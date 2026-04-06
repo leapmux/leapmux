@@ -3,14 +3,14 @@ package db_test
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/leapmux/leapmux/internal/worker/db"
 )
 
 func TestOpen_InMemory(t *testing.T) {
-	sqlDB, err := db.Open(":memory:")
+	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	defer func() { _ = sqlDB.Close() }()
 
@@ -26,7 +26,7 @@ func TestOpen_InMemory(t *testing.T) {
 }
 
 func TestMigrate(t *testing.T) {
-	sqlDB, err := db.Open(":memory:")
+	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	defer func() { _ = sqlDB.Close() }()
 
@@ -50,7 +50,7 @@ func TestMigrate(t *testing.T) {
 }
 
 func TestMigrate_Idempotent(t *testing.T) {
-	sqlDB, err := db.Open(":memory:")
+	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	defer func() { _ = sqlDB.Close() }()
 

@@ -14,35 +14,36 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 type sectionTestEnv struct {
-	client  leapmuxv1connect.SectionServiceClient
-	queries *gendb.Queries
-	token   string
-	orgID   string
-	userID  string
+	client leapmuxv1connect.SectionServiceClient
+	store  store.Store
+	token  string
+	orgID  string
+	userID string
 }
 
 func setupSectionTest(t *testing.T) *sectionTestEnv {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	queries := gendb.New(sqlDB)
-	sectionSvc := service.NewSectionService(queries)
+	sectionSvc := service.NewSectionService(st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(queries, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
 	mux.Handle(path, handler)
@@ -62,26 +63,26 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 
-	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "test-org"})
-	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "test-org"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test",
-		PasswordSet:  1,
-		IsAdmin:      1,
+		PasswordSet:  true,
+		IsAdmin:      true,
 	})
 
-	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
 	require.NoError(t, err)
 
 	return &sectionTestEnv{
-		client:  client,
-		queries: queries,
-		token:   token,
-		orgID:   orgID,
-		userID:  userID,
+		client: client,
+		store:  st,
+		token:  token,
+		orgID:  orgID,
+		userID: userID,
 	}
 }
 
@@ -145,11 +146,7 @@ func TestSectionService_CreateSection(t *testing.T) {
 		&leapmuxv1.CreateSectionRequest{Name: "My Custom"}, env.token))
 	require.NoError(t, err)
 
-	sec := resp.Msg.GetSection()
-	assert.Equal(t, "My Custom", sec.GetName())
-	assert.Equal(t, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM, sec.GetSectionType())
-	assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, sec.GetSidebar())
-	assert.NotEmpty(t, sec.GetId())
+	assert.NotEmpty(t, resp.Msg.GetSectionId())
 
 	// Verify it appears in the list.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
@@ -175,7 +172,7 @@ func TestSectionService_RenameSection(t *testing.T) {
 	// Create a section first.
 	createResp, _ := env.client.CreateSection(context.Background(), authedReq(
 		&leapmuxv1.CreateSectionRequest{Name: "Old Name"}, env.token))
-	sectionID := createResp.Msg.GetSection().GetId()
+	sectionID := createResp.Msg.GetSectionId()
 
 	// Rename it.
 	_, err := env.client.RenameSection(context.Background(), authedReq(
@@ -212,7 +209,7 @@ func TestSectionService_DeleteSection(t *testing.T) {
 	// Create a section, then delete it.
 	createResp, _ := env.client.CreateSection(context.Background(), authedReq(
 		&leapmuxv1.CreateSectionRequest{Name: "Temp Section"}, env.token))
-	sectionID := createResp.Msg.GetSection().GetId()
+	sectionID := createResp.Msg.GetSectionId()
 
 	_, err := env.client.DeleteSection(context.Background(), authedReq(
 		&leapmuxv1.DeleteSectionRequest{SectionId: sectionID}, env.token))
@@ -222,6 +219,69 @@ func TestSectionService_DeleteSection(t *testing.T) {
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
 	require.Len(t, listResp.Msg.GetSections(), 6)
+}
+
+func TestSectionService_DeleteSection_WithItems(t *testing.T) {
+	env := setupSectionTest(t)
+	ctx := context.Background()
+
+	// Create a workspace so the FK in workspace_section_items is satisfied.
+	workspaceID := id.Generate()
+	err := env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID:          workspaceID,
+		OrgID:       env.orgID,
+		OwnerUserID: env.userID,
+		Title:       "ws for delete test",
+	})
+	require.NoError(t, err)
+
+	// Trigger auto-init of sections.
+	listResp, err := env.client.ListSections(ctx, authedReq(
+		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+	require.NoError(t, err)
+
+	// Create a custom section and assign a workspace to it.
+	createResp, err := env.client.CreateSection(ctx, authedReq(
+		&leapmuxv1.CreateSectionRequest{Name: "Custom With Items"}, env.token))
+	require.NoError(t, err)
+	customID := createResp.Msg.GetSectionId()
+
+	_, err = env.client.MoveWorkspace(ctx, authedReq(
+		&leapmuxv1.MoveWorkspaceRequest{
+			WorkspaceId: workspaceID,
+			SectionId:   customID,
+			Position:    "a",
+		}, env.token))
+	require.NoError(t, err)
+
+	// Delete the custom section — items should be moved to "In progress".
+	_, err = env.client.DeleteSection(ctx, authedReq(
+		&leapmuxv1.DeleteSectionRequest{SectionId: customID}, env.token))
+	require.NoError(t, err)
+
+	// Find the "In progress" section ID.
+	var inProgressID string
+	for _, s := range listResp.Msg.GetSections() {
+		if s.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
+			inProgressID = s.GetId()
+			break
+		}
+	}
+	require.NotEmpty(t, inProgressID)
+
+	// Verify the workspace was moved to "In progress".
+	listResp2, err := env.client.ListSections(ctx, authedReq(
+		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+	require.NoError(t, err)
+	var found bool
+	for _, item := range listResp2.Msg.GetItems() {
+		if item.GetWorkspaceId() == workspaceID {
+			assert.Equal(t, inProgressID, item.GetSectionId())
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "workspace should be in 'In progress' section after deleting custom section")
 }
 
 func TestSectionService_MoveSection(t *testing.T) {
@@ -266,7 +326,7 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 
 	// Create a workspace (hub-owned) so that the FK in workspace_section_items is satisfied.
 	workspaceID := id.Generate()
-	err := env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       env.orgID,
 		OwnerUserID: env.userID,
@@ -307,7 +367,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	env := setupSectionTest(t)
 
 	workspaceID := id.Generate()
-	err := env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OrgID:       env.orgID,
 		OwnerUserID: env.userID,
@@ -329,7 +389,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	}
 
 	// Not archived initially (not in any section).
-	archived, err := env.queries.IsWorkspaceInArchivedSection(context.Background(), gendb.IsWorkspaceInArchivedSectionParams{
+	archived, err := env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
 		UserID:      env.userID,
 		WorkspaceID: workspaceID,
 	})
@@ -339,7 +399,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	// Move to In Progress.
 	_, _ = env.client.MoveWorkspace(context.Background(), authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: inProgressID, Position: "a"}, env.token))
-	archived, err = env.queries.IsWorkspaceInArchivedSection(context.Background(), gendb.IsWorkspaceInArchivedSectionParams{
+	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
 		UserID:      env.userID,
 		WorkspaceID: workspaceID,
 	})
@@ -349,7 +409,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	// Move to Archived.
 	_, _ = env.client.MoveWorkspace(context.Background(), authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: archivedID, Position: "a"}, env.token))
-	archived, err = env.queries.IsWorkspaceInArchivedSection(context.Background(), gendb.IsWorkspaceInArchivedSectionParams{
+	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
 		UserID:      env.userID,
 		WorkspaceID: workspaceID,
 	})
@@ -359,7 +419,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	// Move back to In Progress.
 	_, _ = env.client.MoveWorkspace(context.Background(), authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: inProgressID, Position: "a"}, env.token))
-	archived, err = env.queries.IsWorkspaceInArchivedSection(context.Background(), gendb.IsWorkspaceInArchivedSectionParams{
+	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
 		UserID:      env.userID,
 		WorkspaceID: workspaceID,
 	})

@@ -57,3 +57,4 @@ test-results/
 frontend/test-results/
 frontend/playwright-report/
 coverage/
+/leapmux

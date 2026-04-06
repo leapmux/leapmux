@@ -15,7 +15,8 @@ import { dirname, join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const FRONTEND = join(ROOT, 'frontend')
-const LICENSE_OVERRIDES = join(ROOT, 'scripts/license-overrides')
+const LICENSE_OVERRIDES_GO = join(ROOT, 'scripts/license-overrides/go')
+const LICENSE_OVERRIDES_JS = join(ROOT, 'scripts/license-overrides/js')
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,7 +122,16 @@ function collectGoDeps() {
       }
     }
 
-    const licFile = findLicenseFile(dir, goModCache)
+    let licFile = findLicenseFile(dir, goModCache)
+    if (!licFile) {
+      // Check for a manual override in scripts/license-overrides/go/.
+      // Try the module path with slashes replaced by dashes.
+      const overrideName = mod.Path.replace(/\//g, '-')
+      const overrideDir = join(LICENSE_OVERRIDES_GO, overrideName)
+      if (existsSync(join(overrideDir, 'expected.json'))) {
+        licFile = findLicenseFile(overrideDir, overrideDir)
+      }
+    }
     if (!licFile) {
       errors.push(`Go: ${key} — no license file found in ${dir}`)
       continue
@@ -193,18 +203,18 @@ function collectJsDeps() {
 
     if (licFile) {
       // Upstream ships a license file. Warn if we still have an override for it.
-      const overrideDir = join(LICENSE_OVERRIDES, pkgName)
+      const overrideDir = join(LICENSE_OVERRIDES_JS, pkgName)
       if (existsSync(join(overrideDir, 'expected.json'))) {
-        warnings.push(`JS: ${pkgName}@${version} — upstream now ships a LICENSE file; override in scripts/license-overrides/${pkgName}/ can be removed`)
+        warnings.push(`JS: ${pkgName}@${version} — upstream now ships a LICENSE file; override in scripts/license-overrides/js/${pkgName}/ can be removed`)
       }
     } else {
       // No license file — check overrides.
-      const overrideDir = join(LICENSE_OVERRIDES, pkgName)
+      const overrideDir = join(LICENSE_OVERRIDES_JS, pkgName)
       const expectedPath = join(overrideDir, 'expected.json')
       if (existsSync(expectedPath)) {
         const expected = JSON.parse(readFileSync(expectedPath, 'utf-8'))
         if (expected.license !== licenseField) {
-          errors.push(`JS: ${pkgName}@${version} — license field changed from "${expected.license}" to "${licenseField}"; review and update the override in scripts/license-overrides/${pkgName}/`)
+          errors.push(`JS: ${pkgName}@${version} — license field changed from "${expected.license}" to "${licenseField}"; review and update the override in scripts/license-overrides/js/${pkgName}/`)
           continue
         }
         licFile = findLicenseFile(overrideDir, overrideDir)
@@ -212,7 +222,7 @@ function collectJsDeps() {
     }
 
     if (!licFile) {
-      errors.push(`JS: ${pkgName}@${version} — no license file found; add an override in scripts/license-overrides/${pkgName}/`)
+      errors.push(`JS: ${pkgName}@${version} — no license file found; add an override in scripts/license-overrides/js/${pkgName}/`)
       continue
     }
 

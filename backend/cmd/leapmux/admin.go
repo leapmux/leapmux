@@ -2,29 +2,28 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"strings"
+	"time"
 
 	"github.com/mattn/go-isatty"
 	"golang.org/x/term"
-	sqlite "modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/storeopen"
 )
 
 func runAdmin(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin <group> <command> [flags]\n\nGroups:\n  user              Manage users\n  session           Manage sessions\n  worker            Manage workers\n  oauth-provider    Manage OAuth/OIDC providers\n  encryption-key    Manage encryption keys\n  db                Database utilities")
+		return fmt.Errorf("usage: leapmux admin <group> <command> [flags]\n\nGroups:\n  org               Manage organizations\n  user              Manage users\n  session           Manage sessions\n  worker            Manage workers\n  oauth-provider    Manage OAuth/OIDC providers\n  encryption-key    Manage encryption keys\n  db                Database utilities")
 	}
 
 	switch args[0] {
+	case "org":
+		return runAdminOrg(args[1:])
 	case "user":
 		return runAdminUser(args[1:])
 	case "session":
@@ -44,11 +43,14 @@ func runAdmin(args []string) error {
 
 // ---- Helpers ----
 
-// withAdminDB creates a flag set with --data-dir, parses args, opens the
-// database, and calls fn. The database is closed after fn returns.
-func withAdminDB(name string, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, q *gendb.Queries) error) error {
+// withAdminStore creates a flag set with --data-dir and --config, parses args,
+// opens the store, and calls fn. The store is closed after fn returns.
+// When --config is provided, the hub config file is loaded to obtain storage
+// settings. Otherwise, a minimal config is constructed from --data-dir.
+func withAdminStore(name string, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store) error) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	dataDir := fs.String("data-dir", "", "data directory")
+	configFile := fs.String("config", "", "path to hub config file (loads storage settings)")
 	if setup != nil {
 		setup(fs)
 	}
@@ -56,29 +58,31 @@ func withAdminDB(name string, args []string, setup func(fs *flag.FlagSet), fn fu
 		return err
 	}
 
-	cfg := adminConfig(*dataDir)
-	sqlDB, q, err := openAdminDB(cfg)
+	var cfg *config.Config
+	if *configFile != "" {
+		var err error
+		cfg, _, err = config.LoadWithOptions([]string{"--config", *configFile}, config.LoadOptions{})
+		if err != nil {
+			return fmt.Errorf("load config from %s: %w", *configFile, err)
+		}
+		if *dataDir != "" {
+			cfg.DataDir = *dataDir
+		}
+	} else {
+		cfg = adminConfig(*dataDir)
+	}
+
+	st, err := openAdminStore(cfg)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = sqlDB.Close() }()
+	defer func() { _ = st.Close() }()
 
-	return fn(context.Background(), cfg, sqlDB, q)
+	return fn(context.Background(), cfg, st)
 }
 
-// openAdminDB opens the database, runs migrations, and returns the connection
-// and queries handle. The caller must close the returned *sql.DB.
-func openAdminDB(cfg *config.Config) (*sql.DB, *gendb.Queries, error) {
-	dbPath := cfg.DBPath()
-	sqlDB, err := db.Open(dbPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open database: %w", err)
-	}
-	if err := db.Migrate(sqlDB); err != nil {
-		_ = sqlDB.Close()
-		return nil, nil, fmt.Errorf("migrate database: %w", err)
-	}
-	return sqlDB, gendb.New(sqlDB), nil
+func openAdminStore(cfg *config.Config) (store.Store, error) {
+	return storeopen.Open(context.Background(), cfg)
 }
 
 // adminConfig returns a minimal Config with DataDir set. When dataDir is
@@ -108,9 +112,8 @@ func withAdminConfig(name string, args []string, setup func(fs *flag.FlagSet), f
 	return fn(adminConfig(*dataDir))
 }
 
-// resolveUser looks up a user by ID or username. Exactly one of userID or
-// username must be non-empty.
-func resolveUser(ctx context.Context, q *gendb.Queries, userID, username string) (*gendb.User, error) {
+// resolveUser looks up a user by ID or username using the Store interface.
+func resolveUser(ctx context.Context, st store.Store, userID, username string) (*store.User, error) {
 	if userID == "" && username == "" {
 		return nil, fmt.Errorf("--id or --username is required")
 	}
@@ -118,50 +121,50 @@ func resolveUser(ctx context.Context, q *gendb.Queries, userID, username string)
 		return nil, fmt.Errorf("--id and --username are mutually exclusive")
 	}
 
-	var user gendb.User
-	var err error
-
 	if userID != "" {
-		user, err = q.GetUserByID(ctx, userID)
+		user, err := st.Users().GetByID(ctx, userID)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, store.ErrNotFound) {
 				return nil, fmt.Errorf("user not found: %s", userID)
 			}
 			return nil, fmt.Errorf("get user by ID: %w", err)
 		}
-	} else {
-		user, err = q.GetUserByUsername(ctx, username)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, fmt.Errorf("user not found: %s", username)
-			}
-			return nil, fmt.Errorf("get user by username: %w", err)
-		}
+		return user, nil
 	}
 
-	return &user, nil
+	user, err := st.Users().GetByUsername(ctx, username)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, fmt.Errorf("user not found: %s", username)
+		}
+		return nil, fmt.Errorf("get user by username: %w", err)
+	}
+	return user, nil
 }
 
-// sqliteConstraintUnique is the extended error code for UNIQUE constraint
-// violations: SQLITE_CONSTRAINT (19) | (8 << 8) = 2067.
-const sqliteConstraintUnique = sqlite3.SQLITE_CONSTRAINT | (8 << 8)
-
-// friendlyConstraintError translates SQLite UNIQUE constraint violations
+// friendlyConstraintError translates uniqueness constraint violations
 // into user-friendly messages.
 func friendlyConstraintError(err error, username, email string) error {
-	var sqliteErr *sqlite.Error
-	if !errors.As(err, &sqliteErr) || sqliteErr.Code() != sqliteConstraintUnique {
+	var ce *store.ConflictError
+	if !errors.As(err, &ce) {
+		if errors.Is(err, store.ErrConflict) {
+			// Fallback for untyped ErrConflict.
+			return fmt.Errorf("username %q is already taken", username)
+		}
 		return err
 	}
-	// It's a UNIQUE constraint violation. Check the error message to determine which field.
-	msg := err.Error()
-	if strings.Contains(msg, "orgs.name") || strings.Contains(msg, "users.username") {
+	switch ce.Entity {
+	case store.ConflictEntityOrg:
+		// Org name = username (personal org), so username is taken.
 		return fmt.Errorf("username %q is already taken", username)
+	case store.ConflictEntityUser:
+		if email != "" {
+			return fmt.Errorf("email %q is already in use", email)
+		}
+		return fmt.Errorf("username %q is already taken", username)
+	default:
+		return err
 	}
-	if strings.Contains(msg, "users.email") {
-		return fmt.Errorf("email %q is already in use", email)
-	}
-	return err
 }
 
 // promptPassword reads a password from the terminal without echoing.
@@ -192,11 +195,19 @@ func requirePassword(pw string, prompt string) (string, error) {
 	return promptPassword(prompt)
 }
 
-func yesNo(v int64) string {
-	if v == 1 {
+func yesNo(v bool) string {
+	if v {
 		return "yes"
 	}
 	return "no"
+}
+
+// maybePrintNextCursor prints a cursor hint for the next page if the result
+// set is exactly limit items (indicating more pages may exist).
+func maybePrintNextCursor[T any](items []T, limit int64, getTime func(T) time.Time) {
+	if n := int64(len(items)); n > 0 && n == limit {
+		fmt.Printf("\nNext page: --cursor %s\n", getTime(items[n-1]).UTC().Format(time.RFC3339Nano))
+	}
 }
 
 // truncate shortens a string to maxLen runes, appending "..." if truncated.

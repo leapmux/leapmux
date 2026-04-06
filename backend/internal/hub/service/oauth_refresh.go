@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
 const tokenRefreshInterval = 1 * time.Minute
@@ -30,7 +30,7 @@ func (h *OAuthHandler) StartTokenRefresh(ctx context.Context) {
 }
 
 func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
-	tokens, err := h.queries.ListExpiringOAuthTokens(ctx)
+	tokens, err := h.store.OAuthTokens().ListExpiring(ctx)
 	if err != nil {
 		slog.Error("oauth refresh: list expiring tokens", "error", err)
 		return
@@ -39,7 +39,7 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 	// Cache DB lookups within this tick to avoid repeated GetOAuthProviderByID
 	// calls. The built Provider itself is cached on OAuthHandler.
 	type dbLookup struct {
-		dbProvider *gendb.OauthProvider
+		dbProvider *store.OAuthProvider
 		err        error
 	}
 	dbCache := make(map[string]*dbLookup)
@@ -48,11 +48,11 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 		lookup, ok := dbCache[tok.ProviderID]
 		if !ok {
 			lookup = &dbLookup{}
-			dbProvider, getErr := h.queries.GetOAuthProviderByID(ctx, tok.ProviderID)
+			dbProvider, getErr := h.store.OAuthProviders().GetByID(ctx, tok.ProviderID)
 			if getErr != nil {
 				lookup.err = getErr
 			} else {
-				lookup.dbProvider = &dbProvider
+				lookup.dbProvider = dbProvider
 			}
 			dbCache[tok.ProviderID] = lookup
 		}
@@ -77,7 +77,7 @@ func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
 		newTokens, err := provider.Refresh(ctx, string(refreshTokenPlain))
 		if err != nil {
 			slog.Warn("oauth refresh: refresh failed, deleting tokens", "user_id", tok.UserID, "provider_id", tok.ProviderID, "error", err)
-			_ = h.queries.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{
+			_ = h.store.OAuthTokens().DeleteByUserAndProvider(ctx, store.DeleteOAuthTokensByUserAndProviderParams{
 				UserID:     tok.UserID,
 				ProviderID: tok.ProviderID,
 			})

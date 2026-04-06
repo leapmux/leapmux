@@ -1,0 +1,51 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "db/queries"
+    schema: "db/migrations"
+    gen:
+      go:
+        package: "db"
+        out: "generated/db"
+        emit_json_tags: true
+        emit_empty_slices: true
+        sql_package: "pgx/v5"
+        overrides:
+          # Worker enums
+          - column: "workers.status"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "WorkerStatus"
+          # Worker notification enums
+          - column: "worker_notifications.type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "NotificationType"
+          - column: "worker_notifications.status"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "NotificationStatus"
+          # Worker registration enum
+          - column: "worker_registrations.status"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "RegistrationStatus"
+          # Workspace section enums
+          - column: "workspace_sections.section_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "SectionType"
+          - column: "workspace_sections.sidebar"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "Sidebar"
+          # Org member enum
+          - column: "org_members.role"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "OrgMemberRole"
+          # Workspace tab enum
+          - column: "workspace_tabs.tab_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "TabType"

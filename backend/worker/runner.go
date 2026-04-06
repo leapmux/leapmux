@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -31,6 +32,8 @@ type RunConfig struct {
 	WorkerID             string                      // Worker ID (from registration)
 	Name                 string                      // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
 	DBMaxConns           int                         // Maximum number of open database connections (0 = default)
+	DBCacheSize          int                         // SQLite page cache size (negative = KiB; 0 = default)
+	DBMmapSize           int                         // SQLite memory-mapped I/O size in bytes (0 = disabled)
 	MaxMessageSize       int                         // Maximum reassembled channel message size in bytes (0 = 16 MiB default)
 	MaxIncompleteChunked int                         // Maximum in-flight chunked sequences per channel (0 = 4 default)
 	AgentStartupTimeout  time.Duration               // Timeout for agent startup handshake (0 = 30s default)
@@ -46,7 +49,11 @@ type RunConfig struct {
 func Run(ctx context.Context, cfg RunConfig) error {
 	// Open the Worker-local database for persistent state.
 	dbPath := filepath.Join(cfg.DataDir, "worker.db")
-	sqlDB, err := workerdb.Open(dbPath, cfg.DBMaxConns)
+	sqlDB, err := workerdb.Open(dbPath, sqlitedb.Config{
+		MaxConns:  cfg.DBMaxConns,
+		CacheSize: cfg.DBCacheSize,
+		MmapSize:  cfg.DBMmapSize,
+	})
 	if err != nil {
 		return fmt.Errorf("open worker db: %w", err)
 	}

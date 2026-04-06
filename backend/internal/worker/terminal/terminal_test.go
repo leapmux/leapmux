@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -313,7 +314,7 @@ func TestManager_HasTerminal_UnknownTerminal(t *testing.T) {
 // newTestDB creates an in-memory SQLite database with migrations applied.
 func newTestDB(t *testing.T) *db.Queries {
 	t.Helper()
-	sqlDB, err := workerdb.Open(":memory:")
+	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err, "open in-memory DB")
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	require.NoError(t, workerdb.Migrate(sqlDB), "migrate DB")

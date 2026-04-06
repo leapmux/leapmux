@@ -2,25 +2,27 @@ package service
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
 // WorkerManagementService implements the Hub-side service called by Frontend
 // to manage worker registrations and workers.
 type WorkerManagementService struct {
-	queries     *db.Queries
+	store       store.Store
 	workerMgr   *workermgr.Manager
 	broadcaster *HubEventBroadcaster
 	notifier    *notifier.Notifier
@@ -28,8 +30,8 @@ type WorkerManagementService struct {
 }
 
 // NewWorkerManagementService creates a new WorkerManagementService.
-func NewWorkerManagementService(q *db.Queries, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, soloMode bool) *WorkerManagementService {
-	return &WorkerManagementService{queries: q, workerMgr: mgr, broadcaster: b, notifier: n, soloMode: soloMode}
+func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, soloMode bool) *WorkerManagementService {
+	return &WorkerManagementService{store: st, workerMgr: mgr, broadcaster: b, notifier: n, soloMode: soloMode}
 }
 
 func (s *WorkerManagementService) ApproveRegistration(
@@ -47,9 +49,9 @@ func (s *WorkerManagementService) ApproveRegistration(
 	}
 
 	// Look up the registration.
-	reg, err := s.queries.GetRegistrationByID(ctx, regID)
+	reg, err := s.store.Registrations().GetByID(ctx, regID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("registration not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -63,36 +65,22 @@ func (s *WorkerManagementService) ApproveRegistration(
 	workerID := id.Generate()
 	authToken := id.Generate()
 
-	// Copy public keys from registration to worker (may be empty if worker didn't send them).
-	publicKey := reg.PublicKey
-	if publicKey == nil {
-		publicKey = []byte{}
-	}
-	mlkemPK := reg.MlkemPublicKey
-	if mlkemPK == nil {
-		mlkemPK = []byte{}
-	}
-	slhdsaPK := reg.SlhdsaPublicKey
-	if slhdsaPK == nil {
-		slhdsaPK = []byte{}
-	}
-
-	if err := s.queries.CreateWorker(ctx, db.CreateWorkerParams{
+	if err := s.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       authToken,
 		RegisteredBy:    user.ID,
-		PublicKey:       publicKey,
-		MlkemPublicKey:  mlkemPK,
-		SlhdsaPublicKey: slhdsaPK,
+		PublicKey:       ptrconv.OrEmpty(reg.PublicKey),
+		MlkemPublicKey:  ptrconv.OrEmpty(reg.MlkemPublicKey),
+		SlhdsaPublicKey: ptrconv.OrEmpty(reg.SlhdsaPublicKey),
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 	}
 
 	// Update the registration to approved.
-	if err := s.queries.ApproveRegistration(ctx, db.ApproveRegistrationParams{
+	if err := s.store.Registrations().Approve(ctx, store.ApproveRegistrationParams{
 		ID:         regID,
-		WorkerID:   sql.NullString{String: workerID, Valid: true},
-		ApprovedBy: sql.NullString{String: user.ID, Valid: true},
+		WorkerID:   ptrconv.Ptr(workerID),
+		ApprovedBy: ptrconv.Ptr(user.ID),
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("approve registration: %w", err))
 	}
@@ -117,34 +105,34 @@ func (s *WorkerManagementService) ListWorkers(
 	}
 
 	limit := int64(50)
-	offset := int64(0)
+	cursor := ""
 	if req.Msg.GetPage() != nil {
 		if req.Msg.GetPage().GetLimit() > 0 {
 			limit = int64(req.Msg.GetPage().GetLimit())
 		}
 		if req.Msg.GetPage().GetCursor() != "" {
-			_, _ = fmt.Sscanf(req.Msg.GetPage().GetCursor(), "%d", &offset)
+			cursor = req.Msg.GetPage().GetCursor()
 		}
 	}
 
-	workers, err := s.queries.ListWorkersByUserID(ctx, db.ListWorkersByUserIDParams{
+	workers, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
+		Cursor:       cursor,
 		Limit:        limit,
-		Offset:       offset,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	protoWorkers := make([]*leapmuxv1.Worker, len(workers))
-	for i, b := range workers {
-		protoWorkers[i] = s.workerToProto(&b)
+	for i := range workers {
+		protoWorkers[i] = s.workerToProto(&workers[i])
 	}
 
 	hasMore := int64(len(workers)) == limit
 	var nextCursor string
 	if hasMore {
-		nextCursor = fmt.Sprintf("%d", offset+limit)
+		nextCursor = workers[len(workers)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
 
 	return connect.NewResponse(&leapmuxv1.ListWorkersResponse{
@@ -165,19 +153,19 @@ func (s *WorkerManagementService) GetWorker(
 		return nil, err
 	}
 
-	worker, err := s.queries.GetOwnedWorker(ctx, db.GetOwnedWorkerParams{
+	worker, err := s.store.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 		UserID:   user.ID,
 		WorkerID: req.Msg.GetWorkerId(),
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetWorkerResponse{
-		Worker: s.workerToProto(&worker),
+		Worker: s.workerToProto(worker),
 	}), nil
 }
 
@@ -193,15 +181,13 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, err
 	}
 
-	result, err := s.queries.DeregisterWorker(ctx, db.DeregisterWorkerParams{
+	rows, err := s.store.Workers().Deregister(ctx, store.DeregisterWorkerParams{
 		ID:           req.Msg.GetWorkerId(),
 		RegisteredBy: user.ID,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 	}
@@ -229,9 +215,9 @@ func (s *WorkerManagementService) GetRegistration(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("registration_token is required"))
 	}
 
-	reg, err := s.queries.GetRegistrationByID(ctx, regID)
+	reg, err := s.store.Registrations().GetByID(ctx, regID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("registration not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -252,10 +238,10 @@ func (s *WorkerManagementService) GetRegistration(
 	}), nil
 }
 
-func (s *WorkerManagementService) workerToProto(b *db.Worker) *leapmuxv1.Worker {
+func (s *WorkerManagementService) workerToProto(b *store.Worker) *leapmuxv1.Worker {
 	lastSeen := ""
-	if b.LastSeenAt.Valid {
-		lastSeen = timefmt.Format(b.LastSeenAt.Time)
+	if b.LastSeenAt != nil {
+		lastSeen = timefmt.Format(*b.LastSeenAt)
 	}
 
 	return &leapmuxv1.Worker{

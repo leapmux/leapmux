@@ -12,10 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 // setupTestDataDir creates a temp dir with an encryption key and migrated hub DB.
@@ -28,9 +29,9 @@ func setupTestDataDir(t *testing.T) string {
 	require.NoError(t, err)
 
 	// Create and migrate the DB.
-	sqlDB, err := db.Open(filepath.Join(dir, "hub.db"))
+	sqlDB, err := sqlite.OpenDB(filepath.Join(dir, "hub.db"), sqlitedb.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.Migrate(sqlDB))
+	require.NoError(t, sqlite.MigrateDB(sqlDB))
 	_ = sqlDB.Close()
 
 	return dir
@@ -40,7 +41,7 @@ func setupTestDataDir(t *testing.T) string {
 // The database is automatically closed when the test completes.
 func openTestDB(t *testing.T, dir string) (*sql.DB, *gendb.Queries) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(dir, "hub.db"))
+	sqlDB, err := sqlite.OpenDB(filepath.Join(dir, "hub.db"), sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return sqlDB, gendb.New(sqlDB)
@@ -461,9 +462,8 @@ func TestCLI_UserList_WithQuery(t *testing.T) {
 	_, q := openTestDB(t, dir)
 
 	users, err := q.SearchUsers(context.Background(), gendb.SearchUsersParams{
-		Query:  sql.NullString{String: "ali", Valid: true},
-		Limit:  50,
-		Offset: 0,
+		Query: sql.NullString{String: "ali", Valid: true},
+		Limit: 50,
 	})
 	require.NoError(t, err)
 	assert.Len(t, users, 2)
@@ -473,33 +473,34 @@ func TestCLI_UserList_WithQuery(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestCLI_UserList_WithLimitOffset(t *testing.T) {
+func TestCLI_UserList_WithLimitAndCursor(t *testing.T) {
 	dir := setupTestDataDir(t)
 
 	for i := 0; i < 5; i++ {
 		createTestUser(t, dir, fmt.Sprintf("user%d", i))
 	}
 
-	// Verify limit works.
+	// Verify limit works via the generated query.
 	_, q := openTestDB(t, dir)
 
 	users, err := q.ListAllUsers(context.Background(), gendb.ListAllUsersParams{
-		Limit:  2,
-		Offset: 0,
+		Limit: 2,
 	})
 	require.NoError(t, err)
 	assert.Len(t, users, 2)
 
-	// Verify offset works.
-	users, err = q.ListAllUsers(context.Background(), gendb.ListAllUsersParams{
+	// Verify cursor-based pagination works.
+	// The cursor must be passed in the same string format SQLite stores it in.
+	cursor := users[len(users)-1].CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z")
+	users2, err := q.ListAllUsers(context.Background(), gendb.ListAllUsersParams{
+		Cursor: cursor,
 		Limit:  10,
-		Offset: 3,
 	})
 	require.NoError(t, err)
-	assert.Len(t, users, 2)
+	assert.Len(t, users2, 3)
 
-	// CLI with limit/offset should not error.
-	err = runUserList([]string{"--limit", "2", "--offset", "1", "--data-dir", dir})
+	// CLI with limit should not error.
+	err = runUserList([]string{"--limit", "2", "--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -1240,33 +1241,4 @@ func TestCLI_DBPath(t *testing.T) {
 	// Verify no error. The printed path should match the expected DB path.
 	err := runDBPath([]string{"--data-dir", dir})
 	require.NoError(t, err)
-}
-
-func TestCLI_DBBackup(t *testing.T) {
-	dir := setupTestDataDir(t)
-	backupPath := filepath.Join(dir, "backup.db")
-
-	err := runDBBackup([]string{"--output", backupPath, "--data-dir", dir})
-	require.NoError(t, err)
-
-	// Verify the backup file is a valid SQLite database by opening it.
-	backupDB, err := db.Open(backupPath)
-	require.NoError(t, err)
-	defer func() { _ = backupDB.Close() }()
-
-	// Verify we can query it.
-	q := gendb.New(backupDB)
-	_, err = q.ListAllUsers(context.Background(), gendb.ListAllUsersParams{
-		Limit:  10,
-		Offset: 0,
-	})
-	require.NoError(t, err)
-}
-
-func TestCLI_DBBackup_MissingOutput(t *testing.T) {
-	dir := setupTestDataDir(t)
-
-	err := runDBBackup([]string{"--data-dir", dir})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--output is required")
 }

@@ -12,6 +12,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -55,7 +56,7 @@ func (w *testResponseWriter) ChannelID() string { return w.channelID }
 func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.Dispatcher, *testResponseWriter) {
 	t.Helper()
 
-	sqlDB, err := workerdb.Open(":memory:")
+	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	require.NoError(t, workerdb.Migrate(sqlDB))

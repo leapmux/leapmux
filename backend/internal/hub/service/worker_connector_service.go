@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -12,10 +12,11 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
 
@@ -25,7 +26,7 @@ import (
 const DefaultPollTimeout = 30 * time.Second
 
 type WorkerConnectorService struct {
-	queries     *db.Queries
+	store       store.Store
 	workerMgr   *workermgr.Manager
 	channelMgr  *channelmgr.Manager
 	broadcaster *HubEventBroadcaster
@@ -37,7 +38,7 @@ type WorkerConnectorService struct {
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
 func NewWorkerConnectorService(
-	q *db.Queries,
+	st store.Store,
 	mgr *workermgr.Manager,
 	cMgr *channelmgr.Manager,
 	b *HubEventBroadcaster,
@@ -46,7 +47,7 @@ func NewWorkerConnectorService(
 	shutdownCh <-chan struct{},
 ) *WorkerConnectorService {
 	return &WorkerConnectorService{
-		queries:     q,
+		store:       st,
 		workerMgr:   mgr,
 		channelMgr:  cMgr,
 		broadcaster: b,
@@ -67,7 +68,7 @@ func (s *WorkerConnectorService) RequestRegistration(
 	req *connect.Request[leapmuxv1.RequestRegistrationRequest],
 ) (*connect.Response[leapmuxv1.RequestRegistrationResponse], error) {
 	// Expire old pending registrations first.
-	if err := s.queries.ExpireRegistrations(ctx); err != nil {
+	if err := s.store.Registrations().ExpirePending(ctx); err != nil {
 		slog.Debug("failed to expire registrations", "error", err)
 	}
 
@@ -79,20 +80,11 @@ func (s *WorkerConnectorService) RequestRegistration(
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	publicKey := req.Msg.GetPublicKey()
-	if publicKey == nil {
-		publicKey = []byte{}
-	}
-	mlkemPublicKey := req.Msg.GetMlkemPublicKey()
-	if mlkemPublicKey == nil {
-		mlkemPublicKey = []byte{}
-	}
-	slhdsaPublicKey := req.Msg.GetSlhdsaPublicKey()
-	if slhdsaPublicKey == nil {
-		slhdsaPublicKey = []byte{}
-	}
+	publicKey := ptrconv.OrEmpty(req.Msg.GetPublicKey())
+	mlkemPublicKey := ptrconv.OrEmpty(req.Msg.GetMlkemPublicKey())
+	slhdsaPublicKey := ptrconv.OrEmpty(req.Msg.GetSlhdsaPublicKey())
 
-	if err := s.queries.CreateRegistration(ctx, db.CreateRegistrationParams{
+	if err := s.store.Registrations().Create(ctx, store.CreateRegistrationParams{
 		ID:              regID,
 		Version:         version,
 		PublicKey:       publicKey,
@@ -128,7 +120,7 @@ func (s *WorkerConnectorService) autoApproveRegistration(
 	user := auth.GetUser(ctx)
 	if user == nil {
 		// Non-solo mode: look up the admin user as the approver.
-		adminUser, err := s.queries.GetUserByUsername(ctx, "admin")
+		adminUser, err := s.store.Users().GetByUsername(ctx, "admin")
 		if err != nil {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("resolve admin user for auto-approval: %w", err))
 		}
@@ -141,7 +133,7 @@ func (s *WorkerConnectorService) autoApproveRegistration(
 	workerID := id.Generate()
 	authToken := id.Generate()
 
-	if err := s.queries.CreateWorker(ctx, db.CreateWorkerParams{
+	if err := s.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       authToken,
 		RegisteredBy:    user.ID,
@@ -152,10 +144,10 @@ func (s *WorkerConnectorService) autoApproveRegistration(
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 	}
 
-	if err := s.queries.ApproveRegistration(ctx, db.ApproveRegistrationParams{
+	if err := s.store.Registrations().Approve(ctx, store.ApproveRegistrationParams{
 		ID:         regID,
-		WorkerID:   sql.NullString{String: workerID, Valid: true},
-		ApprovedBy: sql.NullString{String: user.ID, Valid: true},
+		WorkerID:   ptrconv.Ptr(workerID),
+		ApprovedBy: ptrconv.Ptr(user.ID),
 	}); err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("approve registration: %w", err))
 	}
@@ -183,9 +175,9 @@ func (s *WorkerConnectorService) PollRegistration(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("registration_token is required"))
 	}
 
-	reg, err := s.queries.GetRegistrationByID(ctx, regID)
+	reg, err := s.store.Registrations().GetByID(ctx, regID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("registration not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -196,9 +188,9 @@ func (s *WorkerConnectorService) PollRegistration(
 		_ = s.workerMgr.WaitForRegistrationChange(ctx, regID, s.pollTimeout)
 
 		// Re-query after waking up.
-		reg, err = s.queries.GetRegistrationByID(ctx, regID)
+		reg, err = s.store.Registrations().GetByID(ctx, regID)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, store.ErrNotFound) {
 				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("registration not found"))
 			}
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -212,9 +204,9 @@ func (s *WorkerConnectorService) PollRegistration(
 		resp.Status = leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_PENDING
 	case leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED:
 		resp.Status = leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED
-		if reg.WorkerID.Valid {
-			resp.WorkerId = reg.WorkerID.String
-			worker, err := s.queries.GetWorkerByID(ctx, reg.WorkerID.String)
+		if reg.WorkerID != nil {
+			resp.WorkerId = *reg.WorkerID
+			worker, err := s.store.Workers().GetByID(ctx, *reg.WorkerID)
 			if err == nil {
 				resp.AuthToken = worker.AuthToken
 				resp.RegisteredBy = worker.RegisteredBy
@@ -246,9 +238,9 @@ func (s *WorkerConnectorService) Connect(
 		token = authToken[len(prefix):]
 	}
 
-	worker, err := s.queries.GetWorkerByAuthToken(ctx, token)
+	worker, err := s.store.Workers().GetByAuthToken(ctx, token)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid auth token"))
 		}
 		return connect.NewError(connect.CodeInternal, err)
@@ -278,7 +270,7 @@ func (s *WorkerConnectorService) Connect(
 	}()
 
 	// Update last seen.
-	if err := s.queries.UpdateWorkerLastSeen(ctx, worker.ID); err != nil {
+	if err := s.store.Workers().UpdateLastSeen(ctx, worker.ID); err != nil {
 		slog.Warn("failed to update worker last seen", "worker_id", worker.ID, "error", err)
 	}
 
@@ -386,7 +378,7 @@ func (s *WorkerConnectorService) processWorkerMessage(
 ) error {
 	// Update last seen periodically on heartbeats.
 	if hb := msg.GetHeartbeat(); hb != nil {
-		if err := s.queries.UpdateWorkerLastSeen(ctx, workerID); err != nil && ctx.Err() == nil {
+		if err := s.store.Workers().UpdateLastSeen(ctx, workerID); err != nil && ctx.Err() == nil {
 			slog.Warn("failed to update worker last seen on heartbeat", "worker_id", workerID, "error", err)
 		}
 		// Cache encryption mode on the live connection (not persisted to DB).
@@ -410,11 +402,11 @@ func (s *WorkerConnectorService) processWorkerMessage(
 			if slhdsaPK == nil {
 				slhdsaPK = []byte{}
 			}
-			if err := s.queries.UpdateWorkerPublicKey(ctx, db.UpdateWorkerPublicKeyParams{
+			if err := s.store.Workers().UpdatePublicKey(ctx, store.UpdateWorkerPublicKeyParams{
+				ID:              workerID,
 				PublicKey:       pk,
 				MlkemPublicKey:  mlkemPK,
 				SlhdsaPublicKey: slhdsaPK,
-				ID:              workerID,
 			}); err != nil {
 				slog.Warn("failed to update worker public key", "worker_id", workerID, "error", err)
 			}
@@ -503,7 +495,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, wo
 	}
 
 	// Get current hub tabs for this worker.
-	hubTabs, err := s.queries.ListWorkspaceTabsByWorker(ctx, workerID)
+	hubTabs, err := s.store.WorkspaceTabs().ListByWorker(ctx, workerID)
 	if err != nil {
 		slog.Error("failed to list hub tabs for worker during sync", "worker_id", workerID, "error", err)
 		return
@@ -517,7 +509,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, wo
 		workerWsID, exists := workerTabs[k]
 		if !exists {
 			// Tab no longer exists on worker — delete from hub.
-			if err := s.queries.DeleteWorkspaceTab(ctx, db.DeleteWorkspaceTabParams{
+			if err := s.store.WorkspaceTabs().Delete(ctx, store.DeleteWorkspaceTabParams{
 				WorkspaceID: ht.WorkspaceID,
 				TabType:     ht.TabType,
 				TabID:       ht.TabID,
@@ -535,7 +527,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, wo
 			// Workspace mismatch — worker is authoritative, update hub.
 			// Delete old row and upsert new row with worker's workspace_id,
 			// preserving position and tile_id.
-			if err := s.queries.DeleteWorkspaceTab(ctx, db.DeleteWorkspaceTabParams{
+			if err := s.store.WorkspaceTabs().Delete(ctx, store.DeleteWorkspaceTabParams{
 				WorkspaceID: ht.WorkspaceID,
 				TabType:     ht.TabType,
 				TabID:       ht.TabID,
@@ -549,7 +541,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, wo
 				)
 				continue
 			}
-			if err := s.queries.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+			if err := s.store.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
 				WorkspaceID: workerWsID,
 				WorkerID:    ht.WorkerID,
 				TabType:     ht.TabType,

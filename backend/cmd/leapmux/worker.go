@@ -103,7 +103,7 @@ func runWorker(args []string) error {
 	)
 
 	// Open the Worker-local database for persistent state.
-	sqlDB, err := workerdb.Open(cfg.DBPath(), cfg.DBMaxConns)
+	sqlDB, err := workerdb.Open(cfg.DBPath(), cfg.DBConfig())
 	if err != nil {
 		return fmt.Errorf("open worker db: %w", err)
 	}

@@ -2,14 +2,14 @@ package service
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
 	"github.com/leapmux/leapmux/internal/util/validate"
@@ -17,12 +17,12 @@ import (
 
 // SectionService implements the SectionServiceHandler interface.
 type SectionService struct {
-	queries *db.Queries
+	store store.Store
 }
 
 // NewSectionService creates a new SectionService.
-func NewSectionService(q *db.Queries) *SectionService {
-	return &SectionService{queries: q}
+func NewSectionService(st store.Store) *SectionService {
+	return &SectionService{store: st}
 }
 
 func (s *SectionService) ListSections(
@@ -34,20 +34,20 @@ func (s *SectionService) ListSections(
 		return nil, err
 	}
 
-	// Auto-initialize default sections if needed.
-	count, err := s.queries.CountDefaultSectionsForUser(ctx, user.ID)
+	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if count == 0 {
+
+	// Auto-initialize default sections if needed.
+	if len(sections) == 0 {
 		if err := s.initDefaultSections(ctx, user.ID); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("init sections: %w", err))
 		}
-	}
-
-	sections, err := s.queries.ListWorkspaceSectionsByUserID(ctx, user.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		sections, err = s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
 	}
 
 	// Ensure Workers section exists for users created before it became a server-side section.
@@ -59,17 +59,14 @@ func (s *SectionService) ListSections(
 		}
 	}
 	if !hasWorkers {
-		if err := s.createWorkersSection(ctx, user.ID, sections); err != nil {
+		workersSec, err := s.createWorkersSection(ctx, user.ID, sections)
+		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create workers section: %w", err))
 		}
-		// Re-fetch to include the new section.
-		sections, err = s.queries.ListWorkspaceSectionsByUserID(ctx, user.ID)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
+		sections = append(sections, *workersSec)
 	}
 
-	items, err := s.queries.ListWorkspaceSectionItemsByUser(ctx, user.ID)
+	items, err := s.store.WorkspaceSectionItems().ListByUser(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -115,7 +112,7 @@ func (s *SectionService) CreateSection(
 	}
 
 	// Find the position between the last custom section and "Archived".
-	sections, err := s.queries.ListWorkspaceSectionsByUserID(ctx, user.ID)
+	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -143,7 +140,7 @@ func (s *SectionService) CreateSection(
 	}
 
 	sectionID := id.Generate()
-	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 		ID:          sectionID,
 		UserID:      user.ID,
 		Name:        name,
@@ -155,13 +152,7 @@ func (s *SectionService) CreateSection(
 	}
 
 	return connect.NewResponse(&leapmuxv1.CreateSectionResponse{
-		Section: &leapmuxv1.Section{
-			Id:          sectionID,
-			Name:        name,
-			Position:    position,
-			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
-			Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
-		},
+		SectionId: sectionID,
 	}), nil
 }
 
@@ -179,7 +170,7 @@ func (s *SectionService) RenameSection(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
 	}
 
-	result, err := s.queries.RenameWorkspaceSection(ctx, db.RenameWorkspaceSectionParams{
+	rows, err := s.store.WorkspaceSections().Rename(ctx, store.RenameWorkspaceSectionParams{
 		Name:   name,
 		ID:     req.Msg.GetSectionId(),
 		UserID: user.ID,
@@ -187,7 +178,6 @@ func (s *SectionService) RenameSection(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found or not a custom section"))
 	}
@@ -207,7 +197,7 @@ func (s *SectionService) DeleteSection(
 	sectionID := req.Msg.GetSectionId()
 
 	// Find the "In progress" section to move orphaned workspaces there.
-	sections, err := s.queries.ListWorkspaceSectionsByUserID(ctx, user.ID)
+	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -225,21 +215,29 @@ func (s *SectionService) DeleteSection(
 	}
 
 	// Move items from the deleted section to "In progress".
-	if err := s.queries.MoveWorkspaceSectionItemsToSection(ctx, db.MoveWorkspaceSectionItemsToSectionParams{
-		SectionID:   inProgressID,
-		SectionID_2: sectionID,
+	if err := s.store.WorkspaceSectionItems().MoveToSection(ctx, store.MoveWorkspaceSectionItemsToSectionParams{
+		ToSectionID:   inProgressID,
+		FromSectionID: sectionID,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	result, err := s.queries.DeleteWorkspaceSection(ctx, db.DeleteWorkspaceSectionParams{
+	// Verify the section is empty after moving items (race protection).
+	hasItems, err := s.store.WorkspaceSectionItems().HasItemsBySection(ctx, sectionID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if hasItems {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, store.ErrSectionNotEmpty)
+	}
+
+	rows, err := s.store.WorkspaceSections().Delete(ctx, store.DeleteWorkspaceSectionParams{
 		ID:     sectionID,
 		UserID: user.ID,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found or not a custom section"))
 	}
@@ -262,9 +260,9 @@ func (s *SectionService) MoveSection(
 	}
 
 	// Verify the section exists and belongs to the user.
-	section, err := s.queries.GetWorkspaceSectionByID(ctx, req.Msg.GetSectionId())
+	section, err := s.store.WorkspaceSections().GetByID(ctx, req.Msg.GetSectionId())
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -273,7 +271,7 @@ func (s *SectionService) MoveSection(
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
 	}
 
-	if err := s.queries.UpdateWorkspaceSectionSidebarPosition(ctx, db.UpdateWorkspaceSectionSidebarPositionParams{
+	if err := s.store.WorkspaceSections().UpdateSidebarPosition(ctx, store.UpdateWorkspaceSectionSidebarPositionParams{
 		Sidebar:  sidebar,
 		Position: req.Msg.GetPosition(),
 		ID:       req.Msg.GetSectionId(),
@@ -297,9 +295,9 @@ func (s *SectionService) MoveWorkspace(
 	workspaceID := req.Msg.GetWorkspaceId()
 
 	// Verify the target section exists and belongs to the user.
-	section, err := s.queries.GetWorkspaceSectionByID(ctx, req.Msg.GetSectionId())
+	section, err := s.store.WorkspaceSections().GetByID(ctx, req.Msg.GetSectionId())
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -308,7 +306,7 @@ func (s *SectionService) MoveWorkspace(
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
 	}
 
-	if err := s.queries.SetWorkspaceSectionItem(ctx, db.SetWorkspaceSectionItemParams{
+	if err := s.store.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 		UserID:      user.ID,
 		WorkspaceID: workspaceID,
 		SectionID:   req.Msg.GetSectionId(),
@@ -333,7 +331,7 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 	filesPos := lexorank.First()
 	todosPos := lexorank.After(filesPos)
 
-	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
 		UserID:      userID,
 		Name:        "In progress",
@@ -344,7 +342,7 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 		return err
 	}
 
-	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
 		UserID:      userID,
 		Name:        "Shared",
@@ -355,7 +353,7 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 		return err
 	}
 
-	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
 		UserID:      userID,
 		Name:        "Archived",
@@ -366,7 +364,7 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 		return err
 	}
 
-	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
 		UserID:      userID,
 		Name:        "Workers",
@@ -377,7 +375,7 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 		return err
 	}
 
-	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
 		UserID:      userID,
 		Name:        "Files",
@@ -388,7 +386,7 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 		return err
 	}
 
-	if err := s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 		ID:          id.Generate(),
 		UserID:      userID,
 		Name:        "To-dos",
@@ -404,7 +402,7 @@ func (s *SectionService) initDefaultSections(ctx context.Context, userID string)
 
 // createWorkersSection creates a Workers section for an existing user.
 // It is positioned after the last left-sidebar section.
-func (s *SectionService) createWorkersSection(ctx context.Context, userID string, sections []db.WorkspaceSection) error {
+func (s *SectionService) createWorkersSection(ctx context.Context, userID string, sections []store.WorkspaceSection) (*store.WorkspaceSection, error) {
 	var lastLeftPos string
 	for _, sec := range sections {
 		if sec.Sidebar == leapmuxv1.Sidebar_SIDEBAR_LEFT && sec.Position > lastLeftPos {
@@ -419,12 +417,24 @@ func (s *SectionService) createWorkersSection(ctx context.Context, userID string
 		position = lexorank.First()
 	}
 
-	return s.queries.CreateWorkspaceSection(ctx, db.CreateWorkspaceSectionParams{
-		ID:          id.Generate(),
+	sectionID := id.Generate()
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+		ID:          sectionID,
 		UserID:      userID,
 		Name:        "Workers",
 		Position:    position,
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKERS,
 		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
-	})
+	}); err != nil {
+		return nil, err
+	}
+
+	return &store.WorkspaceSection{
+		ID:          sectionID,
+		UserID:      userID,
+		Name:        "Workers",
+		Position:    position,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKERS,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}, nil
 }

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -46,18 +45,17 @@ func serializeLayoutJSON(marshaler protojson.MarshalOptions, layout *leapmuxv1.L
 
 // WorkspaceService implements the WorkspaceServiceHandler interface.
 type WorkspaceService struct {
-	db       *sql.DB
-	queries  *db.Queries
+	store    store.Store
 	soloMode bool
 }
 
 // NewWorkspaceService creates a new WorkspaceService.
-func NewWorkspaceService(sqlDB *sql.DB, q *db.Queries, soloMode bool) *WorkspaceService {
-	return &WorkspaceService{db: sqlDB, queries: q, soloMode: soloMode}
+func NewWorkspaceService(st store.Store, soloMode bool) *WorkspaceService {
+	return &WorkspaceService{store: st, soloMode: soloMode}
 }
 
 // workspaceToProto converts a hub DB workspace row to the proto Workspace message.
-func workspaceToProto(w db.Workspace) *leapmuxv1.Workspace {
+func workspaceToProto(w *store.Workspace) *leapmuxv1.Workspace {
 	return &leapmuxv1.Workspace{
 		Id:        w.ID,
 		CreatedBy: w.OwnerUserID,
@@ -81,7 +79,7 @@ func (s *WorkspaceService) CreateWorkspace(
 	}
 
 	wsID := id.Generate()
-	if err := s.queries.CreateWorkspace(ctx, db.CreateWorkspaceParams{
+	if err := s.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          wsID,
 		OrgID:       req.Msg.GetOrgId(),
 		OwnerUserID: user.ID,
@@ -90,13 +88,8 @@ func (s *WorkspaceService) CreateWorkspace(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create workspace: %w", err))
 	}
 
-	ws, err := s.queries.GetWorkspaceByID(ctx, wsID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get created workspace: %w", err))
-	}
-
 	return connect.NewResponse(&leapmuxv1.CreateWorkspaceResponse{
-		Workspace: workspaceToProto(ws),
+		WorkspaceId: wsID,
 	}), nil
 }
 
@@ -109,7 +102,7 @@ func (s *WorkspaceService) ListWorkspaces(
 		return nil, err
 	}
 
-	workspaces, err := s.queries.ListAccessibleWorkspaces(ctx, db.ListAccessibleWorkspacesParams{
+	workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 		UserID: user.ID,
 		OrgID:  req.Msg.GetOrgId(),
 	})
@@ -118,8 +111,8 @@ func (s *WorkspaceService) ListWorkspaces(
 	}
 
 	pbWorkspaces := make([]*leapmuxv1.Workspace, len(workspaces))
-	for i, w := range workspaces {
-		pbWorkspaces[i] = workspaceToProto(w)
+	for i := range workspaces {
+		pbWorkspaces[i] = workspaceToProto(&workspaces[i])
 	}
 
 	return connect.NewResponse(&leapmuxv1.ListWorkspacesResponse{
@@ -136,9 +129,9 @@ func (s *WorkspaceService) GetWorkspace(
 		return nil, err
 	}
 
-	ws, err := s.queries.GetWorkspaceByID(ctx, req.Msg.GetWorkspaceId())
+	ws, err := s.store.Workspaces().GetByID(ctx, req.Msg.GetWorkspaceId())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -151,7 +144,7 @@ func (s *WorkspaceService) GetWorkspace(
 
 	// Check access: must be owner or have explicit access.
 	if ws.OwnerUserID != user.ID {
-		hasAccess, err := s.queries.HasWorkspaceAccess(ctx, db.HasWorkspaceAccessParams{
+		hasAccess, err := s.store.WorkspaceAccess().HasAccess(ctx, store.HasWorkspaceAccessParams{
 			WorkspaceID: ws.ID,
 			UserID:      user.ID,
 		})
@@ -182,7 +175,7 @@ func (s *WorkspaceService) RenameWorkspace(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title: %w", err))
 	}
 
-	result, err := s.queries.RenameWorkspace(ctx, db.RenameWorkspaceParams{
+	rows, err := s.store.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
 		Title:       title,
 		ID:          req.Msg.GetWorkspaceId(),
 		OwnerUserID: user.ID,
@@ -190,7 +183,6 @@ func (s *WorkspaceService) RenameWorkspace(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("rename workspace: %w", err))
 	}
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
 	}
@@ -208,28 +200,27 @@ func (s *WorkspaceService) DeleteWorkspace(
 	}
 
 	// Get distinct worker_ids from tabs before deleting.
-	workerIDs, err := s.queries.ListDistinctWorkersByWorkspace(ctx, req.Msg.GetWorkspaceId())
+	workerIDs, err := s.store.WorkspaceTabs().ListDistinctWorkersByWorkspace(ctx, req.Msg.GetWorkspaceId())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspace workers: %w", err))
 	}
 
-	result, err := s.queries.SoftDeleteWorkspace(ctx, db.SoftDeleteWorkspaceParams{
+	rows, err := s.store.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 		ID:          req.Msg.GetWorkspaceId(),
 		OwnerUserID: user.ID,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace: %w", err))
 	}
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
 	}
 
 	// Clean up tabs and layout for the deleted workspace.
-	if err := s.queries.DeleteWorkspaceTabsByWorkspace(ctx, req.Msg.GetWorkspaceId()); err != nil {
+	if err := s.store.WorkspaceTabs().DeleteByWorkspace(ctx, req.Msg.GetWorkspaceId()); err != nil {
 		slog.Error("failed to delete workspace tabs", "workspace_id", req.Msg.GetWorkspaceId(), "error", err)
 	}
-	if err := s.queries.DeleteWorkspaceLayout(ctx, req.Msg.GetWorkspaceId()); err != nil {
+	if err := s.store.WorkspaceLayouts().Delete(ctx, req.Msg.GetWorkspaceId()); err != nil {
 		slog.Error("failed to delete workspace layout", "workspace_id", req.Msg.GetWorkspaceId(), "error", err)
 	}
 
@@ -251,9 +242,9 @@ func (s *WorkspaceService) UpdateWorkspaceSharing(
 	}
 
 	// Verify ownership.
-	ws, err := s.queries.GetWorkspaceByID(ctx, req.Msg.GetWorkspaceId())
+	ws, err := s.store.Workspaces().GetByID(ctx, req.Msg.GetWorkspaceId())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -264,21 +255,23 @@ func (s *WorkspaceService) UpdateWorkspaceSharing(
 
 	switch req.Msg.GetShareMode() {
 	case leapmuxv1.ShareMode_SHARE_MODE_PRIVATE:
-		if err := s.queries.ClearWorkspaceAccess(ctx, req.Msg.GetWorkspaceId()); err != nil {
+		if err := s.store.WorkspaceAccess().Clear(ctx, req.Msg.GetWorkspaceId()); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("clear workspace access: %w", err))
 		}
 
 	case leapmuxv1.ShareMode_SHARE_MODE_MEMBERS:
-		if err := s.queries.ClearWorkspaceAccess(ctx, req.Msg.GetWorkspaceId()); err != nil {
+		if err := s.store.WorkspaceAccess().Clear(ctx, req.Msg.GetWorkspaceId()); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("clear workspace access: %w", err))
 		}
-		for _, uid := range req.Msg.GetUserIds() {
-			if err := s.queries.GrantWorkspaceAccess(ctx, db.GrantWorkspaceAccessParams{
+		grantParams := make([]store.GrantWorkspaceAccessParams, len(req.Msg.GetUserIds()))
+		for i, uid := range req.Msg.GetUserIds() {
+			grantParams[i] = store.GrantWorkspaceAccessParams{
 				WorkspaceID: req.Msg.GetWorkspaceId(),
 				UserID:      uid,
-			}); err != nil {
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("grant workspace access: %w", err))
 			}
+		}
+		if err := s.store.WorkspaceAccess().BulkGrant(ctx, grantParams); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("grant workspace access: %w", err))
 		}
 
 	default:
@@ -298,9 +291,9 @@ func (s *WorkspaceService) ListWorkspaceShares(
 	}
 
 	// Verify ownership.
-	ws, err := s.queries.GetWorkspaceByID(ctx, req.Msg.GetWorkspaceId())
+	ws, err := s.store.Workspaces().GetByID(ctx, req.Msg.GetWorkspaceId())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -309,7 +302,7 @@ func (s *WorkspaceService) ListWorkspaceShares(
 		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("only workspace owner can list shares"))
 	}
 
-	accessEntries, err := s.queries.ListWorkspaceAccessByWorkspaceID(ctx, req.Msg.GetWorkspaceId())
+	accessEntries, err := s.store.WorkspaceAccess().ListByWorkspaceID(ctx, req.Msg.GetWorkspaceId())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspace shares: %w", err))
 	}
@@ -345,7 +338,7 @@ func (s *WorkspaceService) AddTab(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("tab is required"))
 	}
 
-	if err := s.queries.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+	if err := s.store.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
 		WorkspaceID: req.Msg.GetWorkspaceId(),
 		WorkerID:    tab.GetWorkerId(),
 		TabType:     tab.GetTabType(),
@@ -367,7 +360,7 @@ func (s *WorkspaceService) RemoveTab(
 		return nil, err
 	}
 
-	if err := s.queries.DeleteWorkspaceTab(ctx, db.DeleteWorkspaceTabParams{
+	if err := s.store.WorkspaceTabs().Delete(ctx, store.DeleteWorkspaceTabParams{
 		WorkspaceID: req.Msg.GetWorkspaceId(),
 		TabType:     req.Msg.GetTabType(),
 		TabID:       req.Msg.GetTabId(),
@@ -386,7 +379,7 @@ func (s *WorkspaceService) ListTabs(
 		return nil, err
 	}
 
-	tabs, err := s.queries.ListWorkspaceTabsByWorkspace(ctx, req.Msg.GetWorkspaceId())
+	tabs, err := s.store.WorkspaceTabs().ListByWorkspace(ctx, req.Msg.GetWorkspaceId())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list tabs: %w", err))
 	}
@@ -415,9 +408,9 @@ func (s *WorkspaceService) GetLayout(
 		return nil, err
 	}
 
-	layout, err := s.queries.GetWorkspaceLayout(ctx, req.Msg.GetWorkspaceId())
+	layout, err := s.store.WorkspaceLayouts().Get(ctx, req.Msg.GetWorkspaceId())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return connect.NewResponse(&leapmuxv1.GetLayoutResponse{}), nil
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get layout: %w", err))
@@ -426,7 +419,7 @@ func (s *WorkspaceService) GetLayout(
 	resp := &leapmuxv1.GetLayoutResponse{}
 
 	var stored layoutJSON
-	if err := json.Unmarshal([]byte(layout.LayoutJson), &stored); err != nil {
+	if err := json.Unmarshal([]byte(layout.LayoutJSON), &stored); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("parse layout: %w", err))
 	}
 
@@ -458,9 +451,9 @@ func (s *WorkspaceService) SaveLayout(
 	}
 
 	// Verify ownership for write operation.
-	ws, err := s.queries.GetWorkspaceByID(ctx, req.Msg.GetWorkspaceId())
+	ws, err := s.store.Workspaces().GetByID(ctx, req.Msg.GetWorkspaceId())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -481,28 +474,30 @@ func (s *WorkspaceService) SaveLayout(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout JSON: %w", err))
 	}
 
-	if err := s.queries.UpsertWorkspaceLayout(ctx, db.UpsertWorkspaceLayoutParams{
+	if err := s.store.WorkspaceLayouts().Upsert(ctx, store.UpsertWorkspaceLayoutParams{
 		WorkspaceID: req.Msg.GetWorkspaceId(),
-		LayoutJson:  string(layoutJSONBytes),
+		LayoutJSON:  string(layoutJSONBytes),
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save layout: %w", err))
 	}
 
 	// Delete existing tabs and re-insert the ones from the request.
-	if err := s.queries.DeleteWorkspaceTabsByWorkspace(ctx, req.Msg.GetWorkspaceId()); err != nil {
+	if err := s.store.WorkspaceTabs().DeleteByWorkspace(ctx, req.Msg.GetWorkspaceId()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace tabs: %w", err))
 	}
-	for _, tab := range req.Msg.GetTabs() {
-		if err := s.queries.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+	tabParams := make([]store.UpsertWorkspaceTabParams, len(req.Msg.GetTabs()))
+	for i, tab := range req.Msg.GetTabs() {
+		tabParams[i] = store.UpsertWorkspaceTabParams{
 			WorkspaceID: req.Msg.GetWorkspaceId(),
 			WorkerID:    tab.GetWorkerId(),
 			TabType:     tab.GetTabType(),
 			TabID:       tab.GetTabId(),
 			Position:    tab.GetPosition(),
 			TileID:      tab.GetTileId(),
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save tab: %w", err))
 		}
+	}
+	if err := s.store.WorkspaceTabs().BulkUpsert(ctx, tabParams); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save tabs: %w", err))
 	}
 
 	return connect.NewResponse(&leapmuxv1.SaveLayoutResponse{}), nil
@@ -517,26 +512,17 @@ func (s *WorkspaceService) SaveMultiLayout(
 		return nil, err
 	}
 
-	if len(req.Msg.GetEntries()) == 0 {
+	entries := req.Msg.GetEntries()
+	if len(entries) == 0 {
 		return connect.NewResponse(&leapmuxv1.SaveMultiLayoutResponse{}), nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("begin transaction: %w", err))
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	txq := s.queries.WithTx(tx)
-	marshaler := protojson.MarshalOptions{EmitUnpopulated: false}
-
-	for _, entry := range req.Msg.GetEntries() {
+	// Verify ownership for all workspaces before entering the transaction.
+	for _, entry := range entries {
 		wsID := entry.GetWorkspaceId()
-
-		// Verify ownership for each workspace (shared workspaces must never be modified).
-		ws, err := txq.GetWorkspaceByID(ctx, wsID)
+		ws, err := s.store.Workspaces().GetByID(ctx, wsID)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, store.ErrNotFound) {
 				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace %s not found", wsID))
 			}
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -545,45 +531,55 @@ func (s *WorkspaceService) SaveMultiLayout(
 			return nil, connect.NewError(connect.CodePermissionDenied,
 				fmt.Errorf("only workspace owner can save layout for workspace %s", wsID))
 		}
-
-		// Serialize layout.
-		stored, err := serializeLayoutJSON(marshaler, entry.GetLayout(), entry.GetFloatingWindows())
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout for %s: %w", wsID, err))
-		}
-
-		layoutJSONBytes, err := json.Marshal(stored)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout JSON for %s: %w", wsID, err))
-		}
-
-		if err := txq.UpsertWorkspaceLayout(ctx, db.UpsertWorkspaceLayoutParams{
-			WorkspaceID: wsID,
-			LayoutJson:  string(layoutJSONBytes),
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save layout for %s: %w", wsID, err))
-		}
-
-		// Delete existing tabs and re-insert.
-		if err := txq.DeleteWorkspaceTabsByWorkspace(ctx, wsID); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete tabs for %s: %w", wsID, err))
-		}
-		for _, tab := range entry.GetTabs() {
-			if err := txq.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
-				WorkspaceID: wsID,
-				WorkerID:    tab.GetWorkerId(),
-				TabType:     tab.GetTabType(),
-				TabID:       tab.GetTabId(),
-				Position:    tab.GetPosition(),
-				TileID:      tab.GetTileId(),
-			}); err != nil {
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save tab for %s: %w", wsID, err))
-			}
-		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit transaction: %w", err))
+	marshaler := protojson.MarshalOptions{EmitUnpopulated: false}
+
+	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		for _, entry := range entries {
+			wsID := entry.GetWorkspaceId()
+
+			// Serialize layout.
+			stored, err := serializeLayoutJSON(marshaler, entry.GetLayout(), entry.GetFloatingWindows())
+			if err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout for %s: %w", wsID, err))
+			}
+
+			layoutJSONBytes, err := json.Marshal(stored)
+			if err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout JSON for %s: %w", wsID, err))
+			}
+
+			if err := tx.WorkspaceLayouts().Upsert(ctx, store.UpsertWorkspaceLayoutParams{
+				WorkspaceID: wsID,
+				LayoutJSON:  string(layoutJSONBytes),
+			}); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("save layout for %s: %w", wsID, err))
+			}
+
+			// Delete existing tabs and re-insert.
+			if err := tx.WorkspaceTabs().DeleteByWorkspace(ctx, wsID); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("delete tabs for %s: %w", wsID, err))
+			}
+			tabParams := make([]store.UpsertWorkspaceTabParams, len(entry.GetTabs()))
+			for i, tab := range entry.GetTabs() {
+				tabParams[i] = store.UpsertWorkspaceTabParams{
+					WorkspaceID: wsID,
+					WorkerID:    tab.GetWorkerId(),
+					TabType:     tab.GetTabType(),
+					TabID:       tab.GetTabId(),
+					Position:    tab.GetPosition(),
+					TileID:      tab.GetTileId(),
+				}
+			}
+			if err := tx.WorkspaceTabs().BulkUpsert(ctx, tabParams); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("save tabs for %s: %w", wsID, err))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return connect.NewResponse(&leapmuxv1.SaveMultiLayoutResponse{}), nil

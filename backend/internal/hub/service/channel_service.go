@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -10,14 +10,14 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
-// ChannelService implements the Hub-side relay for encrypted Frontend ↔ Worker channels.
+// ChannelService implements the Hub-side relay for encrypted Frontend <-> Worker channels.
 type ChannelService struct {
-	queries    *db.Queries
+	store      store.Store
 	workerMgr  *workermgr.Manager
 	channelMgr *channelmgr.Manager
 	pending    *workermgr.PendingRequests
@@ -25,13 +25,13 @@ type ChannelService struct {
 
 // NewChannelService creates a new ChannelService.
 func NewChannelService(
-	q *db.Queries,
+	st store.Store,
 	wMgr *workermgr.Manager,
 	cMgr *channelmgr.Manager,
 	pr *workermgr.PendingRequests,
 ) *ChannelService {
 	return &ChannelService{
-		queries:    q,
+		store:      st,
 		workerMgr:  wMgr,
 		channelMgr: cMgr,
 		pending:    pr,
@@ -57,9 +57,9 @@ func (s *ChannelService) GetWorkerPublicKey(
 		return nil, err
 	}
 
-	keys, err := s.queries.GetWorkerPublicKey(ctx, workerID)
+	keys, err := s.store.Workers().GetPublicKey(ctx, workerID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -139,11 +139,11 @@ func (s *ChannelService) OpenChannel(
 
 	channelID := id.Generate()
 
-	// Register in channel manager (no cancel func yet — WebSocket will set it).
+	// Register in channel manager (no cancel func yet -- WebSocket will set it).
 	s.channelMgr.Register(channelID, workerID, user.ID, nil)
 
 	// Query accessible workspaces for this user in their personal org.
-	workspaces, err := s.queries.ListAccessibleWorkspaces(ctx, db.ListAccessibleWorkspacesParams{
+	workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 		UserID: user.ID,
 		OrgID:  user.OrgID,
 	})
@@ -213,7 +213,7 @@ func (s *ChannelService) CloseChannel(
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("channel not found"))
 	}
 
-	// Notify worker (best effort — worker may be offline).
+	// Notify worker (best effort -- worker may be offline).
 	if workerID := s.channelMgr.GetWorkerID(channelID); workerID != "" {
 		if conn := s.workerMgr.Get(workerID); conn != nil {
 			_ = conn.Send(&leapmuxv1.ConnectResponse{
@@ -250,24 +250,26 @@ func (s *ChannelService) PrepareWorkspaceAccess(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workspace_id is required"))
 	}
 
-	// Verify the user has access to the workspace (owner or explicit grant).
-	hasAccess, err := s.queries.HasWorkspaceAccess(ctx, db.HasWorkspaceAccessParams{
-		WorkspaceID: workspaceID,
-		UserID:      user.ID,
-	})
+	// Check ownership first; only fall back to the access-grant table when
+	// the requesting user is not the workspace owner.
+	ws, err := s.store.Workspaces().GetByID(ctx, workspaceID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check workspace access: %w", err))
-	}
-	// Also check ownership.
-	ws, err := s.queries.GetWorkspaceByID(ctx, workspaceID)
-	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if ws.OwnerUserID != user.ID && !hasAccess {
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("no access to workspace"))
+	if ws.OwnerUserID != user.ID {
+		hasAccess, err := s.store.WorkspaceAccess().HasAccess(ctx, store.HasWorkspaceAccessParams{
+			WorkspaceID: workspaceID,
+			UserID:      user.ID,
+		})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check workspace access: %w", err))
+		}
+		if !hasAccess {
+			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("no access to workspace"))
+		}
 	}
 
 	// Find all channels for this user on the specified worker and push the update.
@@ -298,17 +300,17 @@ func (s *ChannelService) PrepareWorkspaceAccess(
 
 // verifyWorkerAccess checks that the user owns the worker or has been granted access.
 // Returns the worker record for downstream use (e.g. querying accessible workspaces).
-func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.UserInfo, workerID string) (db.Worker, error) {
-	worker, err := s.queries.GetWorkerByID(ctx, workerID)
+func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.UserInfo, workerID string) (*store.Worker, error) {
+	worker, err := s.store.Workers().GetByID(ctx, workerID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return db.Worker{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 		}
-		return db.Worker{}, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	if worker.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
-		return db.Worker{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 	}
 
 	// Owner always has access.
@@ -317,15 +319,15 @@ func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.User
 	}
 
 	// Check explicit access grant.
-	hasAccess, err := s.queries.HasWorkerAccess(ctx, db.HasWorkerAccessParams{
+	hasAccess, err := s.store.WorkerAccessGrants().HasAccess(ctx, store.HasWorkerAccessParams{
 		WorkerID: workerID,
 		UserID:   user.ID,
 	})
 	if err != nil {
-		return db.Worker{}, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if !hasAccess {
-		return db.Worker{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 	}
 
 	return worker, nil

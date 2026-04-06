@@ -8,7 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
 // publicProcedures lists RPC procedures that do not require authentication.
@@ -49,7 +49,7 @@ type cachedSession struct {
 // authInterceptor implements connect.Interceptor to validate session cookies
 // on both unary and streaming RPCs.
 type authInterceptor struct {
-	queries                   *db.Queries
+	store                     store.Store
 	soloMode                  bool
 	secureCookie              bool
 	emailVerificationRequired bool
@@ -66,16 +66,16 @@ type authInterceptor struct {
 //
 // The returned SessionCache can be used to evict entries from the in-memory
 // touch throttle (e.g., on logout).
-func NewInterceptor(q *db.Queries, soloMode bool, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *SessionCache) {
-	a := &authInterceptor{queries: q, soloMode: soloMode, secureCookie: secureCookie, emailVerificationRequired: emailVerificationRequired}
+func NewInterceptor(st store.Store, soloMode bool, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *SessionCache) {
+	a := &authInterceptor{store: st, soloMode: soloMode, secureCookie: secureCookie, emailVerificationRequired: emailVerificationRequired}
 	if soloMode {
-		user, err := q.GetUserByUsername(context.Background(), bootstrap.Username(soloMode))
+		user, err := st.Users().GetByUsername(context.Background(), bootstrap.Username(soloMode))
 		if err == nil {
 			a.soloUser = &UserInfo{
 				ID:       user.ID,
 				OrgID:    user.OrgID,
 				Username: user.Username,
-				IsAdmin:  user.IsAdmin == 1,
+				IsAdmin:  user.IsAdmin,
 			}
 		}
 	}
@@ -215,7 +215,7 @@ func (a *authInterceptor) validateTokenCached(ctx context.Context, token string)
 		a.sessionCache.Delete(token)
 	}
 
-	userInfo, err := ValidateToken(ctx, a.queries, token)
+	userInfo, err := ValidateToken(ctx, a.store, token)
 	if err != nil {
 		return nil, err
 	}
@@ -245,9 +245,9 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string) {
 
 	newExpiry := now.Add(SessionDuration).UTC()
 	threshold := now.Add(-sessionTouchThreshold).UTC()
-	if err := a.queries.TouchUserSession(ctx, db.TouchUserSessionParams{
-		ExpiresAt:    newExpiry,
+	if err := a.store.Sessions().Touch(ctx, store.TouchSessionParams{
 		ID:           sessionID,
+		ExpiresAt:    newExpiry,
 		LastActiveAt: threshold,
 	}); err == nil {
 		a.lastTouch.Store(sessionID, now)

@@ -136,8 +136,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           preselectedWorkerId={props.preselectedWorkerId}
           availableProviders={props.availableProviders}
           onRefreshProviders={props.onRefreshProviders}
-          onCreated={(ws, _wid) => {
-            props.workspaceStore.addWorkspace(ws)
+          onCreated={(workspaceId, _wid) => {
             props.setShowNewWorkspace(false)
             props.setPreselectedWorkerId(undefined)
             const targetSectionId = props.newWorkspaceTargetSectionId
@@ -145,7 +144,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             const clearTargetSection = props.setNewWorkspaceTargetSectionId
             if (targetSectionId) {
               sectionClient.moveWorkspace({
-                workspaceId: ws.id,
+                workspaceId,
                 sectionId: targetSectionId,
                 position: 'N',
               }).catch(() => {}).finally(() => {
@@ -156,7 +155,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             else {
               refreshWorkspaces()
             }
-            props.navigate(`/o/${props.orgSlug}/workspace/${ws.id}`)
+            props.navigate(`/o/${props.orgSlug}/workspace/${workspaceId}`)
           }}
           onClose={() => {
             props.setShowNewWorkspace(false)

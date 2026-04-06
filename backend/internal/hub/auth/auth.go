@@ -2,14 +2,15 @@ package auth
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"connectrpc.com/connect"
 
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -53,11 +54,11 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 
 // Login validates credentials and creates a new session token.
 // Returns the session ID, user, session expiry time, and any error.
-func Login(ctx context.Context, q *db.Queries, username, password string) (string, *db.User, time.Time, error) {
+func Login(ctx context.Context, st store.Store, username, password string) (string, *store.User, time.Time, error) {
 	var zero time.Time
-	user, err := q.GetUserByUsername(ctx, username)
+	user, err := st.Users().GetByUsername(ctx, username)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
 		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
@@ -71,12 +72,12 @@ func Login(ctx context.Context, q *db.Queries, username, password string) (strin
 		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 	}
 
-	sessionID, expiresAt, sessionErr := CreateSession(ctx, q, user.ID)
+	sessionID, expiresAt, sessionErr := CreateSession(ctx, st, user.ID)
 	if sessionErr != nil {
 		return "", nil, zero, connect.NewError(connect.CodeInternal, sessionErr)
 	}
 
-	return sessionID, &user, expiresAt, nil
+	return sessionID, user, expiresAt, nil
 }
 
 // SessionMeta holds optional metadata for session creation.
@@ -87,19 +88,19 @@ type SessionMeta struct {
 
 // CreateSession creates a new user session and returns the session ID and
 // expiry time.
-func CreateSession(ctx context.Context, q *db.Queries, userID string, meta ...SessionMeta) (string, time.Time, error) {
+func CreateSession(ctx context.Context, st store.Store, userID string, meta ...SessionMeta) (string, time.Time, error) {
 	sessionID := id.Generate()
 	expiresAt := time.Now().Add(SessionDuration).UTC()
-	params := db.CreateUserSessionParams{
+	params := store.CreateSessionParams{
 		ID:        sessionID,
 		UserID:    userID,
 		ExpiresAt: expiresAt,
 	}
 	if len(meta) > 0 {
 		params.UserAgent = meta[0].UserAgent
-		params.IpAddress = meta[0].IPAddress
+		params.IPAddress = meta[0].IPAddress
 	}
-	if err := q.CreateUserSession(ctx, params); err != nil {
+	if err := st.Sessions().Create(ctx, params); err != nil {
 		return "", time.Time{}, fmt.Errorf("create session: %w", err)
 	}
 	return sessionID, expiresAt, nil
@@ -108,33 +109,49 @@ func CreateSession(ctx context.Context, q *db.Queries, userID string, meta ...Se
 // ValidateToken resolves a session token to a UserInfo. Returns an error if
 // the token is invalid or expired. Uses a single joined query to avoid two
 // sequential DB round-trips.
-func ValidateToken(ctx context.Context, q *db.Queries, token string) (*UserInfo, error) {
-	row, err := q.ValidateSessionWithUser(ctx, token)
+func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo, error) {
+	row, err := st.Sessions().ValidateWithUser(ctx, token)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid or expired token"))
 		}
 		return nil, fmt.Errorf("validate session: %w", err)
 	}
 
 	return &UserInfo{
-		ID:            row.ID,
+		ID:            row.UserID,
 		OrgID:         row.OrgID,
 		Username:      row.Username,
-		IsAdmin:       row.IsAdmin == 1,
-		EmailVerified: row.EmailVerified == 1,
+		IsAdmin:       row.IsAdmin,
+		EmailVerified: row.EmailVerified,
 	}, nil
+}
+
+// RequireOrgAdmin verifies that the user is a member of the organization with
+// owner or admin role. Returns a connect error on failure.
+func RequireOrgAdmin(ctx context.Context, st store.Store, orgID, userID string) error {
+	member, err := st.OrgMembers().GetByOrgAndUser(ctx, orgID, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("not a member of this organization"))
+		}
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if member.Role != leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER && member.Role != leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_ADMIN {
+		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("insufficient permissions"))
+	}
+	return nil
 }
 
 // ResolveOrgID determines the effective org ID for a request.
 // If requestedOrgID is empty, returns the user's personal org.
 // Otherwise, verifies the user is a member of the requested org.
-func ResolveOrgID(ctx context.Context, q *db.Queries, user *UserInfo, requestedOrgID string) (string, error) {
+func ResolveOrgID(ctx context.Context, st store.Store, user *UserInfo, requestedOrgID string) (string, error) {
 	if requestedOrgID == "" {
 		return user.OrgID, nil
 	}
 
-	isMember, err := q.IsOrgMember(ctx, db.IsOrgMemberParams{
+	isMember, err := st.OrgMembers().IsMember(ctx, store.IsOrgMemberParams{
 		OrgID:  requestedOrgID,
 		UserID: user.ID,
 	})

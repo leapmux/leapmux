@@ -69,7 +69,7 @@ message CreateSectionRequest {
 }
 
 message CreateSectionResponse {
-  Section section = 1;
+  string section_id = 1;
 }
 
 message RenameSectionRequest {

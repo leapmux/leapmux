@@ -14,10 +14,12 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 func leafNode(id string) *leapmuxv1.LayoutNode {
@@ -27,28 +29,27 @@ func leafNode(id string) *leapmuxv1.LayoutNode {
 }
 
 type workspaceTestEnv struct {
-	client  leapmuxv1connect.WorkspaceServiceClient
-	queries *gendb.Queries
-	token   string
-	orgID   string
-	userID  string
+	client leapmuxv1connect.WorkspaceServiceClient
+	store  store.Store
+	token  string
+	orgID  string
+	userID string
 }
 
 func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	queries := gendb.New(sqlDB)
-	workspaceSvc := service.NewWorkspaceService(sqlDB, queries, false)
+	workspaceSvc := service.NewWorkspaceService(st, false)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(queries, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
 	mux.Handle(path, handler)
@@ -68,18 +69,18 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 
-	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "test-org"})
-	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "test-org"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test",
-		PasswordSet:  1,
-		IsAdmin:      1,
+		PasswordSet:  true,
+		IsAdmin:      true,
 	})
 
-	_ = queries.CreateWorker(context.Background(), gendb.CreateWorkerParams{
+	_ = st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              "w1",
 		AuthToken:       "tok",
 		RegisteredBy:    userID,
@@ -88,22 +89,22 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 		SlhdsaPublicKey: []byte{},
 	})
 
-	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
 	require.NoError(t, err)
 
 	return &workspaceTestEnv{
-		client:  client,
-		queries: queries,
-		token:   token,
-		orgID:   orgID,
-		userID:  userID,
+		client: client,
+		store:  st,
+		token:  token,
+		orgID:  orgID,
+		userID: userID,
 	}
 }
 
 func (env *workspaceTestEnv) createWorkspace(t *testing.T) string {
 	t.Helper()
 	wsID := id.Generate()
-	err := env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          wsID,
 		OrgID:       env.orgID,
 		OwnerUserID: env.userID,
@@ -146,7 +147,7 @@ func TestSaveMultiLayout_SingleWorkspace(t *testing.T) {
 	assert.NotNil(t, resp)
 
 	// Verify the tab was saved by loading it back.
-	tabs, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), wsID)
+	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
 	require.NoError(t, err)
 	require.Len(t, tabs, 1)
 	assert.Equal(t, "agent-1", tabs[0].TabID)
@@ -182,13 +183,13 @@ func TestSaveMultiLayout_TwoWorkspacesAtomic(t *testing.T) {
 	assert.NotNil(t, resp)
 
 	// Verify tabs for ws1.
-	tabs1, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), ws1)
+	tabs1, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ws1)
 	require.NoError(t, err)
 	require.Len(t, tabs1, 1)
 	assert.Equal(t, "agent-1", tabs1[0].TabID)
 
 	// Verify tabs for ws2.
-	tabs2, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), ws2)
+	tabs2, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ws2)
 	require.NoError(t, err)
 	require.Len(t, tabs2, 2)
 }
@@ -200,17 +201,17 @@ func TestSaveMultiLayout_NotOwnedWorkspaceRejected(t *testing.T) {
 	// Create a workspace owned by another user.
 	otherUserID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           otherUserID,
 		OrgID:        env.orgID,
 		Username:     "other",
 		PasswordHash: hash,
 		DisplayName:  "Other",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	otherWsID := id.Generate()
-	_ = env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+	_ = env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          otherWsID,
 		OrgID:       env.orgID,
 		OwnerUserID: otherUserID,
@@ -238,7 +239,7 @@ func TestSaveMultiLayout_NotOwnedWorkspaceRejected(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
 	// Verify that the owned workspace's tabs were NOT saved (transaction rolled back).
-	tabs, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), ownedWs)
+	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ownedWs)
 	require.NoError(t, err)
 	assert.Empty(t, tabs)
 }
@@ -264,7 +265,7 @@ func TestSaveMultiLayout_TabsReplacedOnUpdate(t *testing.T) {
 		}, env.token))
 	require.NoError(t, err)
 
-	tabs, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), wsID)
+	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
 	require.NoError(t, err)
 	require.Len(t, tabs, 2)
 
@@ -284,7 +285,7 @@ func TestSaveMultiLayout_TabsReplacedOnUpdate(t *testing.T) {
 		}, env.token))
 	require.NoError(t, err)
 
-	tabs, err = env.queries.ListWorkspaceTabsByWorkspace(context.Background(), wsID)
+	tabs, err = env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
 	require.NoError(t, err)
 	require.Len(t, tabs, 1)
 	assert.Equal(t, "term-1", tabs[0].TabID)

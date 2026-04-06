@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -13,18 +13,16 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/util/version"
 )
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
-	sqlDB        *sql.DB
-	queries      *db.Queries
+	store        store.Store
 	cfg          *config.Config
 	sessionCache *auth.SessionCache
 	keystore     *keystore.Keystore
@@ -32,8 +30,8 @@ type AuthService struct {
 }
 
 // NewAuthService creates a new AuthService.
-func NewAuthService(sqlDB *sql.DB, q *db.Queries, cfg *config.Config, sc *auth.SessionCache, ks *keystore.Keystore) *AuthService {
-	return &AuthService{sqlDB: sqlDB, queries: q, cfg: cfg, sessionCache: sc, keystore: ks}
+func NewAuthService(st store.Store, cfg *config.Config, sc *auth.SessionCache, ks *keystore.Keystore) *AuthService {
+	return &AuthService{store: st, cfg: cfg, sessionCache: sc, keystore: ks}
 }
 
 // checkHasAnyUser returns true if at least one user exists. The result is
@@ -43,11 +41,11 @@ func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
 	if s.hasAnyUser.Load() {
 		return true, nil
 	}
-	v, err := s.queries.HasAnyUser(ctx)
+	v, err := s.store.Users().HasAny(ctx)
 	if err != nil {
 		return false, err
 	}
-	if v != 0 {
+	if v {
 		s.hasAnyUser.Store(true)
 		return true, nil
 	}
@@ -55,12 +53,12 @@ func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
 }
 
 func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
-	token, user, expiresAt, err := auth.Login(ctx, s.queries, req.Msg.GetUsername(), req.Msg.GetPassword())
+	token, user, expiresAt, err := auth.Login(ctx, s.store, req.Msg.GetUsername(), req.Msg.GetPassword())
 	if err != nil {
 		return nil, err
 	}
 
-	org, err := s.queries.GetOrgByID(ctx, user.OrgID)
+	org, err := s.store.Orgs().GetByID(ctx, user.OrgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -75,7 +73,7 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
 	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.cfg.SecureCookies)
 	if token != "" {
-		_, _ = s.queries.DeleteUserSession(ctx, token)
+		_, _ = s.store.Sessions().Delete(ctx, token)
 		s.sessionCache.Evict(token)
 	}
 	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})
@@ -89,29 +87,41 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		return nil, err
 	}
 
-	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	org, err := s.queries.GetOrgByID(ctx, user.OrgID)
+	org, err := s.store.Orgs().GetByID(ctx, user.OrgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	var linkedProviders []*leapmuxv1.LinkedOAuthProvider
-	links, _ := s.queries.ListOAuthUserLinksByUser(ctx, user.ID)
-	for _, link := range links {
-		if provider, err := s.queries.GetOAuthProviderByID(ctx, link.ProviderID); err == nil {
+	links, _ := s.store.OAuthUserLinks().ListByUser(ctx, user.ID)
+	if len(links) > 0 {
+		// ListAll is acceptable here: the number of configured OAuth
+		// providers is typically in the single digits, and adding a
+		// GetByIDs method to every backend is not worth the complexity.
+		providers, _ := s.store.OAuthProviders().ListAll(ctx)
+		providerNames := make(map[string]string, len(providers))
+		for _, p := range providers {
+			providerNames[p.ID] = p.Name
+		}
+		for _, link := range links {
+			name, ok := providerNames[link.ProviderID]
+			if !ok {
+				continue
+			}
 			linkedProviders = append(linkedProviders, &leapmuxv1.LinkedOAuthProvider{
-				Id:   provider.ID,
-				Name: provider.Name,
+				Id:   link.ProviderID,
+				Name: name,
 			})
 		}
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
-		User: userToProtoWithOAuth(&user, org.Name, linkedProviders),
+		User: userToProtoWithOAuth(user, org.Name, linkedProviders),
 	}), nil
 }
 
@@ -144,7 +154,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
+	if err := checkUsernameAvailable(ctx, s.store, username); err != nil {
 		return nil, err
 	}
 
@@ -163,53 +173,53 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	if s.cfg.EmailVerificationRequired && email != "" {
 		// Email goes to pending_email; email column stays empty until verified.
-		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 
-		user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+		user, err := CreateUserWithOrg(ctx, s.store, CreateUserParams{
 			Username:     username,
 			PasswordHash: hash,
 			DisplayName:  displayName,
 			Email:        "", // email goes to pending_email
-			PasswordSet:  1,
-			IsAdmin:      0,
+			PasswordSet:  true,
+			IsAdmin:      false,
 		})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 
 		// Set pending email with verification token (stub: auto-verifies).
-		if err := setPendingEmailWithToken(ctx, s.queries, user.ID, email); err != nil {
+		if err := setPendingEmailWithToken(ctx, s.store, user.ID, email); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 
 		// Re-fetch user after promotion.
-		updatedUser, err := s.queries.GetUserByID(ctx, user.ID)
+		updatedUser, err := s.store.Users().GetByID(ctx, user.ID)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 
 		return connect.NewResponse(&leapmuxv1.SignUpResponse{
-			User:                 userToProtoWithOrgName(&updatedUser, username),
+			User:                 userToProtoWithOrgName(updatedUser, username),
 			VerificationRequired: true,
 		}), nil
 	}
 
 	// No verification required — email goes directly to email column.
 	if email != "" {
-		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 	}
 
-	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.store, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  displayName,
 		Email:        email,
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -223,28 +233,28 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
 	// Re-check to handle race condition where another request created a user
 	// between the initial check and now.
-	hasUser, err := s.queries.HasAnyUser(ctx)
+	hasUser, err := s.store.Users().HasAny(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
-	if hasUser != 0 {
+	if hasUser {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
 
 	if email != "" {
-		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 	}
 
-	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.store, CreateUserParams{
 		Username:      username,
 		PasswordHash:  passwordHash,
 		DisplayName:   displayName,
 		Email:         email,
-		EmailVerified: ptrconv.BoolToInt64(email != ""),
-		PasswordSet:   1,
-		IsAdmin:       1,
+		EmailVerified: email != "",
+		PasswordSet:   true,
+		IsAdmin:       true,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -255,8 +265,8 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 }
 
 // signUpResponse creates a session, sets the cookie, and returns the SignUpResponse.
-func (s *AuthService) signUpResponse(ctx context.Context, user *db.User, orgName string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
-	sessionID, expiresAt, err := auth.CreateSession(ctx, s.queries, user.ID)
+func (s *AuthService) signUpResponse(ctx context.Context, user *store.User, orgName string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
+	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -269,17 +279,17 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *db.User, orgName
 }
 
 func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailRequest]) (*connect.Response[leapmuxv1.VerifyEmailResponse], error) {
-	updatedUser, err := verifyPendingEmailToken(ctx, s.queries, req.Msg.GetVerificationToken())
+	updatedUser, err := verifyPendingEmailToken(ctx, s.store, req.Msg.GetVerificationToken())
 	if err != nil {
 		return nil, err
 	}
 
-	sessionID, sessionExpiresAt, sessionErr := auth.CreateSession(ctx, s.queries, updatedUser.ID)
+	sessionID, sessionExpiresAt, sessionErr := auth.CreateSession(ctx, s.store, updatedUser.ID)
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
 
-	org, err := s.queries.GetOrgByID(ctx, updatedUser.OrgID)
+	org, err := s.store.Orgs().GetByID(ctx, updatedUser.OrgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -292,7 +302,7 @@ func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 }
 
 func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {
-	providers, _ := s.queries.ListEnabledOAuthProviders(ctx)
+	providers, _ := s.store.OAuthProviders().ListEnabled(ctx)
 
 	var setupRequired bool
 	if !s.cfg.SoloMode && !s.cfg.DevMode {
@@ -316,7 +326,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 }
 
 func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Request[leapmuxv1.GetOAuthProvidersRequest]) (*connect.Response[leapmuxv1.GetOAuthProvidersResponse], error) {
-	providers, err := s.queries.ListEnabledOAuthProviders(ctx)
+	providers, err := s.store.OAuthProviders().ListEnabled(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -340,33 +350,33 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 
 // loadPendingOAuthSignup fetches and validates a pending OAuth signup by token.
 // It returns a connect error on missing/expired tokens.
-func loadPendingOAuthSignup(ctx context.Context, q *db.Queries, token string) (*db.PendingOauthSignup, error) {
+func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string) (*store.PendingOAuthSignup, error) {
 	if token == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("signup_token is required"))
 	}
-	pending, err := q.GetPendingOAuthSignup(ctx, token)
+	pending, err := st.PendingOAuthSignups().Get(ctx, token)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired signup token"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if time.Now().UTC().After(pending.ExpiresAt) {
-		_ = q.DeletePendingOAuthSignup(ctx, token)
+		_ = st.PendingOAuthSignups().Delete(ctx, token)
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("signup token expired"))
 	}
-	return &pending, nil
+	return pending, nil
 }
 
 func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.GetPendingOAuthSignupRequest]) (*connect.Response[leapmuxv1.GetPendingOAuthSignupResponse], error) {
-	pending, err := loadPendingOAuthSignup(ctx, s.queries, req.Msg.GetSignupToken())
+	pending, err := loadPendingOAuthSignup(ctx, s.store, req.Msg.GetSignupToken())
 	if err != nil {
 		return nil, err
 	}
 
 	// Look up provider name for display.
 	providerName := ""
-	if provider, err := s.queries.GetOAuthProviderByID(ctx, pending.ProviderID); err == nil {
+	if provider, err := s.store.OAuthProviders().GetByID(ctx, pending.ProviderID); err == nil {
 		providerName = provider.Name
 	}
 
@@ -379,7 +389,7 @@ func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Re
 
 func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.CompleteOAuthSignupRequest]) (*connect.Response[leapmuxv1.CompleteOAuthSignupResponse], error) {
 	signupToken := req.Msg.GetSignupToken()
-	pending, err := loadPendingOAuthSignup(ctx, s.queries, signupToken)
+	pending, err := loadPendingOAuthSignup(ctx, s.store, signupToken)
 	if err != nil {
 		return nil, err
 	}
@@ -389,20 +399,20 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	if err := checkUsernameAvailable(ctx, s.queries, username); err != nil {
+	if err := checkUsernameAvailable(ctx, s.store, username); err != nil {
 		return nil, err
 	}
 
 	// Check that the OAuth link doesn't already exist (race protection).
-	_, err = s.queries.GetOAuthUserLink(ctx, db.GetOAuthUserLinkParams{
+	_, err = s.store.OAuthUserLinks().Get(ctx, store.GetOAuthUserLinkParams{
 		ProviderID:      pending.ProviderID,
 		ProviderSubject: pending.ProviderSubject,
 	})
 	if err == nil {
-		_ = s.queries.DeletePendingOAuthSignup(ctx, signupToken)
+		_ = s.store.PendingOAuthSignups().Delete(ctx, signupToken)
 		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("this identity is already linked to an account"))
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, store.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
@@ -419,18 +429,18 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	// Look up the provider's trust_email setting.
-	oauthProvider, provErr := s.queries.GetOAuthProviderByID(ctx, pending.ProviderID)
+	oauthProvider, provErr := s.store.OAuthProviders().GetByID(ctx, pending.ProviderID)
 	if provErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
 	}
-	trustEmail := oauthProvider.TrustEmail == 1
+	trustEmail := oauthProvider.TrustEmail
 
 	var userEmail string
 	var emailVerified bool
 	var pendingEmail string
 
 	if email != "" {
-		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 
@@ -447,14 +457,14 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.store, CreateUserParams{
 		Username:      username,
 		PasswordHash:  pwdhash.PlaceholderHash,
 		DisplayName:   displayName,
 		Email:         userEmail,
-		EmailVerified: ptrconv.BoolToInt64(emailVerified),
-		PasswordSet:   0, // OAuth users don't have a real password
-		IsAdmin:       0,
+		EmailVerified: emailVerified,
+		PasswordSet:   false, // OAuth users don't have a real password
+		IsAdmin:       false,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -462,12 +472,12 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 	// Handle pending email if needed.
 	if pendingEmail != "" {
-		if err := setPendingEmailWithToken(ctx, s.queries, user.ID, pendingEmail); err != nil {
+		if err := setPendingEmailWithToken(ctx, s.store, user.ID, pendingEmail); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 	}
 
-	if err := s.queries.CreateOAuthUserLink(ctx, db.CreateOAuthUserLinkParams{
+	if err := s.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
 		UserID:          user.ID,
 		ProviderID:      pending.ProviderID,
 		ProviderSubject: pending.ProviderSubject,
@@ -477,29 +487,29 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 	// Decrypt and re-store OAuth tokens with the real user ID as AAD.
 	if s.keystore != nil {
-		if err := reencryptPendingTokens(ctx, s.keystore, s.queries, pending, signupToken, user.ID); err != nil {
+		if err := reencryptPendingTokens(ctx, s.keystore, s.store, pending, signupToken, user.ID); err != nil {
 			slog.Error("oauth: re-encrypt tokens for new user", "error", err, "user_id", user.ID)
 		}
 	}
 
-	_ = s.queries.DeletePendingOAuthSignup(ctx, signupToken)
+	_ = s.store.PendingOAuthSignups().Delete(ctx, signupToken)
 
 	// Re-fetch user only when pending email modified the user row.
 	finalUser := user
 	if pendingEmail != "" {
-		refetched, refetchErr := s.queries.GetUserByID(ctx, user.ID)
+		refetched, refetchErr := s.store.Users().GetByID(ctx, user.ID)
 		if refetchErr != nil {
 			return nil, connect.NewError(connect.CodeInternal, refetchErr)
 		}
-		finalUser = &refetched
+		finalUser = refetched
 	}
 
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.queries, finalUser.ID)
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUser.ID)
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
 
-	org, err := s.queries.GetOrgByID(ctx, finalUser.OrgID)
+	org, err := s.store.Orgs().GetByID(ctx, finalUser.OrgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -513,7 +523,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 // reencryptPendingTokens decrypts tokens from a pending signup (keyed by signupToken)
 // and re-encrypts them with the real userID as AAD.
-func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, q *db.Queries, pending *db.PendingOauthSignup, signupToken, userID string) error {
+func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store.Store, pending *store.PendingOAuthSignup, signupToken, userID string) error {
 	accessPlain, err := ks.Decrypt(pending.AccessToken, keystore.AccessTokenAAD(signupToken, pending.ProviderID))
 	if err != nil {
 		return fmt.Errorf("decrypt access token: %w", err)
@@ -528,7 +538,7 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, q *db.Qu
 		return err
 	}
 
-	return q.UpsertOAuthTokens(ctx, db.UpsertOAuthTokensParams{
+	return st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
 		UserID:       userID,
 		ProviderID:   pending.ProviderID,
 		AccessToken:  encAccess,
@@ -539,27 +549,27 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, q *db.Qu
 	})
 }
 
-func userToProto(u *db.User) *leapmuxv1.User {
+func userToProto(u *store.User) *leapmuxv1.User {
 	return &leapmuxv1.User{
 		Id:            u.ID,
 		OrgId:         u.OrgID,
 		Username:      u.Username,
 		DisplayName:   u.DisplayName,
-		IsAdmin:       u.IsAdmin == 1,
+		IsAdmin:       u.IsAdmin,
 		Email:         u.Email,
-		EmailVerified: u.EmailVerified == 1,
+		EmailVerified: u.EmailVerified,
 		PendingEmail:  u.PendingEmail,
-		PasswordSet:   u.PasswordSet == 1,
+		PasswordSet:   u.PasswordSet,
 	}
 }
 
-func userToProtoWithOrgName(u *db.User, orgName string) *leapmuxv1.User {
+func userToProtoWithOrgName(u *store.User, orgName string) *leapmuxv1.User {
 	p := userToProto(u)
 	p.OrgName = orgName
 	return p
 }
 
-func userToProtoWithOAuth(u *db.User, orgName string, oauthProviders []*leapmuxv1.LinkedOAuthProvider) *leapmuxv1.User {
+func userToProtoWithOAuth(u *store.User, orgName string, oauthProviders []*leapmuxv1.LinkedOAuthProvider) *leapmuxv1.User {
 	p := userToProtoWithOrgName(u, orgName)
 	p.OauthProviders = oauthProviders
 	return p

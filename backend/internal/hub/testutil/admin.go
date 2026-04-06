@@ -3,7 +3,6 @@ package testutil
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"testing"
 
@@ -11,14 +10,26 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
+
+// OpenTestStore opens an in-memory SQLite store with migrations applied.
+// (sqlite.Open runs migrations automatically.)
+func OpenTestStore(t *testing.T) store.Store {
+	t.Helper()
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
 
 // CreateTestAdmin bootstraps a default admin user ("admin"/"admin123") with
 // a personal org and OWNER membership, using dev-mode bootstrap.
-func CreateTestAdmin(t *testing.T, sqlDB *sql.DB, q *gendb.Queries) {
+func CreateTestAdmin(t *testing.T, st store.Store) {
 	t.Helper()
-	require.NoError(t, bootstrap.Run(context.Background(), sqlDB, q, false, true))
+	require.NoError(t, bootstrap.Run(context.Background(), st, false, true))
 }
 
 // SessionFromCookie extracts the session ID from a Set-Cookie header value.

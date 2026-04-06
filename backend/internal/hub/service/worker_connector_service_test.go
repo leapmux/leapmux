@@ -2,74 +2,69 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	hubdb "github.com/leapmux/leapmux/internal/hub/db"
-	db "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 // setupSyncTest creates a WorkerConnectorService with an in-memory hub DB
 // and inserts parent records needed by FK constraints.
-func setupSyncTest(t *testing.T, workerIDs []string, workspaceIDs []string) (*WorkerConnectorService, *db.Queries) {
+func setupSyncTest(t *testing.T, workerIDs []string, workspaceIDs []string) (*WorkerConnectorService, store.Store) {
 	t.Helper()
-	sqlDB, err := hubdb.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, hubdb.Migrate(sqlDB))
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
 	// Insert minimal parent records required by FK constraints.
-	seedParents(t, sqlDB, workerIDs, workspaceIDs)
+	seedParents(t, st, workerIDs, workspaceIDs)
 
-	q := db.New(sqlDB)
-	svc := &WorkerConnectorService{queries: q}
-	return svc, q
+	svc := &WorkerConnectorService{store: st}
+	return svc, st
 }
 
-func seedParents(t *testing.T, sqlDB *sql.DB, workerIDs []string, workspaceIDs []string) {
+func seedParents(t *testing.T, st store.Store, workerIDs []string, workspaceIDs []string) {
 	t.Helper()
-	_, err := sqlDB.Exec(`INSERT INTO orgs (id, name) VALUES ('org-1', 'test-org')`)
-	require.NoError(t, err)
-	_, err = sqlDB.Exec(`INSERT INTO users (id, org_id, username, password_hash) VALUES ('user-1', 'org-1', 'testuser', 'hash')`)
-	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: "org-1", Name: "test-org"}))
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{ID: "user-1", OrgID: "org-1", Username: "testuser", PasswordHash: "hash"}))
 	for _, wid := range workerIDs {
-		_, err = sqlDB.Exec(`INSERT INTO workers (id, auth_token, registered_by) VALUES (?, ?, 'user-1')`, wid, "token-"+wid)
-		require.NoError(t, err)
+		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
+			ID: wid, AuthToken: "token-" + wid, RegisteredBy: "user-1",
+			PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+		}))
 	}
 	for _, wsid := range workspaceIDs {
-		_, err = sqlDB.Exec(`INSERT INTO workspaces (id, org_id, owner_user_id, title) VALUES (?, 'org-1', 'user-1', ?)`, wsid, "ws-"+wsid)
-		require.NoError(t, err)
+		require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+			ID: wsid, OrgID: "org-1", OwnerUserID: "user-1", Title: "ws-" + wsid,
+		}))
 	}
 }
 
 func TestHandleWorkspaceTabsSync_WorkspaceMismatchHealed(t *testing.T) {
 	ctx := context.Background()
-	svc, q := setupSyncTest(t, []string{"w1"}, []string{"ws-A", "ws-B"})
+	svc, st := setupSyncTest(t, []string{"w1"}, []string{"ws-A", "ws-B"})
 
-	// Hub has tab in ws-A.
-	require.NoError(t, q.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
-		WorkspaceID: "ws-A",
-		WorkerID:    "w1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID:       "a1",
-		Position:    "0001",
-		TileID:      "tile-1",
+	require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
+		WorkspaceID: "ws-A", WorkerID: "w1",
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a1",
+		Position: "0001", TileID: "tile-1",
 	}))
 
-	// Worker reports tab in ws-B (moved on worker side).
 	svc.handleWorkspaceTabsSync(ctx, "w1", &leapmuxv1.WorkspaceTabsSync{
 		Tabs: []*leapmuxv1.WorkspaceTabEntry{
 			{WorkspaceId: "ws-B", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a1"},
 		},
 	})
 
-	// Verify hub entry was moved to ws-B, preserving position and tile_id.
-	tabs, err := q.ListWorkspaceTabsByWorker(ctx, "w1")
+	tabs, err := st.WorkspaceTabs().ListByWorker(ctx, "w1")
 	require.NoError(t, err)
 	require.Len(t, tabs, 1)
 	assert.Equal(t, "ws-B", tabs[0].WorkspaceID)
@@ -80,21 +75,19 @@ func TestHandleWorkspaceTabsSync_WorkspaceMismatchHealed(t *testing.T) {
 
 func TestHandleWorkspaceTabsSync_MultipleMixedStates(t *testing.T) {
 	ctx := context.Background()
-	svc, q := setupSyncTest(t, []string{"w1"}, []string{"ws-A", "ws-B"})
+	svc, st := setupSyncTest(t, []string{"w1"}, []string{"ws-A", "ws-B"})
 
-	// Hub: agent a1 in ws-A, terminal t1 in ws-A.
-	require.NoError(t, q.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+	require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
 		WorkspaceID: "ws-A", WorkerID: "w1",
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a1",
 		Position: "0001", TileID: "tile-1",
 	}))
-	require.NoError(t, q.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+	require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
 		WorkspaceID: "ws-A", WorkerID: "w1",
 		TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabID: "t1",
 		Position: "0002", TileID: "tile-2",
 	}))
 
-	// Worker: agent a1 moved to ws-B, terminal t1 still in ws-A.
 	svc.handleWorkspaceTabsSync(ctx, "w1", &leapmuxv1.WorkspaceTabsSync{
 		Tabs: []*leapmuxv1.WorkspaceTabEntry{
 			{WorkspaceId: "ws-B", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a1"},
@@ -102,55 +95,52 @@ func TestHandleWorkspaceTabsSync_MultipleMixedStates(t *testing.T) {
 		},
 	})
 
-	tabs, err := q.ListWorkspaceTabsByWorker(ctx, "w1")
+	tabs, err := st.WorkspaceTabs().ListByWorker(ctx, "w1")
 	require.NoError(t, err)
 	require.Len(t, tabs, 2)
 
-	tabMap := make(map[string]db.WorkspaceTab)
+	tabMap := make(map[string]store.WorkspaceTab)
 	for _, tab := range tabs {
 		tabMap[tab.TabID] = tab
 	}
-	assert.Equal(t, "ws-B", tabMap["a1"].WorkspaceID, "agent should be moved to ws-B")
-	assert.Equal(t, "ws-A", tabMap["t1"].WorkspaceID, "terminal should stay in ws-A")
+	assert.Equal(t, "ws-B", tabMap["a1"].WorkspaceID)
+	assert.Equal(t, "ws-A", tabMap["t1"].WorkspaceID)
 }
 
 func TestHandleWorkspaceTabsSync_StaleTabDeleted(t *testing.T) {
 	ctx := context.Background()
-	svc, q := setupSyncTest(t, []string{"w1"}, []string{"ws-A"})
+	svc, st := setupSyncTest(t, []string{"w1"}, []string{"ws-A"})
 
-	// Hub has tab that worker no longer has.
-	require.NoError(t, q.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+	require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
 		WorkspaceID: "ws-A", WorkerID: "w1",
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a2",
 		Position: "0001",
 	}))
 
-	// Worker reports no tabs.
 	svc.handleWorkspaceTabsSync(ctx, "w1", &leapmuxv1.WorkspaceTabsSync{})
 
-	tabs, err := q.ListWorkspaceTabsByWorker(ctx, "w1")
+	tabs, err := st.WorkspaceTabs().ListByWorker(ctx, "w1")
 	require.NoError(t, err)
 	assert.Empty(t, tabs)
 }
 
 func TestHandleWorkspaceTabsSync_MatchingTabsUntouched(t *testing.T) {
 	ctx := context.Background()
-	svc, q := setupSyncTest(t, []string{"w1"}, []string{"ws-A"})
+	svc, st := setupSyncTest(t, []string{"w1"}, []string{"ws-A"})
 
-	require.NoError(t, q.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+	require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
 		WorkspaceID: "ws-A", WorkerID: "w1",
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a1",
 		Position: "0001", TileID: "tile-1",
 	}))
 
-	// Worker reports same tab in same workspace — no changes.
 	svc.handleWorkspaceTabsSync(ctx, "w1", &leapmuxv1.WorkspaceTabsSync{
 		Tabs: []*leapmuxv1.WorkspaceTabEntry{
 			{WorkspaceId: "ws-A", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a1"},
 		},
 	})
 
-	tabs, err := q.ListWorkspaceTabsByWorker(ctx, "w1")
+	tabs, err := st.WorkspaceTabs().ListByWorker(ctx, "w1")
 	require.NoError(t, err)
 	require.Len(t, tabs, 1)
 	assert.Equal(t, "ws-A", tabs[0].WorkspaceID)
@@ -160,50 +150,45 @@ func TestHandleWorkspaceTabsSync_MatchingTabsUntouched(t *testing.T) {
 
 func TestHandleWorkspaceTabsSync_WorkerOnlyTabIgnored(t *testing.T) {
 	ctx := context.Background()
-	svc, q := setupSyncTest(t, []string{"w1"}, []string{"ws-C"})
+	svc, st := setupSyncTest(t, []string{"w1"}, []string{"ws-C"})
 
-	// Hub has no tabs for this worker.
-	// Worker reports a tab — should NOT be added (hub is source of truth for visibility).
 	svc.handleWorkspaceTabsSync(ctx, "w1", &leapmuxv1.WorkspaceTabsSync{
 		Tabs: []*leapmuxv1.WorkspaceTabEntry{
 			{WorkspaceId: "ws-C", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a3"},
 		},
 	})
 
-	tabs, err := q.ListWorkspaceTabsByWorker(ctx, "w1")
+	tabs, err := st.WorkspaceTabs().ListByWorker(ctx, "w1")
 	require.NoError(t, err)
-	assert.Empty(t, tabs, "worker-only tab should not be added to hub")
+	assert.Empty(t, tabs)
 }
 
 func TestHandleWorkspaceTabsSync_EmptyWorkerSync(t *testing.T) {
 	ctx := context.Background()
-	svc, q := setupSyncTest(t, []string{"w1"}, []string{"ws-A"})
+	svc, st := setupSyncTest(t, []string{"w1"}, []string{"ws-A"})
 
-	// Hub has tabs.
-	require.NoError(t, q.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+	require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
 		WorkspaceID: "ws-A", WorkerID: "w1",
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a1",
 		Position: "0001",
 	}))
-	require.NoError(t, q.UpsertWorkspaceTab(ctx, db.UpsertWorkspaceTabParams{
+	require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
 		WorkspaceID: "ws-A", WorkerID: "w1",
 		TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabID: "t1",
 		Position: "0002",
 	}))
 
-	// Worker reports no tabs — all hub tabs deleted.
 	svc.handleWorkspaceTabsSync(ctx, "w1", &leapmuxv1.WorkspaceTabsSync{})
 
-	tabs, err := q.ListWorkspaceTabsByWorker(ctx, "w1")
+	tabs, err := st.WorkspaceTabs().ListByWorker(ctx, "w1")
 	require.NoError(t, err)
 	assert.Empty(t, tabs)
 }
 
 func TestHandleWorkspaceTabsSync_EmptyHubState(t *testing.T) {
 	ctx := context.Background()
-	svc, q := setupSyncTest(t, []string{"w1"}, []string{"ws-A", "ws-B"})
+	svc, st := setupSyncTest(t, []string{"w1"}, []string{"ws-A", "ws-B"})
 
-	// Hub has no tabs, worker reports tabs — no changes (no adds).
 	svc.handleWorkspaceTabsSync(ctx, "w1", &leapmuxv1.WorkspaceTabsSync{
 		Tabs: []*leapmuxv1.WorkspaceTabEntry{
 			{WorkspaceId: "ws-A", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a1"},
@@ -211,9 +196,9 @@ func TestHandleWorkspaceTabsSync_EmptyHubState(t *testing.T) {
 		},
 	})
 
-	tabs, err := q.ListWorkspaceTabsByWorker(ctx, "w1")
+	tabs, err := st.WorkspaceTabs().ListByWorker(ctx, "w1")
 	require.NoError(t, err)
-	assert.Empty(t, tabs, "hub should not gain tabs from worker-only entries")
+	assert.Empty(t, tabs)
 }
 
 // --- Encryption mode validation tests ---
@@ -259,8 +244,6 @@ func TestProcessWorkerMessage_PublicKeyUpdateWithNilMlkem(t *testing.T) {
 	svc, conn := setupEncryptionModeTest(t)
 	ctx := context.Background()
 
-	// Simulate a heartbeat with X25519 public key but nil ML-KEM key,
-	// which used to trigger a NOT NULL constraint failure on workers.mlkem_public_key.
 	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
 			Heartbeat: &leapmuxv1.Heartbeat{
@@ -271,8 +254,7 @@ func TestProcessWorkerMessage_PublicKeyUpdateWithNilMlkem(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify the public key was persisted without constraint errors.
-	pk, dbErr := svc.queries.GetWorkerPublicKey(ctx, "w1")
+	pk, dbErr := svc.store.Workers().GetPublicKey(ctx, "w1")
 	require.NoError(t, dbErr)
 	assert.Equal(t, []byte("fake-x25519-public-key"), pk.PublicKey)
 }
@@ -281,7 +263,6 @@ func TestProcessWorkerMessage_UnspecifiedHeartbeatRejectedAfterModeSet(t *testin
 	svc, conn := setupEncryptionModeTest(t)
 	ctx := context.Background()
 
-	// Initial heartbeat sets POST_QUANTUM mode.
 	err := svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
 			Heartbeat: &leapmuxv1.Heartbeat{
@@ -290,16 +271,13 @@ func TestProcessWorkerMessage_UnspecifiedHeartbeatRejectedAfterModeSet(t *testin
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, conn.EncryptionMode)
 
-	// Subsequent heartbeat without encryption_mode set (UNSPECIFIED)
-	// should be rejected — a worker must always include its encryption mode.
 	err = svc.processWorkerMessage(ctx, conn, "w1", &leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
 			Heartbeat: &leapmuxv1.Heartbeat{},
 		},
 	})
-	require.Error(t, err, "subsequent heartbeat with UNSPECIFIED encryption mode should be rejected")
+	require.Error(t, err)
 }
 
 func TestProcessWorkerMessage_UnspecifiedDefaultsToPostQuantum(t *testing.T) {

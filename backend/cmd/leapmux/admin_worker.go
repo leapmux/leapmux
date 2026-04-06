@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,7 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
@@ -37,88 +36,46 @@ func runWorkerList(args []string) error {
 	var username *string
 	var status *string
 	var limit *int64
-	var offset *int64
-	return withAdminDB("worker list", args, func(fs *flag.FlagSet) {
+	var cursor *string
+	return withAdminStore("worker list", args, func(fs *flag.FlagSet) {
 		userID = fs.String("user-id", "", "filter by user ID")
 		username = fs.String("username", "", "filter by username")
 		status = fs.String("status", "active", "filter by status (active, deregistering, deleted, all)")
 		limit = fs.Int64("limit", 50, "maximum number of results")
-		offset = fs.Int64("offset", 0, "offset for pagination")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		var resolvedUserID string
+		cursor = fs.String("cursor", "", "cursor for pagination (created_at in RFC3339Nano)")
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		var resolvedUserID *string
 		if *userID != "" {
-			resolvedUserID = *userID
+			resolvedUserID = userID
 		} else if *username != "" {
-			user, err := q.GetUserByUsername(ctx, *username)
+			user, err := st.Users().GetByUsername(ctx, *username)
 			if err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
+				if errors.Is(err, store.ErrNotFound) {
 					return fmt.Errorf("user not found: %s", *username)
 				}
 				return fmt.Errorf("get user: %w", err)
 			}
-			resolvedUserID = user.ID
+			resolvedUserID = &user.ID
 		}
 
 		allStatuses := *status == "all"
-		var statusVal leapmuxv1.WorkerStatus
+		var statusVal *leapmuxv1.WorkerStatus
 		if !allStatuses {
-			var parseErr error
-			statusVal, parseErr = parseWorkerStatus(*status)
+			s, parseErr := parseWorkerStatus(*status)
 			if parseErr != nil {
 				return parseErr
 			}
+			statusVal = &s
 		}
 
-		type workerRow struct {
-			ID            string
-			OwnerUsername string
-			Status        leapmuxv1.WorkerStatus
-			CreatedAt     time.Time
-			LastSeenAt    sql.NullTime
-		}
-		var rows []workerRow
-
-		switch {
-		case resolvedUserID != "" && !allStatuses:
-			list, qErr := q.ListWorkersAdminByUserAndStatus(ctx, gendb.ListWorkersAdminByUserAndStatusParams{
-				UserID: resolvedUserID, Status: statusVal, Offset: *offset, Limit: *limit,
-			})
-			if qErr != nil {
-				return fmt.Errorf("list workers: %w", qErr)
-			}
-			for _, w := range list {
-				rows = append(rows, workerRow{w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
-			}
-		case resolvedUserID != "":
-			list, qErr := q.ListWorkersAdminByUser(ctx, gendb.ListWorkersAdminByUserParams{
-				UserID: resolvedUserID, Offset: *offset, Limit: *limit,
-			})
-			if qErr != nil {
-				return fmt.Errorf("list workers: %w", qErr)
-			}
-			for _, w := range list {
-				rows = append(rows, workerRow{w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
-			}
-		case !allStatuses:
-			list, qErr := q.ListWorkersAdminByStatus(ctx, gendb.ListWorkersAdminByStatusParams{
-				Status: statusVal, Offset: *offset, Limit: *limit,
-			})
-			if qErr != nil {
-				return fmt.Errorf("list workers: %w", qErr)
-			}
-			for _, w := range list {
-				rows = append(rows, workerRow{w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
-			}
-		default:
-			list, qErr := q.ListWorkersAdminAll(ctx, gendb.ListWorkersAdminAllParams{
-				Offset: *offset, Limit: *limit,
-			})
-			if qErr != nil {
-				return fmt.Errorf("list workers: %w", qErr)
-			}
-			for _, w := range list {
-				rows = append(rows, workerRow{w.ID, w.OwnerUsername, w.Status, w.CreatedAt, w.LastSeenAt})
-			}
+		rows, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			UserID: resolvedUserID,
+			Status: statusVal,
+			Cursor: *cursor,
+			Limit:  *limit,
+		})
+		if err != nil {
+			return fmt.Errorf("list workers: %w", err)
 		}
 
 		if len(rows) == 0 {
@@ -129,36 +86,38 @@ func runWorkerList(args []string) error {
 		fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n", "ID", "OWNER", "STATUS", "CREATED", "LAST_SEEN")
 		for _, w := range rows {
 			lastSeen := "-"
-			if w.LastSeenAt.Valid {
-				lastSeen = timefmt.Format(w.LastSeenAt.Time)
+			if w.LastSeenAt != nil {
+				lastSeen = timefmt.Format(*w.LastSeenAt)
 			}
 			fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n",
 				w.ID, w.OwnerUsername, workerStatusString(w.Status), timefmt.Format(w.CreatedAt), lastSeen)
 		}
+
+		maybePrintNextCursor(rows, *limit, func(w store.WorkerWithOwner) time.Time { return w.CreatedAt })
 		return nil
 	})
 }
 
 func runWorkerGet(args []string) error {
 	var workerID *string
-	return withAdminDB("worker get", args, func(fs *flag.FlagSet) {
+	return withAdminStore("worker get", args, func(fs *flag.FlagSet) {
 		workerID = fs.String("id", "", "worker ID (required)")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *workerID == "" {
 			return fmt.Errorf("--id is required")
 		}
 
-		worker, err := q.GetWorkerByID(ctx, *workerID)
+		worker, err := st.Workers().GetByID(ctx, *workerID)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, store.ErrNotFound) {
 				return fmt.Errorf("worker not found: %s", *workerID)
 			}
 			return fmt.Errorf("get worker: %w", err)
 		}
 
 		lastSeen := "-"
-		if worker.LastSeenAt.Valid {
-			lastSeen = timefmt.Format(worker.LastSeenAt.Time)
+		if worker.LastSeenAt != nil {
+			lastSeen = timefmt.Format(*worker.LastSeenAt)
 		}
 
 		fmt.Printf("ID:              %s\n", worker.ID)
@@ -168,7 +127,7 @@ func runWorkerGet(args []string) error {
 		fmt.Printf("Last seen at:    %s\n", lastSeen)
 
 		// Show access grants.
-		grants, err := q.ListWorkerAccessGrants(ctx, *workerID)
+		grants, err := st.WorkerAccessGrants().List(ctx, *workerID)
 		if err != nil {
 			return fmt.Errorf("list access grants: %w", err)
 		}
@@ -189,19 +148,18 @@ func runWorkerGet(args []string) error {
 
 func runWorkerDeregister(args []string) error {
 	var workerID *string
-	return withAdminDB("worker deregister", args, func(fs *flag.FlagSet) {
+	return withAdminStore("worker deregister", args, func(fs *flag.FlagSet) {
 		workerID = fs.String("id", "", "worker ID (required)")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *workerID == "" {
 			return fmt.Errorf("--id is required")
 		}
 
-		result, err := q.ForceDeregisterWorker(ctx, *workerID)
+		n, err := st.Workers().ForceDeregister(ctx, *workerID)
 		if err != nil {
 			return fmt.Errorf("deregister worker: %w", err)
 		}
 
-		n, _ := result.RowsAffected()
 		if n == 0 {
 			return fmt.Errorf("worker %s not found or not active", *workerID)
 		}
