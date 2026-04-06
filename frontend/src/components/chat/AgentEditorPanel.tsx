@@ -18,6 +18,7 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { safeGetString, safeRemoveItem, safeSetString } from '~/lib/safeStorage'
+import { PREFIX_EDITOR_MIN_HEIGHT } from '~/lib/storageCleanup'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
@@ -73,7 +74,7 @@ export interface AgentEditorPanelProps {
 
 // Per-agent editor height state
 const EDITOR_MIN_HEIGHT = 38 // px - minimum height of the markdown editor wrapper
-const EDITOR_MIN_HEIGHT_KEY_PREFIX = 'leapmux:editor-min-height:'
+const EDITOR_MIN_HEIGHT_KEY_PREFIX = PREFIX_EDITOR_MIN_HEIGHT
 
 function editorMinHeightKey(agentId: string): string {
   return `${EDITOR_MIN_HEIGHT_KEY_PREFIX}${agentId}`

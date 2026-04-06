@@ -25,14 +25,22 @@ const HOUR_MS = 60 * 60 * 1000
 const REFRESH_THRESHOLD_MS = 3 * HOUR_MS
 const CLEANUP_INTERVAL_MS = HOUR_MS
 
+/** Dynamic key prefixes — single source of truth for all consumers. */
+export const PREFIX_EDITOR_DRAFT = 'leapmux:editor-draft:'
+export const PREFIX_EDITOR_MIN_HEIGHT = 'leapmux:editor-min-height:'
+export const PREFIX_AGENT_SESSION = 'leapmux:agent-session:'
+export const PREFIX_ASK_STATE = 'leapmux:ask-state:'
+export const PREFIX_WORKER_INFO = 'leapmux:worker-info:'
+export const PREFIX_LOCAL_MESSAGES = 'leapmux:local-messages:'
+
 /** Dynamic key prefixes and their TTLs. */
 export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> = [
-  { prefix: 'leapmux:editor-draft:', ttlMs: 7 * DAY_MS },
-  { prefix: 'leapmux:editor-min-height:', ttlMs: 7 * DAY_MS },
-  { prefix: 'leapmux:agent-session:', ttlMs: 7 * DAY_MS },
-  { prefix: 'leapmux:ask-state:', ttlMs: 1 * DAY_MS },
-  { prefix: 'leapmux:worker-info:', ttlMs: 7 * DAY_MS },
-  { prefix: 'leapmux:local-messages:', ttlMs: 7 * DAY_MS },
+  { prefix: PREFIX_EDITOR_DRAFT, ttlMs: 7 * DAY_MS },
+  { prefix: PREFIX_EDITOR_MIN_HEIGHT, ttlMs: 7 * DAY_MS },
+  { prefix: PREFIX_AGENT_SESSION, ttlMs: 7 * DAY_MS },
+  { prefix: PREFIX_ASK_STATE, ttlMs: 1 * DAY_MS },
+  { prefix: PREFIX_WORKER_INFO, ttlMs: 7 * DAY_MS },
+  { prefix: PREFIX_LOCAL_MESSAGES, ttlMs: 7 * DAY_MS },
 ]
 
 /** Returns the TTL in ms for a dynamic key, or null if the key is static or unknown. */

@@ -4,6 +4,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { extractTodos, findLatestTodos, parseMessageContent } from '~/lib/messageParser'
 import { safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/safeStorage'
+import { PREFIX_LOCAL_MESSAGES } from '~/lib/storageCleanup'
 
 // ---------------------------------------------------------------------------
 // Local (optimistic) message persistence via localStorage
@@ -17,7 +18,7 @@ interface PersistedLocalMessage {
   attachments?: Array<{ filename?: string, mime_type?: string, data?: string }>
 }
 
-const LOCAL_MSG_KEY_PREFIX = 'leapmux:local-messages:'
+const LOCAL_MSG_KEY_PREFIX = PREFIX_LOCAL_MESSAGES
 
 function getPersistedLocalMessages(agentId: string): PersistedLocalMessage[] {
   return safeGetJson<PersistedLocalMessage[]>(`${LOCAL_MSG_KEY_PREFIX}${agentId}`) ?? []

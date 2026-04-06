@@ -4,6 +4,7 @@
  */
 
 import { safeGetJson, safeRemoveItem, safeSetJson } from './safeStorage'
+import { PREFIX_WORKER_INFO } from './storageCleanup'
 
 export interface WorkerInfo {
   name: string
@@ -14,7 +15,7 @@ export interface WorkerInfo {
   updatedAt: number // Date.now()
 }
 
-const KEY_PREFIX = 'leapmux:worker-info:'
+const KEY_PREFIX = PREFIX_WORKER_INFO
 
 export function getWorkerInfo(workerId: string): WorkerInfo | null {
   return safeGetJson<WorkerInfo>(KEY_PREFIX + workerId) ?? null

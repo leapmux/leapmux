@@ -1,5 +1,6 @@
 import { createStore } from 'solid-js/store'
 import { safeGetJson, safeSetJson } from '~/lib/safeStorage'
+import { PREFIX_AGENT_SESSION } from '~/lib/storageCleanup'
 
 export interface ContextUsageInfo {
   inputTokens: number
@@ -28,7 +29,7 @@ export interface AgentSessionInfo {
   streamingType?: string // "plan" when streaming plan text, "" otherwise
 }
 
-const STORAGE_KEY_PREFIX = 'leapmux:agent-session:'
+const STORAGE_KEY_PREFIX = PREFIX_AGENT_SESSION
 
 function loadFromStorage(agentId: string): AgentSessionInfo {
   return safeGetJson<AgentSessionInfo>(`${STORAGE_KEY_PREFIX}${agentId}`) ?? {}
