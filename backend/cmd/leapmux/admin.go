@@ -204,7 +204,7 @@ func runUserCreate(args []string) error {
 			DisplayName:   dispName,
 			Email:         *email,
 			EmailVerified: ptrconv.BoolToInt64(*emailVerified),
-			PasswordSet:   1,
+			PasswordSet:   ptrconv.BoolToInt64(true),
 			IsAdmin:       ptrconv.BoolToInt64(*admin),
 		})
 		if err != nil {
@@ -637,7 +637,7 @@ func runWorkerList(args []string) error {
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		offset = fs.Int64("offset", 0, "offset for pagination")
 	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		var resolvedUserID interface{}
+		var resolvedUserID any
 		if *userID != "" {
 			resolvedUserID = *userID
 		} else if *username != "" {
@@ -651,7 +651,7 @@ func runWorkerList(args []string) error {
 			resolvedUserID = user.ID
 		}
 
-		var statusFilter interface{}
+		var statusFilter any
 		if *status != "all" {
 			statusVal, err := parseWorkerStatus(*status)
 			if err != nil {

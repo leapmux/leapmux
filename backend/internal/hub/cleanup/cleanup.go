@@ -39,45 +39,21 @@ func run(ctx context.Context, q *gendb.Queries) {
 		Valid: true,
 	}
 
-	// Hard-delete soft-deleted users.
-	if res, err := q.HardDeleteUsersBefore(ctx, cutoff); err != nil {
-		slog.Error("cleanup: hard-delete users", "error", err)
-	} else if n, _ := res.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted old users", "count", n)
-	}
+	step("users", func() (sql.Result, error) { return q.HardDeleteUsersBefore(ctx, cutoff) })
+	step("orgs", func() (sql.Result, error) { return q.HardDeleteOrgsBefore(ctx, cutoff) })
+	step("workspaces", func() (sql.Result, error) { return q.HardDeleteWorkspacesBefore(ctx, cutoff) })
+	step("workers", func() (sql.Result, error) { return q.HardDeleteWorkersBefore(ctx, cutoff) })
+	step("expired registrations", func() (sql.Result, error) { return q.HardDeleteExpiredRegistrationsBefore(ctx, cutoff.Time) })
+	step("expired sessions", func() (sql.Result, error) { return q.DeleteExpiredUserSessions(ctx) })
+}
 
-	// Hard-delete soft-deleted orgs.
-	if res, err := q.HardDeleteOrgsBefore(ctx, cutoff); err != nil {
-		slog.Error("cleanup: hard-delete orgs", "error", err)
-	} else if n, _ := res.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted old orgs", "count", n)
+func step(name string, fn func() (sql.Result, error)) {
+	res, err := fn()
+	if err != nil {
+		slog.Error("cleanup: "+name, "error", err)
+		return
 	}
-
-	// Hard-delete soft-deleted workspaces.
-	if res, err := q.HardDeleteWorkspacesBefore(ctx, cutoff); err != nil {
-		slog.Error("cleanup: hard-delete workspaces", "error", err)
-	} else if n, _ := res.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted old workspaces", "count", n)
-	}
-
-	// Hard-delete soft-deleted workers.
-	if res, err := q.HardDeleteWorkersBefore(ctx, cutoff); err != nil {
-		slog.Error("cleanup: hard-delete workers", "error", err)
-	} else if n, _ := res.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted old workers", "count", n)
-	}
-
-	// Hard-delete expired registrations.
-	if res, err := q.HardDeleteExpiredRegistrationsBefore(ctx, cutoff.Time); err != nil {
-		slog.Error("cleanup: hard-delete expired registrations", "error", err)
-	} else if n, _ := res.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted old registrations", "count", n)
-	}
-
-	// Hard-delete expired sessions.
-	if res, err := q.DeleteExpiredUserSessions(ctx); err != nil {
-		slog.Error("cleanup: hard-delete expired sessions", "error", err)
-	} else if n, _ := res.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted expired sessions", "count", n)
+	if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("cleanup: "+name, "count", n)
 	}
 }

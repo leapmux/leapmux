@@ -3,17 +3,18 @@
 -- Organizations (tenants)
 CREATE TABLE orgs (
     id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL,
     is_personal INTEGER NOT NULL DEFAULT 0,
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     deleted_at  DATETIME
 );
+CREATE UNIQUE INDEX idx_orgs_name ON orgs(name) WHERE deleted_at IS NULL;
 
 -- Users
 CREATE TABLE users (
     id             TEXT PRIMARY KEY,
     org_id         TEXT NOT NULL REFERENCES orgs(id),
-    username       TEXT NOT NULL UNIQUE,
+    username       TEXT NOT NULL,
     password_hash  TEXT NOT NULL,
     display_name   TEXT NOT NULL DEFAULT '',
     email                    TEXT NOT NULL DEFAULT '',
@@ -29,7 +30,8 @@ CREATE TABLE users (
     deleted_at     DATETIME
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
-CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '';
+CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '' AND deleted_at IS NULL;
 
 -- Multi-org membership (M:N junction)
 CREATE TABLE org_members (
@@ -67,6 +69,7 @@ CREATE TABLE workers (
     slhdsa_public_key BLOB NOT NULL DEFAULT '',
     deleted_at    DATETIME
 );
+CREATE INDEX idx_workers_registered_by ON workers(registered_by);
 
 -- Worker notifications (persistent queue for reliable delivery)
 CREATE TABLE worker_notifications (

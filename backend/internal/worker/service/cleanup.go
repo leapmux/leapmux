@@ -39,24 +39,18 @@ func runCleanup(ctx context.Context, queries *db.Queries) {
 		Valid: true,
 	}
 
-	agentResult, err := queries.DeleteClosedAgentsBefore(ctx, cutoff)
-	if err != nil {
-		slog.Error("cleanup: failed to delete old agents", "error", err)
-	} else if n, _ := agentResult.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted old agents", "count", n)
-	}
+	cleanupStep("agents", func() (sql.Result, error) { return queries.DeleteClosedAgentsBefore(ctx, cutoff) })
+	cleanupStep("terminals", func() (sql.Result, error) { return queries.DeleteClosedTerminalsBefore(ctx, cutoff) })
+	cleanupStep("worktrees", func() (sql.Result, error) { return queries.HardDeleteWorktreesBefore(ctx, cutoff) })
+}
 
-	termResult, err := queries.DeleteClosedTerminalsBefore(ctx, cutoff)
+func cleanupStep(name string, fn func() (sql.Result, error)) {
+	res, err := fn()
 	if err != nil {
-		slog.Error("cleanup: failed to delete old terminals", "error", err)
-	} else if n, _ := termResult.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted old terminals", "count", n)
+		slog.Error("cleanup: "+name, "error", err)
+		return
 	}
-
-	wtResult, err := queries.HardDeleteWorktreesBefore(ctx, cutoff)
-	if err != nil {
-		slog.Error("cleanup: failed to delete old worktrees", "error", err)
-	} else if n, _ := wtResult.RowsAffected(); n > 0 {
-		slog.Info("cleanup: deleted old worktrees", "count", n)
+	if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("cleanup: "+name, "count", n)
 	}
 }
