@@ -393,7 +393,7 @@ Pre-built images are published to GHCR in two variants:
 | Alpine (default) | `:<version>`, `:<major>`, `:latest`, `:dev` | `ghcr.io/leapmux/leapmux:1.0.0` |
 | Ubuntu           | `:<version>-ubuntu`, `:<major>-ubuntu`, `:latest-ubuntu`, `:dev-ubuntu` | `ghcr.io/leapmux/leapmux:1.0.0-ubuntu` |
 
-Release tags (`:latest`, `:<version>`, `:<major>.<minor>`) are published by the release workflow. The `:dev` tag is updated on every push to `main`.
+Release tags (`:latest`, `:<version>`, `:<major>`) are published by the release workflow. The `:dev` tag is updated on every push to `main`.
 
 Tool and base image versions are centralized in the `versions.yaml` file at the repository root.
 
