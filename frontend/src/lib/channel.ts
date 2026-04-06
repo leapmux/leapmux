@@ -530,12 +530,7 @@ export class ChannelManager {
   static clearKeyPin(workerId: string): void {
     const allPins = safeGetJson<Record<string, { publicKeyHex: string, firstSeen: number }>>('leapmux:key-pins') ?? {}
     delete allPins[workerId]
-    if (Object.keys(allPins).length > 0) {
-      safeSetJson('leapmux:key-pins', allPins)
-    }
-    else {
-      safeRemoveItem('leapmux:key-pins')
-    }
+    safeSetJson('leapmux:key-pins', allPins)
   }
 
   /** Remove all pinned keys. */

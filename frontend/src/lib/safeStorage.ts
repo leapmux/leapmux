@@ -10,48 +10,58 @@
 
 import { getTtlForKey, isKnownKey, isWrappedValue, shouldRefreshExpiration } from './storageCleanup'
 
-function assertKnownKey(key: string): void {
-  if (!isKnownKey(key)) {
+/**
+ * Validate the key and return its TTL. Throws if the key is not registered.
+ * Returns null for static keys, the TTL in ms for dynamic keys.
+ */
+function requireKnownKey(key: string): number | null {
+  const ttl = getTtlForKey(key)
+  if (ttl === null && !isKnownKey(key)) {
     throw new Error(
       `Unknown localStorage key: "${key}". Register it in storageCleanup.ts `
       + `(STATIC_KEYS or DYNAMIC_KEY_TTLS).`,
     )
   }
+  return ttl
+}
+
+/**
+ * Read and unwrap a dynamic key's value, handling expiration and refresh.
+ * Returns the unwrapped value, or undefined if missing/expired/malformed.
+ */
+function readDynamic(key: string, ttl: number): unknown | undefined {
+  const raw = localStorage.getItem(key)
+  if (raw === null)
+    return undefined
+
+  const parsed = JSON.parse(raw)
+  if (!isWrappedValue(parsed))
+    return undefined
+
+  if (parsed.e <= Date.now()) {
+    localStorage.removeItem(key)
+    return undefined
+  }
+
+  if (shouldRefreshExpiration(parsed.e, ttl)) {
+    parsed.e = Date.now() + ttl
+    localStorage.setItem(key, JSON.stringify(parsed))
+  }
+
+  return parsed.v
 }
 
 /** Read and parse a JSON value from localStorage. Returns undefined on missing key or parse error. */
 export function safeGetJson<T>(key: string): T | undefined {
-  assertKnownKey(key)
+  const ttl = requireKnownKey(key)
   try {
+    if (ttl !== null)
+      return readDynamic(key, ttl) as T | undefined
+
     const raw = localStorage.getItem(key)
     if (raw === null)
       return undefined
-
-    const parsed = JSON.parse(raw)
-    const ttl = getTtlForKey(key)
-
-    if (ttl !== null) {
-      // Dynamic key — expect wrapped format.
-      if (!isWrappedValue(parsed))
-        return undefined // Old/unwrapped entry — treat as non-existent.
-
-      if (parsed.e <= Date.now()) {
-        // Expired — delete and return undefined.
-        localStorage.removeItem(key)
-        return undefined
-      }
-
-      // Refresh expiration if 3+ hours have passed since last touch.
-      if (shouldRefreshExpiration(parsed.e, ttl)) {
-        parsed.e = Date.now() + ttl
-        localStorage.setItem(key, JSON.stringify(parsed))
-      }
-
-      return parsed.v as T
-    }
-
-    // Static key — return raw parsed value.
-    return parsed as T
+    return JSON.parse(raw) as T
   }
   catch { /* ignore parse errors */ }
   return undefined
@@ -59,15 +69,12 @@ export function safeGetJson<T>(key: string): T | undefined {
 
 /** Stringify and write a JSON value to localStorage. Silently ignores write errors. */
 export function safeSetJson(key: string, value: unknown): void {
-  assertKnownKey(key)
+  const ttl = requireKnownKey(key)
   try {
-    const ttl = getTtlForKey(key)
     if (ttl !== null) {
-      // Dynamic key — wrap with expiration.
       localStorage.setItem(key, JSON.stringify({ v: value, e: Date.now() + ttl }))
     }
     else {
-      // Static key — store raw.
       localStorage.setItem(key, JSON.stringify(value))
     }
   }
@@ -76,34 +83,12 @@ export function safeSetJson(key: string, value: unknown): void {
 
 /** Read a raw string from localStorage. Returns null on missing key or access error. */
 export function safeGetString(key: string): string | null {
-  assertKnownKey(key)
+  const ttl = requireKnownKey(key)
   try {
-    const ttl = getTtlForKey(key)
-
     if (ttl !== null) {
-      // Dynamic key — stored as wrapped JSON.
-      const raw = localStorage.getItem(key)
-      if (raw === null)
-        return null
-
-      const parsed = JSON.parse(raw)
-      if (!isWrappedValue(parsed))
-        return null // Old/unwrapped entry.
-
-      if (parsed.e <= Date.now()) {
-        localStorage.removeItem(key)
-        return null
-      }
-
-      if (shouldRefreshExpiration(parsed.e, ttl)) {
-        parsed.e = Date.now() + ttl
-        localStorage.setItem(key, JSON.stringify(parsed))
-      }
-
-      return String(parsed.v)
+      const v = readDynamic(key, ttl)
+      return v !== undefined ? String(v) : null
     }
-
-    // Static key — return raw value.
     return localStorage.getItem(key)
   }
   catch { /* ignore access errors */ }
@@ -112,15 +97,12 @@ export function safeGetString(key: string): string | null {
 
 /** Write a raw string to localStorage. Silently ignores write errors. */
 export function safeSetString(key: string, value: string): void {
-  assertKnownKey(key)
+  const ttl = requireKnownKey(key)
   try {
-    const ttl = getTtlForKey(key)
     if (ttl !== null) {
-      // Dynamic key — wrap as JSON with expiration.
       localStorage.setItem(key, JSON.stringify({ v: value, e: Date.now() + ttl }))
     }
     else {
-      // Static key — store raw string.
       localStorage.setItem(key, value)
     }
   }

@@ -1,5 +1,17 @@
+import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+
+/** Read a worker's key pin from the consolidated leapmux:key-pins map. */
+async function getKeyPin(page: Page, workerId: string) {
+  return page.evaluate((wid) => {
+    const raw = localStorage.getItem('leapmux:key-pins')
+    if (!raw)
+      return null
+    const pins = JSON.parse(raw)
+    return pins[wid] ?? null
+  }, workerId)
+}
 
 test.describe('Key Pinning', () => {
   test('first connection pins the worker public key in localStorage', async ({
@@ -14,13 +26,7 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Verify the key was pinned in the consolidated leapmux:key-pins map.
-    const pin = await page.evaluate((wid) => {
-      const raw = localStorage.getItem('leapmux:key-pins')
-      if (!raw)
-        return null
-      const pins = JSON.parse(raw)
-      return pins[wid] ?? null
-    }, workerId)
+    const pin = await getKeyPin(page, workerId)
 
     expect(pin).not.toBeNull()
     expect(pin.publicKeyHex).toBeTruthy()
@@ -42,13 +48,7 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Verify key is pinned.
-    const pin = await page.evaluate((wid) => {
-      const raw = localStorage.getItem('leapmux:key-pins')
-      if (!raw)
-        return null
-      const pins = JSON.parse(raw)
-      return pins[wid] ?? null
-    }, workerId)
+    const pin = await getKeyPin(page, workerId)
     expect(pin).not.toBeNull()
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
@@ -88,13 +88,7 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Verify the pin was updated to the real key (not the fake 'aa' key).
-    const updatedPin = await page.evaluate((wid) => {
-      const raw = localStorage.getItem('leapmux:key-pins')
-      if (!raw)
-        return null
-      const pins = JSON.parse(raw)
-      return pins[wid] ?? null
-    }, workerId)
+    const updatedPin = await getKeyPin(page, workerId)
     expect(updatedPin).not.toBeNull()
     expect(updatedPin.publicKeyHex).not.toBe('aa'.repeat(32))
     // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
@@ -137,13 +131,7 @@ test.describe('Key Pinning', () => {
     await expect(dialog).not.toBeVisible()
 
     // The pin should NOT be updated (still the fake key).
-    const unchangedPin = await page.evaluate((wid) => {
-      const raw = localStorage.getItem('leapmux:key-pins')
-      if (!raw)
-        return null
-      const pins = JSON.parse(raw)
-      return pins[wid] ?? null
-    }, workerId)
+    const unchangedPin = await getKeyPin(page, workerId)
     expect(unchangedPin).not.toBeNull()
     expect(unchangedPin.publicKeyHex).toBe('bb'.repeat(32))
   })
