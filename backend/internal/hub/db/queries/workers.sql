@@ -1,23 +1,19 @@
 -- name: CreateWorker :exec
-INSERT INTO workers (id, org_id, auth_token, registered_by, public_key, mlkem_public_key, slhdsa_public_key)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO workers (id, auth_token, registered_by, public_key, mlkem_public_key, slhdsa_public_key)
+VALUES (?, ?, ?, ?, ?, ?);
 
 -- name: GetWorkerByID :one
-SELECT * FROM workers WHERE id = ? AND org_id = ?;
-
--- name: GetWorkerByIDInternal :one
 SELECT * FROM workers WHERE id = ?;
 
 -- name: GetWorkerByAuthToken :one
 SELECT * FROM workers WHERE auth_token = ? AND status != 3;
 
--- name: ListWorkersByOrgID :many
-SELECT * FROM workers WHERE org_id = ? AND status = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?;
+-- name: ListWorkersByUserID :many
+SELECT * FROM workers WHERE registered_by = ? AND status = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?;
 
 -- name: ListOwnedWorkers :many
 SELECT * FROM workers
-WHERE org_id = sqlc.arg(org_id)
-  AND status = 1
+WHERE status = 1
   AND registered_by = sqlc.arg(user_id)
 ORDER BY created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
@@ -25,7 +21,6 @@ LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 -- name: GetOwnedWorker :one
 SELECT * FROM workers
 WHERE id = sqlc.arg(worker_id)
-  AND org_id = sqlc.arg(org_id)
   AND status = 1
   AND registered_by = sqlc.arg(user_id);
 
@@ -33,16 +28,16 @@ WHERE id = sqlc.arg(worker_id)
 UPDATE workers SET status = ? WHERE id = ?;
 
 -- name: DeregisterWorker :execresult
-UPDATE workers SET status = 2 WHERE id = ? AND org_id = ? AND registered_by = ? AND status = 1;
+UPDATE workers SET status = 2 WHERE id = ? AND registered_by = ? AND status = 1;
 
 -- name: ForceDeregisterWorker :execresult
 UPDATE workers SET status = 2 WHERE id = ? AND status = 1;
 
 -- name: MarkWorkerDeleted :exec
-UPDATE workers SET status = 3 WHERE id = ?;
+UPDATE workers SET status = 3, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
 
--- name: ListWorkersByOrgAndRegisteredBy :many
-SELECT id FROM workers WHERE org_id = ? AND registered_by = ? AND status = 1;
+-- name: MarkAllWorkersDeletedByUser :exec
+UPDATE workers SET status = 3, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE registered_by = ? AND status != 3;
 
 -- name: UpdateWorkerLastSeen :exec
 UPDATE workers SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
@@ -52,3 +47,37 @@ UPDATE workers SET public_key = ?, mlkem_public_key = ?, slhdsa_public_key = ? W
 
 -- name: GetWorkerPublicKey :one
 SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ?;
+
+-- name: ListWorkersAdminAll :many
+SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC
+LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
+
+-- name: ListWorkersAdminByStatus :many
+SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.status = sqlc.arg(status)
+ORDER BY w.created_at DESC
+LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
+
+-- name: ListWorkersAdminByUser :many
+SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.registered_by = sqlc.arg(user_id)
+ORDER BY w.created_at DESC
+LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
+
+-- name: ListWorkersAdminByUserAndStatus :many
+SELECT w.*, COALESCE(u.username, '(deleted)') AS owner_username
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.registered_by = sqlc.arg(user_id) AND w.status = sqlc.arg(status)
+ORDER BY w.created_at DESC
+LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
+
+-- name: HardDeleteWorkersBefore :execresult
+DELETE FROM workers WHERE rowid IN (SELECT w.rowid FROM workers w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < ? LIMIT 1000);

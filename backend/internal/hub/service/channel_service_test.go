@@ -222,7 +222,6 @@ func TestOpenChannel_WithMockWorker(t *testing.T) {
 	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
 	conn := &workermgr.Conn{
 		WorkerID: workerID,
-		OrgID:    "test-org",
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sentCh <- msg
 			return nil
@@ -378,7 +377,6 @@ func TestGetWorkerEncryptionMode_PostQuantum(t *testing.T) {
 	// Simulate worker online with POST_QUANTUM mode.
 	conn := &workermgr.Conn{
 		WorkerID:       workerID,
-		OrgID:          "test-org",
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 	}
 	env.workerMgr.Register(conn)
@@ -398,7 +396,6 @@ func TestGetWorkerEncryptionMode_Classic(t *testing.T) {
 
 	conn := &workermgr.Conn{
 		WorkerID:       workerID,
-		OrgID:          "test-org",
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 	}
 	env.workerMgr.Register(conn)
@@ -419,7 +416,6 @@ func TestGetWorkerEncryptionMode_UnspecifiedDefaultsToPostQuantum(t *testing.T) 
 	// Register with UNSPECIFIED — should be normalized to POST_QUANTUM.
 	conn := &workermgr.Conn{
 		WorkerID:       workerID,
-		OrgID:          "test-org",
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED,
 	}
 	env.workerMgr.Register(conn)
@@ -442,7 +438,6 @@ func TestOpenChannel_PostQuantumHandshake(t *testing.T) {
 	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
 	conn := &workermgr.Conn{
 		WorkerID:       workerID,
-		OrgID:          "test-org",
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sentCh <- msg
@@ -481,7 +476,6 @@ func TestOpenChannel_ClassicHandshake(t *testing.T) {
 	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
 	conn := &workermgr.Conn{
 		WorkerID:       workerID,
-		OrgID:          "test-org",
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sentCh <- msg
@@ -537,7 +531,6 @@ func TestPrepareWorkspaceAccess_Success(t *testing.T) {
 	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn := &workermgr.Conn{
 		WorkerID: workerID,
-		OrgID:    adminUser.OrgID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sentMsgs <- msg
 			return nil
@@ -587,7 +580,6 @@ func TestPrepareWorkspaceAccess_OnlySendsToMatchingWorker(t *testing.T) {
 	sent1 := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn1 := &workermgr.Conn{
 		WorkerID: worker1ID,
-		OrgID:    adminUser.OrgID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sent1 <- msg
 			return nil
@@ -598,7 +590,6 @@ func TestPrepareWorkspaceAccess_OnlySendsToMatchingWorker(t *testing.T) {
 	sent2 := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn2 := &workermgr.Conn{
 		WorkerID: worker2ID,
-		OrgID:    adminUser.OrgID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sent2 <- msg
 			return nil
@@ -696,7 +687,6 @@ func TestPrepareWorkspaceAccess_SharedWorkspaceAccess(t *testing.T) {
 	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn := &workermgr.Conn{
 		WorkerID: workerID,
-		OrgID:    adminUser.OrgID,
 		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
 			sentMsgs <- msg
 			return nil

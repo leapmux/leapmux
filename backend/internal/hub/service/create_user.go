@@ -28,9 +28,9 @@ type CreateUserParams struct {
 	IsAdmin       int64
 }
 
-// createUserWithOrg creates a personal org, a user, and an org membership
+// CreateUserWithOrg creates a personal org, a user, and an org membership
 // atomically within a transaction. It returns the created user row.
-func createUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p CreateUserParams) (*db.User, error) {
+func CreateUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p CreateUserParams) (*db.User, error) {
 	tx, err := sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
@@ -81,15 +81,15 @@ func createUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p Crea
 	}
 
 	// If this user claimed a verified email, clear competing pending_email entries.
-	clearCompetingPendingEmails(ctx, q, p.Email, userID)
+	ClearCompetingPendingEmails(ctx, q, p.Email, userID)
 
 	return &user, nil
 }
 
-// setEmailAndClearCompeting updates a user's email and clears competing
+// SetEmailAndClearCompeting updates a user's email and clears competing
 // pending_email entries from other users. Use this instead of calling
-// UpdateUserEmail + clearCompetingPendingEmails separately.
-func setEmailAndClearCompeting(ctx context.Context, q *db.Queries, userID, email string, verified int64) error {
+// UpdateUserEmail + ClearCompetingPendingEmails separately.
+func SetEmailAndClearCompeting(ctx context.Context, q *db.Queries, userID, email string, verified int64) error {
 	if err := q.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
 		Email:         email,
 		EmailVerified: verified,
@@ -97,18 +97,18 @@ func setEmailAndClearCompeting(ctx context.Context, q *db.Queries, userID, email
 	}); err != nil {
 		return err
 	}
-	clearCompetingPendingEmails(ctx, q, email, userID)
+	ClearCompetingPendingEmails(ctx, q, email, userID)
 	return nil
 }
 
-// checkEmailAvailable checks that no other user has the given email in their
+// CheckEmailAvailable checks that no other user has the given email in their
 // verified email column. Empty emails are always allowed. Use excludeUserID
 // to skip the current user (for email changes).
 //
 // Multiple users may have the same pending_email concurrently — only the
 // verified email column is checked here. When a user promotes their
 // pending_email, promotePendingEmail clears competing pending_email entries.
-func checkEmailAvailable(ctx context.Context, q *db.Queries, email, excludeUserID string) error {
+func CheckEmailAvailable(ctx context.Context, q *db.Queries, email, excludeUserID string) error {
 	if email == "" {
 		return nil
 	}
@@ -176,20 +176,20 @@ func verifyPendingEmailToken(ctx context.Context, q *db.Queries, token string) (
 // any other users' pending_email with the same value so they don't attempt
 // to verify a now-taken address.
 func promotePendingEmail(ctx context.Context, q *db.Queries, userID, email string) error {
-	if err := checkEmailAvailable(ctx, q, email, userID); err != nil {
+	if err := CheckEmailAvailable(ctx, q, email, userID); err != nil {
 		return fmt.Errorf("email was claimed by another user: %w", err)
 	}
 	if err := q.PromotePendingEmail(ctx, userID); err != nil {
 		return fmt.Errorf("promote pending email: %w", err)
 	}
-	clearCompetingPendingEmails(ctx, q, email, userID)
+	ClearCompetingPendingEmails(ctx, q, email, userID)
 	return nil
 }
 
-// clearCompetingPendingEmails clears pending_email from all other users who
+// ClearCompetingPendingEmails clears pending_email from all other users who
 // have the same value. Call this whenever an email address is claimed — either
 // by promotion or by direct assignment to the email column.
-func clearCompetingPendingEmails(ctx context.Context, q *db.Queries, email, ownerUserID string) {
+func ClearCompetingPendingEmails(ctx context.Context, q *db.Queries, email, ownerUserID string) {
 	if email == "" {
 		return
 	}
@@ -203,7 +203,7 @@ func clearCompetingPendingEmails(ctx context.Context, q *db.Queries, email, owne
 // It rejects immediately if the email is already verified by another user.
 // Stub: auto-verifies immediately (real email sending TBD).
 func setPendingEmailWithToken(ctx context.Context, q *db.Queries, userID, email string) error {
-	if err := checkEmailAvailable(ctx, q, email, userID); err != nil {
+	if err := CheckEmailAvailable(ctx, q, email, userID); err != nil {
 		return err
 	}
 	token := id.Generate()

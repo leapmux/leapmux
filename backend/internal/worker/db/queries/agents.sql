@@ -70,4 +70,4 @@ UPDATE agents SET workspace_id = ? WHERE id = ?;
 SELECT * FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 
 -- name: DeleteClosedAgentsBefore :execresult
-DELETE FROM agents WHERE closed_at < ?;
+DELETE FROM agents WHERE rowid IN (SELECT a.rowid FROM agents a WHERE a.closed_at < ? LIMIT 1000);

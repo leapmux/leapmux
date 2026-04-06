@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
+	"github.com/leapmux/leapmux/internal/hub/cleanup"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
@@ -182,7 +183,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	oauthHandler := service.NewOAuthHandler(sqlDB, queries, cfg, ks)
 	oauthHandler.RegisterRoutes(mux)
 
-	orgSvc := service.NewOrgService(queries, nil, cfg.SoloMode)
+	orgSvc := service.NewOrgService(queries, cfg.SoloMode)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
@@ -193,10 +194,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionSvc := service.NewSectionService(queries)
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
-
-	adminSvc := service.NewAdminService(sqlDB, queries, cfg.SoloMode, sessionCache)
-	adminPath, adminHandler := leapmuxv1connect.NewAdminServiceHandler(adminSvc, connectOpts)
-	mux.Handle(adminPath, adminHandler)
 
 	workspaceSvc := service.NewWorkspaceService(sqlDB, queries, cfg.SoloMode)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
@@ -264,13 +261,12 @@ type WorkerCredentials struct {
 // RegisterWorker creates a worker record directly in the database,
 // bypassing the normal registration flow. This is used by the solo/dev
 // binary to auto-register a local worker.
-func (s *Server) RegisterWorker(ctx context.Context, orgID, registeredBy string) (*WorkerCredentials, error) {
+func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*WorkerCredentials, error) {
 	workerID := id.Generate()
 	authToken := id.Generate()
 
 	if err := s.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:              workerID,
-		OrgID:           orgID,
 		AuthToken:       authToken,
 		RegisteredBy:    registeredBy,
 		PublicKey:       []byte{},
@@ -288,7 +284,7 @@ func (s *Server) RegisterWorker(ctx context.Context, orgID, registeredBy string)
 
 // GetWorkerByID looks up a worker by ID. Returns an error if not found.
 func (s *Server) GetWorkerByID(ctx context.Context, workerID string) error {
-	_, err := s.queries.GetWorkerByIDInternal(ctx, workerID)
+	_, err := s.queries.GetWorkerByID(ctx, workerID)
 	return err
 }
 
@@ -332,6 +328,9 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	// Start background OAuth token refresh.
 	s.oauthHandler.StartTokenRefresh(ctx)
+
+	// Start periodic cleanup of soft-deleted records.
+	cleanup.StartLoop(ctx, s.queries)
 
 	shutdownDone := make(chan struct{})
 	go func() {

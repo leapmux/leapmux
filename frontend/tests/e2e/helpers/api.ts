@@ -211,12 +211,11 @@ export async function approveRegistrationViaAPI(
   hubUrl: string,
   cookie: string,
   registrationToken: string,
-  orgId: string,
 ): Promise<string> {
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ApproveRegistration`, {
     method: 'POST',
     headers: authedHeaders(cookie),
-    body: JSON.stringify({ registrationToken, orgId }),
+    body: JSON.stringify({ registrationToken }),
   })
   if (!res.ok) {
     throw new Error(`approveRegistrationViaAPI failed: ${res.status}`)

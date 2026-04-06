@@ -55,7 +55,7 @@ async function openWorkerContextMenu(
 
 test.describe('Worker Deregistration', () => {
   test.beforeAll(async ({ separateHubWorker }) => {
-    const { hubUrl, adminToken, adminOrgId, dataDir, binaryPath } = separateHubWorker
+    const { hubUrl, adminToken, dataDir, binaryPath } = separateHubWorker
     const workerDataDir = join(dataDir, 'worker-deregister-data')
     mkdirSync(workerDataDir, { recursive: true })
 
@@ -102,7 +102,6 @@ test.describe('Worker Deregistration', () => {
       hubUrl,
       adminToken,
       registrationToken,
-      adminOrgId,
     )
   })
 

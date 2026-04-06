@@ -62,7 +62,6 @@ export const RegistrationPage: Component<RegistrationPageProps> = (props) => {
     try {
       const resp = await workerClient.approveRegistration({
         registrationToken: props.token,
-        orgId: selectedOrgId(),
       })
       setApproved(true)
       if (resp.workerId) {

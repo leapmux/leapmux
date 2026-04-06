@@ -143,7 +143,6 @@ func (s *WorkerConnectorService) autoApproveRegistration(
 
 	if err := s.queries.CreateWorker(ctx, db.CreateWorkerParams{
 		ID:              workerID,
-		OrgID:           user.OrgID,
 		AuthToken:       authToken,
 		RegisteredBy:    user.ID,
 		PublicKey:       publicKey,
@@ -215,10 +214,9 @@ func (s *WorkerConnectorService) PollRegistration(
 		resp.Status = leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED
 		if reg.WorkerID.Valid {
 			resp.WorkerId = reg.WorkerID.String
-			worker, err := s.queries.GetWorkerByIDInternal(ctx, reg.WorkerID.String)
+			worker, err := s.queries.GetWorkerByID(ctx, reg.WorkerID.String)
 			if err == nil {
 				resp.AuthToken = worker.AuthToken
-				resp.OrgId = worker.OrgID
 				resp.RegisteredBy = worker.RegisteredBy
 			}
 		}
@@ -259,7 +257,6 @@ func (s *WorkerConnectorService) Connect(
 	// Register the connection.
 	conn := &workermgr.Conn{
 		WorkerID: worker.ID,
-		OrgID:    worker.OrgID,
 		Stream:   stream,
 	}
 	replaced := s.workerMgr.Register(conn)

@@ -3,16 +3,19 @@
 -- Organizations (tenants)
 CREATE TABLE orgs (
     id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL,
     is_personal INTEGER NOT NULL DEFAULT 0,
-    created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    deleted_at  DATETIME
 );
+CREATE UNIQUE INDEX idx_orgs_name ON orgs(name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_orgs_deleted_at ON orgs(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Users
 CREATE TABLE users (
     id             TEXT PRIMARY KEY,
     org_id         TEXT NOT NULL REFERENCES orgs(id),
-    username       TEXT NOT NULL UNIQUE,
+    username       TEXT NOT NULL,
     password_hash  TEXT NOT NULL,
     display_name   TEXT NOT NULL DEFAULT '',
     email                    TEXT NOT NULL DEFAULT '',
@@ -24,10 +27,14 @@ CREATE TABLE users (
     is_admin                 INTEGER NOT NULL DEFAULT 0,
     prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    deleted_at     DATETIME
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
-CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '';
+CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '' AND deleted_at IS NULL;
+CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_users_pending_email_token ON users(pending_email_token) WHERE pending_email_token != '' AND deleted_at IS NULL;
 
 -- Multi-org membership (M:N junction)
 CREATE TABLE org_members (
@@ -42,7 +49,7 @@ CREATE INDEX idx_org_members_user_id ON org_members(user_id);
 -- Auth sessions
 CREATE TABLE user_sessions (
     id              TEXT PRIMARY KEY,
-    user_id         TEXT NOT NULL REFERENCES users(id),
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at      DATETIME NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_active_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -50,12 +57,11 @@ CREATE TABLE user_sessions (
     ip_address      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
-CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
+CREATE INDEX idx_user_sessions_expires_at_last_active ON user_sessions(expires_at, last_active_at);
 
 -- Registered workers
 CREATE TABLE workers (
     id            TEXT PRIMARY KEY,
-    org_id        TEXT NOT NULL REFERENCES orgs(id),
     auth_token    TEXT NOT NULL UNIQUE,
     registered_by TEXT NOT NULL REFERENCES users(id),
     status        INTEGER NOT NULL DEFAULT 1,
@@ -63,14 +69,16 @@ CREATE TABLE workers (
     last_seen_at  DATETIME,
     public_key    BLOB NOT NULL DEFAULT '',
     mlkem_public_key  BLOB NOT NULL DEFAULT '',
-    slhdsa_public_key BLOB NOT NULL DEFAULT ''
+    slhdsa_public_key BLOB NOT NULL DEFAULT '',
+    deleted_at    DATETIME
 );
-CREATE INDEX idx_workers_org_id ON workers(org_id);
+CREATE INDEX idx_workers_registered_by ON workers(registered_by);
+CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Worker notifications (persistent queue for reliable delivery)
 CREATE TABLE worker_notifications (
     id           TEXT PRIMARY KEY,
-    worker_id    TEXT NOT NULL REFERENCES workers(id),
+    worker_id    TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     type         INTEGER NOT NULL,
     payload      TEXT NOT NULL DEFAULT '{}',
     status       INTEGER NOT NULL DEFAULT 1,
@@ -90,7 +98,7 @@ CREATE TABLE worker_registrations (
     slhdsa_public_key BLOB NOT NULL DEFAULT '',
     status      INTEGER NOT NULL DEFAULT 1,
     worker_id   TEXT REFERENCES workers(id) ON DELETE SET NULL,
-    approved_by TEXT REFERENCES users(id),
+    approved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     expires_at  DATETIME NOT NULL,
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -123,10 +131,11 @@ CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(sect
 CREATE TABLE worker_access_grants (
     worker_id  TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    granted_by TEXT NOT NULL REFERENCES users(id),
+    granted_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (worker_id, user_id)
 );
+CREATE INDEX idx_worker_access_grants_user_id ON worker_access_grants(user_id);
 
 -- Workspaces (hub-owned registry)
 CREATE TABLE workspaces (
@@ -135,13 +144,17 @@ CREATE TABLE workspaces (
     owner_user_id TEXT NOT NULL REFERENCES users(id),
     title         TEXT NOT NULL DEFAULT '',
     is_deleted    INTEGER NOT NULL DEFAULT 0,
-    created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    deleted_at    DATETIME
 );
+CREATE INDEX idx_workspaces_org_owner ON workspaces(org_id, owner_user_id) WHERE is_deleted = 0;
+CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
+CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Workspace read-only sharing ACL
 CREATE TABLE workspace_access (
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    user_id      TEXT NOT NULL REFERENCES users(id),
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (workspace_id, user_id)
 );
@@ -189,6 +202,7 @@ CREATE TABLE oauth_user_links (
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (user_id, provider_id)
 );
+CREATE UNIQUE INDEX idx_oauth_user_links_provider_subject ON oauth_user_links(provider_id, provider_subject);
 
 -- Encrypted OAuth tokens per user per provider
 CREATE TABLE oauth_tokens (
@@ -202,6 +216,9 @@ CREATE TABLE oauth_tokens (
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (user_id, provider_id)
 );
+CREATE INDEX idx_oauth_tokens_provider_id ON oauth_tokens(provider_id);
+CREATE INDEX idx_oauth_tokens_expires_at ON oauth_tokens(expires_at);
+CREATE INDEX idx_oauth_tokens_key_version ON oauth_tokens(key_version);
 
 -- Short-lived OAuth state for CSRF + PKCE during auth flow
 CREATE TABLE oauth_states (

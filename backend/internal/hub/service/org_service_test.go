@@ -16,10 +16,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/db"
 	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
-	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -45,17 +43,13 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 
 	hubtestutil.CreateTestAdmin(t, sqlDB, q)
 
-	bgMgr := workermgr.New()
-
 	cfg := testConfig()
-	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
-	notifierSvc := notifier.New(q, bgMgr, pendingReqs, cfg)
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(q, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
-	orgSvc := service.NewOrgService(q, notifierSvc, false)
+	orgSvc := service.NewOrgService(q, false)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
@@ -505,6 +499,92 @@ func TestOrgService_RemoveOrgMember_CannotRemoveLastOwner(t *testing.T) {
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestOrgService_RemoveOrgMember_PreservesGrantsInOtherOrgs(t *testing.T) {
+	env := setupOrgTestServer(t)
+	ctx := context.Background()
+
+	// Create two orgs.
+	respA, err := env.client.CreateOrg(ctx, authedReq(&leapmuxv1.CreateOrgRequest{Name: "org-alpha"}, env.token))
+	require.NoError(t, err)
+	orgA := respA.Msg.GetOrg().GetId()
+
+	respB, err := env.client.CreateOrg(ctx, authedReq(&leapmuxv1.CreateOrgRequest{Name: "org-beta"}, env.token))
+	require.NoError(t, err)
+	orgB := respB.Msg.GetOrg().GetId()
+
+	// Create user2 and invite into both orgs.
+	user2ID, _ := env.createSecondUser(t)
+
+	_, err = env.client.InviteOrgMember(ctx, authedReq(&leapmuxv1.InviteOrgMemberRequest{
+		OrgId: orgA, Username: "user2", Role: leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
+	}, env.token))
+	require.NoError(t, err)
+
+	_, err = env.client.InviteOrgMember(ctx, authedReq(&leapmuxv1.InviteOrgMemberRequest{
+		OrgId: orgB, Username: "user2", Role: leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
+	}, env.token))
+	require.NoError(t, err)
+
+	// Create a worker registered by admin (who is a member of both orgs).
+	workerA := id.Generate()
+	_ = env.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
+		ID: workerA, AuthToken: id.Generate(), RegisteredBy: env.userID,
+		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+	})
+	// Admin is in org-alpha, so this worker is "in" org-alpha.
+
+	workerB := id.Generate()
+	_ = env.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
+		ID: workerB, AuthToken: id.Generate(), RegisteredBy: env.userID,
+		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+	})
+	// Admin is also in org-beta, so this worker is "in" org-beta too.
+	// For the test, we need workers scoped to specific orgs. Create a
+	// user3 who is only in org-beta, and register a worker as user3.
+	user3ID := id.Generate()
+	hash, _ := password.Hash("pass3")
+	_ = env.queries.CreateUser(ctx, gendb.CreateUserParams{
+		ID: user3ID, OrgID: env.orgID, Username: "user3",
+		PasswordHash: hash, DisplayName: "User 3", PasswordSet: 1,
+	})
+	_ = env.queries.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
+		OrgID: orgB, UserID: user3ID, Role: leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
+	})
+	workerInB := id.Generate()
+	_ = env.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
+		ID: workerInB, AuthToken: id.Generate(), RegisteredBy: user3ID,
+		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+	})
+
+	// Grant user2 access to workerA (admin's worker, in org-alpha) and workerInB (user3's worker, in org-beta).
+	_ = env.queries.GrantWorkerAccess(ctx, gendb.GrantWorkerAccessParams{
+		WorkerID: workerA, UserID: user2ID, GrantedBy: env.userID,
+	})
+	_ = env.queries.GrantWorkerAccess(ctx, gendb.GrantWorkerAccessParams{
+		WorkerID: workerInB, UserID: user2ID, GrantedBy: user3ID,
+	})
+
+	// Verify user2 has access to both workers.
+	hasA, _ := env.queries.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{WorkerID: workerA, UserID: user2ID})
+	assert.True(t, hasA)
+	hasB, _ := env.queries.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{WorkerID: workerInB, UserID: user2ID})
+	assert.True(t, hasB)
+
+	// Remove user2 from org-alpha only.
+	_, err = env.client.RemoveOrgMember(ctx, authedReq(&leapmuxv1.RemoveOrgMemberRequest{
+		OrgId: orgA, UserId: user2ID,
+	}, env.token))
+	require.NoError(t, err)
+
+	// User2's grant to workerA (in org-alpha) should be revoked.
+	hasA, _ = env.queries.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{WorkerID: workerA, UserID: user2ID})
+	assert.False(t, hasA, "grant to worker in org-alpha should be revoked")
+
+	// User2's grant to workerInB (in org-beta) should be PRESERVED.
+	hasB, _ = env.queries.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{WorkerID: workerInB, UserID: user2ID})
+	assert.True(t, hasB, "grant to worker in org-beta should be preserved")
 }
 
 // --- UpdateOrgMember ---

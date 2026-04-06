@@ -113,11 +113,10 @@ export const AppShell: ParentComponent = (props) => {
 
   // Fetch workers list.
   async function fetchWorkers() {
-    const orgId = org.orgId()
-    if (!orgId)
+    if (!org.orgId())
       return
     try {
-      const resp = await workerClient.listWorkers({ orgId })
+      const resp = await workerClient.listWorkers({})
       setWorkers(resp.workers)
       for (const w of resp.workers) {
         if (w.online) {

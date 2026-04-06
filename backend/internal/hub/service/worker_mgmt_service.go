@@ -46,12 +46,6 @@ func (s *WorkerManagementService) ApproveRegistration(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("registration_token is required"))
 	}
 
-	// Resolve org ID - user picks which org to register the worker in.
-	orgID, err := auth.ResolveOrgID(ctx, s.queries, user, req.Msg.GetOrgId())
-	if err != nil {
-		return nil, err
-	}
-
 	// Look up the registration.
 	reg, err := s.queries.GetRegistrationByID(ctx, regID)
 	if err != nil {
@@ -85,7 +79,6 @@ func (s *WorkerManagementService) ApproveRegistration(
 
 	if err := s.queries.CreateWorker(ctx, db.CreateWorkerParams{
 		ID:              workerID,
-		OrgID:           orgID,
 		AuthToken:       authToken,
 		RegisteredBy:    user.ID,
 		PublicKey:       publicKey,
@@ -123,11 +116,6 @@ func (s *WorkerManagementService) ListWorkers(
 		return nil, err
 	}
 
-	orgID, err := auth.ResolveOrgID(ctx, s.queries, user, req.Msg.GetOrgId())
-	if err != nil {
-		return nil, err
-	}
-
 	limit := int64(50)
 	offset := int64(0)
 	if req.Msg.GetPage() != nil {
@@ -139,10 +127,10 @@ func (s *WorkerManagementService) ListWorkers(
 		}
 	}
 
-	workers, err := s.queries.ListWorkersByOrgID(ctx, db.ListWorkersByOrgIDParams{
-		OrgID:  orgID,
-		Limit:  limit,
-		Offset: offset,
+	workers, err := s.queries.ListWorkersByUserID(ctx, db.ListWorkersByUserIDParams{
+		RegisteredBy: user.ID,
+		Limit:        limit,
+		Offset:       offset,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -177,19 +165,9 @@ func (s *WorkerManagementService) GetWorker(
 		return nil, err
 	}
 
-	worker, err := s.queries.GetWorkerByIDInternal(ctx, req.Msg.GetWorkerId())
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Verify the user owns this worker.
-	_, err = s.queries.GetOwnedWorker(ctx, db.GetOwnedWorkerParams{
+	worker, err := s.queries.GetOwnedWorker(ctx, db.GetOwnedWorkerParams{
 		UserID:   user.ID,
-		WorkerID: worker.ID,
-		OrgID:    worker.OrgID,
+		WorkerID: req.Msg.GetWorkerId(),
 	})
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -215,14 +193,8 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, err
 	}
 
-	orgID, err := auth.ResolveOrgID(ctx, s.queries, user, "")
-	if err != nil {
-		return nil, err
-	}
-
 	result, err := s.queries.DeregisterWorker(ctx, db.DeregisterWorkerParams{
 		ID:           req.Msg.GetWorkerId(),
-		OrgID:        orgID,
 		RegisteredBy: user.ID,
 	})
 	if err != nil {
@@ -288,7 +260,6 @@ func (s *WorkerManagementService) workerToProto(b *db.Worker) *leapmuxv1.Worker 
 
 	return &leapmuxv1.Worker{
 		Id:           b.ID,
-		OrgId:        b.OrgID,
 		Online:       s.workerMgr.IsOnline(b.ID),
 		CreatedAt:    timefmt.Format(b.CreatedAt),
 		LastSeenAt:   lastSeen,

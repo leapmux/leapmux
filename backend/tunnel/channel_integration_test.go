@@ -76,9 +76,7 @@ func startTestSolo(t *testing.T) (hubURL, socketPath, userID, workerID string) {
 	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(httpClient, hubURL)
 	var wID string
 	for i := 0; i < 60; i++ {
-		listResp, listErr := mgmtClient.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{
-			OrgId: meResp.Msg.GetUser().GetOrgId(),
-		}))
+		listResp, listErr := mgmtClient.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{}))
 		if listErr == nil {
 			for _, w := range listResp.Msg.GetWorkers() {
 				if w.GetOnline() {

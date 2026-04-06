@@ -34,7 +34,7 @@ SELECT * FROM terminals WHERE workspace_id = ? AND closed_at IS NULL;
 SELECT * FROM terminals WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 
 -- name: DeleteClosedTerminalsBefore :execresult
-DELETE FROM terminals WHERE closed_at < ?;
+DELETE FROM terminals WHERE rowid IN (SELECT t.rowid FROM terminals t WHERE t.closed_at < ? LIMIT 1000);
 
 -- name: GetTerminalWorkspaceID :one
 SELECT workspace_id FROM terminals WHERE id = ?;

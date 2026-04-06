@@ -241,12 +241,12 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 	}
 
 	// Find the admin user (created by bootstrap).
-	userID, orgID, err := server.GetAdminUser(ctx)
+	userID, _, err := server.GetAdminUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	creds, err := server.RegisterWorker(ctx, orgID, userID)
+	creds, err := server.RegisterWorker(ctx, userID)
 	if err != nil {
 		return nil, err
 	}

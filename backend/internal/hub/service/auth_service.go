@@ -75,7 +75,7 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
 	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.cfg.SecureCookies)
 	if token != "" {
-		_ = s.queries.DeleteUserSession(ctx, token)
+		_, _ = s.queries.DeleteUserSession(ctx, token)
 		s.sessionCache.Evict(token)
 	}
 	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})
@@ -163,11 +163,11 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	if s.cfg.EmailVerificationRequired && email != "" {
 		// Email goes to pending_email; email column stays empty until verified.
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 
-		user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+		user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 			Username:     username,
 			PasswordHash: hash,
 			DisplayName:  displayName,
@@ -198,12 +198,12 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	// No verification required — email goes directly to email column.
 	if email != "" {
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 	}
 
-	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  displayName,
@@ -232,12 +232,12 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 	}
 
 	if email != "" {
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 	}
 
-	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:      username,
 		PasswordHash:  passwordHash,
 		DisplayName:   displayName,
@@ -430,7 +430,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	var pendingEmail string
 
 	if email != "" {
-		if err := checkEmailAvailable(ctx, s.queries, email, ""); err != nil {
+		if err := CheckEmailAvailable(ctx, s.queries, email, ""); err != nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists, err)
 		}
 
@@ -447,7 +447,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		}
 	}
 
-	user, err := createUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
+	user, err := CreateUserWithOrg(ctx, s.sqlDB, s.queries, CreateUserParams{
 		Username:      username,
 		PasswordHash:  pwdhash.PlaceholderHash,
 		DisplayName:   displayName,

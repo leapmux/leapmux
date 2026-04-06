@@ -27,7 +27,7 @@ func createSimpleUser(t *testing.T, sqlDB *sql.DB, q *gendb.Queries, username, e
 	t.Helper()
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
-	user, err := createUserWithOrg(context.Background(), sqlDB, q, CreateUserParams{
+	user, err := CreateUserWithOrg(context.Background(), sqlDB, q, CreateUserParams{
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  username,
@@ -89,7 +89,7 @@ func TestCreateUserWithOrg_ClearsCompetingPendingEmails(t *testing.T) {
 
 	// User B signs up with that email directly.
 	hash, _ := password.Hash("testpass")
-	_, err = createUserWithOrg(ctx, sqlDB, q, CreateUserParams{
+	_, err = CreateUserWithOrg(ctx, sqlDB, q, CreateUserParams{
 		Username:     "user-b",
 		PasswordHash: hash,
 		DisplayName:  "User B",
@@ -117,9 +117,9 @@ func TestSetEmailAndClearCompeting(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// User B gets verified email via setEmailAndClearCompeting.
+	// User B gets verified email via SetEmailAndClearCompeting.
 	userB := createSimpleUser(t, sqlDB, q, "user-b", "")
-	err = setEmailAndClearCompeting(ctx, q, userB.ID, "target@example.com", 1)
+	err = SetEmailAndClearCompeting(ctx, q, userB.ID, "target@example.com", 1)
 	require.NoError(t, err)
 
 	// User B has verified email.
@@ -139,7 +139,7 @@ func TestSetEmailAndClearCompeting_Unverified(t *testing.T) {
 	ctx := context.Background()
 
 	user := createSimpleUser(t, sqlDB, q, "user-a", "")
-	err := setEmailAndClearCompeting(ctx, q, user.ID, "new@example.com", 0)
+	err := SetEmailAndClearCompeting(ctx, q, user.ID, "new@example.com", 0)
 	require.NoError(t, err)
 
 	updated, err := q.GetUserByID(ctx, user.ID)

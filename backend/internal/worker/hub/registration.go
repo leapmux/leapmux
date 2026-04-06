@@ -20,7 +20,6 @@ import (
 type RegistrationResult struct {
 	WorkerID     string
 	AuthToken    string
-	OrgID        string
 	RegisteredBy string
 }
 
@@ -135,7 +134,6 @@ func registerWithClient(
 			return &RegistrationResult{
 				WorkerID:     pollResp.Msg.GetWorkerId(),
 				AuthToken:    pollResp.Msg.GetAuthToken(),
-				OrgID:        pollResp.Msg.GetOrgId(),
 				RegisteredBy: pollResp.Msg.GetRegisteredBy(),
 			}, nil
 

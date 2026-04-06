@@ -56,7 +56,6 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 				Status:    leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED,
 				WorkerId:  "worker-123",
 				AuthToken: "auth-token-abc",
-				OrgId:     "org-1",
 			}), nil
 		},
 	}
@@ -70,7 +69,6 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 	assert.Equal(t, int32(failCount+1), attempts.Load(), "RequestRegistration call count")
 	assert.Equal(t, "worker-123", result.WorkerID)
 	assert.Equal(t, "auth-token-abc", result.AuthToken)
-	assert.Equal(t, "org-1", result.OrgID)
 }
 
 func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
@@ -161,7 +159,6 @@ func TestRegisterWithClient_LongPollPendingThenApproved(t *testing.T) {
 				Status:    leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED,
 				WorkerId:  "worker-lp",
 				AuthToken: "auth-lp",
-				OrgId:     "org-lp",
 			}), nil
 		},
 	}
@@ -175,7 +172,6 @@ func TestRegisterWithClient_LongPollPendingThenApproved(t *testing.T) {
 	assert.Equal(t, int32(3), pollCount.Load(), "PollRegistration call count")
 	assert.Equal(t, "worker-lp", result.WorkerID)
 	assert.Equal(t, "auth-lp", result.AuthToken)
-	assert.Equal(t, "org-lp", result.OrgID)
 }
 
 func TestRegisterWithClient_PollErrorRetries(t *testing.T) {
@@ -197,7 +193,6 @@ func TestRegisterWithClient_PollErrorRetries(t *testing.T) {
 				Status:    leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED,
 				WorkerId:  "worker-err",
 				AuthToken: "auth-err",
-				OrgId:     "org-err",
 			}), nil
 		},
 	}

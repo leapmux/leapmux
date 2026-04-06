@@ -19,7 +19,7 @@ vi.mock('~/api/tunnelApi', () => ({
 }))
 
 function makeWorker(id: string, registeredBy = 'user-1'): Worker {
-  return create(WorkerSchema, { id, registeredBy, orgId: 'org-1', online: true })
+  return create(WorkerSchema, { id, registeredBy, online: true })
 }
 
 const defaultWorkerInfo: WorkerInfo = {

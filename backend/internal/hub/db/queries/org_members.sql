@@ -9,13 +9,13 @@ SELECT om.org_id, om.user_id, om.role, om.joined_at,
        u.username, u.display_name, u.email
 FROM org_members om
 JOIN users u ON u.id = om.user_id
-WHERE om.org_id = ?
+WHERE om.org_id = ? AND u.deleted_at IS NULL
 ORDER BY om.joined_at;
 
 -- name: ListOrgsByUserID :many
 SELECT o.* FROM orgs o
 JOIN org_members om ON o.id = om.org_id
-WHERE om.user_id = ?
+WHERE om.user_id = ? AND o.deleted_at IS NULL
 ORDER BY o.name;
 
 -- name: UpdateOrgMemberRole :exec

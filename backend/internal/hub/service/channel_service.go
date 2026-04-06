@@ -125,8 +125,8 @@ func (s *ChannelService) OpenChannel(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
-	// Verify user has access to this worker and get the worker's org.
-	worker, err := s.verifyWorkerAccess(ctx, user, workerID)
+	// Verify user has access to this worker.
+	_, err = s.verifyWorkerAccess(ctx, user, workerID)
 	if err != nil {
 		return nil, err
 	}
@@ -142,10 +142,10 @@ func (s *ChannelService) OpenChannel(
 	// Register in channel manager (no cancel func yet — WebSocket will set it).
 	s.channelMgr.Register(channelID, workerID, user.ID, nil)
 
-	// Query accessible workspaces for this user in the worker's org.
+	// Query accessible workspaces for this user in their personal org.
 	workspaces, err := s.queries.ListAccessibleWorkspaces(ctx, db.ListAccessibleWorkspacesParams{
 		UserID: user.ID,
-		OrgID:  worker.OrgID,
+		OrgID:  user.OrgID,
 	})
 	if err != nil {
 		s.channelMgr.Unregister(channelID)
@@ -296,13 +296,10 @@ func (s *ChannelService) PrepareWorkspaceAccess(
 	return connect.NewResponse(&leapmuxv1.PrepareWorkspaceAccessResponse{}), nil
 }
 
-// verifyWorkerAccess checks that the user is a member of the worker's org.
-// All org members may open E2EE channels to any worker in their org;
-// fine-grained workspace access is enforced by the Worker itself.
+// verifyWorkerAccess checks that the user owns the worker or has been granted access.
 // Returns the worker record for downstream use (e.g. querying accessible workspaces).
 func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.UserInfo, workerID string) (db.Worker, error) {
-	// Look up the worker without org restriction.
-	worker, err := s.queries.GetWorkerByIDInternal(ctx, workerID)
+	worker, err := s.queries.GetWorkerByID(ctx, workerID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return db.Worker{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
@@ -310,15 +307,24 @@ func (s *ChannelService) verifyWorkerAccess(ctx context.Context, user *auth.User
 		return db.Worker{}, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Check if the user is a member of the worker's org.
-	isMember, err := s.queries.IsOrgMember(ctx, db.IsOrgMemberParams{
-		OrgID:  worker.OrgID,
-		UserID: user.ID,
+	if worker.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
+		return db.Worker{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+	}
+
+	// Owner always has access.
+	if worker.RegisteredBy == user.ID {
+		return worker, nil
+	}
+
+	// Check explicit access grant.
+	hasAccess, err := s.queries.HasWorkerAccess(ctx, db.HasWorkerAccessParams{
+		WorkerID: workerID,
+		UserID:   user.ID,
 	})
 	if err != nil {
 		return db.Worker{}, connect.NewError(connect.CodeInternal, err)
 	}
-	if !isMember {
+	if !hasAccess {
 		return db.Worker{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 	}
 

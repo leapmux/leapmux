@@ -134,13 +134,13 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	}
 
 	// Check that no other user has this email.
-	if err := checkEmailAvailable(ctx, s.queries, newEmail, user.ID); err != nil {
+	if err := CheckEmailAvailable(ctx, s.queries, newEmail, user.ID); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 
 	// Admin: immediate change, trusted.
 	if userInfo.IsAdmin {
-		if err := setEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 1); err != nil {
+		if err := SetEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 1); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
@@ -150,7 +150,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 
 	// Non-admin, verification not required: immediate change, unverified.
 	if !s.cfg.EmailVerificationRequired {
-		if err := setEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 0); err != nil {
+		if err := SetEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 0); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{

@@ -44,7 +44,7 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
 
   const fetchWorkers = async () => {
     try {
-      const resp = await workerClient.listWorkers({ orgId: org.orgId() })
+      const resp = await workerClient.listWorkers({})
       const online = resp.workers.filter(b => b.online)
       setWorkers(online)
       if (online.length > 0 && !workerId()) {

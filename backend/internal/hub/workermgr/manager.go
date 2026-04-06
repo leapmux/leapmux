@@ -15,7 +15,6 @@ import (
 // Conn represents a connected worker's bidirectional stream.
 type Conn struct {
 	WorkerID       string
-	OrgID          string
 	EncryptionMode leapmuxv1.EncryptionMode // Set from the initial heartbeat.
 	Stream         *connect.BidiStream[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
 	SendFn         func(*leapmuxv1.ConnectResponse) error // Optional: overrides Stream.Send for testing.

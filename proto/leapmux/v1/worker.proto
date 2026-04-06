@@ -53,8 +53,7 @@ message PollRegistrationResponse {
   RegistrationStatus status = 1;
   string worker_id = 2;
   string auth_token = 3;
-  string org_id = 4;
-  string registered_by = 5; // User ID who approved this worker
+  string registered_by = 4; // User ID who approved this worker
 }
 
 enum RegistrationStatus {
@@ -89,7 +88,6 @@ enum NotificationStatus {
 
 message ApproveRegistrationRequest {
   string registration_token = 1;
-  string org_id = 2;
 }
 
 message ApproveRegistrationResponse {
@@ -98,7 +96,6 @@ message ApproveRegistrationResponse {
 
 message ListWorkersRequest {
   PageRequest page = 1;
-  string org_id = 2;
 }
 
 message ListWorkersResponse {
@@ -133,11 +130,10 @@ message GetRegistrationResponse {
 
 message Worker {
   string id = 1;
-  string org_id = 2;
-  bool online = 3;
-  string created_at = 4;
-  string last_seen_at = 5;
-  string registered_by = 6;
+  bool online = 2;
+  string created_at = 3;
+  string last_seen_at = 4;
+  string registered_by = 5;
 }
 
 // --- Bidirectional stream envelope messages ---

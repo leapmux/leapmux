@@ -320,7 +320,6 @@ export const processTest = base.extend<
       hubUrl,
       adminToken,
       registrationToken,
-      adminOrgId,
     )
     console.log(`[e2e] Worker approved: ${workerId}`)
 
