@@ -58,4 +58,4 @@ ORDER BY w.created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 
 -- name: HardDeleteWorkersBefore :execresult
-DELETE FROM workers WHERE deleted_at IS NOT NULL AND deleted_at < ?;
+DELETE FROM workers WHERE rowid IN (SELECT w.rowid FROM workers w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < ? LIMIT 1000);

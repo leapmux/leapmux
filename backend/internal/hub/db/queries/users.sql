@@ -3,6 +3,9 @@ INSERT INTO users (id, org_id, username, password_hash, display_name, email, ema
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetUserByID :one
+SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
+
+-- name: GetUserByIDIncludeDeleted :one
 SELECT * FROM users WHERE id = ?;
 
 -- name: GetUserByUsername :one
@@ -50,7 +53,7 @@ WHERE id = ?;
 UPDATE users SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
 
 -- name: HardDeleteUsersBefore :execresult
-DELETE FROM users WHERE deleted_at IS NOT NULL AND deleted_at < ?;
+DELETE FROM users WHERE rowid IN (SELECT u.rowid FROM users u WHERE u.deleted_at IS NOT NULL AND u.deleted_at < ? LIMIT 1000);
 
 -- name: GetUserPrefs :one
 SELECT prefs FROM users WHERE id = ?;

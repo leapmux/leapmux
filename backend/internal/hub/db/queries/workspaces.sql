@@ -23,4 +23,4 @@ UPDATE workspaces SET is_deleted = 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ'
 UPDATE workspaces SET is_deleted = 1, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE owner_user_id = ?;
 
 -- name: HardDeleteWorkspacesBefore :execresult
-DELETE FROM workspaces WHERE deleted_at IS NOT NULL AND deleted_at < ?;
+DELETE FROM workspaces WHERE rowid IN (SELECT w.rowid FROM workspaces w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < ? LIMIT 1000);

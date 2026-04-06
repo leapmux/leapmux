@@ -371,8 +371,8 @@ func TestHardDeleteUsersBefore_RetainsRecent(t *testing.T) {
 	affected, _ := result.RowsAffected()
 	require.Equal(t, int64(0), affected)
 
-	// The user should still exist.
-	user, err := q.GetUserByID(ctx, userID)
+	// The user should still exist (soft-deleted but within retention).
+	user, err := q.GetUserByIDIncludeDeleted(ctx, userID)
 	require.NoError(t, err)
 	require.True(t, user.DeletedAt.Valid, "user should still be soft-deleted")
 }

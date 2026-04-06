@@ -11,7 +11,7 @@ SELECT * FROM worktrees WHERE id = ?;
 UPDATE worktrees SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
 
 -- name: HardDeleteWorktreesBefore :execresult
-DELETE FROM worktrees WHERE deleted_at IS NOT NULL AND deleted_at < ?;
+DELETE FROM worktrees WHERE rowid IN (SELECT w.rowid FROM worktrees w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < ? LIMIT 1000);
 
 -- name: AddWorktreeTab :exec
 INSERT INTO worktree_tabs (worktree_id, tab_type, tab_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING;

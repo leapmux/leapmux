@@ -45,12 +45,20 @@ func runCleanup(ctx context.Context, queries *db.Queries) {
 }
 
 func cleanupStep(name string, fn func() (sql.Result, error)) {
-	res, err := fn()
-	if err != nil {
-		slog.Error("cleanup: "+name, "error", err)
-		return
+	var total int64
+	for {
+		res, err := fn()
+		if err != nil {
+			slog.Error("cleanup: "+name, "error", err)
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			break
+		}
+		total += n
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		slog.Info("cleanup: "+name, "count", n)
+	if total > 0 {
+		slog.Info("cleanup: "+name, "count", total)
 	}
 }

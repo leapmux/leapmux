@@ -16,7 +16,7 @@ SET status = 4
 WHERE status = 1 AND expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 
 -- name: HardDeleteExpiredRegistrationsBefore :execresult
-DELETE FROM worker_registrations WHERE status = 4 AND created_at < ?;
+DELETE FROM worker_registrations WHERE rowid IN (SELECT r.rowid FROM worker_registrations r WHERE r.status = 4 AND r.created_at < ? LIMIT 1000);
 
 -- name: CreateUserSession :exec
 INSERT INTO user_sessions (id, user_id, expires_at, user_agent, ip_address) VALUES (?, ?, ?, ?, ?);
