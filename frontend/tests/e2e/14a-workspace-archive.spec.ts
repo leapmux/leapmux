@@ -157,10 +157,10 @@ test.describe('Workspace Archive', () => {
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree and open a file tab
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
       await page.getByText('package.json').click()
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toBeVisible({ timeout: 10_000 })
+      await expect(fileTab).toBeVisible()
 
       // Archive the workspace
       const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
@@ -202,7 +202,7 @@ test.describe('Workspace Archive', () => {
 
       // Wait for the file tree to load
       const packageJsonNode = page.getByText('package.json')
-      await expect(packageJsonNode).toBeVisible({ timeout: 15_000 })
+      await expect(packageJsonNode).toBeVisible()
 
       // Verify mention button IS visible before archive (via context menu)
       await packageJsonNode.hover()
@@ -247,14 +247,14 @@ test.describe('Workspace Archive', () => {
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree and open a file tab
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
       await page.getByText('package.json').click()
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
-      await expect(fileTab).toBeVisible({ timeout: 10_000 })
+      await expect(fileTab).toBeVisible()
 
       // Verify file mention button IS visible before archive
       const fileMentionButton = page.locator('[data-testid="file-mention-button"]')
-      await expect(fileMentionButton).toBeVisible({ timeout: 5_000 })
+      await expect(fileMentionButton).toBeVisible()
 
       // Archive the workspace
       const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)

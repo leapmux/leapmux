@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { sendMessage } from './helpers/ui'
+import { isMaybeVisible, sendMessage } from './helpers/ui'
 
 codexTest.describe('Codex Interrupt', () => {
   codexTest('send a prompt and interrupt mid-response', async ({ authenticatedCodexWorkspace, page }) => {
@@ -12,7 +12,7 @@ codexTest.describe('Codex Interrupt', () => {
 
     // Click the interrupt/stop button.
     const stopBtn = page.locator('[data-testid="interrupt-btn"], [data-testid="stop-btn"]')
-    if (await stopBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+    if (await isMaybeVisible(stopBtn)) {
       await stopBtn.click()
 
       // Wait for the turn to complete (interrupted).
@@ -32,13 +32,13 @@ codexTest.describe('Codex Interrupt', () => {
     await page.waitForTimeout(3000)
 
     const stopBtn = page.locator('[data-testid="interrupt-btn"], [data-testid="stop-btn"]')
-    if (await stopBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+    if (await isMaybeVisible(stopBtn)) {
       await stopBtn.click()
       await page.waitForTimeout(5000)
 
       // After interrupt, the thinking indicator should be gone.
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
-      await expect(thinkingIndicator).not.toBeVisible({ timeout: 10_000 })
+      await expect(thinkingIndicator).not.toBeVisible()
     }
   })
 })

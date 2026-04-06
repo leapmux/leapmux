@@ -33,7 +33,7 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
     await page.getByText('Create new worktree').click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
@@ -85,7 +85,7 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
     await page.getByText('Create new worktree').click()
 
     // Read initial branch name
@@ -125,7 +125,7 @@ test.describe('Worktree Validation', () => {
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Switch to branch')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Switch to branch')).toBeVisible()
     await page.getByText('Switch to branch').click()
 
     // Create button should be disabled until a branch is selected
@@ -157,7 +157,7 @@ test.describe('Worktree Validation', () => {
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Use existing worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use existing worktree')).toBeVisible()
     await page.getByText('Use existing worktree').click()
 
     // Create button should be disabled until a worktree is selected
@@ -187,7 +187,7 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // "Use current state" is default — submit should be enabled immediately
-    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use current state')).toBeVisible()
     const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
     await expect(createBtn).toBeEnabled()
 
@@ -218,7 +218,7 @@ test.describe('Worktree Validation', () => {
 
     // Navigate to first repo and select "Create new branch"
     await setWorkingDir(page, repo1)
-    await expect(page.getByText('Use current state')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Use current state')).toBeVisible()
     await page.getByText('Create new branch').click()
 
     // Verify sub-controls are visible
@@ -229,7 +229,7 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repo2)
 
     // Mode should be preserved as "Create new branch"
-    await expect(dialog.getByText('Branch Name')).toBeVisible({ timeout: 10000 })
+    await expect(dialog.getByText('Branch Name')).toBeVisible()
     await expect(dialog.getByText('Base Branch')).toBeVisible()
 
     // Now test with "Create new worktree"
@@ -240,7 +240,7 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repo1)
 
     // Mode should still be "Create new worktree"
-    await expect(page.getByText('Worktree path:')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Worktree path:')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -268,12 +268,12 @@ test.describe('Worktree Validation', () => {
 
     // Navigate to repo1 and select "Switch to branch"
     await setWorkingDir(page, repo1)
-    await expect(page.getByText('Switch to branch')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Switch to branch')).toBeVisible()
     await page.getByText('Switch to branch').click()
 
     // Wait for branches to load — should contain alpha-branch
     const branchSelect = dialog.locator('select').last()
-    await expect(branchSelect).toBeEnabled({ timeout: 10000 })
+    await expect(branchSelect).toBeEnabled()
     const repo1Options = await branchSelect.locator('option').allTextContents()
     expect(repo1Options.some(o => o.includes('alpha-branch'))).toBe(true)
     expect(repo1Options.some(o => o.includes('beta-branch'))).toBe(false)
@@ -286,7 +286,7 @@ test.describe('Worktree Validation', () => {
       const repo2Options = await branchSelect.locator('option').allTextContents()
       expect(repo2Options.some(o => o.includes('beta-branch'))).toBe(true)
       expect(repo2Options.some(o => o.includes('alpha-branch'))).toBe(false)
-    }).toPass({ timeout: 10000 })
+    }).toPass()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -309,11 +309,11 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Select "Switch to branch" to see the branch list
-    await expect(page.getByText('Switch to branch')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Switch to branch')).toBeVisible()
     await page.getByText('Switch to branch').click()
 
     const branchSelect = dialog.locator('select').last()
-    await expect(branchSelect).toBeEnabled({ timeout: 10000 })
+    await expect(branchSelect).toBeEnabled()
 
     // Initially, only "main" should be listed
     const options = await branchSelect.locator('option').allTextContents()
@@ -329,7 +329,7 @@ test.describe('Worktree Validation', () => {
     await expect(async () => {
       const updatedOptions = await branchSelect.locator('option').allTextContents()
       expect(updatedOptions.some(o => o.includes('new-after-open'))).toBe(true)
-    }).toPass({ timeout: 10000 })
+    }).toPass()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -357,7 +357,7 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Select "Create new branch"
-    await expect(page.getByText('Create new branch')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new branch')).toBeVisible()
     await page.getByText('Create new branch').click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
@@ -401,7 +401,7 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Create new worktree')).toBeVisible()
     await page.getByText('Create new worktree').click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')

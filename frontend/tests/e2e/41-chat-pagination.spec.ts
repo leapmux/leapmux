@@ -154,7 +154,7 @@ test.describe('Chat Pagination & Scroll', () => {
     await agentTabs.first().click()
 
     // Wait for messages to load (tab content stays mounted across switches)
-    await expect(chatContainer).toContainText('First Agent Reply', { timeout: 15_000 })
+    await expect(chatContainer).toContainText('First Agent Reply')
   })
 
   test('should show thinking indicator while agent is processing', async ({ page, authenticatedWorkspace }) => {
@@ -163,7 +163,7 @@ test.describe('Chat Pagination & Scroll', () => {
     await sendMessage(page, 'Say hello.')
 
     // The thinking indicator should appear while the agent is processing
-    await expect(page.locator('[data-testid="thinking-indicator"]')).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('[data-testid="thinking-indicator"]')).toBeVisible()
 
     // Wait for the turn to complete
     await waitForTurnComplete(page)
@@ -236,7 +236,7 @@ test.describe('Chat Pagination & Scroll', () => {
     // Wait for the agent to start responding (thinking indicator or streaming).
     await expect(
       page.locator('[data-testid="thinking-indicator"], [data-testid="interrupt-button"]').first(),
-    ).toBeVisible({ timeout: 10_000 })
+    ).toBeVisible()
 
     // Switch to a new agent tab while the turn is still in progress.
     await page.locator('[data-testid^="new-agent-button"]').first().click()
@@ -294,6 +294,6 @@ test.describe('Chat Pagination & Scroll', () => {
 
     // The chat should show the previous messages
     const chatContainer = page.locator('[data-testid="chat-container"]')
-    await expect(chatContainer).toContainText('Message One', { timeout: 15_000 })
+    await expect(chatContainer).toContainText('Message One')
   })
 })

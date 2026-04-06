@@ -49,11 +49,11 @@ test.describe('Git File Status', () => {
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree to load.
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
       // Tab bar should be visible in a git repo.
       const tabBar = page.locator('[data-testid="files-filter-tab-bar"]')
-      await expect(tabBar).toBeVisible({ timeout: 15_000 })
+      await expect(tabBar).toBeVisible()
 
       // All 4 filter tabs should be present.
       await expect(page.locator('[data-testid="files-filter-all"]')).toBeVisible()
@@ -79,7 +79,7 @@ test.describe('Git File Status', () => {
       await waitForWorkspaceReady(page)
 
       // Wait for the file tree to load.
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
       // Tab bar should NOT be visible.
       await expect(page.locator('[data-testid="files-filter-tab-bar"]')).not.toBeVisible()
@@ -101,11 +101,11 @@ test.describe('Git File Status', () => {
       await waitForWorkspaceReady(page)
 
       // Wait for tree to load.
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
-      await expect(page.locator('[data-testid="files-filter-tab-bar"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
+      await expect(page.locator('[data-testid="files-filter-tab-bar"]')).toBeVisible()
 
       // "All" tab (default) should show all files including clean.txt.
-      await expect(page.getByText('clean.txt')).toBeVisible({ timeout: 10_000 })
+      await expect(page.getByText('clean.txt')).toBeVisible()
       await expect(page.getByText('file_a.txt')).toBeVisible()
       await expect(page.getByText('file_b.txt')).toBeVisible()
 
@@ -141,13 +141,13 @@ test.describe('Git File Status', () => {
       await page.goto(`/o/admin/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
       // Switch to Changed tab to see status indicators.
       await page.locator('[data-testid="files-filter-changed"]').click()
 
       // Status indicators should be visible.
-      await expect(page.locator('[data-testid="git-status-staged"]')).toBeVisible({ timeout: 10_000 })
+      await expect(page.locator('[data-testid="git-status-staged"]')).toBeVisible()
       await expect(page.locator('[data-testid="git-status-unstaged"]')).toBeVisible()
 
       // Diff stats badges should be visible.
@@ -169,11 +169,11 @@ test.describe('Git File Status', () => {
       await page.goto(`/o/admin/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
       // Switch to Changed tab and enable flat list for easier targeting.
       await page.locator('[data-testid="files-filter-changed"]').click()
-      await expect(page.getByText('untracked.txt')).toBeVisible({ timeout: 10_000 })
+      await expect(page.getByText('untracked.txt')).toBeVisible()
       await page.locator('[data-testid="files-flat-list-toggle"]').click()
       await expect(page.locator('[data-testid="files-flat-list"]')).toBeVisible()
 
@@ -203,11 +203,11 @@ test.describe('Git File Status', () => {
       await page.goto(`/o/admin/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
       // Switch to Changed tab.
       await page.locator('[data-testid="files-filter-changed"]').click()
-      await expect(page.getByText('file_a.txt')).toBeVisible({ timeout: 10_000 })
+      await expect(page.getByText('file_a.txt')).toBeVisible()
 
       // Click flat list toggle.
       await page.locator('[data-testid="files-flat-list-toggle"]').click()
@@ -239,10 +239,10 @@ test.describe('Git File Status', () => {
       await waitForWorkspaceReady(page)
 
       const rootNode = page.locator('[data-testid="tree-root-node"]')
-      await expect(rootNode).toBeVisible({ timeout: 15_000 })
+      await expect(rootNode).toBeVisible()
 
       // Verify children are visible (root is expanded by default).
-      await expect(page.getByText('package.json')).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('package.json')).toBeVisible()
 
       // Expand a subdirectory.
       await page.getByText('src').click()
@@ -268,7 +268,7 @@ test.describe('Git File Status', () => {
       await page.goto(`/o/admin/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
       // When an agent tab is active (default), locate button should not be visible.
       const locateButton = page.locator('[data-testid="files-locate-file"]')
@@ -289,15 +289,15 @@ test.describe('Git File Status', () => {
       await page.goto(`/o/admin/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
       // Switch to Changed tab and click a file.
       await page.locator('[data-testid="files-filter-changed"]').click()
-      await expect(page.getByText('file_b.txt')).toBeVisible({ timeout: 10_000 })
+      await expect(page.getByText('file_b.txt')).toBeVisible()
       await page.getByText('file_b.txt').click()
 
       // Diff mode toolbar should appear.
-      await expect(page.locator('[data-testid="diff-mode-toolbar"]')).toBeVisible({ timeout: 10_000 })
+      await expect(page.locator('[data-testid="diff-mode-toolbar"]')).toBeVisible()
 
       // Toolbar should have HEAD, Working, Unified, Split buttons.
       await expect(page.locator('[data-testid="diff-mode-head"]')).toBeVisible()
@@ -321,15 +321,15 @@ test.describe('Git File Status', () => {
       await page.goto(`/o/admin/workspace/${workspaceId}`)
       await waitForWorkspaceReady(page)
 
-      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
 
       // Switch to Staged tab and click file_a.
       await page.locator('[data-testid="files-filter-staged"]').click()
-      await expect(page.getByText('file_a.txt')).toBeVisible({ timeout: 10_000 })
+      await expect(page.getByText('file_a.txt')).toBeVisible()
       await page.getByText('file_a.txt').click()
 
       // File should open with diff toolbar showing unified as active.
-      await expect(page.locator('[data-testid="diff-mode-toolbar"]')).toBeVisible({ timeout: 10_000 })
+      await expect(page.locator('[data-testid="diff-mode-toolbar"]')).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

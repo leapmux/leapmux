@@ -6,7 +6,6 @@ import { expect, test } from './fixtures'
 function waitForMoveSection(page: import('@playwright/test').Page) {
   return page.waitForResponse(
     resp => resp.url().includes('SectionService/MoveSection') && resp.ok(),
-    { timeout: 10_000 },
   )
 }
 

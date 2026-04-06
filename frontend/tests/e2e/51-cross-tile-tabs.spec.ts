@@ -4,7 +4,7 @@ import { waitForLayoutSave } from './helpers/ui'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
-  await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor({ timeout: 10000 })
+  await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor()
 }
 
 /** Open a new terminal in a specific tile. */
@@ -245,7 +245,7 @@ test.describe('Cross-Tile Tabs', () => {
 
     // Reload
     await page.reload()
-    await page.locator('[data-testid="tile"]').first().waitFor({ timeout: 10000 })
+    await page.locator('[data-testid="tile"]').first().waitFor()
 
     // Should still have 2 tiles
     await expect(page.locator('[data-testid="tile"]')).toHaveCount(2)

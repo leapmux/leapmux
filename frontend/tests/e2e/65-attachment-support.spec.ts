@@ -137,7 +137,7 @@ test.describe('Attachment Support', () => {
 
     // A toast should have been shown in the DOM (output element with .toast-message).
     const toast = page.locator('output .toast-message')
-    await expect(toast).toContainText('binary', { timeout: 5000 })
+    await expect(toast).toContainText('binary')
   })
 
   test('attachment-only message (no text) can be sent', async ({ page, authenticatedWorkspace }) => {

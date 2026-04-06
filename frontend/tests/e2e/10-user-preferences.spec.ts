@@ -16,17 +16,16 @@ test.describe('User Preferences', () => {
     await expect(page.getByRole('button', { name: 'Use account default' }).first()).toBeVisible()
   })
 
-  test('should show profile fields in Account Defaults tab', async ({ page }) => {
+  test('should show appearance settings in Account Defaults tab', async ({ page }) => {
     await loginViaUI(page)
     await openPreferencesDialog(page)
 
     // Switch to Account Defaults tab
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
 
-    // Should show profile and password sections
-    await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Change Password' })).toBeVisible()
+    // Should show appearance and font settings
     await expect(page.getByRole('heading', { name: 'Theme', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Fonts' })).toBeVisible()
   })
 
   test('should persist theme preference after page reload', async ({ page }) => {

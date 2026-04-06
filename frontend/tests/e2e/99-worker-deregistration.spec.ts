@@ -213,14 +213,14 @@ test.describe('Worker Status Indicator', () => {
       await workersSection.locator('> [role="button"]').click()
 
     // Worker should initially be connected (green)
-    await expect(workersSection.locator('[data-status="connected"]')).toBeVisible({ timeout: 15_000 })
+    await expect(workersSection.locator('[data-status="connected"]')).toBeVisible()
 
     // Stop the worker
     await stopWorker()
     await waitForWorkerOffline(separateHubWorker.hubUrl, separateHubWorker.adminToken)
 
     // Status dot should change to disconnected (red)
-    await expect(workersSection.locator('[data-status="disconnected"]')).toBeVisible({ timeout: 15_000 })
+    await expect(workersSection.locator('[data-status="disconnected"]')).toBeVisible()
 
     // Restart the worker
     await restartWorker(separateHubWorker)
@@ -235,6 +235,6 @@ test.describe('Worker Status Indicator', () => {
       await refreshedSection.locator('> [role="button"]').click()
 
     // Status dot should change back to connected (green)
-    await expect(refreshedSection.locator('[data-status="connected"]')).toBeVisible({ timeout: 15_000 })
+    await expect(refreshedSection.locator('[data-status="connected"]')).toBeVisible()
   })
 })

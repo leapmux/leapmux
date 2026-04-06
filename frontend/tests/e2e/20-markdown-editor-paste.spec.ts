@@ -44,6 +44,8 @@ test.describe('Clipboard Copy/Paste', () => {
     // Capture clipboard text by intercepting DataTransfer.setData
     // during a copy triggered via execCommand.
     await page.keyboard.press('Meta+a')
+    // Wait for the selection to be established before copying.
+    await page.evaluate(() => new Promise(r => requestAnimationFrame(r)))
     const clipboardText = await page.evaluate(() => {
       let captured = ''
       const origSetData = DataTransfer.prototype.setData

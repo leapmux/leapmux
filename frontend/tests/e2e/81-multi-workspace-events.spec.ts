@@ -5,7 +5,7 @@ import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
-  await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor({ timeout: 10000 })
+  await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().waitFor()
 }
 
 /**
@@ -44,7 +44,7 @@ test.describe('Multi-Workspace Events', () => {
       await ws2Item.locator('svg').first().click()
 
       // ws1 active has 1 leaf (auto-expanded) + ws2 expanded has 1 leaf = 2
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
@@ -74,7 +74,7 @@ test.describe('Multi-Workspace Events', () => {
       await ws2Item.locator('svg').first().click()
 
       // ws1 active (1 leaf) + ws2 expanded (2 leaves) = 3
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3)
 
       // Switch to ws2 — should load with its 2 agent tabs
       await ws2Item.click()
@@ -121,7 +121,7 @@ test.describe('Multi-Workspace Events', () => {
 
       // After preloading, all 3 workspaces are expanded:
       // ws1 active (1 leaf) + ws2 (1 leaf) + ws3 (1 leaf) = 3
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3, { timeout: 5000 })
+      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})

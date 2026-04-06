@@ -96,9 +96,11 @@ class FetchChannelTransport implements ChannelTransport {
 
   createWebSocket(): WebSocket {
     const wsUrl = `${this.hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/channel`
-    // Session cookie is sent automatically by the WebSocket implementation
-    // via the Cookie header. We pass it as a custom header for Node.js WebSocket.
-    const ws = new WebSocket(wsUrl, ['channel-relay'])
+    // Bun/Node.js WebSocket doesn't send cookies automatically like browsers do.
+    // Pass the session cookie via the headers option so the server can authenticate.
+    const ws = new WebSocket(wsUrl, {
+      headers: { Cookie: this.cookie },
+    } as any)
     // @ts-expect-error -- Node.js WebSocket supports binaryType
     ws.binaryType = 'arraybuffer'
     return ws

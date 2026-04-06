@@ -76,7 +76,7 @@ test.describe('Editor Resize Handle', () => {
     await expect(async () => {
       const heightAfter = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       expect(heightAfter).toBeGreaterThan(heightBefore)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
   })
 
   test('should resize editor by dragging handle down after enlarging', async ({ page, authenticatedWorkspace }) => {
@@ -91,7 +91,7 @@ test.describe('Editor Resize Handle', () => {
     await expect(async () => {
       const heightAfterEnlarge = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       expect(heightAfterEnlarge).toBeGreaterThan(50)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
 
     const heightAfterEnlarge = await wrapper.evaluate(el => el.getBoundingClientRect().height)
 
@@ -101,7 +101,7 @@ test.describe('Editor Resize Handle', () => {
     await expect(async () => {
       const heightAfterShrink = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       expect(heightAfterShrink).toBeLessThan(heightAfterEnlarge)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
   })
 
   test('should not shrink below default minimum height', async ({ page, authenticatedWorkspace }) => {
@@ -149,7 +149,7 @@ test.describe('Editor Resize Handle', () => {
       expect(stored).not.toBeNull()
       storedVal = Number.parseInt(stored!, 10)
       expect(storedVal).toBeGreaterThan(38)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
 
     // Reload the page and wait for the workspace to re-render
     await page.waitForTimeout(500)
@@ -162,7 +162,7 @@ test.describe('Editor Resize Handle', () => {
     await expect(async () => {
       const heightAfterReload = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       expect(heightAfterReload).toBeGreaterThanOrEqual(storedVal)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
   })
 
   test('should reset height on double-click', async ({ page, authenticatedWorkspace }) => {
@@ -178,7 +178,7 @@ test.describe('Editor Resize Handle', () => {
     await expect(async () => {
       const heightEnlarged = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       expect(heightEnlarged).toBeGreaterThan(50)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
 
     // Double-click the resize handle to reset
     const handle = page.locator('[data-testid="editor-resize-handle"]')
@@ -188,7 +188,7 @@ test.describe('Editor Resize Handle', () => {
     await expect(async () => {
       const heightReset = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       expect(heightReset).toBeLessThanOrEqual(50)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
 
     // localStorage key should be removed
     const stored = await getStoredEditorHeight(page)
@@ -220,7 +220,7 @@ test.describe('Editor Resize Handle', () => {
       const heightAfterTyping = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       // Allow a small tolerance (±5px) for the constrained height
       expect(heightAfterTyping).toBeLessThanOrEqual(heightAfterResize + 5)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
 
     // The editor should be scrollable (content overflows)
     const isScrollable = await wrapper.evaluate(el => el.scrollHeight > el.clientHeight)
@@ -255,7 +255,7 @@ test.describe('Editor Resize Handle', () => {
       const h = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       expect(h).toBeGreaterThanOrEqual(35) // ~38px with tolerance
       expect(h).toBeLessThanOrEqual(50)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
 
     // Type some text into the editor.
     await editor.click()
@@ -274,7 +274,7 @@ test.describe('Editor Resize Handle', () => {
       const h = await wrapper.evaluate(el => el.getBoundingClientRect().height)
       // Should be at or near the natural default height (no override).
       expect(h).toBeLessThanOrEqual(defaultHeight + 5)
-    }).toPass({ timeout: 5000 })
+    }).toPass()
 
     // localStorage key should still be absent.
     const storedAfterClear = await getStoredEditorHeight(page)
