@@ -232,6 +232,28 @@ func TestManager_Resize_UnknownTerminal(t *testing.T) {
 	assert.Contains(t, err.Error(), "no terminal", "error should indicate unknown terminal")
 }
 
+func TestManager_Resize_SameDimensions(t *testing.T) {
+	m := NewManager()
+	err := m.StartTerminal(Options{
+		ID:         "tm-resize-noop",
+		Shell:      "/bin/sh",
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
+	}, func([]byte) {}, nil)
+	require.NoError(t, err)
+	defer m.StopAll()
+
+	// Resize to same dimensions should be a no-op (no spurious SIGWINCH).
+	assert.NoError(t, m.Resize("tm-resize-noop", 80, 24))
+
+	// Resize to different dimensions should succeed.
+	assert.NoError(t, m.Resize("tm-resize-noop", 120, 40))
+
+	// Resize to same (new) dimensions should be a no-op again.
+	assert.NoError(t, m.Resize("tm-resize-noop", 120, 40))
+}
+
 func TestManager_ScreenSnapshot(t *testing.T) {
 	m := NewManager()
 	var mu sync.Mutex

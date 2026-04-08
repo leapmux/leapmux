@@ -98,6 +98,7 @@ func (m *Manager) SendInput(terminalID string, data []byte) error {
 func (m *Manager) Resize(terminalID string, cols, rows uint16) error {
 	m.mu.RLock()
 	t, ok := m.terminals[terminalID]
+	meta := m.meta[terminalID]
 	m.mu.RUnlock()
 
 	if !ok {
@@ -105,6 +106,13 @@ func (m *Manager) Resize(terminalID string, cols, rows uint16) error {
 	}
 	if t.IsExited() {
 		return fmt.Errorf("terminal exited: %s", terminalID)
+	}
+
+	// Skip if dimensions haven't changed to avoid a spurious SIGWINCH
+	// that causes shells (e.g. zsh with starship) to redraw the prompt,
+	// leaving the old prompt visible on screen.
+	if meta.Cols == uint32(cols) && meta.Rows == uint32(rows) {
+		return nil
 	}
 
 	if err := t.Resize(cols, rows); err != nil {
