@@ -21,6 +21,11 @@ type openCodeRecordedRequest struct {
 
 func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []openCodeRecordedRequest) {
 	t.Helper()
+	return newOpenCodeAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+}
+
+func newOpenCodeAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*OpenCodeAgent, func() []openCodeRecordedRequest) {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -62,7 +67,11 @@ func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []openCodeReco
 			requests = append(requests, openCodeRecordedRequest{Method: req.Method, Params: req.Params})
 			mu.Unlock()
 			if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-				ch.(chan json.RawMessage) <- json.RawMessage(`{}`)
+				body := json.RawMessage(`{}`)
+				if respond != nil {
+					body = respond(req.Method)
+				}
+				ch.(chan json.RawMessage) <- body
 			}
 		}
 	}()
@@ -185,6 +194,35 @@ func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	if len(recorded) != 1 || recorded[0].Method != "session/set_mode" {
 		t.Fatalf("expected one session/set_mode request, got %#v", recorded)
 	}
+}
+
+func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
+	agent, requests := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionNew {
+			return json.RawMessage(`{"sessionId":"session-2"}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.model = "openai/gpt-5"
+	agent.currentPrimaryAgent = OpenCodePrimaryAgentPlan
+	agent.availablePrimaryAgents = []*leapmuxv1.AvailableOption{
+		{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},
+		{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
+	}
+	agent.sink = &testSink{}
+
+	sessionID, ok := agent.ClearContext()
+	require.True(t, ok)
+	assert.Equal(t, "session-2", sessionID)
+	assert.Equal(t, "session-2", agent.sessionID)
+
+	recorded := requests()
+	require.Len(t, recorded, 3)
+	assert.Equal(t, acpMethodSessionNew, recorded[0].Method)
+	assert.Equal(t, acpMethodSessionSetModel, recorded[1].Method)
+	assert.Equal(t, "openai/gpt-5", recorded[1].Params["modelId"])
+	assert.Equal(t, acpMethodSessionSetMode, recorded[2].Method)
+	assert.Equal(t, OpenCodePrimaryAgentPlan, recorded[2].Params["modeId"])
 }
 
 func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {

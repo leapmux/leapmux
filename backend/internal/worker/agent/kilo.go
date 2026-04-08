@@ -89,6 +89,12 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 		a.Stop()
 		_ = a.Wait()
 	}
+	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
+		if err := a.setModel(requested); err != nil {
+			cleanup()
+			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
+		}
+	}
 	var requestedPrimaryAgent string
 	if opts.ExtraSettings != nil {
 		requestedPrimaryAgent = opts.ExtraSettings[OpenCodeExtraPrimaryAgent]
@@ -173,6 +179,28 @@ func (a *KiloAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		}
 	}
 	return true
+}
+
+func (a *KiloAgent) ClearContext() (string, bool) {
+	sessionID, ok := a.clearSession()
+	if !ok {
+		return "", false
+	}
+	a.mu.Lock()
+	model := a.model
+	primaryAgent := a.currentPrimaryAgent
+	a.mu.Unlock()
+	if model != "" {
+		if err := a.setModel(model); err != nil {
+			slog.Warn("kilo ClearContext: failed to re-apply model", "agent_id", a.agentID, "error", err)
+		}
+	}
+	if primaryAgent != "" {
+		if err := a.setPrimaryAgent(primaryAgent); err != nil {
+			slog.Warn("kilo ClearContext: failed to re-apply primary agent", "agent_id", a.agentID, "error", err)
+		}
+	}
+	return sessionID, true
 }
 
 func (a *KiloAgent) setPrimaryAgent(agent string) error {

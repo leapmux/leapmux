@@ -99,10 +99,19 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		a.permissionMode = GeminiCLIModeDefault
 	}
 
+	cleanup := func() {
+		a.Stop()
+		_ = a.Wait()
+	}
+	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
+		if err := a.setModel(requested); err != nil {
+			cleanup()
+			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
+		}
+	}
 	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
 		if err := a.setPermissionMode(requested); err != nil {
-			a.Stop()
-			_ = a.Wait()
+			cleanup()
 			return nil, a.formatStartupError("session/set_mode", err)
 		}
 	}
@@ -216,6 +225,28 @@ func (a *GeminiCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		}
 	}
 	return true
+}
+
+func (a *GeminiCLIAgent) ClearContext() (string, bool) {
+	sessionID, ok := a.clearSession()
+	if !ok {
+		return "", false
+	}
+	a.mu.Lock()
+	model := a.model
+	mode := a.permissionMode
+	a.mu.Unlock()
+	if model != "" {
+		if err := a.setModel(model); err != nil {
+			slog.Warn("gemini ClearContext: failed to re-apply model", "agent_id", a.agentID, "error", err)
+		}
+	}
+	if mode != "" {
+		if err := a.setPermissionMode(mode); err != nil {
+			slog.Warn("gemini ClearContext: failed to re-apply mode", "agent_id", a.agentID, "error", err)
+		}
+	}
+	return sessionID, true
 }
 
 func (a *GeminiCLIAgent) setPermissionMode(mode string) error {

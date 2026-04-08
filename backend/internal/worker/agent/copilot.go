@@ -167,6 +167,28 @@ func (a *CopilotCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	return true
 }
 
+func (a *CopilotCLIAgent) ClearContext() (string, bool) {
+	sessionID, ok := a.clearSession()
+	if !ok {
+		return "", false
+	}
+	a.mu.Lock()
+	model := a.model
+	mode := a.permissionMode
+	a.mu.Unlock()
+	if model != "" {
+		if err := a.setModel(model); err != nil {
+			slog.Warn("copilot ClearContext: failed to re-apply model", "agent_id", a.agentID, "error", err)
+		}
+	}
+	if mode != "" {
+		if err := a.setPermissionMode(mode); err != nil {
+			slog.Warn("copilot ClearContext: failed to re-apply mode", "agent_id", a.agentID, "error", err)
+		}
+	}
+	return sessionID, true
+}
+
 func (a *CopilotCLIAgent) setPermissionMode(mode string) error {
 	a.mu.Lock()
 	available := a.availableModes

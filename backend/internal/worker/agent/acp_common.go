@@ -178,9 +178,11 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	}
 }
 
-// ClearContext sends a session/new request on the running ACP process,
-// replacing the current session with a fresh one.
-func (b *acpBase) ClearContext() (string, bool) {
+// clearSession sends a session/new request on the running ACP process,
+// replacing the current session with a fresh one and re-applying the
+// current model. Concrete providers should override ClearContext() to
+// call this and then re-apply their own settings (e.g. permission mode).
+func (b *acpBase) clearSession() (string, bool) {
 	_, params := buildACPSessionRequest("", b.workingDir, acpMethodSessionNew, "")
 	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
 	if err != nil {
