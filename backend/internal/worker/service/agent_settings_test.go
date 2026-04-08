@@ -487,3 +487,44 @@ func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) 
 	assert.Equal(t, "Default", change["oldLabel"])
 	assert.Equal(t, "YOLO", change["newLabel"])
 }
+
+func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	require.NoError(t, svc.Queries.SetAgentPermissionMode(ctx, db.SetAgentPermissionModeParams{
+		PermissionMode: "default",
+		ID:             "agent-1",
+	}))
+
+	// Register a mock agent so HasAgent returns true.
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:    "agent-1",
+		WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent("agent-1")
+
+	// Send set_permission_mode via SendAgentRawMessage while the agent
+	// is running. The DB should be updated eagerly, even if the agent
+	// doesn't echo the mode back in its control_response.
+	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: "agent-1",
+		Content: `{"type":"control_request","request_id":"r1","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"}}`,
+	}, w)
+
+	require.Empty(t, w.errors)
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, "bypassPermissions", dbAgent.PermissionMode,
+		"permission mode should be persisted to DB when set_permission_mode is sent while agent is running")
+}

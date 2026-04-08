@@ -1200,6 +1200,15 @@ func (svc *Context) handleControlRequestMessage(agentID, content string) {
 		}
 	}
 
+	// Persist set_permission_mode to the DB eagerly so that /clear
+	// (which reads the DB) always sees the latest mode. Some providers
+	// (e.g. Claude Code) don't echo the mode back in their
+	// control_response, so relying on the output handler alone would
+	// leave the DB stale.
+	if mode, ok := parseSetPermissionMode(content); ok {
+		svc.setAgentPermissionMode(agentID, mode)
+	}
+
 	// Send as raw input to the agent's stdin.
 	if err := svc.Agents.SendRawInput(agentID, []byte(content)); err != nil {
 		slog.Error("failed to send control request to agent", "agent_id", agentID, "error", err)
