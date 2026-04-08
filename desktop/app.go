@@ -98,6 +98,12 @@ func (a *App) domReady(_ context.Context) {
 		if (e.key === 'F12') {
 			if (__post) __post('%s');
 		}
+		if (e.key === 'F5') {
+			e.preventDefault();
+		}
+		if ((e.key === 'r' || e.key === 'R') && (e.ctrlKey || e.metaKey)) {
+			e.preventDefault();
+		}
 		if (e.key === 'q' && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
 			if (__post) __post('Q');
