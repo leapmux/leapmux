@@ -12,7 +12,6 @@ import (
 )
 
 const (
-	OpenCodeExtraPrimaryAgent = OptionGroupKeyPrimaryAgent
 	OpenCodePrimaryAgentBuild = "build"
 	OpenCodePrimaryAgentPlan  = "plan"
 	openCodeHiddenCompaction  = "compaction"
@@ -107,7 +106,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 	}
 	var requestedPrimaryAgent string
 	if opts.ExtraSettings != nil {
-		requestedPrimaryAgent = opts.ExtraSettings[OpenCodeExtraPrimaryAgent]
+		requestedPrimaryAgent = opts.ExtraSettings[OptionGroupKeyPrimaryAgent]
 	}
 	if err := a.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, requestedPrimaryAgent); err != nil {
 		cleanup()
@@ -251,7 +250,7 @@ func init() {
 		},
 		nil, // models discovered dynamically from newSession
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   OpenCodeExtraPrimaryAgent,
+			Key:   OptionGroupKeyPrimaryAgent,
 			Label: "Primary Agent",
 			Options: []*leapmuxv1.AvailableOption{
 				{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},

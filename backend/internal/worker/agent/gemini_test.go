@@ -135,15 +135,15 @@ func TestHelperProcessGeminiCLI(t *testing.T) {
 		}
 
 		switch req.Method {
-		case "initialize":
+		case acpMethodInitialize:
 			writeResponse(req.ID, `{}`, false)
-		case "session/new":
+		case acpMethodSessionNew:
 			writeResponse(req.ID, `{"sessionId":"session-new","models":{"currentModelId":"gemini-2.5-pro","availableModels":[{"modelId":"auto","name":"Auto","description":"Automatic"},{"modelId":"gemini-2.5-pro","name":"Gemini 2.5 Pro","description":"Detailed"}]},"modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}`, false)
-		case "session/load":
+		case acpMethodSessionLoad:
 			if scenario == "load" {
 				writeResponse(req.ID, `{"models":{"currentModelId":"gemini-2.5-flash","availableModels":[{"modelId":"auto","name":"Auto"},{"modelId":"gemini-2.5-flash","name":"Gemini 2.5 Flash"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}`, false)
 			}
-		case "session/set_mode", "session/set_model", "session/prompt":
+		case acpMethodSessionSetMode, acpMethodSessionSetModel, acpMethodSessionPrompt:
 			writeResponse(req.ID, `{}`, false)
 		}
 	}
@@ -264,9 +264,9 @@ func TestGeminiUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 
 	recorded := requests()
 	require.Len(t, recorded, 2)
-	assert.Equal(t, "session/set_model", recorded[0].Method)
+	assert.Equal(t, acpMethodSessionSetModel, recorded[0].Method)
 	assert.Equal(t, "gemini-2.5-flash", recorded[0].Params["modelId"])
-	assert.Equal(t, "session/set_mode", recorded[1].Method)
+	assert.Equal(t, acpMethodSessionSetMode, recorded[1].Method)
 	assert.Equal(t, GeminiCLIModePlan, recorded[1].Params["modeId"])
 }
 

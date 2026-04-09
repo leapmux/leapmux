@@ -218,9 +218,9 @@ func TestCursorUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 
 	recorded := requests()
 	require.Len(t, recorded, 2)
-	assert.Equal(t, "session/set_model", recorded[0].Method)
+	assert.Equal(t, acpMethodSessionSetModel, recorded[0].Method)
 	assert.Equal(t, cursorCLIModelAutoWire, recorded[0].Params["modelId"])
-	assert.Equal(t, "session/set_mode", recorded[1].Method)
+	assert.Equal(t, acpMethodSessionSetMode, recorded[1].Method)
 	assert.Equal(t, CursorCLIModePlan, recorded[1].Params["modeId"])
 }
 

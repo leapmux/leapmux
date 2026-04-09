@@ -138,8 +138,8 @@ func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 	if len(recorded) != 1 {
 		t.Fatalf("expected 1 request, got %d", len(recorded))
 	}
-	if recorded[0].Method != "session/set_mode" {
-		t.Fatalf("expected session/set_mode, got %q", recorded[0].Method)
+	if recorded[0].Method != acpMethodSessionSetMode {
+		t.Fatalf("expected %s, got %q", acpMethodSessionSetMode, recorded[0].Method)
 	}
 	if got := recorded[0].Params["modeId"]; got != OpenCodePrimaryAgentPlan {
 		t.Fatalf("expected modeId %q, got %#v", OpenCodePrimaryAgentPlan, got)
@@ -182,8 +182,8 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 		t.Fatalf("expected current primary agent %q, got %q", OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	}
 	recorded := requests()
-	if len(recorded) != 1 || recorded[0].Method != "session/set_mode" {
-		t.Fatalf("expected one session/set_mode request, got %#v", recorded)
+	if len(recorded) != 1 || recorded[0].Method != acpMethodSessionSetMode {
+		t.Fatalf("expected one %s request, got %#v", acpMethodSessionSetMode, recorded)
 	}
 }
 
