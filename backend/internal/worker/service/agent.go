@@ -1312,6 +1312,9 @@ func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode st
 	agentID := dbAgent.ID
 	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	oldMode := extras[agent.CodexExtraCollaborationMode]
+	if oldMode == mode {
+		return dbAgent
+	}
 	extras[agent.CodexExtraCollaborationMode] = mode
 	newExtraSettings := marshalExtraSettings(extras)
 	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
@@ -1332,18 +1335,16 @@ func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode st
 
 	svc.broadcastSettingsStatusChange(dbAgent, extras)
 
-	if oldMode != mode {
-		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": "settings_changed",
-			"changes": map[string]interface{}{
-				agent.CodexExtraCollaborationMode: map[string]string{
-					"old": oldMode, "new": mode,
-					"label":    svc.optionGroupLabel(agentID, agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
-					"oldLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
-				},
+	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type": "settings_changed",
+		"changes": map[string]interface{}{
+			agent.CodexExtraCollaborationMode: map[string]string{
+				"old": oldMode, "new": mode,
+				"label":    svc.optionGroupLabel(agentID, agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
+				"oldLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
 			},
-		})
-	}
+		},
+	})
 
 	return dbAgent
 }
