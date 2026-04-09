@@ -188,7 +188,7 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 }
 
 func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
-	agent := &KiloAgent{acpBase: acpBase{model: "openai/gpt-5"}, currentPrimaryAgent: OpenCodePrimaryAgentPlan}
+	agent := &KiloAgent{acpBase: acpBase{model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
 	settings := agent.CurrentSettings()
 	if settings.GetModel() != "openai/gpt-5" {
 		t.Fatalf("expected model to round-trip")

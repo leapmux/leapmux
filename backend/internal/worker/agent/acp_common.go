@@ -71,19 +71,21 @@ type jsonrpcBase struct {
 // agents (GeminiCLIAgent, OpenCodeAgent, CopilotCLIAgent) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
-	sink               OutputSink
-	providerName       string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
-	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
-	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
-	reapplySettings    func()                  // called by ClearContext after session/new to re-apply model, mode, etc.
-	sessionID          string
-	workingDir         string
-	model              string
-	permissionMode     string
-	availableModels    []*leapmuxv1.AvailableModel
-	availableModes     []*leapmuxv1.AvailableOption
-	turnAssistantText  strings.Builder
-	turnThinkingText   strings.Builder
+	sink                   OutputSink
+	providerName           string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
+	extraSessionUpdate     acpSessionUpdateHandler // optional provider-specific session update handler
+	extraMethod            acpMethodHandler        // optional provider-specific request/notification handler
+	reapplySettings        func()                  // called by ClearContext after session/new to re-apply model, mode, etc.
+	sessionID              string
+	workingDir             string
+	model                  string
+	permissionMode         string
+	currentPrimaryAgent    string
+	availableModels        []*leapmuxv1.AvailableModel
+	availableModes         []*leapmuxv1.AvailableOption
+	availablePrimaryAgents []*leapmuxv1.AvailableOption
+	turnAssistantText      strings.Builder
+	turnThinkingText       strings.Builder
 }
 
 // handleACPPromptResponse extracts accumulated turn text, calls the optional
@@ -220,8 +222,7 @@ func (b *acpBase) ClearContext() (string, bool) {
 }
 
 // reapplyModelAndPermissionMode re-applies the current model and permission
-// mode after a session/new. Used as the default reapplySettings callback by
-// agents that track permission mode (Copilot, Gemini, Goose).
+// mode after a session/new.
 func (b *acpBase) reapplyModelAndPermissionMode() {
 	b.mu.Lock()
 	model, mode := b.model, b.permissionMode
@@ -265,6 +266,33 @@ func (b *acpBase) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		acpApplySetting(b.providerName, b.agentID, "mode", s.GetPermissionMode(), b.setPermissionMode)
 }
 
+// setPrimaryAgent sends a session/set_mode RPC for a primary-agent value
+// and updates the local field. Used by agents that track primaryAgent
+// instead of permissionMode (Kilo, OpenCode).
+func (b *acpBase) setPrimaryAgent(agent string) error {
+	b.mu.Lock()
+	available := b.availablePrimaryAgents
+	b.mu.Unlock()
+
+	if err := b.acpSetMode(agent, available); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.currentPrimaryAgent = agent
+	b.mu.Unlock()
+	return nil
+}
+
+// reapplyModelAndPrimaryAgent re-applies the current model and primary
+// agent after a session/new.
+func (b *acpBase) reapplyModelAndPrimaryAgent() {
+	b.mu.Lock()
+	model, primaryAgent := b.model, b.currentPrimaryAgent
+	b.mu.Unlock()
+	acpApplySetting(b.providerName, b.agentID, "model", model, b.setModel)
+	acpApplySetting(b.providerName, b.agentID, "primary agent", primaryAgent, b.setPrimaryAgent)
+}
+
 // acpApplySetting applies a single setting, logging a warning and returning
 // false on failure. Skips empty values.
 func acpApplySetting(providerName, agentID, name, value string, apply func(string) error) bool {
@@ -272,7 +300,7 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 		return true
 	}
 	if err := apply(value); err != nil {
-		slog.Warn("failed to apply "+name, "provider", providerName, "agent_id", agentID, "error", err)
+		slog.Warn("failed to apply setting", "setting", name, "provider", providerName, "agent_id", agentID, "error", err)
 		return false
 	}
 	return true

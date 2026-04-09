@@ -14,9 +14,6 @@ const KiloPrimaryAgentCode = "code"
 // KiloAgent manages a single Kilo ACP process.
 type KiloAgent struct {
 	acpBase
-
-	currentPrimaryAgent    string
-	availablePrimaryAgents []*leapmuxv1.AvailableOption
 }
 
 // StartKilo starts a Kilo ACP agent process and performs the handshake.
@@ -168,30 +165,6 @@ func (a *KiloAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 func (a *KiloAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	return acpApplySetting(a.providerName, a.agentID, "model", s.GetModel(), a.setModel) &&
 		acpApplySetting(a.providerName, a.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], a.setPrimaryAgent)
-}
-
-func (a *KiloAgent) setPrimaryAgent(agent string) error {
-	a.mu.Lock()
-	available := a.availablePrimaryAgents
-	a.mu.Unlock()
-
-	if err := a.acpSetMode(agent, available); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.currentPrimaryAgent = agent
-	a.mu.Unlock()
-	return nil
-}
-
-// reapplyModelAndPrimaryAgent re-applies the current model and primary
-// agent after a session/new.
-func (a *KiloAgent) reapplyModelAndPrimaryAgent() {
-	a.mu.Lock()
-	model, primaryAgent := a.model, a.currentPrimaryAgent
-	a.mu.Unlock()
-	acpApplySetting(a.providerName, a.agentID, "model", model, a.setModel)
-	acpApplySetting(a.providerName, a.agentID, "primary agent", primaryAgent, a.setPrimaryAgent)
 }
 
 func (a *KiloAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGroup {

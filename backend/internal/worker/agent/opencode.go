@@ -27,9 +27,6 @@ const (
 // OpenCodeAgent manages a single OpenCode ACP process.
 type OpenCodeAgent struct {
 	acpBase
-
-	currentPrimaryAgent    string
-	availablePrimaryAgents []*leapmuxv1.AvailableOption
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
@@ -257,30 +254,6 @@ func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGrou
 func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	return acpApplySetting(a.providerName, a.agentID, "model", s.GetModel(), a.setModel) &&
 		acpApplySetting(a.providerName, a.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], a.setPrimaryAgent)
-}
-
-func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {
-	a.mu.Lock()
-	available := a.availablePrimaryAgents
-	a.mu.Unlock()
-
-	if err := a.acpSetMode(agent, available); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.currentPrimaryAgent = agent
-	a.mu.Unlock()
-	return nil
-}
-
-// reapplyModelAndPrimaryAgent re-applies the current model and primary
-// agent after a session/new.
-func (a *OpenCodeAgent) reapplyModelAndPrimaryAgent() {
-	a.mu.Lock()
-	model, primaryAgent := a.model, a.currentPrimaryAgent
-	a.mu.Unlock()
-	acpApplySetting(a.providerName, a.agentID, "model", model, a.setModel)
-	acpApplySetting(a.providerName, a.agentID, "primary agent", primaryAgent, a.setPrimaryAgent)
 }
 
 func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGroup {

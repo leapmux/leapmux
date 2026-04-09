@@ -1282,7 +1282,7 @@ func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 
 	svc.broadcastSettingsStatusChange(dbAgent, nil)
 
-	if oldMode != "" && oldMode != mode {
+	if oldMode != "" {
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": "settings_changed",
 			"changes": map[string]interface{}{
@@ -1954,6 +1954,9 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 // parseSetPermissionMode checks if a control_request is a set_permission_mode
 // request and returns the requested mode. Returns ("", false) if not a match.
 func parseSetPermissionMode(content string) (string, bool) {
+	if !strings.Contains(content, "set_permission_mode") {
+		return "", false
+	}
 	var msg struct {
 		Request struct {
 			Subtype string `json:"subtype"`
