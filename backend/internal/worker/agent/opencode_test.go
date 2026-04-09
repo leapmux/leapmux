@@ -210,13 +210,7 @@ func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
 		{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
 	}
 	agent.sink = &testSink{}
-	agent.reapplySettings = func() {
-		agent.mu.Lock()
-		model, primaryAgent := agent.model, agent.currentPrimaryAgent
-		agent.mu.Unlock()
-		acpApplySetting(agent.providerName, agent.agentID, "model", model, agent.setModel)
-		acpApplySetting(agent.providerName, agent.agentID, "primary agent", primaryAgent, agent.setPrimaryAgent)
-	}
+	agent.reapplySettings = agent.reapplyModelAndPrimaryAgent
 
 	sessionID, ok := agent.ClearContext()
 	require.True(t, ok)

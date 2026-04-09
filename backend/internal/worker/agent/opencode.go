@@ -72,13 +72,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		},
 	}
 	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = func() {
-		a.mu.Lock()
-		model, primaryAgent := a.model, a.currentPrimaryAgent
-		a.mu.Unlock()
-		acpApplySetting(a.providerName, a.agentID, "model", model, a.setModel)
-		acpApplySetting(a.providerName, a.agentID, "primary agent", primaryAgent, a.setPrimaryAgent)
-	}
+	a.reapplySettings = a.reapplyModelAndPrimaryAgent
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -277,6 +271,16 @@ func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {
 	a.currentPrimaryAgent = agent
 	a.mu.Unlock()
 	return nil
+}
+
+// reapplyModelAndPrimaryAgent re-applies the current model and primary
+// agent after a session/new.
+func (a *OpenCodeAgent) reapplyModelAndPrimaryAgent() {
+	a.mu.Lock()
+	model, primaryAgent := a.model, a.currentPrimaryAgent
+	a.mu.Unlock()
+	acpApplySetting(a.providerName, a.agentID, "model", model, a.setModel)
+	acpApplySetting(a.providerName, a.agentID, "primary agent", primaryAgent, a.setPrimaryAgent)
 }
 
 func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGroup {

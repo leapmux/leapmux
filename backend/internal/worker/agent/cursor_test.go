@@ -238,13 +238,7 @@ func TestCursorClearContextReappliesModelAndMode(t *testing.T) {
 		{Id: CursorCLIModePlan, Name: "Plan"},
 	}
 	agent.sink = &testSink{}
-	agent.reapplySettings = func() {
-		agent.mu.Lock()
-		model, mode := agent.model, agent.permissionMode
-		agent.mu.Unlock()
-		acpApplySetting(agent.providerName, agent.agentID, "model", model, agent.setCursorModel)
-		acpApplySetting(agent.providerName, agent.agentID, "mode", mode, agent.setPermissionMode)
-	}
+	agent.reapplySettings = agent.reapplyModelAndMode
 
 	sessionID, ok := agent.ClearContext()
 	require.True(t, ok)
