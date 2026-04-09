@@ -2,7 +2,6 @@ package service_test
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,31 +15,26 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
-func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries, *sql.DB) {
+func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-
-	err = db.Migrate(sqlDB)
-	require.NoError(t, err)
-
-	q := gendb.New(sqlDB)
+	st := hubtestutil.OpenTestStore(t)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(q, false, false, false)
+	interceptor, sc := auth.NewInterceptor(st, false, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, cfg, sc, nil)
+	authSvc := service.NewAuthService(st, cfg, sc, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -48,20 +42,19 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return client, q, sqlDB
+	return client, st
 }
 
 // setupEmptyAuthTestServer creates a test auth server with an empty database
 // (no users). Used for testing the initial setup flow.
-func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
-	client, q, _ := setupAuthTestServerBase(t, cfg)
-	return client, q
+func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
+	return setupAuthTestServerBase(t, cfg)
 }
 
-func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
-	client, q, sqlDB := setupAuthTestServerBase(t, cfg)
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
-	return client, q
+func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
+	client, st := setupAuthTestServerBase(t, cfg)
+	hubtestutil.CreateTestAdmin(t, st)
+	return client, st
 }
 
 func TestAuthService_LoginSuccess(t *testing.T) {
@@ -195,7 +188,7 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 }
 
 func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
-	client, q := setupAuthTestServer(t, testConfig())
+	client, st := setupAuthTestServer(t, testConfig())
 
 	// Login to get a token.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -207,9 +200,9 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	userSvc := service.NewUserService(q, testConfig(), nil)
+	userSvc := service.NewUserService(st, testConfig(), nil)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -228,23 +221,23 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 }
 
 func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
-	client, q := setupAuthTestServer(t, testConfigWithSignup())
+	client, st := setupAuthTestServer(t, testConfigWithSignup())
 
 	// Create a user with that email directly in the DB.
 	orgID := id.Generate()
-	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "emailuser"})
+	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "emailuser"})
 	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
-	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           id.Generate(),
 		OrgID:        orgID,
 		Username:     "emailuser",
 		PasswordHash: hash,
 		DisplayName:  "Email User",
 		Email:        "taken@example.com",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	require.NoError(t, err)
 
@@ -260,101 +253,95 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 }
 
 func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
-	_, q := setupAuthTestServer(t, testConfigWithSignup())
+	_, st := setupAuthTestServer(t, testConfigWithSignup())
 	ctx := context.Background()
 
 	// Create two users, both with pending_email = "shared@example.com".
 	for _, username := range []string{"user-a", "user-b"} {
 		orgID := id.Generate()
-		err := q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: username + "-org"})
+		err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: username + "-org"})
 		require.NoError(t, err)
 		hash, err := password.Hash("testpass")
 		require.NoError(t, err)
 		userID := id.Generate()
-		err = q.CreateUser(ctx, gendb.CreateUserParams{
+		err = st.Users().Create(ctx, store.CreateUserParams{
 			ID:           userID,
 			OrgID:        orgID,
 			Username:     username,
 			PasswordHash: hash,
 			DisplayName:  username,
 			Email:        "",
-			PasswordSet:  1,
-			IsAdmin:      0,
+			PasswordSet:  true,
+			IsAdmin:      false,
 		})
 		require.NoError(t, err)
-		err = q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
-			PendingEmail:      "shared@example.com",
-			PendingEmailToken: id.Generate(),
-			PendingEmailExpiresAt: sql.NullTime{
-				Time:  time.Now().Add(24 * time.Hour).UTC(),
-				Valid: true,
-			},
-			ID: userID,
+		err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			PendingEmail:          "shared@example.com",
+			PendingEmailToken:     id.Generate(),
+			PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
+			ID:                    userID,
 		})
 		require.NoError(t, err)
 	}
 
 	// Verify both have pending_email set.
-	userA, err := q.GetUserByUsername(ctx, "user-a")
+	userA, err := st.Users().GetByUsername(ctx, "user-a")
 	require.NoError(t, err)
 	assert.Equal(t, "shared@example.com", userA.PendingEmail)
-	userB, err := q.GetUserByUsername(ctx, "user-b")
+	userB, err := st.Users().GetByUsername(ctx, "user-b")
 	require.NoError(t, err)
 	assert.Equal(t, "shared@example.com", userB.PendingEmail)
 
 	// User A promotes — this should also clear user B's pending_email.
-	err = q.PromotePendingEmail(ctx, userA.ID)
+	err = st.Users().PromotePendingEmail(ctx, userA.ID)
 	require.NoError(t, err)
-	err = q.ClearCompetingPendingEmails(ctx, gendb.ClearCompetingPendingEmailsParams{
+	err = st.Users().ClearCompetingPendingEmails(ctx, store.ClearCompetingPendingEmailsParams{
 		PendingEmail: "shared@example.com",
-		ID:           userA.ID,
+		ExcludeID:    userA.ID,
 	})
 	require.NoError(t, err)
 
 	// User A now has verified email.
-	userA, err = q.GetUserByUsername(ctx, "user-a")
+	userA, err = st.Users().GetByUsername(ctx, "user-a")
 	require.NoError(t, err)
 	assert.Equal(t, "shared@example.com", userA.Email)
-	assert.Equal(t, int64(1), userA.EmailVerified)
+	assert.True(t, userA.EmailVerified)
 	assert.Empty(t, userA.PendingEmail)
 
 	// User B's pending_email should be cleared.
-	userB, err = q.GetUserByUsername(ctx, "user-b")
+	userB, err = st.Users().GetByUsername(ctx, "user-b")
 	require.NoError(t, err)
 	assert.Empty(t, userB.PendingEmail)
 	assert.Empty(t, userB.Email)
 }
 
 func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
-	client, q := setupAuthTestServer(t, testConfigWithSignup())
+	client, st := setupAuthTestServer(t, testConfigWithSignup())
 	ctx := context.Background()
 
 	// User A sets pending_email = "race@example.com" (unverified).
 	orgID := id.Generate()
-	err := q.CreateOrg(ctx, gendb.CreateOrgParams{ID: orgID, Name: "racer-org"})
+	err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "racer-org"})
 	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	userAID := id.Generate()
-	err = q.CreateUser(ctx, gendb.CreateUserParams{
+	err = st.Users().Create(ctx, store.CreateUserParams{
 		ID:           userAID,
 		OrgID:        orgID,
 		Username:     "racer",
 		PasswordHash: hash,
 		DisplayName:  "Racer",
 		Email:        "",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	require.NoError(t, err)
-	err = q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
-		PendingEmail:      "race@example.com",
-		PendingEmailToken: id.Generate(),
-		PendingEmailExpiresAt: sql.NullTime{
-			Time:  time.Now().Add(24 * time.Hour).UTC(),
-			Valid: true,
-		},
-		ID: userAID,
+	err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		PendingEmail:          "race@example.com",
+		PendingEmailToken:     id.Generate(),
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
+		ID:                    userAID,
 	})
 	require.NoError(t, err)
 
@@ -368,7 +355,7 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	require.NoError(t, err)
 
 	// User A's pending_email should be cleared.
-	userA, err := q.GetUserByUsername(ctx, "racer")
+	userA, err := st.Users().GetByUsername(ctx, "racer")
 	require.NoError(t, err)
 	assert.Empty(t, userA.PendingEmail, "competing pending_email should be cleared when another user claims the email directly")
 }
@@ -402,35 +389,32 @@ func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired bool) (
 	leapmuxv1connect.UserServiceClient,
 	leapmuxv1connect.AuthServiceClient,
-	*gendb.Queries,
-	*sql.DB,
+	store.Store,
 ) {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	q := gendb.New(sqlDB)
-
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false, emailVerificationRequired)
+	interceptor, _ := auth.NewInterceptor(st, false, false, emailVerificationRequired)
 	opts := connect.WithInterceptors(interceptor)
 
 	cfg := testConfig()
 	cfg.SignupEnabled = true
 	cfg.EmailVerificationRequired = emailVerificationRequired
 
-	userSvc := service.NewUserService(q, cfg, nil)
+	userSvc := service.NewUserService(st, cfg, nil)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	authSvc := service.NewAuthService(sqlDB, q, cfg, nil, nil)
+	authSvc := service.NewAuthService(st, cfg, nil, nil)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -439,30 +423,30 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 
 	userClient := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
 	authClient := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return userClient, authClient, q, sqlDB
+	return userClient, authClient, st
 }
 
 func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
-	userClient, _, q, _ := setupVerificationGatingTestServer(t, true)
+	userClient, _, st := setupVerificationGatingTestServer(t, true)
 
 	// Create a user with email_verified=0 directly via DB.
 	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "unverified"})
-	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "unverified"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "unverified",
 		PasswordHash: hash,
 		DisplayName:  "Unverified User",
 		Email:        "unverified@example.com",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	// email_verified defaults to 0 in the DB.
 
-	token, _, _, err := auth.Login(context.Background(), q, "unverified", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "unverified", "testpass")
 	require.NoError(t, err)
 
 	// Try UpdateProfile — should be blocked by verification gating.
@@ -475,11 +459,11 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 }
 
 func TestVerificationGating_AdminExempt(t *testing.T) {
-	userClient, _, q, _ := setupVerificationGatingTestServer(t, true)
+	userClient, _, st := setupVerificationGatingTestServer(t, true)
 
 	// The bootstrap admin has email_verified=0 by default (no email set).
 	// Verify the admin can still call protected RPCs.
-	adminToken, _, _, err := auth.Login(context.Background(), q, "admin", "admin123")
+	adminToken, _, _, err := auth.Login(context.Background(), st, "admin", "admin123")
 	require.NoError(t, err)
 
 	// Admin should be able to call UpdateProfile even with email_verified=0.
@@ -491,26 +475,26 @@ func TestVerificationGating_AdminExempt(t *testing.T) {
 }
 
 func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
-	userClient, _, q, _ := setupVerificationGatingTestServer(t, false)
+	userClient, _, st := setupVerificationGatingTestServer(t, false)
 
 	// Create an unverified user.
 	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "nogate"})
-	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "nogate"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "nogate",
 		PasswordHash: hash,
 		DisplayName:  "No Gate User",
 		Email:        "nogate@example.com",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	// email_verified defaults to 0 — but gating is OFF.
 
-	token, _, _, err := auth.Login(context.Background(), q, "nogate", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "nogate", "testpass")
 	require.NoError(t, err)
 
 	// Unverified user should be able to call UpdateProfile when gating is off.
@@ -527,7 +511,7 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 	cfg := testConfigWithSignup()
 	cfg.EmailVerificationRequired = true
 
-	client, q := setupAuthTestServer(t, cfg)
+	client, st := setupAuthTestServer(t, cfg)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "verifyuser",
@@ -543,33 +527,32 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 
 	// Because the stub auto-promotes pending_email, the email should end up
 	// in the email column with email_verified=1.
-	user, err := q.GetUserByUsername(context.Background(), "verifyuser")
+	user, err := st.Users().GetByUsername(context.Background(), "verifyuser")
 	require.NoError(t, err)
 	assert.Equal(t, "verify@example.com", user.Email)
-	assert.Equal(t, int64(1), user.EmailVerified)
+	assert.True(t, user.EmailVerified)
 	// pending_email should be cleared after promotion.
 	assert.Empty(t, user.PendingEmail)
 }
 
 // --- VerifyEmail tests ---
 
-func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, *gendb.Queries, *sql.DB) {
+func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, cfg, nil, nil)
+	authSvc := service.NewAuthService(st, cfg, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -577,32 +560,32 @@ func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return client, q, sqlDB
+	return client, st
 }
 
-func createTestUserWithPendingEmail(t *testing.T, q *gendb.Queries, username, pendingEmail, token string, expiresAt sql.NullTime) string {
+func createTestUserWithPendingEmail(t *testing.T, st store.Store, username, pendingEmail, token string, expiresAt *time.Time) string {
 	t.Helper()
 	orgID := id.Generate()
 	userID := id.Generate()
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 
-	err = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: username})
+	err = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: username})
 	require.NoError(t, err)
-	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     username,
 		PasswordHash: hash,
 		DisplayName:  username,
 		Email:        "",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	require.NoError(t, err)
 
 	// Set pending email directly.
-	err = q.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+	err = st.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          pendingEmail,
 		PendingEmailToken:     token,
 		PendingEmailExpiresAt: expiresAt,
@@ -616,11 +599,11 @@ func createTestUserWithPendingEmail(t *testing.T, q *gendb.Queries, username, pe
 func TestVerifyEmail_PromotesPendingEmail(t *testing.T) {
 	cfg := testConfig()
 	cfg.EmailVerificationRequired = true
-	client, q, _ := setupAuthTestServerWithKeystore(t, cfg)
+	client, st := setupAuthTestServerWithKeystore(t, cfg)
 
 	verifyToken := id.Generate()
-	userID := createTestUserWithPendingEmail(t, q, "pendinguser", "pending@example.com", verifyToken,
-		sql.NullTime{Time: time.Now().Add(24 * time.Hour).UTC(), Valid: true})
+	userID := createTestUserWithPendingEmail(t, st, "pendinguser", "pending@example.com", verifyToken,
+		ptrTime(time.Now().Add(24*time.Hour).UTC()))
 
 	resp, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
 		VerificationToken: verifyToken,
@@ -636,16 +619,16 @@ func TestVerifyEmail_PromotesPendingEmail(t *testing.T) {
 	assert.Contains(t, setCookie, auth.CookieName+"=")
 
 	// Verify in DB.
-	user, err := q.GetUserByID(context.Background(), userID)
+	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Equal(t, "pending@example.com", user.Email)
-	assert.Equal(t, int64(1), user.EmailVerified)
+	assert.True(t, user.EmailVerified)
 	assert.Empty(t, user.PendingEmail)
 	assert.Empty(t, user.PendingEmailToken)
 }
 
 func TestVerifyEmail_InvalidToken(t *testing.T) {
-	client, _, _ := setupAuthTestServerWithKeystore(t, testConfig())
+	client, _ := setupAuthTestServerWithKeystore(t, testConfig())
 
 	_, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
 		VerificationToken: "nonexistent-token",
@@ -656,11 +639,11 @@ func TestVerifyEmail_InvalidToken(t *testing.T) {
 
 func TestVerifyEmail_ExpiredToken(t *testing.T) {
 	cfg := testConfig()
-	client, q, _ := setupAuthTestServerWithKeystore(t, cfg)
+	client, st := setupAuthTestServerWithKeystore(t, cfg)
 
 	verifyToken := id.Generate()
-	_ = createTestUserWithPendingEmail(t, q, "expiredverify", "expired@example.com", verifyToken,
-		sql.NullTime{Time: time.Now().Add(-1 * time.Hour).UTC(), Valid: true})
+	_ = createTestUserWithPendingEmail(t, st, "expiredverify", "expired@example.com", verifyToken,
+		ptrTime(time.Now().Add(-1*time.Hour).UTC()))
 
 	_, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
 		VerificationToken: verifyToken,
@@ -672,26 +655,26 @@ func TestVerifyEmail_ExpiredToken(t *testing.T) {
 // --- Verification gating: allowed methods ---
 
 func TestVerificationGating_LogoutAllowed(t *testing.T) {
-	_, authClient, q, _ := setupVerificationGatingTestServer(t, true)
+	_, authClient, st := setupVerificationGatingTestServer(t, true)
 
 	// Create an unverified user.
 	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "logoutgating"})
-	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "logoutgating"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "logoutgating",
 		PasswordHash: hash,
 		DisplayName:  "Logout Gating",
 		Email:        "logoutgating@example.com",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), q, "logoutgating", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "logoutgating", "testpass")
 	require.NoError(t, err)
 
 	// Logout should be allowed for unverified users.
@@ -704,26 +687,26 @@ func TestVerificationGating_LogoutAllowed(t *testing.T) {
 }
 
 func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
-	userClient, _, q, _ := setupVerificationGatingTestServer(t, true)
+	userClient, _, st := setupVerificationGatingTestServer(t, true)
 
 	// Create an unverified user.
 	orgID := id.Generate()
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "emailchangegate"})
-	_ = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "emailchangegate"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "emailchangegate",
 		PasswordHash: hash,
 		DisplayName:  "Email Change Gating",
 		Email:        "emailchangegate@example.com",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), q, "emailchangegate", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "emailchangegate", "testpass")
 	require.NoError(t, err)
 
 	// RequestEmailChange should be allowed for unverified users
@@ -774,7 +757,7 @@ func TestAuthService_Logout(t *testing.T) {
 
 func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	// Signup disabled, but no users exist — setup mode should kick in.
-	client, q := setupEmptyAuthTestServer(t, testConfig())
+	client, st := setupEmptyAuthTestServer(t, testConfig())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
@@ -795,15 +778,15 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	assert.Contains(t, setCookie, auth.CookieName+"=")
 
 	// Verify in DB.
-	dbUser, err := q.GetUserByUsername(context.Background(), "myadmin")
+	dbUser, err := st.Users().GetByUsername(context.Background(), "myadmin")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), dbUser.IsAdmin)
+	assert.True(t, dbUser.IsAdmin)
 	assert.Equal(t, "admin@example.com", dbUser.Email)
-	assert.Equal(t, int64(1), dbUser.EmailVerified)
+	assert.True(t, dbUser.EmailVerified)
 }
 
 func TestSetupSignUp_EmptyEmail(t *testing.T) {
-	client, q := setupEmptyAuthTestServer(t, testConfig())
+	client, st := setupEmptyAuthTestServer(t, testConfig())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
@@ -819,10 +802,10 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 	assert.False(t, user.GetEmailVerified())
 
 	// Verify in DB.
-	dbUser, err := q.GetUserByUsername(context.Background(), "myadmin")
+	dbUser, err := st.Users().GetByUsername(context.Background(), "myadmin")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), dbUser.IsAdmin)
-	assert.Equal(t, int64(0), dbUser.EmailVerified)
+	assert.True(t, dbUser.IsAdmin)
+	assert.False(t, dbUser.EmailVerified)
 }
 
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
@@ -864,20 +847,18 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	cfg := testConfig()
 	cfg.SoloMode = true
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
-
-	q := gendb.New(sqlDB)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(q, true, false, false)
+	interceptor, sc := auth.NewInterceptor(st, true, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, cfg, sc, nil)
+	authSvc := service.NewAuthService(st, cfg, sc, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -897,7 +878,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 
 func TestSetupSignUp_NormalSignupStillCreatesNonAdmin(t *testing.T) {
 	// Signup enabled + users already exist = normal non-admin signup.
-	client, q := setupAuthTestServer(t, testConfigWithSignup())
+	client, st := setupAuthTestServer(t, testConfigWithSignup())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "regularuser",
@@ -910,14 +891,14 @@ func TestSetupSignUp_NormalSignupStillCreatesNonAdmin(t *testing.T) {
 	user := resp.Msg.GetUser()
 	assert.False(t, user.GetIsAdmin())
 
-	dbUser, err := q.GetUserByUsername(context.Background(), "regularuser")
+	dbUser, err := st.Users().GetByUsername(context.Background(), "regularuser")
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), dbUser.IsAdmin)
+	assert.False(t, dbUser.IsAdmin)
 }
 
 func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
 	// Signup enabled + no users = setup mode should still create admin.
-	client, q := setupEmptyAuthTestServer(t, testConfigWithSignup())
+	client, st := setupEmptyAuthTestServer(t, testConfigWithSignup())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
@@ -931,9 +912,9 @@ func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
 	assert.True(t, user.GetIsAdmin(), "first user should be admin even when signup is enabled")
 	assert.True(t, user.GetEmailVerified())
 
-	dbUser, err := q.GetUserByUsername(context.Background(), "myadmin")
+	dbUser, err := st.Users().GetByUsername(context.Background(), "myadmin")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), dbUser.IsAdmin)
+	assert.True(t, dbUser.IsAdmin)
 }
 
 func TestSetupSignUp_RaceCondition(t *testing.T) {

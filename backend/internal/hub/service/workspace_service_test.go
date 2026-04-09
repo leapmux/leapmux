@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,10 +15,12 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 func leafNode(id string) *leapmuxv1.LayoutNode {
@@ -27,28 +30,27 @@ func leafNode(id string) *leapmuxv1.LayoutNode {
 }
 
 type workspaceTestEnv struct {
-	client  leapmuxv1connect.WorkspaceServiceClient
-	queries *gendb.Queries
-	token   string
-	orgID   string
-	userID  string
+	client leapmuxv1connect.WorkspaceServiceClient
+	store  store.Store
+	token  string
+	orgID  string
+	userID string
 }
 
 func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	queries := gendb.New(sqlDB)
-	workspaceSvc := service.NewWorkspaceService(sqlDB, queries, false)
+	workspaceSvc := service.NewWorkspaceService(st, false)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(queries, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
 	mux.Handle(path, handler)
@@ -68,18 +70,18 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 
-	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "test-org"})
-	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "test-org"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test",
-		PasswordSet:  1,
-		IsAdmin:      1,
+		PasswordSet:  true,
+		IsAdmin:      true,
 	})
 
-	_ = queries.CreateWorker(context.Background(), gendb.CreateWorkerParams{
+	_ = st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              "w1",
 		AuthToken:       "tok",
 		RegisteredBy:    userID,
@@ -88,22 +90,22 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 		SlhdsaPublicKey: []byte{},
 	})
 
-	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
 	require.NoError(t, err)
 
 	return &workspaceTestEnv{
-		client:  client,
-		queries: queries,
-		token:   token,
-		orgID:   orgID,
-		userID:  userID,
+		client: client,
+		store:  st,
+		token:  token,
+		orgID:  orgID,
+		userID: userID,
 	}
 }
 
 func (env *workspaceTestEnv) createWorkspace(t *testing.T) string {
 	t.Helper()
 	wsID := id.Generate()
-	err := env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          wsID,
 		OrgID:       env.orgID,
 		OwnerUserID: env.userID,
@@ -111,6 +113,91 @@ func (env *workspaceTestEnv) createWorkspace(t *testing.T) string {
 	})
 	require.NoError(t, err)
 	return wsID
+}
+
+func (env *workspaceTestEnv) createUserAndToken(t *testing.T, username string) (string, string) {
+	t.Helper()
+
+	userID := id.Generate()
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+
+	err = env.store.Users().Create(context.Background(), store.CreateUserParams{
+		ID:           userID,
+		OrgID:        env.orgID,
+		Username:     username,
+		PasswordHash: hash,
+		DisplayName:  username,
+		PasswordSet:  true,
+		IsAdmin:      false,
+	})
+	require.NoError(t, err)
+
+	token, _, _, err := auth.Login(context.Background(), env.store, username, "testpass")
+	require.NoError(t, err)
+	return userID, token
+}
+
+type failingWorkspaceTabStore struct {
+	store.WorkspaceTabStore
+	bulkUpsertErr        error
+	deleteByWorkspaceErr error
+}
+
+func (s failingWorkspaceTabStore) BulkUpsert(ctx context.Context, params []store.UpsertWorkspaceTabParams) error {
+	if s.bulkUpsertErr != nil {
+		return s.bulkUpsertErr
+	}
+	return s.WorkspaceTabStore.BulkUpsert(ctx, params)
+}
+
+func (s failingWorkspaceTabStore) DeleteByWorkspace(ctx context.Context, workspaceID string) error {
+	if s.deleteByWorkspaceErr != nil {
+		return s.deleteByWorkspaceErr
+	}
+	return s.WorkspaceTabStore.DeleteByWorkspace(ctx, workspaceID)
+}
+
+type failingWorkspaceLayoutStore struct {
+	store.WorkspaceLayoutStore
+	deleteErr error
+}
+
+func (s failingWorkspaceLayoutStore) Delete(ctx context.Context, workspaceID string) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return s.WorkspaceLayoutStore.Delete(ctx, workspaceID)
+}
+
+type wrappedStore struct {
+	store.Store
+	wrapTabs    func(store.WorkspaceTabStore) store.WorkspaceTabStore
+	wrapLayouts func(store.WorkspaceLayoutStore) store.WorkspaceLayoutStore
+}
+
+func (s wrappedStore) WorkspaceTabs() store.WorkspaceTabStore {
+	if s.wrapTabs != nil {
+		return s.wrapTabs(s.Store.WorkspaceTabs())
+	}
+	return s.Store.WorkspaceTabs()
+}
+
+func (s wrappedStore) WorkspaceLayouts() store.WorkspaceLayoutStore {
+	if s.wrapLayouts != nil {
+		return s.wrapLayouts(s.Store.WorkspaceLayouts())
+	}
+	return s.Store.WorkspaceLayouts()
+}
+
+func (s wrappedStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
+	return s.Store.RunInTransaction(ctx, func(tx store.Store) error {
+		return fn(wrappedStore{
+			Store:       tx,
+			wrapTabs:    s.wrapTabs,
+			wrapLayouts: s.wrapLayouts,
+		})
+	})
 }
 
 func TestSaveMultiLayout_EmptyEntries(t *testing.T) {
@@ -146,7 +233,7 @@ func TestSaveMultiLayout_SingleWorkspace(t *testing.T) {
 	assert.NotNil(t, resp)
 
 	// Verify the tab was saved by loading it back.
-	tabs, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), wsID)
+	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
 	require.NoError(t, err)
 	require.Len(t, tabs, 1)
 	assert.Equal(t, "agent-1", tabs[0].TabID)
@@ -182,13 +269,13 @@ func TestSaveMultiLayout_TwoWorkspacesAtomic(t *testing.T) {
 	assert.NotNil(t, resp)
 
 	// Verify tabs for ws1.
-	tabs1, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), ws1)
+	tabs1, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ws1)
 	require.NoError(t, err)
 	require.Len(t, tabs1, 1)
 	assert.Equal(t, "agent-1", tabs1[0].TabID)
 
 	// Verify tabs for ws2.
-	tabs2, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), ws2)
+	tabs2, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ws2)
 	require.NoError(t, err)
 	require.Len(t, tabs2, 2)
 }
@@ -200,17 +287,17 @@ func TestSaveMultiLayout_NotOwnedWorkspaceRejected(t *testing.T) {
 	// Create a workspace owned by another user.
 	otherUserID := id.Generate()
 	hash, _ := password.Hash("testpass")
-	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           otherUserID,
 		OrgID:        env.orgID,
 		Username:     "other",
 		PasswordHash: hash,
 		DisplayName:  "Other",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	otherWsID := id.Generate()
-	_ = env.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+	_ = env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          otherWsID,
 		OrgID:       env.orgID,
 		OwnerUserID: otherUserID,
@@ -238,7 +325,7 @@ func TestSaveMultiLayout_NotOwnedWorkspaceRejected(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
 	// Verify that the owned workspace's tabs were NOT saved (transaction rolled back).
-	tabs, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), ownedWs)
+	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ownedWs)
 	require.NoError(t, err)
 	assert.Empty(t, tabs)
 }
@@ -264,7 +351,7 @@ func TestSaveMultiLayout_TabsReplacedOnUpdate(t *testing.T) {
 		}, env.token))
 	require.NoError(t, err)
 
-	tabs, err := env.queries.ListWorkspaceTabsByWorkspace(context.Background(), wsID)
+	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
 	require.NoError(t, err)
 	require.Len(t, tabs, 2)
 
@@ -284,8 +371,226 @@ func TestSaveMultiLayout_TabsReplacedOnUpdate(t *testing.T) {
 		}, env.token))
 	require.NoError(t, err)
 
-	tabs, err = env.queries.ListWorkspaceTabsByWorkspace(context.Background(), wsID)
+	tabs, err = env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
 	require.NoError(t, err)
 	require.Len(t, tabs, 1)
 	assert.Equal(t, "term-1", tabs[0].TabID)
+}
+
+func TestWorkspaceReadAccess_SharedMemberReadOnly(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+	viewerID, viewerToken := env.createUserAndToken(t, "viewer")
+
+	require.NoError(t, env.store.WorkspaceTabs().Upsert(context.Background(), store.UpsertWorkspaceTabParams{
+		WorkspaceID: wsID,
+		WorkerID:    "w1",
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabID:       "agent-1",
+		Position:    "a",
+		TileID:      "tile-1",
+	}))
+	require.NoError(t, env.store.WorkspaceLayouts().Upsert(context.Background(), store.UpsertWorkspaceLayoutParams{
+		WorkspaceID: wsID,
+		LayoutJSON:  `{"layout":{"leaf":{"id":"tile-1"}}}`,
+	}))
+	require.NoError(t, env.store.WorkspaceAccess().Grant(context.Background(), store.GrantWorkspaceAccessParams{
+		WorkspaceID: wsID,
+		UserID:      viewerID,
+	}))
+
+	_, err := env.client.GetWorkspace(context.Background(), authedReq(&leapmuxv1.GetWorkspaceRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+	}, viewerToken))
+	require.NoError(t, err)
+
+	tabsResp, err := env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
+		WorkspaceId: wsID,
+	}, viewerToken))
+	require.NoError(t, err)
+	require.Len(t, tabsResp.Msg.GetTabs(), 1)
+
+	layoutResp, err := env.client.GetLayout(context.Background(), authedReq(&leapmuxv1.GetLayoutRequest{
+		WorkspaceId: wsID,
+	}, viewerToken))
+	require.NoError(t, err)
+	require.NotNil(t, layoutResp.Msg.GetLayout())
+
+	_, err = env.client.AddTab(context.Background(), authedReq(&leapmuxv1.AddTabRequest{
+		WorkspaceId: wsID,
+		Tab: &leapmuxv1.WorkspaceTab{
+			TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+			TabId:    "agent-2",
+			Position: "b",
+			TileId:   "tile-1",
+			WorkerId: "w1",
+		},
+	}, viewerToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	_, err = env.client.RemoveTab(context.Background(), authedReq(&leapmuxv1.RemoveTabRequest{
+		WorkspaceId: wsID,
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabId:       "agent-1",
+	}, viewerToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	_, err = env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+		Layout:      leafNode("tile-1"),
+	}, viewerToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	_, err = env.client.UpdateWorkspaceSharing(context.Background(), authedReq(&leapmuxv1.UpdateWorkspaceSharingRequest{
+		WorkspaceId: wsID,
+		ShareMode:   leapmuxv1.ShareMode_SHARE_MODE_PRIVATE,
+	}, viewerToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+func TestWorkspaceReadAccess_UnsharedUserDenied(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+	_, outsiderToken := env.createUserAndToken(t, "outsider")
+
+	_, err := env.client.GetWorkspace(context.Background(), authedReq(&leapmuxv1.GetWorkspaceRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+	}, outsiderToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	_, err = env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
+		WorkspaceId: wsID,
+	}, outsiderToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	_, err = env.client.GetLayout(context.Background(), authedReq(&leapmuxv1.GetLayoutRequest{
+		WorkspaceId: wsID,
+	}, outsiderToken))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+func TestSaveLayout_RollsBackOnTabFailure(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+
+	require.NoError(t, env.store.WorkspaceLayouts().Upsert(context.Background(), store.UpsertWorkspaceLayoutParams{
+		WorkspaceID: wsID,
+		LayoutJSON:  `{"layout":{"leaf":{"id":"old-tile"}}}`,
+	}))
+	require.NoError(t, env.store.WorkspaceTabs().Upsert(context.Background(), store.UpsertWorkspaceTabParams{
+		WorkspaceID: wsID,
+		WorkerID:    "w1",
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabID:       "old-tab",
+		Position:    "a",
+		TileID:      "old-tile",
+	}))
+
+	svc := service.NewWorkspaceService(wrappedStore{
+		Store: env.store,
+		wrapTabs: func(base store.WorkspaceTabStore) store.WorkspaceTabStore {
+			return failingWorkspaceTabStore{WorkspaceTabStore: base, bulkUpsertErr: errors.New("boom")}
+		},
+	}, false)
+
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: env.userID, OrgID: env.orgID, Username: "testuser", IsAdmin: true})
+	_, err := svc.SaveLayout(ctx, connect.NewRequest(&leapmuxv1.SaveLayoutRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+		Layout:      leafNode("new-tile"),
+		Tabs: []*leapmuxv1.WorkspaceTab{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "new-tab", Position: "b", TileId: "new-tile", WorkerId: "w1"},
+		},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+
+	layout, err := env.store.WorkspaceLayouts().Get(context.Background(), wsID)
+	require.NoError(t, err)
+	assert.Equal(t, `{"layout":{"leaf":{"id":"old-tile"}}}`, layout.LayoutJSON)
+
+	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
+	require.NoError(t, err)
+	require.Len(t, tabs, 1)
+	assert.Equal(t, "old-tab", tabs[0].TabID)
+}
+
+func TestUpdateWorkspaceSharing_InvalidUserLeavesACLsIntact(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+	viewerID, _ := env.createUserAndToken(t, "existing-viewer")
+
+	require.NoError(t, env.store.WorkspaceAccess().Grant(context.Background(), store.GrantWorkspaceAccessParams{
+		WorkspaceID: wsID,
+		UserID:      viewerID,
+	}))
+
+	svc := service.NewWorkspaceService(env.store, false)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: env.userID, OrgID: env.orgID, Username: "testuser", IsAdmin: true})
+	_, err := svc.UpdateWorkspaceSharing(ctx, connect.NewRequest(&leapmuxv1.UpdateWorkspaceSharingRequest{
+		WorkspaceId: wsID,
+		ShareMode:   leapmuxv1.ShareMode_SHARE_MODE_MEMBERS,
+		UserIds:     []string{viewerID, "missing-user"},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	entries, err := env.store.WorkspaceAccess().ListByWorkspaceID(context.Background(), wsID)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, viewerID, entries[0].UserID)
+}
+
+func TestDeleteWorkspace_RollsBackOnCleanupFailure(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+
+	require.NoError(t, env.store.WorkspaceTabs().Upsert(context.Background(), store.UpsertWorkspaceTabParams{
+		WorkspaceID: wsID,
+		WorkerID:    "w1",
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabID:       "tab-1",
+		Position:    "a",
+		TileID:      "tile-1",
+	}))
+	require.NoError(t, env.store.WorkspaceLayouts().Upsert(context.Background(), store.UpsertWorkspaceLayoutParams{
+		WorkspaceID: wsID,
+		LayoutJSON:  `{"layout":{"leaf":{"id":"tile-1"}}}`,
+	}))
+
+	svc := service.NewWorkspaceService(wrappedStore{
+		Store: env.store,
+		wrapLayouts: func(base store.WorkspaceLayoutStore) store.WorkspaceLayoutStore {
+			return failingWorkspaceLayoutStore{WorkspaceLayoutStore: base, deleteErr: errors.New("layout delete failed")}
+		},
+	}, false)
+
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: env.userID, OrgID: env.orgID, Username: "testuser", IsAdmin: true})
+	_, err := svc.DeleteWorkspace(ctx, connect.NewRequest(&leapmuxv1.DeleteWorkspaceRequest{
+		WorkspaceId: wsID,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+
+	ws, err := env.store.Workspaces().GetByID(context.Background(), wsID)
+	require.NoError(t, err)
+	assert.Equal(t, wsID, ws.ID)
+
+	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
+	require.NoError(t, err)
+	require.Len(t, tabs, 1)
+
+	layout, err := env.store.WorkspaceLayouts().Get(context.Background(), wsID)
+	require.NoError(t, err)
+	assert.Equal(t, `{"layout":{"leaf":{"id":"tile-1"}}}`, layout.LayoutJSON)
 }

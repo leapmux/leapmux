@@ -2,7 +2,6 @@ package service_test
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,38 +15,37 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 type userTestEnv struct {
-	client  leapmuxv1connect.UserServiceClient
-	sqlDB   *sql.DB
-	queries *gendb.Queries
-	token   string
-	orgID   string
-	userID  string
+	client leapmuxv1connect.UserServiceClient
+	store  store.Store
+	token  string
+	orgID  string
+	userID string
 }
 
 func setupUserTest(t *testing.T) *userTestEnv {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	queries := gendb.New(sqlDB)
-
-	userSvc := service.NewUserService(queries, testConfig(), nil)
+	userSvc := service.NewUserService(st, testConfig(), nil)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(queries, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -67,27 +65,83 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 
-	_ = queries.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "testuser"})
-	_ = queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "testuser"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test User",
-		PasswordSet:  1,
-		IsAdmin:      1,
+		PasswordSet:  true,
+		IsAdmin:      true,
 	})
 
-	token, _, _, err := auth.Login(context.Background(), queries, "testuser", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
 	require.NoError(t, err)
 
 	return &userTestEnv{
-		client:  client,
-		sqlDB:   sqlDB,
-		queries: queries,
-		token:   token,
-		orgID:   orgID,
-		userID:  userID,
+		client: client,
+		store:  st,
+		token:  token,
+		orgID:  orgID,
+		userID: userID,
+	}
+}
+
+// setupOAuthUserTest creates a test env with an OAuth-only user (PasswordSet=false).
+func setupOAuthUserTest(t *testing.T) *userTestEnv {
+	t.Helper()
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	err = st.Migrator().Migrate(context.Background())
+	require.NoError(t, err)
+
+	userSvc := service.NewUserService(st, testConfig(), nil)
+
+	mux := http.NewServeMux()
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	opts := connect.WithInterceptors(interceptor)
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
+	mux.Handle(path, handler)
+
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	client := leapmuxv1connect.NewUserServiceClient(
+		server.Client(),
+		server.URL,
+		connect.WithGRPC(),
+	)
+
+	orgID := id.Generate()
+	userID := id.Generate()
+	hash, _ := password.Hash("testpass")
+
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "testuser"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
+		ID:           userID,
+		OrgID:        orgID,
+		Username:     "testuser",
+		PasswordHash: hash,
+		DisplayName:  "Test User",
+		PasswordSet:  false,
+		IsAdmin:      true,
+	})
+
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
+	require.NoError(t, err)
+
+	return &userTestEnv{
+		client: client,
+		store:  st,
+		token:  token,
+		orgID:  orgID,
+		userID: userID,
 	}
 }
 
@@ -105,7 +159,7 @@ func TestUserService_UpdateProfile(t *testing.T) {
 	assert.Equal(t, "newname", resp.Msg.GetOrgName(), "should rename personal org")
 
 	// Verify the database was actually updated.
-	user, err := env.queries.GetUserByID(context.Background(), env.userID)
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "newname", user.Username)
 }
@@ -129,14 +183,14 @@ func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
 	// Create a second user.
 	user2ID := id.Generate()
 	hash, _ := password.Hash("testpass2")
-	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           user2ID,
 		OrgID:        env.orgID,
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 
 	// Try to change testuser's username to "user2".
@@ -158,11 +212,11 @@ func TestUserService_ChangePassword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify login works with new password.
-	_, _, _, err = auth.Login(context.Background(), env.queries, "testuser", "newpass123")
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123")
 	assert.NoError(t, err)
 
 	// Verify login with old password fails.
-	_, _, _, err = auth.Login(context.Background(), env.queries, "testuser", "testpass")
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "testpass")
 	require.Error(t, err)
 }
 
@@ -261,9 +315,9 @@ func TestRequestEmailChange_Success(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Set an initial email on the user.
-	err := env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
+	err := env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "old@example.com",
-		EmailVerified: 1,
+		EmailVerified: true,
 		ID:            env.userID,
 	})
 	require.NoError(t, err)
@@ -277,7 +331,7 @@ func TestRequestEmailChange_Success(t *testing.T) {
 	assert.False(t, resp.Msg.GetVerificationRequired())
 
 	// Verify the email was updated in the DB.
-	user, err := env.queries.GetUserByID(context.Background(), env.userID)
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "new@example.com", user.Email)
 }
@@ -296,9 +350,9 @@ func TestRequestEmailChange_SameEmail_Rejected(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Set an email on the user.
-	err := env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
+	err := env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "same@example.com",
-		EmailVerified: 1,
+		EmailVerified: true,
 		ID:            env.userID,
 	})
 	require.NoError(t, err)
@@ -317,9 +371,9 @@ func TestUpdateProfile_EmailFieldRemoved(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Set an email on the user directly in the DB.
-	err := env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
+	err := env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "preserved@example.com",
-		EmailVerified: 1,
+		EmailVerified: true,
 		ID:            env.userID,
 	})
 	require.NoError(t, err)
@@ -332,7 +386,7 @@ func TestUpdateProfile_EmailFieldRemoved(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the email is unchanged in the DB.
-	user, err := env.queries.GetUserByID(context.Background(), env.userID)
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "preserved@example.com", user.Email)
 }
@@ -350,10 +404,10 @@ func TestRequestEmailChange_Admin_ImmediateChange(t *testing.T) {
 	assert.False(t, resp.Msg.GetVerificationRequired())
 
 	// Verify the email was updated in the DB with email_verified=1.
-	user, err := env.queries.GetUserByID(context.Background(), env.userID)
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "admin-new@example.com", user.Email)
-	assert.Equal(t, int64(1), user.EmailVerified)
+	assert.True(t, user.EmailVerified)
 }
 
 // --- RequestEmailChange: duplicate email rejected ---
@@ -364,18 +418,18 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 	// Create a second user with an email.
 	user2ID := id.Generate()
 	hash, _ := password.Hash("testpass2")
-	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           user2ID,
 		OrgID:        env.orgID,
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
-	err := env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
+	err := env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "claimed@example.com",
-		EmailVerified: 1,
+		EmailVerified: true,
 		ID:            user2ID,
 	})
 	require.NoError(t, err)
@@ -392,29 +446,27 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 
 // setupVerificationUserTestServer creates a test server with
 // EmailVerificationRequired=true and both UserService and AuthService
-// registered. It returns a UserService client, queries, and the admin token.
-func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserServiceClient, *gendb.Queries, string) {
+// registered. It returns a UserService client, st, and the admin token.
+func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserServiceClient, store.Store, string) {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	q := gendb.New(sqlDB)
-
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false, true)
+	interceptor, _ := auth.NewInterceptor(st, false, false, true)
 	opts := connect.WithInterceptors(interceptor)
 
 	cfg := testConfig()
 	cfg.EmailVerificationRequired = true
 
-	userSvc := service.NewUserService(q, cfg, nil)
+	userSvc := service.NewUserService(st, cfg, nil)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
@@ -424,32 +476,32 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
 
 	// Log in as admin (bootstrap user).
-	token, _, _, err := auth.Login(context.Background(), q, "admin", "admin123")
+	token, _, _, err := auth.Login(context.Background(), st, "admin", "admin123")
 	require.NoError(t, err)
 
-	return client, q, token
+	return client, st, token
 }
 
 func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
-	client, q, adminToken := setupVerificationUserTestServer(t)
+	client, st, adminToken := setupVerificationUserTestServer(t)
 
 	// Create a non-admin user.
-	adminUser, err := q.GetUserByUsername(context.Background(), "admin")
+	adminUser, err := st.Users().GetByUsername(context.Background(), "admin")
 	require.NoError(t, err)
 
 	userID := id.Generate()
 	hash, _ := password.Hash("userpass")
-	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           userID,
 		OrgID:        adminUser.OrgID,
 		Username:     "verifyuser",
 		PasswordHash: hash,
 		DisplayName:  "Verify User",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	require.NoError(t, err)
-	err = q.CreateOrgMember(context.Background(), gendb.CreateOrgMemberParams{
+	err = st.OrgMembers().Create(context.Background(), store.CreateOrgMemberParams{
 		OrgID:  adminUser.OrgID,
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
@@ -457,15 +509,15 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set email_verified=1 so the user is not gated by verification interceptor.
-	err = q.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
+	err = st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "old@example.com",
-		EmailVerified: 1,
+		EmailVerified: true,
 		ID:            userID,
 	})
 	require.NoError(t, err)
 
 	// Log in as the non-admin user.
-	userToken, _, _, err := auth.Login(context.Background(), q, "verifyuser", "userpass")
+	userToken, _, _, err := auth.Login(context.Background(), st, "verifyuser", "userpass")
 	require.NoError(t, err)
 
 	// Request email change.
@@ -476,7 +528,7 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	assert.True(t, resp.Msg.GetVerificationRequired())
 
 	// The stub auto-promotes, so the email should be in the email column.
-	user, err := q.GetUserByID(context.Background(), userID)
+	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Equal(t, "pending@example.com", user.Email)
 
@@ -491,10 +543,10 @@ func TestVerifyEmailChange_Success(t *testing.T) {
 
 	// Set pending_email + token via DB directly.
 	verifyToken := id.Generate()
-	err := env.queries.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "verified@example.com",
 		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(1 * time.Hour).UTC(), Valid: true},
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
 	})
 	require.NoError(t, err)
@@ -507,10 +559,10 @@ func TestVerifyEmailChange_Success(t *testing.T) {
 	assert.Equal(t, "verified@example.com", resp.Msg.GetUser().GetEmail())
 
 	// Verify in DB: email promoted, pending cleared, email_verified=1.
-	user, err := env.queries.GetUserByID(context.Background(), env.userID)
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "verified@example.com", user.Email)
-	assert.Equal(t, int64(1), user.EmailVerified)
+	assert.True(t, user.EmailVerified)
 	assert.Empty(t, user.PendingEmail)
 	assert.Empty(t, user.PendingEmailToken)
 }
@@ -530,10 +582,10 @@ func TestVerifyEmailChange_ExpiredToken(t *testing.T) {
 
 	// Set pending_email with an expired token.
 	verifyToken := id.Generate()
-	err := env.queries.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "expired@example.com",
 		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(-1 * time.Hour).UTC(), Valid: true},
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(-1 * time.Hour).UTC()),
 		ID:                    env.userID,
 	})
 	require.NoError(t, err)
@@ -550,10 +602,10 @@ func TestVerifyEmailChange_PendingEmailEmpty(t *testing.T) {
 
 	// Set a token but with empty pending_email.
 	verifyToken := id.Generate()
-	err := env.queries.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "",
 		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(1 * time.Hour).UTC(), Valid: true},
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
 	})
 	require.NoError(t, err)
@@ -570,10 +622,10 @@ func TestVerifyEmailChange_EmailTakenSinceRequest(t *testing.T) {
 
 	// Set pending_email on the test user.
 	verifyToken := id.Generate()
-	err := env.queries.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "contested@example.com",
 		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(1 * time.Hour).UTC(), Valid: true},
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
 	})
 	require.NoError(t, err)
@@ -581,18 +633,18 @@ func TestVerifyEmailChange_EmailTakenSinceRequest(t *testing.T) {
 	// Create another user who claims that email in the email column.
 	user2ID := id.Generate()
 	hash, _ := password.Hash("testpass2")
-	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           user2ID,
 		OrgID:        env.orgID,
 		Username:     "claimer",
 		PasswordHash: hash,
 		DisplayName:  "Claimer",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
-	err = env.queries.UpdateUserEmail(context.Background(), gendb.UpdateUserEmailParams{
+	err = env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "contested@example.com",
-		EmailVerified: 1,
+		EmailVerified: true,
 		ID:            user2ID,
 	})
 	require.NoError(t, err)
@@ -610,10 +662,10 @@ func TestVerifyEmailChange_CrossUser_Rejected(t *testing.T) {
 
 	// Set pending_email on the test user.
 	verifyToken := id.Generate()
-	err := env.queries.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "stolen@example.com",
 		PendingEmailToken:     verifyToken,
-		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(1 * time.Hour).UTC(), Valid: true},
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
 	})
 	require.NoError(t, err)
@@ -621,16 +673,16 @@ func TestVerifyEmailChange_CrossUser_Rejected(t *testing.T) {
 	// Create a different user and log in as them.
 	attackerID := id.Generate()
 	attackerHash, _ := password.Hash("testpass2")
-	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           attackerID,
 		OrgID:        env.orgID,
 		Username:     "attacker",
 		PasswordHash: attackerHash,
 		DisplayName:  "Attacker",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
-	attackerToken, _, _, err := auth.Login(context.Background(), env.queries, "attacker", "testpass2")
+	attackerToken, _, _, err := auth.Login(context.Background(), env.store, "attacker", "testpass2")
 	require.NoError(t, err)
 
 	// Attacker tries to verify the first user's email change token.
@@ -645,13 +697,13 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Create a second session for the same user (simulates another device).
-	otherSession, _, err := auth.CreateSession(context.Background(), env.queries, env.userID)
+	otherSession, _, err := auth.CreateSession(context.Background(), env.store, env.userID)
 	require.NoError(t, err)
 
 	// Verify both sessions are valid.
-	_, err = auth.ValidateToken(context.Background(), env.queries, env.token)
+	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
 	require.NoError(t, err)
-	_, err = auth.ValidateToken(context.Background(), env.queries, otherSession)
+	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
 	require.NoError(t, err)
 
 	// Change password using the original session.
@@ -662,38 +714,33 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	require.NoError(t, err)
 
 	// Original session should still be valid (it's the current session).
-	_, err = auth.ValidateToken(context.Background(), env.queries, env.token)
+	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
 	assert.NoError(t, err)
 
 	// The other session should be invalidated.
-	_, err = auth.ValidateToken(context.Background(), env.queries, otherSession)
+	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
 	assert.Error(t, err, "other sessions should be invalidated after password change")
 }
 
 // --- ChangePassword tests for OAuth users ---
 
 func TestChangePassword_OAuthUser_CanSetWithoutCurrentPassword(t *testing.T) {
-	env := setupUserTest(t)
-
-	// Simulate an OAuth-only user: set password_set = 0.
-	_, err := env.sqlDB.ExecContext(context.Background(),
-		"UPDATE users SET password_set = 0 WHERE id = ?", env.userID)
-	require.NoError(t, err)
+	env := setupOAuthUserTest(t)
 
 	// Should succeed with empty current password.
-	_, err = env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
+	_, err := env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
 		CurrentPassword: "",
 		NewPassword:     "newpass123",
 	}, env.token))
 	require.NoError(t, err)
 
 	// Verify password_set is now 1.
-	user, err := env.queries.GetUserByID(context.Background(), env.userID)
+	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), user.PasswordSet)
+	assert.True(t, user.PasswordSet)
 
 	// Verify the new password works via login.
-	_, _, _, err = auth.Login(context.Background(), env.queries, "testuser", "newpass123")
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123")
 	require.NoError(t, err)
 }
 
@@ -723,23 +770,23 @@ func TestUnlinkOAuthProvider_Success(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Create two OAuth providers.
-	err := env.queries.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+	err := env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID: "github-1", ProviderType: "github", Name: "GitHub",
-		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: 1,
+		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 	})
 	require.NoError(t, err)
-	err = env.queries.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+	err = env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID: "google-1", ProviderType: "oidc", Name: "Google",
-		ClientID: "c2", ClientSecret: []byte("s2"), Scopes: "openid", Enabled: 1,
+		ClientID: "c2", ClientSecret: []byte("s2"), Scopes: "openid", Enabled: true,
 	})
 	require.NoError(t, err)
 
 	// Link both to the user.
-	err = env.queries.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+	err = env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
 		UserID: env.userID, ProviderID: "github-1", ProviderSubject: "gh-sub",
 	})
 	require.NoError(t, err)
-	err = env.queries.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+	err = env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
 		UserID: env.userID, ProviderID: "google-1", ProviderSubject: "g-sub",
 	})
 	require.NoError(t, err)
@@ -751,7 +798,7 @@ func TestUnlinkOAuthProvider_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify only Google link remains.
-	links, err := env.queries.ListOAuthUserLinksByUser(context.Background(), env.userID)
+	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Len(t, links, 1)
 	assert.Equal(t, "google-1", links[0].ProviderID)
@@ -761,12 +808,12 @@ func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
 	env := setupUserTest(t)
 
 	// User has password_set = 1 (default from setupUserTest).
-	err := env.queries.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+	err := env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID: "github-2", ProviderType: "github", Name: "GitHub",
-		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: 1,
+		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 	})
 	require.NoError(t, err)
-	err = env.queries.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+	err = env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
 		UserID: env.userID, ProviderID: "github-2", ProviderSubject: "gh-sub",
 	})
 	require.NoError(t, err)
@@ -777,25 +824,20 @@ func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	links, err := env.queries.ListOAuthUserLinksByUser(context.Background(), env.userID)
+	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Empty(t, links)
 }
 
 func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
-	env := setupUserTest(t)
+	env := setupOAuthUserTest(t)
 
-	// Simulate OAuth-only user.
-	_, err := env.sqlDB.ExecContext(context.Background(),
-		"UPDATE users SET password_set = 0 WHERE id = ?", env.userID)
-	require.NoError(t, err)
-
-	err = env.queries.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+	err := env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID: "github-3", ProviderType: "github", Name: "GitHub",
-		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: 1,
+		ClientID: "c1", ClientSecret: []byte("s1"), Scopes: "read:user", Enabled: true,
 	})
 	require.NoError(t, err)
-	err = env.queries.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+	err = env.store.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
 		UserID: env.userID, ProviderID: "github-3", ProviderSubject: "gh-sub",
 	})
 	require.NoError(t, err)
@@ -809,7 +851,7 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 	assert.Contains(t, err.Error(), "set a password first")
 
 	// Link should still exist.
-	links, err := env.queries.ListOAuthUserLinksByUser(context.Background(), env.userID)
+	links, err := env.store.OAuthUserLinks().ListByUser(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Len(t, links, 1)
 }

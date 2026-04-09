@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 
 	_ "modernc.org/sqlite"
 )
@@ -16,13 +17,18 @@ import (
 // (reads included) through a single connection.
 const DefaultMaxConns = 4
 
+// Config holds tuning options for a SQLite database.
+type Config struct {
+	MaxConns  int // Maximum open connections. 0 = DefaultMaxConns.
+	CacheSize int // Page cache size (negative = KiB, positive = pages). 0 = SQLite default (-2000 = 2 MiB).
+	MmapSize  int // Memory-mapped I/O size in bytes. 0 = disabled.
+}
+
 // Open opens a SQLite database at the given path and configures it for
 // concurrent use (WAL mode, foreign keys enabled).
 // Use ":memory:" for an in-memory database (useful for testing).
-// If maxConns is provided, it sets the maximum number of open connections;
-// otherwise DefaultMaxConns is used.
-func Open(path string, maxConns ...int) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", buildDSN(path))
+func Open(path string, cfg Config) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", buildDSN(path, cfg))
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -32,9 +38,9 @@ func Open(path string, maxConns ...int) (*sql.DB, error) {
 	if path == ":memory:" {
 		db.SetMaxOpenConns(1)
 	} else {
-		n := DefaultMaxConns
-		if len(maxConns) > 0 && maxConns[0] > 0 {
-			n = maxConns[0]
+		n := cfg.MaxConns
+		if n <= 0 {
+			n = DefaultMaxConns
 		}
 		db.SetMaxOpenConns(n)
 	}
@@ -59,22 +65,27 @@ func Open(path string, maxConns ...int) (*sql.DB, error) {
 // connection string so they take effect on every pooled connection.
 // It uses the file: URI scheme to safely separate the path from query
 // parameters, avoiding issues if the path contains special characters.
-func buildDSN(path string) string {
+func buildDSN(path string, cfg Config) string {
+	if path == ":memory:" {
+		return ":memory:?_pragma=foreign_keys(1)"
+	}
+
 	// 60s busy_timeout: high enough to never trigger during normal
 	// operation, but still acts as a safety net against stuck transactions.
 	// Request-scoped contexts provide the real timeout boundary.
-	const filePragmas = "_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
-	const memoryPragmas = "_pragma=foreign_keys(1)"
-
-	if path == ":memory:" {
-		return ":memory:?" + memoryPragmas
+	pragmas := "_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	if cfg.CacheSize != 0 {
+		pragmas += "&_pragma=cache_size(" + strconv.Itoa(cfg.CacheSize) + ")"
+	}
+	if cfg.MmapSize > 0 {
+		pragmas += "&_pragma=mmap_size(" + strconv.Itoa(cfg.MmapSize) + ")"
 	}
 
 	u := &url.URL{
 		Scheme:   "file",
 		OmitHost: true,
 		Path:     path,
-		RawQuery: filePragmas,
+		RawQuery: pragmas,
 	}
 	return u.String()
 }

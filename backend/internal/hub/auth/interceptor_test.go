@@ -15,8 +15,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
@@ -26,14 +26,14 @@ import (
 func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
-	sqlDB, q := setupDB(t)
+	st := hubtestutil.OpenTestStore(t)
 
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, &config.Config{}, nil, nil)
+	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -94,16 +94,16 @@ func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 }
 
 func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
-	sqlDB, q := setupDB(t)
+	st := hubtestutil.OpenTestStore(t)
 
 	// Bootstrap in solo mode creates a user named "solo".
-	err := bootstrap.Run(context.Background(), sqlDB, q, true, false)
+	err := bootstrap.Run(context.Background(), st, true, false)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, true, false, false)
+	interceptor, _ := auth.NewInterceptor(st, true, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, &config.Config{SoloMode: true}, nil, nil)
+	authSvc := service.NewAuthService(st, &config.Config{SoloMode: true}, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -147,30 +147,30 @@ func TestInterceptor_BearerTokenNotAccepted(t *testing.T) {
 
 // setupInterceptorTestServerWithCache is like setupInterceptorTestServer but
 // wires the SessionCache into the AuthService (so Logout evicts entries) and
-// returns the queries handle for DB inspection.
-func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthServiceClient, *gendb.Queries) {
+// returns the store for DB inspection.
+func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
 
-	sqlDB, q := setupDB(t)
+	st := hubtestutil.OpenTestStore(t)
 
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(q, false, false, false)
+	interceptor, sc := auth.NewInterceptor(st, false, false, false)
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, &config.Config{}, sc, nil)
+	authSvc := service.NewAuthService(st, &config.Config{}, sc, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), q
+	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), st
 }
 
 func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
-	client, q := setupInterceptorTestServerWithCache(t)
+	client, st := setupInterceptorTestServerWithCache(t)
 
 	token := loginAdmin(t, client)
 
@@ -180,7 +180,7 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	_, err := client.GetCurrentUser(context.Background(), req1)
 	require.NoError(t, err)
 
-	sess1, err := q.GetUserSessionByID(context.Background(), token)
+	sess1, err := st.Sessions().GetByID(context.Background(), token)
 	require.NoError(t, err)
 	t1 := sess1.LastActiveAt
 
@@ -190,7 +190,7 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	_, err = client.GetCurrentUser(context.Background(), req2)
 	require.NoError(t, err)
 
-	sess2, err := q.GetUserSessionByID(context.Background(), token)
+	sess2, err := st.Sessions().GetByID(context.Background(), token)
 	require.NoError(t, err)
 	t2 := sess2.LastActiveAt
 

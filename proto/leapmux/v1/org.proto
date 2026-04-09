@@ -41,7 +41,7 @@ message CreateOrgRequest {
 }
 
 message CreateOrgResponse {
-  Org org = 1;
+  string org_id = 1;
 }
 
 message GetOrgRequest {
@@ -97,9 +97,7 @@ message InviteOrgMemberRequest {
   OrgMemberRole role = 3;
 }
 
-message InviteOrgMemberResponse {
-  OrgMember member = 1;
-}
+message InviteOrgMemberResponse {}
 
 message RemoveOrgMemberRequest {
   string org_id = 1;
@@ -114,9 +112,7 @@ message UpdateOrgMemberRequest {
   OrgMemberRole role = 3;
 }
 
-message UpdateOrgMemberResponse {
-  OrgMember member = 1;
-}
+message UpdateOrgMemberResponse {}
 
 // --- Messages ---
 

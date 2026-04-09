@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
 func runAdminEncryptionKey(args []string) error {
@@ -68,7 +67,7 @@ func runRemoveEncryptionKey(args []string) error {
 }
 
 func runReencryptSecrets(args []string) error {
-	return withAdminDB("encryption-key reencrypt", args, nil, func(ctx context.Context, cfg *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
+	return withAdminStore("encryption-key reencrypt", args, nil, func(ctx context.Context, cfg *config.Config, st store.Store) error {
 		ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
 		if err != nil {
 			return fmt.Errorf("load encryption key: %w", err)
@@ -78,10 +77,11 @@ func runReencryptSecrets(args []string) error {
 		count := 0
 
 		// Re-encrypt oauth_providers.client_secret.
-		providers, err := q.ListAllOAuthProvidersWithSecrets(ctx)
+		providers, err := st.OAuthProviders().ListAllWithSecrets(ctx)
 		if err != nil {
 			return fmt.Errorf("list providers: %w", err)
 		}
+
 		for _, p := range providers {
 			if ver, err := keystore.CiphertextVersion(p.ClientSecret); err == nil && ver == activeVer {
 				continue // already at active version
@@ -95,9 +95,8 @@ func runReencryptSecrets(args []string) error {
 			if encErr != nil {
 				return fmt.Errorf("re-encrypt provider %s: %w", p.ID, encErr)
 			}
-			// Update via raw SQL since sqlc doesn't have an update for client_secret.
-			if _, execErr := sqlDB.ExecContext(ctx, "UPDATE oauth_providers SET client_secret = ? WHERE id = ?", newCt, p.ID); execErr != nil {
-				return fmt.Errorf("update provider %s: %w", p.ID, execErr)
+			if err := st.OAuthProviders().UpdateClientSecret(ctx, p.ID, newCt); err != nil {
+				return fmt.Errorf("update provider %s: %w", p.ID, err)
 			}
 			count++
 		}
@@ -107,7 +106,7 @@ func runReencryptSecrets(args []string) error {
 			if ver == activeVer {
 				continue
 			}
-			tokens, listErr := q.ListOAuthTokensByKeyVersion(ctx, int64(ver))
+			tokens, listErr := st.OAuthTokens().ListByKeyVersion(ctx, int64(ver))
 			if listErr != nil {
 				return fmt.Errorf("list tokens for key version %d: %w", ver, listErr)
 			}
@@ -133,7 +132,7 @@ func runReencryptSecrets(args []string) error {
 					return fmt.Errorf("re-encrypt refresh_token: %w", err)
 				}
 
-				err = q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
+				err = st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
 					UserID:       tok.UserID,
 					ProviderID:   tok.ProviderID,
 					AccessToken:  newAccess,

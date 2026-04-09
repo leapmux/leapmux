@@ -2,17 +2,15 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"strconv"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/oauth"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 func runAdminOAuthProvider(args []string) error {
@@ -44,7 +42,7 @@ func runAddOAuthProvider(args []string) error {
 	var issuerURL *string
 	var scopes *string
 	var trustEmailFlag *bool
-	return withAdminDB("oauth-provider add", args, func(fs *flag.FlagSet) {
+	return withAdminStore("oauth-provider add", args, func(fs *flag.FlagSet) {
 		providerType = fs.String("type", "", "provider type (github, google, apple, oidc)")
 		name = fs.String("name", "", "display name")
 		clientID = fs.String("client-id", "", "OAuth client ID")
@@ -59,7 +57,7 @@ func runAddOAuthProvider(args []string) error {
 			trustEmailFlag = &b
 			return nil
 		})
-	}, func(ctx context.Context, cfg *config.Config, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, cfg *config.Config, st store.Store) error {
 		if *providerType == "" {
 			return fmt.Errorf("--type is required (github, google, apple, oidc)")
 		}
@@ -102,7 +100,6 @@ func runAddOAuthProvider(args []string) error {
 		if trustEmailVal == nil {
 			return fmt.Errorf("--trust-email is required for generic OIDC providers (use --trust-email=true or --trust-email=false)")
 		}
-		trustEmail := ptrconv.BoolToInt64(*trustEmailVal)
 
 		// Validate issuer for OIDC-based providers.
 		if storedType == oauth.ProviderTypeOIDC {
@@ -127,16 +124,16 @@ func runAddOAuthProvider(args []string) error {
 			return fmt.Errorf("encrypt client secret: %w", err)
 		}
 
-		if err := q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
+		if err := st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 			ID:           providerID,
 			ProviderType: storedType,
 			Name:         displayName,
-			IssuerUrl:    issuer,
+			IssuerURL:    issuer,
 			ClientID:     *clientID,
 			ClientSecret: encryptedSecret,
 			Scopes:       scopeStr,
-			TrustEmail:   trustEmail,
-			Enabled:      1,
+			TrustEmail:   *trustEmailVal,
+			Enabled:      true,
 		}); err != nil {
 			return fmt.Errorf("create provider: %w", err)
 		}
@@ -147,8 +144,8 @@ func runAddOAuthProvider(args []string) error {
 }
 
 func runListOAuthProviders(args []string) error {
-	return withAdminDB("oauth-provider list", args, nil, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		providers, err := q.ListAllOAuthProviders(ctx)
+	return withAdminStore("oauth-provider list", args, nil, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		providers, err := st.OAuthProviders().ListAll(ctx)
 		if err != nil {
 			return fmt.Errorf("list providers: %w", err)
 		}
@@ -168,19 +165,19 @@ func runListOAuthProviders(args []string) error {
 
 func runRemoveOAuthProvider(args []string) error {
 	var providerID *string
-	return withAdminDB("oauth-provider remove", args, func(fs *flag.FlagSet) {
+	return withAdminStore("oauth-provider remove", args, func(fs *flag.FlagSet) {
 		providerID = fs.String("id", "", "provider ID")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *providerID == "" {
 			return fmt.Errorf("--id is required")
 		}
 
-		provider, err := q.GetOAuthProviderByID(ctx, *providerID)
+		provider, err := st.OAuthProviders().GetByID(ctx, *providerID)
 		if err != nil {
 			return fmt.Errorf("get provider %s: %w", *providerID, err)
 		}
 
-		if err := q.DeleteOAuthProvider(ctx, *providerID); err != nil {
+		if err := st.OAuthProviders().Delete(ctx, *providerID); err != nil {
 			return fmt.Errorf("delete provider: %w", err)
 		}
 
@@ -191,15 +188,15 @@ func runRemoveOAuthProvider(args []string) error {
 
 func runSetOAuthProviderEnabled(args []string, enabled bool) error {
 	var providerID *string
-	return withAdminDB("oauth-provider enable/disable", args, func(fs *flag.FlagSet) {
+	return withAdminStore("oauth-provider enable/disable", args, func(fs *flag.FlagSet) {
 		providerID = fs.String("id", "", "provider ID")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *providerID == "" {
 			return fmt.Errorf("--id is required")
 		}
 
-		if err := q.UpdateOAuthProviderEnabled(ctx, gendb.UpdateOAuthProviderEnabledParams{
-			Enabled: ptrconv.BoolToInt64(enabled),
+		if err := st.OAuthProviders().UpdateEnabled(ctx, store.UpdateOAuthProviderEnabledParams{
+			Enabled: enabled,
 			ID:      *providerID,
 		}); err != nil {
 			return fmt.Errorf("update provider: %w", err)

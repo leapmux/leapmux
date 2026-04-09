@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,7 +10,7 @@ import (
 	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -23,81 +23,83 @@ type CreateUserParams struct {
 	PasswordHash  string
 	DisplayName   string
 	Email         string
-	EmailVerified int64
-	PasswordSet   int64
-	IsAdmin       int64
+	EmailVerified bool
+	PasswordSet   bool
+	IsAdmin       bool
 }
 
 // CreateUserWithOrg creates a personal org, a user, and an org membership
 // atomically within a transaction. It returns the created user row.
-func CreateUserWithOrg(ctx context.Context, sqlDB *sql.DB, q *db.Queries, p CreateUserParams) (*db.User, error) {
-	tx, err := sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	txq := q.WithTx(tx)
-
+func CreateUserWithOrg(ctx context.Context, st store.Store, p CreateUserParams) (*store.User, error) {
 	orgID := id.Generate()
-	if err := txq.CreateOrg(ctx, db.CreateOrgParams{
-		ID:         orgID,
-		Name:       p.Username,
-		IsPersonal: 1,
-	}); err != nil {
-		return nil, fmt.Errorf("create org: %w", err)
+	userID := id.Generate()
+
+	err := st.RunInTransaction(ctx, func(tx store.Store) error {
+		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
+			ID:         orgID,
+			Name:       p.Username,
+			IsPersonal: true,
+		}); err != nil {
+			return fmt.Errorf("create org: %w", store.NewConflictError(err, store.ConflictEntityOrg))
+		}
+
+		if err := tx.Users().Create(ctx, store.CreateUserParams{
+			ID:            userID,
+			OrgID:         orgID,
+			Username:      p.Username,
+			PasswordHash:  p.PasswordHash,
+			DisplayName:   p.DisplayName,
+			Email:         p.Email,
+			EmailVerified: p.EmailVerified,
+			PasswordSet:   p.PasswordSet,
+			IsAdmin:       p.IsAdmin,
+		}); err != nil {
+			return fmt.Errorf("create user: %w", store.NewConflictError(err, store.ConflictEntityUser))
+		}
+
+		if err := tx.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
+			OrgID:  orgID,
+			UserID: userID,
+			Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
+		}); err != nil {
+			return fmt.Errorf("create org member: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	userID := id.Generate()
-	if err := txq.CreateUser(ctx, db.CreateUserParams{
+	createdUser := &store.User{
 		ID:            userID,
 		OrgID:         orgID,
 		Username:      p.Username,
-		PasswordHash:  p.PasswordHash,
 		DisplayName:   p.DisplayName,
 		Email:         p.Email,
 		EmailVerified: p.EmailVerified,
 		PasswordSet:   p.PasswordSet,
 		IsAdmin:       p.IsAdmin,
-	}); err != nil {
-		return nil, fmt.Errorf("create user: %w", err)
-	}
-
-	if err := txq.CreateOrgMember(ctx, db.CreateOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
-	}); err != nil {
-		return nil, fmt.Errorf("create org member: %w", err)
-	}
-
-	user, err := txq.GetUserByID(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("get created user: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	// If this user claimed a verified email, clear competing pending_email entries.
-	ClearCompetingPendingEmails(ctx, q, p.Email, userID)
+	ClearCompetingPendingEmails(ctx, st, p.Email, createdUser.ID)
 
-	return &user, nil
+	return createdUser, nil
 }
 
 // SetEmailAndClearCompeting updates a user's email and clears competing
 // pending_email entries from other users. Use this instead of calling
 // UpdateUserEmail + ClearCompetingPendingEmails separately.
-func SetEmailAndClearCompeting(ctx context.Context, q *db.Queries, userID, email string, verified int64) error {
-	if err := q.UpdateUserEmail(ctx, db.UpdateUserEmailParams{
+func SetEmailAndClearCompeting(ctx context.Context, st store.Store, userID, email string, verified bool) error {
+	if err := st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
+		ID:            userID,
 		Email:         email,
 		EmailVerified: verified,
-		ID:            userID,
 	}); err != nil {
 		return err
 	}
-	ClearCompetingPendingEmails(ctx, q, email, userID)
+	ClearCompetingPendingEmails(ctx, st, email, userID)
 	return nil
 }
 
@@ -108,51 +110,48 @@ func SetEmailAndClearCompeting(ctx context.Context, q *db.Queries, userID, email
 // Multiple users may have the same pending_email concurrently — only the
 // verified email column is checked here. When a user promotes their
 // pending_email, promotePendingEmail clears competing pending_email entries.
-func CheckEmailAvailable(ctx context.Context, q *db.Queries, email, excludeUserID string) error {
+func CheckEmailAvailable(ctx context.Context, st store.Store, email, excludeUserID string) error {
 	if email == "" {
 		return nil
 	}
-	existing, err := q.GetUserByEmail(ctx, email)
-	if err == sql.ErrNoRows {
-		return nil
-	}
+	taken, err := st.Users().ExistsByEmail(ctx, email, excludeUserID)
 	if err != nil {
 		return fmt.Errorf("check email: %w", err)
 	}
-	if excludeUserID != "" && existing.ID == excludeUserID {
-		return nil
+	if taken {
+		return fmt.Errorf("email address is already in use")
 	}
-	return fmt.Errorf("email address is already in use")
+	return nil
 }
 
 // checkUsernameAvailable checks that no other user has the given username.
-func checkUsernameAvailable(ctx context.Context, q *db.Queries, username string) error {
-	_, err := q.GetUserByUsername(ctx, username)
-	if err == sql.ErrNoRows {
-		return nil
-	}
+func checkUsernameAvailable(ctx context.Context, st store.Store, username string) error {
+	taken, err := st.Users().ExistsByUsername(ctx, username)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
+	if taken {
+		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
+	}
+	return nil
 }
 
 // verifyPendingEmailToken validates a pending-email verification token,
 // checks expiry, and promotes the pending email. Returns the updated user.
-func verifyPendingEmailToken(ctx context.Context, q *db.Queries, token string) (*db.User, error) {
+func verifyPendingEmailToken(ctx context.Context, st store.Store, token string) (*store.User, error) {
 	if token == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("verification_token is required"))
 	}
 
-	user, err := q.GetUserByPendingEmailToken(ctx, token)
+	user, err := st.Users().GetByPendingEmailToken(ctx, token)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid verification token"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	if user.PendingEmailExpiresAt.Valid && time.Now().UTC().After(user.PendingEmailExpiresAt.Time) {
+	if user.PendingEmailExpiresAt != nil && time.Now().UTC().After(*user.PendingEmailExpiresAt) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("verification token expired"))
 	}
 
@@ -160,64 +159,65 @@ func verifyPendingEmailToken(ctx context.Context, q *db.Queries, token string) (
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
 	}
 
-	if err := promotePendingEmail(ctx, q, user.ID, user.PendingEmail); err != nil {
+	if err := promotePendingEmail(ctx, st, user.ID, user.PendingEmail); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 
-	updatedUser, err := q.GetUserByID(ctx, user.ID)
+	updatedUser, err := st.Users().GetByID(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return &updatedUser, nil
+	return updatedUser, nil
 }
 
-// promotePendingEmail moves pending_email to email with email_verified=1.
+// promotePendingEmail moves pending_email to email with email_verified=true.
 // It checks that no other user has claimed the verified email, then clears
 // any other users' pending_email with the same value so they don't attempt
 // to verify a now-taken address.
-func promotePendingEmail(ctx context.Context, q *db.Queries, userID, email string) error {
-	if err := CheckEmailAvailable(ctx, q, email, userID); err != nil {
+func promotePendingEmail(ctx context.Context, st store.Store, userID, email string) error {
+	if err := CheckEmailAvailable(ctx, st, email, userID); err != nil {
 		return fmt.Errorf("email was claimed by another user: %w", err)
 	}
-	if err := q.PromotePendingEmail(ctx, userID); err != nil {
+	if err := st.Users().PromotePendingEmail(ctx, userID); err != nil {
 		return fmt.Errorf("promote pending email: %w", err)
 	}
-	ClearCompetingPendingEmails(ctx, q, email, userID)
+	ClearCompetingPendingEmails(ctx, st, email, userID)
 	return nil
 }
 
 // ClearCompetingPendingEmails clears pending_email from all other users who
 // have the same value. Call this whenever an email address is claimed — either
 // by promotion or by direct assignment to the email column.
-func ClearCompetingPendingEmails(ctx context.Context, q *db.Queries, email, ownerUserID string) {
+func ClearCompetingPendingEmails(ctx context.Context, st store.Store, email, ownerUserID string) {
 	if email == "" {
 		return
 	}
-	_ = q.ClearCompetingPendingEmails(ctx, db.ClearCompetingPendingEmailsParams{
+	_ = st.Users().ClearCompetingPendingEmails(ctx, store.ClearCompetingPendingEmailsParams{
 		PendingEmail: email,
-		ID:           ownerUserID,
+		ExcludeID:    ownerUserID,
 	})
 }
 
 // setPendingEmailWithToken sets pending_email with a verification token.
 // It rejects immediately if the email is already verified by another user.
 // Stub: auto-verifies immediately (real email sending TBD).
-func setPendingEmailWithToken(ctx context.Context, q *db.Queries, userID, email string) error {
-	if err := CheckEmailAvailable(ctx, q, email, userID); err != nil {
+func setPendingEmailWithToken(ctx context.Context, st store.Store, userID, email string) error {
+	if err := CheckEmailAvailable(ctx, st, email, userID); err != nil {
 		return err
 	}
 	token := id.Generate()
-	if err := q.SetPendingEmail(ctx, db.SetPendingEmailParams{
+	expiresAt := time.Now().Add(pendingEmailExpiry).UTC()
+	if err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+		ID:                    userID,
 		PendingEmail:          email,
 		PendingEmailToken:     token,
-		PendingEmailExpiresAt: sql.NullTime{Time: time.Now().Add(pendingEmailExpiry).UTC(), Valid: true},
-		ID:                    userID,
+		PendingEmailExpiresAt: &expiresAt,
 	}); err != nil {
 		return fmt.Errorf("set pending email: %w", err)
 	}
 
 	// Stub: auto-verify immediately.
-	if err := promotePendingEmail(ctx, q, userID, email); err != nil {
+	if err := promotePendingEmail(ctx, st, userID, email); err != nil {
 		slog.Warn("stub auto-verify failed", "user_id", userID, "error", err)
 	}
 	return nil

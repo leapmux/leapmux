@@ -14,46 +14,46 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 type orgTestEnv struct {
-	client  leapmuxv1connect.OrgServiceClient
-	queries *gendb.Queries
-	token   string
-	userID  string
-	orgID   string // personal org ID of the admin user
+	client leapmuxv1connect.OrgServiceClient
+	store  store.Store
+	token  string
+	userID string
+	orgID  string // personal org ID of the admin user
 }
 
 func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	q := gendb.New(sqlDB)
-
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	cfg := testConfig()
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
-	orgSvc := service.NewOrgService(q, false)
+	orgSvc := service.NewOrgService(st, false)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
-	authSvc := service.NewAuthService(sqlDB, q, cfg, nil, nil)
+	authSvc := service.NewAuthService(st, cfg, nil, nil)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -63,15 +63,15 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	client := leapmuxv1connect.NewOrgServiceClient(server.Client(), server.URL)
 
 	// Login as the bootstrapped admin user.
-	token, user, _, err := auth.Login(context.Background(), q, "admin", "admin123")
+	token, user, _, err := auth.Login(context.Background(), st, "admin", "admin123")
 	require.NoError(t, err)
 
 	return &orgTestEnv{
-		client:  client,
-		queries: q,
-		token:   token,
-		userID:  user.ID,
-		orgID:   user.OrgID,
+		client: client,
+		store:  st,
+		token:  token,
+		userID: user.ID,
+		orgID:  user.OrgID,
 	}
 }
 
@@ -81,22 +81,22 @@ func (e *orgTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 
 	userID = id.Generate()
 	hash, _ := password.Hash("testpass2")
-	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
+	_ = e.store.Users().Create(ctx, store.CreateUserParams{
 		ID:           userID,
 		OrgID:        e.orgID,
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	// Add as org member with MEMBER role in the admin's personal org.
-	_ = e.queries.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
+	_ = e.store.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
 		OrgID:  e.orgID,
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, _, err := auth.Login(ctx, e.queries, "user2", "testpass2")
+	token, _, _, err := auth.Login(ctx, e.store, "user2", "testpass2")
 	require.NoError(t, err)
 	return
 }
@@ -111,11 +111,23 @@ func TestOrgService_CreateOrg(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	org := resp.Msg.GetOrg()
-	assert.NotEmpty(t, org.GetId())
-	assert.Equal(t, "my-team", org.GetName())
-	assert.False(t, org.GetIsPersonal())
-	assert.NotEmpty(t, org.GetCreatedAt())
+	assert.NotEmpty(t, resp.Msg.GetOrgId())
+}
+
+func TestOrgService_CreateOrg_DuplicateName(t *testing.T) {
+	env := setupOrgTestServer(t)
+
+	_, err := env.client.CreateOrg(context.Background(), authedReq(&leapmuxv1.CreateOrgRequest{
+		Name: "duplicate-org",
+	}, env.token))
+	require.NoError(t, err)
+
+	// Creating another org with the same name should return AlreadyExists.
+	_, err = env.client.CreateOrg(context.Background(), authedReq(&leapmuxv1.CreateOrgRequest{
+		Name: "duplicate-org",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 }
 
 func TestOrgService_CreateOrg_EmptyName(t *testing.T) {
@@ -138,7 +150,7 @@ func TestOrgService_GetOrg(t *testing.T) {
 		Name: "get-test-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Get it by ID.
 	resp, err := env.client.GetOrg(context.Background(), authedReq(&leapmuxv1.GetOrgRequest{
@@ -172,7 +184,7 @@ func TestOrgService_UpdateOrg(t *testing.T) {
 		Name: "rename-me",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Rename it.
 	resp, err := env.client.UpdateOrg(context.Background(), authedReq(&leapmuxv1.UpdateOrgRequest{
@@ -204,7 +216,7 @@ func TestOrgService_UpdateOrg_NotOwnerOrAdmin(t *testing.T) {
 		Name: "admin-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Create second user and invite them as a regular member.
 	_, user2Token := env.createSecondUser(t)
@@ -236,7 +248,7 @@ func TestOrgService_DeleteOrg(t *testing.T) {
 		Name: "delete-me",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Delete it.
 	_, err = env.client.DeleteOrg(context.Background(), authedReq(&leapmuxv1.DeleteOrgRequest{
@@ -259,7 +271,7 @@ func TestOrgService_DeleteOrg_NotOwner(t *testing.T) {
 		Name: "owner-only-delete",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Create second user and invite them as a member.
 	_, user2Token := env.createSecondUser(t)
@@ -354,7 +366,7 @@ func TestOrgService_ListOrgMembers(t *testing.T) {
 		Name: "members-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	resp, err := env.client.ListOrgMembers(context.Background(), authedReq(&leapmuxv1.ListOrgMembersRequest{
 		OrgId: orgID,
@@ -377,22 +389,18 @@ func TestOrgService_InviteOrgMember(t *testing.T) {
 		Name: "invite-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Create second user (in personal org).
 	env.createSecondUser(t)
 
 	// Invite user2 to the new org as admin.
-	inviteResp, err := env.client.InviteOrgMember(context.Background(), authedReq(&leapmuxv1.InviteOrgMemberRequest{
+	_, err = env.client.InviteOrgMember(context.Background(), authedReq(&leapmuxv1.InviteOrgMemberRequest{
 		OrgId:    orgID,
 		Username: "user2",
 		Role:     leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_ADMIN,
 	}, env.token))
 	require.NoError(t, err)
-
-	member := inviteResp.Msg.GetMember()
-	assert.Equal(t, "user2", member.GetUsername())
-	assert.Equal(t, leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_ADMIN, member.GetRole())
 
 	// Verify members list now has 2 members.
 	listResp, err := env.client.ListOrgMembers(context.Background(), authedReq(&leapmuxv1.ListOrgMembersRequest{
@@ -410,7 +418,7 @@ func TestOrgService_InviteOrgMember_NotOwnerOrAdmin(t *testing.T) {
 		Name: "restricted-invite-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Create second user and invite as regular member.
 	_, user2Token := env.createSecondUser(t)
@@ -425,14 +433,14 @@ func TestOrgService_InviteOrgMember_NotOwnerOrAdmin(t *testing.T) {
 	// Create a third user for user2 to attempt to invite.
 	user3ID := id.Generate()
 	hash, _ := password.Hash("pass3")
-	_ = env.queries.CreateUser(context.Background(), gendb.CreateUserParams{
+	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           user3ID,
 		OrgID:        env.orgID,
 		Username:     "user3",
 		PasswordHash: hash,
 		DisplayName:  "User 3",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 
 	// user2 (member role) tries to invite user3 — should fail.
@@ -455,7 +463,7 @@ func TestOrgService_RemoveOrgMember(t *testing.T) {
 		Name: "remove-member-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Create and invite second user.
 	user2ID, _ := env.createSecondUser(t)
@@ -490,7 +498,7 @@ func TestOrgService_RemoveOrgMember_CannotRemoveLastOwner(t *testing.T) {
 		Name: "last-owner-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Try to remove the admin (last owner).
 	_, err = env.client.RemoveOrgMember(context.Background(), authedReq(&leapmuxv1.RemoveOrgMemberRequest{
@@ -508,11 +516,11 @@ func TestOrgService_RemoveOrgMember_PreservesGrantsInOtherOrgs(t *testing.T) {
 	// Create two orgs.
 	respA, err := env.client.CreateOrg(ctx, authedReq(&leapmuxv1.CreateOrgRequest{Name: "org-alpha"}, env.token))
 	require.NoError(t, err)
-	orgA := respA.Msg.GetOrg().GetId()
+	orgA := respA.Msg.GetOrgId()
 
 	respB, err := env.client.CreateOrg(ctx, authedReq(&leapmuxv1.CreateOrgRequest{Name: "org-beta"}, env.token))
 	require.NoError(t, err)
-	orgB := respB.Msg.GetOrg().GetId()
+	orgB := respB.Msg.GetOrgId()
 
 	// Create user2 and invite into both orgs.
 	user2ID, _ := env.createSecondUser(t)
@@ -529,14 +537,14 @@ func TestOrgService_RemoveOrgMember_PreservesGrantsInOtherOrgs(t *testing.T) {
 
 	// Create a worker registered by admin (who is a member of both orgs).
 	workerA := id.Generate()
-	_ = env.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
+	_ = env.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID: workerA, AuthToken: id.Generate(), RegisteredBy: env.userID,
 		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 	})
 	// Admin is in org-alpha, so this worker is "in" org-alpha.
 
 	workerB := id.Generate()
-	_ = env.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
+	_ = env.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID: workerB, AuthToken: id.Generate(), RegisteredBy: env.userID,
 		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 	})
@@ -545,31 +553,31 @@ func TestOrgService_RemoveOrgMember_PreservesGrantsInOtherOrgs(t *testing.T) {
 	// user3 who is only in org-beta, and register a worker as user3.
 	user3ID := id.Generate()
 	hash, _ := password.Hash("pass3")
-	_ = env.queries.CreateUser(ctx, gendb.CreateUserParams{
+	_ = env.store.Users().Create(ctx, store.CreateUserParams{
 		ID: user3ID, OrgID: env.orgID, Username: "user3",
-		PasswordHash: hash, DisplayName: "User 3", PasswordSet: 1,
+		PasswordHash: hash, DisplayName: "User 3", PasswordSet: true,
 	})
-	_ = env.queries.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
+	_ = env.store.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
 		OrgID: orgB, UserID: user3ID, Role: leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
 	workerInB := id.Generate()
-	_ = env.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
+	_ = env.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID: workerInB, AuthToken: id.Generate(), RegisteredBy: user3ID,
 		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 	})
 
 	// Grant user2 access to workerA (admin's worker, in org-alpha) and workerInB (user3's worker, in org-beta).
-	_ = env.queries.GrantWorkerAccess(ctx, gendb.GrantWorkerAccessParams{
+	_ = env.store.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
 		WorkerID: workerA, UserID: user2ID, GrantedBy: env.userID,
 	})
-	_ = env.queries.GrantWorkerAccess(ctx, gendb.GrantWorkerAccessParams{
+	_ = env.store.WorkerAccessGrants().Grant(ctx, store.GrantWorkerAccessParams{
 		WorkerID: workerInB, UserID: user2ID, GrantedBy: user3ID,
 	})
 
 	// Verify user2 has access to both workers.
-	hasA, _ := env.queries.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{WorkerID: workerA, UserID: user2ID})
+	hasA, _ := env.store.WorkerAccessGrants().HasAccess(ctx, store.HasWorkerAccessParams{WorkerID: workerA, UserID: user2ID})
 	assert.True(t, hasA)
-	hasB, _ := env.queries.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{WorkerID: workerInB, UserID: user2ID})
+	hasB, _ := env.store.WorkerAccessGrants().HasAccess(ctx, store.HasWorkerAccessParams{WorkerID: workerInB, UserID: user2ID})
 	assert.True(t, hasB)
 
 	// Remove user2 from org-alpha only.
@@ -579,11 +587,11 @@ func TestOrgService_RemoveOrgMember_PreservesGrantsInOtherOrgs(t *testing.T) {
 	require.NoError(t, err)
 
 	// User2's grant to workerA (in org-alpha) should be revoked.
-	hasA, _ = env.queries.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{WorkerID: workerA, UserID: user2ID})
+	hasA, _ = env.store.WorkerAccessGrants().HasAccess(ctx, store.HasWorkerAccessParams{WorkerID: workerA, UserID: user2ID})
 	assert.False(t, hasA, "grant to worker in org-alpha should be revoked")
 
 	// User2's grant to workerInB (in org-beta) should be PRESERVED.
-	hasB, _ = env.queries.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{WorkerID: workerInB, UserID: user2ID})
+	hasB, _ = env.store.WorkerAccessGrants().HasAccess(ctx, store.HasWorkerAccessParams{WorkerID: workerInB, UserID: user2ID})
 	assert.True(t, hasB, "grant to worker in org-beta should be preserved")
 }
 
@@ -597,7 +605,7 @@ func TestOrgService_UpdateOrgMember(t *testing.T) {
 		Name: "role-change-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Create and invite second user as member.
 	user2ID, _ := env.createSecondUser(t)
@@ -610,14 +618,12 @@ func TestOrgService_UpdateOrgMember(t *testing.T) {
 	require.NoError(t, err)
 
 	// Promote user2 to admin.
-	resp, err := env.client.UpdateOrgMember(context.Background(), authedReq(&leapmuxv1.UpdateOrgMemberRequest{
+	_, err = env.client.UpdateOrgMember(context.Background(), authedReq(&leapmuxv1.UpdateOrgMemberRequest{
 		OrgId:  orgID,
 		UserId: user2ID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_ADMIN,
 	}, env.token))
 	require.NoError(t, err)
-
-	assert.Equal(t, leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_ADMIN, resp.Msg.GetMember().GetRole())
 }
 
 func TestOrgService_UpdateOrgMember_CannotDemoteLastOwner(t *testing.T) {
@@ -628,7 +634,7 @@ func TestOrgService_UpdateOrgMember_CannotDemoteLastOwner(t *testing.T) {
 		Name: "demote-last-owner-org",
 	}, env.token))
 	require.NoError(t, err)
-	orgID := createResp.Msg.GetOrg().GetId()
+	orgID := createResp.Msg.GetOrgId()
 
 	// Try to demote the admin (last owner) to member.
 	_, err = env.client.UpdateOrgMember(context.Background(), authedReq(&leapmuxv1.UpdateOrgMemberRequest{

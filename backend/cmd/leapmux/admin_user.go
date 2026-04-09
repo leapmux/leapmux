@@ -2,16 +2,15 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -48,25 +47,25 @@ func runAdminUser(args []string) error {
 func runUserList(args []string) error {
 	var query *string
 	var limit *int64
-	var offset *int64
-	return withAdminDB("user list", args, func(fs *flag.FlagSet) {
+	var cursor *string
+	return withAdminStore("user list", args, func(fs *flag.FlagSet) {
 		query = fs.String("query", "", "search query (matches username, display name, email)")
 		limit = fs.Int64("limit", 50, "maximum number of results")
-		offset = fs.Int64("offset", 0, "offset for pagination")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		var users []gendb.User
+		cursor = fs.String("cursor", "", "cursor for pagination (created_at in RFC3339Nano)")
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		var users []store.User
 		var err error
 
 		if *query != "" {
-			users, err = q.SearchUsers(ctx, gendb.SearchUsersParams{
-				Query:  sql.NullString{String: *query, Valid: true},
+			users, err = st.Users().Search(ctx, store.SearchUsersParams{
+				Query:  query,
 				Limit:  *limit,
-				Offset: *offset,
+				Cursor: *cursor,
 			})
 		} else {
-			users, err = q.ListAllUsers(ctx, gendb.ListAllUsersParams{
+			users, err = st.Users().ListAll(ctx, store.ListAllUsersParams{
 				Limit:  *limit,
-				Offset: *offset,
+				Cursor: *cursor,
 			})
 		}
 		if err != nil {
@@ -83,6 +82,8 @@ func runUserList(args []string) error {
 			fmt.Printf("%-48s %-20s %-24s %-30s %-8s %-8s\n",
 				u.ID, u.Username, u.DisplayName, u.Email, yesNo(u.IsAdmin), timefmt.Format(u.CreatedAt))
 		}
+
+		maybePrintNextCursor(users, *limit, func(u store.User) time.Time { return u.CreatedAt })
 		return nil
 	})
 }
@@ -90,11 +91,11 @@ func runUserList(args []string) error {
 func runUserGet(args []string) error {
 	var userID *string
 	var username *string
-	return withAdminDB("user get", args, func(fs *flag.FlagSet) {
+	return withAdminStore("user get", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		user, err := resolveUser(ctx, q, *userID, *username)
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err
 		}
@@ -120,14 +121,14 @@ func runUserCreate(args []string) error {
 	var email *string
 	var emailVerified *bool
 	var admin *bool
-	return withAdminDB("user create", args, func(fs *flag.FlagSet) {
+	return withAdminStore("user create", args, func(fs *flag.FlagSet) {
 		username = fs.String("username", "", "username (required)")
 		pw = fs.String("password", "", "password (prompted if omitted)")
 		displayName = fs.String("display-name", "", "display name")
 		email = fs.String("email", "", "email address")
 		emailVerified = fs.Bool("email-verified", false, "mark email as verified")
 		admin = fs.Bool("admin", false, "grant admin privileges")
-	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *username == "" {
 			return fmt.Errorf("--username is required")
 		}
@@ -162,14 +163,14 @@ func runUserCreate(args []string) error {
 			return fmt.Errorf("hash password: %w", err)
 		}
 
-		user, err := service.CreateUserWithOrg(ctx, sqlDB, q, service.CreateUserParams{
+		user, err := service.CreateUserWithOrg(ctx, st, service.CreateUserParams{
 			Username:      slug,
 			PasswordHash:  hash,
 			DisplayName:   dispName,
 			Email:         *email,
-			EmailVerified: ptrconv.BoolToInt64(*emailVerified),
-			PasswordSet:   ptrconv.BoolToInt64(true),
-			IsAdmin:       ptrconv.BoolToInt64(*admin),
+			EmailVerified: *emailVerified,
+			PasswordSet:   true,
+			IsAdmin:       *admin,
 		})
 		if err != nil {
 			return friendlyConstraintError(err, slug, *email)
@@ -187,7 +188,7 @@ func runUserUpdate(args []string) error {
 	var displayName *string
 	var email *string
 	var emailVerifiedFlag *bool
-	return withAdminDB("user update", args, func(fs *flag.FlagSet) {
+	return withAdminStore("user update", args, func(fs *flag.FlagSet) {
 		flagSet = fs
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username (for lookup)")
@@ -201,8 +202,8 @@ func runUserUpdate(args []string) error {
 			emailVerifiedFlag = &b
 			return nil
 		})
-	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
-		user, err := resolveUser(ctx, q, *userID, *username)
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err
 		}
@@ -233,48 +234,37 @@ func runUserUpdate(args []string) error {
 			}
 		}
 
-		// Wrap all updates in a transaction for atomicity.
-		tx, err := sqlDB.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin transaction: %w", err)
-		}
-		defer func() { _ = tx.Rollback() }()
-
-		txq := q.WithTx(tx)
-
-		if updateDisplayName {
-			if err := txq.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
-				Username:    user.Username,
-				DisplayName: sanitizedDisplayName,
-				ID:          user.ID,
-			}); err != nil {
-				return fmt.Errorf("update display name: %w", err)
+		return st.RunInTransaction(ctx, func(tx store.Store) error {
+			if updateDisplayName {
+				if err := tx.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
+					Username:    user.Username,
+					DisplayName: sanitizedDisplayName,
+					ID:          user.ID,
+				}); err != nil {
+					return fmt.Errorf("update display name: %w", err)
+				}
 			}
-		}
 
-		if updateEmail {
-			verified := user.EmailVerified
-			if emailVerifiedFlag != nil {
-				verified = ptrconv.BoolToInt64(*emailVerifiedFlag)
+			if updateEmail {
+				verified := user.EmailVerified
+				if emailVerifiedFlag != nil {
+					verified = *emailVerifiedFlag
+				}
+				if err := service.SetEmailAndClearCompeting(ctx, tx, user.ID, *email, verified); err != nil {
+					return friendlyConstraintError(err, user.Username, *email)
+				}
+			} else if updateEmailVerified {
+				if err := tx.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
+					EmailVerified: *emailVerifiedFlag,
+					ID:            user.ID,
+				}); err != nil {
+					return fmt.Errorf("update email verified: %w", err)
+				}
 			}
-			if err := service.SetEmailAndClearCompeting(ctx, txq, user.ID, *email, verified); err != nil {
-				return friendlyConstraintError(err, user.Username, *email)
-			}
-		} else if updateEmailVerified {
-			if err := txq.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
-				EmailVerified: ptrconv.BoolToInt64(*emailVerifiedFlag),
-				ID:            user.ID,
-			}); err != nil {
-				return fmt.Errorf("update email verified: %w", err)
-			}
-		}
 
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit transaction: %w", err)
-		}
-
-		fmt.Printf("Updated user %q (id: %s)\n", user.Username, user.ID)
-		return nil
+			fmt.Printf("Updated user %q (id: %s)\n", user.Username, user.ID)
+			return nil
+		})
 	})
 }
 
@@ -282,55 +272,49 @@ func runUserDelete(args []string) error {
 	var userID *string
 	var username *string
 	var force *bool
-	return withAdminDB("user delete", args, func(fs *flag.FlagSet) {
+	return withAdminStore("user delete", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 		force = fs.Bool("force", false, "required to delete an admin user")
-	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
-		user, err := resolveUser(ctx, q, *userID, *username)
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err
 		}
 
-		if user.IsAdmin == 1 && !*force {
+		if user.IsAdmin && !*force {
 			return fmt.Errorf("user %q is an admin; pass --force to confirm deletion", user.Username)
 		}
 
-		tx, err := sqlDB.BeginTx(ctx, nil)
+		err = st.RunInTransaction(ctx, func(tx store.Store) error {
+			if err := tx.Workers().MarkAllDeletedByUser(ctx, user.ID); err != nil {
+				return fmt.Errorf("mark workers deleted: %w", err)
+			}
+			if err := tx.WorkerAccessGrants().DeleteByUser(ctx, user.ID); err != nil {
+				return fmt.Errorf("delete worker access grants: %w", err)
+			}
+			if err := tx.Workspaces().SoftDeleteAllByUser(ctx, user.ID); err != nil {
+				return fmt.Errorf("soft-delete workspaces: %w", err)
+			}
+			if err := tx.Sessions().DeleteByUser(ctx, user.ID); err != nil {
+				return fmt.Errorf("delete sessions: %w", err)
+			}
+			if err := tx.OrgMembers().Delete(ctx, store.DeleteOrgMemberParams{
+				OrgID:  user.OrgID,
+				UserID: user.ID,
+			}); err != nil {
+				return fmt.Errorf("delete org member: %w", err)
+			}
+			if err := tx.Users().Delete(ctx, user.ID); err != nil {
+				return fmt.Errorf("delete user: %w", err)
+			}
+			if err := tx.Orgs().SoftDelete(ctx, user.OrgID); err != nil {
+				return fmt.Errorf("delete personal org: %w", err)
+			}
+			return nil
+		})
 		if err != nil {
-			return fmt.Errorf("begin transaction: %w", err)
-		}
-		defer func() { _ = tx.Rollback() }()
-
-		txq := q.WithTx(tx)
-
-		if err := txq.MarkAllWorkersDeletedByUser(ctx, user.ID); err != nil {
-			return fmt.Errorf("mark workers deleted: %w", err)
-		}
-		if err := txq.DeleteWorkerAccessGrantsByUser(ctx, user.ID); err != nil {
-			return fmt.Errorf("delete worker access grants: %w", err)
-		}
-		if err := txq.SoftDeleteAllWorkspacesByUser(ctx, user.ID); err != nil {
-			return fmt.Errorf("soft-delete workspaces: %w", err)
-		}
-		if err := txq.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
-			return fmt.Errorf("delete sessions: %w", err)
-		}
-		if err := txq.DeleteOrgMember(ctx, gendb.DeleteOrgMemberParams{
-			OrgID:  user.OrgID,
-			UserID: user.ID,
-		}); err != nil {
-			return fmt.Errorf("delete org member: %w", err)
-		}
-		if err := txq.DeleteUser(ctx, user.ID); err != nil {
-			return fmt.Errorf("delete user: %w", err)
-		}
-		if err := txq.SoftDeleteOrg(ctx, user.OrgID); err != nil {
-			return fmt.Errorf("delete personal org: %w", err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit transaction: %w", err)
+			return err
 		}
 
 		fmt.Printf("Deleted user %q (id: %s) and personal org %s\n", user.Username, user.ID, user.OrgID)
@@ -342,12 +326,12 @@ func runUserResetPassword(args []string) error {
 	var userID *string
 	var username *string
 	var pw *string
-	return withAdminDB("user reset-password", args, func(fs *flag.FlagSet) {
+	return withAdminStore("user reset-password", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 		pw = fs.String("password", "", "new password (prompted if omitted)")
-	}, func(ctx context.Context, _ *config.Config, sqlDB *sql.DB, q *gendb.Queries) error {
-		user, err := resolveUser(ctx, q, *userID, *username)
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err
 		}
@@ -366,26 +350,22 @@ func runUserResetPassword(args []string) error {
 			return fmt.Errorf("hash password: %w", err)
 		}
 
-		tx, err := sqlDB.BeginTx(ctx, nil)
+		err = st.RunInTransaction(ctx, func(tx store.Store) error {
+			if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
+				PasswordHash: hash,
+				ID:           user.ID,
+			}); err != nil {
+				return fmt.Errorf("update password: %w", err)
+			}
+
+			if err := tx.Sessions().DeleteByUser(ctx, user.ID); err != nil {
+				return fmt.Errorf("delete sessions: %w", err)
+			}
+
+			return nil
+		})
 		if err != nil {
-			return fmt.Errorf("begin transaction: %w", err)
-		}
-		defer func() { _ = tx.Rollback() }()
-		txq := q.WithTx(tx)
-
-		if err := txq.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
-			PasswordHash: hash,
-			ID:           user.ID,
-		}); err != nil {
-			return fmt.Errorf("update password: %w", err)
-		}
-
-		if err := txq.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
-			return fmt.Errorf("delete sessions: %w", err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit transaction: %w", err)
+			return err
 		}
 
 		fmt.Printf("Password reset for user %q (id: %s). All sessions revoked.\n", user.Username, user.ID)
@@ -408,17 +388,17 @@ func runUserSetAdmin(args []string, admin bool) error {
 	}
 	var userID *string
 	var username *string
-	return withAdminDB("user "+verb, args, func(fs *flag.FlagSet) {
+	return withAdminStore("user "+verb, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		user, err := resolveUser(ctx, q, *userID, *username)
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err
 		}
 
-		if err := q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
-			IsAdmin: ptrconv.BoolToInt64(admin),
+		if err := st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			IsAdmin: admin,
 			ID:      user.ID,
 		}); err != nil {
 			return fmt.Errorf("update admin: %w", err)
@@ -436,16 +416,16 @@ func runUserSetAdmin(args []string, admin bool) error {
 func runUserListSessions(args []string) error {
 	var userID *string
 	var username *string
-	return withAdminDB("user list-sessions", args, func(fs *flag.FlagSet) {
+	return withAdminStore("user list-sessions", args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		user, err := resolveUser(ctx, q, *userID, *username)
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err
 		}
 
-		sessions, err := q.ListUserSessionsByUserID(ctx, user.ID)
+		sessions, err := st.Sessions().ListByUserID(ctx, user.ID)
 		if err != nil {
 			return fmt.Errorf("list sessions: %w", err)
 		}
@@ -459,7 +439,7 @@ func runUserListSessions(args []string) error {
 		for _, s := range sessions {
 			fmt.Printf("%-48s %-24s %-24s %-24s %-16s %s\n",
 				s.ID, timefmt.Format(s.CreatedAt), timefmt.Format(s.LastActiveAt),
-				timefmt.Format(s.ExpiresAt), s.IpAddress, truncate(s.UserAgent, 60))
+				timefmt.Format(s.ExpiresAt), s.IPAddress, truncate(s.UserAgent, 60))
 		}
 		return nil
 	})

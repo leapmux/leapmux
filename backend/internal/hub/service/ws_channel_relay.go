@@ -11,7 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -22,7 +22,7 @@ import (
 //
 // URL: /ws/channel?token={session_token}
 type ChannelRelayHandler struct {
-	queries      *db.Queries
+	store        store.Store
 	workerMgr    *workermgr.Manager
 	channelMgr   *channelmgr.Manager
 	soloUser     *auth.UserInfo
@@ -31,14 +31,14 @@ type ChannelRelayHandler struct {
 
 // NewChannelRelayHandler creates a new WebSocket relay handler.
 func NewChannelRelayHandler(
-	q *db.Queries,
+	st store.Store,
 	wMgr *workermgr.Manager,
 	cMgr *channelmgr.Manager,
 	soloUser *auth.UserInfo,
 	secureCookie bool,
 ) *ChannelRelayHandler {
 	return &ChannelRelayHandler{
-		queries:      q,
+		store:        st,
 		workerMgr:    wMgr,
 		channelMgr:   cMgr,
 		soloUser:     soloUser,
@@ -62,7 +62,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 
 		var err error
-		user, err = auth.ValidateToken(r.Context(), h.queries, token)
+		user, err = auth.ValidateToken(r.Context(), h.store, token)
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -185,7 +185,6 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		if conn == nil {
 			slog.Warn("channel relay: worker offline",
 				"channel_id", channelID, "worker_id", workerID)
-			// Don't close the entire WS — other channels may be healthy.
 			continue
 		}
 
@@ -196,7 +195,6 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}); err != nil {
 			slog.Debug("channel relay: failed to relay to worker",
 				"channel_id", channelID, "error", err)
-			// Don't close the entire WS — other channels may be healthy.
 			continue
 		}
 	}

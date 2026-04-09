@@ -8,7 +8,7 @@ import (
 )
 
 func TestOpen_InMemory(t *testing.T) {
-	db, err := Open(":memory:")
+	db, err := Open(":memory:", Config{})
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
@@ -21,7 +21,7 @@ func TestOpen_InMemory(t *testing.T) {
 
 func TestOpen_File(t *testing.T) {
 	path := t.TempDir() + "/test.db"
-	db, err := Open(path)
+	db, err := Open(path, Config{})
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
@@ -40,18 +40,39 @@ func TestOpen_File(t *testing.T) {
 	assert.Equal(t, 60000, timeout)
 }
 
+func TestOpen_FileWithOptions(t *testing.T) {
+	path := t.TempDir() + "/test.db"
+	db, err := Open(path, Config{CacheSize: -8000, MmapSize: 268435456})
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var cacheSize int
+	require.NoError(t, db.QueryRow("PRAGMA cache_size").Scan(&cacheSize))
+	assert.Equal(t, -8000, cacheSize)
+
+	var mmapSize int
+	require.NoError(t, db.QueryRow("PRAGMA mmap_size").Scan(&mmapSize))
+	assert.Equal(t, 268435456, mmapSize)
+}
+
 func TestBuildDSN_Memory(t *testing.T) {
-	dsn := buildDSN(":memory:")
+	dsn := buildDSN(":memory:", Config{})
 	assert.Equal(t, ":memory:?_pragma=foreign_keys(1)", dsn)
 }
 
 func TestBuildDSN_AbsolutePath(t *testing.T) {
-	dsn := buildDSN("/home/user/data.db")
+	dsn := buildDSN("/home/user/data.db", Config{})
 	assert.Equal(t, "file:/home/user/data.db?_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", dsn)
 }
 
+func TestBuildDSN_WithCacheAndMmap(t *testing.T) {
+	dsn := buildDSN("/home/user/data.db", Config{CacheSize: -8000, MmapSize: 268435456})
+	assert.Contains(t, dsn, "_pragma=cache_size(-8000)")
+	assert.Contains(t, dsn, "_pragma=mmap_size(268435456)")
+}
+
 func TestBuildDSN_SpecialCharsInPath(t *testing.T) {
-	dsn := buildDSN("/home/user/my?data&file.db")
+	dsn := buildDSN("/home/user/my?data&file.db", Config{})
 	assert.Contains(t, dsn, "file:/home/user/my%3Fdata&file.db")
 	assert.Contains(t, dsn, "_pragma=foreign_keys(1)")
 }

@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
+
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
@@ -34,21 +34,12 @@ func runAdminSession(args []string) error {
 func runSessionList(args []string) error {
 	var limit *int64
 	var cursor *string
-	return withAdminDB("session list", args, func(fs *flag.FlagSet) {
+	return withAdminStore("session list", args, func(fs *flag.FlagSet) {
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		cursor = fs.String("cursor", "", "pagination cursor (last_active_at from previous page)")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		var cursorTime any
-		if *cursor != "" {
-			t, err := time.Parse(time.RFC3339Nano, *cursor)
-			if err != nil {
-				return fmt.Errorf("invalid --cursor value (expected RFC3339 timestamp): %w", err)
-			}
-			cursorTime = t
-		}
-
-		sessions, err := q.ListAllActiveSessions(ctx, gendb.ListAllActiveSessionsParams{
-			Cursor: cursorTime,
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		sessions, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+			Cursor: *cursor,
 			Limit:  *limit,
 		})
 		if err != nil {
@@ -65,32 +56,28 @@ func runSessionList(args []string) error {
 			fmt.Printf("%-48s %-48s %-20s %-24s %-24s %-16s %s\n",
 				s.ID, s.UserID, s.Username,
 				timefmt.Format(s.LastActiveAt), timefmt.Format(s.ExpiresAt),
-				s.IpAddress, truncate(s.UserAgent, 60))
+				s.IPAddress, truncate(s.UserAgent, 60))
 		}
 
-		// Print next-page cursor hint.
-		last := sessions[len(sessions)-1]
-		if int64(len(sessions)) == *limit {
-			fmt.Printf("\nNext page: --cursor %s\n", timefmt.Format(last.LastActiveAt))
-		}
+		maybePrintNextCursor(sessions, *limit, func(s store.ActiveSession) time.Time { return s.LastActiveAt })
 		return nil
 	})
 }
 
 func runSessionRevoke(args []string) error {
 	var sessionID *string
-	return withAdminDB("session revoke", args, func(fs *flag.FlagSet) {
+	return withAdminStore("session revoke", args, func(fs *flag.FlagSet) {
 		sessionID = fs.String("id", "", "session ID (required)")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *sessionID == "" {
 			return fmt.Errorf("--id is required")
 		}
 
-		result, err := q.DeleteUserSession(ctx, *sessionID)
+		n, err := st.Sessions().Delete(ctx, *sessionID)
 		if err != nil {
 			return fmt.Errorf("delete session: %w", err)
 		}
-		if n, _ := result.RowsAffected(); n == 0 {
+		if n == 0 {
 			return fmt.Errorf("session not found: %s", *sessionID)
 		}
 
@@ -102,16 +89,16 @@ func runSessionRevoke(args []string) error {
 func runSessionRevokeUser(args []string) error {
 	var userID *string
 	var username *string
-	return withAdminDB("session revoke-user", args, func(fs *flag.FlagSet) {
+	return withAdminStore("session revoke-user", args, func(fs *flag.FlagSet) {
 		userID = fs.String("user-id", "", "user ID")
 		username = fs.String("username", "", "username")
-	}, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		user, err := resolveUser(ctx, q, *userID, *username)
+	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err
 		}
 
-		if err := q.DeleteUserSessionsByUser(ctx, user.ID); err != nil {
+		if err := st.Sessions().DeleteByUser(ctx, user.ID); err != nil {
 			return fmt.Errorf("delete sessions: %w", err)
 		}
 
@@ -121,13 +108,12 @@ func runSessionRevokeUser(args []string) error {
 }
 
 func runSessionPurgeExpired(args []string) error {
-	return withAdminDB("session purge-expired", args, nil, func(ctx context.Context, _ *config.Config, _ *sql.DB, q *gendb.Queries) error {
-		result, err := q.DeleteExpiredUserSessions(ctx)
+	return withAdminStore("session purge-expired", args, nil, func(ctx context.Context, _ *config.Config, st store.Store) error {
+		n, err := st.Cleanup().HardDeleteExpiredSessions(ctx)
 		if err != nil {
 			return fmt.Errorf("purge expired sessions: %w", err)
 		}
 
-		n, _ := result.RowsAffected()
 		fmt.Printf("Purged %d expired sessions.\n", n)
 		return nil
 	})

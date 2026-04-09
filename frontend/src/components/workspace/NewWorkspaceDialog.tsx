@@ -1,6 +1,5 @@
 import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
 import { createEffect, createMemo, createSignal, Show } from 'solid-js'
@@ -26,7 +25,7 @@ import { spinner } from '~/styles/animations.css'
 import { errorText } from '~/styles/shared.css'
 
 interface NewWorkspaceDialogProps {
-  onCreated: (workspace: Workspace, workerId: string) => void
+  onCreated: (workspaceId: string, workerId: string) => void
   onClose: () => void
   preselectedWorkerId?: string
   availableProviders?: AgentProvider[]
@@ -73,14 +72,14 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         orgId: state.org.orgId(),
         title: title().trim(),
       })
-      if (!wsResp.workspace)
-        throw new Error('No workspace in response')
-      createdWorkspaceId = wsResp.workspace.id
+      if (!wsResp.workspaceId)
+        throw new Error('No workspace ID in response')
+      createdWorkspaceId = wsResp.workspaceId
 
       const wid = state.workerId()
-      await channelClient.prepareWorkspaceAccess({ workerId: wid, workspaceId: wsResp.workspace.id })
+      await channelClient.prepareWorkspaceAccess({ workerId: wid, workspaceId: wsResp.workspaceId })
       const agentResp = await workerRpc.openAgent(wid, {
-        workspaceId: wsResp.workspace.id,
+        workspaceId: wsResp.workspaceId,
         agentProvider: agentProvider(),
         model: '',
         title: 'Agent 1',
@@ -100,12 +99,12 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       if (agentResp.agent) {
         recordProviderUse(agentProvider())
         workspaceClient.addTab({
-          workspaceId: wsResp.workspace.id,
+          workspaceId: wsResp.workspaceId,
           tab: { tabType: TabType.AGENT, tabId: agentResp.agent.id, workerId: wid },
         }).catch(() => {})
       }
 
-      props.onCreated(wsResp.workspace, wid)
+      props.onCreated(wsResp.workspaceId, wid)
     }
     catch (err) {
       if (createdWorkspaceId) {

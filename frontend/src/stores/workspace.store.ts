@@ -29,10 +29,6 @@ export function createWorkspaceStore() {
       setState('error', error)
     },
 
-    addWorkspace(workspace: Workspace) {
-      setState('workspaces', prev => [workspace, ...prev])
-    },
-
     removeWorkspace(id: string) {
       setState('workspaces', prev => prev.filter(s => s.id !== id))
     },

@@ -39,6 +39,8 @@ type Config struct {
 	Name                       string `koanf:"name" json:"name"`
 	DataDir                    string `koanf:"data_dir" json:"data_dir"`
 	DBMaxConns                 int    `koanf:"db_max_conns" json:"db_max_conns"`
+	DBCacheSize                int    `koanf:"db_cache_size" json:"db_cache_size"`
+	DBMmapSize                 int    `koanf:"db_mmap_size" json:"db_mmap_size"`
 	MaxMessageSize             int    `koanf:"max_message_size" json:"max_message_size"`
 	MaxIncompleteChunked       int    `koanf:"max_incomplete_chunked" json:"max_incomplete_chunked"`
 	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
@@ -155,6 +157,8 @@ func Load(args []string) (*Config, bool, error) {
 	fs.String("name", "", "worker display name (default: hostname)")
 	fs.String("data-dir", ".", "data directory")
 	fs.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
+	fs.Int("db-cache-size", 0, "SQLite page cache size (negative = KiB, e.g. -64000 = 64 MiB; 0 = default)")
+	fs.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
 	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
 	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
 	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
@@ -178,6 +182,8 @@ func Load(args []string) (*Config, bool, error) {
 		"name":                          "name",
 		"data-dir":                      "data_dir",
 		"db-max-conns":                  "db_max_conns",
+		"db-cache-size":                 "db_cache_size",
+		"db-mmap-size":                  "db_mmap_size",
 		"max-message-size":              "max_message_size",
 		"max-incomplete-chunked":        "max_incomplete_chunked",
 		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
@@ -192,6 +198,8 @@ func Load(args []string) (*Config, bool, error) {
 		"name":                          "",
 		"data_dir":                      ".",
 		"db_max_conns":                  sqlitedb.DefaultMaxConns,
+		"db_cache_size":                 0,
+		"db_mmap_size":                  0,
 		"max_message_size":              0,
 		"max_incomplete_chunked":        0,
 		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
@@ -247,6 +255,15 @@ func (c *Config) StatePath() string {
 // DBPath returns the path to the worker database file.
 func (c *Config) DBPath() string {
 	return filepath.Join(c.DataDir, "worker.db")
+}
+
+// DBConfig returns the SQLite configuration for sqlitedb.Open.
+func (c *Config) DBConfig() sqlitedb.Config {
+	return sqlitedb.Config{
+		MaxConns:  c.DBMaxConns,
+		CacheSize: c.DBCacheSize,
+		MmapSize:  c.DBMmapSize,
+	}
 }
 
 // LoadState loads persisted state from disk. Returns nil if no state file exists.

@@ -39,7 +39,7 @@ message CreateWorkspaceRequest {
 }
 
 message CreateWorkspaceResponse {
-  Workspace workspace = 1;
+  string workspace_id = 1;
 }
 
 message ListWorkspacesRequest {

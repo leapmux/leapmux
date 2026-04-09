@@ -2,16 +2,16 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -32,14 +32,14 @@ type storedPreferences struct {
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
-	queries      *db.Queries
+	store        store.Store
 	cfg          *config.Config
 	sessionCache *auth.SessionCache
 }
 
 // NewUserService creates a new UserService.
-func NewUserService(q *db.Queries, cfg *config.Config, sc *auth.SessionCache) *UserService {
-	return &UserService{queries: q, cfg: cfg, sessionCache: sc}
+func NewUserService(st store.Store, cfg *config.Config, sc *auth.SessionCache) *UserService {
+	return &UserService{store: st, cfg: cfg, sessionCache: sc}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -51,7 +51,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		return nil, err
 	}
 
-	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -70,8 +70,8 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 
 	// If the username is changing, check that the new one is not already taken.
 	if usernameChanged {
-		existing, err := s.queries.GetUserByUsername(ctx, newUsername)
-		if err != nil && err != sql.ErrNoRows {
+		existing, err := s.store.Users().GetByUsername(ctx, newUsername)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		if err == nil && existing.ID != user.ID {
@@ -79,7 +79,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		}
 	}
 
-	if err := s.queries.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
+	if err := s.store.Users().UpdateProfile(ctx, store.UpdateUserProfileParams{
 		Username:    newUsername,
 		DisplayName: displayName,
 		ID:          user.ID,
@@ -96,7 +96,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 
 	// Rename the personal org to match the new username.
 	if usernameChanged {
-		if err := s.queries.UpdateOrgName(ctx, db.UpdateOrgNameParams{
+		if err := s.store.Orgs().UpdateName(ctx, store.UpdateOrgNameParams{
 			Name: newUsername,
 			ID:   user.OrgID,
 		}); err != nil {
@@ -125,7 +125,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -134,13 +134,13 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	}
 
 	// Check that no other user has this email.
-	if err := CheckEmailAvailable(ctx, s.queries, newEmail, user.ID); err != nil {
+	if err := CheckEmailAvailable(ctx, s.store, newEmail, user.ID); err != nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, err)
 	}
 
 	// Admin: immediate change, trusted.
 	if userInfo.IsAdmin {
-		if err := SetEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 1); err != nil {
+		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, true); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
@@ -150,7 +150,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 
 	// Non-admin, verification not required: immediate change, unverified.
 	if !s.cfg.EmailVerificationRequired {
-		if err := SetEmailAndClearCompeting(ctx, s.queries, user.ID, newEmail, 0); err != nil {
+		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, false); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
@@ -159,7 +159,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	}
 
 	// Non-admin, verification required: set pending email (stub: auto-verifies).
-	if err := setPendingEmailWithToken(ctx, s.queries, user.ID, newEmail); err != nil {
+	if err := setPendingEmailWithToken(ctx, s.store, user.ID, newEmail); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
@@ -174,7 +174,7 @@ func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	updatedUser, err := verifyPendingEmailToken(ctx, s.queries, req.Msg.GetVerificationToken())
+	updatedUser, err := verifyPendingEmailToken(ctx, s.store, req.Msg.GetVerificationToken())
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +186,7 @@ func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Reques
 	// Evict so the next request picks up the updated EmailVerified status.
 	s.sessionCache.Evict(userInfo.SessionID)
 
-	org, err := s.queries.GetOrgByID(ctx, updatedUser.OrgID)
+	org, err := s.store.Orgs().GetByID(ctx, updatedUser.OrgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -205,7 +205,7 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, err
 	}
 
-	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -214,9 +214,9 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// OAuth-only users (password_set == 0) can set a password without providing
+	// OAuth-only users (password_set == false) can set a password without providing
 	// the current one. Users with a password must verify it first.
-	if user.PasswordSet == 1 {
+	if user.PasswordSet {
 		match, err := password.Verify(user.PasswordHash, req.Msg.GetCurrentPassword())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
@@ -231,7 +231,7 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
-	if err := s.queries.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{
+	if err := s.store.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
 		PasswordHash: hashed,
 		ID:           user.ID,
 	}); err != nil {
@@ -240,9 +240,9 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 
 	// Invalidate all other sessions so stolen sessions can't survive a
 	// password change. Keep the current session alive.
-	_ = s.queries.DeleteOtherUserSessions(ctx, db.DeleteOtherUserSessionsParams{
+	_ = s.store.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
 		UserID: user.ID,
-		ID:     userInfo.SessionID,
+		KeepID: userInfo.SessionID,
 	})
 
 	// Evict all cached sessions for this user so that deleted sessions
@@ -265,12 +265,12 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("provider_id is required"))
 	}
 
-	user, err := s.queries.GetUserByID(ctx, userInfo.ID)
+	user, err := s.store.Users().GetByID(ctx, userInfo.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	links, err := s.queries.ListOAuthUserLinksByUser(ctx, user.ID)
+	links, err := s.store.OAuthUserLinks().ListByUser(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -288,11 +288,11 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 	}
 
 	// Guard: cannot unlink the last provider if the user has no password set.
-	if len(links) <= 1 && user.PasswordSet == 0 {
+	if len(links) <= 1 && !user.PasswordSet {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot unlink your only login method; set a password first"))
 	}
 
-	if err := s.queries.DeleteOAuthUserLink(ctx, db.DeleteOAuthUserLinkParams{
+	if err := s.store.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
 		UserID:     user.ID,
 		ProviderID: providerID,
 	}); err != nil {
@@ -308,7 +308,7 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 		return nil, err
 	}
 
-	prefs, err := s.queries.GetUserPrefs(ctx, userInfo.ID)
+	prefs, err := s.store.Users().GetPrefs(ctx, userInfo.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -403,7 +403,7 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prefs: %w", err))
 	}
 
-	if err := s.queries.UpdateUserPrefs(ctx, db.UpdateUserPrefsParams{
+	if err := s.store.Users().UpdatePrefs(ctx, store.UpdateUserPrefsParams{
 		Prefs: string(prefsJSON),
 		ID:    userInfo.ID,
 	}); err != nil {

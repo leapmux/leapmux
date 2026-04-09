@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,9 +14,9 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -29,8 +29,7 @@ const (
 
 // OAuthHandler handles OAuth login/callback HTTP endpoints.
 type OAuthHandler struct {
-	sqlDB    *sql.DB
-	queries  *gendb.Queries
+	store    store.Store
 	cfg      *config.Config
 	keystore *keystore.Keystore
 
@@ -42,8 +41,8 @@ type OAuthHandler struct {
 }
 
 // NewOAuthHandler creates a new OAuth HTTP handler.
-func NewOAuthHandler(sqlDB *sql.DB, q *gendb.Queries, cfg *config.Config, ks *keystore.Keystore) *OAuthHandler {
-	return &OAuthHandler{sqlDB: sqlDB, queries: q, cfg: cfg, keystore: ks, providers: make(map[string]huboauth.Provider)}
+func NewOAuthHandler(st store.Store, cfg *config.Config, ks *keystore.Keystore) *OAuthHandler {
+	return &OAuthHandler{store: st, cfg: cfg, keystore: ks, providers: make(map[string]huboauth.Provider)}
 }
 
 // RegisterRoutes registers OAuth HTTP routes on the given mux.
@@ -76,22 +75,22 @@ func (h *OAuthHandler) handleOAuth(w http.ResponseWriter, r *http.Request) {
 // builds the cached Provider instance. Returns the provider, its trust_email
 // setting, and whether the load succeeded. Writes an HTTP error on failure.
 func (h *OAuthHandler) loadEnabledProvider(w http.ResponseWriter, ctx context.Context, providerID string) (huboauth.Provider, bool, bool) {
-	dbProvider, err := h.queries.GetOAuthProviderByID(ctx, providerID)
+	dbProvider, err := h.store.OAuthProviders().GetByID(ctx, providerID)
 	if err != nil {
 		http.Error(w, "unknown provider", http.StatusNotFound)
 		return nil, false, false
 	}
-	if dbProvider.Enabled != 1 {
+	if !dbProvider.Enabled {
 		http.Error(w, "provider disabled", http.StatusForbidden)
 		return nil, false, false
 	}
-	provider, err := h.buildProvider(ctx, &dbProvider)
+	provider, err := h.buildProvider(ctx, dbProvider)
 	if err != nil {
 		slog.Error("oauth: build provider", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return nil, false, false
 	}
-	return provider, dbProvider.TrustEmail == 1, true
+	return provider, dbProvider.TrustEmail, true
 }
 
 func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, providerID string) {
@@ -107,11 +106,11 @@ func (h *OAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request, provi
 
 	redirectURI := sanitizeRedirectURI(r.URL.Query().Get("redirect"))
 
-	if err := h.queries.CreateOAuthState(ctx, gendb.CreateOAuthStateParams{
+	if err := h.store.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
 		State:        state,
 		ProviderID:   providerID,
 		PkceVerifier: verifier,
-		RedirectUri:  redirectURI,
+		RedirectURI:  redirectURI,
 		ExpiresAt:    time.Now().Add(oauthStateExpiry).UTC(),
 	}); err != nil {
 		slog.Error("oauth: create state", "error", err)
@@ -140,12 +139,12 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	oauthState, err := h.queries.GetOAuthState(ctx, state)
+	oauthState, err := h.store.OAuthStates().Get(ctx, state)
 	if err != nil {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
-	_ = h.queries.DeleteOAuthState(ctx, state)
+	_ = h.store.OAuthStates().Delete(ctx, state)
 
 	if time.Now().UTC().After(oauthState.ExpiresAt) {
 		http.Error(w, "state expired", http.StatusBadRequest)
@@ -182,22 +181,22 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	}
 
 	// Check if this OAuth identity is already linked to a user.
-	link, err := h.queries.GetOAuthUserLink(ctx, gendb.GetOAuthUserLinkParams{
+	link, err := h.store.OAuthUserLinks().Get(ctx, store.GetOAuthUserLinkParams{
 		ProviderID:      providerID,
 		ProviderSubject: claims.Subject,
 	})
 	if err == nil {
 		// Existing link — direct login.
-		user, userErr := h.queries.GetUserByID(ctx, link.UserID)
+		user, userErr := h.store.Users().GetByID(ctx, link.UserID)
 		if userErr != nil {
 			http.Error(w, "linked user not found", http.StatusInternalServerError)
 			return
 		}
 
-		h.loginOAuthUser(w, r, user.ID, providerID, tokenSet, oauthState.RedirectUri)
+		h.loginOAuthUser(w, r, user.ID, providerID, tokenSet, oauthState.RedirectURI)
 		return
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, store.ErrNotFound) {
 		slog.Error("oauth: query user link", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -206,9 +205,9 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	// Auto-link by verified email: if the OAuth provider is trusted, look for
 	// an existing user with the same verified email and link automatically.
 	if trustEmail {
-		existingUser, emailErr := h.queries.GetUserByEmail(ctx, claims.Email)
-		if emailErr == nil && existingUser.EmailVerified == 1 {
-			if err := h.queries.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{
+		existingUser, emailErr := h.store.Users().GetByEmail(ctx, claims.Email)
+		if emailErr == nil && existingUser.EmailVerified {
+			if err := h.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
 				UserID:          existingUser.ID,
 				ProviderID:      providerID,
 				ProviderSubject: claims.Subject,
@@ -220,7 +219,7 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 
 			slog.Info("oauth: auto-linked provider to existing account by verified email",
 				"user_id", existingUser.ID, "provider_id", providerID, "email", claims.Email)
-			h.loginOAuthUser(w, r, existingUser.ID, providerID, tokenSet, oauthState.RedirectUri)
+			h.loginOAuthUser(w, r, existingUser.ID, providerID, tokenSet, oauthState.RedirectURI)
 			return
 		}
 	}
@@ -231,7 +230,7 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	signupToken, err := h.storePendingSignup(ctx, providerID, claims, tokenSet, oauthState.RedirectUri)
+	signupToken, err := h.storePendingSignup(ctx, providerID, claims, tokenSet, oauthState.RedirectURI)
 	if err != nil {
 		slog.Error("oauth: store pending signup", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -250,7 +249,7 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 		slog.Error("oauth: store tokens", "error", err)
 	}
 
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.queries, userID, auth.SessionMeta{
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, userID, auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 		IPAddress: r.RemoteAddr,
 	})
@@ -305,7 +304,7 @@ func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string
 		displayName = claims.Name
 	}
 
-	if err := h.queries.CreatePendingOAuthSignup(ctx, gendb.CreatePendingOAuthSignupParams{
+	if err := h.store.PendingOAuthSignups().Create(ctx, store.CreatePendingOAuthSignupParams{
 		Token:           token,
 		ProviderID:      providerID,
 		ProviderSubject: claims.Subject,
@@ -316,7 +315,7 @@ func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string
 		TokenType:       tokenSet.TokenType,
 		TokenExpiresAt:  tokenExpiresAt,
 		KeyVersion:      int64(h.keystore.ActiveVersion()),
-		RedirectUri:     redirectURI,
+		RedirectURI:     redirectURI,
 		ExpiresAt:       time.Now().Add(pendingOAuthSignupExpiry).UTC(),
 	}); err != nil {
 		return "", fmt.Errorf("create pending signup: %w", err)
@@ -347,7 +346,7 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 
 	expiresAt := tokenExpiryTime(tokenSet)
 
-	return h.queries.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
+	return h.store.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
 		UserID:       userID,
 		ProviderID:   providerID,
 		AccessToken:  encAccess,
@@ -358,7 +357,7 @@ func (h *OAuthHandler) storeTokens(ctx context.Context, userID, providerID strin
 	})
 }
 
-func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *gendb.OauthProvider) (huboauth.Provider, error) {
+func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *store.OAuthProvider) (huboauth.Provider, error) {
 	// Check cache first (provider config is immutable after creation).
 	h.providersMu.RLock()
 	cached, ok := h.providers[dbProvider.ID]
@@ -379,7 +378,7 @@ func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *gendb.Oaut
 	var provider huboauth.Provider
 	switch dbProvider.ProviderType {
 	case huboauth.ProviderTypeOIDC:
-		provider, err = huboauth.NewOIDCProvider(ctx, dbProvider.IssuerUrl, dbProvider.ClientID, string(clientSecret), redirectURL, scopes)
+		provider, err = huboauth.NewOIDCProvider(ctx, dbProvider.IssuerURL, dbProvider.ClientID, string(clientSecret), redirectURL, scopes)
 		if err != nil {
 			return nil, err
 		}

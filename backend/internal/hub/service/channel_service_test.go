@@ -17,12 +17,14 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
 type channelTestEnv struct {
@@ -30,7 +32,7 @@ type channelTestEnv struct {
 	connectorClient leapmuxv1connect.WorkerConnectorServiceClient
 	mgmtClient      leapmuxv1connect.WorkerManagementServiceClient
 	authClient      leapmuxv1connect.AuthServiceClient
-	queries         *gendb.Queries
+	store           store.Store
 	workerMgr       *workermgr.Manager
 	channelMgr      *channelmgr.Manager
 }
@@ -38,16 +40,14 @@ type channelTestEnv struct {
 func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	q := gendb.New(sqlDB)
-
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	cfg := testConfig()
 	wMgr := workermgr.New()
@@ -55,21 +55,21 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(sqlDB, q, cfg, nil, nil), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(st, cfg, nil, nil), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
-		service.NewWorkerConnectorService(q, wMgr, nil, nil, nil, nil, nil), opts)
+		service.NewWorkerConnectorService(st, wMgr, nil, nil, nil, nil, nil), opts)
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(q, wMgr, nil, nil, false), opts)
+		service.NewWorkerManagementService(st, wMgr, nil, nil, false), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
-	channelSvc := service.NewChannelService(q, wMgr, cMgr, pendingReqs)
+	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs)
 	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, opts)
 	mux.Handle(channelPath, channelHandler)
 
@@ -81,7 +81,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 		connectorClient: leapmuxv1connect.NewWorkerConnectorServiceClient(server.Client(), server.URL),
 		mgmtClient:      leapmuxv1connect.NewWorkerManagementServiceClient(server.Client(), server.URL),
 		authClient:      leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL),
-		queries:         q,
+		store:           st,
 		workerMgr:       wMgr,
 		channelMgr:      cMgr,
 	}
@@ -116,7 +116,7 @@ func (e *channelTestEnv) createWorkerWithKey(t *testing.T, token string, publicK
 
 	// Set the public key.
 	if len(publicKey) > 0 {
-		err = e.queries.UpdateWorkerPublicKey(ctx, gendb.UpdateWorkerPublicKeyParams{
+		err = e.store.Workers().UpdatePublicKey(ctx, store.UpdateWorkerPublicKeyParams{
 			PublicKey:       publicKey,
 			MlkemPublicKey:  []byte{},
 			SlhdsaPublicKey: []byte{},
@@ -278,7 +278,7 @@ func TestCloseChannel_Success(t *testing.T) {
 	token := env.adminToken(t)
 
 	// Get admin user info.
-	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
@@ -304,7 +304,7 @@ func TestCloseChannel_WrongUser(t *testing.T) {
 	workerID := env.createWorkerWithKey(t, adminToken, []byte("key"))
 
 	// Get admin user info.
-	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
 	// Register a channel owned by admin in channel manager.
@@ -508,7 +508,7 @@ func TestOpenChannel_ClassicHandshake(t *testing.T) {
 func (e *channelTestEnv) createWorkspace(t *testing.T, ownerUserID, orgID string) string {
 	t.Helper()
 	wsID := id.Generate()
-	err := e.queries.CreateWorkspace(context.Background(), gendb.CreateWorkspaceParams{
+	err := e.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
 		ID:          wsID,
 		OrgID:       orgID,
 		OwnerUserID: ownerUserID,
@@ -522,7 +522,7 @@ func TestPrepareWorkspaceAccess_Success(t *testing.T) {
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
@@ -570,7 +570,7 @@ func TestPrepareWorkspaceAccess_OnlySendsToMatchingWorker(t *testing.T) {
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
 	worker1ID := env.createWorkerWithKey(t, token, []byte("key1"))
@@ -653,7 +653,7 @@ func TestPrepareWorkspaceAccess_NoAccessToWorkspace(t *testing.T) {
 	ctx := context.Background()
 	adminToken := env.adminToken(t)
 
-	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
 	workerID := env.createWorkerWithKey(t, adminToken, []byte("key"))
@@ -678,7 +678,7 @@ func TestPrepareWorkspaceAccess_SharedWorkspaceAccess(t *testing.T) {
 	ctx := context.Background()
 	adminToken := env.adminToken(t)
 
-	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
 	workerID := env.createWorkerWithKey(t, adminToken, []byte("key"))
@@ -699,7 +699,7 @@ func TestPrepareWorkspaceAccess_SharedWorkspaceAccess(t *testing.T) {
 
 	// Create user2 and grant workspace access.
 	user2ID, user2Token := env.createSecondUser(t)
-	err = env.queries.GrantWorkspaceAccess(ctx, gendb.GrantWorkspaceAccessParams{
+	err = env.store.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
 		WorkspaceID: wsID,
 		UserID:      user2ID,
 	})
@@ -733,7 +733,7 @@ func TestPrepareWorkspaceAccess_WorkerOffline(t *testing.T) {
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	adminUser, err := env.queries.GetUserByUsername(ctx, "admin")
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
@@ -777,26 +777,26 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	t.Helper()
 	ctx := context.Background()
 
-	adminUser, err := e.queries.GetUserByUsername(ctx, "admin")
+	adminUser, err := e.store.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
 	userID = id.Generate()
 	hash, _ := password.Hash("testpass2")
-	_ = e.queries.CreateUser(ctx, gendb.CreateUserParams{
+	_ = e.store.Users().Create(ctx, store.CreateUserParams{
 		ID:           userID,
 		OrgID:        adminUser.OrgID,
 		Username:     "user2",
 		PasswordHash: hash,
 		DisplayName:  "User 2",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
-	_ = e.queries.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
+	_ = e.store.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
 		OrgID:  adminUser.OrgID,
 		UserID: userID,
 		Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_MEMBER,
 	})
-	token, _, _, loginErr := auth.Login(ctx, e.queries, "user2", "testpass2")
+	token, _, _, loginErr := auth.Login(ctx, e.store, "user2", "testpass2")
 	require.NoError(t, loginErr)
 	return
 }

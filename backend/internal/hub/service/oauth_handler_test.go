@@ -15,27 +15,28 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
+
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
-func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keystore.Keystore) {
+func setupOAuthTestServer(t *testing.T) (*httptest.Server, store.Store, *keystore.Keystore) {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -47,7 +48,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 		SignupEnabled: true,
 	}
 
-	oauthHandler := service.NewOAuthHandler(sqlDB, q, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
 
 	mux := http.NewServeMux()
 	oauthHandler.RegisterRoutes(mux)
@@ -55,21 +56,21 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, *gendb.Queries, *keys
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return server, q, ks
+	return server, st, ks
 }
 
-func createTestProvider(t *testing.T, q *gendb.Queries, ks *keystore.Keystore) string {
-	return createTestProviderWithTrustEmail(t, q, ks, 1)
+func createTestProvider(t *testing.T, st store.Store, ks *keystore.Keystore) string {
+	return createTestProviderWithTrustEmail(t, st, ks, true)
 }
 
-func createTestProviderWithTrustEmail(t *testing.T, q *gendb.Queries, ks *keystore.Keystore, trustEmail int64) string {
+func createTestProviderWithTrustEmail(t *testing.T, st store.Store, ks *keystore.Keystore, trustEmail bool) string {
 	t.Helper()
 	providerID := id.Generate()
 	aad := keystore.ProviderAAD(providerID)
 	encSecret, err := ks.Encrypt([]byte("test-client-secret"), aad)
 	require.NoError(t, err)
 
-	err = q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+	err = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerID,
 		ProviderType: "github",
 		Name:         "Test GitHub",
@@ -77,15 +78,15 @@ func createTestProviderWithTrustEmail(t *testing.T, q *gendb.Queries, ks *keysto
 		ClientSecret: encSecret,
 		Scopes:       "read:user user:email",
 		TrustEmail:   trustEmail,
-		Enabled:      1,
+		Enabled:      true,
 	})
 	require.NoError(t, err)
 	return providerID
 }
 
 func TestOAuthLogin_RedirectsToProvider(t *testing.T) {
-	server, q, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, q, ks)
+	server, st, ks := setupOAuthTestServer(t)
+	providerID := createTestProvider(t, st, ks)
 
 	// Don't follow redirects.
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -118,12 +119,12 @@ func TestOAuthLogin_UnknownProvider_Returns404(t *testing.T) {
 }
 
 func TestOAuthLogin_DisabledProvider_Returns403(t *testing.T) {
-	server, q, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, q, ks)
+	server, st, ks := setupOAuthTestServer(t)
+	providerID := createTestProvider(t, st, ks)
 
 	// Disable the provider.
-	err := q.UpdateOAuthProviderEnabled(context.Background(), gendb.UpdateOAuthProviderEnabledParams{
-		Enabled: 0,
+	err := st.OAuthProviders().UpdateEnabled(context.Background(), store.UpdateOAuthProviderEnabledParams{
+		Enabled: false,
 		ID:      providerID,
 	})
 	require.NoError(t, err)
@@ -136,8 +137,8 @@ func TestOAuthLogin_DisabledProvider_Returns403(t *testing.T) {
 }
 
 func TestOAuthLogin_StoresRedirectURI(t *testing.T) {
-	server, q, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, q, ks)
+	server, st, ks := setupOAuthTestServer(t)
+	providerID := createTestProvider(t, st, ks)
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -183,11 +184,11 @@ func TestOAuthCallback_MissingCodeOrState_Returns400(t *testing.T) {
 }
 
 func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
-	server, q, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, q, ks)
+	server, st, ks := setupOAuthTestServer(t)
+	providerID := createTestProvider(t, st, ks)
 
 	// Create an already-expired state.
-	err := q.CreateOAuthState(context.Background(), gendb.CreateOAuthStateParams{
+	err := st.OAuthStates().Create(context.Background(), store.CreateOAuthStateParams{
 		State:        "expired-state",
 		ProviderID:   providerID,
 		PkceVerifier: "test-verifier",
@@ -203,24 +204,24 @@ func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
 }
 
 func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
-	_, q, ks := setupOAuthTestServer(t)
+	_, st, ks := setupOAuthTestServer(t)
 
 	// Create two providers, one enabled and one disabled.
-	enabledID := createTestProvider(t, q, ks)
+	enabledID := createTestProvider(t, st, ks)
 	disabledID := id.Generate()
 	aad := keystore.ProviderAAD(disabledID)
 	encSecret, _ := ks.Encrypt([]byte("secret"), aad)
-	_ = q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+	_ = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           disabledID,
 		ProviderType: "oidc",
 		Name:         "Disabled OIDC",
 		ClientID:     "disabled-client",
 		ClientSecret: encSecret,
 		Scopes:       "openid",
-		Enabled:      0,
+		Enabled:      false,
 	})
 
-	providers, err := q.ListEnabledOAuthProviders(context.Background())
+	providers, err := st.OAuthProviders().ListEnabled(context.Background())
 	require.NoError(t, err)
 
 	// Only the enabled provider should be listed.
@@ -279,21 +280,20 @@ func TestOAuthTokenStorage_KeyVersionMatches(t *testing.T) {
 func setupOAuthTestServerWithAuthService(t *testing.T) (
 	*httptest.Server,
 	leapmuxv1connect.AuthServiceClient,
-	*gendb.Queries,
+	store.Store,
 	*keystore.Keystore,
 	*config.Config,
 ) {
 	t.Helper()
 
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -308,13 +308,13 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	mux := http.NewServeMux()
 
 	// Register OAuth HTTP routes.
-	oauthHandler := service.NewOAuthHandler(sqlDB, q, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
 	oauthHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
-	interceptor, _ := auth.NewInterceptor(q, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, false, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(sqlDB, q, cfg, nil, ks)
+	authSvc := service.NewAuthService(st, cfg, nil, ks)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -322,18 +322,18 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return server, client, q, ks, cfg
+	return server, client, st, ks, cfg
 }
 
 // insertPendingSignup creates a pending_oauth_signups row with encrypted tokens.
-func insertPendingSignup(t *testing.T, q *gendb.Queries, ks *keystore.Keystore, providerID, token, email, displayName, subject string, expiresAt time.Time) {
+func insertPendingSignup(t *testing.T, st store.Store, ks *keystore.Keystore, providerID, token, email, displayName, subject string, expiresAt time.Time) {
 	t.Helper()
 	encAccess, err := ks.Encrypt([]byte("mock-access-token"), keystore.AccessTokenAAD(token, providerID))
 	require.NoError(t, err)
 	encRefresh, err := ks.Encrypt([]byte("mock-refresh-token"), keystore.RefreshTokenAAD(token, providerID))
 	require.NoError(t, err)
 
-	err = q.CreatePendingOAuthSignup(context.Background(), gendb.CreatePendingOAuthSignupParams{
+	err = st.PendingOAuthSignups().Create(context.Background(), store.CreatePendingOAuthSignupParams{
 		Token:           token,
 		ProviderID:      providerID,
 		ProviderSubject: subject,
@@ -352,11 +352,11 @@ func insertPendingSignup(t *testing.T, q *gendb.Queries, ks *keystore.Keystore, 
 // --- GetPendingOAuthSignup RPC tests ---
 
 func TestGetPendingOAuthSignup_Success(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks)
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
-	insertPendingSignup(t, q, ks, providerID, signupToken, "alice@example.com", "Alice", "sub-123", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "alice@example.com", "Alice", "sub-123", time.Now().Add(5*time.Minute).UTC())
 
 	resp, err := client.GetPendingOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.GetPendingOAuthSignupRequest{
 		SignupToken: signupToken,
@@ -378,12 +378,12 @@ func TestGetPendingOAuthSignup_InvalidToken(t *testing.T) {
 }
 
 func TestGetPendingOAuthSignup_ExpiredToken(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks)
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
 	// Insert an already-expired pending signup.
-	insertPendingSignup(t, q, ks, providerID, signupToken, "expired@example.com", "Expired", "sub-expired", time.Now().Add(-1*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "expired@example.com", "Expired", "sub-expired", time.Now().Add(-1*time.Minute).UTC())
 
 	_, err := client.GetPendingOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.GetPendingOAuthSignupRequest{
 		SignupToken: signupToken,
@@ -395,11 +395,11 @@ func TestGetPendingOAuthSignup_ExpiredToken(t *testing.T) {
 // --- CompleteOAuthSignup RPC tests ---
 
 func TestCompleteOAuthSignup_Success(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks)
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
-	insertPendingSignup(t, q, ks, providerID, signupToken, "bob@example.com", "Bob", "sub-bob", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "bob@example.com", "Bob", "sub-bob", time.Now().Add(5*time.Minute).UTC())
 
 	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
@@ -415,7 +415,7 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	assert.Contains(t, setCookie, auth.CookieName+"=")
 
 	// Verify OAuth user link was created.
-	link, err := q.GetOAuthUserLink(context.Background(), gendb.GetOAuthUserLinkParams{
+	link, err := st.OAuthUserLinks().Get(context.Background(), store.GetOAuthUserLinkParams{
 		ProviderID:      providerID,
 		ProviderSubject: "sub-bob",
 	})
@@ -423,17 +423,17 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	assert.Equal(t, resp.Msg.GetUser().GetId(), link.UserID)
 
 	// Verify pending signup was consumed.
-	_, err = q.GetPendingOAuthSignup(context.Background(), signupToken)
+	_, err = st.PendingOAuthSignups().Get(context.Background(), signupToken)
 	require.Error(t, err)
 }
 
 func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks) // trust_email=1 by default
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks) // trust_email=1 by default
 	signupToken := id.Generate()
 
 	// Pending signup has provider email "provider@example.com".
-	insertPendingSignup(t, q, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-provider", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-provider", time.Now().Add(5*time.Minute).UTC())
 
 	// Request tries to override with a different email — should be ignored.
 	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
@@ -444,33 +444,33 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 	require.NoError(t, err)
 
 	// The user's email should be the provider's, not the attacker's.
-	user, err := q.GetUserByID(context.Background(), resp.Msg.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "provider@example.com", user.Email, "email must come from provider, not request")
 }
 
 func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks)
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
-	insertPendingSignup(t, q, ks, providerID, signupToken, "dup@example.com", "Dup", "sub-dup", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "dup@example.com", "Dup", "sub-dup", time.Now().Add(5*time.Minute).UTC())
 
 	// Create an existing user with the same username.
 	orgID := id.Generate()
-	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "existing-org"})
+	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "existing-org"})
 	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
-	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           id.Generate(),
 		OrgID:        orgID,
 		Username:     "takenname",
 		PasswordHash: hash,
 		DisplayName:  "Taken",
 		Email:        "",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	require.NoError(t, err)
 
@@ -482,32 +482,32 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 
 	// Pending row should NOT be deleted so the user can retry with a different username.
-	_, err = q.GetPendingOAuthSignup(context.Background(), signupToken)
+	_, err = st.PendingOAuthSignups().Get(context.Background(), signupToken)
 	require.NoError(t, err)
 }
 
 func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProviderWithTrustEmail(t, q, ks, 0) // untrusted provider
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProviderWithTrustEmail(t, st, ks, false) // untrusted provider
 	signupToken := id.Generate()
 
-	insertPendingSignup(t, q, ks, providerID, signupToken, "taken@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "taken@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
 
 	// Create an existing user with the same email.
 	orgID := id.Generate()
-	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "emaildup-org"})
+	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "emaildup-org"})
 	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
-	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:           id.Generate(),
 		OrgID:        orgID,
 		Username:     "emailowner",
 		PasswordHash: hash,
 		DisplayName:  "Email Owner",
 		Email:        "taken@example.com",
-		PasswordSet:  1,
-		IsAdmin:      0,
+		PasswordSet:  true,
+		IsAdmin:      false,
 	})
 	require.NoError(t, err)
 
@@ -534,11 +534,11 @@ func TestCompleteOAuthSignup_InvalidToken(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_InvalidUsername(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks)
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
-	insertPendingSignup(t, q, ks, providerID, signupToken, "valid@example.com", "Valid", "sub-valid", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "valid@example.com", "Valid", "sub-valid", time.Now().Add(5*time.Minute).UTC())
 
 	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
@@ -549,11 +549,11 @@ func TestCompleteOAuthSignup_InvalidUsername(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_TokenConsumedOnSuccess(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks)
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
-	insertPendingSignup(t, q, ks, providerID, signupToken, "consume@example.com", "Consume", "sub-consume", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "consume@example.com", "Consume", "sub-consume", time.Now().Add(5*time.Minute).UTC())
 
 	// First call succeeds.
 	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
@@ -572,11 +572,11 @@ func TestCompleteOAuthSignup_TokenConsumedOnSuccess(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) {
-	_, client, q, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, q, ks)
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
-	insertPendingSignup(t, q, ks, providerID, signupToken, "keyver@example.com", "KeyVer", "sub-keyver", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, st, ks, providerID, signupToken, "keyver@example.com", "KeyVer", "sub-keyver", time.Now().Add(5*time.Minute).UTC())
 
 	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
@@ -588,7 +588,7 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 
 	// Verify stored tokens use the active key version and can be decrypted
 	// with the user ID as AAD (not the signup token).
-	tok, err := q.GetOAuthTokens(context.Background(), gendb.GetOAuthTokensParams{
+	tok, err := st.OAuthTokens().Get(context.Background(), store.GetOAuthTokensParams{
 		UserID:     userID,
 		ProviderID: providerID,
 	})
@@ -614,15 +614,14 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 
 func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	// Use a custom setup with SignupEnabled=false.
-	sqlDB, err := db.Open(":memory:")
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	q := gendb.New(sqlDB)
-	hubtestutil.CreateTestAdmin(t, sqlDB, q)
+	hubtestutil.CreateTestAdmin(t, st)
 
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
@@ -634,17 +633,17 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 		SignupEnabled: false, // signup disabled
 	}
 
-	oauthHandler := service.NewOAuthHandler(sqlDB, q, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
 	mux := http.NewServeMux()
 	oauthHandler.RegisterRoutes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	providerID := createTestProvider(t, q, ks)
+	providerID := createTestProvider(t, st, ks)
 
 	// Create a valid OAuth state for the callback.
 	stateValue := id.Generate()
-	err = q.CreateOAuthState(context.Background(), gendb.CreateOAuthStateParams{
+	err = st.OAuthStates().Create(context.Background(), store.CreateOAuthStateParams{
 		State:        stateValue,
 		ProviderID:   providerID,
 		PkceVerifier: "test-verifier",
@@ -679,30 +678,30 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 // Since handleCallback requires a real OAuth token exchange, this test
 // exercises the DB-level operations that the auto-link path performs.
 func TestAutoLinkByVerifiedEmail(t *testing.T) {
-	_, q, ks := setupOAuthTestServer(t)
+	_, st, ks := setupOAuthTestServer(t)
 
 	// Create a user with a verified email.
 	orgID := id.Generate()
-	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "alice-org", IsPersonal: 1})
+	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "alice-org", IsPersonal: true})
 	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	userID := id.Generate()
-	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:            userID,
 		OrgID:         orgID,
 		Username:      "alice",
 		PasswordHash:  hash,
 		DisplayName:   "Alice",
 		Email:         "alice@example.com",
-		EmailVerified: 1,
-		IsAdmin:       0,
+		EmailVerified: true,
+		IsAdmin:       false,
 	})
 	require.NoError(t, err)
 
 	// Link Alice to GitHub provider.
-	githubProviderID := createTestProvider(t, q, ks)
-	err = q.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+	githubProviderID := createTestProvider(t, st, ks)
+	err = st.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
 		UserID:          userID,
 		ProviderID:      githubProviderID,
 		ProviderSubject: "github-alice-123",
@@ -714,33 +713,33 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 	aad := keystore.ProviderAAD(googleProviderID)
 	encSecret, err := ks.Encrypt([]byte("google-secret"), aad)
 	require.NoError(t, err)
-	err = q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+	err = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           googleProviderID,
 		ProviderType: "oidc",
 		Name:         "Test Google",
 		ClientID:     "google-client-id",
 		ClientSecret: encSecret,
 		Scopes:       "openid profile email",
-		Enabled:      1,
+		Enabled:      true,
 	})
 	require.NoError(t, err)
 
 	// Simulate what handleCallback does for auto-link:
 	// 1. GetOAuthUserLink for Google identity → not found (new identity).
-	_, err = q.GetOAuthUserLink(context.Background(), gendb.GetOAuthUserLinkParams{
+	_, err = st.OAuthUserLinks().Get(context.Background(), store.GetOAuthUserLinkParams{
 		ProviderID:      googleProviderID,
 		ProviderSubject: "google-alice-456",
 	})
 	require.Error(t, err, "should not find Google link yet")
 
 	// 2. Look up user by verified email.
-	existingUser, err := q.GetUserByEmail(context.Background(), "alice@example.com")
+	existingUser, err := st.Users().GetByEmail(context.Background(), "alice@example.com")
 	require.NoError(t, err)
 	assert.Equal(t, userID, existingUser.ID)
-	assert.Equal(t, int64(1), existingUser.EmailVerified)
+	assert.True(t, existingUser.EmailVerified)
 
 	// 3. Create the OAuth link for the new provider identity.
-	err = q.CreateOAuthUserLink(context.Background(), gendb.CreateOAuthUserLinkParams{
+	err = st.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
 		UserID:          existingUser.ID,
 		ProviderID:      googleProviderID,
 		ProviderSubject: "google-alice-456",
@@ -748,7 +747,7 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify: user now has links to both providers.
-	links, err := q.ListOAuthUserLinksByUser(context.Background(), userID)
+	links, err := st.OAuthUserLinks().ListByUser(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Len(t, links, 2)
 
@@ -760,14 +759,14 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 	assert.True(t, providerIDs[googleProviderID], "should have Google link")
 
 	// Verify: looking up either provider identity resolves to the same user.
-	githubLink, err := q.GetOAuthUserLink(context.Background(), gendb.GetOAuthUserLinkParams{
+	githubLink, err := st.OAuthUserLinks().Get(context.Background(), store.GetOAuthUserLinkParams{
 		ProviderID:      githubProviderID,
 		ProviderSubject: "github-alice-123",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, userID, githubLink.UserID)
 
-	googleLink, err := q.GetOAuthUserLink(context.Background(), gendb.GetOAuthUserLinkParams{
+	googleLink, err := st.OAuthUserLinks().Get(context.Background(), store.GetOAuthUserLinkParams{
 		ProviderID:      googleProviderID,
 		ProviderSubject: "google-alice-456",
 	})
@@ -778,61 +777,61 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 // TestAutoLinkByEmail_SkippedWhenUnverified validates that auto-link does NOT
 // happen when the existing user's email is unverified.
 func TestAutoLinkByEmail_SkippedWhenUnverified(t *testing.T) {
-	_, q, _ := setupOAuthTestServer(t)
+	_, st, _ := setupOAuthTestServer(t)
 
 	// Create a user with an unverified email.
 	orgID := id.Generate()
-	err := q.CreateOrg(context.Background(), gendb.CreateOrgParams{ID: orgID, Name: "bob-org", IsPersonal: 1})
+	err := st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "bob-org", IsPersonal: true})
 	require.NoError(t, err)
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
-	err = q.CreateUser(context.Background(), gendb.CreateUserParams{
+	err = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID:            id.Generate(),
 		OrgID:         orgID,
 		Username:      "bob",
 		PasswordHash:  hash,
 		DisplayName:   "Bob",
 		Email:         "bob@example.com",
-		EmailVerified: 0, // unverified
-		IsAdmin:       0,
+		EmailVerified: false, // unverified
+		IsAdmin:       false,
 	})
 	require.NoError(t, err)
 
 	// Look up the user by email — found but not verified.
-	existingUser, err := q.GetUserByEmail(context.Background(), "bob@example.com")
+	existingUser, err := st.Users().GetByEmail(context.Background(), "bob@example.com")
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), existingUser.EmailVerified)
+	assert.False(t, existingUser.EmailVerified)
 
 	// The auto-link path checks EmailVerified == 1 and skips when unverified.
 	// This means a new pending signup would be created instead (tested elsewhere).
 }
 
 func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
-	_, q, ks := setupOAuthTestServer(t)
+	_, st, ks := setupOAuthTestServer(t)
 
 	// Create two OAuth providers.
-	providerA := createTestProvider(t, q, ks)
+	providerA := createTestProvider(t, st, ks)
 	providerBID := id.Generate()
 	aad := keystore.ProviderAAD(providerBID)
 	encSecret, err := ks.Encrypt([]byte("secret-b"), aad)
 	require.NoError(t, err)
-	err = q.CreateOAuthProvider(context.Background(), gendb.CreateOAuthProviderParams{
+	err = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerBID,
 		ProviderType: "oidc",
 		Name:         "Test OIDC",
 		ClientID:     "client-b",
 		ClientSecret: encSecret,
 		Scopes:       "openid",
-		Enabled:      1,
+		Enabled:      true,
 	})
 	require.NoError(t, err)
 
 	// Use the bootstrap admin as the token owner.
-	admin, err := q.GetUserByUsername(context.Background(), "admin")
+	admin, err := st.Users().GetByUsername(context.Background(), "admin")
 	require.NoError(t, err)
 
 	// Insert tokens for both providers.
-	err = q.UpsertOAuthTokens(context.Background(), gendb.UpsertOAuthTokensParams{
+	err = st.OAuthTokens().Upsert(context.Background(), store.UpsertOAuthTokensParams{
 		UserID:       admin.ID,
 		ProviderID:   providerA,
 		AccessToken:  []byte("dummy"),
@@ -843,7 +842,7 @@ func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = q.UpsertOAuthTokens(context.Background(), gendb.UpsertOAuthTokensParams{
+	err = st.OAuthTokens().Upsert(context.Background(), store.UpsertOAuthTokensParams{
 		UserID:       admin.ID,
 		ProviderID:   providerBID,
 		AccessToken:  []byte("dummy"),
@@ -855,21 +854,21 @@ func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete tokens for provider A only.
-	err = q.DeleteOAuthTokensByUserAndProvider(context.Background(), gendb.DeleteOAuthTokensByUserAndProviderParams{
+	err = st.OAuthTokens().DeleteByUserAndProvider(context.Background(), store.DeleteOAuthTokensByUserAndProviderParams{
 		UserID:     admin.ID,
 		ProviderID: providerA,
 	})
 	require.NoError(t, err)
 
 	// Provider A's tokens should be gone.
-	_, err = q.GetOAuthTokens(context.Background(), gendb.GetOAuthTokensParams{
+	_, err = st.OAuthTokens().Get(context.Background(), store.GetOAuthTokensParams{
 		UserID:     admin.ID,
 		ProviderID: providerA,
 	})
 	require.Error(t, err, "provider A tokens should have been deleted")
 
 	// Provider B's tokens should still exist.
-	tok, err := q.GetOAuthTokens(context.Background(), gendb.GetOAuthTokensParams{
+	tok, err := st.OAuthTokens().Get(context.Background(), store.GetOAuthTokensParams{
 		UserID:     admin.ID,
 		ProviderID: providerBID,
 	})

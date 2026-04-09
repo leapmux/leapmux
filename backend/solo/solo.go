@@ -99,7 +99,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	cliFlags := cfg.CLIFlags
 	if cliFlags == nil {
-		cliFlags = []string{"addr", "data-dir", "dev-frontend", "db-max-conns", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level", "use-login-shell"}
+		cliFlags = []string{"addr", "data-dir", "dev-frontend", "storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level", "use-login-shell"}
 	}
 
 	hubCfg, _, err := hubconfig.LoadWithOptions(cfg.Args, hubconfig.LoadOptions{
@@ -231,7 +231,9 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 			AuthToken:            state.AuthToken,
 			CompositeKey:         compositeKey,
 			WorkerID:             state.WorkerID,
-			DBMaxConns:           hubCfg.DBMaxConns,
+			DBMaxConns:           hubCfg.Storage.SQLite.MaxConns,
+			DBCacheSize:          hubCfg.Storage.SQLite.CacheSize,
+			DBMmapSize:           hubCfg.Storage.SQLite.MmapSize,
 			MaxMessageSize:       hubCfg.MaxMessageSize,
 			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
 			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),

@@ -4,7 +4,6 @@ package hub
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -20,12 +19,12 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/cleanup"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/db"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/storeopen"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
@@ -52,11 +51,10 @@ func WithFrontendHandler(h http.Handler) ServerOption {
 // Server is a reusable Hub server instance.
 type Server struct {
 	cfg          *config.Config
-	queries      *gendb.Queries
+	store        store.Store
 	keystore     *keystore.Keystore
 	oauthHandler *service.OAuthHandler
 	server       *http.Server
-	sqlDB        *sql.DB
 	tcpLn        net.Listener
 	shutdownCh   chan struct{}
 	sessionCache *auth.SessionCache
@@ -94,30 +92,22 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		}
 	}
 
-	sqlDB, err := db.Open(cfg.DBPath(), cfg.DBMaxConns)
+	st, err := storeopen.Open(context.Background(), cfg)
 	if err != nil {
 		closeTCP()
-		return nil, fmt.Errorf("open database: %w", err)
+		return nil, fmt.Errorf("open store: %w", err)
 	}
-
-	if err := db.Migrate(sqlDB); err != nil {
-		_ = sqlDB.Close()
-		closeTCP()
-		return nil, fmt.Errorf("migrate database: %w", err)
-	}
-
-	queries := gendb.New(sqlDB)
 
 	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
 	if err != nil {
-		_ = sqlDB.Close()
+		_ = st.Close()
 		closeTCP()
 		return nil, fmt.Errorf("load encryption keystore: %w", err)
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
 
-	if err := bootstrap.Run(context.Background(), sqlDB, queries, cfg.SoloMode, cfg.DevMode); err != nil {
-		_ = sqlDB.Close()
+	if err := bootstrap.Run(context.Background(), st, cfg.SoloMode, cfg.DevMode); err != nil {
+		_ = st.Close()
 		closeTCP()
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
@@ -135,7 +125,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	cMgr := channelmgr.New(cMgrOpts...)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
-	authInterceptor, sessionCache := auth.NewInterceptor(queries, cfg.SoloMode, cfg.SecureCookies, cfg.EmailVerificationRequired)
+	authInterceptor, sessionCache := auth.NewInterceptor(st, cfg.SoloMode, cfg.SecureCookies, cfg.EmailVerificationRequired)
 	connectOpts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
@@ -145,57 +135,57 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	mux := http.NewServeMux()
 
-	authSvc := service.NewAuthService(sqlDB, queries, cfg, sessionCache, ks)
+	authSvc := service.NewAuthService(st, cfg, sessionCache, ks)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
-	notifierSvc := notifier.New(queries, wMgr, pendingReqs, cfg)
+	notifierSvc := notifier.New(st, wMgr, pendingReqs, cfg)
 
-	connectorSvc := service.NewWorkerConnectorService(queries, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, shutdownCh)
+	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, shutdownCh)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
-	mgmtSvc := service.NewWorkerManagementService(queries, wMgr, broadcaster, notifierSvc, cfg.SoloMode)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, cfg.SoloMode)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
-	channelSvc := service.NewChannelService(queries, wMgr, cMgr, pendingReqs)
+	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs)
 	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, connectOpts)
 	mux.Handle(channelPath, channelHandler)
 
-	// WebSocket endpoint for encrypted channel relay (Frontend ↔ Worker).
+	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
 	var soloUser *auth.UserInfo
 	if cfg.SoloMode {
 		username := bootstrap.Username(cfg.SoloMode)
-		if u, lookupErr := queries.GetUserByUsername(context.Background(), username); lookupErr == nil {
+		if u, lookupErr := st.Users().GetByUsername(context.Background(), username); lookupErr == nil {
 			soloUser = &auth.UserInfo{
 				ID:       u.ID,
 				OrgID:    u.OrgID,
 				Username: u.Username,
-				IsAdmin:  u.IsAdmin == 1,
+				IsAdmin:  u.IsAdmin,
 			}
 		}
 	}
-	channelRelay := service.NewChannelRelayHandler(queries, wMgr, cMgr, soloUser, cfg.SecureCookies)
+	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, soloUser, cfg.SecureCookies)
 	mux.Handle("/ws/channel", channelRelay)
 
 	// OAuth HTTP endpoints.
-	oauthHandler := service.NewOAuthHandler(sqlDB, queries, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
 	oauthHandler.RegisterRoutes(mux)
 
-	orgSvc := service.NewOrgService(queries, cfg.SoloMode)
+	orgSvc := service.NewOrgService(st, cfg.SoloMode)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
-	userSvc := service.NewUserService(queries, cfg, sessionCache)
+	userSvc := service.NewUserService(st, cfg, sessionCache)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
-	sectionSvc := service.NewSectionService(queries)
+	sectionSvc := service.NewSectionService(st)
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	workspaceSvc := service.NewWorkspaceService(sqlDB, queries, cfg.SoloMode)
+	workspaceSvc := service.NewWorkspaceService(st, cfg.SoloMode)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 
@@ -208,7 +198,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	} else if cfg.DevFrontend != "" {
 		devProxy, proxyErr := frontend.DevProxy(cfg.DevFrontend)
 		if proxyErr != nil {
-			_ = sqlDB.Close()
+			_ = st.Close()
 			closeTCP()
 			return nil, fmt.Errorf("create dev proxy: %w", proxyErr)
 		}
@@ -229,11 +219,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	return &Server{
 		cfg:          cfg,
-		queries:      queries,
+		store:        st,
 		keystore:     ks,
 		oauthHandler: oauthHandler,
 		server:       server,
-		sqlDB:        sqlDB,
 		tcpLn:        tcpLn,
 		shutdownCh:   shutdownCh,
 		sessionCache: sessionCache,
@@ -241,10 +230,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}, nil
 }
 
-// Queries returns the Hub's store queries for direct database access
+// Store returns the Hub's store for direct database access
 // (e.g. for solo/dev auto-registration).
-func (s *Server) Queries() *gendb.Queries {
-	return s.queries
+func (s *Server) Store() store.Store {
+	return s.store
 }
 
 // SocketPath returns the Unix domain socket path for this server.
@@ -265,7 +254,7 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 	workerID := id.Generate()
 	authToken := id.Generate()
 
-	if err := s.queries.CreateWorker(ctx, gendb.CreateWorkerParams{
+	if err := s.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:              workerID,
 		AuthToken:       authToken,
 		RegisteredBy:    registeredBy,
@@ -284,14 +273,14 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 
 // GetWorkerByID looks up a worker by ID. Returns an error if not found.
 func (s *Server) GetWorkerByID(ctx context.Context, workerID string) error {
-	_, err := s.queries.GetWorkerByID(ctx, workerID)
+	_, err := s.store.Workers().GetByID(ctx, workerID)
 	return err
 }
 
 // GetAdminUser returns the admin user's ID and org ID.
 func (s *Server) GetAdminUser(ctx context.Context) (userID, orgID string, err error) {
 	username := bootstrap.Username(s.cfg.SoloMode)
-	user, err := s.queries.GetUserByUsername(ctx, username)
+	user, err := s.store.Users().GetByUsername(ctx, username)
 	if err != nil {
 		return "", "", fmt.Errorf("get admin user: %w", err)
 	}
@@ -303,7 +292,7 @@ func (s *Server) GetAdminUser(ctx context.Context) (userID, orgID string, err er
 func (s *Server) Serve(ctx context.Context) error {
 	sockPath := s.cfg.SocketPath()
 	if err := removeStaleSocket(sockPath); err != nil {
-		_ = s.sqlDB.Close()
+		_ = s.store.Close()
 		return fmt.Errorf("remove stale socket: %w", err)
 	}
 
@@ -314,7 +303,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		if tcpLn != nil {
 			_ = tcpLn.Close()
 		}
-		_ = s.sqlDB.Close()
+		_ = s.store.Close()
 		return fmt.Errorf("listen unix: %w", err)
 	}
 	if err := os.Chmod(sockPath, 0o600); err != nil {
@@ -322,7 +311,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			_ = tcpLn.Close()
 		}
 		_ = unixLn.Close()
-		_ = s.sqlDB.Close()
+		_ = s.store.Close()
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 
@@ -330,7 +319,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.oauthHandler.StartTokenRefresh(ctx)
 
 	// Start periodic cleanup of soft-deleted records.
-	cleanup.StartLoop(ctx, s.queries)
+	cleanup.StartLoop(ctx, s.store)
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -370,7 +359,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 
 	if err := <-errCh; err != http.ErrServerClosed {
-		_ = s.sqlDB.Close()
+		_ = s.store.Close()
 		return fmt.Errorf("serve: %w", err)
 	}
 	// Wait for the remaining listener(s) to finish.
@@ -384,13 +373,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	// 5. Clean up socket.
 	_ = os.Remove(sockPath)
 
-	// 6. Checkpoint WAL into main DB file before closing.
-	if _, err := s.sqlDB.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		slog.Warn("WAL checkpoint failed", "error", err)
-	}
-
-	// 7. Close database.
-	_ = s.sqlDB.Close()
+	// 6. Close store.
+	_ = s.store.Close()
 	return nil
 }
 

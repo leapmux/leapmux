@@ -21,7 +21,7 @@ func TestLoad(t *testing.T) {
 		assert.Equal(t, ":4327", cfg.Addr)
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/hub"), cfg.DataDir)
 		assert.Equal(t, "", cfg.DevFrontend)
-		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.DBMaxConns)
+		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.SQLiteDBConfig().MaxConns)
 		assert.Equal(t, 0, cfg.MaxMessageSize)
 		assert.Equal(t, 0, cfg.MaxIncompleteChunked)
 		assert.Equal(t, "info", cfg.LogLevel)
@@ -31,7 +31,9 @@ func TestLoad(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "hub.yaml")
 		yamlContent := `addr: ":9999"
-db_max_conns: 16
+storage:
+  sqlite:
+    max_conns: 16
 log_level: "debug"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
@@ -39,7 +41,7 @@ log_level: "debug"
 		cfg, _, err := Load([]string{"-config", configPath})
 		require.NoError(t, err)
 		assert.Equal(t, ":9999", cfg.Addr)
-		assert.Equal(t, 16, cfg.DBMaxConns)
+		assert.Equal(t, 16, cfg.SQLiteDBConfig().MaxConns)
 		assert.Equal(t, "debug", cfg.LogLevel)
 		// data_dir defaults to "." resolved against config file dir.
 		assert.Equal(t, tmpDir, cfg.DataDir)
@@ -213,6 +215,20 @@ func TestValidate(t *testing.T) {
 		assert.Error(t, cfg.Validate())
 	})
 
+	t.Run("removed storage backends are unsupported", func(t *testing.T) {
+		for _, storageType := range []StorageType{"mongodb", "dynamodb"} {
+			cfg := &Config{
+				Addr:    ":4327",
+				DataDir: t.TempDir(),
+				Storage: StorageConfig{Type: storageType},
+			}
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "unsupported storage.type")
+			assert.ErrorContains(t, err, validStorageTypes)
+		}
+	})
+
 	t.Run("valid config creates data dir", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		dataDir := filepath.Join(tmpDir, "data")
@@ -228,6 +244,9 @@ func TestValidate(t *testing.T) {
 
 func TestPaths(t *testing.T) {
 	cfg := &Config{DataDir: "/test/dir"}
-	assert.Equal(t, "/test/dir/hub.db", cfg.DBPath())
+	assert.Equal(t, "/test/dir/hub.db", cfg.SQLiteDBPath(), "defaults to DataDir/hub.db")
 	assert.Equal(t, "/test/dir/hub.sock", cfg.SocketPath())
+
+	cfg.Storage.SQLite.Path = "/custom/path.db"
+	assert.Equal(t, "/custom/path.db", cfg.SQLiteDBPath(), "uses explicit SQLite path")
 }

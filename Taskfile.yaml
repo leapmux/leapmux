@@ -56,17 +56,25 @@ tasks:
     deps: [generate-sqlc-hub, generate-sqlc-worker]
 
   generate-sqlc-hub:
-    desc: Generate type-safe SQL code for Hub
+    desc: Generate type-safe SQL code for Hub (all SQL backends)
     deps: [generate-proto]
+    vars:
+      BACKENDS: sqlite postgres mysql
     sources:
       - backend/generated/proto/**/*
-      - backend/internal/hub/db/**/*.sql
-      - backend/internal/hub/sqlc.yaml
+      - backend/internal/hub/store/sqlite/db/**/*.sql
+      - backend/internal/hub/store/sqlite/sqlc.yaml
+      - backend/internal/hub/store/postgres/db/**/*.sql
+      - backend/internal/hub/store/postgres/sqlc.yaml
+      - backend/internal/hub/store/mysql/db/**/*.sql
+      - backend/internal/hub/store/mysql/sqlc.yaml
     generates:
-      - backend/internal/hub/generated/db/**/*
+      - backend/internal/hub/store/sqlite/generated/db/**/*
+      - backend/internal/hub/store/postgres/generated/db/**/*
+      - backend/internal/hub/store/mysql/generated/db/**/*
     cmds:
-      - rm -rf backend/internal/hub/generated/db/
-      - cd backend/internal/hub && sqlc generate
+      - for: { var: BACKENDS }
+        cmd: rm -rf backend/internal/hub/store/{{.ITEM}}/generated/db/ && cd backend/internal/hub/store/{{.ITEM}} && sqlc generate
 
   generate-sqlc-worker:
     desc: Generate type-safe SQL code for Worker
@@ -622,7 +630,7 @@ tasks:
     desc: Remove all build artifacts and generated code
     cmds:
       - rm -rf backend/build/ backend/leapmux
-      - rm -rf backend/generated/ backend/*/generated/ backend/*/*/generated/
+      - rm -rf backend/generated/ backend/*/generated/ backend/*/*/generated/ backend/*/*/*/generated/ backend/*/*/*/*/generated/
       - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
       - rm -rf frontend/src/spinners/
       - rm -rf desktop/build/ desktop/leapmux-desktop

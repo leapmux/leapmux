@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/worker/db"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -17,7 +18,7 @@ import (
 // and returns the raw *sql.DB and a *gendb.Queries handle.
 func setupTestDB(t *testing.T) (*sql.DB, *gendb.Queries) {
 	t.Helper()
-	sqlDB, err := db.Open(":memory:")
+	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 

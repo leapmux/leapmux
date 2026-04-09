@@ -3,17 +3,18 @@ package service
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"math/rand/v2"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/dbcleanup"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 const (
-	cleanupInterval  = 1 * time.Hour
-	cleanupRetention = 7 * 24 * time.Hour
-	cleanupJitter    = 5 * time.Minute
+	cleanupInterval   = 1 * time.Hour
+	cleanupRetention  = 7 * 24 * time.Hour
+	cleanupJitter     = 5 * time.Minute
+	cleanupBatchDelay = 50 * time.Millisecond
 )
 
 // StartCleanupLoop starts a background goroutine that periodically
@@ -54,7 +55,37 @@ func runCleanup(ctx context.Context, queries *db.Queries) {
 		Valid: true,
 	}
 
-	dbcleanup.Step(ctx, "agents", func() (sql.Result, error) { return queries.DeleteClosedAgentsBefore(ctx, cutoff) })
-	dbcleanup.Step(ctx, "terminals", func() (sql.Result, error) { return queries.DeleteClosedTerminalsBefore(ctx, cutoff) })
-	dbcleanup.Step(ctx, "worktrees", func() (sql.Result, error) { return queries.HardDeleteWorktreesBefore(ctx, cutoff) })
+	cleanupStep(ctx, "agents", func() (sql.Result, error) { return queries.DeleteClosedAgentsBefore(ctx, cutoff) })
+	cleanupStep(ctx, "terminals", func() (sql.Result, error) { return queries.DeleteClosedTerminalsBefore(ctx, cutoff) })
+	cleanupStep(ctx, "worktrees", func() (sql.Result, error) { return queries.HardDeleteWorktreesBefore(ctx, cutoff) })
+}
+
+func cleanupStep(ctx context.Context, name string, fn func() (sql.Result, error)) {
+	var total int64
+
+loop:
+	for {
+		res, err := fn()
+		if err != nil {
+			slog.Error("cleanup step failed", "step", name, "error", err)
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			break
+		}
+		total += n
+
+		timer := time.NewTimer(cleanupBatchDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			break loop
+		case <-timer.C:
+		}
+	}
+
+	if total > 0 {
+		slog.Info("cleanup step complete", "step", name, "count", total)
+	}
 }

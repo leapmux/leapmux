@@ -2,82 +2,73 @@ package bootstrap_test
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
-	"github.com/leapmux/leapmux/internal/hub/db"
-	gendb "github.com/leapmux/leapmux/internal/hub/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
-func setupDB(t *testing.T) (*sql.DB, *gendb.Queries) {
-	t.Helper()
-	sqlDB, err := db.Open(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-
-	err = db.Migrate(sqlDB)
-	require.NoError(t, err)
-
-	return sqlDB, gendb.New(sqlDB)
+func setupStore(t *testing.T) store.Store {
+	return hubtestutil.OpenTestStore(t)
 }
 
 func TestRun_SkipsHubMode(t *testing.T) {
-	sqlDB, q := setupDB(t)
+	st := setupStore(t)
 	ctx := context.Background()
 
 	// Hub mode (soloMode=false, devMode=false) should not create any orgs or users.
-	err := bootstrap.Run(ctx, sqlDB, q, false, false)
+	err := bootstrap.Run(ctx, st, false, false)
 	require.NoError(t, err)
 
-	orgCount, err := q.CountOrgs(ctx)
+	hasOrgs, err := st.Orgs().HasAny(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), orgCount)
+	assert.False(t, hasOrgs)
 
-	userCount, err := q.CountUsers(ctx)
+	hasUsers, err := st.Users().HasAny(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), userCount)
+	assert.False(t, hasUsers)
 }
 
 func TestRun_SoloMode(t *testing.T) {
-	sqlDB, q := setupDB(t)
+	st := setupStore(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, sqlDB, q, true, false)
+	err := bootstrap.Run(ctx, st, true, false)
 	require.NoError(t, err)
 
-	org, err := q.GetOrgByName(ctx, "solo")
+	org, err := st.Orgs().GetByName(ctx, "solo")
 	require.NoError(t, err)
 	assert.Equal(t, "solo", org.Name)
 
-	user, err := q.GetUserByUsername(ctx, "solo")
+	user, err := st.Users().GetByUsername(ctx, "solo")
 	require.NoError(t, err)
 	assert.Equal(t, "solo", user.Username)
 	assert.Equal(t, org.ID, user.OrgID)
-	assert.Equal(t, int64(1), user.IsAdmin)
+	assert.True(t, user.IsAdmin)
 	assert.Empty(t, user.PasswordHash)
 }
 
 func TestRun_DevMode(t *testing.T) {
-	sqlDB, q := setupDB(t)
+	st := setupStore(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, sqlDB, q, false, true)
+	err := bootstrap.Run(ctx, st, false, true)
 	require.NoError(t, err)
 
-	org, err := q.GetOrgByName(ctx, "admin")
+	org, err := st.Orgs().GetByName(ctx, "admin")
 	require.NoError(t, err)
 	assert.Equal(t, "admin", org.Name)
 
-	user, err := q.GetUserByUsername(ctx, "admin")
+	user, err := st.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 	assert.Equal(t, "admin", user.Username)
 	assert.Equal(t, org.ID, user.OrgID)
-	assert.Equal(t, int64(1), user.IsAdmin)
+	assert.True(t, user.IsAdmin)
 
 	// Dev mode should have a valid password hash.
 	match, err := password.Verify(user.PasswordHash, "admin123")
@@ -86,16 +77,16 @@ func TestRun_DevMode(t *testing.T) {
 }
 
 func TestRun_Idempotent(t *testing.T) {
-	sqlDB, q := setupDB(t)
+	st := setupStore(t)
 	ctx := context.Background()
 
-	err := bootstrap.Run(ctx, sqlDB, q, true, false)
+	err := bootstrap.Run(ctx, st, true, false)
 	require.NoError(t, err)
 
-	err = bootstrap.Run(ctx, sqlDB, q, true, false)
+	err = bootstrap.Run(ctx, st, true, false)
 	require.NoError(t, err)
 
-	count, err := q.CountOrgs(ctx)
+	orgs, err := st.Orgs().ListAll(ctx, store.ListAllOrgsParams{Limit: 100})
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), count)
+	assert.Len(t, orgs, 1)
 }
