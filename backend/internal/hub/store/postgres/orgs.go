@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type orgStore struct {
@@ -60,7 +59,7 @@ func (s *orgStore) GetByName(ctx context.Context, name string) (*store.Org, erro
 }
 
 func fromDBOrgs(rows []gendb.Org) []store.Org {
-	return sqlutil.MapSlice(rows, fromDBOrg)
+	return store.MapSlice(rows, fromDBOrg)
 }
 
 func (s *orgStore) HasAny(ctx context.Context) (bool, error) {

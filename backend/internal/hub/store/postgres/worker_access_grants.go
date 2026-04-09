@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 // workerAccessGrantStore implements store.WorkerAccessGrantStore backed by PostgreSQL.
@@ -33,7 +32,7 @@ func (s *workerAccessGrantStore) List(ctx context.Context, workerID string) ([]s
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBWorkerAccessGrant), nil
+	return store.MapSlice(rows, fromDBWorkerAccessGrant), nil
 }
 
 func (s *workerAccessGrantStore) HasAccess(ctx context.Context, p store.HasWorkerAccessParams) (bool, error) {

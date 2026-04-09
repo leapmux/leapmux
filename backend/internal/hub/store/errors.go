@@ -33,12 +33,17 @@ const (
 
 // ConflictError is a structured conflict error that carries the entity
 // type (e.g. "org", "user") that caused the uniqueness violation.
-// It matches ErrConflict via errors.Is.
+// It matches ErrConflict via errors.Is and preserves the original error
+// chain via Unwrap for debugging.
 type ConflictError struct {
 	Entity ConflictEntity
+	Cause  error
 }
 
 func (e *ConflictError) Error() string {
+	if e.Cause != nil {
+		return "conflict: " + string(e.Entity) + ": " + e.Cause.Error()
+	}
 	return "conflict: " + string(e.Entity)
 }
 
@@ -46,11 +51,15 @@ func (e *ConflictError) Is(target error) bool {
 	return target == ErrConflict
 }
 
+func (e *ConflictError) Unwrap() error {
+	return e.Cause
+}
+
 // NewConflictError wraps an ErrConflict-chain error with entity
 // information. If err is not an ErrConflict, it is returned as-is.
 func NewConflictError(err error, entity ConflictEntity) error {
 	if errors.Is(err, ErrConflict) {
-		return &ConflictError{Entity: entity}
+		return &ConflictError{Entity: entity, Cause: err}
 	}
 	return err
 }

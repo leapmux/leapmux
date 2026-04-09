@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -81,6 +82,8 @@ type UserStore interface {
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*User, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
+	ExistsByUsername(ctx context.Context, username string) (bool, error)
+	ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error)
 	GetByPendingEmailToken(ctx context.Context, token string) (*User, error)
 	GetPrefs(ctx context.Context, id string) (string, error)
 	HasAny(ctx context.Context) (bool, error)
@@ -295,6 +298,25 @@ const (
 	EntityWorkerRegistrations TestEntity = "worker_registrations"
 	EntityWorkspaces          TestEntity = "workspaces"
 )
+
+// validEntities is the set of known TestEntity values, used by
+// ValidateEntity to prevent SQL injection in test helpers.
+var validEntities = map[TestEntity]bool{
+	EntityOrgs:                true,
+	EntityUsers:               true,
+	EntitySessions:            true,
+	EntityWorkers:             true,
+	EntityWorkerRegistrations: true,
+	EntityWorkspaces:          true,
+}
+
+// ValidateEntity returns an error if entity is not a known TestEntity value.
+func ValidateEntity(entity TestEntity) error {
+	if !validEntities[entity] {
+		return fmt.Errorf("unknown entity %q", entity)
+	}
+	return nil
+}
 
 // TestHelper provides test-only operations for backends. It is not
 // part of the production Store interface but is used by the conformance

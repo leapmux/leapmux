@@ -24,6 +24,10 @@ func fromDBOrg(o gendb.Org) store.Org {
 	}
 }
 
+func fromDBOrgs(rows []gendb.Org) []store.Org {
+	return store.MapSlice(rows, fromDBOrg)
+}
+
 func (s *orgStore) Create(ctx context.Context, p store.CreateOrgParams) error {
 	return mapErr(s.q.CreateOrg(ctx, gendb.CreateOrgParams{
 		ID:         p.ID,
@@ -80,7 +84,7 @@ func (s *orgStore) ListAll(ctx context.Context, p store.ListAllOrgsParams) ([]st
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBOrg), nil
+	return fromDBOrgs(rows), nil
 }
 
 func (s *orgStore) Search(ctx context.Context, p store.SearchOrgsParams) ([]store.Org, error) {
@@ -97,7 +101,7 @@ func (s *orgStore) Search(ctx context.Context, p store.SearchOrgsParams) ([]stor
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBOrg), nil
+	return fromDBOrgs(rows), nil
 }
 
 func (s *orgStore) UpdateName(ctx context.Context, p store.UpdateOrgNameParams) error {

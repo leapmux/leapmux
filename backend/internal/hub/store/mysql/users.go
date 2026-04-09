@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"errors"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
@@ -33,6 +34,10 @@ func fromDBUser(u gendb.User) store.User {
 		UpdatedAt:             u.UpdatedAt,
 		DeletedAt:             sqlutil.NullTimeToPtr(u.DeletedAt),
 	}
+}
+
+func fromDBUsers(rows []gendb.User) []store.User {
+	return store.MapSlice(rows, fromDBUser)
 }
 
 func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error {
@@ -85,6 +90,25 @@ func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, 
 	return &out, nil
 }
 
+func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
+	_, err := s.GetByUsername(ctx, username)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error) {
+	u, err := s.GetByEmail(ctx, email)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return u.ID != excludeUserID, nil
+}
+
 func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
 	u, err := s.q.GetUserByPendingEmailToken(ctx, token)
 	if err != nil {
@@ -117,7 +141,7 @@ func (s *userStore) ListByOrgID(ctx context.Context, orgID string) ([]store.User
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBUser), nil
+	return fromDBUsers(rows), nil
 }
 
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) ([]store.User, error) {
@@ -133,7 +157,7 @@ func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) ([]
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBUser), nil
+	return fromDBUsers(rows), nil
 }
 
 func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]store.User, error) {
@@ -150,7 +174,7 @@ func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]st
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBUser), nil
+	return fromDBUsers(rows), nil
 }
 
 func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfileParams) error {

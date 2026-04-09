@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type workspaceSectionStore struct {
@@ -50,7 +49,7 @@ func (s *workspaceSectionStore) ListByUserID(ctx context.Context, userID string)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, func(sec gendb.WorkspaceSection) store.WorkspaceSection { return *fromDBWorkspaceSection(sec) }), nil
+	return store.MapSlice(rows, func(sec gendb.WorkspaceSection) store.WorkspaceSection { return *fromDBWorkspaceSection(sec) }), nil
 }
 
 func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorkspaceSectionParams) (int64, error) {

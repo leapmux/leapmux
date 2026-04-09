@@ -6,7 +6,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
@@ -30,7 +29,7 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 }
 
 func fromDBSessions(rows []gendb.UserSession) []store.UserSession {
-	return sqlutil.MapSlice(rows, fromDBSession)
+	return store.MapSlice(rows, fromDBSession)
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {

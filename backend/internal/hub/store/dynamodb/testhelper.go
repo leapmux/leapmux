@@ -11,7 +11,6 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 // testableDynamoStore extends dynamoStore with test helper operations.
@@ -52,7 +51,7 @@ var entityTableMap = map[store.TestEntity]string{
 }
 
 func (h *dynamoTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
-	if err := sqlutil.ValidateEntity(entity); err != nil {
+	if err := store.ValidateEntity(entity); err != nil {
 		return err
 	}
 	tableSuffix, ok := entityTableMap[entity]
@@ -80,7 +79,7 @@ func (h *dynamoTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEn
 }
 
 func (h *dynamoTestHelper) setTimeAttr(ctx context.Context, entity store.TestEntity, id string, attr string, t time.Time) error {
-	if err := sqlutil.ValidateEntity(entity); err != nil {
+	if err := store.ValidateEntity(entity); err != nil {
 		return err
 	}
 	tableSuffix, ok := entityTableMap[entity]

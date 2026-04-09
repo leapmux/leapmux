@@ -59,7 +59,7 @@ func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessi
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
+	return store.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
 }
 
 func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspaceParams) (int64, error) {

@@ -205,7 +205,7 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 }
 
 func fromDBWorkers(rows []gendb.Worker) []store.Worker {
-	return sqlutil.MapSlice(rows, func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
+	return store.MapSlice(rows, func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
 }
 
 // workerAdminRow is satisfied by all four sqlc-generated ListWorkersAdmin*Row
@@ -227,7 +227,7 @@ type workerAdminRow interface {
 }
 
 func fromDBWorkersAdmin[R workerAdminRow](rows []R) []store.WorkerWithOwner {
-	return sqlutil.MapSlice(rows, func(r R) store.WorkerWithOwner {
+	return store.MapSlice(rows, func(r R) store.WorkerWithOwner {
 		type concrete struct {
 			ID              string               `json:"id"`
 			AuthToken       string               `json:"auth_token"`

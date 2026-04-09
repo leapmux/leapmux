@@ -24,7 +24,6 @@ type pgStore struct {
 	queries *gendb.Queries
 	mig     store.Migrator
 
-	// Pre-allocated sub-stores to avoid per-call heap allocation.
 	orgs                  orgStore
 	users                 userStore
 	sessions              sessionStore

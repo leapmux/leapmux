@@ -168,10 +168,7 @@ func (st *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActive
 	}
 
 	// Batch-fetch all usernames.
-	userIDs := make([]string, len(sessions))
-	for i, s := range sessions {
-		userIDs[i] = s.UserID
-	}
+	userIDs := store.PluckStrings(sessions, func(s store.UserSession) string { return s.UserID })
 	usernames, err := st.s.lookupUsernames(ctx, userIDs)
 	if err != nil {
 		return nil, err
@@ -190,12 +187,26 @@ func (st *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store
 		{Key: "_id", Value: sess.UserID},
 		{Key: "deleted_at", Value: nil},
 	}
+	proj := bson.D{
+		{Key: "_id", Value: 1},
+		{Key: "org_id", Value: 1},
+		{Key: "username", Value: 1},
+		{Key: "is_admin", Value: 1},
+		{Key: "email_verified", Value: 1},
+	}
 	var m bson.M
-	err = st.s.collection(colUsers).FindOne(ctx, filter).Decode(&m)
+	err = st.s.collection(colUsers).FindOne(ctx, filter,
+		options.FindOne().SetProjection(proj),
+	).Decode(&m)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 
-	u := docToUser(m)
-	return store.UserToSessionWithUser(&u), nil
+	return &store.SessionWithUser{
+		UserID:        getS(m, "_id"),
+		OrgID:         getS(m, "org_id"),
+		Username:      getS(m, "username"),
+		IsAdmin:       getBool(m, "is_admin"),
+		EmailVerified: getBool(m, "email_verified"),
+	}, nil
 }

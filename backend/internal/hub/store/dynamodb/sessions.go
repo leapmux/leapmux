@@ -258,10 +258,7 @@ func (st *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActive
 	}
 
 	// Batch-fetch all usernames.
-	userIDs := make([]string, len(sessions))
-	for i, s := range sessions {
-		userIDs[i] = s.UserID
-	}
+	userIDs := store.PluckStrings(sessions, func(s store.UserSession) string { return s.UserID })
 	usernames, err := st.s.lookupUsernames(ctx, userIDs)
 	if err != nil {
 		return nil, err
@@ -279,6 +276,9 @@ func (st *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.s.table(tableUsers)),
 		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(sess.UserID)},
+		ProjectionExpression: aws.String(
+			"id, org_id, username, is_admin, email_verified, deleted_at",
+		),
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -287,13 +287,15 @@ func (st *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store
 		return nil, store.ErrNotFound
 	}
 
-	u, err := itemToUser(out.Item)
-	if err != nil {
-		return nil, err
-	}
-	if u.DeletedAt != nil {
+	if getTimePtr(out.Item, attrDeletedAt) != nil {
 		return nil, store.ErrNotFound
 	}
 
-	return store.UserToSessionWithUser(&u), nil
+	return &store.SessionWithUser{
+		UserID:        getS(out.Item, attrID),
+		OrgID:         getS(out.Item, attrOrgID),
+		Username:      getS(out.Item, attrUsername),
+		IsAdmin:       getBool(out.Item, attrIsAdmin),
+		EmailVerified: getBool(out.Item, attrEmailVerified),
+	}, nil
 }

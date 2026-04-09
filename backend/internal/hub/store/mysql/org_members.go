@@ -59,7 +59,7 @@ func (s *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) ([
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, func(r gendb.ListOrgsByUserIDRow) store.Org {
+	return store.MapSlice(rows, func(r gendb.ListOrgsByUserIDRow) store.Org {
 		return store.Org{
 			ID:         r.ID,
 			Name:       r.Name,

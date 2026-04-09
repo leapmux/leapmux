@@ -6,7 +6,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type oauthProviderStore struct {
@@ -33,7 +32,7 @@ func fromDBOAuthProvider(p gendb.OauthProvider) *store.OAuthProvider {
 }
 
 func fromDBOAuthProviders(rows []gendb.OauthProvider) []store.OAuthProvider {
-	return sqlutil.MapSlice(rows, func(r gendb.OauthProvider) store.OAuthProvider { return *fromDBOAuthProvider(r) })
+	return store.MapSlice(rows, func(r gendb.OauthProvider) store.OAuthProvider { return *fromDBOAuthProvider(r) })
 }
 
 type oauthProviderSummaryRow interface {
@@ -93,7 +92,7 @@ func (s *oauthProviderStore) ListEnabled(ctx context.Context) ([]store.OAuthProv
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBOAuthProviderSummary[gendb.ListEnabledOAuthProvidersRow]), nil
+	return store.MapSlice(rows, fromDBOAuthProviderSummary[gendb.ListEnabledOAuthProvidersRow]), nil
 }
 
 func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProviderSummary, error) {
@@ -101,7 +100,7 @@ func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProvider
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBOAuthProviderSummary[gendb.ListAllOAuthProvidersRow]), nil
+	return store.MapSlice(rows, fromDBOAuthProviderSummary[gendb.ListAllOAuthProvidersRow]), nil
 }
 
 func (s *oauthProviderStore) ListAllWithSecrets(ctx context.Context) ([]store.OAuthProvider, error) {

@@ -7,7 +7,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type sessionStore struct {
@@ -30,7 +29,7 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 }
 
 func fromDBSessions(rows []gendb.UserSession) []store.UserSession {
-	return sqlutil.MapSlice(rows, fromDBSession)
+	return store.MapSlice(rows, fromDBSession)
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {

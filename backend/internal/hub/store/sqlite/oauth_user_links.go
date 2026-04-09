@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type oauthUserLinkStore struct {
@@ -24,7 +23,7 @@ func fromDBOAuthUserLink(l gendb.OauthUserLink) store.OAuthUserLink {
 }
 
 func fromDBOAuthUserLinks(rows []gendb.OauthUserLink) []store.OAuthUserLink {
-	return sqlutil.MapSlice(rows, fromDBOAuthUserLink)
+	return store.MapSlice(rows, fromDBOAuthUserLink)
 }
 
 func (s *oauthUserLinkStore) Create(ctx context.Context, p store.CreateOAuthUserLinkParams) error {

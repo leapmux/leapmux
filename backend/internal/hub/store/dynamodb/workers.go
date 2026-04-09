@@ -315,10 +315,7 @@ func (st *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminPa
 		}
 	}
 
-	userIDs := make([]string, len(workers))
-	for i, w := range workers {
-		userIDs[i] = w.RegisteredBy
-	}
+	userIDs := store.PluckStrings(workers, func(w *store.Worker) string { return w.RegisteredBy })
 	usernames, err := st.s.lookupUsernames(ctx, userIDs)
 	if err != nil {
 		return nil, err

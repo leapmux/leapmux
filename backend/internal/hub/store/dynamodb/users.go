@@ -189,6 +189,42 @@ func (st *userStore) GetByEmail(ctx context.Context, email string) (*store.User,
 	return st.getByGSI(ctx, gsiEmail, attrEmail, store.NormalizeEmail(email))
 }
 
+func (st *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
+	return st.existsByGSI(ctx, gsiUsername, attrUsername, store.NormalizeUsername(username), "")
+}
+
+func (st *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error) {
+	if email == "" {
+		return false, nil
+	}
+	return st.existsByGSI(ctx, gsiEmail, attrEmail, store.NormalizeEmail(email), excludeUserID)
+}
+
+func (st *userStore) existsByGSI(ctx context.Context, indexName, keyName, keyValue, excludeID string) (bool, error) {
+	out, err := st.s.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(st.table()),
+		IndexName:              aws.String(indexName),
+		KeyConditionExpression: aws.String("#k = :v"),
+		FilterExpression:       aws.String("attribute_not_exists(deleted_at)"),
+		ProjectionExpression:   aws.String(attrID),
+		ExpressionAttributeNames: map[string]string{
+			"#k": keyName,
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":v": attrS(keyValue),
+		},
+	})
+	if err != nil {
+		return false, mapErr(err)
+	}
+	for _, item := range out.Items {
+		if excludeID == "" || getS(item, attrID) != excludeID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (st *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
 	return st.getByGSI(ctx, gsiPendingEmailToken, attrPendingEmailToken, token)
 }

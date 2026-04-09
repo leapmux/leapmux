@@ -211,7 +211,7 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 }
 
 func fromDBWorkers(rows []gendb.Worker) []store.Worker {
-	return sqlutil.MapSlice(rows, func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
+	return store.MapSlice(rows, func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
 }
 
 func fromDBWorkersAdmin[R sqlutil.WorkerAdminRow](rows []R) []store.WorkerWithOwner {

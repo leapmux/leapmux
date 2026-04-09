@@ -76,10 +76,7 @@ func (st *orgMemberStore) ListByOrgID(ctx context.Context, orgID string) ([]stor
 	}
 
 	// Batch-fetch all users in a single query.
-	userIDs := make([]string, len(members))
-	for i, om := range members {
-		userIDs[i] = om.UserID
-	}
+	userIDs := store.PluckStrings(members, func(om store.OrgMember) string { return om.UserID })
 	userFilter := bson.D{
 		{Key: "_id", Value: bson.D{{Key: "$in", Value: userIDs}}},
 		{Key: "deleted_at", Value: nil},

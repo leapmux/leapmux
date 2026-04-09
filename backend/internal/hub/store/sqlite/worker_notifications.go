@@ -27,7 +27,7 @@ func (s *workerNotificationStore) ListPendingByWorker(ctx context.Context, worke
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBWorkerNotification), nil
+	return store.MapSlice(rows, fromDBWorkerNotification), nil
 }
 
 func (s *workerNotificationStore) MarkDelivered(ctx context.Context, id string) error {

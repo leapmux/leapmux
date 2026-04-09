@@ -47,7 +47,7 @@ type pgTestHelper struct {
 }
 
 func (h *pgTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
-	if err := sqlutil.ValidateEntity(entity); err != nil {
+	if err := store.ValidateEntity(entity); err != nil {
 		return err
 	}
 	query := fmt.Sprintf("UPDATE %s SET deleted_at = $1 WHERE id = $2", entity)
@@ -56,7 +56,7 @@ func (h *pgTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity
 }
 
 func (h *pgTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity, id string, createdAt time.Time) error {
-	if err := sqlutil.ValidateEntity(entity); err != nil {
+	if err := store.ValidateEntity(entity); err != nil {
 		return err
 	}
 	query := fmt.Sprintf("UPDATE %s SET created_at = $1 WHERE id = $2", entity)

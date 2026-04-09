@@ -36,7 +36,7 @@ func (c *timeoutCapture) GetSystemInfo(ctx context.Context, req *connect.Request
 func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1connect.AuthServiceClient, *timeoutCapture) {
 	t.Helper()
 
-	st := setupDB(t)
+	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 
 	capture := &timeoutCapture{inner: service.NewAuthService(st, &config.Config{}, nil, nil)}

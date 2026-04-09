@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type oauthTokenStore struct {
@@ -28,7 +27,7 @@ func fromDBOAuthToken(t gendb.OauthToken) store.OAuthToken {
 }
 
 func fromDBOAuthTokens(rows []gendb.OauthToken) []store.OAuthToken {
-	return sqlutil.MapSlice(rows, fromDBOAuthToken)
+	return store.MapSlice(rows, fromDBOAuthToken)
 }
 
 func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensParams) error {

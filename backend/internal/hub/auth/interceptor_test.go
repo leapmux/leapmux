@@ -20,18 +20,13 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
-// setupDB opens an in-memory SQLite database and returns a store.Store.
-func setupDB(t *testing.T) store.Store {
-	return hubtestutil.OpenTestStore(t)
-}
-
 // setupInterceptorTestServer creates an httptest server with the AuthService
 // registered behind the auth interceptor. It returns a ConnectRPC client and
 // the admin credentials (username "admin", password "admin123").
 func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
-	st := setupDB(t)
+	st := hubtestutil.OpenTestStore(t)
 
 	hubtestutil.CreateTestAdmin(t, st)
 
@@ -99,7 +94,7 @@ func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 }
 
 func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
-	st := setupDB(t)
+	st := hubtestutil.OpenTestStore(t)
 
 	// Bootstrap in solo mode creates a user named "solo".
 	err := bootstrap.Run(context.Background(), st, true, false)
@@ -156,7 +151,7 @@ func TestInterceptor_BearerTokenNotAccepted(t *testing.T) {
 func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
 
-	st := setupDB(t)
+	st := hubtestutil.OpenTestStore(t)
 
 	hubtestutil.CreateTestAdmin(t, st)
 

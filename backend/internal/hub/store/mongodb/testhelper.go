@@ -9,7 +9,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type testableMongoStore struct {
@@ -35,7 +34,7 @@ type mongoTestHelper struct {
 }
 
 func (h *mongoTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
-	if err := sqlutil.ValidateEntity(entity); err != nil {
+	if err := store.ValidateEntity(entity); err != nil {
 		return err
 	}
 	_, err := h.db.Collection(string(entity)).UpdateOne(ctx,
@@ -46,7 +45,7 @@ func (h *mongoTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEnt
 }
 
 func (h *mongoTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity, id string, createdAt time.Time) error {
-	if err := sqlutil.ValidateEntity(entity); err != nil {
+	if err := store.ValidateEntity(entity); err != nil {
 		return err
 	}
 	_, err := h.db.Collection(string(entity)).UpdateOne(ctx,

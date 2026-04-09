@@ -2,10 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type userStore struct {
@@ -36,7 +36,7 @@ func fromDBUser(u gendb.User) store.User {
 }
 
 func fromDBUsers(rows []gendb.User) []store.User {
-	return sqlutil.MapSlice(rows, fromDBUser)
+	return store.MapSlice(rows, fromDBUser)
 }
 
 func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error {
@@ -87,6 +87,25 @@ func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, 
 	}
 	out := fromDBUser(u)
 	return &out, nil
+}
+
+func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
+	_, err := s.GetByUsername(ctx, username)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error) {
+	u, err := s.GetByEmail(ctx, email)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return u.ID != excludeUserID, nil
 }
 
 func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {

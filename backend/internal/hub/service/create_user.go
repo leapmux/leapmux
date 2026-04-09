@@ -114,29 +114,26 @@ func CheckEmailAvailable(ctx context.Context, st store.Store, email, excludeUser
 	if email == "" {
 		return nil
 	}
-	existing, err := st.Users().GetByEmail(ctx, email)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil
-	}
+	taken, err := st.Users().ExistsByEmail(ctx, email, excludeUserID)
 	if err != nil {
 		return fmt.Errorf("check email: %w", err)
 	}
-	if excludeUserID != "" && existing.ID == excludeUserID {
-		return nil
+	if taken {
+		return fmt.Errorf("email address is already in use")
 	}
-	return fmt.Errorf("email address is already in use")
+	return nil
 }
 
 // checkUsernameAvailable checks that no other user has the given username.
 func checkUsernameAvailable(ctx context.Context, st store.Store, username string) error {
-	_, err := st.Users().GetByUsername(ctx, username)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil
-	}
+	taken, err := st.Users().ExistsByUsername(ctx, username)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
+	if taken {
+		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username already taken"))
+	}
+	return nil
 }
 
 // verifyPendingEmailToken validates a pending-email verification token,

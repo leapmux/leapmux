@@ -26,7 +26,7 @@ func fromDBOrg(o gendb.Org) store.Org {
 }
 
 func fromDBOrgs(rows []gendb.Org) []store.Org {
-	return sqlutil.MapSlice(rows, fromDBOrg)
+	return store.MapSlice(rows, fromDBOrg)
 }
 
 func (s *orgStore) Create(ctx context.Context, p store.CreateOrgParams) error {

@@ -118,6 +118,48 @@ func (st *userStore) GetByEmail(ctx context.Context, email string) (*store.User,
 	return &u, nil
 }
 
+func (st *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
+	filter := bson.D{
+		{Key: "username", Value: store.NormalizeUsername(username)},
+		{Key: "deleted_at", Value: nil},
+	}
+	var m bson.M
+	err := st.s.collection(colUsers).FindOne(ctx, filter,
+		options.FindOne().SetProjection(bson.D{{Key: "_id", Value: 1}}),
+	).Decode(&m)
+	if err != nil {
+		if mapErr(err) == store.ErrNotFound {
+			return false, nil
+		}
+		return false, mapErr(err)
+	}
+	return true, nil
+}
+
+func (st *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error) {
+	if email == "" {
+		return false, nil
+	}
+	filter := bson.D{
+		{Key: "email", Value: store.NormalizeEmail(email)},
+		{Key: "deleted_at", Value: nil},
+	}
+	if excludeUserID != "" {
+		filter = append(filter, bson.E{Key: "_id", Value: bson.D{{Key: "$ne", Value: excludeUserID}}})
+	}
+	var m bson.M
+	err := st.s.collection(colUsers).FindOne(ctx, filter,
+		options.FindOne().SetProjection(bson.D{{Key: "_id", Value: 1}}),
+	).Decode(&m)
+	if err != nil {
+		if mapErr(err) == store.ErrNotFound {
+			return false, nil
+		}
+		return false, mapErr(err)
+	}
+	return true, nil
+}
+
 func (st *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
 	if token == "" {
 		return nil, store.ErrNotFound

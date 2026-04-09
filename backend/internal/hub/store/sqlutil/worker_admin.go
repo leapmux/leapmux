@@ -61,7 +61,7 @@ type WorkerAdminRow interface {
 // FromDBWorkersAdmin converts sqlc-generated admin worker rows (database/sql
 // types) to store.WorkerWithOwner slices.
 func FromDBWorkersAdmin[R WorkerAdminRow](rows []R) []store.WorkerWithOwner {
-	return MapSlice(rows, func(r R) store.WorkerWithOwner {
+	return store.MapSlice(rows, func(r R) store.WorkerWithOwner {
 		// concrete must mirror WorkerAdminRow exactly (Go generics workaround).
 		type concrete struct {
 			ID              string                 `json:"id"`

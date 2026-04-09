@@ -6,7 +6,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type workspaceTabStore struct {
@@ -90,7 +89,7 @@ func (s *workspaceTabStore) ListByWorkspace(ctx context.Context, workspaceID str
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBWorkspaceTab), nil
+	return store.MapSlice(rows, fromDBWorkspaceTab), nil
 }
 
 func (s *workspaceTabStore) ListByWorker(ctx context.Context, workerID string) ([]store.WorkspaceTab, error) {
@@ -98,7 +97,7 @@ func (s *workspaceTabStore) ListByWorker(ctx context.Context, workerID string) (
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBWorkspaceTab), nil
+	return store.MapSlice(rows, fromDBWorkspaceTab), nil
 }
 
 func (s *workspaceTabStore) ListDistinctWorkersByWorkspace(ctx context.Context, workspaceID string) ([]string, error) {

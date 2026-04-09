@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 // orgMemberStore implements store.OrgMemberStore backed by PostgreSQL.
@@ -59,7 +58,7 @@ func (s *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) ([
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBOrg), nil
+	return store.MapSlice(rows, fromDBOrg), nil
 }
 
 func (s *orgMemberStore) UpdateRole(ctx context.Context, p store.UpdateOrgMemberRoleParams) error {

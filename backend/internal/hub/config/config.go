@@ -70,6 +70,9 @@ const (
 	StorageTypeTiDB        StorageType = "tidb"
 )
 
+// validStorageTypes is the display string for valid storage.type values.
+const validStorageTypes = "sqlite, postgres, mysql, mongodb, dynamodb, cockroachdb, yugabytedb, tidb"
+
 // StorageConfig holds the storage backend configuration.
 type StorageConfig struct {
 	Type        StorageType    `koanf:"type"` // See StorageType* constants for valid values.
@@ -276,7 +279,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "agent startup timeout in seconds", nil, ptrconv.Ptr(DefaultAgentStartupTimeoutSeconds), nil},
 		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "worktree creation timeout in seconds", nil, ptrconv.Ptr(DefaultWorktreeCreateTimeoutSeconds), nil},
 		// Storage configuration
-		{"storage-type", "storage.type", "storage backend type (sqlite, postgres, mysql, mongodb, dynamodb, cockroachdb, yugabytedb, tidb)", ptrconv.Ptr(""), nil, nil},
+		{"storage-type", "storage.type", "storage backend type (" + validStorageTypes + ")", ptrconv.Ptr(""), nil, nil},
 		// SQLite (default)
 		{"storage-sqlite-path", "storage.sqlite.path", "SQLite database file path (default: {data_dir}/hub.db)", ptrconv.Ptr(""), nil, nil},
 		{"storage-sqlite-max-conns", "storage.sqlite.max_conns", "SQLite maximum open connections", nil, ptrconv.Ptr(sqlitedb.DefaultMaxConns), nil},
@@ -410,24 +413,38 @@ func (c *Config) Validate() error {
 	case "", StorageTypeSQLite:
 		// No additional validation needed.
 	case StorageTypePostgres:
-		return requireField(c.Storage.Postgres.DSN, "storage.postgres.dsn")
+		if err := requireField(c.Storage.Postgres.DSN, "storage.postgres.dsn"); err != nil {
+			return err
+		}
 	case StorageTypeMySQL:
-		return requireField(c.Storage.MySQL.DSN, "storage.mysql.dsn")
+		if err := requireField(c.Storage.MySQL.DSN, "storage.mysql.dsn"); err != nil {
+			return err
+		}
 	case StorageTypeMongoDB:
 		if err := requireField(c.Storage.MongoDB.URI, "storage.mongodb.uri"); err != nil {
 			return err
 		}
-		return requireField(c.Storage.MongoDB.Database, "storage.mongodb.database")
+		if err := requireField(c.Storage.MongoDB.Database, "storage.mongodb.database"); err != nil {
+			return err
+		}
 	case StorageTypeDynamoDB:
-		return requireField(c.Storage.DynamoDB.Region, "storage.dynamodb.region")
+		if err := requireField(c.Storage.DynamoDB.Region, "storage.dynamodb.region"); err != nil {
+			return err
+		}
 	case StorageTypeCockroachDB:
-		return requireField(c.Storage.CockroachDB.DSN, "storage.cockroachdb.dsn")
+		if err := requireField(c.Storage.CockroachDB.DSN, "storage.cockroachdb.dsn"); err != nil {
+			return err
+		}
 	case StorageTypeYugabyteDB:
-		return requireField(c.Storage.YugabyteDB.DSN, "storage.yugabytedb.dsn")
+		if err := requireField(c.Storage.YugabyteDB.DSN, "storage.yugabytedb.dsn"); err != nil {
+			return err
+		}
 	case StorageTypeTiDB:
-		return requireField(c.Storage.TiDB.DSN, "storage.tidb.dsn")
+		if err := requireField(c.Storage.TiDB.DSN, "storage.tidb.dsn"); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("unsupported storage.type: %q (valid: sqlite, postgres, mysql, mongodb, dynamodb, cockroachdb, yugabytedb, tidb)", c.Storage.Type)
+		return fmt.Errorf("unsupported storage.type: %q (valid: %s)", c.Storage.Type, validStorageTypes)
 	}
 
 	return nil

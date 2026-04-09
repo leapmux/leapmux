@@ -23,6 +23,24 @@ const (
 	SearchMaxExamine = 10000
 )
 
+// MapSlice converts a slice of type In to a slice of type Out using fn.
+func MapSlice[In, Out any](in []In, fn func(In) Out) []Out {
+	out := make([]Out, len(in))
+	for i, v := range in {
+		out[i] = fn(v)
+	}
+	return out
+}
+
+// PluckStrings extracts a string field from each item in a slice.
+func PluckStrings[T any](items []T, fn func(T) string) []string {
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = fn(item)
+	}
+	return out
+}
+
 // UniqueStrings deduplicates ids (DynamoDB BatchGetItem silently drops duplicates).
 func UniqueStrings(ids []string) []string {
 	seen := make(map[string]bool, len(ids))
@@ -49,9 +67,9 @@ func ParseCursorTime(cursor string) (time.Time, bool, error) {
 	return t, true, nil
 }
 
-// sortFilterLimit is the generic implementation for all SortAndPaginate* functions.
-// It sorts items by timeVal descending, applies cursor-based filtering, and limits results.
-func sortFilterLimit[T any](items []T, timeVal func(T) time.Time, cursor string, limit int64) ([]T, error) {
+// SortFilterLimit sorts items by timeVal descending, applies cursor-based
+// filtering, and limits results. Generic helper for paginated listings.
+func SortFilterLimit[T any](items []T, timeVal func(T) time.Time, cursor string, limit int64) ([]T, error) {
 	slices.SortFunc(items, func(a, b T) int {
 		return cmp.Compare(timeVal(b).UnixNano(), timeVal(a).UnixNano())
 	})
@@ -76,7 +94,7 @@ func sortFilterLimit[T any](items []T, timeVal func(T) time.Time, cursor string,
 // SortAndPaginateWorkers sorts workers by CreatedAt descending, applies
 // cursor-based filtering, and limits results.
 func SortAndPaginateWorkers(workers []*Worker, cursor string, limit int64) ([]*Worker, error) {
-	return sortFilterLimit(workers, func(w *Worker) time.Time { return w.CreatedAt }, cursor, limit)
+	return SortFilterLimit(workers, func(w *Worker) time.Time { return w.CreatedAt }, cursor, limit)
 }
 
 // PrefixMatchUser returns true if the lowered query is a prefix of the

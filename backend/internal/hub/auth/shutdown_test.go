@@ -21,7 +21,7 @@ import (
 func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
-	st := setupDB(t)
+	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
