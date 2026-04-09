@@ -8,12 +8,12 @@ import (
 )
 
 // orgMemberStore implements store.OrgMemberStore backed by SQLite.
-type orgMemberStore struct{ q *gendb.Queries }
+type orgMemberStore struct{ conn *sqliteConn }
 
 var _ store.OrgMemberStore = (*orgMemberStore)(nil)
 
 func (s *orgMemberStore) Create(ctx context.Context, p store.CreateOrgMemberParams) error {
-	return mapErr(s.q.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
+	return mapErr(s.conn.q.CreateOrgMember(ctx, gendb.CreateOrgMemberParams{
 		OrgID:  p.OrgID,
 		UserID: p.UserID,
 		Role:   p.Role,
@@ -21,7 +21,7 @@ func (s *orgMemberStore) Create(ctx context.Context, p store.CreateOrgMemberPara
 }
 
 func (s *orgMemberStore) GetByOrgAndUser(ctx context.Context, orgID, userID string) (*store.OrgMember, error) {
-	row, err := s.q.GetOrgMember(ctx, gendb.GetOrgMemberParams{
+	row, err := s.conn.q.GetOrgMember(ctx, gendb.GetOrgMemberParams{
 		OrgID:  orgID,
 		UserID: userID,
 	})
@@ -32,7 +32,7 @@ func (s *orgMemberStore) GetByOrgAndUser(ctx context.Context, orgID, userID stri
 }
 
 func (s *orgMemberStore) ListByOrgID(ctx context.Context, orgID string) ([]store.OrgMemberWithUser, error) {
-	rows, err := s.q.ListOrgMembersByOrgID(ctx, orgID)
+	rows, err := s.conn.q.ListOrgMembersByOrgID(ctx, orgID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -54,7 +54,7 @@ func (s *orgMemberStore) ListByOrgID(ctx context.Context, orgID string) ([]store
 }
 
 func (s *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) ([]store.Org, error) {
-	rows, err := s.q.ListOrgsByUserID(ctx, userID)
+	rows, err := s.conn.q.ListOrgsByUserID(ctx, userID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -62,7 +62,7 @@ func (s *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) ([
 }
 
 func (s *orgMemberStore) UpdateRole(ctx context.Context, p store.UpdateOrgMemberRoleParams) error {
-	return mapErr(s.q.UpdateOrgMemberRole(ctx, gendb.UpdateOrgMemberRoleParams{
+	return mapErr(s.conn.q.UpdateOrgMemberRole(ctx, gendb.UpdateOrgMemberRoleParams{
 		Role:   p.Role,
 		OrgID:  p.OrgID,
 		UserID: p.UserID,
@@ -70,14 +70,14 @@ func (s *orgMemberStore) UpdateRole(ctx context.Context, p store.UpdateOrgMember
 }
 
 func (s *orgMemberStore) Delete(ctx context.Context, p store.DeleteOrgMemberParams) error {
-	return mapErr(s.q.DeleteOrgMember(ctx, gendb.DeleteOrgMemberParams{
+	return mapErr(s.conn.q.DeleteOrgMember(ctx, gendb.DeleteOrgMemberParams{
 		OrgID:  p.OrgID,
 		UserID: p.UserID,
 	}))
 }
 
 func (s *orgMemberStore) CountByRole(ctx context.Context, p store.CountOrgMembersByRoleParams) (int64, error) {
-	n, err := s.q.CountOrgMembersByRole(ctx, gendb.CountOrgMembersByRoleParams{
+	n, err := s.conn.q.CountOrgMembersByRole(ctx, gendb.CountOrgMembersByRoleParams{
 		OrgID: p.OrgID,
 		Role:  p.Role,
 	})
@@ -85,7 +85,7 @@ func (s *orgMemberStore) CountByRole(ctx context.Context, p store.CountOrgMember
 }
 
 func (s *orgMemberStore) IsMember(ctx context.Context, p store.IsOrgMemberParams) (bool, error) {
-	ok, err := s.q.IsOrgMember(ctx, gendb.IsOrgMemberParams{
+	ok, err := s.conn.q.IsOrgMember(ctx, gendb.IsOrgMemberParams{
 		OrgID:  p.OrgID,
 		UserID: p.UserID,
 	})

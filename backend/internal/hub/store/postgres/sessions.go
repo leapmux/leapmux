@@ -3,16 +3,11 @@ package postgres
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 )
 
-type sessionStore struct {
-	q    *gendb.Queries
-	pool *pgxpool.Pool
-}
+type sessionStore struct{ conn *pgConn }
 
 var _ store.SessionStore = (*sessionStore)(nil)
 
@@ -33,7 +28,7 @@ func fromDBSessions(rows []gendb.UserSession) []store.UserSession {
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
-	return mapErr(s.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
+	return mapErr(s.conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 		ID:        p.ID,
 		UserID:    p.UserID,
 		ExpiresAt: timeToTs(p.ExpiresAt),
@@ -43,7 +38,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 }
 
 func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSession, error) {
-	sess, err := s.q.GetUserSessionByID(ctx, id)
+	sess, err := s.conn.q.GetUserSessionByID(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -52,7 +47,7 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 }
 
 func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) error {
-	return mapErr(s.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
+	return mapErr(s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
 		ExpiresAt:    timeToTs(p.ExpiresAt),
 		ID:           p.ID,
 		LastActiveAt: timeToTs(p.LastActiveAt),
@@ -60,22 +55,22 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) er
 }
 
 func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
-	return rowsAffected(s.q.DeleteUserSession(ctx, id))
+	return rowsAffected(s.conn.q.DeleteUserSession(ctx, id))
 }
 
 func (s *sessionStore) DeleteByUser(ctx context.Context, userID string) error {
-	return mapErr(s.q.DeleteUserSessionsByUser(ctx, userID))
+	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, userID))
 }
 
 func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSessionsParams) error {
-	return mapErr(s.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
+	return mapErr(s.conn.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
 		UserID: p.UserID,
 		ID:     p.KeepID,
 	}))
 }
 
 func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store.UserSession, error) {
-	rows, err := s.q.ListUserSessionsByUserID(ctx, userID)
+	rows, err := s.conn.q.ListUserSessionsByUserID(ctx, userID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -83,14 +78,11 @@ func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store
 }
 
 func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) ([]store.ActiveSession, error) {
-	ts, err := parseCursorToTs(p.Cursor)
+	params, err := listAllActiveSessionsParams(p.Cursor, p.Limit)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.q.ListAllActiveSessions(ctx, gendb.ListAllActiveSessionsParams{
-		Cursor: ts,
-		Limit:  int32(p.Limit),
-	})
+	rows, err := s.conn.q.ListAllActiveSessions(ctx, params)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -111,7 +103,7 @@ func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveS
 }
 
 func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.SessionWithUser, error) {
-	row, err := s.q.ValidateSessionWithUser(ctx, id)
+	row, err := s.conn.q.ValidateSessionWithUser(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -122,18 +114,4 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.
 		IsAdmin:       row.IsAdmin,
 		EmailVerified: row.EmailVerified,
 	}, nil
-}
-
-// parseCursorToTs parses the opaque cursor string into a pgtype.Timestamptz.
-// An empty cursor returns the zero value (no cursor). A non-empty cursor must
-// be an RFC3339Nano-formatted timestamp.
-func parseCursorToTs(cursor string) (pgtype.Timestamptz, error) {
-	t, ok, err := store.ParseCursorTime(cursor)
-	if err != nil {
-		return pgtype.Timestamptz{}, err
-	}
-	if !ok {
-		return pgtype.Timestamptz{}, nil
-	}
-	return pgtype.Timestamptz{Time: t, Valid: true}, nil
 }

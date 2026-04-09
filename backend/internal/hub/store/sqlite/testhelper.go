@@ -31,7 +31,7 @@ func OpenTestable(path string) (store.TestableStore, error) {
 }
 
 func (s *testableSQLiteStore) TestHelper() store.TestHelper {
-	return &sqliteTestHelper{db: s.sqlDB}
+	return &sqliteTestHelper{db: s.conn.shared.db}
 }
 
 type sqliteTestHelper struct {

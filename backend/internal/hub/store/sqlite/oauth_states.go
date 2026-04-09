@@ -8,7 +8,7 @@ import (
 )
 
 type oauthStateStore struct {
-	q *gendb.Queries
+	conn *sqliteConn
 }
 
 var _ store.OAuthStateStore = (*oauthStateStore)(nil)
@@ -25,7 +25,7 @@ func fromDBOAuthState(s gendb.OauthState) *store.OAuthState {
 }
 
 func (s *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStateParams) error {
-	return mapErr(s.q.CreateOAuthState(ctx, gendb.CreateOAuthStateParams{
+	return mapErr(s.conn.q.CreateOAuthState(ctx, gendb.CreateOAuthStateParams{
 		State:        p.State,
 		ProviderID:   p.ProviderID,
 		PkceVerifier: p.PkceVerifier,
@@ -35,7 +35,7 @@ func (s *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStatePa
 }
 
 func (s *oauthStateStore) Get(ctx context.Context, state string) (*store.OAuthState, error) {
-	row, err := s.q.GetOAuthState(ctx, state)
+	row, err := s.conn.q.GetOAuthState(ctx, state)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -43,5 +43,5 @@ func (s *oauthStateStore) Get(ctx context.Context, state string) (*store.OAuthSt
 }
 
 func (s *oauthStateStore) Delete(ctx context.Context, state string) error {
-	return mapErr(s.q.DeleteOAuthState(ctx, state))
+	return mapErr(s.conn.q.DeleteOAuthState(ctx, state))
 }

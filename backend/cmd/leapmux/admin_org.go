@@ -8,7 +8,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
@@ -39,7 +38,7 @@ func runOrgList(args []string) error {
 
 		if *query != "" {
 			orgs, err = st.Orgs().Search(ctx, store.SearchOrgsParams{
-				Query:  ptrconv.Ptr(*query),
+				Query:  query,
 				Limit:  *limit,
 				Cursor: *cursor,
 			})

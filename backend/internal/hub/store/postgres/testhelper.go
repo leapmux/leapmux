@@ -30,8 +30,8 @@ func OpenTestable(ctx context.Context, cfg config.PostgresConfig) (store.Testabl
 }
 
 // NewTestableFromPool creates a TestableStore from an existing pool and sql.DB.
-func NewTestableFromPool(pool *pgxpool.Pool, sqlDB *sql.DB) (store.TestableStore, error) {
-	st, err := newFromPool(pool, sqlDB)
+func NewTestableFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (store.TestableStore, error) {
+	st, err := newFromPool(pool, migrationDB)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func NewTestableFromPool(pool *pgxpool.Pool, sqlDB *sql.DB) (store.TestableStore
 }
 
 func (s *testablePGStore) TestHelper() store.TestHelper {
-	return &pgTestHelper{pool: s.pool}
+	return &pgTestHelper{pool: s.conn.shared.pool}
 }
 
 type pgTestHelper struct {

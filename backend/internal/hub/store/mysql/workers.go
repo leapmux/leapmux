@@ -5,17 +5,16 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 // workerStore implements store.WorkerStore backed by MySQL.
-type workerStore struct{ q *gendb.Queries }
+type workerStore struct{ conn *mysqlConn }
 
 var _ store.WorkerStore = (*workerStore)(nil)
 
 func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) error {
-	return mapErr(s.q.CreateWorker(ctx, gendb.CreateWorkerParams{
+	return mapErr(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:              p.ID,
 		AuthToken:       p.AuthToken,
 		RegisteredBy:    p.RegisteredBy,
@@ -26,7 +25,7 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 }
 
 func (s *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, error) {
-	row, err := s.q.GetWorkerByID(ctx, id)
+	row, err := s.conn.q.GetWorkerByID(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -34,7 +33,7 @@ func (s *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, er
 }
 
 func (s *workerStore) GetByAuthToken(ctx context.Context, token string) (*store.Worker, error) {
-	row, err := s.q.GetWorkerByAuthToken(ctx, token)
+	row, err := s.conn.q.GetWorkerByAuthToken(ctx, token)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -42,7 +41,7 @@ func (s *workerStore) GetByAuthToken(ctx context.Context, token string) (*store.
 }
 
 func (s *workerStore) GetPublicKey(ctx context.Context, id string) (*store.WorkerPublicKeys, error) {
-	row, err := s.q.GetWorkerPublicKey(ctx, id)
+	row, err := s.conn.q.GetWorkerPublicKey(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -58,7 +57,7 @@ func (s *workerStore) GetOwned(ctx context.Context, p store.GetOwnedWorkerParams
 }
 
 func (s *workerStore) hasAccess(ctx context.Context, workerID, userID string) (bool, error) {
-	ok, err := s.q.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{
+	ok, err := s.conn.q.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{
 		WorkerID: workerID,
 		UserID:   userID,
 	})
@@ -66,16 +65,11 @@ func (s *workerStore) hasAccess(ctx context.Context, workerID, userID string) (b
 }
 
 func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUserIDParams) ([]store.Worker, error) {
-	col1, createdAt, err := parseMySQLCursor(p.Cursor)
+	params, err := listWorkersByUserIDParams(p.RegisteredBy, p.Cursor, p.Limit)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.q.ListWorkersByUserID(ctx, gendb.ListWorkersByUserIDParams{
-		RegisteredBy: p.RegisteredBy,
-		Column2:      col1,
-		CreatedAt:    createdAt,
-		Limit:        int32(p.Limit),
-	})
+	rows, err := s.conn.q.ListWorkersByUserID(ctx, params)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -83,18 +77,11 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 }
 
 func (s *workerStore) ListOwned(ctx context.Context, p store.ListOwnedWorkersParams) ([]store.Worker, error) {
-	col1, createdAt, err := parseMySQLCursor(p.Cursor)
+	params, err := listOwnedWorkersParams(p.UserID, p.Cursor, p.Limit)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.q.ListOwnedWorkers(ctx, gendb.ListOwnedWorkersParams{
-		UserID:      p.UserID,
-		Column2:     col1,
-		CreatedAt:   createdAt,
-		Column5:     col1,
-		CreatedAt_2: createdAt,
-		Limit:       int32(p.Limit),
-	})
+	rows, err := s.conn.q.ListOwnedWorkers(ctx, params)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -102,74 +89,66 @@ func (s *workerStore) ListOwned(ctx context.Context, p store.ListOwnedWorkersPar
 }
 
 func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) ([]store.WorkerWithOwner, error) {
-	col1, createdAt, err := parseMySQLCursor(p.Cursor)
-	if err != nil {
-		return nil, err
-	}
 	switch {
 	case p.UserID == nil && p.Status == nil:
-		rows, err := s.q.ListWorkersAdminAll(ctx, gendb.ListWorkersAdminAllParams{
-			Column1:   col1,
-			CreatedAt: createdAt,
-			Limit:     int32(p.Limit),
-		})
+		params, err := listWorkersAdminAllParams(p.Cursor, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := s.conn.q.ListWorkersAdminAll(ctx, params)
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		return fromDBWorkersAdmin(rows), nil
+		return store.MapSlice(rows, fromDBListWorkersAdminAllRow), nil
 
 	case p.UserID == nil && p.Status != nil:
-		rows, err := s.q.ListWorkersAdminByStatus(ctx, gendb.ListWorkersAdminByStatusParams{
-			Status:    *p.Status,
-			Column2:   col1,
-			CreatedAt: createdAt,
-			Limit:     int32(p.Limit),
-		})
+		params, err := listWorkersAdminByStatusParams(*p.Status, p.Cursor, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := s.conn.q.ListWorkersAdminByStatus(ctx, params)
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		return fromDBWorkersAdmin(rows), nil
+		return store.MapSlice(rows, fromDBListWorkersAdminByStatusRow), nil
 
 	case p.UserID != nil && p.Status == nil:
-		rows, err := s.q.ListWorkersAdminByUser(ctx, gendb.ListWorkersAdminByUserParams{
-			UserID:    *p.UserID,
-			Column2:   col1,
-			CreatedAt: createdAt,
-			Limit:     int32(p.Limit),
-		})
+		params, err := listWorkersAdminByUserParams(*p.UserID, p.Cursor, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := s.conn.q.ListWorkersAdminByUser(ctx, params)
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		return fromDBWorkersAdmin(rows), nil
+		return store.MapSlice(rows, fromDBListWorkersAdminByUserRow), nil
 
 	default: // both non-nil
-		rows, err := s.q.ListWorkersAdminByUserAndStatus(ctx, gendb.ListWorkersAdminByUserAndStatusParams{
-			UserID:    *p.UserID,
-			Status:    *p.Status,
-			Column3:   col1,
-			CreatedAt: createdAt,
-			Limit:     int32(p.Limit),
-		})
+		params, err := listWorkersAdminByUserAndStatusParams(*p.UserID, *p.Status, p.Cursor, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := s.conn.q.ListWorkersAdminByUserAndStatus(ctx, params)
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		return fromDBWorkersAdmin(rows), nil
+		return store.MapSlice(rows, fromDBListWorkersAdminByUserAndStatusRow), nil
 	}
 }
 
 func (s *workerStore) SetStatus(ctx context.Context, p store.SetWorkerStatusParams) error {
-	return mapErr(s.q.SetWorkerStatus(ctx, gendb.SetWorkerStatusParams{
+	return mapErr(s.conn.q.SetWorkerStatus(ctx, gendb.SetWorkerStatusParams{
 		Status: p.Status,
 		ID:     p.ID,
 	}))
 }
 
 func (s *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
-	return mapErr(s.q.UpdateWorkerLastSeen(ctx, id))
+	return mapErr(s.conn.q.UpdateWorkerLastSeen(ctx, id))
 }
 
 func (s *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorkerPublicKeyParams) error {
-	return mapErr(s.q.UpdateWorkerPublicKey(ctx, gendb.UpdateWorkerPublicKeyParams{
+	return mapErr(s.conn.q.UpdateWorkerPublicKey(ctx, gendb.UpdateWorkerPublicKeyParams{
 		PublicKey:       p.PublicKey,
 		MlkemPublicKey:  p.MlkemPublicKey,
 		SlhdsaPublicKey: p.SlhdsaPublicKey,
@@ -178,22 +157,22 @@ func (s *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorkerP
 }
 
 func (s *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerParams) (int64, error) {
-	return rowsAffected(s.q.DeregisterWorker(ctx, gendb.DeregisterWorkerParams{
+	return rowsAffected(s.conn.q.DeregisterWorker(ctx, gendb.DeregisterWorkerParams{
 		ID:           p.ID,
 		RegisteredBy: p.RegisteredBy,
 	}))
 }
 
 func (s *workerStore) ForceDeregister(ctx context.Context, id string) (int64, error) {
-	return rowsAffected(s.q.ForceDeregisterWorker(ctx, id))
+	return rowsAffected(s.conn.q.ForceDeregisterWorker(ctx, id))
 }
 
 func (s *workerStore) MarkDeleted(ctx context.Context, id string) error {
-	return mapErr(s.q.MarkWorkerDeleted(ctx, id))
+	return mapErr(s.conn.q.MarkWorkerDeleted(ctx, id))
 }
 
 func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy string) error {
-	return mapErr(s.q.MarkAllWorkersDeletedByUser(ctx, registeredBy))
+	return mapErr(s.conn.q.MarkAllWorkersDeletedByUser(ctx, registeredBy))
 }
 
 func fromDBWorker(w gendb.Worker) *store.Worker {
@@ -215,6 +194,74 @@ func fromDBWorkers(rows []gendb.Worker) []store.Worker {
 	return store.MapSlice(rows, func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
 }
 
-func fromDBWorkersAdmin[R sqlutil.WorkerAdminRow](rows []R) []store.WorkerWithOwner {
-	return sqlutil.FromDBWorkersAdmin(rows)
+func fromDBListWorkersAdminAllRow(r gendb.ListWorkersAdminAllRow) store.WorkerWithOwner {
+	return store.WorkerWithOwner{
+		Worker: store.Worker{
+			ID:              r.ID,
+			AuthToken:       r.AuthToken,
+			RegisteredBy:    r.RegisteredBy,
+			Status:          r.Status,
+			CreatedAt:       r.CreatedAt,
+			LastSeenAt:      ptrconv.NullTimeToPtr(r.LastSeenAt),
+			PublicKey:       r.PublicKey,
+			MlkemPublicKey:  r.MlkemPublicKey,
+			SlhdsaPublicKey: r.SlhdsaPublicKey,
+			DeletedAt:       ptrconv.NullTimeToPtr(r.DeletedAt),
+		},
+		OwnerUsername: r.OwnerUsername,
+	}
+}
+
+func fromDBListWorkersAdminByStatusRow(r gendb.ListWorkersAdminByStatusRow) store.WorkerWithOwner {
+	return store.WorkerWithOwner{
+		Worker: store.Worker{
+			ID:              r.ID,
+			AuthToken:       r.AuthToken,
+			RegisteredBy:    r.RegisteredBy,
+			Status:          r.Status,
+			CreatedAt:       r.CreatedAt,
+			LastSeenAt:      ptrconv.NullTimeToPtr(r.LastSeenAt),
+			PublicKey:       r.PublicKey,
+			MlkemPublicKey:  r.MlkemPublicKey,
+			SlhdsaPublicKey: r.SlhdsaPublicKey,
+			DeletedAt:       ptrconv.NullTimeToPtr(r.DeletedAt),
+		},
+		OwnerUsername: r.OwnerUsername,
+	}
+}
+
+func fromDBListWorkersAdminByUserRow(r gendb.ListWorkersAdminByUserRow) store.WorkerWithOwner {
+	return store.WorkerWithOwner{
+		Worker: store.Worker{
+			ID:              r.ID,
+			AuthToken:       r.AuthToken,
+			RegisteredBy:    r.RegisteredBy,
+			Status:          r.Status,
+			CreatedAt:       r.CreatedAt,
+			LastSeenAt:      ptrconv.NullTimeToPtr(r.LastSeenAt),
+			PublicKey:       r.PublicKey,
+			MlkemPublicKey:  r.MlkemPublicKey,
+			SlhdsaPublicKey: r.SlhdsaPublicKey,
+			DeletedAt:       ptrconv.NullTimeToPtr(r.DeletedAt),
+		},
+		OwnerUsername: r.OwnerUsername,
+	}
+}
+
+func fromDBListWorkersAdminByUserAndStatusRow(r gendb.ListWorkersAdminByUserAndStatusRow) store.WorkerWithOwner {
+	return store.WorkerWithOwner{
+		Worker: store.Worker{
+			ID:              r.ID,
+			AuthToken:       r.AuthToken,
+			RegisteredBy:    r.RegisteredBy,
+			Status:          r.Status,
+			CreatedAt:       r.CreatedAt,
+			LastSeenAt:      ptrconv.NullTimeToPtr(r.LastSeenAt),
+			PublicKey:       r.PublicKey,
+			MlkemPublicKey:  r.MlkemPublicKey,
+			SlhdsaPublicKey: r.SlhdsaPublicKey,
+			DeletedAt:       ptrconv.NullTimeToPtr(r.DeletedAt),
+		},
+		OwnerUsername: r.OwnerUsername,
+	}
 }

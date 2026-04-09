@@ -8,13 +8,13 @@ import (
 )
 
 type workspaceSectionItemStore struct {
-	q *gendb.Queries
+	conn *pgConn
 }
 
 var _ store.WorkspaceSectionItemStore = (*workspaceSectionItemStore)(nil)
 
 func (s *workspaceSectionItemStore) Set(ctx context.Context, p store.SetWorkspaceSectionItemParams) error {
-	return mapErr(s.q.SetWorkspaceSectionItem(ctx, gendb.SetWorkspaceSectionItemParams{
+	return mapErr(s.conn.q.SetWorkspaceSectionItem(ctx, gendb.SetWorkspaceSectionItemParams{
 		UserID:      p.UserID,
 		WorkspaceID: p.WorkspaceID,
 		SectionID:   p.SectionID,
@@ -23,7 +23,7 @@ func (s *workspaceSectionItemStore) Set(ctx context.Context, p store.SetWorkspac
 }
 
 func (s *workspaceSectionItemStore) Get(ctx context.Context, p store.GetWorkspaceSectionItemParams) (*store.WorkspaceSectionItem, error) {
-	item, err := s.q.GetWorkspaceSectionItem(ctx, gendb.GetWorkspaceSectionItemParams{
+	item, err := s.conn.q.GetWorkspaceSectionItem(ctx, gendb.GetWorkspaceSectionItemParams{
 		UserID:      p.UserID,
 		WorkspaceID: p.WorkspaceID,
 	})
@@ -39,7 +39,7 @@ func (s *workspaceSectionItemStore) Get(ctx context.Context, p store.GetWorkspac
 }
 
 func (s *workspaceSectionItemStore) ListByUser(ctx context.Context, userID string) ([]store.WorkspaceSectionItem, error) {
-	rows, err := s.q.ListWorkspaceSectionItemsByUser(ctx, userID)
+	rows, err := s.conn.q.ListWorkspaceSectionItemsByUser(ctx, userID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -56,30 +56,30 @@ func (s *workspaceSectionItemStore) ListByUser(ctx context.Context, userID strin
 }
 
 func (s *workspaceSectionItemStore) Delete(ctx context.Context, p store.DeleteWorkspaceSectionItemParams) error {
-	return mapErr(s.q.DeleteWorkspaceSectionItem(ctx, gendb.DeleteWorkspaceSectionItemParams{
+	return mapErr(s.conn.q.DeleteWorkspaceSectionItem(ctx, gendb.DeleteWorkspaceSectionItemParams{
 		UserID:      p.UserID,
 		WorkspaceID: p.WorkspaceID,
 	}))
 }
 
 func (s *workspaceSectionItemStore) DeleteBySection(ctx context.Context, sectionID string) error {
-	return mapErr(s.q.DeleteWorkspaceSectionItemsBySection(ctx, sectionID))
+	return mapErr(s.conn.q.DeleteWorkspaceSectionItemsBySection(ctx, sectionID))
 }
 
 func (s *workspaceSectionItemStore) MoveToSection(ctx context.Context, p store.MoveWorkspaceSectionItemsToSectionParams) error {
-	return mapErr(s.q.MoveWorkspaceSectionItemsToSection(ctx, gendb.MoveWorkspaceSectionItemsToSectionParams{
+	return mapErr(s.conn.q.MoveWorkspaceSectionItemsToSection(ctx, gendb.MoveWorkspaceSectionItemsToSectionParams{
 		SectionID:   p.ToSectionID,
 		SectionID_2: p.FromSectionID,
 	}))
 }
 
 func (s *workspaceSectionItemStore) HasItemsBySection(ctx context.Context, sectionID string) (bool, error) {
-	ok, err := s.q.HasWorkspaceSectionItemsBySection(ctx, sectionID)
+	ok, err := s.conn.q.HasWorkspaceSectionItemsBySection(ctx, sectionID)
 	return ok, mapErr(err)
 }
 
 func (s *workspaceSectionItemStore) IsInArchivedSection(ctx context.Context, p store.IsWorkspaceInArchivedSectionParams) (bool, error) {
-	ok, err := s.q.IsWorkspaceInArchivedSection(ctx, gendb.IsWorkspaceInArchivedSectionParams{
+	ok, err := s.conn.q.IsWorkspaceInArchivedSection(ctx, gendb.IsWorkspaceInArchivedSectionParams{
 		UserID:      p.UserID,
 		WorkspaceID: p.WorkspaceID,
 	})

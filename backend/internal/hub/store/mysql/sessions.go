@@ -2,16 +2,12 @@ package mysql
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 )
 
-type sessionStore struct {
-	q  *gendb.Queries
-	db *sql.DB
-}
+type sessionStore struct{ conn *mysqlConn }
 
 var _ store.SessionStore = (*sessionStore)(nil)
 
@@ -32,7 +28,7 @@ func fromDBSessions(rows []gendb.UserSession) []store.UserSession {
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
-	return mapErr(s.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
+	return mapErr(s.conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 		ID:        p.ID,
 		UserID:    p.UserID,
 		ExpiresAt: p.ExpiresAt,
@@ -42,7 +38,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 }
 
 func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSession, error) {
-	sess, err := s.q.GetUserSessionByID(ctx, id)
+	sess, err := s.conn.q.GetUserSessionByID(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -51,7 +47,7 @@ func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSessi
 }
 
 func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) error {
-	return mapErr(s.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
+	return mapErr(s.conn.q.TouchUserSession(ctx, gendb.TouchUserSessionParams{
 		ExpiresAt:    p.ExpiresAt,
 		ID:           p.ID,
 		LastActiveAt: p.LastActiveAt,
@@ -59,22 +55,22 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) er
 }
 
 func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
-	return rowsAffected(s.q.DeleteUserSession(ctx, id))
+	return rowsAffected(s.conn.q.DeleteUserSession(ctx, id))
 }
 
 func (s *sessionStore) DeleteByUser(ctx context.Context, userID string) error {
-	return mapErr(s.q.DeleteUserSessionsByUser(ctx, userID))
+	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, userID))
 }
 
 func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSessionsParams) error {
-	return mapErr(s.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
+	return mapErr(s.conn.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
 		UserID: p.UserID,
 		ID:     p.KeepID,
 	}))
 }
 
 func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store.UserSession, error) {
-	rows, err := s.q.ListUserSessionsByUserID(ctx, userID)
+	rows, err := s.conn.q.ListUserSessionsByUserID(ctx, userID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -82,17 +78,11 @@ func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store
 }
 
 func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) ([]store.ActiveSession, error) {
-	// The MySQL query uses two positional params for the cursor (? IS NULL OR last_active_at < ?)
-	// plus one for the limit.
-	column1, lastActiveAt, err := parseMySQLCursor(p.Cursor)
+	params, err := listAllActiveSessionsParams(p.Cursor, p.Limit)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.q.ListAllActiveSessions(ctx, gendb.ListAllActiveSessionsParams{
-		Column1:      column1,
-		LastActiveAt: lastActiveAt,
-		Limit:        int32(p.Limit),
-	})
+	rows, err := s.conn.q.ListAllActiveSessions(ctx, params)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -113,7 +103,7 @@ func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveS
 }
 
 func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.SessionWithUser, error) {
-	row, err := s.q.ValidateSessionWithUser(ctx, id)
+	row, err := s.conn.q.ValidateSessionWithUser(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}

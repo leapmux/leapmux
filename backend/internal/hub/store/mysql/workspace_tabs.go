@@ -9,8 +9,7 @@ import (
 )
 
 type workspaceTabStore struct {
-	q    *gendb.Queries
-	dbtx gendb.DBTX
+	conn *mysqlConn
 }
 
 var _ store.WorkspaceTabStore = (*workspaceTabStore)(nil)
@@ -27,7 +26,7 @@ func fromDBWorkspaceTab(t gendb.WorkspaceTab) store.WorkspaceTab {
 }
 
 func (s *workspaceTabStore) Upsert(ctx context.Context, p store.UpsertWorkspaceTabParams) error {
-	return mapErr(s.q.UpsertWorkspaceTab(ctx, gendb.UpsertWorkspaceTabParams{
+	return mapErr(s.conn.q.UpsertWorkspaceTab(ctx, gendb.UpsertWorkspaceTabParams{
 		WorkspaceID: p.WorkspaceID,
 		WorkerID:    p.WorkerID,
 		TabType:     p.TabType,
@@ -57,12 +56,12 @@ func (s *workspaceTabStore) BulkUpsert(ctx context.Context, params []store.Upser
 	}
 	sb.WriteString(` ON DUPLICATE KEY UPDATE worker_id = VALUES(worker_id), position = VALUES(position), tile_id = VALUES(tile_id)`)
 
-	_, err := s.dbtx.ExecContext(ctx, sb.String(), args...)
+	_, err := s.conn.exec.ExecContext(ctx, sb.String(), args...)
 	return mapErr(err)
 }
 
 func (s *workspaceTabStore) Delete(ctx context.Context, p store.DeleteWorkspaceTabParams) error {
-	return mapErr(s.q.DeleteWorkspaceTab(ctx, gendb.DeleteWorkspaceTabParams{
+	return mapErr(s.conn.q.DeleteWorkspaceTab(ctx, gendb.DeleteWorkspaceTabParams{
 		WorkspaceID: p.WorkspaceID,
 		TabType:     p.TabType,
 		TabID:       p.TabID,
@@ -70,22 +69,22 @@ func (s *workspaceTabStore) Delete(ctx context.Context, p store.DeleteWorkspaceT
 }
 
 func (s *workspaceTabStore) DeleteByWorker(ctx context.Context, workerID string) error {
-	return mapErr(s.q.DeleteWorkspaceTabsByWorker(ctx, workerID))
+	return mapErr(s.conn.q.DeleteWorkspaceTabsByWorker(ctx, workerID))
 }
 
 func (s *workspaceTabStore) DeleteByWorkspace(ctx context.Context, workspaceID string) error {
-	return mapErr(s.q.DeleteWorkspaceTabsByWorkspace(ctx, workspaceID))
+	return mapErr(s.conn.q.DeleteWorkspaceTabsByWorkspace(ctx, workspaceID))
 }
 
 func (s *workspaceTabStore) DeleteWorkerTabsForWorkspace(ctx context.Context, p store.DeleteWorkerTabsForWorkspaceParams) error {
-	return mapErr(s.q.DeleteWorkerTabsForWorkspace(ctx, gendb.DeleteWorkerTabsForWorkspaceParams{
+	return mapErr(s.conn.q.DeleteWorkerTabsForWorkspace(ctx, gendb.DeleteWorkerTabsForWorkspaceParams{
 		WorkerID:    p.WorkerID,
 		WorkspaceID: p.WorkspaceID,
 	}))
 }
 
 func (s *workspaceTabStore) ListByWorkspace(ctx context.Context, workspaceID string) ([]store.WorkspaceTab, error) {
-	rows, err := s.q.ListWorkspaceTabsByWorkspace(ctx, workspaceID)
+	rows, err := s.conn.q.ListWorkspaceTabsByWorkspace(ctx, workspaceID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -93,7 +92,7 @@ func (s *workspaceTabStore) ListByWorkspace(ctx context.Context, workspaceID str
 }
 
 func (s *workspaceTabStore) ListByWorker(ctx context.Context, workerID string) ([]store.WorkspaceTab, error) {
-	rows, err := s.q.ListWorkspaceTabsByWorker(ctx, workerID)
+	rows, err := s.conn.q.ListWorkspaceTabsByWorker(ctx, workerID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -101,14 +100,14 @@ func (s *workspaceTabStore) ListByWorker(ctx context.Context, workerID string) (
 }
 
 func (s *workspaceTabStore) ListDistinctWorkersByWorkspace(ctx context.Context, workspaceID string) ([]string, error) {
-	ids, err := s.q.ListDistinctWorkersByWorkspace(ctx, workspaceID)
+	ids, err := s.conn.q.ListDistinctWorkersByWorkspace(ctx, workspaceID)
 	return ids, mapErr(err)
 }
 
 func (s *workspaceTabStore) GetMaxPosition(ctx context.Context, workspaceID string) (string, error) {
 	// Query directly because sqlc maps CAST(... AS CHAR) to interface{}.
 	var pos string
-	err := s.dbtx.QueryRowContext(ctx,
+	err := s.conn.exec.QueryRowContext(ctx,
 		"SELECT CAST(COALESCE(MAX(position), '') AS CHAR) FROM workspace_tabs WHERE workspace_id = ?",
 		workspaceID,
 	).Scan(&pos)

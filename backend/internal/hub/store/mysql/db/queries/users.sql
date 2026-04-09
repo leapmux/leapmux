@@ -20,6 +20,16 @@ SELECT * FROM users WHERE email = ? AND email != '' AND deleted_at IS NULL;
 -- name: GetUserIDByEmail :one
 SELECT id FROM users WHERE email = ? AND email != '' AND deleted_at IS NULL;
 
+-- name: ExistsByEmail :one
+SELECT EXISTS(
+  SELECT 1
+  FROM users
+  WHERE email = sqlc.arg(email)
+    AND email != ''
+    AND deleted_at IS NULL
+    AND id != sqlc.arg(exclude_user_id)
+) AS exists_flag;
+
 -- name: ListUsersByOrgID :many
 SELECT * FROM users WHERE org_id = ? AND deleted_at IS NULL ORDER BY created_at;
 

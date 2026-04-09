@@ -39,7 +39,7 @@ func NewTestableFromDB(sqlDB *sql.DB) (store.TestableStore, error) {
 }
 
 func (s *testableMySQLStore) TestHelper() store.TestHelper {
-	return &mysqlTestHelper{db: s.sqlDB}
+	return &mysqlTestHelper{db: s.conn.shared.db}
 }
 
 type mysqlTestHelper struct {

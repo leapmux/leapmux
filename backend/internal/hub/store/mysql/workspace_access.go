@@ -8,13 +8,13 @@ import (
 )
 
 type workspaceAccessStore struct {
-	q *gendb.Queries
+	conn *mysqlConn
 }
 
 var _ store.WorkspaceAccessStore = (*workspaceAccessStore)(nil)
 
 func (s *workspaceAccessStore) Grant(ctx context.Context, p store.GrantWorkspaceAccessParams) error {
-	return mapErr(s.q.GrantWorkspaceAccess(ctx, gendb.GrantWorkspaceAccessParams{
+	return mapErr(s.conn.q.GrantWorkspaceAccess(ctx, gendb.GrantWorkspaceAccessParams{
 		WorkspaceID: p.WorkspaceID,
 		UserID:      p.UserID,
 	}))
@@ -30,14 +30,14 @@ func (s *workspaceAccessStore) BulkGrant(ctx context.Context, params []store.Gra
 }
 
 func (s *workspaceAccessStore) Revoke(ctx context.Context, p store.RevokeWorkspaceAccessParams) error {
-	return mapErr(s.q.RevokeWorkspaceAccess(ctx, gendb.RevokeWorkspaceAccessParams{
+	return mapErr(s.conn.q.RevokeWorkspaceAccess(ctx, gendb.RevokeWorkspaceAccessParams{
 		WorkspaceID: p.WorkspaceID,
 		UserID:      p.UserID,
 	}))
 }
 
 func (s *workspaceAccessStore) ListByWorkspaceID(ctx context.Context, workspaceID string) ([]store.WorkspaceAccess, error) {
-	rows, err := s.q.ListWorkspaceAccessByWorkspaceID(ctx, workspaceID)
+	rows, err := s.conn.q.ListWorkspaceAccessByWorkspaceID(ctx, workspaceID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -53,7 +53,7 @@ func (s *workspaceAccessStore) ListByWorkspaceID(ctx context.Context, workspaceI
 }
 
 func (s *workspaceAccessStore) HasAccess(ctx context.Context, p store.HasWorkspaceAccessParams) (bool, error) {
-	ok, err := s.q.HasWorkspaceAccess(ctx, gendb.HasWorkspaceAccessParams{
+	ok, err := s.conn.q.HasWorkspaceAccess(ctx, gendb.HasWorkspaceAccessParams{
 		WorkspaceID: p.WorkspaceID,
 		UserID:      p.UserID,
 	})
@@ -61,5 +61,5 @@ func (s *workspaceAccessStore) HasAccess(ctx context.Context, p store.HasWorkspa
 }
 
 func (s *workspaceAccessStore) Clear(ctx context.Context, workspaceID string) error {
-	return mapErr(s.q.ClearWorkspaceAccess(ctx, workspaceID))
+	return mapErr(s.conn.q.ClearWorkspaceAccess(ctx, workspaceID))
 }

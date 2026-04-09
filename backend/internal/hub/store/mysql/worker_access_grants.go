@@ -8,12 +8,12 @@ import (
 )
 
 // workerAccessGrantStore implements store.WorkerAccessGrantStore backed by MySQL.
-type workerAccessGrantStore struct{ q *gendb.Queries }
+type workerAccessGrantStore struct{ conn *mysqlConn }
 
 var _ store.WorkerAccessGrantStore = (*workerAccessGrantStore)(nil)
 
 func (s *workerAccessGrantStore) Grant(ctx context.Context, p store.GrantWorkerAccessParams) error {
-	return mapErr(s.q.GrantWorkerAccess(ctx, gendb.GrantWorkerAccessParams{
+	return mapErr(s.conn.q.GrantWorkerAccess(ctx, gendb.GrantWorkerAccessParams{
 		WorkerID:  p.WorkerID,
 		UserID:    p.UserID,
 		GrantedBy: p.GrantedBy,
@@ -21,14 +21,14 @@ func (s *workerAccessGrantStore) Grant(ctx context.Context, p store.GrantWorkerA
 }
 
 func (s *workerAccessGrantStore) Revoke(ctx context.Context, p store.RevokeWorkerAccessParams) error {
-	return mapErr(s.q.RevokeWorkerAccess(ctx, gendb.RevokeWorkerAccessParams{
+	return mapErr(s.conn.q.RevokeWorkerAccess(ctx, gendb.RevokeWorkerAccessParams{
 		WorkerID: p.WorkerID,
 		UserID:   p.UserID,
 	}))
 }
 
 func (s *workerAccessGrantStore) List(ctx context.Context, workerID string) ([]store.WorkerAccessGrant, error) {
-	rows, err := s.q.ListWorkerAccessGrants(ctx, workerID)
+	rows, err := s.conn.q.ListWorkerAccessGrants(ctx, workerID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -36,7 +36,7 @@ func (s *workerAccessGrantStore) List(ctx context.Context, workerID string) ([]s
 }
 
 func (s *workerAccessGrantStore) HasAccess(ctx context.Context, p store.HasWorkerAccessParams) (bool, error) {
-	ok, err := s.q.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{
+	ok, err := s.conn.q.HasWorkerAccess(ctx, gendb.HasWorkerAccessParams{
 		WorkerID: p.WorkerID,
 		UserID:   p.UserID,
 	})
@@ -44,15 +44,15 @@ func (s *workerAccessGrantStore) HasAccess(ctx context.Context, p store.HasWorke
 }
 
 func (s *workerAccessGrantStore) DeleteByWorker(ctx context.Context, workerID string) error {
-	return mapErr(s.q.DeleteWorkerAccessGrantsByWorker(ctx, workerID))
+	return mapErr(s.conn.q.DeleteWorkerAccessGrantsByWorker(ctx, workerID))
 }
 
 func (s *workerAccessGrantStore) DeleteByUser(ctx context.Context, userID string) error {
-	return mapErr(s.q.DeleteWorkerAccessGrantsByUser(ctx, userID))
+	return mapErr(s.conn.q.DeleteWorkerAccessGrantsByUser(ctx, userID))
 }
 
 func (s *workerAccessGrantStore) DeleteByUserInOrg(ctx context.Context, p store.DeleteWorkerAccessGrantsByUserInOrgParams) error {
-	return mapErr(s.q.DeleteWorkerAccessGrantsByUserInOrg(ctx, gendb.DeleteWorkerAccessGrantsByUserInOrgParams{
+	return mapErr(s.conn.q.DeleteWorkerAccessGrantsByUserInOrg(ctx, gendb.DeleteWorkerAccessGrantsByUserInOrgParams{
 		UserID: p.UserID,
 		OrgID:  p.OrgID,
 	}))

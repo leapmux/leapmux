@@ -72,12 +72,6 @@ func SortFilterLimit[T any](items []T, timeVal func(T) time.Time, cursor string,
 	return ApplyOffsetLimit(items, 0, limit), nil
 }
 
-// SortAndPaginateWorkers sorts workers by CreatedAt descending, applies
-// cursor-based filtering, and limits results.
-func SortAndPaginateWorkers(workers []*Worker, cursor string, limit int64) ([]*Worker, error) {
-	return SortFilterLimit(workers, func(w *Worker) time.Time { return w.CreatedAt }, cursor, limit)
-}
-
 // PrefixMatchUser returns true if the lowered query is a prefix of the
 // user's username, display name, or email (case-insensitive).
 // The caller must pass a pre-lowercased query.

@@ -2,17 +2,13 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
-type sessionStore struct {
-	q  *gendb.Queries
-	db *sql.DB
-}
+type sessionStore struct{ conn *sqliteConn }
 
 var _ store.SessionStore = (*sessionStore)(nil)
 
@@ -33,7 +29,7 @@ func fromDBSessions(rows []gendb.UserSession) []store.UserSession {
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
-	return mapErr(s.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
+	return mapErr(s.conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 		ID:        p.ID,
 		UserID:    p.UserID,
 		ExpiresAt: p.ExpiresAt.UTC(),
@@ -43,7 +39,7 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 }
 
 func (s *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSession, error) {
-	sess, err := s.q.GetUserSessionByID(ctx, id)
+	sess, err := s.conn.q.GetUserSessionByID(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -55,7 +51,7 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) er
 	// Format LastActiveAt in the same ISO 8601 format as strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 	// to ensure correct string comparison with the DB-stored value.
 	lastActiveStr := p.LastActiveAt.UTC().Format(sqliteTimeFormat)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.conn.shared.db.ExecContext(ctx,
 		`UPDATE user_sessions
 		 SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 		     expires_at = ?
@@ -66,22 +62,22 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) er
 }
 
 func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
-	return rowsAffected(s.q.DeleteUserSession(ctx, id))
+	return rowsAffected(s.conn.q.DeleteUserSession(ctx, id))
 }
 
 func (s *sessionStore) DeleteByUser(ctx context.Context, userID string) error {
-	return mapErr(s.q.DeleteUserSessionsByUser(ctx, userID))
+	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, userID))
 }
 
 func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSessionsParams) error {
-	return mapErr(s.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
+	return mapErr(s.conn.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
 		UserID: p.UserID,
 		ID:     p.KeepID,
 	}))
 }
 
 func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store.UserSession, error) {
-	rows, err := s.q.ListUserSessionsByUserID(ctx, userID)
+	rows, err := s.conn.q.ListUserSessionsByUserID(ctx, userID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -89,14 +85,11 @@ func (s *sessionStore) ListByUserID(ctx context.Context, userID string) ([]store
 }
 
 func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams) ([]store.ActiveSession, error) {
-	cursor, err := parseCursorToSQLiteTime(p.Cursor)
+	params, err := listAllActiveSessionsParams(p.Cursor, p.Limit)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.q.ListAllActiveSessions(ctx, gendb.ListAllActiveSessionsParams{
-		Cursor: cursor,
-		Limit:  p.Limit,
-	})
+	rows, err := s.conn.q.ListAllActiveSessions(ctx, params)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -117,7 +110,7 @@ func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveS
 }
 
 func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.SessionWithUser, error) {
-	row, err := s.q.ValidateSessionWithUser(ctx, id)
+	row, err := s.conn.q.ValidateSessionWithUser(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}

@@ -9,12 +9,12 @@ import (
 )
 
 // workerNotificationStore implements store.WorkerNotificationStore backed by SQLite.
-type workerNotificationStore struct{ q *gendb.Queries }
+type workerNotificationStore struct{ conn *sqliteConn }
 
 var _ store.WorkerNotificationStore = (*workerNotificationStore)(nil)
 
 func (s *workerNotificationStore) Create(ctx context.Context, p store.CreateWorkerNotificationParams) error {
-	return mapErr(s.q.CreateWorkerNotification(ctx, gendb.CreateWorkerNotificationParams{
+	return mapErr(s.conn.q.CreateWorkerNotification(ctx, gendb.CreateWorkerNotificationParams{
 		ID:       p.ID,
 		WorkerID: p.WorkerID,
 		Type:     p.Type,
@@ -23,7 +23,7 @@ func (s *workerNotificationStore) Create(ctx context.Context, p store.CreateWork
 }
 
 func (s *workerNotificationStore) ListPendingByWorker(ctx context.Context, workerID string) ([]store.WorkerNotification, error) {
-	rows, err := s.q.ListPendingNotificationsByWorker(ctx, workerID)
+	rows, err := s.conn.q.ListPendingNotificationsByWorker(ctx, workerID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -31,15 +31,15 @@ func (s *workerNotificationStore) ListPendingByWorker(ctx context.Context, worke
 }
 
 func (s *workerNotificationStore) MarkDelivered(ctx context.Context, id string) error {
-	return mapErr(s.q.MarkNotificationDelivered(ctx, id))
+	return mapErr(s.conn.q.MarkNotificationDelivered(ctx, id))
 }
 
 func (s *workerNotificationStore) MarkFailed(ctx context.Context, id string) error {
-	return mapErr(s.q.MarkNotificationFailed(ctx, id))
+	return mapErr(s.conn.q.MarkNotificationFailed(ctx, id))
 }
 
 func (s *workerNotificationStore) IncrementAttempts(ctx context.Context, id string) error {
-	return mapErr(s.q.IncrementNotificationAttempts(ctx, id))
+	return mapErr(s.conn.q.IncrementNotificationAttempts(ctx, id))
 }
 
 func fromDBWorkerNotification(n gendb.WorkerNotification) store.WorkerNotification {

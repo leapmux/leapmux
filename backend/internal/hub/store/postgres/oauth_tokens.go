@@ -8,7 +8,7 @@ import (
 )
 
 type oauthTokenStore struct {
-	q *gendb.Queries
+	conn *pgConn
 }
 
 var _ store.OAuthTokenStore = (*oauthTokenStore)(nil)
@@ -31,7 +31,7 @@ func fromDBOAuthTokens(rows []gendb.OauthToken) []store.OAuthToken {
 }
 
 func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensParams) error {
-	return mapErr(s.q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
+	return mapErr(s.conn.q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
 		UserID:       p.UserID,
 		ProviderID:   p.ProviderID,
 		AccessToken:  p.AccessToken,
@@ -43,7 +43,7 @@ func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensP
 }
 
 func (s *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams) (*store.OAuthToken, error) {
-	t, err := s.q.GetOAuthTokens(ctx, gendb.GetOAuthTokensParams{
+	t, err := s.conn.q.GetOAuthTokens(ctx, gendb.GetOAuthTokensParams{
 		UserID:     p.UserID,
 		ProviderID: p.ProviderID,
 	})
@@ -55,7 +55,7 @@ func (s *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams)
 }
 
 func (s *oauthTokenStore) ListExpiring(ctx context.Context) ([]store.OAuthToken, error) {
-	rows, err := s.q.ListExpiringOAuthTokens(ctx)
+	rows, err := s.conn.q.ListExpiringOAuthTokens(ctx)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -63,7 +63,7 @@ func (s *oauthTokenStore) ListExpiring(ctx context.Context) ([]store.OAuthToken,
 }
 
 func (s *oauthTokenStore) ListByKeyVersion(ctx context.Context, keyVersion int64) ([]store.OAuthToken, error) {
-	rows, err := s.q.ListOAuthTokensByKeyVersion(ctx, int32(keyVersion))
+	rows, err := s.conn.q.ListOAuthTokensByKeyVersion(ctx, int32(keyVersion))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -71,7 +71,7 @@ func (s *oauthTokenStore) ListByKeyVersion(ctx context.Context, keyVersion int64
 }
 
 func (s *oauthTokenStore) CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error) {
-	count, err := s.q.CountOAuthTokensByKeyVersion(ctx, int32(keyVersion))
+	count, err := s.conn.q.CountOAuthTokensByKeyVersion(ctx, int32(keyVersion))
 	if err != nil {
 		return 0, mapErr(err)
 	}
@@ -79,15 +79,15 @@ func (s *oauthTokenStore) CountByKeyVersion(ctx context.Context, keyVersion int6
 }
 
 func (s *oauthTokenStore) DeleteByProvider(ctx context.Context, providerID string) error {
-	return mapErr(s.q.DeleteOAuthTokensByProvider(ctx, providerID))
+	return mapErr(s.conn.q.DeleteOAuthTokensByProvider(ctx, providerID))
 }
 
 func (s *oauthTokenStore) DeleteByUser(ctx context.Context, userID string) error {
-	return mapErr(s.q.DeleteOAuthTokensByUser(ctx, userID))
+	return mapErr(s.conn.q.DeleteOAuthTokensByUser(ctx, userID))
 }
 
 func (s *oauthTokenStore) DeleteByUserAndProvider(ctx context.Context, p store.DeleteOAuthTokensByUserAndProviderParams) error {
-	return mapErr(s.q.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{
+	return mapErr(s.conn.q.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{
 		UserID:     p.UserID,
 		ProviderID: p.ProviderID,
 	}))

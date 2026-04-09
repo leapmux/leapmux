@@ -18,11 +18,7 @@ import (
 
 // pgStore implements store.Store backed by PostgreSQL.
 type pgStore struct {
-	pool    *pgxpool.Pool
-	dbtx    gendb.DBTX // pool outside tx, pgx.Tx inside tx
-	sqlDB   *sql.DB    // database/sql wrapper for goose migrations
-	queries *gendb.Queries
-	mig     store.Migrator
+	conn *pgConn
 
 	orgs                  orgStore
 	users                 userStore
@@ -47,6 +43,18 @@ type pgStore struct {
 }
 
 var _ store.Store = (*pgStore)(nil)
+
+type pgShared struct {
+	pool        *pgxpool.Pool
+	migrationDB *sql.DB // database/sql wrapper for goose migrations
+	migrator    store.Migrator
+}
+
+type pgConn struct {
+	shared *pgShared
+	exec   gendb.DBTX // pool outside tx, pgx.Tx inside tx
+	q      *gendb.Queries
+}
 
 // Open connects to a PostgreSQL database, runs migrations, and returns a Store.
 func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
@@ -89,54 +97,62 @@ func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
 	}
 
 	st := &pgStore{
-		pool:    pool,
-		dbtx:    pool,
-		sqlDB:   sqlDB,
-		queries: gendb.New(pool),
-		mig:     mig,
+		conn: &pgConn{
+			shared: &pgShared{
+				pool:        pool,
+				migrationDB: sqlDB,
+				migrator:    mig,
+			},
+			exec: pool,
+			q:    gendb.New(pool),
+		},
 	}
 	initSubStores(st)
 	return st, nil
 }
 
 // newFromPool wraps an existing pool (already migrated) into a Store.
-func newFromPool(pool *pgxpool.Pool, sqlDB *sql.DB) (*pgStore, error) {
-	mig, err := newMigrator(sqlDB)
+func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
+	mig, err := newMigrator(migrationDB)
 	if err != nil {
 		return nil, fmt.Errorf("init postgres migrator: %w", err)
 	}
 	st := &pgStore{
-		pool:    pool,
-		dbtx:    pool,
-		sqlDB:   sqlDB,
-		queries: gendb.New(pool),
-		mig:     mig,
+		conn: &pgConn{
+			shared: &pgShared{
+				pool:        pool,
+				migrationDB: migrationDB,
+				migrator:    mig,
+			},
+			exec: pool,
+			q:    gendb.New(pool),
+		},
 	}
 	initSubStores(st)
 	return st, nil
 }
 
 func initSubStores(s *pgStore) {
-	s.orgs = orgStore{q: s.queries}
-	s.users = userStore{q: s.queries}
-	s.sessions = sessionStore{q: s.queries, pool: s.pool}
-	s.orgMembers = orgMemberStore{q: s.queries}
-	s.workers = workerStore{q: s.queries}
-	s.workerAccessGrants = workerAccessGrantStore{q: s.queries}
-	s.workerNotifications = workerNotificationStore{q: s.queries}
-	s.registrations = registrationStore{q: s.queries}
-	s.workspaces = workspaceStore{q: s.queries}
-	s.workspaceAccess = workspaceAccessStore{q: s.queries}
-	s.workspaceTabs = workspaceTabStore{q: s.queries, dbtx: s.dbtx}
-	s.workspaceLayouts = workspaceLayoutStore{q: s.queries}
-	s.workspaceSections = workspaceSectionStore{q: s.queries}
-	s.workspaceSectionItems = workspaceSectionItemStore{q: s.queries}
-	s.oauthProviders = oauthProviderStore{q: s.queries}
-	s.oauthStates = oauthStateStore{q: s.queries}
-	s.oauthTokens = oauthTokenStore{q: s.queries}
-	s.oauthUserLinks = oauthUserLinkStore{q: s.queries}
-	s.pendingOAuthSignups = pendingOAuthSignupStore{q: s.queries}
-	s.cleanup = cleanupStore{q: s.queries}
+	s.orgs = orgStore{conn: s.conn}
+	s.users = userStore{conn: s.conn}
+	s.sessions = sessionStore{conn: s.conn}
+	s.orgMembers = orgMemberStore{conn: s.conn}
+	s.workers = workerStore{conn: s.conn}
+	s.workerAccessGrants = workerAccessGrantStore{conn: s.conn}
+	s.workerNotifications = workerNotificationStore{conn: s.conn}
+	s.registrations = registrationStore{conn: s.conn}
+	s.workspaces = workspaceStore{conn: s.conn}
+	s.workspaceAccess = workspaceAccessStore{conn: s.conn}
+	s.workspaceTabs = workspaceTabStore{conn: s.conn}
+	s.workspaceLayouts = workspaceLayoutStore{conn: s.conn}
+	s.workspaceSections = workspaceSectionStore{conn: s.conn}
+	s.workspaceSectionItems = workspaceSectionItemStore{conn: s.conn}
+	s.oauthProviders = oauthProviderStore{conn: s.conn}
+	s.oauthStates = oauthStateStore{conn: s.conn}
+	s.oauthTokens = oauthTokenStore{conn: s.conn}
+	s.oauthUserLinks = oauthUserLinkStore{conn: s.conn}
+	s.pendingOAuthSignups = pendingOAuthSignupStore{conn: s.conn}
+	s.cleanup = cleanupStore{conn: s.conn}
 }
 
 func (s *pgStore) Orgs() store.OrgStore                               { return &s.orgs }
@@ -161,20 +177,21 @@ func (s *pgStore) OAuthTokens() store.OAuthTokenStore                 { return &
 func (s *pgStore) OAuthUserLinks() store.OAuthUserLinkStore           { return &s.oauthUserLinks }
 func (s *pgStore) PendingOAuthSignups() store.PendingOAuthSignupStore { return &s.pendingOAuthSignups }
 func (s *pgStore) Cleanup() store.CleanupStore                        { return &s.cleanup }
-func (s *pgStore) Migrator() store.Migrator                           { return s.mig }
+func (s *pgStore) Migrator() store.Migrator                           { return s.conn.shared.migrator }
 
 func (s *pgStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
-	pgxTx, err := s.pool.Begin(ctx)
+	pgxTx, err := s.conn.shared.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
 	txStore := &pgStore{
-		pool:    s.pool,
-		dbtx:    pgxTx,
-		queries: s.queries.WithTx(pgxTx),
-		mig:     s.mig,
+		conn: &pgConn{
+			shared: s.conn.shared,
+			exec:   pgxTx,
+			q:      s.conn.q.WithTx(pgxTx),
+		},
 	}
 	initSubStores(txStore)
 	if err := fn(txStore); err != nil {
@@ -184,6 +201,6 @@ func (s *pgStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) 
 }
 
 func (s *pgStore) Close() error {
-	s.pool.Close()
-	return s.sqlDB.Close()
+	s.conn.shared.pool.Close()
+	return s.conn.shared.migrationDB.Close()
 }

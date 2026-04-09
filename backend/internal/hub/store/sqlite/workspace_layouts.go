@@ -8,13 +8,13 @@ import (
 )
 
 type workspaceLayoutStore struct {
-	q *gendb.Queries
+	conn *sqliteConn
 }
 
 var _ store.WorkspaceLayoutStore = (*workspaceLayoutStore)(nil)
 
 func (s *workspaceLayoutStore) Get(ctx context.Context, workspaceID string) (*store.WorkspaceLayout, error) {
-	l, err := s.q.GetWorkspaceLayout(ctx, workspaceID)
+	l, err := s.conn.q.GetWorkspaceLayout(ctx, workspaceID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -26,12 +26,12 @@ func (s *workspaceLayoutStore) Get(ctx context.Context, workspaceID string) (*st
 }
 
 func (s *workspaceLayoutStore) Upsert(ctx context.Context, p store.UpsertWorkspaceLayoutParams) error {
-	return mapErr(s.q.UpsertWorkspaceLayout(ctx, gendb.UpsertWorkspaceLayoutParams{
+	return mapErr(s.conn.q.UpsertWorkspaceLayout(ctx, gendb.UpsertWorkspaceLayoutParams{
 		WorkspaceID: p.WorkspaceID,
 		LayoutJson:  p.LayoutJSON,
 	}))
 }
 
 func (s *workspaceLayoutStore) Delete(ctx context.Context, workspaceID string) error {
-	return mapErr(s.q.DeleteWorkspaceLayout(ctx, workspaceID))
+	return mapErr(s.conn.q.DeleteWorkspaceLayout(ctx, workspaceID))
 }

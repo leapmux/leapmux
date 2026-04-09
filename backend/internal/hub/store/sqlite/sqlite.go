@@ -16,10 +16,7 @@ import (
 
 // sqliteStore implements store.Store backed by SQLite.
 type sqliteStore struct {
-	sqlDB   *sql.DB
-	dbtx    gendb.DBTX // sqlDB outside tx, *sql.Tx inside tx
-	queries *gendb.Queries
-	mig     store.Migrator
+	conn *sqliteConn
 
 	orgs                  orgStore
 	users                 userStore
@@ -45,6 +42,17 @@ type sqliteStore struct {
 
 var _ store.Store = (*sqliteStore)(nil)
 
+type sqliteShared struct {
+	db       *sql.DB
+	migrator store.Migrator
+}
+
+type sqliteConn struct {
+	shared *sqliteShared
+	exec   gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
+	q      *gendb.Queries
+}
+
 // Open opens a SQLite database, runs migrations, and returns a Store.
 func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 	sqlDB, err := OpenDB(path, cfg)
@@ -63,10 +71,14 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 	}
 
 	st := &sqliteStore{
-		sqlDB:   sqlDB,
-		dbtx:    sqlDB,
-		queries: gendb.New(sqlDB),
-		mig:     mig,
+		conn: &sqliteConn{
+			shared: &sqliteShared{
+				db:       sqlDB,
+				migrator: mig,
+			},
+			exec: sqlDB,
+			q:    gendb.New(sqlDB),
+		},
 	}
 	initSubStores(st)
 	return st, nil
@@ -81,36 +93,40 @@ func NewFromDB(sqlDB *sql.DB) (store.Store, error) {
 		return nil, fmt.Errorf("init sqlite migrator: %w", err)
 	}
 	st := &sqliteStore{
-		sqlDB:   sqlDB,
-		dbtx:    sqlDB,
-		queries: gendb.New(sqlDB),
-		mig:     mig,
+		conn: &sqliteConn{
+			shared: &sqliteShared{
+				db:       sqlDB,
+				migrator: mig,
+			},
+			exec: sqlDB,
+			q:    gendb.New(sqlDB),
+		},
 	}
 	initSubStores(st)
 	return st, nil
 }
 
 func initSubStores(s *sqliteStore) {
-	s.orgs = orgStore{q: s.queries}
-	s.users = userStore{q: s.queries}
-	s.sessions = sessionStore{q: s.queries, db: s.sqlDB}
-	s.orgMembers = orgMemberStore{q: s.queries}
-	s.workers = workerStore{q: s.queries}
-	s.workerAccessGrants = workerAccessGrantStore{q: s.queries}
-	s.workerNotifications = workerNotificationStore{q: s.queries}
-	s.registrations = registrationStore{q: s.queries}
-	s.workspaces = workspaceStore{q: s.queries}
-	s.workspaceAccess = workspaceAccessStore{q: s.queries}
-	s.workspaceTabs = workspaceTabStore{q: s.queries, dbtx: s.dbtx}
-	s.workspaceLayouts = workspaceLayoutStore{q: s.queries}
-	s.workspaceSections = workspaceSectionStore{q: s.queries}
-	s.workspaceSectionItems = workspaceSectionItemStore{q: s.queries}
-	s.oauthProviders = oauthProviderStore{q: s.queries}
-	s.oauthStates = oauthStateStore{q: s.queries}
-	s.oauthTokens = oauthTokenStore{q: s.queries}
-	s.oauthUserLinks = oauthUserLinkStore{q: s.queries}
-	s.pendingOAuthSignups = pendingOAuthSignupStore{q: s.queries}
-	s.cleanup = cleanupStore{q: s.queries}
+	s.orgs = orgStore{conn: s.conn}
+	s.users = userStore{conn: s.conn}
+	s.sessions = sessionStore{conn: s.conn}
+	s.orgMembers = orgMemberStore{conn: s.conn}
+	s.workers = workerStore{conn: s.conn}
+	s.workerAccessGrants = workerAccessGrantStore{conn: s.conn}
+	s.workerNotifications = workerNotificationStore{conn: s.conn}
+	s.registrations = registrationStore{conn: s.conn}
+	s.workspaces = workspaceStore{conn: s.conn}
+	s.workspaceAccess = workspaceAccessStore{conn: s.conn}
+	s.workspaceTabs = workspaceTabStore{conn: s.conn}
+	s.workspaceLayouts = workspaceLayoutStore{conn: s.conn}
+	s.workspaceSections = workspaceSectionStore{conn: s.conn}
+	s.workspaceSectionItems = workspaceSectionItemStore{conn: s.conn}
+	s.oauthProviders = oauthProviderStore{conn: s.conn}
+	s.oauthStates = oauthStateStore{conn: s.conn}
+	s.oauthTokens = oauthTokenStore{conn: s.conn}
+	s.oauthUserLinks = oauthUserLinkStore{conn: s.conn}
+	s.pendingOAuthSignups = pendingOAuthSignupStore{conn: s.conn}
+	s.cleanup = cleanupStore{conn: s.conn}
 }
 
 func (s *sqliteStore) Orgs() store.OrgStore                             { return &s.orgs }
@@ -139,20 +155,21 @@ func (s *sqliteStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
 	return &s.pendingOAuthSignups
 }
 func (s *sqliteStore) Cleanup() store.CleanupStore { return &s.cleanup }
-func (s *sqliteStore) Migrator() store.Migrator    { return s.mig }
+func (s *sqliteStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
 
 func (s *sqliteStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
-	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	tx, err := s.conn.shared.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	txStore := &sqliteStore{
-		sqlDB:   s.sqlDB,
-		dbtx:    tx,
-		queries: s.queries.WithTx(tx),
-		mig:     s.mig,
+		conn: &sqliteConn{
+			shared: s.conn.shared,
+			exec:   tx,
+			q:      s.conn.q.WithTx(tx),
+		},
 	}
 	initSubStores(txStore)
 	if err := fn(txStore); err != nil {
@@ -163,9 +180,9 @@ func (s *sqliteStore) RunInTransaction(ctx context.Context, fn func(tx store.Sto
 
 func (s *sqliteStore) Close() error {
 	// Flush the WAL before close to avoid a large WAL file on the next open.
-	if _, err := s.sqlDB.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+	if _, err := s.conn.shared.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		// Log but don't fail — the close itself is more important.
 		slog.Warn("WAL checkpoint failed", "error", err)
 	}
-	return s.sqlDB.Close()
+	return s.conn.shared.db.Close()
 }

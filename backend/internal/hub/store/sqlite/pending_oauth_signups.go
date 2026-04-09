@@ -8,7 +8,7 @@ import (
 )
 
 type pendingOAuthSignupStore struct {
-	q *gendb.Queries
+	conn *sqliteConn
 }
 
 var _ store.PendingOAuthSignupStore = (*pendingOAuthSignupStore)(nil)
@@ -32,7 +32,7 @@ func fromDBPendingOAuthSignup(p gendb.PendingOauthSignup) *store.PendingOAuthSig
 }
 
 func (s *pendingOAuthSignupStore) Create(ctx context.Context, p store.CreatePendingOAuthSignupParams) error {
-	return mapErr(s.q.CreatePendingOAuthSignup(ctx, gendb.CreatePendingOAuthSignupParams{
+	return mapErr(s.conn.q.CreatePendingOAuthSignup(ctx, gendb.CreatePendingOAuthSignupParams{
 		Token:           p.Token,
 		ProviderID:      p.ProviderID,
 		ProviderSubject: p.ProviderSubject,
@@ -49,7 +49,7 @@ func (s *pendingOAuthSignupStore) Create(ctx context.Context, p store.CreatePend
 }
 
 func (s *pendingOAuthSignupStore) Get(ctx context.Context, token string) (*store.PendingOAuthSignup, error) {
-	row, err := s.q.GetPendingOAuthSignup(ctx, token)
+	row, err := s.conn.q.GetPendingOAuthSignup(ctx, token)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -57,5 +57,5 @@ func (s *pendingOAuthSignupStore) Get(ctx context.Context, token string) (*store
 }
 
 func (s *pendingOAuthSignupStore) Delete(ctx context.Context, token string) error {
-	return mapErr(s.q.DeletePendingOAuthSignup(ctx, token))
+	return mapErr(s.conn.q.DeletePendingOAuthSignup(ctx, token))
 }

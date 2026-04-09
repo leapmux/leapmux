@@ -11,7 +11,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -59,7 +58,7 @@ func runUserList(args []string) error {
 
 		if *query != "" {
 			users, err = st.Users().Search(ctx, store.SearchUsersParams{
-				Query:  ptrconv.Ptr(*query),
+				Query:  query,
 				Limit:  *limit,
 				Cursor: *cursor,
 			})

@@ -8,7 +8,7 @@ import (
 )
 
 type oauthUserLinkStore struct {
-	q *gendb.Queries
+	conn *pgConn
 }
 
 var _ store.OAuthUserLinkStore = (*oauthUserLinkStore)(nil)
@@ -27,7 +27,7 @@ func fromDBOAuthUserLinks(rows []gendb.OauthUserLink) []store.OAuthUserLink {
 }
 
 func (s *oauthUserLinkStore) Create(ctx context.Context, p store.CreateOAuthUserLinkParams) error {
-	return mapErr(s.q.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{
+	return mapErr(s.conn.q.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{
 		UserID:          p.UserID,
 		ProviderID:      p.ProviderID,
 		ProviderSubject: p.ProviderSubject,
@@ -35,7 +35,7 @@ func (s *oauthUserLinkStore) Create(ctx context.Context, p store.CreateOAuthUser
 }
 
 func (s *oauthUserLinkStore) Get(ctx context.Context, p store.GetOAuthUserLinkParams) (*store.OAuthUserLink, error) {
-	l, err := s.q.GetOAuthUserLink(ctx, gendb.GetOAuthUserLinkParams{
+	l, err := s.conn.q.GetOAuthUserLink(ctx, gendb.GetOAuthUserLinkParams{
 		ProviderID:      p.ProviderID,
 		ProviderSubject: p.ProviderSubject,
 	})
@@ -47,7 +47,7 @@ func (s *oauthUserLinkStore) Get(ctx context.Context, p store.GetOAuthUserLinkPa
 }
 
 func (s *oauthUserLinkStore) ListByUser(ctx context.Context, userID string) ([]store.OAuthUserLink, error) {
-	rows, err := s.q.ListOAuthUserLinksByUser(ctx, userID)
+	rows, err := s.conn.q.ListOAuthUserLinksByUser(ctx, userID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -55,12 +55,12 @@ func (s *oauthUserLinkStore) ListByUser(ctx context.Context, userID string) ([]s
 }
 
 func (s *oauthUserLinkStore) Delete(ctx context.Context, p store.DeleteOAuthUserLinkParams) error {
-	return mapErr(s.q.DeleteOAuthUserLink(ctx, gendb.DeleteOAuthUserLinkParams{
+	return mapErr(s.conn.q.DeleteOAuthUserLink(ctx, gendb.DeleteOAuthUserLinkParams{
 		UserID:     p.UserID,
 		ProviderID: p.ProviderID,
 	}))
 }
 
 func (s *oauthUserLinkStore) DeleteByProvider(ctx context.Context, providerID string) error {
-	return mapErr(s.q.DeleteOAuthUserLinksByProvider(ctx, providerID))
+	return mapErr(s.conn.q.DeleteOAuthUserLinksByProvider(ctx, providerID))
 }

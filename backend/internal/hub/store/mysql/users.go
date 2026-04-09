@@ -9,7 +9,7 @@ import (
 )
 
 type userStore struct {
-	q *gendb.Queries
+	conn *mysqlConn
 }
 
 var _ store.UserStore = (*userStore)(nil)
@@ -40,7 +40,7 @@ func fromDBUsers(rows []gendb.User) []store.User {
 }
 
 func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error {
-	return mapErr(s.q.CreateUser(ctx, gendb.CreateUserParams{
+	return mapErr(s.conn.q.CreateUser(ctx, gendb.CreateUserParams{
 		ID:            p.ID,
 		OrgID:         p.OrgID,
 		Username:      store.NormalizeUsername(p.Username),
@@ -54,7 +54,7 @@ func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error 
 }
 
 func (s *userStore) GetByID(ctx context.Context, id string) (*store.User, error) {
-	u, err := s.q.GetUserByID(ctx, id)
+	u, err := s.conn.q.GetUserByID(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -63,7 +63,7 @@ func (s *userStore) GetByID(ctx context.Context, id string) (*store.User, error)
 }
 
 func (s *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.User, error) {
-	u, err := s.q.GetUserByIDIncludeDeleted(ctx, id)
+	u, err := s.conn.q.GetUserByIDIncludeDeleted(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -72,7 +72,7 @@ func (s *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*stor
 }
 
 func (s *userStore) GetByUsername(ctx context.Context, username string) (*store.User, error) {
-	u, err := s.q.GetUserByUsername(ctx, store.NormalizeUsername(username))
+	u, err := s.conn.q.GetUserByUsername(ctx, store.NormalizeUsername(username))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -81,7 +81,7 @@ func (s *userStore) GetByUsername(ctx context.Context, username string) (*store.
 }
 
 func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, error) {
-	u, err := s.q.GetUserByEmail(ctx, store.NormalizeEmail(email))
+	u, err := s.conn.q.GetUserByEmail(ctx, store.NormalizeEmail(email))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -90,7 +90,7 @@ func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, 
 }
 
 func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
-	exists, err := s.q.ExistsByUsername(ctx, store.NormalizeUsername(username))
+	exists, err := s.conn.q.ExistsByUsername(ctx, store.NormalizeUsername(username))
 	if err != nil {
 		return false, mapErr(err)
 	}
@@ -98,18 +98,18 @@ func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool
 }
 
 func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error) {
-	id, err := s.q.GetUserIDByEmail(ctx, store.NormalizeEmail(email))
+	exists, err := s.conn.q.ExistsByEmail(ctx, gendb.ExistsByEmailParams{
+		Email:         store.NormalizeEmail(email),
+		ExcludeUserID: excludeUserID,
+	})
 	if err != nil {
-		if mapErr(err) == store.ErrNotFound {
-			return false, nil
-		}
 		return false, mapErr(err)
 	}
-	return id != excludeUserID, nil
+	return exists, nil
 }
 
 func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
-	u, err := s.q.GetUserByPendingEmailToken(ctx, token)
+	u, err := s.conn.q.GetUserByPendingEmailToken(ctx, token)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -118,12 +118,12 @@ func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*
 }
 
 func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
-	prefs, err := s.q.GetUserPrefs(ctx, id)
+	prefs, err := s.conn.q.GetUserPrefs(ctx, id)
 	return prefs, mapErr(err)
 }
 
 func (s *userStore) HasAny(ctx context.Context) (bool, error) {
-	ok, err := s.q.HasAnyUser(ctx)
+	ok, err := s.conn.q.HasAnyUser(ctx)
 	if err != nil {
 		return false, mapErr(err)
 	}
@@ -131,12 +131,12 @@ func (s *userStore) HasAny(ctx context.Context) (bool, error) {
 }
 
 func (s *userStore) Count(ctx context.Context) (int64, error) {
-	n, err := s.q.CountUsers(ctx)
+	n, err := s.conn.q.CountUsers(ctx)
 	return n, mapErr(err)
 }
 
 func (s *userStore) ListByOrgID(ctx context.Context, orgID string) ([]store.User, error) {
-	rows, err := s.q.ListUsersByOrgID(ctx, orgID)
+	rows, err := s.conn.q.ListUsersByOrgID(ctx, orgID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -144,15 +144,11 @@ func (s *userStore) ListByOrgID(ctx context.Context, orgID string) ([]store.User
 }
 
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) ([]store.User, error) {
-	col1, createdAt, err := parseMySQLCursor(p.Cursor)
+	params, err := listAllUsersParams(p.Cursor, p.Limit)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.q.ListAllUsers(ctx, gendb.ListAllUsersParams{
-		Column1:   col1,
-		CreatedAt: createdAt,
-		Limit:     int32(p.Limit),
-	})
+	rows, err := s.conn.q.ListAllUsers(ctx, params)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -160,16 +156,11 @@ func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) ([]
 }
 
 func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]store.User, error) {
-	col1, createdAt, err := parseMySQLCursor(p.Cursor)
+	params, err := searchUsersParams(p.Query, p.Cursor, p.Limit)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.q.SearchUsers(ctx, gendb.SearchUsersParams{
-		Query:     ptrconv.PtrToNullString(p.Query),
-		Column5:   col1,
-		CreatedAt: createdAt,
-		Limit:     int32(p.Limit),
-	})
+	rows, err := s.conn.q.SearchUsers(ctx, params)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -177,7 +168,7 @@ func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]st
 }
 
 func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfileParams) error {
-	return mapErr(s.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
+	return mapErr(s.conn.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
 		Username:    store.NormalizeUsername(p.Username),
 		DisplayName: p.DisplayName,
 		ID:          p.ID,
@@ -185,14 +176,14 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 }
 
 func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswordParams) error {
-	return mapErr(s.q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
+	return mapErr(s.conn.q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
 		PasswordHash: p.PasswordHash,
 		ID:           p.ID,
 	}))
 }
 
 func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailParams) error {
-	return mapErr(s.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
+	return mapErr(s.conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
 		Email:         store.NormalizeEmail(p.Email),
 		EmailVerified: p.EmailVerified,
 		ID:            p.ID,
@@ -200,28 +191,28 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 }
 
 func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserEmailVerifiedParams) error {
-	return mapErr(s.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
+	return mapErr(s.conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
 		EmailVerified: p.EmailVerified,
 		ID:            p.ID,
 	}))
 }
 
 func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminParams) error {
-	return mapErr(s.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
+	return mapErr(s.conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
 		IsAdmin: p.IsAdmin,
 		ID:      p.ID,
 	}))
 }
 
 func (s *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsParams) error {
-	return mapErr(s.q.UpdateUserPrefs(ctx, gendb.UpdateUserPrefsParams{
+	return mapErr(s.conn.q.UpdateUserPrefs(ctx, gendb.UpdateUserPrefsParams{
 		Prefs: p.Prefs,
 		ID:    p.ID,
 	}))
 }
 
 func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmailParams) error {
-	return mapErr(s.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
+	return mapErr(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
 		PendingEmailExpiresAt: ptrconv.PtrToNullTime(p.PendingEmailExpiresAt),
@@ -230,20 +221,20 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 }
 
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
-	return mapErr(s.q.PromotePendingEmail(ctx, id))
+	return mapErr(s.conn.q.PromotePendingEmail(ctx, id))
 }
 
 func (s *userStore) ClearPendingEmail(ctx context.Context, id string) error {
-	return mapErr(s.q.ClearPendingEmail(ctx, id))
+	return mapErr(s.conn.q.ClearPendingEmail(ctx, id))
 }
 
 func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.ClearCompetingPendingEmailsParams) error {
-	return mapErr(s.q.ClearCompetingPendingEmails(ctx, gendb.ClearCompetingPendingEmailsParams{
+	return mapErr(s.conn.q.ClearCompetingPendingEmails(ctx, gendb.ClearCompetingPendingEmailsParams{
 		PendingEmail: store.NormalizeEmail(p.PendingEmail),
 		ID:           p.ExcludeID,
 	}))
 }
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
-	return mapErr(s.q.DeleteUser(ctx, id))
+	return mapErr(s.conn.q.DeleteUser(ctx, id))
 }

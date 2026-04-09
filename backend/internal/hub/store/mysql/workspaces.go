@@ -9,7 +9,7 @@ import (
 )
 
 type workspaceStore struct {
-	q *gendb.Queries
+	conn *mysqlConn
 }
 
 var _ store.WorkspaceStore = (*workspaceStore)(nil)
@@ -27,7 +27,7 @@ func fromDBWorkspace(w gendb.Workspace) *store.Workspace {
 }
 
 func (s *workspaceStore) Create(ctx context.Context, p store.CreateWorkspaceParams) error {
-	return mapErr(s.q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
+	return mapErr(s.conn.q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
 		ID:          p.ID,
 		OrgID:       p.OrgID,
 		OwnerUserID: p.OwnerUserID,
@@ -36,7 +36,7 @@ func (s *workspaceStore) Create(ctx context.Context, p store.CreateWorkspacePara
 }
 
 func (s *workspaceStore) GetByID(ctx context.Context, id string) (*store.Workspace, error) {
-	w, err := s.q.GetWorkspaceByID(ctx, id)
+	w, err := s.conn.q.GetWorkspaceByID(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -44,7 +44,7 @@ func (s *workspaceStore) GetByID(ctx context.Context, id string) (*store.Workspa
 }
 
 func (s *workspaceStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.Workspace, error) {
-	w, err := s.q.GetWorkspaceByIDIncludeDeleted(ctx, id)
+	w, err := s.conn.q.GetWorkspaceByIDIncludeDeleted(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -52,7 +52,7 @@ func (s *workspaceStore) GetByIDIncludeDeleted(ctx context.Context, id string) (
 }
 
 func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessibleWorkspacesParams) ([]store.Workspace, error) {
-	rows, err := s.q.ListAccessibleWorkspaces(ctx, gendb.ListAccessibleWorkspacesParams{
+	rows, err := s.conn.q.ListAccessibleWorkspaces(ctx, gendb.ListAccessibleWorkspacesParams{
 		UserID: p.UserID,
 		OrgID:  p.OrgID,
 	})
@@ -63,7 +63,7 @@ func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessi
 }
 
 func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspaceParams) (int64, error) {
-	return rowsAffected(s.q.RenameWorkspace(ctx, gendb.RenameWorkspaceParams{
+	return rowsAffected(s.conn.q.RenameWorkspace(ctx, gendb.RenameWorkspaceParams{
 		Title:       p.Title,
 		ID:          p.ID,
 		OwnerUserID: p.OwnerUserID,
@@ -71,12 +71,12 @@ func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspacePara
 }
 
 func (s *workspaceStore) SoftDelete(ctx context.Context, p store.SoftDeleteWorkspaceParams) (int64, error) {
-	return rowsAffected(s.q.SoftDeleteWorkspace(ctx, gendb.SoftDeleteWorkspaceParams{
+	return rowsAffected(s.conn.q.SoftDeleteWorkspace(ctx, gendb.SoftDeleteWorkspaceParams{
 		ID:          p.ID,
 		OwnerUserID: p.OwnerUserID,
 	}))
 }
 
 func (s *workspaceStore) SoftDeleteAllByUser(ctx context.Context, ownerUserID string) error {
-	return mapErr(s.q.SoftDeleteAllWorkspacesByUser(ctx, ownerUserID))
+	return mapErr(s.conn.q.SoftDeleteAllWorkspacesByUser(ctx, ownerUserID))
 }

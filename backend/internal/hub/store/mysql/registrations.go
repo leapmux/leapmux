@@ -9,7 +9,7 @@ import (
 )
 
 type registrationStore struct {
-	q *gendb.Queries
+	conn *mysqlConn
 }
 
 var _ store.RegistrationStore = (*registrationStore)(nil)
@@ -30,7 +30,7 @@ func fromDBWorkerRegistration(r gendb.WorkerRegistration) *store.WorkerRegistrat
 }
 
 func (s *registrationStore) Create(ctx context.Context, p store.CreateRegistrationParams) error {
-	return mapErr(s.q.CreateRegistration(ctx, gendb.CreateRegistrationParams{
+	return mapErr(s.conn.q.CreateRegistration(ctx, gendb.CreateRegistrationParams{
 		ID:              p.ID,
 		Version:         p.Version,
 		PublicKey:       p.PublicKey,
@@ -41,7 +41,7 @@ func (s *registrationStore) Create(ctx context.Context, p store.CreateRegistrati
 }
 
 func (s *registrationStore) GetByID(ctx context.Context, id string) (*store.WorkerRegistration, error) {
-	r, err := s.q.GetRegistrationByID(ctx, id)
+	r, err := s.conn.q.GetRegistrationByID(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -49,7 +49,7 @@ func (s *registrationStore) GetByID(ctx context.Context, id string) (*store.Work
 }
 
 func (s *registrationStore) Approve(ctx context.Context, p store.ApproveRegistrationParams) error {
-	return mapErr(s.q.ApproveRegistration(ctx, gendb.ApproveRegistrationParams{
+	return mapErr(s.conn.q.ApproveRegistration(ctx, gendb.ApproveRegistrationParams{
 		WorkerID:   ptrconv.PtrToNullString(p.WorkerID),
 		ApprovedBy: ptrconv.PtrToNullString(p.ApprovedBy),
 		ID:         p.ID,
@@ -57,5 +57,5 @@ func (s *registrationStore) Approve(ctx context.Context, p store.ApproveRegistra
 }
 
 func (s *registrationStore) ExpirePending(ctx context.Context) error {
-	return mapErr(s.q.ExpireRegistrations(ctx))
+	return mapErr(s.conn.q.ExpireRegistrations(ctx))
 }
