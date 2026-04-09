@@ -284,13 +284,7 @@ func TestGeminiClearContextReappliesModelAndMode(t *testing.T) {
 		{Id: GeminiCLIModePlan, Name: "Plan"},
 	}
 	agent.sink = &testSink{}
-	agent.reapplySettings = func() {
-		agent.mu.Lock()
-		model, mode := agent.model, agent.permissionMode
-		agent.mu.Unlock()
-		acpReapplySetting(agent.providerName, agent.agentID, "model", model, agent.setModel)
-		acpReapplySetting(agent.providerName, agent.agentID, "mode", mode, agent.setPermissionMode)
-	}
+	agent.reapplySettings = agent.reapplyModelAndPermissionMode
 
 	sessionID, ok := agent.ClearContext()
 	require.True(t, ok)

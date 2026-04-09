@@ -76,8 +76,8 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		a.mu.Lock()
 		model, primaryAgent := a.model, a.currentPrimaryAgent
 		a.mu.Unlock()
-		acpReapplySetting(a.providerName, a.agentID, "model", model, a.setModel)
-		acpReapplySetting(a.providerName, a.agentID, "primary agent", primaryAgent, a.setPrimaryAgent)
+		acpApplySetting(a.providerName, a.agentID, "model", model, a.setModel)
+		acpApplySetting(a.providerName, a.agentID, "primary agent", primaryAgent, a.setPrimaryAgent)
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -261,8 +261,8 @@ func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGrou
 
 // UpdateSettings applies setting changes to a running agent.
 func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return acpUpdateSetting(a.providerName, a.agentID, "model", s.GetModel(), a.setModel) &&
-		acpUpdateSetting(a.providerName, a.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], a.setPrimaryAgent)
+	return acpApplySetting(a.providerName, a.agentID, "model", s.GetModel(), a.setModel) &&
+		acpApplySetting(a.providerName, a.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], a.setPrimaryAgent)
 }
 
 func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {

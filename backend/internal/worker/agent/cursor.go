@@ -65,8 +65,8 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		a.mu.Lock()
 		model, mode := a.model, a.permissionMode
 		a.mu.Unlock()
-		acpReapplySetting(a.providerName, a.agentID, "model", model, a.setCursorModel)
-		acpReapplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
+		acpApplySetting(a.providerName, a.agentID, "model", model, a.setCursorModel)
+		acpApplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -146,15 +146,6 @@ func (a *CursorCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.A
 	})
 }
 
-func (a *CursorCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		PermissionMode: a.permissionMode,
-	}
-}
-
 func (a *CursorCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -170,8 +161,8 @@ func (a *CursorCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGro
 }
 
 func (a *CursorCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return acpUpdateSetting(a.providerName, a.agentID, "model", normalizeCursorModelID(s.GetModel()), a.setCursorModel) &&
-		acpUpdateSetting(a.providerName, a.agentID, "mode", s.GetPermissionMode(), a.setPermissionMode)
+	return acpApplySetting(a.providerName, a.agentID, "model", normalizeCursorModelID(s.GetModel()), a.setCursorModel) &&
+		acpApplySetting(a.providerName, a.agentID, "mode", s.GetPermissionMode(), a.setPermissionMode)
 }
 
 func (a *CursorCLIAgent) setCursorModel(model string) error {

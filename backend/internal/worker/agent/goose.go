@@ -58,13 +58,7 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Provider
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = func() {
-		a.mu.Lock()
-		model, mode := a.model, a.permissionMode
-		a.mu.Unlock()
-		acpReapplySetting(a.providerName, a.agentID, "model", model, a.setModel)
-		acpReapplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
-	}
+	a.reapplySettings = a.reapplyModelAndPermissionMode
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -131,15 +125,6 @@ func (a *GooseCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.At
 	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
 		a.handleACPPromptResponse(resp, nil)
 	})
-}
-
-func (a *GooseCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		PermissionMode: a.permissionMode,
-	}
 }
 
 func (a *GooseCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {

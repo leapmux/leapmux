@@ -242,8 +242,8 @@ func TestCursorClearContextReappliesModelAndMode(t *testing.T) {
 		agent.mu.Lock()
 		model, mode := agent.model, agent.permissionMode
 		agent.mu.Unlock()
-		acpReapplySetting(agent.providerName, agent.agentID, "model", model, agent.setCursorModel)
-		acpReapplySetting(agent.providerName, agent.agentID, "mode", mode, agent.setPermissionMode)
+		acpApplySetting(agent.providerName, agent.agentID, "model", model, agent.setCursorModel)
+		acpApplySetting(agent.providerName, agent.agentID, "mode", mode, agent.setPermissionMode)
 	}
 
 	sessionID, ok := agent.ClearContext()

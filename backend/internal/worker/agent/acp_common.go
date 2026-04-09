@@ -219,8 +219,18 @@ func (b *acpBase) ClearContext() (string, bool) {
 	return session.SessionID, true
 }
 
+// reapplyModelAndPermissionMode re-applies the current model and permission
+// mode after a session/new. Used as the default reapplySettings callback by
+// agents that track permission mode (Copilot, Gemini, Goose).
+func (b *acpBase) reapplyModelAndPermissionMode() {
+	b.mu.Lock()
+	model, mode := b.model, b.permissionMode
+	b.mu.Unlock()
+	acpApplySetting(b.providerName, b.agentID, "model", model, b.setModel)
+	acpApplySetting(b.providerName, b.agentID, "mode", mode, b.setPermissionMode)
+}
+
 // setPermissionMode sends a session/set_mode RPC and updates the local field.
-// Used by Copilot, Cursor, Gemini, and Goose agents.
 func (b *acpBase) setPermissionMode(mode string) error {
 	b.mu.Lock()
 	available := b.availableModes
@@ -235,36 +245,37 @@ func (b *acpBase) setPermissionMode(mode string) error {
 	return nil
 }
 
+// CurrentSettings returns the current model and permission mode.
+// Concrete types that track additional settings (e.g. primaryAgent)
+// should override this method.
+func (b *acpBase) CurrentSettings() *leapmuxv1.AgentSettings {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return &leapmuxv1.AgentSettings{
+		Model:          b.model,
+		PermissionMode: b.permissionMode,
+	}
+}
+
 // UpdateSettings applies model and permission-mode changes to a running
 // ACP agent. Concrete types that use different settings (e.g. primaryAgent
 // instead of permissionMode) should override this method.
 func (b *acpBase) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return acpUpdateSetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel) &&
-		acpUpdateSetting(b.providerName, b.agentID, "mode", s.GetPermissionMode(), b.setPermissionMode)
+	return acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel) &&
+		acpApplySetting(b.providerName, b.agentID, "mode", s.GetPermissionMode(), b.setPermissionMode)
 }
 
-// acpUpdateSetting applies a single setting extracted from AgentSettings,
-// logging a warning and returning false on failure. Skips empty values.
-func acpUpdateSetting(providerName, agentID, name, value string, apply func(string) error) bool {
+// acpApplySetting applies a single setting, logging a warning and returning
+// false on failure. Skips empty values.
+func acpApplySetting(providerName, agentID, name, value string, apply func(string) error) bool {
 	if value == "" {
 		return true
 	}
 	if err := apply(value); err != nil {
-		slog.Warn("UpdateSettings: failed to set "+name, "provider", providerName, "agent_id", agentID, "error", err)
+		slog.Warn("failed to apply "+name, "provider", providerName, "agent_id", agentID, "error", err)
 		return false
 	}
 	return true
-}
-
-// acpReapplySetting re-applies a single setting after a session/new,
-// logging a warning on failure.
-func acpReapplySetting(providerName, agentID, name, value string, apply func(string) error) {
-	if value == "" {
-		return
-	}
-	if err := apply(value); err != nil {
-		slog.Warn("ClearContext: failed to re-apply "+name, "provider", providerName, "agent_id", agentID, "error", err)
-	}
 }
 
 // buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.

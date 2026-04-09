@@ -62,13 +62,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate
 	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = func() {
-		a.mu.Lock()
-		model, mode := a.model, a.permissionMode
-		a.mu.Unlock()
-		acpReapplySetting(a.providerName, a.agentID, "model", model, a.setModel)
-		acpReapplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
-	}
+	a.reapplySettings = a.reapplyModelAndPermissionMode
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -190,15 +184,6 @@ func broadcastGeminiQuotaSessionInfo(sink OutputSink, resp json.RawMessage) {
 			"outputTokens":             outputTokens,
 		},
 	})
-}
-
-func (a *GeminiCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		PermissionMode: a.permissionMode,
-	}
 }
 
 func (a *GeminiCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
