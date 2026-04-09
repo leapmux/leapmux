@@ -52,6 +52,7 @@ export const PREFIX_AGENT_SESSION = 'leapmux:agent-session:'
 export const PREFIX_ASK_STATE = 'leapmux:ask-state:'
 export const PREFIX_WORKER_INFO = 'leapmux:worker-info:'
 export const PREFIX_LOCAL_MESSAGES = 'leapmux:local-messages:'
+export const PREFIX_FILES_SHOW_HIDDEN = 'leapmux:files-show-hidden:'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
@@ -66,6 +67,7 @@ export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> 
   { prefix: PREFIX_ASK_STATE, ttlMs: 1 * DAY_MS },
   { prefix: PREFIX_WORKER_INFO, ttlMs: 7 * DAY_MS },
   { prefix: PREFIX_LOCAL_MESSAGES, ttlMs: 7 * DAY_MS },
+  { prefix: PREFIX_FILES_SHOW_HIDDEN, ttlMs: 7 * DAY_MS },
 ]
 
 // ---------------------------------------------------------------------------

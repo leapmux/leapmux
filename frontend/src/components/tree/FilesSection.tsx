@@ -14,7 +14,7 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
-import { safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { PREFIX_FILES_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
@@ -143,7 +143,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
 export const FilesSection: Component<FilesSectionProps> = (props) => {
   const [activeFilter, setActiveFilter] = createSignal<GitFilterTab>('all')
   const [flatListMode, setFlatListMode] = createSignal(false)
-  const showHiddenStorageKey = () => `files:showHidden:${props.workerId}:${props.workingDir}`
+  const showHiddenStorageKey = () => `${PREFIX_FILES_SHOW_HIDDEN}${props.workerId}:${props.workingDir}`
   const [showHiddenFiles, setShowHiddenFiles] = createSignal(safeGetJson<boolean>(showHiddenStorageKey()) ?? true)
   let treeHandle: DirectoryTreeHandle | undefined
 
