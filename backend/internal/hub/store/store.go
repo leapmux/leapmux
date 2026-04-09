@@ -2,7 +2,7 @@
 //
 // The Store interface provides all database operations needed by the Hub,
 // grouped into domain-specific sub-stores. Implementations exist for
-// SQLite (default), PostgreSQL, MySQL, MongoDB, and DynamoDB.
+// SQLite (default), PostgreSQL, and MySQL-compatible backends.
 package store
 
 import (
@@ -38,8 +38,7 @@ type Store interface {
 	Migrator() Migrator
 
 	// RunInTransaction executes fn within a transaction. The provided
-	// Store is bound to the transaction. SQL backends use real DB
-	// transactions; DynamoDB uses TransactWriteItems.
+	// Store is bound to the transaction.
 	RunInTransaction(ctx context.Context, fn func(tx Store) error) error
 
 	// Close releases any resources (connection pools, etc.).
@@ -58,8 +57,7 @@ type Migrator interface {
 	Migrate(ctx context.Context) error
 
 	// MigrateTo applies or rolls back migrations to reach the target
-	// version. Rollback support depends on the backend. NoSQL backends
-	// may return ErrRollbackNotSupported for downgrades.
+	// version. Rollback support depends on the backend.
 	MigrateTo(ctx context.Context, version int64) error
 }
 
@@ -274,8 +272,8 @@ type PendingOAuthSignupStore interface {
 
 // CleanupStore provides methods for hard-deleting soft-deleted records
 // and expired ephemeral data. Backends may augment these with native
-// mechanisms (e.g. DynamoDB TTL) but must implement all methods for
-// consistent cross-backend behavior.
+// mechanisms but must implement all methods for consistent cross-backend
+// behavior.
 type CleanupStore interface {
 	HardDeleteExpiredSessions(ctx context.Context) (int64, error)
 	HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error)

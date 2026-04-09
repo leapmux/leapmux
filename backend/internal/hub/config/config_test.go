@@ -215,6 +215,20 @@ func TestValidate(t *testing.T) {
 		assert.Error(t, cfg.Validate())
 	})
 
+	t.Run("removed storage backends are unsupported", func(t *testing.T) {
+		for _, storageType := range []StorageType{"mongodb", "dynamodb"} {
+			cfg := &Config{
+				Addr:    ":4327",
+				DataDir: t.TempDir(),
+				Storage: StorageConfig{Type: storageType},
+			}
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "unsupported storage.type")
+			assert.ErrorContains(t, err, validStorageTypes)
+		}
+	})
+
 	t.Run("valid config creates data dir", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		dataDir := filepath.Join(tmpDir, "data")

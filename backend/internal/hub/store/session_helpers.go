@@ -1,7 +1,6 @@
 package store
 
 // UserToSessionWithUser converts a User to a SessionWithUser.
-// Used by NoSQL backends that cannot JOIN sessions with users.
 func UserToSessionWithUser(u *User) *SessionWithUser {
 	return &SessionWithUser{
 		UserID:        u.ID,

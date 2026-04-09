@@ -11,10 +11,6 @@ var (
 	// constraint (e.g. duplicate ID, username, or email).
 	ErrConflict = errors.New("conflict")
 
-	// ErrRollbackNotSupported is returned by NoSQL Migrators when a
-	// downgrade migration is not possible.
-	ErrRollbackNotSupported = errors.New("rollback not supported")
-
 	// ErrSectionNotEmpty is returned when attempting to delete a
 	// workspace section that still contains items.
 	ErrSectionNotEmpty = errors.New("section not empty")

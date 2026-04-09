@@ -63,15 +63,13 @@ const (
 	StorageTypeSQLite      StorageType = "sqlite"
 	StorageTypePostgres    StorageType = "postgres"
 	StorageTypeMySQL       StorageType = "mysql"
-	StorageTypeMongoDB     StorageType = "mongodb"
-	StorageTypeDynamoDB    StorageType = "dynamodb"
 	StorageTypeCockroachDB StorageType = "cockroachdb"
 	StorageTypeYugabyteDB  StorageType = "yugabytedb"
 	StorageTypeTiDB        StorageType = "tidb"
 )
 
 // validStorageTypes is the display string for valid storage.type values.
-const validStorageTypes = "sqlite, postgres, mysql, mongodb, dynamodb, cockroachdb, yugabytedb, tidb"
+const validStorageTypes = "sqlite, postgres, mysql, cockroachdb, yugabytedb, tidb"
 
 // StorageConfig holds the storage backend configuration.
 type StorageConfig struct {
@@ -79,8 +77,6 @@ type StorageConfig struct {
 	SQLite      SQLiteConfig   `koanf:"sqlite"`
 	Postgres    PostgresConfig `koanf:"postgres"`
 	MySQL       MySQLConfig    `koanf:"mysql"`
-	MongoDB     MongoDBConfig  `koanf:"mongodb"`
-	DynamoDB    DynamoDBConfig `koanf:"dynamodb"`
 	CockroachDB PostgresConfig `koanf:"cockroachdb"` // CockroachDB reuses the PostgreSQL provider.
 	YugabyteDB  PostgresConfig `koanf:"yugabytedb"`  // YugabyteDB reuses the PostgreSQL provider.
 	TiDB        MySQLConfig    `koanf:"tidb"`        // TiDB reuses the MySQL provider.
@@ -113,29 +109,6 @@ type MySQLConfig struct {
 	MaxIdleConns           int    `koanf:"max_idle_conns"`             // Maximum idle connections. Default: 5.
 	ConnMaxLifetimeSeconds int    `koanf:"conn_max_lifetime_seconds"`  // Maximum connection lifetime. Default: 3600.
 	ConnMaxIdleTimeSeconds int    `koanf:"conn_max_idle_time_seconds"` // Maximum idle time per connection. Default: 300.
-}
-
-// MongoDBConfig holds MongoDB-specific storage configuration.
-type MongoDBConfig struct {
-	URI                           string `koanf:"uri"`                              // Connection URI (required when type=mongodb).
-	Database                      string `koanf:"database"`                         // Database name (required when type=mongodb).
-	MaxPoolSize                   int    `koanf:"max_pool_size"`                    // Maximum connection pool size. Default: 100.
-	MinPoolSize                   int    `koanf:"min_pool_size"`                    // Minimum connection pool size. Default: 0.
-	MaxConnIdleTimeSeconds        int    `koanf:"max_conn_idle_time_seconds"`       // Maximum idle time per connection. Default: 300.
-	ServerSelectionTimeoutSeconds int    `koanf:"server_selection_timeout_seconds"` // Server selection timeout. Default: 30.
-	TimeoutSeconds                int    `koanf:"timeout_seconds"`                  // Operation timeout. Default: 30.
-	ReadConcern                   string `koanf:"read_concern"`                     // Read concern level (e.g. "local", "majority"). Default: driver default.
-	WriteConcern                  string `koanf:"write_concern"`                    // Write concern (e.g. "majority", "1"). Default: driver default.
-	RetryWrites                   *bool  `koanf:"retry_writes"`                     // Retry supported writes on transient errors. Default: driver default (true).
-}
-
-// DynamoDBConfig holds DynamoDB-specific storage configuration.
-type DynamoDBConfig struct {
-	Region              string `koanf:"region"`                 // AWS region (required when type=dynamodb).
-	Endpoint            string `koanf:"endpoint"`               // Endpoint override (for local development).
-	TablePrefix         string `koanf:"table_prefix"`           // Prefix for all table names. Default: "leapmux_".
-	CreateTables        bool   `koanf:"create_tables"`          // Auto-create tables on Open(). Default: true.
-	PointInTimeRecovery bool   `koanf:"point_in_time_recovery"` // Enable PITR on created tables. Default: false.
 }
 
 // APITimeout returns the general API timeout as a duration.
@@ -285,23 +258,6 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		{"storage-sqlite-max-conns", "storage.sqlite.max_conns", "SQLite maximum open connections", nil, ptrconv.Ptr(sqlitedb.DefaultMaxConns), nil},
 		{"storage-sqlite-cache-size", "storage.sqlite.cache_size", "SQLite page cache size (negative = KiB, e.g. -64000 = 64 MiB)", nil, ptrconv.Ptr(0), nil},
 		{"storage-sqlite-mmap-size", "storage.sqlite.mmap_size", "SQLite memory-mapped I/O size in bytes (0 = disabled)", nil, ptrconv.Ptr(0), nil},
-		// MongoDB
-		{"storage-mongodb-uri", "storage.mongodb.uri", "MongoDB connection URI", ptrconv.Ptr(""), nil, nil},
-		{"storage-mongodb-database", "storage.mongodb.database", "MongoDB database name", ptrconv.Ptr(""), nil, nil},
-		{"storage-mongodb-max-pool-size", "storage.mongodb.max_pool_size", "MongoDB maximum connection pool size", nil, ptrconv.Ptr(100), nil},
-		{"storage-mongodb-min-pool-size", "storage.mongodb.min_pool_size", "MongoDB minimum connection pool size", nil, ptrconv.Ptr(0), nil},
-		{"storage-mongodb-max-conn-idle-time-seconds", "storage.mongodb.max_conn_idle_time_seconds", "MongoDB max idle time per connection in seconds", nil, ptrconv.Ptr(300), nil},
-		{"storage-mongodb-server-selection-timeout-seconds", "storage.mongodb.server_selection_timeout_seconds", "MongoDB server selection timeout in seconds", nil, ptrconv.Ptr(30), nil},
-		{"storage-mongodb-timeout-seconds", "storage.mongodb.timeout_seconds", "MongoDB operation timeout in seconds", nil, ptrconv.Ptr(30), nil},
-		{"storage-mongodb-read-concern", "storage.mongodb.read_concern", "MongoDB read concern level (e.g. local, majority)", ptrconv.Ptr(""), nil, nil},
-		{"storage-mongodb-write-concern", "storage.mongodb.write_concern", "MongoDB write concern (e.g. majority, 1)", ptrconv.Ptr(""), nil, nil},
-		{"storage-mongodb-retry-writes", "storage.mongodb.retry_writes", "retry supported MongoDB writes on transient errors", nil, nil, ptrconv.Ptr(true)},
-		// DynamoDB
-		{"storage-dynamodb-region", "storage.dynamodb.region", "DynamoDB AWS region", ptrconv.Ptr(""), nil, nil},
-		{"storage-dynamodb-endpoint", "storage.dynamodb.endpoint", "DynamoDB endpoint override (for local dev)", ptrconv.Ptr(""), nil, nil},
-		{"storage-dynamodb-table-prefix", "storage.dynamodb.table_prefix", "DynamoDB table name prefix", ptrconv.Ptr("leapmux_"), nil, nil},
-		{"storage-dynamodb-create-tables", "storage.dynamodb.create_tables", "auto-create DynamoDB tables on startup", nil, nil, ptrconv.Ptr(true)},
-		{"storage-dynamodb-point-in-time-recovery", "storage.dynamodb.point_in_time_recovery", "enable point-in-time recovery on created tables", nil, nil, ptrconv.Ptr(false)},
 	}
 	// PostgreSQL and PostgreSQL-compatible backends.
 	allFlags = append(allFlags, prefixFlags("storage-postgres", "storage.postgres", "PostgreSQL", postgresBaseFlags)...)
@@ -418,17 +374,6 @@ func (c *Config) Validate() error {
 		}
 	case StorageTypeMySQL:
 		if err := requireField(c.Storage.MySQL.DSN, "storage.mysql.dsn"); err != nil {
-			return err
-		}
-	case StorageTypeMongoDB:
-		if err := requireField(c.Storage.MongoDB.URI, "storage.mongodb.uri"); err != nil {
-			return err
-		}
-		if err := requireField(c.Storage.MongoDB.Database, "storage.mongodb.database"); err != nil {
-			return err
-		}
-	case StorageTypeDynamoDB:
-		if err := requireField(c.Storage.DynamoDB.Region, "storage.dynamodb.region"); err != nil {
 			return err
 		}
 	case StorageTypeCockroachDB:

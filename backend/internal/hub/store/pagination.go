@@ -32,22 +32,6 @@ func MapSlice[In, Out any](in []In, fn func(In) Out) []Out {
 	return out
 }
 
-// UniqueStrings deduplicates ids (DynamoDB BatchGetItem silently drops duplicates).
-func UniqueStrings(ids []string) []string {
-	if len(ids) <= 1 {
-		return ids
-	}
-	seen := make(map[string]bool, len(ids))
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
 // ParseCursorTime parses an RFC3339Nano cursor string into a time.Time.
 // Returns zero time and false for an empty cursor (first page).
 func ParseCursorTime(cursor string) (time.Time, bool, error) {

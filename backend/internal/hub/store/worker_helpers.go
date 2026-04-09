@@ -32,19 +32,3 @@ func GetOwnedWorker(
 	}
 	return w, nil
 }
-
-// WorkersToWithOwner converts a slice of Workers to WorkerWithOwner using
-// a username map keyed by user ID. Used by NoSQL backends that cannot JOIN.
-func WorkersToWithOwner(workers []Worker, usernames map[string]string) []WorkerWithOwner {
-	if len(workers) == 0 {
-		return []WorkerWithOwner{}
-	}
-	results := make([]WorkerWithOwner, len(workers))
-	for i, w := range workers {
-		results[i] = WorkerWithOwner{
-			Worker:        w,
-			OwnerUsername: usernames[w.RegisteredBy],
-		}
-	}
-	return results
-}
