@@ -246,7 +246,6 @@ func (b *acpBase) setPermissionMode(mode string) error {
 	return nil
 }
 
-// CurrentSettings returns the current model and permission mode.
 // Concrete types that track additional settings (e.g. primaryAgent)
 // should override this method.
 func (b *acpBase) CurrentSettings() *leapmuxv1.AgentSettings {
@@ -258,17 +257,16 @@ func (b *acpBase) CurrentSettings() *leapmuxv1.AgentSettings {
 	}
 }
 
-// UpdateSettings applies model and permission-mode changes to a running
-// ACP agent. Concrete types that use different settings (e.g. primaryAgent
-// instead of permissionMode) should override this method.
+// Concrete types that use different settings (e.g. primaryAgent instead
+// of permissionMode) should override this method.
 func (b *acpBase) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel) &&
-		acpApplySetting(b.providerName, b.agentID, "mode", s.GetPermissionMode(), b.setPermissionMode)
+	ok := acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel)
+	ok = acpApplySetting(b.providerName, b.agentID, "mode", s.GetPermissionMode(), b.setPermissionMode) && ok
+	return ok
 }
 
-// setPrimaryAgent sends a session/set_mode RPC for a primary-agent value
-// and updates the local field. Used by agents that track primaryAgent
-// instead of permissionMode (Kilo, OpenCode).
+// Used by agents that track primaryAgent instead of permissionMode
+// (Kilo, OpenCode).
 func (b *acpBase) setPrimaryAgent(agent string) error {
 	b.mu.Lock()
 	available := b.availablePrimaryAgents
@@ -325,9 +323,8 @@ func (b *acpBase) primaryAgentOptionGroups(fallback []*leapmuxv1.AvailableOption
 	}}
 }
 
-// primaryAgentCurrentSettings returns settings including primaryAgent in
-// ExtraSettings. Used by agents that track primaryAgent instead of
-// permissionMode (Kilo, OpenCode).
+// Used by agents that track primaryAgent instead of permissionMode
+// (Kilo, OpenCode).
 func (b *acpBase) primaryAgentCurrentSettings() *leapmuxv1.AgentSettings {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -341,16 +338,16 @@ func (b *acpBase) primaryAgentCurrentSettings() *leapmuxv1.AgentSettings {
 	}
 }
 
-// primaryAgentUpdateSettings applies model and primary-agent changes to a
-// running ACP agent. Used by agents that track primaryAgent instead of
-// permissionMode (Kilo, OpenCode).
+// Used by agents that track primaryAgent instead of permissionMode
+// (Kilo, OpenCode).
 func (b *acpBase) primaryAgentUpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel) &&
-		acpApplySetting(b.providerName, b.agentID, "primary agent", s.GetExtraSettings()[OptionGroupKeyPrimaryAgent], b.setPrimaryAgent)
+	ok := acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel)
+	ok = acpApplySetting(b.providerName, b.agentID, "primary agent", s.GetExtraSettings()[OptionGroupKeyPrimaryAgent], b.setPrimaryAgent) && ok
+	return ok
 }
 
-// acpApplySetting applies a single setting, logging a warning and returning
-// false on failure. Skips empty values.
+// acpApplySetting logs a warning and returns false on failure. Skips
+// empty values.
 func acpApplySetting(providerName, agentID, name, value string, apply func(string) error) bool {
 	if value == "" {
 		return true

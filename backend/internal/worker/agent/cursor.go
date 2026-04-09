@@ -145,8 +145,9 @@ func (a *CursorCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGro
 }
 
 func (a *CursorCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return acpApplySetting(a.providerName, a.agentID, "model", normalizeCursorModelID(s.GetModel()), a.setCursorModel) &&
-		acpApplySetting(a.providerName, a.agentID, "mode", s.GetPermissionMode(), a.setPermissionMode)
+	ok := acpApplySetting(a.providerName, a.agentID, "model", normalizeCursorModelID(s.GetModel()), a.setCursorModel)
+	ok = acpApplySetting(a.providerName, a.agentID, "mode", s.GetPermissionMode(), a.setPermissionMode) && ok
+	return ok
 }
 
 func (a *CursorCLIAgent) setCursorModel(model string) error {
