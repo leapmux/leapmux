@@ -173,7 +173,7 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	agent.currentPrimaryAgent = KiloPrimaryAgentCode
 
 	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		ExtraSettings: map[string]string{OpenCodeExtraPrimaryAgent: OpenCodePrimaryAgentPlan},
+		ExtraSettings: map[string]string{OptionGroupKeyPrimaryAgent: OpenCodePrimaryAgentPlan},
 	})
 	if !updated {
 		t.Fatalf("expected update to succeed")
@@ -193,7 +193,7 @@ func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
 	if settings.GetModel() != "openai/gpt-5" {
 		t.Fatalf("expected model to round-trip")
 	}
-	if got := settings.GetExtraSettings()[OpenCodeExtraPrimaryAgent]; got != OpenCodePrimaryAgentPlan {
+	if got := settings.GetExtraSettings()[OptionGroupKeyPrimaryAgent]; got != OpenCodePrimaryAgentPlan {
 		t.Fatalf("expected primaryAgent %q, got %q", OpenCodePrimaryAgentPlan, got)
 	}
 }
@@ -204,8 +204,8 @@ func TestKiloAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
 	if len(groups) != 1 {
 		t.Fatalf("expected 1 option group, got %d", len(groups))
 	}
-	if groups[0].Key != OpenCodeExtraPrimaryAgent {
-		t.Fatalf("expected key %q, got %q", OpenCodeExtraPrimaryAgent, groups[0].Key)
+	if groups[0].Key != OptionGroupKeyPrimaryAgent {
+		t.Fatalf("expected key %q, got %q", OptionGroupKeyPrimaryAgent, groups[0].Key)
 	}
 	if len(groups[0].Options) != 2 {
 		t.Fatalf("expected 2 fallback options, got %d", len(groups[0].Options))

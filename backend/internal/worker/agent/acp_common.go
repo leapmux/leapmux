@@ -333,7 +333,7 @@ func (b *acpBase) primaryAgentCurrentSettings() *leapmuxv1.AgentSettings {
 	defer b.mu.Unlock()
 	var extra map[string]string
 	if b.currentPrimaryAgent != "" {
-		extra = map[string]string{OpenCodeExtraPrimaryAgent: b.currentPrimaryAgent}
+		extra = map[string]string{OptionGroupKeyPrimaryAgent: b.currentPrimaryAgent}
 	}
 	return &leapmuxv1.AgentSettings{
 		Model:         b.model,
@@ -346,7 +346,7 @@ func (b *acpBase) primaryAgentCurrentSettings() *leapmuxv1.AgentSettings {
 // permissionMode (Kilo, OpenCode).
 func (b *acpBase) primaryAgentUpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	return acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel) &&
-		acpApplySetting(b.providerName, b.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], b.setPrimaryAgent)
+		acpApplySetting(b.providerName, b.agentID, "primary agent", s.GetExtraSettings()[OptionGroupKeyPrimaryAgent], b.setPrimaryAgent)
 }
 
 // acpApplySetting applies a single setting, logging a warning and returning
