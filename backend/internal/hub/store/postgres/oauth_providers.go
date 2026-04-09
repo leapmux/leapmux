@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -35,31 +36,33 @@ func fromDBOAuthProviders(rows []gendb.OauthProvider) []store.OAuthProvider {
 	return sqlutil.MapSlice(rows, func(r gendb.OauthProvider) store.OAuthProvider { return *fromDBOAuthProvider(r) })
 }
 
-func fromDBOAuthProviderSummaryAll(r gendb.ListAllOAuthProvidersRow) store.OAuthProviderSummary {
-	return store.OAuthProviderSummary{
-		ID:           r.ID,
-		ProviderType: r.ProviderType,
-		Name:         r.Name,
-		IssuerURL:    r.IssuerUrl,
-		ClientID:     r.ClientID,
-		Scopes:       r.Scopes,
-		TrustEmail:   r.TrustEmail,
-		Enabled:      r.Enabled,
-		CreatedAt:    tsToTime(r.CreatedAt),
-	}
+type oauthProviderSummaryRow interface {
+	gendb.ListAllOAuthProvidersRow | gendb.ListEnabledOAuthProvidersRow
 }
 
-func fromDBOAuthProviderSummaryEnabled(r gendb.ListEnabledOAuthProvidersRow) store.OAuthProviderSummary {
+func fromDBOAuthProviderSummary[R oauthProviderSummaryRow](r R) store.OAuthProviderSummary {
+	type concrete struct {
+		ID           string             `json:"id"`
+		ProviderType string             `json:"provider_type"`
+		Name         string             `json:"name"`
+		IssuerUrl    string             `json:"issuer_url"`
+		ClientID     string             `json:"client_id"`
+		Scopes       string             `json:"scopes"`
+		TrustEmail   bool               `json:"trust_email"`
+		Enabled      bool               `json:"enabled"`
+		CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	}
+	c := concrete(r)
 	return store.OAuthProviderSummary{
-		ID:           r.ID,
-		ProviderType: r.ProviderType,
-		Name:         r.Name,
-		IssuerURL:    r.IssuerUrl,
-		ClientID:     r.ClientID,
-		Scopes:       r.Scopes,
-		TrustEmail:   r.TrustEmail,
-		Enabled:      r.Enabled,
-		CreatedAt:    tsToTime(r.CreatedAt),
+		ID:           c.ID,
+		ProviderType: c.ProviderType,
+		Name:         c.Name,
+		IssuerURL:    c.IssuerUrl,
+		ClientID:     c.ClientID,
+		Scopes:       c.Scopes,
+		TrustEmail:   c.TrustEmail,
+		Enabled:      c.Enabled,
+		CreatedAt:    tsToTime(c.CreatedAt),
 	}
 }
 
@@ -90,7 +93,7 @@ func (s *oauthProviderStore) ListEnabled(ctx context.Context) ([]store.OAuthProv
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBOAuthProviderSummaryEnabled), nil
+	return sqlutil.MapSlice(rows, fromDBOAuthProviderSummary[gendb.ListEnabledOAuthProvidersRow]), nil
 }
 
 func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProviderSummary, error) {
@@ -98,7 +101,7 @@ func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProvider
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return sqlutil.MapSlice(rows, fromDBOAuthProviderSummaryAll), nil
+	return sqlutil.MapSlice(rows, fromDBOAuthProviderSummary[gendb.ListAllOAuthProvidersRow]), nil
 }
 
 func (s *oauthProviderStore) ListAllWithSecrets(ctx context.Context) ([]store.OAuthProvider, error) {

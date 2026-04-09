@@ -3,6 +3,7 @@ package mysql
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
@@ -23,7 +24,7 @@ func mapErr(err error) error {
 	var mysqlErr *mysqldriver.MySQLError
 	if errors.As(err, &mysqlErr) {
 		if mysqlErr.Number == mysqlErrDupEntry {
-			return store.ErrConflict
+			return fmt.Errorf("%w: %w", store.ErrConflict, err)
 		}
 	}
 	return err

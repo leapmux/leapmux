@@ -27,13 +27,13 @@ func (st *cleanupStore) HardDeleteExpiredSessions(ctx context.Context) (int64, e
 		TableName:              aws.String(st.s.table(tableSessions)),
 		IndexName:              aws.String(gsiNotExpiredExpiresAt),
 		KeyConditionExpression: aws.String("not_expired = :ne AND expires_at < :now"),
-		ProjectionExpression:   aws.String("id"),
+		ProjectionExpression:   aws.String(attrID),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":ne":  attrS(sentinelActive),
 			":now": attrS(now),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		keys = append(keys, map[string]ddbtypes.AttributeValue{"id": item["id"]})
+		keys = append(keys, map[string]ddbtypes.AttributeValue{attrID: item[attrID]})
 		return len(keys) < store.CleanupBatchLimit
 	})
 	if err != nil {
@@ -62,15 +62,15 @@ func (st *cleanupStore) HardDeleteWorkspacesBefore(ctx context.Context, cutoff t
 	// Cascade to child tables (best-effort).
 	for _, wsID := range ids {
 		// workspace_access (PK=workspace_id, SK=user_id)
-		_ = deleteAllByPK(ctx, st.s, st.s.table(tableWorkspaceAccess), "workspace_id", wsID, "user_id")
+		_ = deleteAllByPK(ctx, st.s, st.s.table(tableWorkspaceAccess), attrWorkspaceID, wsID, attrUserID)
 		// workspace_tabs (PK=workspace_id, SK=tab_type#tab_id)
-		_ = deleteAllByPK(ctx, st.s, st.s.table(tableWorkspaceTabs), "workspace_id", wsID, "tab_type#tab_id")
+		_ = deleteAllByPK(ctx, st.s, st.s.table(tableWorkspaceTabs), attrWorkspaceID, wsID, attrTabTypeSK)
 		// workspace_layouts (PK=workspace_id, no SK)
 		_ = st.s.batchDelete(ctx, st.s.table(tableWorkspaceLayouts), []map[string]ddbtypes.AttributeValue{
-			{"workspace_id": attrS(wsID)},
+			{attrWorkspaceID: attrS(wsID)},
 		})
 		// workspace_section_items (PK=user_id, SK=workspace_id, GSI=workspace_id-index)
-		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkspaceSectionItems), gsiWorkspaceID, "workspace_id", wsID, "user_id", "workspace_id")
+		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkspaceSectionItems), gsiWorkspaceID, attrWorkspaceID, wsID, attrUserID, attrWorkspaceID)
 	}
 
 	return st.batchDeleteByIDs(ctx, st.s.table(tableWorkspaces), ids)
@@ -89,11 +89,11 @@ func (st *cleanupStore) HardDeleteWorkersBefore(ctx context.Context, cutoff time
 	// Cascade to child tables (best-effort).
 	for _, wkID := range ids {
 		// worker_access_grants (PK=worker_id, SK=user_id)
-		_ = deleteAllByPK(ctx, st.s, st.s.table(tableWorkerGrants), "worker_id", wkID, "user_id")
+		_ = deleteAllByPK(ctx, st.s, st.s.table(tableWorkerGrants), attrWorkerID, wkID, attrUserID)
 		// worker_notifications (PK=id, GSI worker_id-status-index on worker_id)
-		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkerNotifications), gsiWorkerIDStatus, "worker_id", wkID, "id", "")
+		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkerNotifications), gsiWorkerIDStatus, attrWorkerID, wkID, attrID, "")
 		// workspace_tabs (GSI worker_id-index on worker_id)
-		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkspaceTabs), gsiWorkerID, "worker_id", wkID, "workspace_id", "tab_type#tab_id")
+		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkspaceTabs), gsiWorkerID, attrWorkerID, wkID, attrWorkspaceID, attrTabTypeSK)
 	}
 
 	return st.batchDeleteByIDs(ctx, st.s.table(tableWorkers), ids)
@@ -112,16 +112,16 @@ func (st *cleanupStore) HardDeleteExpiredRegistrationsBefore(ctx context.Context
 			IndexName:              aws.String(gsiStatus),
 			KeyConditionExpression: aws.String("#st = :status"),
 			FilterExpression:       aws.String("created_at < :cutoff"),
-			ProjectionExpression:   aws.String("id"),
+			ProjectionExpression:   aws.String(attrID),
 			ExpressionAttributeNames: map[string]string{
-				"#st": "status",
+				"#st": attrStatus,
 			},
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 				":status": attrS(status),
 				":cutoff": attrS(cutoffStr),
 			},
 		}, func(item map[string]ddbtypes.AttributeValue) bool {
-			keys = append(keys, map[string]ddbtypes.AttributeValue{"id": item["id"]})
+			keys = append(keys, map[string]ddbtypes.AttributeValue{attrID: item[attrID]})
 			return len(keys) < store.CleanupBatchLimit
 		})
 		if err != nil {
@@ -156,19 +156,19 @@ func (st *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.T
 	// remaining children need to be handled here.
 	for _, userID := range ids {
 		// org_members (PK=org_id, SK=user_id; GSI user_id-index)
-		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableOrgMembers), gsiUserID, "user_id", userID, "org_id", "user_id")
+		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableOrgMembers), gsiUserID, attrUserID, userID, attrOrgID, attrUserID)
 		// workspace_sections (PK=id; GSI user_id-index)
-		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkspaceSections), gsiUserID, "user_id", userID, "id", "")
+		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkspaceSections), gsiUserID, attrUserID, userID, attrID, "")
 		// workspace_section_items (PK=user_id, SK=workspace_id)
-		_ = deleteAllByPK(ctx, st.s, st.s.table(tableWorkspaceSectionItems), "user_id", userID, "workspace_id")
+		_ = deleteAllByPK(ctx, st.s, st.s.table(tableWorkspaceSectionItems), attrUserID, userID, attrWorkspaceID)
 		// worker_access_grants (PK=worker_id, SK=user_id; GSI user_id-index)
-		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkerGrants), gsiUserID, "user_id", userID, "worker_id", "user_id")
+		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkerGrants), gsiUserID, attrUserID, userID, attrWorkerID, attrUserID)
 		// workspace_access (PK=workspace_id, SK=user_id; GSI user_id-index)
-		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkspaceAccess), gsiUserID, "user_id", userID, "workspace_id", "user_id")
+		_ = deleteAllByGSI(ctx, st.s, st.s.table(tableWorkspaceAccess), gsiUserID, attrUserID, userID, attrWorkspaceID, attrUserID)
 		// oauth_tokens (PK=user_id, SK=provider_id)
-		_ = deleteAllByPK(ctx, st.s, st.s.table(tableOAuthTokens), "user_id", userID, "provider_id")
+		_ = deleteAllByPK(ctx, st.s, st.s.table(tableOAuthTokens), attrUserID, userID, attrProviderID)
 		// oauth_user_links (PK=user_id, SK=provider_id)
-		_ = deleteAllByPK(ctx, st.s, st.s.table(tableOAuthUserLinks), "user_id", userID, "provider_id")
+		_ = deleteAllByPK(ctx, st.s, st.s.table(tableOAuthUserLinks), attrUserID, userID, attrProviderID)
 	}
 
 	return st.batchDeleteByIDs(ctx, st.s.table(tableUsers), ids)
@@ -187,7 +187,7 @@ func (st *cleanupStore) HardDeleteOrgsBefore(ctx context.Context, cutoff time.Ti
 	// Cascade to child tables (best-effort).
 	for _, orgID := range ids {
 		// org_members (PK=org_id, SK=user_id)
-		_ = deleteAllByPK(ctx, st.s, st.s.table(tableOrgMembers), "org_id", orgID, "user_id")
+		_ = deleteAllByPK(ctx, st.s, st.s.table(tableOrgMembers), attrOrgID, orgID, attrUserID)
 	}
 
 	return st.batchDeleteByIDs(ctx, st.s.table(tableOrgs), ids)
@@ -197,7 +197,7 @@ func (st *cleanupStore) HardDeleteOrgsBefore(ctx context.Context, cutoff time.Ti
 func (st *cleanupStore) batchDeleteByIDs(ctx context.Context, tableName string, ids []string) (int64, error) {
 	keys := make([]map[string]ddbtypes.AttributeValue, len(ids))
 	for i, id := range ids {
-		keys[i] = map[string]ddbtypes.AttributeValue{"id": attrS(id)}
+		keys[i] = map[string]ddbtypes.AttributeValue{attrID: attrS(id)}
 	}
 	if err := st.s.batchDelete(ctx, tableName, keys); err != nil {
 		return 0, mapErr(err)
@@ -206,11 +206,11 @@ func (st *cleanupStore) batchDeleteByIDs(ctx context.Context, tableName string, 
 }
 
 func (st *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
-	return st.deleteExpiredByActiveGSI(ctx, tableOAuthStates, "state")
+	return st.deleteExpiredByActiveGSI(ctx, tableOAuthStates, attrState)
 }
 
 func (st *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error) {
-	return st.deleteExpiredByActiveGSI(ctx, tablePendingOAuthSignups, "token")
+	return st.deleteExpiredByActiveGSI(ctx, tablePendingOAuthSignups, attrToken)
 }
 
 // deleteExpiredByActiveGSI queries the active-expires_at-index GSI for
@@ -262,13 +262,13 @@ func (st *cleanupStore) queryDeletedIDs(ctx context.Context, tableName string, c
 		TableName:              aws.String(tableName),
 		IndexName:              aws.String(gsiDeletedDeletedAt),
 		KeyConditionExpression: aws.String("deleted = :del AND deleted_at < :cutoff"),
-		ProjectionExpression:   aws.String("id"),
+		ProjectionExpression:   aws.String(attrID),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":del":    attrS(deletedTrue),
 			":cutoff": attrS(cutoffStr),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		ids = append(ids, getS(item, "id"))
+		ids = append(ids, getS(item, attrID))
 		return len(ids) < store.CleanupBatchLimit
 	})
 	if err != nil {

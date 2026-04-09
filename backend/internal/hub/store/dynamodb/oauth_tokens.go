@@ -19,17 +19,41 @@ var _ store.OAuthTokenStore = (*oauthTokenStore)(nil)
 
 func (st *oauthTokenStore) table() string { return st.s.table(tableOAuthTokens) }
 
-func itemToOAuthToken(item map[string]ddbtypes.AttributeValue) store.OAuthToken {
-	return store.OAuthToken{
-		UserID:       getS(item, "user_id"),
-		ProviderID:   getS(item, "provider_id"),
-		AccessToken:  getBytes(item, "access_token"),
-		RefreshToken: getBytes(item, "refresh_token"),
-		TokenType:    getS(item, "token_type"),
-		ExpiresAt:    getTime(item, "expires_at"),
-		KeyVersion:   getSAsInt64(item, "key_version"),
-		UpdatedAt:    getTime(item, "updated_at"),
+func itemToOAuthToken(item map[string]ddbtypes.AttributeValue) (store.OAuthToken, error) {
+	userID, err := mustGetS(item, attrUserID)
+	if err != nil {
+		return store.OAuthToken{}, err
 	}
+	providerID, err := mustGetS(item, attrProviderID)
+	if err != nil {
+		return store.OAuthToken{}, err
+	}
+	tokenType, err := mustGetS(item, attrTokenType)
+	if err != nil {
+		return store.OAuthToken{}, err
+	}
+	expiresAt, err := mustGetTime(item, attrExpiresAt)
+	if err != nil {
+		return store.OAuthToken{}, err
+	}
+	keyVersion, err := mustGetSAsInt64(item, attrKeyVersion)
+	if err != nil {
+		return store.OAuthToken{}, err
+	}
+	updatedAt, err := mustGetTime(item, attrUpdatedAt)
+	if err != nil {
+		return store.OAuthToken{}, err
+	}
+	return store.OAuthToken{
+		UserID:       userID,
+		ProviderID:   providerID,
+		AccessToken:  getBytes(item, attrAccessToken),
+		RefreshToken: getBytes(item, attrRefreshToken),
+		TokenType:    tokenType,
+		ExpiresAt:    expiresAt,
+		KeyVersion:   keyVersion,
+		UpdatedAt:    updatedAt,
+	}, nil
 }
 
 func (st *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensParams) error {
@@ -37,17 +61,17 @@ func (st *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokens
 	_, err := st.s.putItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(st.table()),
 		Item: map[string]ddbtypes.AttributeValue{
-			"user_id":          attrS(p.UserID),
-			"provider_id":      attrS(p.ProviderID),
-			"access_token":     attrB(p.AccessToken),
-			"refresh_token":    attrB(p.RefreshToken),
-			"token_type":       attrS(p.TokenType),
-			"expires_at":       attrS(timeToStr(p.ExpiresAt.UTC())),
-			"key_version":      attrS(strconv.FormatInt(p.KeyVersion, 10)),
-			"expiry_partition": attrS(sentinelExpiryGroup),
-			"updated_at":       attrS(timeToStr(now)),
+			attrUserID:          attrS(p.UserID),
+			attrProviderID:      attrS(p.ProviderID),
+			attrAccessToken:     attrB(p.AccessToken),
+			attrRefreshToken:    attrB(p.RefreshToken),
+			attrTokenType:       attrS(p.TokenType),
+			attrExpiresAt:       attrS(timeToStr(p.ExpiresAt.UTC())),
+			attrKeyVersion:      attrS(strconv.FormatInt(p.KeyVersion, 10)),
+			attrExpiryPartition: attrS(sentinelExpiryGroup),
+			attrUpdatedAt:       attrS(timeToStr(now)),
 		},
-	}, "user_id", "provider_id")
+	}, attrUserID, attrProviderID)
 	return mapErr(err)
 }
 
@@ -55,8 +79,8 @@ func (st *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"user_id":     attrS(p.UserID),
-			"provider_id": attrS(p.ProviderID),
+			attrUserID:     attrS(p.UserID),
+			attrProviderID: attrS(p.ProviderID),
 		},
 	})
 	if err != nil {
@@ -65,7 +89,10 @@ func (st *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	t := itemToOAuthToken(out.Item)
+	t, err := itemToOAuthToken(out.Item)
+	if err != nil {
+		return nil, err
+	}
 	return &t, nil
 }
 
@@ -82,7 +109,11 @@ func (st *oauthTokenStore) ListExpiring(ctx context.Context) ([]store.OAuthToken
 			":threshold": attrS(threshold),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		tokens = append(tokens, itemToOAuthToken(item))
+		t, err := itemToOAuthToken(item)
+		if err != nil {
+			return false
+		}
+		tokens = append(tokens, t)
 		return true
 	})
 	if err != nil {
@@ -102,7 +133,11 @@ func (st *oauthTokenStore) ListByKeyVersion(ctx context.Context, keyVersion int6
 			":kv": attrS(kv),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		tokens = append(tokens, itemToOAuthToken(item))
+		t, err := itemToOAuthToken(item)
+		if err != nil {
+			return false
+		}
+		tokens = append(tokens, t)
 		return true
 	})
 	if err != nil {
@@ -139,19 +174,19 @@ func (st *oauthTokenStore) CountByKeyVersion(ctx context.Context, keyVersion int
 }
 
 func (st *oauthTokenStore) DeleteByProvider(ctx context.Context, providerID string) error {
-	return deleteAllByGSI(ctx, st.s, st.table(), gsiProviderID, "provider_id", providerID, "user_id", "provider_id")
+	return deleteAllByGSI(ctx, st.s, st.table(), gsiProviderID, attrProviderID, providerID, attrUserID, attrProviderID)
 }
 
 func (st *oauthTokenStore) DeleteByUser(ctx context.Context, userID string) error {
-	return deleteAllByPK(ctx, st.s, st.table(), "user_id", userID, "provider_id")
+	return deleteAllByPK(ctx, st.s, st.table(), attrUserID, userID, attrProviderID)
 }
 
 func (st *oauthTokenStore) DeleteByUserAndProvider(ctx context.Context, p store.DeleteOAuthTokensByUserAndProviderParams) error {
 	_, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"user_id":     attrS(p.UserID),
-			"provider_id": attrS(p.ProviderID),
+			attrUserID:     attrS(p.UserID),
+			attrProviderID: attrS(p.ProviderID),
 		},
 	})
 	return mapErr(err)

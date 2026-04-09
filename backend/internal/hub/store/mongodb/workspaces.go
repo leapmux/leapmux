@@ -133,6 +133,7 @@ func (st *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspacePar
 		{Key: "_id", Value: p.ID},
 		{Key: "owner_user_id", Value: p.OwnerUserID},
 	}
+	st.s.trackBeforeUpdate(ctx, colWorkspaces, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "title", Value: p.Title},
@@ -151,6 +152,7 @@ func (st *workspaceStore) SoftDelete(ctx context.Context, p store.SoftDeleteWork
 		{Key: "_id", Value: p.ID},
 		{Key: "owner_user_id", Value: p.OwnerUserID},
 	}
+	st.s.trackBeforeUpdate(ctx, colWorkspaces, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "is_deleted", Value: true},

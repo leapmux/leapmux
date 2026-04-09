@@ -41,6 +41,7 @@ func (st *workspaceTabStore) Upsert(ctx context.Context, p store.UpsertWorkspace
 		{Key: "tile_id", Value: p.TileID},
 	}
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpsert(ctx, colWorkspaceTabs, filter, id)
 	opts := options.Replace().SetUpsert(true)
 	_, err := st.s.collection(colWorkspaceTabs).ReplaceOne(ctx, filter, doc, opts)
 	return mapErr(err)
@@ -75,6 +76,7 @@ func (st *workspaceTabStore) BulkUpsert(ctx context.Context, params []store.Upse
 func (st *workspaceTabStore) Delete(ctx context.Context, p store.DeleteWorkspaceTabParams) error {
 	id := workspaceTabID(p.WorkspaceID, p.TabType, p.TabID)
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeDelete(ctx, colWorkspaceTabs, filter)
 	_, err := st.s.collection(colWorkspaceTabs).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

@@ -17,9 +17,9 @@ func putConstraint(table, entity, field, value string) ddbtypes.TransactWriteIte
 		Put: &ddbtypes.Put{
 			TableName: aws.String(table),
 			Item: map[string]ddbtypes.AttributeValue{
-				"constraint_value": attrS(constraintKey(entity, field, value)),
+				attrConstraintValue: attrS(constraintKey(entity, field, value)),
 			},
-			ConditionExpression: aws.String("attribute_not_exists(constraint_value)"),
+			ConditionExpression: aws.String("attribute_not_exists(" + attrConstraintValue + ")"),
 		},
 	}
 }
@@ -30,7 +30,7 @@ func deleteConstraint(table, entity, field, value string) ddbtypes.TransactWrite
 		Delete: &ddbtypes.Delete{
 			TableName: aws.String(table),
 			Key: map[string]ddbtypes.AttributeValue{
-				"constraint_value": attrS(constraintKey(entity, field, value)),
+				attrConstraintValue: attrS(constraintKey(entity, field, value)),
 			},
 		},
 	}

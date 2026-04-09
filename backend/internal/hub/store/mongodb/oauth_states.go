@@ -49,6 +49,8 @@ func (st *oauthStateStore) Get(ctx context.Context, state string) (*store.OAuthS
 }
 
 func (st *oauthStateStore) Delete(ctx context.Context, state string) error {
-	_, err := st.s.collection(colOAuthStates).DeleteOne(ctx, bson.D{{Key: "_id", Value: state}})
+	filter := bson.D{{Key: "_id", Value: state}}
+	st.s.trackBeforeDelete(ctx, colOAuthStates, filter)
+	_, err := st.s.collection(colOAuthStates).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

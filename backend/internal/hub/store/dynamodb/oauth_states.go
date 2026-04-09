@@ -17,32 +17,67 @@ var _ store.OAuthStateStore = (*oauthStateStore)(nil)
 
 func (st *oauthStateStore) table() string { return st.s.table(tableOAuthStates) }
 
+func itemToOAuthState(item map[string]ddbtypes.AttributeValue) (*store.OAuthState, error) {
+	state, err := mustGetS(item, attrState)
+	if err != nil {
+		return nil, err
+	}
+	providerID, err := mustGetS(item, attrProviderID)
+	if err != nil {
+		return nil, err
+	}
+	pkceVerifier, err := mustGetS(item, attrPKCEVerifier)
+	if err != nil {
+		return nil, err
+	}
+	redirectURI, err := mustGetS(item, attrRedirectURI)
+	if err != nil {
+		return nil, err
+	}
+	expiresAt, err := mustGetTime(item, attrExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &store.OAuthState{
+		State:        state,
+		ProviderID:   providerID,
+		PkceVerifier: pkceVerifier,
+		RedirectURI:  redirectURI,
+		ExpiresAt:    expiresAt,
+		CreatedAt:    createdAt,
+	}, nil
+}
+
 func (st *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStateParams) error {
 	now := time.Now().UTC()
 	_, err := st.s.putItem(ctx, &dynamodb.PutItemInput{
 		TableName:           aws.String(st.table()),
 		ConditionExpression: aws.String("attribute_not_exists(#s)"),
 		ExpressionAttributeNames: map[string]string{
-			"#s": "state",
+			"#s": attrState,
 		},
 		Item: map[string]ddbtypes.AttributeValue{
-			"state":         attrS(p.State),
-			"provider_id":   attrS(p.ProviderID),
-			"pkce_verifier": attrS(p.PkceVerifier),
-			"redirect_uri":  attrS(p.RedirectURI),
-			"expires_at":    attrS(timeToStr(p.ExpiresAt)),
-			"created_at":    attrS(timeToStr(now)),
-			"active":        attrS(sentinelActive),
-			"ttl":           attrN(p.ExpiresAt.Unix()),
+			attrState:        attrS(p.State),
+			attrProviderID:   attrS(p.ProviderID),
+			attrPKCEVerifier: attrS(p.PkceVerifier),
+			attrRedirectURI:  attrS(p.RedirectURI),
+			attrExpiresAt:    attrS(timeToStr(p.ExpiresAt)),
+			attrCreatedAt:    attrS(timeToStr(now)),
+			attrActive:       attrS(sentinelActive),
+			attrTTL:          attrN(p.ExpiresAt.Unix()),
 		},
-	}, "state")
+	}, attrState)
 	return mapErr(err)
 }
 
 func (st *oauthStateStore) Get(ctx context.Context, state string) (*store.OAuthState, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"state": attrS(state)},
+		Key:       map[string]ddbtypes.AttributeValue{attrState: attrS(state)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -50,20 +85,17 @@ func (st *oauthStateStore) Get(ctx context.Context, state string) (*store.OAuthS
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	return &store.OAuthState{
-		State:        getS(out.Item, "state"),
-		ProviderID:   getS(out.Item, "provider_id"),
-		PkceVerifier: getS(out.Item, "pkce_verifier"),
-		RedirectURI:  getS(out.Item, "redirect_uri"),
-		ExpiresAt:    getTime(out.Item, "expires_at"),
-		CreatedAt:    getTime(out.Item, "created_at"),
-	}, nil
+	s, err := itemToOAuthState(out.Item)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (st *oauthStateStore) Delete(ctx context.Context, state string) error {
 	_, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"state": attrS(state)},
+		Key:       map[string]ddbtypes.AttributeValue{attrState: attrS(state)},
 	})
 	return mapErr(err)
 }

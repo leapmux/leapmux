@@ -28,8 +28,8 @@ type mongoStore struct {
 	client  *mongo.Client
 	db      *mongo.Database
 	mig     *mongoMigrator
-	mu      sync.Mutex     // serializes RunInTransaction
-	inserts *insertTracker // non-nil inside transaction callback for rollback
+	mu      sync.Mutex // serializes RunInTransaction
+	tracker *txTracker // non-nil inside transaction callback for rollback
 
 	// Pre-allocated sub-stores to avoid per-call heap allocation.
 	orgs                  orgStore
@@ -118,12 +118,57 @@ func (s *mongoStore) collection(name string) *mongo.Collection {
 	return s.db.Collection(name)
 }
 
-// trackInsert records an insert for potential rollback on standalone servers.
+// trackInsert records an insert for potential rollback.
 func (s *mongoStore) trackInsert(collection string, id interface{}) {
-	if s.inserts == nil {
+	if s.tracker == nil {
 		return
 	}
-	s.inserts.record(collection, id)
+	s.tracker.recordInsert(collection, id)
+}
+
+// trackBeforeUpdate captures the before-image of a document before an
+// UpdateOne or ReplaceOne operation so it can be restored on rollback.
+// Must be called BEFORE the actual mutation. No-op outside transactions.
+func (s *mongoStore) trackBeforeUpdate(ctx context.Context, collection string, filter bson.D) {
+	if s.tracker == nil {
+		return
+	}
+	var oldDoc bson.M
+	if err := s.collection(collection).FindOne(ctx, filter).Decode(&oldDoc); err != nil {
+		return // doc not found — nothing to undo
+	}
+	s.tracker.recordUpdate(collection, oldDoc["_id"], oldDoc)
+}
+
+// trackBeforeDelete captures the before-image of a document before a
+// DeleteOne operation so it can be re-inserted on rollback.
+// Must be called BEFORE the actual mutation. No-op outside transactions.
+func (s *mongoStore) trackBeforeDelete(ctx context.Context, collection string, filter bson.D) {
+	if s.tracker == nil {
+		return
+	}
+	var oldDoc bson.M
+	if err := s.collection(collection).FindOne(ctx, filter).Decode(&oldDoc); err != nil {
+		return // doc not found — nothing to undo
+	}
+	s.tracker.recordDelete(collection, oldDoc)
+}
+
+// trackBeforeUpsert handles ReplaceOne with upsert=true. If the document
+// exists, captures a before-image (update). If not, records the id so the
+// new document is deleted on rollback (insert). No-op outside transactions.
+func (s *mongoStore) trackBeforeUpsert(ctx context.Context, collection string, filter bson.D, id interface{}) {
+	if s.tracker == nil {
+		return
+	}
+	var oldDoc bson.M
+	if err := s.collection(collection).FindOne(ctx, filter).Decode(&oldDoc); err != nil {
+		// Doc doesn't exist — this will be a new insert.
+		s.tracker.recordInsert(collection, id)
+		return
+	}
+	// Doc exists — this is an update.
+	s.tracker.recordUpdate(collection, oldDoc["_id"], oldDoc)
 }
 
 // --- Sub-store accessors ---
@@ -180,25 +225,29 @@ func (s *mongoStore) Cleanup() store.CleanupStore { return &s.cleanup }
 func (s *mongoStore) Migrator() store.Migrator    { return s.mig }
 
 // RunInTransaction executes fn with mutex serialization. Compensating
-// deletes are used for rollback on error. Native MongoDB transactions
-// require a replica set and the session context cannot be propagated
-// through the store.Store interface, so we use the mutex-based approach
-// for all topologies.
+// writes are used for rollback on error: inserts are deleted, updates
+// and deletes are restored from before-images. Native MongoDB
+// transactions require a replica set and the session context cannot be
+// propagated through the store.Store interface, so we use the
+// mutex-based approach for all topologies.
+//
+// Note: bulk mutations (UpdateMany, DeleteMany) called inside the
+// transaction callback are NOT tracked and will not be rolled back.
 func (s *mongoStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	tracker := &insertTracker{}
+	tracker := &txTracker{}
 	txStore := &mongoStore{
 		client:  s.client,
 		db:      s.db,
 		mig:     s.mig,
-		inserts: tracker,
+		tracker: tracker,
 	}
 	initSubStores(txStore)
 	err := fn(txStore)
 	if err != nil {
-		// Best-effort rollback: delete all items that were created.
+		// Best-effort rollback: undo all tracked writes in reverse order.
 		tracker.rollback(ctx, s.db)
 		return err
 	}
@@ -254,30 +303,52 @@ func (s *mongoStore) Close() error {
 	return s.client.Disconnect(ctx)
 }
 
-// --- Insert tracker for standalone rollback ---
+// --- Transaction tracker for rollback ---
 
-// insertRecord tracks a single insert for rollback.
-type insertRecord struct {
+type txActionType int
+
+const (
+	txInsert txActionType = iota // rollback = delete
+	txUpdate                     // rollback = replace with before-image
+	txDelete                     // rollback = re-insert before-image
+)
+
+// txAction describes how to undo a single write operation.
+type txAction struct {
+	actionType txActionType
 	collection string
-	id         interface{}
+	id         interface{} // _id of the document (used for insert/update rollback)
+	oldDoc     bson.M      // before-image (nil for inserts)
 }
 
-// insertTracker records insert operations during a transaction.
-type insertTracker struct {
-	records []insertRecord
+// txTracker records write operations during a transaction for rollback.
+type txTracker struct {
+	actions []txAction
 }
 
-func (t *insertTracker) record(collection string, id interface{}) {
-	if t == nil {
-		return
-	}
-	t.records = append(t.records, insertRecord{collection: collection, id: id})
+func (t *txTracker) recordInsert(collection string, id interface{}) {
+	t.actions = append(t.actions, txAction{actionType: txInsert, collection: collection, id: id})
 }
 
-func (t *insertTracker) rollback(ctx context.Context, db *mongo.Database) {
-	// Delete in reverse order to handle dependencies.
-	for i := len(t.records) - 1; i >= 0; i-- {
-		r := t.records[i]
-		_, _ = db.Collection(r.collection).DeleteOne(ctx, bson.D{{Key: "_id", Value: r.id}})
+func (t *txTracker) recordUpdate(collection string, id interface{}, oldDoc bson.M) {
+	t.actions = append(t.actions, txAction{actionType: txUpdate, collection: collection, id: id, oldDoc: oldDoc})
+}
+
+func (t *txTracker) recordDelete(collection string, oldDoc bson.M) {
+	t.actions = append(t.actions, txAction{actionType: txDelete, collection: collection, oldDoc: oldDoc})
+}
+
+func (t *txTracker) rollback(ctx context.Context, db *mongo.Database) {
+	// Undo in reverse order to handle dependencies.
+	for i := len(t.actions) - 1; i >= 0; i-- {
+		a := t.actions[i]
+		switch a.actionType {
+		case txInsert:
+			_, _ = db.Collection(a.collection).DeleteOne(ctx, bson.D{{Key: "_id", Value: a.id}})
+		case txUpdate:
+			_, _ = db.Collection(a.collection).ReplaceOne(ctx, bson.D{{Key: "_id", Value: a.id}}, a.oldDoc)
+		case txDelete:
+			_, _ = db.Collection(a.collection).InsertOne(ctx, a.oldDoc)
+		}
 	}
 }

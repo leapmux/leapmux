@@ -22,22 +22,38 @@ func (st *orgStore) table() string { return st.s.table(tableOrgs) }
 
 func orgToItem(p store.CreateOrgParams, now time.Time) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
-		"id":          attrS(p.ID),
-		"name":        attrS(p.Name),
-		"is_personal": attrBool(p.IsPersonal),
-		"created_at":  attrS(timeToStr(now)),
-		"deleted":     attrS(deletedFalse),
+		attrID:         attrS(p.ID),
+		attrName:       attrS(p.Name),
+		attrIsPersonal: attrBool(p.IsPersonal),
+		attrCreatedAt:  attrS(timeToStr(now)),
+		attrDeleted:    attrS(deletedFalse),
 	}
 }
 
-func itemToOrg(item map[string]ddbtypes.AttributeValue) store.Org {
-	return store.Org{
-		ID:         getS(item, "id"),
-		Name:       getS(item, "name"),
-		IsPersonal: getBool(item, "is_personal"),
-		CreatedAt:  getTime(item, "created_at"),
-		DeletedAt:  getTimePtr(item, "deleted_at"),
+func itemToOrg(item map[string]ddbtypes.AttributeValue) (store.Org, error) {
+	id, err := mustGetS(item, attrID)
+	if err != nil {
+		return store.Org{}, err
 	}
+	name, err := mustGetS(item, attrName)
+	if err != nil {
+		return store.Org{}, err
+	}
+	isPersonal, err := mustGetBool(item, attrIsPersonal)
+	if err != nil {
+		return store.Org{}, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return store.Org{}, err
+	}
+	return store.Org{
+		ID:         id,
+		Name:       name,
+		IsPersonal: isPersonal,
+		CreatedAt:  createdAt,
+		DeletedAt:  getTimePtr(item, attrDeletedAt),
+	}, nil
 }
 
 func (st *orgStore) Create(ctx context.Context, p store.CreateOrgParams) error {
@@ -60,9 +76,9 @@ func (st *orgStore) Create(ctx context.Context, p store.CreateOrgParams) error {
 		return mapErr(err)
 	}
 	if t := st.s.txTracker; t != nil {
-		t.recordPut(st.table(), map[string]ddbtypes.AttributeValue{"id": item["id"]}, nil)
+		t.recordPut(st.table(), map[string]ddbtypes.AttributeValue{attrID: item[attrID]}, nil)
 		t.recordPut(constraintTable, map[string]ddbtypes.AttributeValue{
-			"constraint_value": attrS(constraintKey("org", "name", p.Name)),
+			attrConstraintValue: attrS(constraintKey("org", "name", p.Name)),
 		}, nil)
 	}
 	return nil
@@ -82,7 +98,7 @@ func (st *orgStore) GetByID(ctx context.Context, id string) (*store.Org, error) 
 func (st *orgStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.Org, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -90,7 +106,10 @@ func (st *orgStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*stor
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	o := itemToOrg(out.Item)
+	o, err := itemToOrg(out.Item)
+	if err != nil {
+		return nil, err
+	}
 	return &o, nil
 }
 
@@ -101,7 +120,7 @@ func (st *orgStore) GetByName(ctx context.Context, name string) (*store.Org, err
 		KeyConditionExpression: aws.String("#n = :name"),
 		FilterExpression:       aws.String("attribute_not_exists(deleted_at)"),
 		ExpressionAttributeNames: map[string]string{
-			"#n": "name",
+			"#n": attrName,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":name": attrS(name),
@@ -113,7 +132,10 @@ func (st *orgStore) GetByName(ctx context.Context, name string) (*store.Org, err
 	if len(out.Items) == 0 {
 		return nil, store.ErrNotFound
 	}
-	o := itemToOrg(out.Items[0])
+	o, err := itemToOrg(out.Items[0])
+	if err != nil {
+		return nil, err
+	}
 	return &o, nil
 }
 
@@ -153,7 +175,11 @@ func (st *orgStore) ListAll(ctx context.Context, p store.ListAllOrgsParams) ([]s
 
 	var all []store.Org
 	err = st.s.queryPages(ctx, input, func(item map[string]ddbtypes.AttributeValue) bool {
-		all = append(all, itemToOrg(item))
+		o, err := itemToOrg(item)
+		if err != nil {
+			return false
+		}
+		all = append(all, o)
 		return p.Limit <= 0 || int64(len(all)) < p.Limit
 	})
 	if err != nil {
@@ -185,9 +211,12 @@ func (st *orgStore) Search(ctx context.Context, p store.SearchOrgsParams) ([]sto
 		Limit:                     aws.Int32(int32(store.SearchPageSize)),
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
 		examined++
-		o := itemToOrg(item)
-		if q != "" && !store.PrefixMatchOrg(o, q) {
+		if q != "" && !prefixMatchOrgItem(item, q) {
 			return examined < store.SearchMaxExamine
+		}
+		o, err := itemToOrg(item)
+		if err != nil {
+			return false
 		}
 		all = append(all, o)
 		return (p.Limit <= 0 || int64(len(all)) < p.Limit) && examined < store.SearchMaxExamine
@@ -197,6 +226,13 @@ func (st *orgStore) Search(ctx context.Context, p store.SearchOrgsParams) ([]sto
 	}
 
 	return ptrconv.NonNil(all), nil
+}
+
+// prefixMatchOrgItem checks whether a raw DynamoDB item matches the search
+// query by reading only the name field directly from the attribute map,
+// avoiding the cost of full itemToOrg deserialization for non-matching items.
+func prefixMatchOrgItem(item map[string]ddbtypes.AttributeValue, loweredQuery string) bool {
+	return strings.HasPrefix(strings.ToLower(getS(item, attrName)), loweredQuery)
 }
 
 func (st *orgStore) UpdateName(ctx context.Context, p store.UpdateOrgNameParams) error {
@@ -215,11 +251,11 @@ func (st *orgStore) UpdateName(ctx context.Context, p store.UpdateOrgNameParams)
 			{
 				Update: &ddbtypes.Update{
 					TableName:           aws.String(st.table()),
-					Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+					Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 					UpdateExpression:    aws.String("SET #n = :name"),
 					ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 					ExpressionAttributeNames: map[string]string{
-						"#n": "name",
+						"#n": attrName,
 					},
 					ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 						":name": attrS(p.Name),
@@ -250,7 +286,7 @@ func (st *orgStore) SoftDelete(ctx context.Context, id string) error {
 			{
 				Update: &ddbtypes.Update{
 					TableName:           aws.String(st.table()),
-					Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+					Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 					UpdateExpression:    aws.String("SET deleted_at = :now, deleted = :del"),
 					ConditionExpression: aws.String("attribute_exists(id)"),
 					ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -288,7 +324,7 @@ func (st *orgStore) SoftDeleteNonPersonal(ctx context.Context, id string) error 
 			{
 				Update: &ddbtypes.Update{
 					TableName:           aws.String(st.table()),
-					Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+					Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 					UpdateExpression:    aws.String("SET deleted_at = :now, deleted = :del"),
 					ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at) AND is_personal = :false"),
 					ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{

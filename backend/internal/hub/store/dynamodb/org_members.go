@@ -22,20 +22,36 @@ func (st *orgMemberStore) table() string { return st.s.table(tableOrgMembers) }
 
 func orgMemberToItem(p store.CreateOrgMemberParams, now time.Time) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
-		"org_id":    attrS(p.OrgID),
-		"user_id":   attrS(p.UserID),
-		"role":      attrN(int64(p.Role)),
-		"joined_at": attrS(timeToStr(now)),
+		attrOrgID:    attrS(p.OrgID),
+		attrUserID:   attrS(p.UserID),
+		attrRole:     attrN(int64(p.Role)),
+		attrJoinedAt: attrS(timeToStr(now)),
 	}
 }
 
-func itemToOrgMember(item map[string]ddbtypes.AttributeValue) store.OrgMember {
-	return store.OrgMember{
-		OrgID:    getS(item, "org_id"),
-		UserID:   getS(item, "user_id"),
-		Role:     leapmuxv1.OrgMemberRole(getN(item, "role")),
-		JoinedAt: getTime(item, "joined_at"),
+func itemToOrgMember(item map[string]ddbtypes.AttributeValue) (store.OrgMember, error) {
+	orgID, err := mustGetS(item, attrOrgID)
+	if err != nil {
+		return store.OrgMember{}, err
 	}
+	userID, err := mustGetS(item, attrUserID)
+	if err != nil {
+		return store.OrgMember{}, err
+	}
+	role, err := mustGetN(item, attrRole)
+	if err != nil {
+		return store.OrgMember{}, err
+	}
+	joinedAt, err := mustGetTime(item, attrJoinedAt)
+	if err != nil {
+		return store.OrgMember{}, err
+	}
+	return store.OrgMember{
+		OrgID:    orgID,
+		UserID:   userID,
+		Role:     leapmuxv1.OrgMemberRole(role),
+		JoinedAt: joinedAt,
+	}, nil
 }
 
 func (st *orgMemberStore) Create(ctx context.Context, p store.CreateOrgMemberParams) error {
@@ -44,7 +60,7 @@ func (st *orgMemberStore) Create(ctx context.Context, p store.CreateOrgMemberPar
 		TableName:           aws.String(st.table()),
 		Item:                orgMemberToItem(p, now),
 		ConditionExpression: aws.String("attribute_not_exists(org_id) AND attribute_not_exists(user_id)"),
-	}, "org_id", "user_id")
+	}, attrOrgID, attrUserID)
 	return mapErr(err)
 }
 
@@ -52,8 +68,8 @@ func (st *orgMemberStore) GetByOrgAndUser(ctx context.Context, orgID, userID str
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"org_id":  attrS(orgID),
-			"user_id": attrS(userID),
+			attrOrgID:  attrS(orgID),
+			attrUserID: attrS(userID),
 		},
 	})
 	if err != nil {
@@ -62,7 +78,10 @@ func (st *orgMemberStore) GetByOrgAndUser(ctx context.Context, orgID, userID str
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	m := itemToOrgMember(out.Item)
+	m, err := itemToOrgMember(out.Item)
+	if err != nil {
+		return nil, err
+	}
 	return &m, nil
 }
 
@@ -76,7 +95,11 @@ func (st *orgMemberStore) ListByOrgID(ctx context.Context, orgID string) ([]stor
 			":orgID": attrS(orgID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		members = append(members, itemToOrgMember(item))
+		m, err := itemToOrgMember(item)
+		if err != nil {
+			return false
+		}
+		members = append(members, m)
 		return true
 	})
 	if err != nil {
@@ -90,7 +113,7 @@ func (st *orgMemberStore) ListByOrgID(ctx context.Context, orgID string) ([]stor
 	// Batch-fetch all referenced users.
 	userKeys := make([]map[string]ddbtypes.AttributeValue, len(members))
 	for i, m := range members {
-		userKeys[i] = map[string]ddbtypes.AttributeValue{"id": attrS(m.UserID)}
+		userKeys[i] = map[string]ddbtypes.AttributeValue{attrID: attrS(m.UserID)}
 	}
 	userItems, err := st.s.batchGetItems(ctx, st.s.table(tableUsers), userKeys)
 	if err != nil {
@@ -98,10 +121,13 @@ func (st *orgMemberStore) ListByOrgID(ctx context.Context, orgID string) ([]stor
 	}
 	userMap := make(map[string]store.User, len(userItems))
 	for _, item := range userItems {
-		if getTimePtr(item, "deleted_at") != nil {
+		if getTimePtr(item, attrDeletedAt) != nil {
 			continue // Skip soft-deleted users.
 		}
-		u := itemToUser(item)
+		u, err := itemToUser(item)
+		if err != nil {
+			return nil, err
+		}
 		userMap[u.ID] = u
 	}
 
@@ -133,7 +159,7 @@ func (st *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) (
 			":uid": attrS(userID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		orgIDs = append(orgIDs, getS(item, "org_id"))
+		orgIDs = append(orgIDs, getS(item, attrOrgID))
 		return true
 	})
 	if err != nil {
@@ -147,7 +173,7 @@ func (st *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) (
 	// Batch-fetch all referenced orgs.
 	orgKeys := make([]map[string]ddbtypes.AttributeValue, len(orgIDs))
 	for i, id := range orgIDs {
-		orgKeys[i] = map[string]ddbtypes.AttributeValue{"id": attrS(id)}
+		orgKeys[i] = map[string]ddbtypes.AttributeValue{attrID: attrS(id)}
 	}
 	orgItems, err := st.s.batchGetItems(ctx, st.s.table(tableOrgs), orgKeys)
 	if err != nil {
@@ -156,7 +182,10 @@ func (st *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) (
 
 	var orgs []store.Org
 	for _, item := range orgItems {
-		o := itemToOrg(item)
+		o, err := itemToOrg(item)
+		if err != nil {
+			return nil, err
+		}
 		if o.DeletedAt != nil {
 			continue
 		}
@@ -169,13 +198,13 @@ func (st *orgMemberStore) UpdateRole(ctx context.Context, p store.UpdateOrgMembe
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"org_id":  attrS(p.OrgID),
-			"user_id": attrS(p.UserID),
+			attrOrgID:  attrS(p.OrgID),
+			attrUserID: attrS(p.UserID),
 		},
 		UpdateExpression:    aws.String("SET #r = :role"),
 		ConditionExpression: aws.String("attribute_exists(org_id)"),
 		ExpressionAttributeNames: map[string]string{
-			"#r": "role",
+			"#r": attrRole,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":role": attrN(int64(p.Role)),
@@ -188,8 +217,8 @@ func (st *orgMemberStore) Delete(ctx context.Context, p store.DeleteOrgMemberPar
 	_, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"org_id":  attrS(p.OrgID),
-			"user_id": attrS(p.UserID),
+			attrOrgID:  attrS(p.OrgID),
+			attrUserID: attrS(p.UserID),
 		},
 	})
 	return mapErr(err)
@@ -205,7 +234,7 @@ func (st *orgMemberStore) CountByRole(ctx context.Context, p store.CountOrgMembe
 			KeyConditionExpression: aws.String("org_id = :orgID"),
 			FilterExpression:       aws.String("#r = :role"),
 			ExpressionAttributeNames: map[string]string{
-				"#r": "role",
+				"#r": attrRole,
 			},
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 				":orgID": attrS(p.OrgID),
@@ -231,10 +260,10 @@ func (st *orgMemberStore) IsMember(ctx context.Context, p store.IsOrgMemberParam
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"org_id":  attrS(p.OrgID),
-			"user_id": attrS(p.UserID),
+			attrOrgID:  attrS(p.OrgID),
+			attrUserID: attrS(p.UserID),
 		},
-		ProjectionExpression: aws.String("org_id"),
+		ProjectionExpression: aws.String(attrOrgID),
 	})
 	if err != nil {
 		return false, mapErr(err)

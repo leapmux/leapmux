@@ -32,28 +32,56 @@ func sessionToItem(p store.CreateSessionParams, now time.Time) map[string]ddbtyp
 		ttl = minTTL
 	}
 	return map[string]ddbtypes.AttributeValue{
-		"id":             attrS(p.ID),
-		"user_id":        attrS(p.UserID),
-		"expires_at":     attrS(timeToStr(p.ExpiresAt)),
-		"created_at":     attrS(timeToStr(now)),
-		"last_active_at": attrS(timeToStr(now)),
-		"user_agent":     attrS(p.UserAgent),
-		"ip_address":     attrS(p.IPAddress),
-		"not_expired":    attrS(sentinelActive),
-		"ttl":            attrN(ttl),
+		attrID:           attrS(p.ID),
+		attrUserID:       attrS(p.UserID),
+		attrExpiresAt:    attrS(timeToStr(p.ExpiresAt)),
+		attrCreatedAt:    attrS(timeToStr(now)),
+		attrLastActiveAt: attrS(timeToStr(now)),
+		attrUserAgent:    attrS(p.UserAgent),
+		attrIPAddress:    attrS(p.IPAddress),
+		attrNotExpired:   attrS(sentinelActive),
+		attrTTL:          attrN(ttl),
 	}
 }
 
-func itemToSession(item map[string]ddbtypes.AttributeValue) store.UserSession {
-	return store.UserSession{
-		ID:           getS(item, "id"),
-		UserID:       getS(item, "user_id"),
-		ExpiresAt:    getTime(item, "expires_at"),
-		CreatedAt:    getTime(item, "created_at"),
-		LastActiveAt: getTime(item, "last_active_at"),
-		UserAgent:    getS(item, "user_agent"),
-		IPAddress:    getS(item, "ip_address"),
+func itemToSession(item map[string]ddbtypes.AttributeValue) (store.UserSession, error) {
+	id, err := mustGetS(item, attrID)
+	if err != nil {
+		return store.UserSession{}, err
 	}
+	userID, err := mustGetS(item, attrUserID)
+	if err != nil {
+		return store.UserSession{}, err
+	}
+	expiresAt, err := mustGetTime(item, attrExpiresAt)
+	if err != nil {
+		return store.UserSession{}, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return store.UserSession{}, err
+	}
+	lastActiveAt, err := mustGetTime(item, attrLastActiveAt)
+	if err != nil {
+		return store.UserSession{}, err
+	}
+	userAgent, err := mustGetS(item, attrUserAgent)
+	if err != nil {
+		return store.UserSession{}, err
+	}
+	ipAddress, err := mustGetS(item, attrIPAddress)
+	if err != nil {
+		return store.UserSession{}, err
+	}
+	return store.UserSession{
+		ID:           id,
+		UserID:       userID,
+		ExpiresAt:    expiresAt,
+		CreatedAt:    createdAt,
+		LastActiveAt: lastActiveAt,
+		UserAgent:    userAgent,
+		IPAddress:    ipAddress,
+	}, nil
 }
 
 func (st *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
@@ -62,14 +90,14 @@ func (st *sessionStore) Create(ctx context.Context, p store.CreateSessionParams)
 		TableName:           aws.String(st.table()),
 		Item:                sessionToItem(p, now),
 		ConditionExpression: aws.String("attribute_not_exists(id)"),
-	}, "id")
+	}, attrID)
 	return mapErr(err)
 }
 
 func (st *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSession, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -77,7 +105,10 @@ func (st *sessionStore) GetByID(ctx context.Context, id string) (*store.UserSess
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	sess := itemToSession(out.Item)
+	sess, err := itemToSession(out.Item)
+	if err != nil {
+		return nil, err
+	}
 	if sess.ExpiresAt.Before(time.Now().UTC()) {
 		return nil, store.ErrNotFound
 	}
@@ -88,11 +119,11 @@ func (st *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) e
 	lastActiveStr := timeToStr(p.LastActiveAt)
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET last_active_at = :now, expires_at = :exp, #ttl = :ttl"),
 		ConditionExpression: aws.String("attribute_exists(id) AND last_active_at < :lastActive"),
 		ExpressionAttributeNames: map[string]string{
-			"#ttl": "ttl",
+			"#ttl": attrTTL,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":now":        attrS(timeToStr(time.Now().UTC())),
@@ -115,7 +146,7 @@ func (st *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) e
 func (st *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
 	out, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName:    aws.String(st.table()),
-		Key:          map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:          map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 		ReturnValues: ddbtypes.ReturnValueAllOld,
 	})
 	if err != nil {
@@ -128,11 +159,11 @@ func (st *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
 }
 
 func (st *sessionStore) DeleteByUser(ctx context.Context, userID string) error {
-	return st.deleteByGSI(ctx, gsiUserID, "user_id", userID, nil)
+	return st.deleteByGSI(ctx, gsiUserID, attrUserID, userID, nil)
 }
 
 func (st *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSessionsParams) error {
-	return st.deleteByGSI(ctx, gsiUserID, "user_id", p.UserID, &p.KeepID)
+	return st.deleteByGSI(ctx, gsiUserID, attrUserID, p.UserID, &p.KeepID)
 }
 
 func (st *sessionStore) deleteByGSI(ctx context.Context, indexName, keyName, keyValue string, excludeID *string) error {
@@ -141,7 +172,7 @@ func (st *sessionStore) deleteByGSI(ctx context.Context, indexName, keyName, key
 		TableName:              aws.String(st.table()),
 		IndexName:              aws.String(indexName),
 		KeyConditionExpression: aws.String("#k = :v"),
-		ProjectionExpression:   aws.String("id"),
+		ProjectionExpression:   aws.String(attrID),
 		ExpressionAttributeNames: map[string]string{
 			"#k": keyName,
 		},
@@ -149,11 +180,11 @@ func (st *sessionStore) deleteByGSI(ctx context.Context, indexName, keyName, key
 			":v": attrS(keyValue),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		id := getS(item, "id")
+		id := getS(item, attrID)
 		if excludeID != nil && id == *excludeID {
 			return true
 		}
-		keys = append(keys, map[string]ddbtypes.AttributeValue{"id": attrS(id)})
+		keys = append(keys, map[string]ddbtypes.AttributeValue{attrID: attrS(id)})
 		return true
 	})
 	if err != nil {
@@ -173,7 +204,10 @@ func (st *sessionStore) ListByUserID(ctx context.Context, userID string) ([]stor
 			":uid": attrS(userID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		sess := itemToSession(item)
+		sess, err := itemToSession(item)
+		if err != nil {
+			return false
+		}
 		if !sess.ExpiresAt.Before(now) {
 			sessions = append(sessions, sess)
 		}
@@ -212,7 +246,11 @@ func (st *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActive
 		ExpressionAttributeValues: exprValues,
 		ScanIndexForward:          aws.Bool(false),
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		sessions = append(sessions, itemToSession(item))
+		sess, err := itemToSession(item)
+		if err != nil {
+			return false
+		}
+		sessions = append(sessions, sess)
 		return p.Limit <= 0 || int64(len(sessions)) < p.Limit
 	})
 	if err != nil {
@@ -240,7 +278,7 @@ func (st *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store
 
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.s.table(tableUsers)),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(sess.UserID)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(sess.UserID)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -249,7 +287,10 @@ func (st *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store
 		return nil, store.ErrNotFound
 	}
 
-	u := itemToUser(out.Item)
+	u, err := itemToUser(out.Item)
+	if err != nil {
+		return nil, err
+	}
 	if u.DeletedAt != nil {
 		return nil, store.ErrNotFound
 	}

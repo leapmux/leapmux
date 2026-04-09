@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -19,18 +20,40 @@ var _ store.WorkspaceTabStore = (*workspaceTabStore)(nil)
 
 func (st *workspaceTabStore) table() string { return st.s.table(tableWorkspaceTabs) }
 
-func itemToWorkspaceTab(item map[string]ddbtypes.AttributeValue) store.WorkspaceTab {
-	sk := getS(item, "tab_type#tab_id")
+func itemToWorkspaceTab(item map[string]ddbtypes.AttributeValue) (store.WorkspaceTab, error) {
+	sk, err := mustGetS(item, attrTabTypeSK)
+	if err != nil {
+		return store.WorkspaceTab{}, err
+	}
 	tabTypeStr, tabID := parseTabSK(sk)
-	tabTypeInt, _ := strconv.ParseInt(tabTypeStr, 10, 32)
+	tabTypeInt, err := strconv.ParseInt(tabTypeStr, 10, 32)
+	if err != nil {
+		return store.WorkspaceTab{}, fmt.Errorf("attribute %q: %w", attrTabTypeSK, err)
+	}
+	workspaceID, err := mustGetS(item, attrWorkspaceID)
+	if err != nil {
+		return store.WorkspaceTab{}, err
+	}
+	workerID, err := mustGetS(item, attrWorkerID)
+	if err != nil {
+		return store.WorkspaceTab{}, err
+	}
+	position, err := mustGetS(item, attrPosition)
+	if err != nil {
+		return store.WorkspaceTab{}, err
+	}
+	tileID, err := mustGetS(item, attrTileID)
+	if err != nil {
+		return store.WorkspaceTab{}, err
+	}
 	return store.WorkspaceTab{
-		WorkspaceID: getS(item, "workspace_id"),
-		WorkerID:    getS(item, "worker_id"),
+		WorkspaceID: workspaceID,
+		WorkerID:    workerID,
 		TabType:     leapmuxv1.TabType(tabTypeInt),
 		TabID:       tabID,
-		Position:    getS(item, "position"),
-		TileID:      getS(item, "tile_id"),
-	}
+		Position:    position,
+		TileID:      tileID,
+	}, nil
 }
 
 func (st *workspaceTabStore) Upsert(ctx context.Context, p store.UpsertWorkspaceTabParams) error {
@@ -38,13 +61,13 @@ func (st *workspaceTabStore) Upsert(ctx context.Context, p store.UpsertWorkspace
 	_, err := st.s.putItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(st.table()),
 		Item: map[string]ddbtypes.AttributeValue{
-			"workspace_id":    attrS(p.WorkspaceID),
-			"tab_type#tab_id": attrS(sk),
-			"worker_id":       attrS(p.WorkerID),
-			"position":        attrS(p.Position),
-			"tile_id":         attrS(p.TileID),
+			attrWorkspaceID: attrS(p.WorkspaceID),
+			attrTabTypeSK:   attrS(sk),
+			attrWorkerID:    attrS(p.WorkerID),
+			attrPosition:    attrS(p.Position),
+			attrTileID:      attrS(p.TileID),
 		},
-	}, "workspace_id", "tab_type#tab_id")
+	}, attrWorkspaceID, attrTabTypeSK)
 	return mapErr(err)
 }
 
@@ -58,11 +81,11 @@ func (st *workspaceTabStore) BulkUpsert(ctx context.Context, params []store.Upse
 		requests[i] = ddbtypes.WriteRequest{
 			PutRequest: &ddbtypes.PutRequest{
 				Item: map[string]ddbtypes.AttributeValue{
-					"workspace_id":    attrS(p.WorkspaceID),
-					"tab_type#tab_id": attrS(sk),
-					"worker_id":       attrS(p.WorkerID),
-					"position":        attrS(p.Position),
-					"tile_id":         attrS(p.TileID),
+					attrWorkspaceID: attrS(p.WorkspaceID),
+					attrTabTypeSK:   attrS(sk),
+					attrWorkerID:    attrS(p.WorkerID),
+					attrPosition:    attrS(p.Position),
+					attrTileID:      attrS(p.TileID),
 				},
 			},
 		}
@@ -75,19 +98,19 @@ func (st *workspaceTabStore) Delete(ctx context.Context, p store.DeleteWorkspace
 	_, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"workspace_id":    attrS(p.WorkspaceID),
-			"tab_type#tab_id": attrS(sk),
+			attrWorkspaceID: attrS(p.WorkspaceID),
+			attrTabTypeSK:   attrS(sk),
 		},
 	})
 	return mapErr(err)
 }
 
 func (st *workspaceTabStore) DeleteByWorker(ctx context.Context, workerID string) error {
-	return deleteAllByGSI(ctx, st.s, st.table(), gsiWorkerID, "worker_id", workerID, "workspace_id", "tab_type#tab_id")
+	return deleteAllByGSI(ctx, st.s, st.table(), gsiWorkerID, attrWorkerID, workerID, attrWorkspaceID, attrTabTypeSK)
 }
 
 func (st *workspaceTabStore) DeleteByWorkspace(ctx context.Context, workspaceID string) error {
-	return deleteAllByPK(ctx, st.s, st.table(), "workspace_id", workspaceID, "tab_type#tab_id")
+	return deleteAllByPK(ctx, st.s, st.table(), attrWorkspaceID, workspaceID, attrTabTypeSK)
 }
 
 func (st *workspaceTabStore) DeleteWorkerTabsForWorkspace(ctx context.Context, p store.DeleteWorkerTabsForWorkspaceParams) error {
@@ -101,10 +124,10 @@ func (st *workspaceTabStore) DeleteWorkerTabsForWorkspace(ctx context.Context, p
 			":wid":  attrS(p.WorkerID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		sk := getS(item, "tab_type#tab_id")
+		sk := getS(item, attrTabTypeSK)
 		keys = append(keys, map[string]ddbtypes.AttributeValue{
-			"workspace_id":    attrS(p.WorkspaceID),
-			"tab_type#tab_id": attrS(sk),
+			attrWorkspaceID: attrS(p.WorkspaceID),
+			attrTabTypeSK:   attrS(sk),
 		})
 		return true
 	})
@@ -123,7 +146,11 @@ func (st *workspaceTabStore) ListByWorkspace(ctx context.Context, workspaceID st
 			":wsid": attrS(workspaceID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		tabs = append(tabs, itemToWorkspaceTab(item))
+		t, err := itemToWorkspaceTab(item)
+		if err != nil {
+			return false
+		}
+		tabs = append(tabs, t)
 		return true
 	})
 	if err != nil {
@@ -142,7 +169,11 @@ func (st *workspaceTabStore) ListByWorker(ctx context.Context, workerID string) 
 			":wid": attrS(workerID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		tabs = append(tabs, itemToWorkspaceTab(item))
+		t, err := itemToWorkspaceTab(item)
+		if err != nil {
+			return false
+		}
+		tabs = append(tabs, t)
 		return true
 	})
 	if err != nil {
@@ -156,12 +187,12 @@ func (st *workspaceTabStore) ListDistinctWorkersByWorkspace(ctx context.Context,
 	err := st.s.queryPages(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(st.table()),
 		KeyConditionExpression: aws.String("workspace_id = :wsid"),
-		ProjectionExpression:   aws.String("worker_id"),
+		ProjectionExpression:   aws.String(attrWorkerID),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":wsid": attrS(workspaceID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		workerSet[getS(item, "worker_id")] = true
+		workerSet[getS(item, attrWorkerID)] = true
 		return true
 	})
 	if err != nil {
@@ -181,13 +212,13 @@ func (st *workspaceTabStore) GetMaxPosition(ctx context.Context, workspaceID str
 		KeyConditionExpression: aws.String("workspace_id = :wsid"),
 		ProjectionExpression:   aws.String("#p"),
 		ExpressionAttributeNames: map[string]string{
-			"#p": "position",
+			"#p": attrPosition,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":wsid": attrS(workspaceID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		pos := getS(item, "position")
+		pos := getS(item, attrPosition)
 		if pos > maxPos {
 			maxPos = pos
 		}

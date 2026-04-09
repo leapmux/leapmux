@@ -308,6 +308,7 @@ func (st *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminPa
 
 func (st *workerStore) SetStatus(ctx context.Context, p store.SetWorkerStatusParams) error {
 	filter := bson.D{{Key: "_id", Value: p.ID}}
+	st.s.trackBeforeUpdate(ctx, colWorkers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "status", Value: int32(p.Status)},
@@ -320,6 +321,7 @@ func (st *workerStore) SetStatus(ctx context.Context, p store.SetWorkerStatusPar
 func (st *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
 	now := truncateMS(time.Now().UTC())
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpdate(ctx, colWorkers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "last_seen_at", Value: now},
@@ -331,6 +333,7 @@ func (st *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
 
 func (st *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorkerPublicKeyParams) error {
 	filter := bson.D{{Key: "_id", Value: p.ID}}
+	st.s.trackBeforeUpdate(ctx, colWorkers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "public_key", Value: bytesVal(p.PublicKey)},
@@ -360,6 +363,7 @@ func (st *workerStore) ForceDeregister(ctx context.Context, id string) (int64, e
 }
 
 func (st *workerStore) deregister(ctx context.Context, filter bson.D) (int64, error) {
+	st.s.trackBeforeUpdate(ctx, colWorkers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "status", Value: int32(leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING)},
@@ -375,6 +379,7 @@ func (st *workerStore) deregister(ctx context.Context, filter bson.D) (int64, er
 func (st *workerStore) MarkDeleted(ctx context.Context, id string) error {
 	now := truncateMS(time.Now().UTC())
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpdate(ctx, colWorkers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "status", Value: int32(leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED)},

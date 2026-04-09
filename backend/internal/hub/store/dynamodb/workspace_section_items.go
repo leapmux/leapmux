@@ -19,16 +19,41 @@ var _ store.WorkspaceSectionItemStore = (*workspaceSectionItemStore)(nil)
 
 func (st *workspaceSectionItemStore) table() string { return st.s.table(tableWorkspaceSectionItems) }
 
+func itemToWorkspaceSectionItem(item map[string]ddbtypes.AttributeValue) (store.WorkspaceSectionItem, error) {
+	userID, err := mustGetS(item, attrUserID)
+	if err != nil {
+		return store.WorkspaceSectionItem{}, err
+	}
+	workspaceID, err := mustGetS(item, attrWorkspaceID)
+	if err != nil {
+		return store.WorkspaceSectionItem{}, err
+	}
+	sectionID, err := mustGetS(item, attrSectionID)
+	if err != nil {
+		return store.WorkspaceSectionItem{}, err
+	}
+	position, err := mustGetS(item, attrPosition)
+	if err != nil {
+		return store.WorkspaceSectionItem{}, err
+	}
+	return store.WorkspaceSectionItem{
+		UserID:      userID,
+		WorkspaceID: workspaceID,
+		SectionID:   sectionID,
+		Position:    position,
+	}, nil
+}
+
 func (st *workspaceSectionItemStore) Set(ctx context.Context, p store.SetWorkspaceSectionItemParams) error {
 	_, err := st.s.putItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(st.table()),
 		Item: map[string]ddbtypes.AttributeValue{
-			"user_id":      attrS(p.UserID),
-			"workspace_id": attrS(p.WorkspaceID),
-			"section_id":   attrS(p.SectionID),
-			"position":     attrS(p.Position),
+			attrUserID:      attrS(p.UserID),
+			attrWorkspaceID: attrS(p.WorkspaceID),
+			attrSectionID:   attrS(p.SectionID),
+			attrPosition:    attrS(p.Position),
 		},
-	}, "user_id", "workspace_id")
+	}, attrUserID, attrWorkspaceID)
 	return mapErr(err)
 }
 
@@ -36,8 +61,8 @@ func (st *workspaceSectionItemStore) Get(ctx context.Context, p store.GetWorkspa
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"user_id":      attrS(p.UserID),
-			"workspace_id": attrS(p.WorkspaceID),
+			attrUserID:      attrS(p.UserID),
+			attrWorkspaceID: attrS(p.WorkspaceID),
 		},
 	})
 	if err != nil {
@@ -46,12 +71,11 @@ func (st *workspaceSectionItemStore) Get(ctx context.Context, p store.GetWorkspa
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	return &store.WorkspaceSectionItem{
-		UserID:      getS(out.Item, "user_id"),
-		WorkspaceID: getS(out.Item, "workspace_id"),
-		SectionID:   getS(out.Item, "section_id"),
-		Position:    getS(out.Item, "position"),
-	}, nil
+	si, err := itemToWorkspaceSectionItem(out.Item)
+	if err != nil {
+		return nil, err
+	}
+	return &si, nil
 }
 
 func (st *workspaceSectionItemStore) ListByUser(ctx context.Context, userID string) ([]store.WorkspaceSectionItem, error) {
@@ -63,12 +87,11 @@ func (st *workspaceSectionItemStore) ListByUser(ctx context.Context, userID stri
 			":uid": attrS(userID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		items = append(items, store.WorkspaceSectionItem{
-			UserID:      getS(item, "user_id"),
-			WorkspaceID: getS(item, "workspace_id"),
-			SectionID:   getS(item, "section_id"),
-			Position:    getS(item, "position"),
-		})
+		si, err := itemToWorkspaceSectionItem(item)
+		if err != nil {
+			return false
+		}
+		items = append(items, si)
 		return true
 	})
 	if err != nil {
@@ -81,15 +104,15 @@ func (st *workspaceSectionItemStore) Delete(ctx context.Context, p store.DeleteW
 	_, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"user_id":      attrS(p.UserID),
-			"workspace_id": attrS(p.WorkspaceID),
+			attrUserID:      attrS(p.UserID),
+			attrWorkspaceID: attrS(p.WorkspaceID),
 		},
 	})
 	return mapErr(err)
 }
 
 func (st *workspaceSectionItemStore) DeleteBySection(ctx context.Context, sectionID string) error {
-	return deleteAllByGSI(ctx, st.s, st.table(), gsiSectionID, "section_id", sectionID, "user_id", "workspace_id")
+	return deleteAllByGSI(ctx, st.s, st.table(), gsiSectionID, attrSectionID, sectionID, attrUserID, attrWorkspaceID)
 }
 
 func (st *workspaceSectionItemStore) MoveToSection(ctx context.Context, p store.MoveWorkspaceSectionItemsToSectionParams) error {
@@ -103,9 +126,9 @@ func (st *workspaceSectionItemStore) MoveToSection(ctx context.Context, p store.
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":sid": attrS(p.FromSectionID),
 		},
-		ProjectionExpression: aws.String("user_id, workspace_id"),
+		ProjectionExpression: aws.String(attrUserID + ", " + attrWorkspaceID),
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		keys = append(keys, itemKey{getS(item, "user_id"), getS(item, "workspace_id")})
+		keys = append(keys, itemKey{getS(item, attrUserID), getS(item, attrWorkspaceID)})
 		return true
 	})
 	if err != nil {
@@ -116,8 +139,8 @@ func (st *workspaceSectionItemStore) MoveToSection(ctx context.Context, p store.
 		if _, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 			TableName: aws.String(st.table()),
 			Key: map[string]ddbtypes.AttributeValue{
-				"user_id":      attrS(k.userID),
-				"workspace_id": attrS(k.wsID),
+				attrUserID:      attrS(k.userID),
+				attrWorkspaceID: attrS(k.wsID),
 			},
 			UpdateExpression: aws.String("SET section_id = :toSid"),
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -160,12 +183,12 @@ func (st *workspaceSectionItemStore) IsInArchivedSection(ctx context.Context, p 
 	// Look up the section to check its type.
 	secOut, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.s.table(tableWorkspaceSections)),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(item.SectionID)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(item.SectionID)},
 	})
 	if err != nil || secOut.Item == nil {
 		return false, mapErr(err)
 	}
 
-	sectionType := getN(secOut.Item, "section_type")
+	sectionType := getN(secOut.Item, attrSectionType)
 	return leapmuxv1.SectionType(sectionType) == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED, nil
 }

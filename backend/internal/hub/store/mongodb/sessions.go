@@ -67,6 +67,7 @@ func (st *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) e
 		{Key: "_id", Value: p.ID},
 		{Key: "last_active_at", Value: bson.D{{Key: "$lt", Value: truncateMS(p.LastActiveAt)}}},
 	}
+	st.s.trackBeforeUpdate(ctx, colSessions, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "last_active_at", Value: now},
@@ -78,7 +79,9 @@ func (st *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) e
 }
 
 func (st *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
-	res, err := st.s.collection(colSessions).DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
+	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeDelete(ctx, colSessions, filter)
+	res, err := st.s.collection(colSessions).DeleteOne(ctx, filter)
 	if err != nil {
 		return 0, mapErr(err)
 	}

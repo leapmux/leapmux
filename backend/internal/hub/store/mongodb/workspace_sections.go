@@ -86,6 +86,7 @@ func (st *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorks
 		{Key: "user_id", Value: p.UserID},
 		{Key: "section_type", Value: int32(leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)},
 	}
+	st.s.trackBeforeUpdate(ctx, colWorkspaceSections, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "name", Value: p.Name},
@@ -103,6 +104,7 @@ func (st *workspaceSectionStore) UpdatePosition(ctx context.Context, p store.Upd
 		{Key: "_id", Value: p.ID},
 		{Key: "user_id", Value: p.UserID},
 	}
+	st.s.trackBeforeUpdate(ctx, colWorkspaceSections, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "position", Value: p.Position},
@@ -117,6 +119,7 @@ func (st *workspaceSectionStore) UpdateSidebarPosition(ctx context.Context, p st
 		{Key: "_id", Value: p.ID},
 		{Key: "user_id", Value: p.UserID},
 	}
+	st.s.trackBeforeUpdate(ctx, colWorkspaceSections, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "sidebar", Value: int32(p.Sidebar)},
@@ -133,6 +136,7 @@ func (st *workspaceSectionStore) Delete(ctx context.Context, p store.DeleteWorks
 		{Key: "user_id", Value: p.UserID},
 		{Key: "section_type", Value: int32(leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)},
 	}
+	st.s.trackBeforeDelete(ctx, colWorkspaceSections, filter)
 	res, err := st.s.collection(colWorkspaceSections).DeleteOne(ctx, filter)
 	if err != nil {
 		return 0, mapErr(err)

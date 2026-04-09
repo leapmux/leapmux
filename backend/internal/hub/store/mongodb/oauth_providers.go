@@ -124,6 +124,7 @@ func (st *oauthProviderStore) ListAllWithSecrets(ctx context.Context) ([]store.O
 
 func (st *oauthProviderStore) UpdateEnabled(ctx context.Context, p store.UpdateOAuthProviderEnabledParams) error {
 	filter := bson.D{{Key: "_id", Value: p.ID}}
+	st.s.trackBeforeUpdate(ctx, colOAuthProviders, filter)
 	update := bson.D{{Key: "$set", Value: bson.D{{Key: "enabled", Value: p.Enabled}}}}
 	_, err := st.s.collection(colOAuthProviders).UpdateOne(ctx, filter, update)
 	return mapErr(err)
@@ -131,13 +132,16 @@ func (st *oauthProviderStore) UpdateEnabled(ctx context.Context, p store.UpdateO
 
 func (st *oauthProviderStore) UpdateClientSecret(ctx context.Context, id string, clientSecret []byte) error {
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpdate(ctx, colOAuthProviders, filter)
 	update := bson.D{{Key: "$set", Value: bson.D{{Key: "client_secret", Value: clientSecret}}}}
 	_, err := st.s.collection(colOAuthProviders).UpdateOne(ctx, filter, update)
 	return mapErr(err)
 }
 
 func (st *oauthProviderStore) Delete(ctx context.Context, id string) error {
-	_, err := st.s.collection(colOAuthProviders).DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
+	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeDelete(ctx, colOAuthProviders, filter)
+	_, err := st.s.collection(colOAuthProviders).DeleteOne(ctx, filter)
 	if err != nil {
 		return mapErr(err)
 	}

@@ -20,19 +20,39 @@ var _ store.RegistrationStore = (*registrationStore)(nil)
 
 func (st *registrationStore) table() string { return st.s.table(tableRegistrations) }
 
-func itemToWorkerRegistration(item map[string]ddbtypes.AttributeValue) *store.WorkerRegistration {
-	return &store.WorkerRegistration{
-		ID:              getS(item, "id"),
-		Version:         getS(item, "version"),
-		PublicKey:       getBytes(item, "public_key"),
-		MlkemPublicKey:  getBytes(item, "mlkem_public_key"),
-		SlhdsaPublicKey: getBytes(item, "slhdsa_public_key"),
-		Status:          leapmuxv1.RegistrationStatus(getSAsInt64(item, "status")),
-		WorkerID:        ptrconv.StringToPtr(getS(item, "worker_id")),
-		ApprovedBy:      ptrconv.StringToPtr(getS(item, "approved_by")),
-		ExpiresAt:       getTime(item, "expires_at"),
-		CreatedAt:       getTime(item, "created_at"),
+func itemToWorkerRegistration(item map[string]ddbtypes.AttributeValue) (*store.WorkerRegistration, error) {
+	id, err := mustGetS(item, attrID)
+	if err != nil {
+		return nil, err
 	}
+	version, err := mustGetS(item, attrVersion)
+	if err != nil {
+		return nil, err
+	}
+	status, err := mustGetSAsInt64(item, attrStatus)
+	if err != nil {
+		return nil, err
+	}
+	expiresAt, err := mustGetTime(item, attrExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &store.WorkerRegistration{
+		ID:              id,
+		Version:         version,
+		PublicKey:       getBytes(item, attrPublicKey),
+		MlkemPublicKey:  getBytes(item, attrMlkemPublicKey),
+		SlhdsaPublicKey: getBytes(item, attrSlhdsaPublicKey),
+		Status:          leapmuxv1.RegistrationStatus(status),
+		WorkerID:        ptrconv.StringToPtr(getS(item, attrWorkerID)),
+		ApprovedBy:      ptrconv.StringToPtr(getS(item, attrApprovedBy)),
+		ExpiresAt:       expiresAt,
+		CreatedAt:       createdAt,
+	}, nil
 }
 
 func (st *registrationStore) Create(ctx context.Context, p store.CreateRegistrationParams) error {
@@ -42,23 +62,23 @@ func (st *registrationStore) Create(ctx context.Context, p store.CreateRegistrat
 		TableName:           aws.String(st.table()),
 		ConditionExpression: aws.String("attribute_not_exists(id)"),
 		Item: map[string]ddbtypes.AttributeValue{
-			"id":                attrS(p.ID),
-			"version":           attrS(p.Version),
-			"public_key":        attrB(p.PublicKey),
-			"mlkem_public_key":  attrB(p.MlkemPublicKey),
-			"slhdsa_public_key": attrB(p.SlhdsaPublicKey),
-			"status":            attrS(pendingStatus),
-			"expires_at":        attrS(timeToStr(p.ExpiresAt)),
-			"created_at":        attrS(timeToStr(now)),
+			attrID:              attrS(p.ID),
+			attrVersion:         attrS(p.Version),
+			attrPublicKey:       attrB(p.PublicKey),
+			attrMlkemPublicKey:  attrB(p.MlkemPublicKey),
+			attrSlhdsaPublicKey: attrB(p.SlhdsaPublicKey),
+			attrStatus:          attrS(pendingStatus),
+			attrExpiresAt:       attrS(timeToStr(p.ExpiresAt)),
+			attrCreatedAt:       attrS(timeToStr(now)),
 		},
-	}, "id")
+	}, attrID)
 	return mapErr(err)
 }
 
 func (st *registrationStore) GetByID(ctx context.Context, id string) (*store.WorkerRegistration, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -66,7 +86,11 @@ func (st *registrationStore) GetByID(ctx context.Context, id string) (*store.Wor
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	return itemToWorkerRegistration(out.Item), nil
+	reg, err := itemToWorkerRegistration(out.Item)
+	if err != nil {
+		return nil, err
+	}
+	return reg, nil
 }
 
 func (st *registrationStore) Approve(ctx context.Context, p store.ApproveRegistrationParams) error {
@@ -76,7 +100,7 @@ func (st *registrationStore) Approve(ctx context.Context, p store.ApproveRegistr
 		":status": attrS(approvedStatus),
 	}
 	exprNames := map[string]string{
-		"#st": "status",
+		"#st": attrStatus,
 	}
 
 	if p.WorkerID != nil {
@@ -90,7 +114,7 @@ func (st *registrationStore) Approve(ctx context.Context, p store.ApproveRegistr
 
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(st.table()),
-		Key:                       map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                       map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:          aws.String(updateExpr),
 		ExpressionAttributeNames:  exprNames,
 		ExpressionAttributeValues: exprValues,
@@ -111,16 +135,16 @@ func (st *registrationStore) ExpirePending(ctx context.Context) error {
 		IndexName:              aws.String(gsiStatus),
 		KeyConditionExpression: aws.String("#st = :pending"),
 		FilterExpression:       aws.String("expires_at < :now"),
-		ProjectionExpression:   aws.String("id"),
+		ProjectionExpression:   aws.String(attrID),
 		ExpressionAttributeNames: map[string]string{
-			"#st": "status",
+			"#st": attrStatus,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":pending": attrS(pendingStatus),
 			":now":     attrS(now),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		ids = append(ids, getS(item, "id"))
+		ids = append(ids, getS(item, attrID))
 		return len(ids) < store.CleanupBatchLimit
 	})
 	if err != nil {
@@ -131,10 +155,10 @@ func (st *registrationStore) ExpirePending(ctx context.Context) error {
 	for _, id := range ids {
 		_, err = st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 			TableName:        aws.String(st.table()),
-			Key:              map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+			Key:              map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 			UpdateExpression: aws.String("SET #st = :expired"),
 			ExpressionAttributeNames: map[string]string{
-				"#st": "status",
+				"#st": attrStatus,
 			},
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 				":expired": attrS(expiredStatus),

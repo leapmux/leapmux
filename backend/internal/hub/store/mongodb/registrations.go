@@ -66,6 +66,7 @@ func (st *registrationStore) Approve(ctx context.Context, p store.ApproveRegistr
 		{Key: "_id", Value: p.ID},
 		{Key: "status", Value: int32(leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_PENDING)},
 	}
+	st.s.trackBeforeUpdate(ctx, colRegistrations, filter)
 	setFields := bson.D{
 		{Key: "status", Value: int32(leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED)},
 	}

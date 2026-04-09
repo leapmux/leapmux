@@ -74,6 +74,7 @@ func (st *workerNotificationStore) ListPendingByWorker(ctx context.Context, work
 func (st *workerNotificationStore) MarkDelivered(ctx context.Context, id string) error {
 	now := truncateMS(time.Now().UTC())
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpdate(ctx, colWorkerNotifications, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "status", Value: int32(leapmuxv1.NotificationStatus_NOTIFICATION_STATUS_DELIVERED)},
@@ -86,6 +87,7 @@ func (st *workerNotificationStore) MarkDelivered(ctx context.Context, id string)
 
 func (st *workerNotificationStore) MarkFailed(ctx context.Context, id string) error {
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpdate(ctx, colWorkerNotifications, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "status", Value: int32(leapmuxv1.NotificationStatus_NOTIFICATION_STATUS_FAILED)},
@@ -97,6 +99,7 @@ func (st *workerNotificationStore) MarkFailed(ctx context.Context, id string) er
 
 func (st *workerNotificationStore) IncrementAttempts(ctx context.Context, id string) error {
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpdate(ctx, colWorkerNotifications, filter)
 	update := bson.D{
 		{Key: "$inc", Value: bson.D{
 			{Key: "attempts", Value: int64(1)},

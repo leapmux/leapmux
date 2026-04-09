@@ -19,25 +19,49 @@ func (st *workspaceStore) table() string { return st.s.table(tableWorkspaces) }
 
 func workspaceToItem(p store.CreateWorkspaceParams, now time.Time) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
-		"id":            attrS(p.ID),
-		"org_id":        attrS(p.OrgID),
-		"owner_user_id": attrS(p.OwnerUserID),
-		"title":         attrS(p.Title),
-		"is_deleted":    attrBool(false),
-		"created_at":    attrS(timeToStr(now)),
+		attrID:          attrS(p.ID),
+		attrOrgID:       attrS(p.OrgID),
+		attrOwnerUserID: attrS(p.OwnerUserID),
+		attrTitle:       attrS(p.Title),
+		attrIsDeleted:   attrBool(false),
+		attrCreatedAt:   attrS(timeToStr(now)),
 	}
 }
 
-func itemToWorkspace(item map[string]ddbtypes.AttributeValue) *store.Workspace {
-	return &store.Workspace{
-		ID:          getS(item, "id"),
-		OrgID:       getS(item, "org_id"),
-		OwnerUserID: getS(item, "owner_user_id"),
-		Title:       getS(item, "title"),
-		IsDeleted:   getBool(item, "is_deleted"),
-		CreatedAt:   getTime(item, "created_at"),
-		DeletedAt:   getTimePtr(item, "deleted_at"),
+func itemToWorkspace(item map[string]ddbtypes.AttributeValue) (*store.Workspace, error) {
+	id, err := mustGetS(item, attrID)
+	if err != nil {
+		return nil, err
 	}
+	orgID, err := mustGetS(item, attrOrgID)
+	if err != nil {
+		return nil, err
+	}
+	ownerUserID, err := mustGetS(item, attrOwnerUserID)
+	if err != nil {
+		return nil, err
+	}
+	title, err := mustGetS(item, attrTitle)
+	if err != nil {
+		return nil, err
+	}
+	isDeleted, err := mustGetBool(item, attrIsDeleted)
+	if err != nil {
+		return nil, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &store.Workspace{
+		ID:          id,
+		OrgID:       orgID,
+		OwnerUserID: ownerUserID,
+		Title:       title,
+		IsDeleted:   isDeleted,
+		CreatedAt:   createdAt,
+		DeletedAt:   getTimePtr(item, attrDeletedAt),
+	}, nil
 }
 
 func (st *workspaceStore) Create(ctx context.Context, p store.CreateWorkspaceParams) error {
@@ -46,7 +70,7 @@ func (st *workspaceStore) Create(ctx context.Context, p store.CreateWorkspacePar
 		TableName:           aws.String(st.table()),
 		Item:                workspaceToItem(p, now),
 		ConditionExpression: aws.String("attribute_not_exists(id)"),
-	}, "id")
+	}, attrID)
 	return mapErr(err)
 }
 
@@ -64,7 +88,7 @@ func (st *workspaceStore) GetByID(ctx context.Context, id string) (*store.Worksp
 func (st *workspaceStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.Workspace, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -72,7 +96,11 @@ func (st *workspaceStore) GetByIDIncludeDeleted(ctx context.Context, id string) 
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	return itemToWorkspace(out.Item), nil
+	w, err := itemToWorkspace(out.Item)
+	if err != nil {
+		return nil, err
+	}
+	return w, nil
 }
 
 func (st *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessibleWorkspacesParams) ([]store.Workspace, error) {
@@ -90,7 +118,10 @@ func (st *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccess
 			":false": attrBool(false),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		w := itemToWorkspace(item)
+		w, err := itemToWorkspace(item)
+		if err != nil {
+			return false
+		}
 		workspaceMap[w.ID] = w
 		return true
 	})
@@ -104,12 +135,12 @@ func (st *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccess
 		TableName:              aws.String(st.s.table(tableWorkspaceAccess)),
 		IndexName:              aws.String(gsiUserID),
 		KeyConditionExpression: aws.String("user_id = :uid"),
-		ProjectionExpression:   aws.String("workspace_id"),
+		ProjectionExpression:   aws.String(attrWorkspaceID),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":uid": attrS(p.UserID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		wsID := getS(item, "workspace_id")
+		wsID := getS(item, attrWorkspaceID)
 		if _, exists := workspaceMap[wsID]; !exists {
 			sharedWSIDs = append(sharedWSIDs, wsID)
 		}
@@ -123,14 +154,17 @@ func (st *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccess
 	if len(sharedWSIDs) > 0 {
 		keys := make([]map[string]ddbtypes.AttributeValue, len(sharedWSIDs))
 		for i, id := range sharedWSIDs {
-			keys[i] = map[string]ddbtypes.AttributeValue{"id": attrS(id)}
+			keys[i] = map[string]ddbtypes.AttributeValue{attrID: attrS(id)}
 		}
 		items, err := st.s.batchGetItems(ctx, st.table(), keys)
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range items {
-			w := itemToWorkspace(item)
+			w, err := itemToWorkspace(item)
+			if err != nil {
+				return nil, err
+			}
 			if !w.IsDeleted && w.OrgID == p.OrgID {
 				workspaceMap[w.ID] = w
 			}
@@ -147,7 +181,7 @@ func (st *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccess
 func (st *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspaceParams) (int64, error) {
 	out, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET title = :t"),
 		ConditionExpression: aws.String("attribute_exists(id) AND owner_user_id = :uid AND is_deleted = :false"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -173,7 +207,7 @@ func (st *workspaceStore) SoftDelete(ctx context.Context, p store.SoftDeleteWork
 	now := timeToStr(time.Now().UTC())
 	out, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET is_deleted = :true, deleted_at = :now, deleted = :del"),
 		ConditionExpression: aws.String("attribute_exists(id) AND owner_user_id = :uid AND is_deleted = :false"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -211,10 +245,10 @@ func (st *workspaceStore) SoftDeleteAllByUser(ctx context.Context, ownerUserID s
 			":false": attrBool(false),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		id := getS(item, "id")
+		id := getS(item, attrID)
 		if _, updateErr = st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 			TableName:        aws.String(st.table()),
-			Key:              map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+			Key:              map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 			UpdateExpression: aws.String("SET is_deleted = :true, deleted_at = :now, deleted = :del"),
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 				":true": attrBool(true),

@@ -48,6 +48,7 @@ func (st *workerAccessGrantStore) Grant(ctx context.Context, p store.GrantWorker
 
 func (st *workerAccessGrantStore) Revoke(ctx context.Context, p store.RevokeWorkerAccessParams) error {
 	filter := bson.D{{Key: "_id", Value: compoundID(p.WorkerID, p.UserID)}}
+	st.s.trackBeforeDelete(ctx, colWorkerAccessGrants, filter)
 	_, err := st.s.collection(colWorkerAccessGrants).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

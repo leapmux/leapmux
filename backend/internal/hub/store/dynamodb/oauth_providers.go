@@ -20,38 +20,78 @@ func (st *oauthProviderStore) table() string { return st.s.table(tableOAuthProvi
 
 func oauthProviderToItem(p store.CreateOAuthProviderParams, now time.Time) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
-		"id":            attrS(p.ID),
-		"provider_type": attrS(p.ProviderType),
-		"name":          attrS(p.Name),
-		"issuer_url":    attrS(p.IssuerURL),
-		"client_id":     attrS(p.ClientID),
-		"client_secret": attrB(p.ClientSecret),
-		"scopes":        attrS(p.Scopes),
-		"trust_email":   attrBool(p.TrustEmail),
-		"enabled":       attrBool(p.Enabled),
-		"created_at":    attrS(timeToStr(now)),
+		attrID:           attrS(p.ID),
+		attrProviderType: attrS(p.ProviderType),
+		attrName:         attrS(p.Name),
+		attrIssuerURL:    attrS(p.IssuerURL),
+		attrClientID:     attrS(p.ClientID),
+		attrClientSecret: attrB(p.ClientSecret),
+		attrScopes:       attrS(p.Scopes),
+		attrTrustEmail:   attrBool(p.TrustEmail),
+		attrEnabled:      attrBool(p.Enabled),
+		attrCreatedAt:    attrS(timeToStr(now)),
 	}
 }
 
-func itemToOAuthProvider(item map[string]ddbtypes.AttributeValue) *store.OAuthProvider {
+func itemToOAuthProvider(item map[string]ddbtypes.AttributeValue) (*store.OAuthProvider, error) {
+	summary, err := itemToOAuthProviderSummary(item)
+	if err != nil {
+		return nil, err
+	}
 	return &store.OAuthProvider{
-		OAuthProviderSummary: itemToOAuthProviderSummary(item),
-		ClientSecret:         getBytes(item, "client_secret"),
-	}
+		OAuthProviderSummary: summary,
+		ClientSecret:         getBytes(item, attrClientSecret),
+	}, nil
 }
 
-func itemToOAuthProviderSummary(item map[string]ddbtypes.AttributeValue) store.OAuthProviderSummary {
-	return store.OAuthProviderSummary{
-		ID:           getS(item, "id"),
-		ProviderType: getS(item, "provider_type"),
-		Name:         getS(item, "name"),
-		IssuerURL:    getS(item, "issuer_url"),
-		ClientID:     getS(item, "client_id"),
-		Scopes:       getS(item, "scopes"),
-		TrustEmail:   getBool(item, "trust_email"),
-		Enabled:      getBool(item, "enabled"),
-		CreatedAt:    getTime(item, "created_at"),
+func itemToOAuthProviderSummary(item map[string]ddbtypes.AttributeValue) (store.OAuthProviderSummary, error) {
+	id, err := mustGetS(item, attrID)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
 	}
+	providerType, err := mustGetS(item, attrProviderType)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
+	}
+	name, err := mustGetS(item, attrName)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
+	}
+	issuerURL, err := mustGetS(item, attrIssuerURL)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
+	}
+	clientID, err := mustGetS(item, attrClientID)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
+	}
+	scopes, err := mustGetS(item, attrScopes)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
+	}
+	trustEmail, err := mustGetBool(item, attrTrustEmail)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
+	}
+	enabled, err := mustGetBool(item, attrEnabled)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
+	}
+	return store.OAuthProviderSummary{
+		ID:           id,
+		ProviderType: providerType,
+		Name:         name,
+		IssuerURL:    issuerURL,
+		ClientID:     clientID,
+		Scopes:       scopes,
+		TrustEmail:   trustEmail,
+		Enabled:      enabled,
+		CreatedAt:    createdAt,
+	}, nil
 }
 
 func (st *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProviderParams) error {
@@ -60,14 +100,14 @@ func (st *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthPro
 		TableName:           aws.String(st.table()),
 		Item:                oauthProviderToItem(p, now),
 		ConditionExpression: aws.String("attribute_not_exists(id)"),
-	}, "id")
+	}, attrID)
 	return mapErr(err)
 }
 
 func (st *oauthProviderStore) GetByID(ctx context.Context, id string) (*store.OAuthProvider, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -75,7 +115,11 @@ func (st *oauthProviderStore) GetByID(ctx context.Context, id string) (*store.OA
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	return itemToOAuthProvider(out.Item), nil
+	p, err := itemToOAuthProvider(out.Item)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 func (st *oauthProviderStore) ListEnabled(ctx context.Context) ([]store.OAuthProviderSummary, error) {
@@ -87,7 +131,11 @@ func (st *oauthProviderStore) ListEnabled(ctx context.Context) ([]store.OAuthPro
 			":true": attrBool(true),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		result = append(result, itemToOAuthProviderSummary(item))
+		s, err := itemToOAuthProviderSummary(item)
+		if err != nil {
+			return false
+		}
+		result = append(result, s)
 		return true
 	})
 	if err != nil {
@@ -101,7 +149,11 @@ func (st *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProvide
 	err := st.s.scanPages(ctx, &dynamodb.ScanInput{
 		TableName: aws.String(st.table()),
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		result = append(result, itemToOAuthProviderSummary(item))
+		s, err := itemToOAuthProviderSummary(item)
+		if err != nil {
+			return false
+		}
+		result = append(result, s)
 		return true
 	})
 	if err != nil {
@@ -115,7 +167,11 @@ func (st *oauthProviderStore) ListAllWithSecrets(ctx context.Context) ([]store.O
 	err := st.s.scanPages(ctx, &dynamodb.ScanInput{
 		TableName: aws.String(st.table()),
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		result = append(result, *itemToOAuthProvider(item))
+		p, err := itemToOAuthProvider(item)
+		if err != nil {
+			return false
+		}
+		result = append(result, *p)
 		return true
 	})
 	if err != nil {
@@ -127,7 +183,7 @@ func (st *oauthProviderStore) ListAllWithSecrets(ctx context.Context) ([]store.O
 func (st *oauthProviderStore) UpdateEnabled(ctx context.Context, p store.UpdateOAuthProviderEnabledParams) error {
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET enabled = :e"),
 		ConditionExpression: aws.String("attribute_exists(id)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -140,7 +196,7 @@ func (st *oauthProviderStore) UpdateEnabled(ctx context.Context, p store.UpdateO
 func (st *oauthProviderStore) UpdateClientSecret(ctx context.Context, id string, clientSecret []byte) error {
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 		UpdateExpression:    aws.String("SET client_secret = :cs"),
 		ConditionExpression: aws.String("attribute_exists(id)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -153,7 +209,7 @@ func (st *oauthProviderStore) UpdateClientSecret(ctx context.Context, id string,
 func (st *oauthProviderStore) Delete(ctx context.Context, id string) error {
 	_, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return mapErr(err)

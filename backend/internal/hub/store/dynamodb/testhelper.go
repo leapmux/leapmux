@@ -64,7 +64,7 @@ func (h *dynamoTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEn
 	_, err := h.s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(tableName),
 		Key: map[string]ddbtypes.AttributeValue{
-			"id": attrS(id),
+			attrID: attrS(id),
 		},
 		UpdateExpression: aws.String("SET deleted_at = :v, deleted = :del"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -76,7 +76,7 @@ func (h *dynamoTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEn
 }
 
 func (h *dynamoTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity, id string, createdAt time.Time) error {
-	return h.setTimeAttr(ctx, entity, id, "created_at", createdAt)
+	return h.setTimeAttr(ctx, entity, id, attrCreatedAt, createdAt)
 }
 
 func (h *dynamoTestHelper) setTimeAttr(ctx context.Context, entity store.TestEntity, id string, attr string, t time.Time) error {
@@ -91,7 +91,7 @@ func (h *dynamoTestHelper) setTimeAttr(ctx context.Context, entity store.TestEnt
 	_, err := h.s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(tableName),
 		Key: map[string]ddbtypes.AttributeValue{
-			"id": attrS(id),
+			attrID: attrS(id),
 		},
 		UpdateExpression: aws.String("SET #a = :v"),
 		ExpressionAttributeNames: map[string]string{

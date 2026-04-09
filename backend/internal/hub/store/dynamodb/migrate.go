@@ -31,9 +31,9 @@ var migrations = []store.NoSQLMigration[*dynamoMigrator]{
 		}
 		// Enable TTL on tables that use expiration (in parallel).
 		ttlTables := map[string]string{
-			tableSessions:            "ttl",
-			tableOAuthStates:         "ttl",
-			tablePendingOAuthSignups: "ttl",
+			tableSessions:            attrTTL,
+			tableOAuthStates:         attrTTL,
+			tablePendingOAuthSignups: attrTTL,
 		}
 		eg, egCtx := errgroup.WithContext(ctx)
 		for table, attr := range ttlTables {
@@ -73,7 +73,7 @@ func (m *dynamoMigrator) CurrentVersion(ctx context.Context) (int64, error) {
 	out, err := m.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(m.metaTable()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"key": attrS(metaKeySchemaVersion),
+			attrKey: attrS(metaKeySchemaVersion),
 		},
 	})
 	if err != nil {
@@ -83,7 +83,7 @@ func (m *dynamoMigrator) CurrentVersion(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 
-	return getN(out.Item, "value"), nil
+	return getN(out.Item, attrValue), nil
 }
 
 func (m *dynamoMigrator) LatestVersion() int64 {
@@ -106,8 +106,8 @@ func (m *dynamoMigrator) setVersion(ctx context.Context, version int64) error {
 	_, err := m.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(m.metaTable()),
 		Item: map[string]ddbtypes.AttributeValue{
-			"key":   attrS(metaKeySchemaVersion),
-			"value": attrN(version),
+			attrKey:   attrS(metaKeySchemaVersion),
+			attrValue: attrN(version),
 		},
 	})
 	return mapErr(err)
@@ -129,7 +129,7 @@ func ensureMetaTable(ctx context.Context, client *dynamodb.Client, prefix string
 	}
 
 	// Create the meta table.
-	td := tableDef{name: tableMeta, pk: "key"}
+	td := tableDef{name: tableMeta, pk: attrKey}
 	_, err = client.CreateTable(ctx, buildCreateTableInput(prefix, td))
 	if err != nil {
 		// Ignore "already exists" race.

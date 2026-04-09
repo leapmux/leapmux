@@ -270,8 +270,9 @@ type PendingOAuthSignupStore interface {
 }
 
 // CleanupStore provides methods for hard-deleting soft-deleted records
-// and expired ephemeral data. All backends implement this interface
-// using application-level logic (no database-native TTL).
+// and expired ephemeral data. Backends may augment these with native
+// mechanisms (e.g. DynamoDB TTL) but must implement all methods for
+// consistent cross-backend behavior.
 type CleanupStore interface {
 	HardDeleteExpiredSessions(ctx context.Context) (int64, error)
 	HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error)

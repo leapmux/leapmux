@@ -282,20 +282,20 @@ func (s *dynamoStore) lookupUsernames(ctx context.Context, userIDs []string) (ma
 	unique := store.UniqueStrings(userIDs)
 	keys := make([]map[string]ddbtypes.AttributeValue, len(unique))
 	for i, uid := range unique {
-		keys[i] = map[string]ddbtypes.AttributeValue{"id": attrS(uid)}
+		keys[i] = map[string]ddbtypes.AttributeValue{attrID: attrS(uid)}
 	}
 
-	items, err := s.batchGetItemsProjected(ctx, s.table(tableUsers), keys, "id, username, deleted_at")
+	items, err := s.batchGetItemsProjected(ctx, s.table(tableUsers), keys, attrID+", "+attrUsername+", "+attrDeletedAt)
 	if err != nil {
 		return nil, err
 	}
 	result := make(map[string]string, len(items))
 	for _, item := range items {
 		// Skip deleted users.
-		if getTimePtr(item, "deleted_at") != nil {
+		if getTimePtr(item, attrDeletedAt) != nil {
 			continue
 		}
-		result[getS(item, "id")] = getS(item, "username")
+		result[getS(item, attrID)] = getS(item, attrUsername)
 	}
 	return result, nil
 }
@@ -479,12 +479,11 @@ func (s *dynamoStore) batchDelete(ctx context.Context, table string, keys []map[
 	return s.batchWrite(ctx, table, requests)
 }
 
-// queryAllKeys paginates through a Query and collects composite keys (pkAttr + optional skAttr)
-// from the returned items. If indexName is non-empty, the query targets that GSI.
-func queryAllKeys(ctx context.Context, s *dynamoStore, tableName, indexName, queryKeyName, queryKeyValue, pkAttr, skAttr string) ([]map[string]ddbtypes.AttributeValue, error) {
-	var keys []map[string]ddbtypes.AttributeValue
-	var lastKey map[string]ddbtypes.AttributeValue
-
+// deleteAllByQuery paginates through a Query, collecting keys in batches of
+// batchWriteMax and deleting each batch before moving on. This keeps memory
+// usage bounded regardless of the total number of matching items.
+// If indexName is non-empty, the query targets that GSI.
+func deleteAllByQuery(ctx context.Context, s *dynamoStore, tableName, indexName, queryKeyName, queryKeyValue, pkAttr, skAttr string) error {
 	exprNames := map[string]string{"#qk": queryKeyName, "#pk": pkAttr}
 	proj := "#pk"
 	if skAttr != "" {
@@ -497,6 +496,11 @@ func queryAllKeys(ctx context.Context, s *dynamoStore, tableName, indexName, que
 		idxName = aws.String(indexName)
 	}
 
+	// Use a small page size so each query returns at most batchWriteMax items,
+	// allowing us to delete immediately without buffering beyond one batch.
+	limit := int32(batchWriteMax)
+
+	var lastKey map[string]ddbtypes.AttributeValue
 	for {
 		out, err := s.client.Query(ctx, &dynamodb.QueryInput{
 			TableName:                aws.String(tableName),
@@ -508,41 +512,39 @@ func queryAllKeys(ctx context.Context, s *dynamoStore, tableName, indexName, que
 				":v": attrS(queryKeyValue),
 			},
 			ExclusiveStartKey: lastKey,
+			Limit:             &limit,
 		})
 		if err != nil {
-			return nil, mapErr(err)
+			return mapErr(err)
 		}
-		for _, item := range out.Items {
-			key := map[string]ddbtypes.AttributeValue{
-				pkAttr: attrS(getS(item, pkAttr)),
+		if len(out.Items) > 0 {
+			keys := make([]map[string]ddbtypes.AttributeValue, len(out.Items))
+			for i, item := range out.Items {
+				key := map[string]ddbtypes.AttributeValue{
+					pkAttr: attrS(getS(item, pkAttr)),
+				}
+				if skAttr != "" {
+					key[skAttr] = attrS(getS(item, skAttr))
+				}
+				keys[i] = key
 			}
-			if skAttr != "" {
-				key[skAttr] = attrS(getS(item, skAttr))
+			if err := s.batchDelete(ctx, tableName, keys); err != nil {
+				return err
 			}
-			keys = append(keys, key)
 		}
 		if out.LastEvaluatedKey == nil {
-			break
+			return nil
 		}
 		lastKey = out.LastEvaluatedKey
 	}
-	return keys, nil
 }
 
 // deleteAllByPK queries all items with the given PK and batch-deletes them.
 func deleteAllByPK(ctx context.Context, s *dynamoStore, tableName, pkName, pkValue, skName string) error {
-	keys, err := queryAllKeys(ctx, s, tableName, "", pkName, pkValue, pkName, skName)
-	if err != nil {
-		return err
-	}
-	return s.batchDelete(ctx, tableName, keys)
+	return deleteAllByQuery(ctx, s, tableName, "", pkName, pkValue, pkName, skName)
 }
 
 // deleteAllByGSI queries items from a GSI and batch-deletes them using the table's key.
 func deleteAllByGSI(ctx context.Context, s *dynamoStore, tableName, indexName, gsiKeyName, gsiKeyValue, tablePK, tableSK string) error {
-	keys, err := queryAllKeys(ctx, s, tableName, indexName, gsiKeyName, gsiKeyValue, tablePK, tableSK)
-	if err != nil {
-		return err
-	}
-	return s.batchDelete(ctx, tableName, keys)
+	return deleteAllByQuery(ctx, s, tableName, indexName, gsiKeyName, gsiKeyValue, tablePK, tableSK)
 }

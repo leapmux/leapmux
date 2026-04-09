@@ -22,26 +22,54 @@ func (st *workspaceSectionStore) table() string { return st.s.table(tableWorkspa
 
 func sectionToItem(p store.CreateWorkspaceSectionParams, now time.Time) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
-		"id":           attrS(p.ID),
-		"user_id":      attrS(p.UserID),
-		"name":         attrS(p.Name),
-		"position":     attrS(p.Position),
-		"section_type": attrN(int64(p.SectionType)),
-		"sidebar":      attrN(int64(p.Sidebar)),
-		"created_at":   attrS(timeToStr(now)),
+		attrID:          attrS(p.ID),
+		attrUserID:      attrS(p.UserID),
+		attrName:        attrS(p.Name),
+		attrPosition:    attrS(p.Position),
+		attrSectionType: attrN(int64(p.SectionType)),
+		attrSidebar:     attrN(int64(p.Sidebar)),
+		attrCreatedAt:   attrS(timeToStr(now)),
 	}
 }
 
-func itemToWorkspaceSection(item map[string]ddbtypes.AttributeValue) *store.WorkspaceSection {
-	return &store.WorkspaceSection{
-		ID:          getS(item, "id"),
-		UserID:      getS(item, "user_id"),
-		Name:        getS(item, "name"),
-		Position:    getS(item, "position"),
-		SectionType: leapmuxv1.SectionType(getN(item, "section_type")),
-		Sidebar:     leapmuxv1.Sidebar(getN(item, "sidebar")),
-		CreatedAt:   getTime(item, "created_at"),
+func itemToWorkspaceSection(item map[string]ddbtypes.AttributeValue) (*store.WorkspaceSection, error) {
+	id, err := mustGetS(item, attrID)
+	if err != nil {
+		return nil, err
 	}
+	userID, err := mustGetS(item, attrUserID)
+	if err != nil {
+		return nil, err
+	}
+	name, err := mustGetS(item, attrName)
+	if err != nil {
+		return nil, err
+	}
+	position, err := mustGetS(item, attrPosition)
+	if err != nil {
+		return nil, err
+	}
+	sectionType, err := mustGetN(item, attrSectionType)
+	if err != nil {
+		return nil, err
+	}
+	sidebar, err := mustGetN(item, attrSidebar)
+	if err != nil {
+		return nil, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &store.WorkspaceSection{
+		ID:          id,
+		UserID:      userID,
+		Name:        name,
+		Position:    position,
+		SectionType: leapmuxv1.SectionType(sectionType),
+		Sidebar:     leapmuxv1.Sidebar(sidebar),
+		CreatedAt:   createdAt,
+	}, nil
 }
 
 func (st *workspaceSectionStore) Create(ctx context.Context, p store.CreateWorkspaceSectionParams) error {
@@ -50,14 +78,14 @@ func (st *workspaceSectionStore) Create(ctx context.Context, p store.CreateWorks
 		TableName:           aws.String(st.table()),
 		Item:                sectionToItem(p, now),
 		ConditionExpression: aws.String("attribute_not_exists(id)"),
-	}, "id")
+	}, attrID)
 	return mapErr(err)
 }
 
 func (st *workspaceSectionStore) GetByID(ctx context.Context, id string) (*store.WorkspaceSection, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -65,7 +93,11 @@ func (st *workspaceSectionStore) GetByID(ctx context.Context, id string) (*store
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	return itemToWorkspaceSection(out.Item), nil
+	sec, err := itemToWorkspaceSection(out.Item)
+	if err != nil {
+		return nil, err
+	}
+	return sec, nil
 }
 
 func (st *workspaceSectionStore) ListByUserID(ctx context.Context, userID string) ([]store.WorkspaceSection, error) {
@@ -78,7 +110,11 @@ func (st *workspaceSectionStore) ListByUserID(ctx context.Context, userID string
 			":uid": attrS(userID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		sections = append(sections, *itemToWorkspaceSection(item))
+		sec, err := itemToWorkspaceSection(item)
+		if err != nil {
+			return false
+		}
+		sections = append(sections, *sec)
 		return true
 	})
 	if err != nil {
@@ -90,11 +126,11 @@ func (st *workspaceSectionStore) ListByUserID(ctx context.Context, userID string
 func (st *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorkspaceSectionParams) (int64, error) {
 	out, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET #n = :name"),
 		ConditionExpression: aws.String("attribute_exists(id) AND user_id = :uid"),
 		ExpressionAttributeNames: map[string]string{
-			"#n": "name",
+			"#n": attrName,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":name": attrS(p.Name),
@@ -117,11 +153,11 @@ func (st *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorks
 func (st *workspaceSectionStore) UpdatePosition(ctx context.Context, p store.UpdateWorkspaceSectionPositionParams) error {
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET #p = :pos"),
 		ConditionExpression: aws.String("attribute_exists(id) AND user_id = :uid"),
 		ExpressionAttributeNames: map[string]string{
-			"#p": "position",
+			"#p": attrPosition,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":pos": attrS(p.Position),
@@ -134,11 +170,11 @@ func (st *workspaceSectionStore) UpdatePosition(ctx context.Context, p store.Upd
 func (st *workspaceSectionStore) UpdateSidebarPosition(ctx context.Context, p store.UpdateWorkspaceSectionSidebarPositionParams) error {
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET sidebar = :sb, #p = :pos"),
 		ConditionExpression: aws.String("attribute_exists(id) AND user_id = :uid"),
 		ExpressionAttributeNames: map[string]string{
-			"#p": "position",
+			"#p": attrPosition,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":sb":  attrN(int64(p.Sidebar)),
@@ -156,7 +192,7 @@ func (st *workspaceSectionStore) UpdateSidebarPosition(ctx context.Context, p st
 func (st *workspaceSectionStore) Delete(ctx context.Context, p store.DeleteWorkspaceSectionParams) (int64, error) {
 	out, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		ConditionExpression: aws.String("attribute_exists(id) AND user_id = :uid AND section_type = :custom"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":uid":    attrS(p.UserID),

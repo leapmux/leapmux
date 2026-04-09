@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -26,7 +27,7 @@ func mapErr(err error) error {
 	if errors.As(err, &sqliteErr) {
 		code := sqliteErr.Code()
 		if code == sqlitelib.SQLITE_CONSTRAINT_UNIQUE || code == sqlitelib.SQLITE_CONSTRAINT_PRIMARYKEY {
-			return store.ErrConflict
+			return fmt.Errorf("%w: %w", store.ErrConflict, err)
 		}
 	}
 	return err

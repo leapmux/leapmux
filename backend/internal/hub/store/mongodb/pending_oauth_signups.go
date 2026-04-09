@@ -63,6 +63,8 @@ func (st *pendingOAuthSignupStore) Get(ctx context.Context, token string) (*stor
 }
 
 func (st *pendingOAuthSignupStore) Delete(ctx context.Context, token string) error {
-	_, err := st.s.collection(colPendingOAuthSignups).DeleteOne(ctx, bson.D{{Key: "_id", Value: token}})
+	filter := bson.D{{Key: "_id", Value: token}}
+	st.s.trackBeforeDelete(ctx, colPendingOAuthSignups, filter)
+	_, err := st.s.collection(colPendingOAuthSignups).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

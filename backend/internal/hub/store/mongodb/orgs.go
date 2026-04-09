@@ -163,6 +163,7 @@ func (st *orgStore) UpdateName(ctx context.Context, p store.UpdateOrgNameParams)
 		{Key: "is_personal", Value: false},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colOrgs, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "name", Value: p.Name},
@@ -178,6 +179,7 @@ func (st *orgStore) SoftDelete(ctx context.Context, id string) error {
 		{Key: "_id", Value: id},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colOrgs, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "deleted_at", Value: now},
@@ -194,6 +196,7 @@ func (st *orgStore) SoftDeleteNonPersonal(ctx context.Context, id string) error 
 		{Key: "is_personal", Value: false},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colOrgs, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "deleted_at", Value: now},

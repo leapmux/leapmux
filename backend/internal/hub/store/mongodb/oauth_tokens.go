@@ -38,8 +38,10 @@ func (st *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokens
 		{Key: "key_version", Value: p.KeyVersion},
 		{Key: "updated_at", Value: now},
 	}
+	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpsert(ctx, colOAuthTokens, filter, id)
 	opts := options.Replace().SetUpsert(true)
-	_, err := st.s.collection(colOAuthTokens).ReplaceOne(ctx, bson.D{{Key: "_id", Value: id}}, doc, opts)
+	_, err := st.s.collection(colOAuthTokens).ReplaceOne(ctx, filter, doc, opts)
 	return mapErr(err)
 }
 
@@ -114,6 +116,8 @@ func (st *oauthTokenStore) DeleteByUser(ctx context.Context, userID string) erro
 
 func (st *oauthTokenStore) DeleteByUserAndProvider(ctx context.Context, p store.DeleteOAuthTokensByUserAndProviderParams) error {
 	id := compoundID(p.UserID, p.ProviderID)
-	_, err := st.s.collection(colOAuthTokens).DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
+	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeDelete(ctx, colOAuthTokens, filter)
+	_, err := st.s.collection(colOAuthTokens).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

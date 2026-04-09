@@ -22,43 +22,91 @@ func (st *userStore) table() string { return st.s.table(tableUsers) }
 
 func userToItem(p store.CreateUserParams, now time.Time) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
-		"id":             attrS(p.ID),
-		"org_id":         attrS(p.OrgID),
-		"username":       attrS(store.NormalizeUsername(p.Username)),
-		"password_hash":  attrS(p.PasswordHash),
-		"display_name":   attrS(p.DisplayName),
-		"email":          attrS(store.NormalizeEmail(p.Email)),
-		"email_verified": attrBool(p.EmailVerified),
-		"password_set":   attrBool(p.PasswordSet),
-		"is_admin":       attrBool(p.IsAdmin),
-		"prefs":          attrS("{}"),
-		"created_at":     attrS(timeToStr(now)),
-		"updated_at":     attrS(timeToStr(now)),
-		"deleted":        attrS(deletedFalse),
+		attrID:            attrS(p.ID),
+		attrOrgID:         attrS(p.OrgID),
+		attrUsername:      attrS(store.NormalizeUsername(p.Username)),
+		attrPasswordHash:  attrS(p.PasswordHash),
+		attrDisplayName:   attrS(p.DisplayName),
+		attrEmail:         attrS(store.NormalizeEmail(p.Email)),
+		attrEmailVerified: attrBool(p.EmailVerified),
+		attrPasswordSet:   attrBool(p.PasswordSet),
+		attrIsAdmin:       attrBool(p.IsAdmin),
+		attrPrefs:         attrS("{}"),
+		attrCreatedAt:     attrS(timeToStr(now)),
+		attrUpdatedAt:     attrS(timeToStr(now)),
+		attrDeleted:       attrS(deletedFalse),
 		// pending_email, pending_email_token, pending_email_expires_at
 		// are omitted (not set on create).
 	}
 }
 
-func itemToUser(item map[string]ddbtypes.AttributeValue) store.User {
-	return store.User{
-		ID:                    getS(item, "id"),
-		OrgID:                 getS(item, "org_id"),
-		Username:              getS(item, "username"),
-		PasswordHash:          getS(item, "password_hash"),
-		DisplayName:           getS(item, "display_name"),
-		Email:                 getS(item, "email"),
-		EmailVerified:         getBool(item, "email_verified"),
-		PendingEmail:          getS(item, "pending_email"),
-		PendingEmailToken:     getS(item, "pending_email_token"),
-		PendingEmailExpiresAt: getTimePtr(item, "pending_email_expires_at"),
-		PasswordSet:           getBool(item, "password_set"),
-		IsAdmin:               getBool(item, "is_admin"),
-		Prefs:                 getS(item, "prefs"),
-		CreatedAt:             getTime(item, "created_at"),
-		UpdatedAt:             getTime(item, "updated_at"),
-		DeletedAt:             getTimePtr(item, "deleted_at"),
+func itemToUser(item map[string]ddbtypes.AttributeValue) (store.User, error) {
+	id, err := mustGetS(item, attrID)
+	if err != nil {
+		return store.User{}, err
 	}
+	orgID, err := mustGetS(item, attrOrgID)
+	if err != nil {
+		return store.User{}, err
+	}
+	username, err := mustGetS(item, attrUsername)
+	if err != nil {
+		return store.User{}, err
+	}
+	passwordHash, err := mustGetS(item, attrPasswordHash)
+	if err != nil {
+		return store.User{}, err
+	}
+	displayName, err := mustGetS(item, attrDisplayName)
+	if err != nil {
+		return store.User{}, err
+	}
+	email, err := mustGetS(item, attrEmail)
+	if err != nil {
+		return store.User{}, err
+	}
+	emailVerified, err := mustGetBool(item, attrEmailVerified)
+	if err != nil {
+		return store.User{}, err
+	}
+	passwordSet, err := mustGetBool(item, attrPasswordSet)
+	if err != nil {
+		return store.User{}, err
+	}
+	isAdmin, err := mustGetBool(item, attrIsAdmin)
+	if err != nil {
+		return store.User{}, err
+	}
+	prefs, err := mustGetS(item, attrPrefs)
+	if err != nil {
+		return store.User{}, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return store.User{}, err
+	}
+	updatedAt, err := mustGetTime(item, attrUpdatedAt)
+	if err != nil {
+		return store.User{}, err
+	}
+	return store.User{
+		ID:                    id,
+		OrgID:                 orgID,
+		Username:              username,
+		PasswordHash:          passwordHash,
+		DisplayName:           displayName,
+		Email:                 email,
+		EmailVerified:         emailVerified,
+		PendingEmail:          getS(item, attrPendingEmail),
+		PendingEmailToken:     getS(item, attrPendingEmailToken),
+		PendingEmailExpiresAt: getTimePtr(item, attrPendingEmailExpiresAt),
+		PasswordSet:           passwordSet,
+		IsAdmin:               isAdmin,
+		Prefs:                 prefs,
+		CreatedAt:             createdAt,
+		UpdatedAt:             updatedAt,
+		DeletedAt:             getTimePtr(item, attrDeletedAt),
+	}, nil
 }
 
 func (st *userStore) Create(ctx context.Context, p store.CreateUserParams) error {
@@ -66,8 +114,9 @@ func (st *userStore) Create(ctx context.Context, p store.CreateUserParams) error
 	item := userToItem(p, now)
 	constraintTable := st.s.table(tableUniqueConstraints)
 
-	username := store.NormalizeUsername(p.Username)
-	email := store.NormalizeEmail(p.Email)
+	// userToItem already normalizes username and email.
+	username := getS(item, attrUsername)
+	email := getS(item, attrEmail)
 
 	txItems := []ddbtypes.TransactWriteItem{
 		{
@@ -90,13 +139,13 @@ func (st *userStore) Create(ctx context.Context, p store.CreateUserParams) error
 		return mapErr(err)
 	}
 	if t := st.s.txTracker; t != nil {
-		t.recordPut(st.table(), map[string]ddbtypes.AttributeValue{"id": item["id"]}, nil)
+		t.recordPut(st.table(), map[string]ddbtypes.AttributeValue{attrID: item[attrID]}, nil)
 		t.recordPut(constraintTable, map[string]ddbtypes.AttributeValue{
-			"constraint_value": attrS(constraintKey("user", "username", username)),
+			attrConstraintValue: attrS(constraintKey("user", "username", username)),
 		}, nil)
 		if email != "" {
 			t.recordPut(constraintTable, map[string]ddbtypes.AttributeValue{
-				"constraint_value": attrS(constraintKey("user", "email", email)),
+				attrConstraintValue: attrS(constraintKey("user", "email", email)),
 			}, nil)
 		}
 	}
@@ -117,7 +166,7 @@ func (st *userStore) GetByID(ctx context.Context, id string) (*store.User, error
 func (st *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.User, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -125,20 +174,23 @@ func (st *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*sto
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	u := itemToUser(out.Item)
+	u, err := itemToUser(out.Item)
+	if err != nil {
+		return nil, err
+	}
 	return &u, nil
 }
 
 func (st *userStore) GetByUsername(ctx context.Context, username string) (*store.User, error) {
-	return st.getByGSI(ctx, gsiUsername, "username", store.NormalizeUsername(username))
+	return st.getByGSI(ctx, gsiUsername, attrUsername, store.NormalizeUsername(username))
 }
 
 func (st *userStore) GetByEmail(ctx context.Context, email string) (*store.User, error) {
-	return st.getByGSI(ctx, gsiEmail, "email", store.NormalizeEmail(email))
+	return st.getByGSI(ctx, gsiEmail, attrEmail, store.NormalizeEmail(email))
 }
 
 func (st *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
-	return st.getByGSI(ctx, gsiPendingEmailToken, "pending_email_token", token)
+	return st.getByGSI(ctx, gsiPendingEmailToken, attrPendingEmailToken, token)
 }
 
 func (st *userStore) getByGSI(ctx context.Context, indexName, keyName, keyValue string) (*store.User, error) {
@@ -160,15 +212,18 @@ func (st *userStore) getByGSI(ctx context.Context, indexName, keyName, keyValue 
 	if len(out.Items) == 0 {
 		return nil, store.ErrNotFound
 	}
-	u := itemToUser(out.Items[0])
+	u, err := itemToUser(out.Items[0])
+	if err != nil {
+		return nil, err
+	}
 	return &u, nil
 }
 
 func (st *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName:            aws.String(st.table()),
-		Key:                  map[string]ddbtypes.AttributeValue{"id": attrS(id)},
-		ProjectionExpression: aws.String("prefs, deleted_at"),
+		Key:                  map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
+		ProjectionExpression: aws.String(attrPrefs + ", " + attrDeletedAt),
 	})
 	if err != nil {
 		return "", mapErr(err)
@@ -176,10 +231,10 @@ func (st *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	if out.Item == nil {
 		return "", store.ErrNotFound
 	}
-	if getTimePtr(out.Item, "deleted_at") != nil {
+	if getTimePtr(out.Item, attrDeletedAt) != nil {
 		return "", store.ErrNotFound
 	}
-	return getS(out.Item, "prefs"), nil
+	return getS(out.Item, attrPrefs), nil
 }
 
 func (st *userStore) HasAny(ctx context.Context) (bool, error) {
@@ -236,7 +291,11 @@ func (st *userStore) ListByOrgID(ctx context.Context, orgID string) ([]store.Use
 			":orgID": attrS(orgID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		users = append(users, itemToUser(item))
+		u, err := itemToUser(item)
+		if err != nil {
+			return false
+		}
+		users = append(users, u)
 		return true
 	})
 	if err != nil {
@@ -264,7 +323,11 @@ func (st *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) ([
 
 	var all []store.User
 	err = st.s.queryPages(ctx, input, func(item map[string]ddbtypes.AttributeValue) bool {
-		all = append(all, itemToUser(item))
+		u, err := itemToUser(item)
+		if err != nil {
+			return false
+		}
+		all = append(all, u)
 		return p.Limit <= 0 || int64(len(all)) < p.Limit
 	})
 	if err != nil {
@@ -296,9 +359,12 @@ func (st *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]s
 		Limit:                     aws.Int32(int32(store.SearchPageSize)),
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
 		examined++
-		u := itemToUser(item)
-		if q != "" && !store.PrefixMatchUser(u, q) {
+		if q != "" && !prefixMatchUserItem(item, q) {
 			return examined < store.SearchMaxExamine
+		}
+		u, err := itemToUser(item)
+		if err != nil {
+			return false
 		}
 		all = append(all, u)
 		return (p.Limit <= 0 || int64(len(all)) < p.Limit) && examined < store.SearchMaxExamine
@@ -308,6 +374,16 @@ func (st *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]s
 	}
 
 	return ptrconv.NonNil(all), nil
+}
+
+// prefixMatchUserItem checks whether a raw DynamoDB item matches the search
+// query by reading only the search-relevant fields (username, display_name,
+// email) directly from the attribute map, avoiding the cost of full
+// itemToUser deserialization for non-matching items.
+func prefixMatchUserItem(item map[string]ddbtypes.AttributeValue, loweredQuery string) bool {
+	return strings.HasPrefix(strings.ToLower(getS(item, attrUsername)), loweredQuery) ||
+		strings.HasPrefix(strings.ToLower(getS(item, attrDisplayName)), loweredQuery) ||
+		strings.HasPrefix(strings.ToLower(getS(item, attrEmail)), loweredQuery)
 }
 
 func (st *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfileParams) error {
@@ -325,7 +401,7 @@ func (st *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfil
 		{
 			Update: &ddbtypes.Update{
 				TableName:           aws.String(st.table()),
-				Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+				Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 				UpdateExpression:    aws.String("SET username = :u, display_name = :d, updated_at = :now"),
 				ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -353,7 +429,7 @@ func (st *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPassw
 	now := timeToStr(time.Now().UTC())
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET password_hash = :h, password_set = :t, updated_at = :now"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -380,7 +456,7 @@ func (st *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPar
 		{
 			Update: &ddbtypes.Update{
 				TableName:           aws.String(st.table()),
-				Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+				Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 				UpdateExpression:    aws.String("SET email = :e, email_verified = :v, updated_at = :now"),
 				ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -410,7 +486,7 @@ func (st *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUser
 	now := timeToStr(time.Now().UTC())
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET email_verified = :v, updated_at = :now"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -425,7 +501,7 @@ func (st *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminPar
 	now := timeToStr(time.Now().UTC())
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET is_admin = :a, updated_at = :now"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -440,7 +516,7 @@ func (st *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsPar
 	now := timeToStr(time.Now().UTC())
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET prefs = :p, updated_at = :now"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -455,7 +531,7 @@ func (st *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmai
 	now := timeToStr(time.Now().UTC())
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET pending_email = :pe, pending_email_token = :pt, pending_email_expires_at = :exp, updated_at = :now"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -485,7 +561,7 @@ func (st *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 		{
 			Update: &ddbtypes.Update{
 				TableName:           aws.String(st.table()),
-				Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+				Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 				UpdateExpression:    aws.String("SET email = pending_email, email_verified = :t, updated_at = :now REMOVE pending_email, pending_email_token, pending_email_expires_at"),
 				ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -512,7 +588,7 @@ func (st *userStore) ClearPendingEmail(ctx context.Context, id string) error {
 	now := timeToStr(time.Now().UTC())
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 		UpdateExpression:    aws.String("SET updated_at = :now REMOVE pending_email, pending_email_token, pending_email_expires_at"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -535,7 +611,7 @@ func (st *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.Cl
 			":excludeID": attrS(p.ExcludeID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		userID := getS(item, "id")
+		userID := getS(item, attrID)
 		if clearErr = st.ClearPendingEmail(ctx, userID); clearErr != nil {
 			return false
 		}
@@ -565,7 +641,7 @@ func (st *userStore) Delete(ctx context.Context, id string) error {
 		{
 			Update: &ddbtypes.Update{
 				TableName:           aws.String(st.table()),
-				Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+				Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 				UpdateExpression:    aws.String("SET deleted_at = :now, updated_at = :now, deleted = :del"),
 				ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{

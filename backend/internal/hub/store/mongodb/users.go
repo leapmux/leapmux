@@ -266,6 +266,7 @@ func (st *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfil
 		{Key: "_id", Value: p.ID},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "username", Value: store.NormalizeUsername(p.Username)},
@@ -283,6 +284,7 @@ func (st *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPassw
 		{Key: "_id", Value: p.ID},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "password_hash", Value: p.PasswordHash},
@@ -300,6 +302,7 @@ func (st *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPar
 		{Key: "_id", Value: p.ID},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "email", Value: store.NormalizeEmail(p.Email)},
@@ -317,6 +320,7 @@ func (st *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUser
 		{Key: "_id", Value: p.ID},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "email_verified", Value: p.EmailVerified},
@@ -333,6 +337,7 @@ func (st *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminPar
 		{Key: "_id", Value: p.ID},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "is_admin", Value: p.IsAdmin},
@@ -349,6 +354,7 @@ func (st *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsPar
 		{Key: "_id", Value: p.ID},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "prefs", Value: p.Prefs},
@@ -365,6 +371,7 @@ func (st *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmai
 		{Key: "_id", Value: p.ID},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "pending_email", Value: store.NormalizeEmail(p.PendingEmail)},
@@ -391,6 +398,7 @@ func (st *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 		{Key: "_id", Value: id},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "email", Value: u.PendingEmail},
@@ -413,6 +421,7 @@ func (st *userStore) ClearPendingEmail(ctx context.Context, id string) error {
 		{Key: "_id", Value: id},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "updated_at", Value: now},
@@ -450,6 +459,7 @@ func (st *userStore) Delete(ctx context.Context, id string) error {
 		{Key: "_id", Value: id},
 		{Key: "deleted_at", Value: nil},
 	}
+	st.s.trackBeforeUpdate(ctx, colUsers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "deleted_at", Value: now},

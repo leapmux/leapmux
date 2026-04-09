@@ -22,6 +22,7 @@ func (st *workspaceSectionItemStore) Set(ctx context.Context, p store.SetWorkspa
 		{Key: "position", Value: p.Position},
 	}
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeUpsert(ctx, colWorkspaceSectionItems, filter, id)
 	opts := options.Replace().SetUpsert(true)
 	_, err := st.s.collection(colWorkspaceSectionItems).ReplaceOne(ctx, filter, doc, opts)
 	return mapErr(err)
@@ -74,6 +75,7 @@ func (st *workspaceSectionItemStore) ListByUser(ctx context.Context, userID stri
 func (st *workspaceSectionItemStore) Delete(ctx context.Context, p store.DeleteWorkspaceSectionItemParams) error {
 	id := compoundID(p.UserID, p.WorkspaceID)
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeDelete(ctx, colWorkspaceSectionItems, filter)
 	_, err := st.s.collection(colWorkspaceSectionItems).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

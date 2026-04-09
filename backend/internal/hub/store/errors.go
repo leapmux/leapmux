@@ -20,7 +20,10 @@ var (
 	ErrSectionNotEmpty = errors.New("section not empty")
 )
 
-// ConflictEntity identifies the entity type that caused a uniqueness violation.
+// ConflictEntity identifies the entity type that caused a uniqueness
+// violation. Currently limited to org/user because those are the only
+// cases where a transaction creates multiple entities and the caller
+// needs to distinguish which one conflicted.
 type ConflictEntity string
 
 const (

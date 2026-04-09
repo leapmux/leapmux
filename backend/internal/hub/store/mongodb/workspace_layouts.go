@@ -33,6 +33,7 @@ func (st *workspaceLayoutStore) Upsert(ctx context.Context, p store.UpsertWorksp
 		{Key: "updated_at", Value: now},
 	}
 	filter := bson.D{{Key: "_id", Value: p.WorkspaceID}}
+	st.s.trackBeforeUpsert(ctx, colWorkspaceLayouts, filter, p.WorkspaceID)
 	opts := options.Replace().SetUpsert(true)
 	_, err := st.s.collection(colWorkspaceLayouts).ReplaceOne(ctx, filter, doc, opts)
 	return mapErr(err)
@@ -40,6 +41,7 @@ func (st *workspaceLayoutStore) Upsert(ctx context.Context, p store.UpsertWorksp
 
 func (st *workspaceLayoutStore) Delete(ctx context.Context, workspaceID string) error {
 	filter := bson.D{{Key: "_id", Value: workspaceID}}
+	st.s.trackBeforeDelete(ctx, colWorkspaceLayouts, filter)
 	_, err := st.s.collection(colWorkspaceLayouts).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

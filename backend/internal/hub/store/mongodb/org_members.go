@@ -170,6 +170,7 @@ func (st *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) (
 
 func (st *orgMemberStore) UpdateRole(ctx context.Context, p store.UpdateOrgMemberRoleParams) error {
 	filter := bson.D{{Key: "_id", Value: compoundID(p.OrgID, p.UserID)}}
+	st.s.trackBeforeUpdate(ctx, colOrgMembers, filter)
 	update := bson.D{
 		{Key: "$set", Value: bson.D{
 			{Key: "role", Value: int32(p.Role)},
@@ -181,6 +182,7 @@ func (st *orgMemberStore) UpdateRole(ctx context.Context, p store.UpdateOrgMembe
 
 func (st *orgMemberStore) Delete(ctx context.Context, p store.DeleteOrgMemberParams) error {
 	filter := bson.D{{Key: "_id", Value: compoundID(p.OrgID, p.UserID)}}
+	st.s.trackBeforeDelete(ctx, colOrgMembers, filter)
 	_, err := st.s.collection(colOrgMembers).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

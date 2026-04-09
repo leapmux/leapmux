@@ -168,6 +168,95 @@ func getSAsInt64(item map[string]types.AttributeValue, key string) int64 {
 	return n
 }
 
+// --- Must-get attribute helpers (return errors) ---
+
+func mustGetS(item map[string]types.AttributeValue, key string) (string, error) {
+	v, ok := item[key]
+	if !ok {
+		return "", fmt.Errorf("attribute %q: missing", key)
+	}
+	sv, ok := v.(*types.AttributeValueMemberS)
+	if !ok {
+		return "", fmt.Errorf("attribute %q: not a string", key)
+	}
+	return sv.Value, nil
+}
+
+func mustGetN(item map[string]types.AttributeValue, key string) (int64, error) {
+	v, ok := item[key]
+	if !ok {
+		return 0, fmt.Errorf("attribute %q: missing", key)
+	}
+	nv, ok := v.(*types.AttributeValueMemberN)
+	if !ok {
+		return 0, fmt.Errorf("attribute %q: not a number", key)
+	}
+	n, err := strconv.ParseInt(nv.Value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("attribute %q: %w", key, err)
+	}
+	return n, nil
+}
+
+func mustGetBool(item map[string]types.AttributeValue, key string) (bool, error) {
+	v, ok := item[key]
+	if !ok {
+		return false, fmt.Errorf("attribute %q: missing", key)
+	}
+	bv, ok := v.(*types.AttributeValueMemberBOOL)
+	if !ok {
+		return false, fmt.Errorf("attribute %q: not a bool", key)
+	}
+	return bv.Value, nil
+}
+
+func mustGetTime(item map[string]types.AttributeValue, key string) (time.Time, error) {
+	s, err := mustGetS(item, key)
+	if err != nil {
+		return time.Time{}, err
+	}
+	t, err := strToTime(s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("attribute %q: %w", key, err)
+	}
+	return t, nil
+}
+
+func mustGetBytes(item map[string]types.AttributeValue, key string) ([]byte, error) {
+	v, ok := item[key]
+	if !ok {
+		return nil, fmt.Errorf("attribute %q: missing", key)
+	}
+	switch tv := v.(type) {
+	case *types.AttributeValueMemberS:
+		if tv.Value == "" {
+			return nil, fmt.Errorf("attribute %q: empty string", key)
+		}
+		b, err := base64.StdEncoding.DecodeString(tv.Value)
+		if err != nil {
+			return nil, fmt.Errorf("attribute %q: %w", key, err)
+		}
+		return b, nil
+	case *types.AttributeValueMemberB:
+		return tv.Value, nil
+	case *types.AttributeValueMemberNULL:
+		return nil, fmt.Errorf("attribute %q: null", key)
+	}
+	return nil, fmt.Errorf("attribute %q: unexpected type %T", key, v)
+}
+
+func mustGetSAsInt64(item map[string]types.AttributeValue, key string) (int64, error) {
+	s, err := mustGetS(item, key)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("attribute %q: %w", key, err)
+	}
+	return n, nil
+}
+
 // --- Error mapping ---
 
 // isConditionFailed returns true if the error is a DynamoDB ConditionalCheckFailedException.

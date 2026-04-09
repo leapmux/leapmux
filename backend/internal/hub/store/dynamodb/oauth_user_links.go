@@ -18,13 +18,29 @@ var _ store.OAuthUserLinkStore = (*oauthUserLinkStore)(nil)
 
 func (st *oauthUserLinkStore) table() string { return st.s.table(tableOAuthUserLinks) }
 
-func itemToOAuthUserLink(item map[string]ddbtypes.AttributeValue) store.OAuthUserLink {
-	return store.OAuthUserLink{
-		UserID:          getS(item, "user_id"),
-		ProviderID:      getS(item, "provider_id"),
-		ProviderSubject: getS(item, "provider_subject"),
-		CreatedAt:       getTime(item, "created_at"),
+func itemToOAuthUserLink(item map[string]ddbtypes.AttributeValue) (store.OAuthUserLink, error) {
+	userID, err := mustGetS(item, attrUserID)
+	if err != nil {
+		return store.OAuthUserLink{}, err
 	}
+	providerID, err := mustGetS(item, attrProviderID)
+	if err != nil {
+		return store.OAuthUserLink{}, err
+	}
+	providerSubject, err := mustGetS(item, attrProviderSubject)
+	if err != nil {
+		return store.OAuthUserLink{}, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return store.OAuthUserLink{}, err
+	}
+	return store.OAuthUserLink{
+		UserID:          userID,
+		ProviderID:      providerID,
+		ProviderSubject: providerSubject,
+		CreatedAt:       createdAt,
+	}, nil
 }
 
 func (st *oauthUserLinkStore) Create(ctx context.Context, p store.CreateOAuthUserLinkParams) error {
@@ -33,12 +49,12 @@ func (st *oauthUserLinkStore) Create(ctx context.Context, p store.CreateOAuthUse
 		TableName:           aws.String(st.table()),
 		ConditionExpression: aws.String("attribute_not_exists(user_id) AND attribute_not_exists(provider_id)"),
 		Item: map[string]ddbtypes.AttributeValue{
-			"user_id":          attrS(p.UserID),
-			"provider_id":      attrS(p.ProviderID),
-			"provider_subject": attrS(p.ProviderSubject),
-			"created_at":       attrS(timeToStr(now)),
+			attrUserID:          attrS(p.UserID),
+			attrProviderID:      attrS(p.ProviderID),
+			attrProviderSubject: attrS(p.ProviderSubject),
+			attrCreatedAt:       attrS(timeToStr(now)),
 		},
-	}, "user_id", "provider_id")
+	}, attrUserID, attrProviderID)
 	return mapErr(err)
 }
 
@@ -60,7 +76,10 @@ func (st *oauthUserLinkStore) Get(ctx context.Context, p store.GetOAuthUserLinkP
 	if len(out.Items) == 0 {
 		return nil, store.ErrNotFound
 	}
-	link := itemToOAuthUserLink(out.Items[0])
+	link, err := itemToOAuthUserLink(out.Items[0])
+	if err != nil {
+		return nil, err
+	}
 	return &link, nil
 }
 
@@ -73,7 +92,11 @@ func (st *oauthUserLinkStore) ListByUser(ctx context.Context, userID string) ([]
 			":uid": attrS(userID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		links = append(links, itemToOAuthUserLink(item))
+		link, err := itemToOAuthUserLink(item)
+		if err != nil {
+			return false
+		}
+		links = append(links, link)
 		return true
 	})
 	if err != nil {
@@ -86,8 +109,8 @@ func (st *oauthUserLinkStore) Delete(ctx context.Context, p store.DeleteOAuthUse
 	_, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"user_id":     attrS(p.UserID),
-			"provider_id": attrS(p.ProviderID),
+			attrUserID:     attrS(p.UserID),
+			attrProviderID: attrS(p.ProviderID),
 		},
 	})
 	return mapErr(err)
@@ -106,8 +129,8 @@ func (st *oauthUserLinkStore) DeleteByProvider(ctx context.Context, providerID s
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
 		keys = append(keys, map[string]ddbtypes.AttributeValue{
-			"user_id":     attrS(getS(item, "user_id")),
-			"provider_id": attrS(getS(item, "provider_id")),
+			attrUserID:     attrS(getS(item, attrUserID)),
+			attrProviderID: attrS(getS(item, attrProviderID)),
 		})
 		return true
 	})

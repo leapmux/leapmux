@@ -18,16 +18,36 @@ var _ store.WorkspaceAccessStore = (*workspaceAccessStore)(nil)
 
 func (st *workspaceAccessStore) table() string { return st.s.table(tableWorkspaceAccess) }
 
+func itemToWorkspaceAccess(item map[string]ddbtypes.AttributeValue) (store.WorkspaceAccess, error) {
+	workspaceID, err := mustGetS(item, attrWorkspaceID)
+	if err != nil {
+		return store.WorkspaceAccess{}, err
+	}
+	userID, err := mustGetS(item, attrUserID)
+	if err != nil {
+		return store.WorkspaceAccess{}, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return store.WorkspaceAccess{}, err
+	}
+	return store.WorkspaceAccess{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+		CreatedAt:   createdAt,
+	}, nil
+}
+
 func (st *workspaceAccessStore) Grant(ctx context.Context, p store.GrantWorkspaceAccessParams) error {
 	now := time.Now().UTC()
 	_, err := st.s.putItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(st.table()),
 		Item: map[string]ddbtypes.AttributeValue{
-			"workspace_id": attrS(p.WorkspaceID),
-			"user_id":      attrS(p.UserID),
-			"created_at":   attrS(timeToStr(now)),
+			attrWorkspaceID: attrS(p.WorkspaceID),
+			attrUserID:      attrS(p.UserID),
+			attrCreatedAt:   attrS(timeToStr(now)),
 		},
-	}, "workspace_id", "user_id")
+	}, attrWorkspaceID, attrUserID)
 	return mapErr(err)
 }
 
@@ -41,9 +61,9 @@ func (st *workspaceAccessStore) BulkGrant(ctx context.Context, params []store.Gr
 		requests[i] = ddbtypes.WriteRequest{
 			PutRequest: &ddbtypes.PutRequest{
 				Item: map[string]ddbtypes.AttributeValue{
-					"workspace_id": attrS(p.WorkspaceID),
-					"user_id":      attrS(p.UserID),
-					"created_at":   attrS(timeToStr(now)),
+					attrWorkspaceID: attrS(p.WorkspaceID),
+					attrUserID:      attrS(p.UserID),
+					attrCreatedAt:   attrS(timeToStr(now)),
 				},
 			},
 		}
@@ -55,8 +75,8 @@ func (st *workspaceAccessStore) Revoke(ctx context.Context, p store.RevokeWorksp
 	_, err := st.s.deleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"workspace_id": attrS(p.WorkspaceID),
-			"user_id":      attrS(p.UserID),
+			attrWorkspaceID: attrS(p.WorkspaceID),
+			attrUserID:      attrS(p.UserID),
 		},
 	})
 	return mapErr(err)
@@ -71,11 +91,11 @@ func (st *workspaceAccessStore) ListByWorkspaceID(ctx context.Context, workspace
 			":wsid": attrS(workspaceID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		result = append(result, store.WorkspaceAccess{
-			WorkspaceID: getS(item, "workspace_id"),
-			UserID:      getS(item, "user_id"),
-			CreatedAt:   getTime(item, "created_at"),
-		})
+		a, err := itemToWorkspaceAccess(item)
+		if err != nil {
+			return false
+		}
+		result = append(result, a)
 		return true
 	})
 	if err != nil {
@@ -88,10 +108,10 @@ func (st *workspaceAccessStore) HasAccess(ctx context.Context, p store.HasWorksp
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
 		Key: map[string]ddbtypes.AttributeValue{
-			"workspace_id": attrS(p.WorkspaceID),
-			"user_id":      attrS(p.UserID),
+			attrWorkspaceID: attrS(p.WorkspaceID),
+			attrUserID:      attrS(p.UserID),
 		},
-		ProjectionExpression: aws.String("workspace_id"),
+		ProjectionExpression: aws.String(attrWorkspaceID),
 	})
 	if err != nil {
 		return false, mapErr(err)
@@ -100,5 +120,5 @@ func (st *workspaceAccessStore) HasAccess(ctx context.Context, p store.HasWorksp
 }
 
 func (st *workspaceAccessStore) Clear(ctx context.Context, workspaceID string) error {
-	return deleteAllByPK(ctx, st.s, st.table(), "workspace_id", workspaceID, "user_id")
+	return deleteAllByPK(ctx, st.s, st.table(), attrWorkspaceID, workspaceID, attrUserID)
 }

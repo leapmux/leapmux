@@ -21,31 +21,51 @@ func (st *workerStore) table() string { return st.s.table(tableWorkers) }
 
 func workerToItem(p store.CreateWorkerParams, now time.Time) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
-		"id":                attrS(p.ID),
-		"auth_token":        attrS(p.AuthToken),
-		"registered_by":     attrS(p.RegisteredBy),
-		"status":            attrN(int64(leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE)),
-		"created_at":        attrS(timeToStr(now)),
-		"public_key":        attrB(p.PublicKey),
-		"mlkem_public_key":  attrB(p.MlkemPublicKey),
-		"slhdsa_public_key": attrB(p.SlhdsaPublicKey),
-		"deleted":           attrS(deletedFalse),
+		attrID:              attrS(p.ID),
+		attrAuthToken:       attrS(p.AuthToken),
+		attrRegisteredBy:    attrS(p.RegisteredBy),
+		attrStatus:          attrN(int64(leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE)),
+		attrCreatedAt:       attrS(timeToStr(now)),
+		attrPublicKey:       attrB(p.PublicKey),
+		attrMlkemPublicKey:  attrB(p.MlkemPublicKey),
+		attrSlhdsaPublicKey: attrB(p.SlhdsaPublicKey),
+		attrDeleted:         attrS(deletedFalse),
 	}
 }
 
-func itemToWorker(item map[string]ddbtypes.AttributeValue) *store.Worker {
-	return &store.Worker{
-		ID:              getS(item, "id"),
-		AuthToken:       getS(item, "auth_token"),
-		RegisteredBy:    getS(item, "registered_by"),
-		Status:          leapmuxv1.WorkerStatus(getN(item, "status")),
-		CreatedAt:       getTime(item, "created_at"),
-		LastSeenAt:      getTimePtr(item, "last_seen_at"),
-		PublicKey:       getBytes(item, "public_key"),
-		MlkemPublicKey:  getBytes(item, "mlkem_public_key"),
-		SlhdsaPublicKey: getBytes(item, "slhdsa_public_key"),
-		DeletedAt:       getTimePtr(item, "deleted_at"),
+func itemToWorker(item map[string]ddbtypes.AttributeValue) (*store.Worker, error) {
+	id, err := mustGetS(item, attrID)
+	if err != nil {
+		return nil, err
 	}
+	authToken, err := mustGetS(item, attrAuthToken)
+	if err != nil {
+		return nil, err
+	}
+	registeredBy, err := mustGetS(item, attrRegisteredBy)
+	if err != nil {
+		return nil, err
+	}
+	status, err := mustGetN(item, attrStatus)
+	if err != nil {
+		return nil, err
+	}
+	createdAt, err := mustGetTime(item, attrCreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &store.Worker{
+		ID:              id,
+		AuthToken:       authToken,
+		RegisteredBy:    registeredBy,
+		Status:          leapmuxv1.WorkerStatus(status),
+		CreatedAt:       createdAt,
+		LastSeenAt:      getTimePtr(item, attrLastSeenAt),
+		PublicKey:       getBytes(item, attrPublicKey),
+		MlkemPublicKey:  getBytes(item, attrMlkemPublicKey),
+		SlhdsaPublicKey: getBytes(item, attrSlhdsaPublicKey),
+		DeletedAt:       getTimePtr(item, attrDeletedAt),
+	}, nil
 }
 
 func (st *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) error {
@@ -54,14 +74,14 @@ func (st *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) e
 		TableName:           aws.String(st.table()),
 		Item:                workerToItem(p, now),
 		ConditionExpression: aws.String("attribute_not_exists(id)"),
-	}, "id")
+	}, attrID)
 	return mapErr(err)
 }
 
 func (st *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.table()),
-		Key:       map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:       map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -69,7 +89,11 @@ func (st *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, e
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	return itemToWorker(out.Item), nil
+	w, err := itemToWorker(out.Item)
+	if err != nil {
+		return nil, err
+	}
+	return w, nil
 }
 
 func (st *workerStore) GetByAuthToken(ctx context.Context, token string) (*store.Worker, error) {
@@ -88,14 +112,18 @@ func (st *workerStore) GetByAuthToken(ctx context.Context, token string) (*store
 	if len(out.Items) == 0 {
 		return nil, store.ErrNotFound
 	}
-	return itemToWorker(out.Items[0]), nil
+	w, err := itemToWorker(out.Items[0])
+	if err != nil {
+		return nil, err
+	}
+	return w, nil
 }
 
 func (st *workerStore) GetPublicKey(ctx context.Context, id string) (*store.WorkerPublicKeys, error) {
 	out, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName:            aws.String(st.table()),
-		Key:                  map[string]ddbtypes.AttributeValue{"id": attrS(id)},
-		ProjectionExpression: aws.String("public_key, mlkem_public_key, slhdsa_public_key, deleted_at"),
+		Key:                  map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
+		ProjectionExpression: aws.String(attrPublicKey + ", " + attrMlkemPublicKey + ", " + attrSlhdsaPublicKey + ", " + attrDeletedAt),
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -103,13 +131,13 @@ func (st *workerStore) GetPublicKey(ctx context.Context, id string) (*store.Work
 	if out.Item == nil {
 		return nil, store.ErrNotFound
 	}
-	if getTimePtr(out.Item, "deleted_at") != nil {
+	if getTimePtr(out.Item, attrDeletedAt) != nil {
 		return nil, store.ErrNotFound
 	}
 	return &store.WorkerPublicKeys{
-		PublicKey:       getBytes(out.Item, "public_key"),
-		MlkemPublicKey:  getBytes(out.Item, "mlkem_public_key"),
-		SlhdsaPublicKey: getBytes(out.Item, "slhdsa_public_key"),
+		PublicKey:       getBytes(out.Item, attrPublicKey),
+		MlkemPublicKey:  getBytes(out.Item, attrMlkemPublicKey),
+		SlhdsaPublicKey: getBytes(out.Item, attrSlhdsaPublicKey),
 	}, nil
 }
 
@@ -121,8 +149,8 @@ func (st *workerStore) hasAccess(ctx context.Context, workerID, userID string) (
 	grantOut, err := st.s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(st.s.table(tableWorkerGrants)),
 		Key: map[string]ddbtypes.AttributeValue{
-			"worker_id": attrS(workerID),
-			"user_id":   attrS(userID),
+			attrWorkerID: attrS(workerID),
+			attrUserID:   attrS(userID),
 		},
 	})
 	if err != nil {
@@ -154,10 +182,14 @@ func (st *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUs
 		KeyConditionExpression:    aws.String(keyExpr),
 		FilterExpression:          aws.String("attribute_not_exists(deleted_at) AND #st = :active"),
 		ExpressionAttributeValues: exprValues,
-		ExpressionAttributeNames:  map[string]string{"#st": "status"},
+		ExpressionAttributeNames:  map[string]string{"#st": attrStatus},
 		ScanIndexForward:          aws.Bool(false),
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		result = append(result, *itemToWorker(item))
+		w, err := itemToWorker(item)
+		if err != nil {
+			return false
+		}
+		result = append(result, *w)
 		remaining--
 		return remaining > 0
 	})
@@ -194,9 +226,12 @@ func (st *workerStore) ListOwned(ctx context.Context, p store.ListOwnedWorkersPa
 		KeyConditionExpression:    aws.String(keyExpr),
 		FilterExpression:          aws.String("attribute_not_exists(deleted_at) AND #st = :active"),
 		ExpressionAttributeValues: exprValues,
-		ExpressionAttributeNames:  map[string]string{"#st": "status"},
+		ExpressionAttributeNames:  map[string]string{"#st": attrStatus},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		w := itemToWorker(item)
+		w, err := itemToWorker(item)
+		if err != nil {
+			return false
+		}
 		workerMap[w.ID] = w
 		return true
 	})
@@ -214,7 +249,7 @@ func (st *workerStore) ListOwned(ctx context.Context, p store.ListOwnedWorkersPa
 			":uid": attrS(p.UserID),
 		},
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		workerID := getS(item, "worker_id")
+		workerID := getS(item, attrWorkerID)
 		if _, exists := workerMap[workerID]; !exists {
 			grantedWorkerIDs = append(grantedWorkerIDs, workerID)
 		}
@@ -228,14 +263,17 @@ func (st *workerStore) ListOwned(ctx context.Context, p store.ListOwnedWorkersPa
 	if len(grantedWorkerIDs) > 0 {
 		keys := make([]map[string]ddbtypes.AttributeValue, len(grantedWorkerIDs))
 		for i, id := range grantedWorkerIDs {
-			keys[i] = map[string]ddbtypes.AttributeValue{"id": attrS(id)}
+			keys[i] = map[string]ddbtypes.AttributeValue{attrID: attrS(id)}
 		}
 		items, err := st.s.batchGetItems(ctx, st.table(), keys)
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range items {
-			w := itemToWorker(item)
+			w, err := itemToWorker(item)
+			if err != nil {
+				return nil, err
+			}
 			if w.DeletedAt == nil {
 				workerMap[w.ID] = w
 			}
@@ -304,7 +342,7 @@ func (st *workerStore) listAdminAll(ctx context.Context, p store.ListWorkersAdmi
 	if p.Status != nil {
 		filterExpr = aws.String("#st = :status")
 		exprValues[":status"] = attrN(int64(*p.Status))
-		exprNames = map[string]string{"#st": "status"}
+		exprNames = map[string]string{"#st": attrStatus}
 	}
 
 	input := &dynamodb.QueryInput{
@@ -323,7 +361,11 @@ func (st *workerStore) listAdminAll(ctx context.Context, p store.ListWorkersAdmi
 
 	var workers []*store.Worker
 	err = st.s.queryPages(ctx, input, func(item map[string]ddbtypes.AttributeValue) bool {
-		workers = append(workers, itemToWorker(item))
+		w, err := itemToWorker(item)
+		if err != nil {
+			return false
+		}
+		workers = append(workers, w)
 		return p.Limit <= 0 || int64(len(workers)) < p.Limit
 	})
 	if err != nil {
@@ -354,7 +396,7 @@ func (st *workerStore) listAdminByUser(ctx context.Context, p store.ListWorkersA
 	if p.Status != nil {
 		filterParts = append(filterParts, "#st = :status")
 		exprValues[":status"] = attrN(int64(*p.Status))
-		exprNames["#st"] = "status"
+		exprNames["#st"] = attrStatus
 	}
 
 	filterExpr := filterParts[0]
@@ -376,7 +418,11 @@ func (st *workerStore) listAdminByUser(ctx context.Context, p store.ListWorkersA
 
 	var workers []*store.Worker
 	err := st.s.queryPages(ctx, input, func(item map[string]ddbtypes.AttributeValue) bool {
-		workers = append(workers, itemToWorker(item))
+		w, err := itemToWorker(item)
+		if err != nil {
+			return false
+		}
+		workers = append(workers, w)
 		return p.Limit <= 0 || int64(len(workers)) < p.Limit
 	})
 	if err != nil {
@@ -389,11 +435,11 @@ func (st *workerStore) listAdminByUser(ctx context.Context, p store.ListWorkersA
 func (st *workerStore) SetStatus(ctx context.Context, p store.SetWorkerStatusParams) error {
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET #st = :status"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeNames: map[string]string{
-			"#st": "status",
+			"#st": attrStatus,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":status": attrN(int64(p.Status)),
@@ -409,7 +455,7 @@ func (st *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
 	now := timeToStr(time.Now().UTC())
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 		UpdateExpression:    aws.String("SET last_seen_at = :now"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -422,7 +468,7 @@ func (st *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
 func (st *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorkerPublicKeyParams) error {
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET public_key = :pk, mlkem_public_key = :mk, slhdsa_public_key = :sk"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -437,11 +483,11 @@ func (st *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorker
 func (st *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerParams) (int64, error) {
 	out, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(p.ID)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(p.ID)},
 		UpdateExpression:    aws.String("SET #st = :deregistering"),
 		ConditionExpression: aws.String("attribute_exists(id) AND registered_by = :rb AND attribute_not_exists(deleted_at) AND #st <> :deregistering"),
 		ExpressionAttributeNames: map[string]string{
-			"#st": "status",
+			"#st": attrStatus,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":deregistering": attrN(int64(leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING)),
@@ -464,11 +510,11 @@ func (st *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerP
 func (st *workerStore) ForceDeregister(ctx context.Context, id string) (int64, error) {
 	out, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 		UpdateExpression:    aws.String("SET #st = :deregistering"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at) AND #st <> :deregistering"),
 		ExpressionAttributeNames: map[string]string{
-			"#st": "status",
+			"#st": attrStatus,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":deregistering": attrN(int64(leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING)),
@@ -491,7 +537,7 @@ func (st *workerStore) MarkDeleted(ctx context.Context, id string) error {
 	now := timeToStr(time.Now().UTC())
 	_, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(st.table()),
-		Key:                 map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+		Key:                 map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 		UpdateExpression:    aws.String("SET deleted_at = :now, deleted = :del"),
 		ConditionExpression: aws.String("attribute_exists(id) AND attribute_not_exists(deleted_at)"),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -518,9 +564,9 @@ func (st *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy st
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":rb": attrS(registeredBy),
 		},
-		ProjectionExpression: aws.String("id"),
+		ProjectionExpression: aws.String(attrID),
 	}, func(item map[string]ddbtypes.AttributeValue) bool {
-		ids = append(ids, getS(item, "id"))
+		ids = append(ids, getS(item, attrID))
 		return true
 	})
 	if err != nil {
@@ -530,7 +576,7 @@ func (st *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy st
 	for _, id := range ids {
 		if _, err := st.s.updateItem(ctx, &dynamodb.UpdateItemInput{
 			TableName:        aws.String(st.table()),
-			Key:              map[string]ddbtypes.AttributeValue{"id": attrS(id)},
+			Key:              map[string]ddbtypes.AttributeValue{attrID: attrS(id)},
 			UpdateExpression: aws.String("SET deleted_at = :now, deleted = :del"),
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 				":now": attrS(now),

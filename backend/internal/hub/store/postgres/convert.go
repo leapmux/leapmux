@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgerrcode"
@@ -57,7 +58,7 @@ func mapErr(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		if pgErr.Code == pgerrcode.UniqueViolation {
-			return store.ErrConflict
+			return fmt.Errorf("%w: %w", store.ErrConflict, err)
 		}
 	}
 	return err

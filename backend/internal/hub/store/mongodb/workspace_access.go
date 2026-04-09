@@ -59,6 +59,7 @@ func (st *workspaceAccessStore) BulkGrant(ctx context.Context, params []store.Gr
 func (st *workspaceAccessStore) Revoke(ctx context.Context, p store.RevokeWorkspaceAccessParams) error {
 	id := compoundID(p.WorkspaceID, p.UserID)
 	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeDelete(ctx, colWorkspaceAccess, filter)
 	_, err := st.s.collection(colWorkspaceAccess).DeleteOne(ctx, filter)
 	return mapErr(err)
 }

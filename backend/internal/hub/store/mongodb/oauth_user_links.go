@@ -72,7 +72,9 @@ func (st *oauthUserLinkStore) ListByUser(ctx context.Context, userID string) ([]
 
 func (st *oauthUserLinkStore) Delete(ctx context.Context, p store.DeleteOAuthUserLinkParams) error {
 	id := compoundID(p.UserID, p.ProviderID)
-	_, err := st.s.collection(colOAuthUserLinks).DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
+	filter := bson.D{{Key: "_id", Value: id}}
+	st.s.trackBeforeDelete(ctx, colOAuthUserLinks, filter)
+	_, err := st.s.collection(colOAuthUserLinks).DeleteOne(ctx, filter)
 	return mapErr(err)
 }
 
