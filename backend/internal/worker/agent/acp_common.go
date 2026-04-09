@@ -319,7 +319,7 @@ func (b *acpBase) primaryAgentOptionGroups(fallback []*leapmuxv1.AvailableOption
 		options = fallback
 	}
 	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OpenCodeExtraPrimaryAgent,
+		Key:     OptionGroupKeyPrimaryAgent,
 		Label:   "Primary Agent",
 		Options: options,
 	}}
@@ -331,9 +331,9 @@ func (b *acpBase) primaryAgentOptionGroups(fallback []*leapmuxv1.AvailableOption
 func (b *acpBase) primaryAgentCurrentSettings() *leapmuxv1.AgentSettings {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	extra := map[string]string{}
+	var extra map[string]string
 	if b.currentPrimaryAgent != "" {
-		extra[OpenCodeExtraPrimaryAgent] = b.currentPrimaryAgent
+		extra = map[string]string{OpenCodeExtraPrimaryAgent: b.currentPrimaryAgent}
 	}
 	return &leapmuxv1.AgentSettings{
 		Model:         b.model,

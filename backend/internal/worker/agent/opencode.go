@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	OpenCodeExtraPrimaryAgent = "primaryAgent"
+	OpenCodeExtraPrimaryAgent = OptionGroupKeyPrimaryAgent
 	OpenCodePrimaryAgentBuild = "build"
 	OpenCodePrimaryAgentPlan  = "plan"
 	openCodeHiddenCompaction  = "compaction"

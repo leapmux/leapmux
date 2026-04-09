@@ -37,12 +37,14 @@ export interface BrowserPreferences {
 export const KEY_BROWSER_PREFS = 'leapmux:browser-prefs'
 export const KEY_MRU_AGENT_PROVIDERS = 'leapmux:mru-agent-providers'
 export const KEY_KEY_PINS = 'leapmux:key-pins'
+export const KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN = 'leapmux:directory-selector-show-hidden'
 
 /** Keys that are never cleaned up and stored without wrapping. */
 export const STATIC_KEYS = new Set([
   KEY_BROWSER_PREFS,
   KEY_MRU_AGENT_PROVIDERS,
   KEY_KEY_PINS,
+  KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
 ])
 
 /** Dynamic key prefixes — single source of truth for all consumers. */

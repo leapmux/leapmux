@@ -1183,10 +1183,19 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 // These payloads are forwarded directly to the agent's stdin and are not
 // wrapped in a user message envelope or persisted as chat messages.
 func (svc *Context) handleControlRequestMessage(agentID, content string) {
+	// Persist set_permission_mode to the DB eagerly so that /clear
+	// (which reads the DB) always sees the latest mode. Some providers
+	// (e.g. Claude Code) don't echo the mode back in their
+	// control_response, so relying on the output handler alone would
+	// leave the DB stale.
+	mode, isSetMode := parseSetPermissionMode(content)
+	if isSetMode {
+		svc.setAgentPermissionMode(agentID, mode)
+	}
+
 	// If agent is not running, handle special cases locally.
 	if !svc.Agents.HasAgent(agentID) {
-		if mode, ok := parseSetPermissionMode(content); ok {
-			svc.setAgentPermissionMode(agentID, mode)
+		if isSetMode {
 			return
 		}
 		if isInterruptRequest(content) {
@@ -1198,15 +1207,6 @@ func (svc *Context) handleControlRequestMessage(agentID, content string) {
 			slog.Error("failed to start agent for control request", "agent_id", agentID, "error", err)
 			return
 		}
-	}
-
-	// Persist set_permission_mode to the DB eagerly so that /clear
-	// (which reads the DB) always sees the latest mode. Some providers
-	// (e.g. Claude Code) don't echo the mode back in their
-	// control_response, so relying on the output handler alone would
-	// leave the DB stale.
-	if mode, ok := parseSetPermissionMode(content); ok {
-		svc.setAgentPermissionMode(agentID, mode)
 	}
 
 	// Send as raw input to the agent's stdin.
