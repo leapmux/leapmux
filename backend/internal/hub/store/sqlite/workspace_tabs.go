@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type workspaceTabStore struct {
@@ -44,19 +45,14 @@ func (s *workspaceTabStore) BulkUpsert(ctx context.Context, params []store.Upser
 		return s.Upsert(ctx, params[0])
 	}
 
-	var sb strings.Builder
-	sb.WriteString(`INSERT INTO workspace_tabs (workspace_id, worker_id, tab_type, tab_id, position, tile_id) VALUES `)
-	args := make([]interface{}, 0, len(params)*6)
-	for i, p := range params {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		sb.WriteString("(?, ?, ?, ?, ?, ?)")
-		args = append(args, p.WorkspaceID, p.WorkerID, p.TabType, p.TabID, p.Position, p.TileID)
-	}
-	sb.WriteString(` ON CONFLICT (workspace_id, tab_type, tab_id) DO UPDATE SET worker_id = excluded.worker_id, position = excluded.position, tile_id = excluded.tile_id`)
-
-	_, err := s.conn.exec.ExecContext(ctx, sb.String(), args...)
+	query, args := sqlutil.BuildWorkspaceTabBulkUpsertQuery(
+		params,
+		func(sb *strings.Builder, _ int) {
+			sb.WriteString("(?, ?, ?, ?, ?, ?)")
+		},
+		` ON CONFLICT (workspace_id, tab_type, tab_id) DO UPDATE SET worker_id = excluded.worker_id, position = excluded.position, tile_id = excluded.tile_id`,
+	)
+	_, err := s.conn.exec.ExecContext(ctx, query, args...)
 	return mapErr(err)
 }
 

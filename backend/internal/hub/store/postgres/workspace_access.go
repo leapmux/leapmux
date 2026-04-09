@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type workspaceAccessStore struct {
@@ -21,12 +22,9 @@ func (s *workspaceAccessStore) Grant(ctx context.Context, p store.GrantWorkspace
 }
 
 func (s *workspaceAccessStore) BulkGrant(ctx context.Context, params []store.GrantWorkspaceAccessParams) error {
-	for _, p := range params {
-		if err := s.Grant(ctx, p); err != nil {
-			return err
-		}
-	}
-	return nil
+	return sqlutil.BulkGrantWorkspaceAccess(params, func(p store.GrantWorkspaceAccessParams) error {
+		return s.Grant(ctx, p)
+	})
 }
 
 func (s *workspaceAccessStore) Revoke(ctx context.Context, p store.RevokeWorkspaceAccessParams) error {
