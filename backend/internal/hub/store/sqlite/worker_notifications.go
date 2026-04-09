@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 // workerNotificationStore implements store.WorkerNotificationStore backed by SQLite.
@@ -52,6 +52,6 @@ func fromDBWorkerNotification(n gendb.WorkerNotification) store.WorkerNotificati
 		Attempts:    n.Attempts,
 		MaxAttempts: n.MaxAttempts,
 		CreatedAt:   n.CreatedAt,
-		DeliveredAt: sqlutil.NullTimeToPtr(n.DeliveredAt),
+		DeliveredAt: ptrconv.NullTimeToPtr(n.DeliveredAt),
 	}
 }

@@ -294,7 +294,7 @@ func (st *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminPa
 	}
 
 	// Batch-fetch all owner usernames.
-	userIDs := store.PluckStrings(workers, func(w store.Worker) string { return w.RegisteredBy })
+	userIDs := store.MapSlice(workers, func(w store.Worker) string { return w.RegisteredBy })
 	usernames, err := st.s.lookupUsernames(ctx, userIDs)
 	if err != nil {
 		return nil, err

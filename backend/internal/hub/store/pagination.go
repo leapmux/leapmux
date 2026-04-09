@@ -32,17 +32,11 @@ func MapSlice[In, Out any](in []In, fn func(In) Out) []Out {
 	return out
 }
 
-// PluckStrings extracts a string field from each item in a slice.
-func PluckStrings[T any](items []T, fn func(T) string) []string {
-	out := make([]string, len(items))
-	for i, item := range items {
-		out[i] = fn(item)
-	}
-	return out
-}
-
 // UniqueStrings deduplicates ids (DynamoDB BatchGetItem silently drops duplicates).
 func UniqueStrings(ids []string) []string {
+	if len(ids) <= 1 {
+		return ids
+	}
 	seen := make(map[string]bool, len(ids))
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -70,9 +64,12 @@ func ParseCursorTime(cursor string) (time.Time, bool, error) {
 // SortFilterLimit sorts items by timeVal descending, applies cursor-based
 // filtering, and limits results. Generic helper for paginated listings.
 func SortFilterLimit[T any](items []T, timeVal func(T) time.Time, cursor string, limit int64) ([]T, error) {
-	slices.SortFunc(items, func(a, b T) int {
+	descCmp := func(a, b T) int {
 		return cmp.Compare(timeVal(b).UnixNano(), timeVal(a).UnixNano())
-	})
+	}
+	if !slices.IsSortedFunc(items, descCmp) {
+		slices.SortFunc(items, descCmp)
+	}
 	if cursor != "" {
 		cursorTime, ok, err := ParseCursorTime(cursor)
 		if err != nil {

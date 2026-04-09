@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 type registrationStore struct {
@@ -22,8 +22,8 @@ func fromDBWorkerRegistration(r gendb.WorkerRegistration) *store.WorkerRegistrat
 		MlkemPublicKey:  r.MlkemPublicKey,
 		SlhdsaPublicKey: r.SlhdsaPublicKey,
 		Status:          r.Status,
-		WorkerID:        sqlutil.NullStringToPtr(r.WorkerID),
-		ApprovedBy:      sqlutil.NullStringToPtr(r.ApprovedBy),
+		WorkerID:        ptrconv.NullStringToPtr(r.WorkerID),
+		ApprovedBy:      ptrconv.NullStringToPtr(r.ApprovedBy),
 		ExpiresAt:       r.ExpiresAt,
 		CreatedAt:       r.CreatedAt,
 	}
@@ -50,8 +50,8 @@ func (s *registrationStore) GetByID(ctx context.Context, id string) (*store.Work
 
 func (s *registrationStore) Approve(ctx context.Context, p store.ApproveRegistrationParams) error {
 	return mapErr(s.q.ApproveRegistration(ctx, gendb.ApproveRegistrationParams{
-		WorkerID:   sqlutil.PtrToNullString(p.WorkerID),
-		ApprovedBy: sqlutil.PtrToNullString(p.ApprovedBy),
+		WorkerID:   ptrconv.PtrToNullString(p.WorkerID),
+		ApprovedBy: ptrconv.PtrToNullString(p.ApprovedBy),
 		ID:         p.ID,
 	}))
 }

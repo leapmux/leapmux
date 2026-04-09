@@ -6,6 +6,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 // WorkerAdminFields holds the driver-agnostic fields needed to build a
@@ -83,11 +84,11 @@ func FromDBWorkersAdmin[R WorkerAdminRow](rows []R) []store.WorkerWithOwner {
 			RegisteredBy:    c.RegisteredBy,
 			Status:          c.Status,
 			CreatedAt:       c.CreatedAt,
-			LastSeenAt:      NullTimeToPtr(c.LastSeenAt),
+			LastSeenAt:      ptrconv.NullTimeToPtr(c.LastSeenAt),
 			PublicKey:       c.PublicKey,
 			MlkemPublicKey:  c.MlkemPublicKey,
 			SlhdsaPublicKey: c.SlhdsaPublicKey,
-			DeletedAt:       NullTimeToPtr(c.DeletedAt),
+			DeletedAt:       ptrconv.NullTimeToPtr(c.DeletedAt),
 			OwnerUsername:   c.OwnerUsername,
 		}.ToWorkerWithOwner()
 	})

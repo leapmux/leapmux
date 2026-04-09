@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 type orgStore struct {
@@ -20,7 +20,7 @@ func fromDBOrg(o gendb.Org) store.Org {
 		Name:       o.Name,
 		IsPersonal: o.IsPersonal,
 		CreatedAt:  o.CreatedAt,
-		DeletedAt:  sqlutil.NullTimeToPtr(o.DeletedAt),
+		DeletedAt:  ptrconv.NullTimeToPtr(o.DeletedAt),
 	}
 }
 
@@ -93,7 +93,7 @@ func (s *orgStore) Search(ctx context.Context, p store.SearchOrgsParams) ([]stor
 		return nil, err
 	}
 	rows, err := s.q.SearchOrgs(ctx, gendb.SearchOrgsParams{
-		Query:     sqlutil.PtrToNullString(p.Query),
+		Query:     ptrconv.PtrToNullString(p.Query),
 		Column3:   col1,
 		CreatedAt: createdAt,
 		Limit:     int32(p.Limit),

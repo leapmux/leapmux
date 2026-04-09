@@ -2,11 +2,10 @@ package mysql
 
 import (
 	"context"
-	"errors"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 type userStore struct {
@@ -26,13 +25,13 @@ func fromDBUser(u gendb.User) store.User {
 		EmailVerified:         u.EmailVerified,
 		PendingEmail:          u.PendingEmail,
 		PendingEmailToken:     u.PendingEmailToken,
-		PendingEmailExpiresAt: sqlutil.NullTimeToPtr(u.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: ptrconv.NullTimeToPtr(u.PendingEmailExpiresAt),
 		PasswordSet:           u.PasswordSet,
 		IsAdmin:               u.IsAdmin,
 		Prefs:                 u.Prefs,
 		CreatedAt:             u.CreatedAt,
 		UpdatedAt:             u.UpdatedAt,
-		DeletedAt:             sqlutil.NullTimeToPtr(u.DeletedAt),
+		DeletedAt:             ptrconv.NullTimeToPtr(u.DeletedAt),
 	}
 }
 
@@ -91,22 +90,22 @@ func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, 
 }
 
 func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
-	_, err := s.GetByUsername(ctx, username)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
+	exists, err := s.q.ExistsByUsername(ctx, store.NormalizeUsername(username))
+	if err != nil {
+		return false, mapErr(err)
 	}
-	return err == nil, err
+	return exists, nil
 }
 
 func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error) {
-	u, err := s.GetByEmail(ctx, email)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	}
+	id, err := s.q.GetUserIDByEmail(ctx, store.NormalizeEmail(email))
 	if err != nil {
-		return false, err
+		if mapErr(err) == store.ErrNotFound {
+			return false, nil
+		}
+		return false, mapErr(err)
 	}
-	return u.ID != excludeUserID, nil
+	return id != excludeUserID, nil
 }
 
 func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
@@ -166,7 +165,7 @@ func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) ([]st
 		return nil, err
 	}
 	rows, err := s.q.SearchUsers(ctx, gendb.SearchUsersParams{
-		Query:     sqlutil.PtrToNullString(p.Query),
+		Query:     ptrconv.PtrToNullString(p.Query),
 		Column5:   col1,
 		CreatedAt: createdAt,
 		Limit:     int32(p.Limit),
@@ -225,7 +224,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	return mapErr(s.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:          store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:     p.PendingEmailToken,
-		PendingEmailExpiresAt: sqlutil.PtrToNullTime(p.PendingEmailExpiresAt),
+		PendingEmailExpiresAt: ptrconv.PtrToNullTime(p.PendingEmailExpiresAt),
 		ID:                    p.ID,
 	}))
 }

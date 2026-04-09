@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
@@ -90,22 +89,22 @@ func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, 
 }
 
 func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
-	_, err := s.GetByUsername(ctx, username)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
+	exists, err := s.q.ExistsByUsername(ctx, store.NormalizeUsername(username))
+	if err != nil {
+		return false, mapErr(err)
 	}
-	return err == nil, err
+	return exists, nil
 }
 
 func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error) {
-	u, err := s.GetByEmail(ctx, email)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	}
+	id, err := s.q.GetUserIDByEmail(ctx, store.NormalizeEmail(email))
 	if err != nil {
-		return false, err
+		if mapErr(err) == store.ErrNotFound {
+			return false, nil
+		}
+		return false, mapErr(err)
 	}
-	return u.ID != excludeUserID, nil
+	return id != excludeUserID, nil
 }
 
 func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {

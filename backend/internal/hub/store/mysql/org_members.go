@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 // orgMemberStore implements store.OrgMemberStore backed by MySQL.
@@ -65,7 +65,7 @@ func (s *orgMemberStore) ListOrgsByUserID(ctx context.Context, userID string) ([
 			Name:       r.Name,
 			IsPersonal: r.IsPersonal,
 			CreatedAt:  r.CreatedAt,
-			DeletedAt:  sqlutil.NullTimeToPtr(r.DeletedAt),
+			DeletedAt:  ptrconv.NullTimeToPtr(r.DeletedAt),
 		}
 	}), nil
 }

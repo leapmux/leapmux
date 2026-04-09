@@ -258,7 +258,7 @@ func (st *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActive
 	}
 
 	// Batch-fetch all usernames.
-	userIDs := store.PluckStrings(sessions, func(s store.UserSession) string { return s.UserID })
+	userIDs := store.MapSlice(sessions, func(s store.UserSession) string { return s.UserID })
 	usernames, err := st.s.lookupUsernames(ctx, userIDs)
 	if err != nil {
 		return nil, err

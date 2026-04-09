@@ -11,8 +11,14 @@ SELECT * FROM users WHERE id = ?;
 -- name: GetUserByUsername :one
 SELECT * FROM users WHERE username = ? AND deleted_at IS NULL;
 
+-- name: ExistsByUsername :one
+SELECT EXISTS(SELECT 1 FROM users WHERE username = ? AND deleted_at IS NULL);
+
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = ? AND email != '' AND deleted_at IS NULL;
+
+-- name: GetUserIDByEmail :one
+SELECT id FROM users WHERE email = ? AND email != '' AND deleted_at IS NULL;
 
 -- name: ListUsersByOrgID :many
 SELECT * FROM users WHERE org_id = ? AND deleted_at IS NULL ORDER BY created_at;
