@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"connectrpc.com/connect"
 
@@ -62,6 +61,129 @@ func workspaceToProto(w *store.Workspace) *leapmuxv1.Workspace {
 		Title:     w.Title,
 		CreatedAt: w.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
 	}
+}
+
+// loadWorkspaceForRead applies the workspace read policy:
+// owners may read, explicitly shared members may read, everyone else is denied.
+func (s *WorkspaceService) loadWorkspaceForRead(ctx context.Context, st store.Store, workspaceID, userID string) (*store.Workspace, error) {
+	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if ws.OwnerUserID == userID {
+		return ws, nil
+	}
+
+	hasAccess, err := st.WorkspaceAccess().HasAccess(ctx, store.HasWorkspaceAccessParams{
+		WorkspaceID: ws.ID,
+		UserID:      userID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if !hasAccess {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("no access to workspace"))
+	}
+	return ws, nil
+}
+
+// loadWorkspaceForOwnerWrite applies the workspace write policy:
+// only owners may mutate workspace state; shared access is read-only.
+func (s *WorkspaceService) loadWorkspaceForOwnerWrite(ctx context.Context, st store.Store, workspaceID, userID string) (*store.Workspace, error) {
+	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if ws.OwnerUserID != userID {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("only workspace owner can modify workspace state"))
+	}
+	return ws, nil
+}
+
+func normalizeWorkspaceShareUserIDs(userIDs []string, ownerUserID string) []string {
+	seen := make(map[string]struct{}, len(userIDs))
+	normalized := make([]string, 0, len(userIDs))
+	for _, userID := range userIDs {
+		if userID == "" || userID == ownerUserID {
+			continue
+		}
+		if _, ok := seen[userID]; ok {
+			continue
+		}
+		seen[userID] = struct{}{}
+		normalized = append(normalized, userID)
+	}
+	return normalized
+}
+
+func (s *WorkspaceService) validateWorkspaceShareUsers(ctx context.Context, st store.Store, userIDs []string) error {
+	for _, userID := range userIDs {
+		if _, err := st.Users().GetByID(ctx, userID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("user %s not found", userID))
+			}
+			return connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	return nil
+}
+
+func buildWorkspaceTabParams(workspaceID string, tabs []*leapmuxv1.WorkspaceTab) []store.UpsertWorkspaceTabParams {
+	params := make([]store.UpsertWorkspaceTabParams, len(tabs))
+	for i, tab := range tabs {
+		params[i] = store.UpsertWorkspaceTabParams{
+			WorkspaceID: workspaceID,
+			WorkerID:    tab.GetWorkerId(),
+			TabType:     tab.GetTabType(),
+			TabID:       tab.GetTabId(),
+			Position:    tab.GetPosition(),
+			TileID:      tab.GetTileId(),
+		}
+	}
+	return params
+}
+
+func (s *WorkspaceService) saveWorkspaceLayoutEntry(
+	ctx context.Context,
+	st store.Store,
+	workspaceID string,
+	layout *leapmuxv1.LayoutNode,
+	floatingWindows []*leapmuxv1.FloatingWindow,
+	tabs []*leapmuxv1.WorkspaceTab,
+	marshaler protojson.MarshalOptions,
+) error {
+	stored, err := serializeLayoutJSON(marshaler, layout, floatingWindows)
+	if err != nil {
+		return err
+	}
+
+	layoutJSONBytes, err := json.Marshal(stored)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout JSON: %w", err))
+	}
+
+	if err := st.WorkspaceLayouts().Upsert(ctx, store.UpsertWorkspaceLayoutParams{
+		WorkspaceID: workspaceID,
+		LayoutJSON:  string(layoutJSONBytes),
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("save layout: %w", err))
+	}
+
+	if err := st.WorkspaceTabs().DeleteByWorkspace(ctx, workspaceID); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace tabs: %w", err))
+	}
+
+	if err := st.WorkspaceTabs().BulkUpsert(ctx, buildWorkspaceTabParams(workspaceID, tabs)); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("save tabs: %w", err))
+	}
+
+	return nil
 }
 
 func (s *WorkspaceService) CreateWorkspace(
@@ -129,31 +251,14 @@ func (s *WorkspaceService) GetWorkspace(
 		return nil, err
 	}
 
-	ws, err := s.store.Workspaces().GetByID(ctx, req.Msg.GetWorkspaceId())
+	ws, err := s.loadWorkspaceForRead(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 
 	// Verify workspace belongs to the requested org.
 	if reqOrgID := req.Msg.GetOrgId(); reqOrgID != "" && ws.OrgID != reqOrgID {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
-	}
-
-	// Check access: must be owner or have explicit access.
-	if ws.OwnerUserID != user.ID {
-		hasAccess, err := s.store.WorkspaceAccess().HasAccess(ctx, store.HasWorkspaceAccessParams{
-			WorkspaceID: ws.ID,
-			UserID:      user.ID,
-		})
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		if !hasAccess {
-			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("no access to workspace"))
-		}
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetWorkspaceResponse{
@@ -199,29 +304,39 @@ func (s *WorkspaceService) DeleteWorkspace(
 		return nil, err
 	}
 
-	// Get distinct worker_ids from tabs before deleting.
-	workerIDs, err := s.store.WorkspaceTabs().ListDistinctWorkersByWorkspace(ctx, req.Msg.GetWorkspaceId())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspace workers: %w", err))
-	}
+	var workerIDs []string
+	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		if _, err := s.loadWorkspaceForOwnerWrite(ctx, tx, req.Msg.GetWorkspaceId(), user.ID); err != nil {
+			return err
+		}
 
-	rows, err := s.store.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
-		ID:          req.Msg.GetWorkspaceId(),
-		OwnerUserID: user.ID,
+		var err error
+		workerIDs, err = tx.WorkspaceTabs().ListDistinctWorkersByWorkspace(ctx, req.Msg.GetWorkspaceId())
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("list workspace workers: %w", err))
+		}
+
+		rows, err := tx.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
+			ID:          req.Msg.GetWorkspaceId(),
+			OwnerUserID: user.ID,
+		})
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace: %w", err))
+		}
+		if rows == 0 {
+			return connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
+		}
+
+		if err := tx.WorkspaceTabs().DeleteByWorkspace(ctx, req.Msg.GetWorkspaceId()); err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace tabs: %w", err))
+		}
+		if err := tx.WorkspaceLayouts().Delete(ctx, req.Msg.GetWorkspaceId()); err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace layout: %w", err))
+		}
+		return nil
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace: %w", err))
-	}
-	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
-	}
-
-	// Clean up tabs and layout for the deleted workspace.
-	if err := s.store.WorkspaceTabs().DeleteByWorkspace(ctx, req.Msg.GetWorkspaceId()); err != nil {
-		slog.Error("failed to delete workspace tabs", "workspace_id", req.Msg.GetWorkspaceId(), "error", err)
-	}
-	if err := s.store.WorkspaceLayouts().Delete(ctx, req.Msg.GetWorkspaceId()); err != nil {
-		slog.Error("failed to delete workspace layout", "workspace_id", req.Msg.GetWorkspaceId(), "error", err)
+		return nil, err
 	}
 
 	return connect.NewResponse(&leapmuxv1.DeleteWorkspaceResponse{
@@ -241,41 +356,54 @@ func (s *WorkspaceService) UpdateWorkspaceSharing(
 		return nil, err
 	}
 
-	// Verify ownership.
-	ws, err := s.store.Workspaces().GetByID(ctx, req.Msg.GetWorkspaceId())
+	ws, err := s.loadWorkspaceForOwnerWrite(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if ws.OwnerUserID != user.ID {
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("only workspace owner can update sharing"))
+		return nil, err
 	}
 
 	switch req.Msg.GetShareMode() {
 	case leapmuxv1.ShareMode_SHARE_MODE_PRIVATE:
-		if err := s.store.WorkspaceAccess().Clear(ctx, req.Msg.GetWorkspaceId()); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("clear workspace access: %w", err))
-		}
+		err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+			if _, err := s.loadWorkspaceForOwnerWrite(ctx, tx, req.Msg.GetWorkspaceId(), user.ID); err != nil {
+				return err
+			}
+			if err := tx.WorkspaceAccess().Clear(ctx, req.Msg.GetWorkspaceId()); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("clear workspace access: %w", err))
+			}
+			return nil
+		})
 
 	case leapmuxv1.ShareMode_SHARE_MODE_MEMBERS:
-		if err := s.store.WorkspaceAccess().Clear(ctx, req.Msg.GetWorkspaceId()); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("clear workspace access: %w", err))
+		normalizedUserIDs := normalizeWorkspaceShareUserIDs(req.Msg.GetUserIds(), ws.OwnerUserID)
+		if err := s.validateWorkspaceShareUsers(ctx, s.store, normalizedUserIDs); err != nil {
+			return nil, err
 		}
-		grantParams := make([]store.GrantWorkspaceAccessParams, len(req.Msg.GetUserIds()))
-		for i, uid := range req.Msg.GetUserIds() {
-			grantParams[i] = store.GrantWorkspaceAccessParams{
-				WorkspaceID: req.Msg.GetWorkspaceId(),
-				UserID:      uid,
+
+		err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+			if _, err := s.loadWorkspaceForOwnerWrite(ctx, tx, req.Msg.GetWorkspaceId(), user.ID); err != nil {
+				return err
 			}
-		}
-		if err := s.store.WorkspaceAccess().BulkGrant(ctx, grantParams); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("grant workspace access: %w", err))
-		}
+			if err := tx.WorkspaceAccess().Clear(ctx, req.Msg.GetWorkspaceId()); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("clear workspace access: %w", err))
+			}
+			grantParams := make([]store.GrantWorkspaceAccessParams, len(normalizedUserIDs))
+			for i, uid := range normalizedUserIDs {
+				grantParams[i] = store.GrantWorkspaceAccessParams{
+					WorkspaceID: req.Msg.GetWorkspaceId(),
+					UserID:      uid,
+				}
+			}
+			if err := tx.WorkspaceAccess().BulkGrant(ctx, grantParams); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("grant workspace access: %w", err))
+			}
+			return nil
+		})
 
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid share mode"))
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	return connect.NewResponse(&leapmuxv1.UpdateWorkspaceSharingResponse{}), nil
@@ -290,16 +418,8 @@ func (s *WorkspaceService) ListWorkspaceShares(
 		return nil, err
 	}
 
-	// Verify ownership.
-	ws, err := s.store.Workspaces().GetByID(ctx, req.Msg.GetWorkspaceId())
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if ws.OwnerUserID != user.ID {
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("only workspace owner can list shares"))
+	if _, err := s.loadWorkspaceForOwnerWrite(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
+		return nil, err
 	}
 
 	accessEntries, err := s.store.WorkspaceAccess().ListByWorkspaceID(ctx, req.Msg.GetWorkspaceId())
@@ -329,7 +449,11 @@ func (s *WorkspaceService) AddTab(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.AddTabRequest],
 ) (*connect.Response[leapmuxv1.AddTabResponse], error) {
-	if _, err := auth.MustGetUser(ctx); err != nil {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.loadWorkspaceForOwnerWrite(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
 		return nil, err
 	}
 
@@ -356,7 +480,11 @@ func (s *WorkspaceService) RemoveTab(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.RemoveTabRequest],
 ) (*connect.Response[leapmuxv1.RemoveTabResponse], error) {
-	if _, err := auth.MustGetUser(ctx); err != nil {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.loadWorkspaceForOwnerWrite(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
 		return nil, err
 	}
 
@@ -375,7 +503,11 @@ func (s *WorkspaceService) ListTabs(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.ListTabsRequest],
 ) (*connect.Response[leapmuxv1.ListTabsResponse], error) {
-	if _, err := auth.MustGetUser(ctx); err != nil {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.loadWorkspaceForRead(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
 		return nil, err
 	}
 
@@ -404,7 +536,11 @@ func (s *WorkspaceService) GetLayout(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.GetLayoutRequest],
 ) (*connect.Response[leapmuxv1.GetLayoutResponse], error) {
-	if _, err := auth.MustGetUser(ctx); err != nil {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.loadWorkspaceForRead(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
 		return nil, err
 	}
 
@@ -450,54 +586,28 @@ func (s *WorkspaceService) SaveLayout(
 		return nil, err
 	}
 
-	// Verify ownership for write operation.
-	ws, err := s.store.Workspaces().GetByID(ctx, req.Msg.GetWorkspaceId())
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if ws.OwnerUserID != user.ID {
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("only workspace owner can save layout"))
+	if _, err := s.loadWorkspaceForOwnerWrite(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
+		return nil, err
 	}
 
 	marshaler := protojson.MarshalOptions{EmitUnpopulated: false}
 
-	stored, err := serializeLayoutJSON(marshaler, req.Msg.GetLayout(), req.Msg.GetFloatingWindows())
+	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		if _, err := s.loadWorkspaceForOwnerWrite(ctx, tx, req.Msg.GetWorkspaceId(), user.ID); err != nil {
+			return err
+		}
+		return s.saveWorkspaceLayoutEntry(
+			ctx,
+			tx,
+			req.Msg.GetWorkspaceId(),
+			req.Msg.GetLayout(),
+			req.Msg.GetFloatingWindows(),
+			req.Msg.GetTabs(),
+			marshaler,
+		)
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	layoutJSONBytes, err := json.Marshal(stored)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout JSON: %w", err))
-	}
-
-	if err := s.store.WorkspaceLayouts().Upsert(ctx, store.UpsertWorkspaceLayoutParams{
-		WorkspaceID: req.Msg.GetWorkspaceId(),
-		LayoutJSON:  string(layoutJSONBytes),
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save layout: %w", err))
-	}
-
-	// Delete existing tabs and re-insert the ones from the request.
-	if err := s.store.WorkspaceTabs().DeleteByWorkspace(ctx, req.Msg.GetWorkspaceId()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace tabs: %w", err))
-	}
-	tabParams := make([]store.UpsertWorkspaceTabParams, len(req.Msg.GetTabs()))
-	for i, tab := range req.Msg.GetTabs() {
-		tabParams[i] = store.UpsertWorkspaceTabParams{
-			WorkspaceID: req.Msg.GetWorkspaceId(),
-			WorkerID:    tab.GetWorkerId(),
-			TabType:     tab.GetTabType(),
-			TabID:       tab.GetTabId(),
-			Position:    tab.GetPosition(),
-			TileID:      tab.GetTileId(),
-		}
-	}
-	if err := s.store.WorkspaceTabs().BulkUpsert(ctx, tabParams); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save tabs: %w", err))
 	}
 
 	return connect.NewResponse(&leapmuxv1.SaveLayoutResponse{}), nil
@@ -520,16 +630,16 @@ func (s *WorkspaceService) SaveMultiLayout(
 	// Verify ownership for all workspaces before entering the transaction.
 	for _, entry := range entries {
 		wsID := entry.GetWorkspaceId()
-		ws, err := s.store.Workspaces().GetByID(ctx, wsID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
+		if _, err := s.loadWorkspaceForOwnerWrite(ctx, s.store, wsID, user.ID); err != nil {
+			switch connect.CodeOf(err) {
+			case connect.CodeNotFound:
 				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace %s not found", wsID))
+			case connect.CodePermissionDenied:
+				return nil, connect.NewError(connect.CodePermissionDenied,
+					fmt.Errorf("only workspace owner can save layout for workspace %s", wsID))
+			default:
+				return nil, err
 			}
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		if ws.OwnerUserID != user.ID {
-			return nil, connect.NewError(connect.CodePermissionDenied,
-				fmt.Errorf("only workspace owner can save layout for workspace %s", wsID))
 		}
 	}
 
@@ -539,41 +649,19 @@ func (s *WorkspaceService) SaveMultiLayout(
 		for _, entry := range entries {
 			wsID := entry.GetWorkspaceId()
 
-			// Serialize layout.
-			stored, err := serializeLayoutJSON(marshaler, entry.GetLayout(), entry.GetFloatingWindows())
-			if err != nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout for %s: %w", wsID, err))
-			}
-
-			layoutJSONBytes, err := json.Marshal(stored)
-			if err != nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("serialize layout JSON for %s: %w", wsID, err))
-			}
-
-			if err := tx.WorkspaceLayouts().Upsert(ctx, store.UpsertWorkspaceLayoutParams{
-				WorkspaceID: wsID,
-				LayoutJSON:  string(layoutJSONBytes),
-			}); err != nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("save layout for %s: %w", wsID, err))
-			}
-
-			// Delete existing tabs and re-insert.
-			if err := tx.WorkspaceTabs().DeleteByWorkspace(ctx, wsID); err != nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("delete tabs for %s: %w", wsID, err))
-			}
-			tabParams := make([]store.UpsertWorkspaceTabParams, len(entry.GetTabs()))
-			for i, tab := range entry.GetTabs() {
-				tabParams[i] = store.UpsertWorkspaceTabParams{
-					WorkspaceID: wsID,
-					WorkerID:    tab.GetWorkerId(),
-					TabType:     tab.GetTabType(),
-					TabID:       tab.GetTabId(),
-					Position:    tab.GetPosition(),
-					TileID:      tab.GetTileId(),
+			if err := s.saveWorkspaceLayoutEntry(
+				ctx,
+				tx,
+				wsID,
+				entry.GetLayout(),
+				entry.GetFloatingWindows(),
+				entry.GetTabs(),
+				marshaler,
+			); err != nil {
+				if connect.CodeOf(err) == connect.CodeInternal {
+					return connect.NewError(connect.CodeInternal, fmt.Errorf("save layout for %s: %w", wsID, err))
 				}
-			}
-			if err := tx.WorkspaceTabs().BulkUpsert(ctx, tabParams); err != nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("save tabs for %s: %w", wsID, err))
+				return err
 			}
 		}
 		return nil

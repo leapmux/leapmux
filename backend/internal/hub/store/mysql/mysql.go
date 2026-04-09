@@ -109,8 +109,8 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 }
 
 // NewFromDB wraps an existing *sql.DB (already opened and migrated) into a
-// Store. The caller retains ownership of the DB; calling Close on the returned
-// Store will close the underlying *sql.DB.
+// Store. The returned Store takes ownership of the DB handle; calling Close
+// on the Store will close the underlying *sql.DB.
 func NewFromDB(sqlDB *sql.DB) (store.Store, error) {
 	mig, err := newMigrator(sqlDB)
 	if err != nil {
