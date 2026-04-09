@@ -126,17 +126,7 @@ func (a *CopilotCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.
 }
 
 func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availableModes
-	if len(options) == 0 {
-		options = fallbackCopilotCLIModes()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPermissionMode,
-		Label:   "Mode",
-		Options: options,
-	}}
+	return a.permissionModeOptionGroups("Mode", fallbackCopilotCLIModes())
 }
 
 func init() {

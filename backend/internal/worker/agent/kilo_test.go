@@ -200,7 +200,7 @@ func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
 
 func TestKiloAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
 	agent := &KiloAgent{}
-	groups := agent.availablePrimaryAgentGroup()
+	groups := agent.AvailableOptionGroups()
 	if len(groups) != 1 {
 		t.Fatalf("expected 1 option group, got %d", len(groups))
 	}

@@ -187,17 +187,7 @@ func broadcastGeminiQuotaSessionInfo(sink OutputSink, resp json.RawMessage) {
 }
 
 func (a *GeminiCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availableModes
-	if len(options) == 0 {
-		options = fallbackGeminiCLIModes()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPermissionMode,
-		Label:   "Permission Mode",
-		Options: options,
-	}}
+	return a.permissionModeOptionGroups("Permission Mode", fallbackGeminiCLIModes())
 }
 
 var geminiCLIAvailableModels = []*leapmuxv1.AvailableModel{

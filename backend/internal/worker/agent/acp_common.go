@@ -293,6 +293,62 @@ func (b *acpBase) reapplyModelAndPrimaryAgent() {
 	acpApplySetting(b.providerName, b.agentID, "primary agent", primaryAgent, b.setPrimaryAgent)
 }
 
+// permissionModeOptionGroups returns AvailableOptionGroups for agents that
+// use permission-mode (e.g. Copilot, Cursor, Gemini, Goose).
+func (b *acpBase) permissionModeOptionGroups(label string, fallback []*leapmuxv1.AvailableOption) []*leapmuxv1.AvailableOptionGroup {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	options := b.availableModes
+	if len(options) == 0 {
+		options = fallback
+	}
+	return []*leapmuxv1.AvailableOptionGroup{{
+		Key:     OptionGroupKeyPermissionMode,
+		Label:   label,
+		Options: options,
+	}}
+}
+
+// primaryAgentOptionGroups returns AvailableOptionGroups for agents that
+// use primary-agent selection (e.g. Kilo, OpenCode).
+func (b *acpBase) primaryAgentOptionGroups(fallback []*leapmuxv1.AvailableOption) []*leapmuxv1.AvailableOptionGroup {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	options := b.availablePrimaryAgents
+	if len(options) == 0 {
+		options = fallback
+	}
+	return []*leapmuxv1.AvailableOptionGroup{{
+		Key:     OpenCodeExtraPrimaryAgent,
+		Label:   "Primary Agent",
+		Options: options,
+	}}
+}
+
+// primaryAgentCurrentSettings returns settings including primaryAgent in
+// ExtraSettings. Used by agents that track primaryAgent instead of
+// permissionMode (Kilo, OpenCode).
+func (b *acpBase) primaryAgentCurrentSettings() *leapmuxv1.AgentSettings {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	extra := map[string]string{}
+	if b.currentPrimaryAgent != "" {
+		extra[OpenCodeExtraPrimaryAgent] = b.currentPrimaryAgent
+	}
+	return &leapmuxv1.AgentSettings{
+		Model:         b.model,
+		ExtraSettings: extra,
+	}
+}
+
+// primaryAgentUpdateSettings applies model and primary-agent changes to a
+// running ACP agent. Used by agents that track primaryAgent instead of
+// permissionMode (Kilo, OpenCode).
+func (b *acpBase) primaryAgentUpdateSettings(s *leapmuxv1.AgentSettings) bool {
+	return acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel) &&
+		acpApplySetting(b.providerName, b.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], b.setPrimaryAgent)
+}
+
 // acpApplySetting applies a single setting, logging a warning and returning
 // false on failure. Skips empty values.
 func acpApplySetting(providerName, agentID, name, value string, apply func(string) error) bool {

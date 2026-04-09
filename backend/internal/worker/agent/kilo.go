@@ -146,39 +146,15 @@ func (a *KiloAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attach
 }
 
 func (a *KiloAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	extra := map[string]string{}
-	if a.currentPrimaryAgent != "" {
-		extra[OpenCodeExtraPrimaryAgent] = a.currentPrimaryAgent
-	}
-	return &leapmuxv1.AgentSettings{
-		Model:         a.model,
-		ExtraSettings: extra,
-	}
+	return a.primaryAgentCurrentSettings()
 }
 
 func (a *KiloAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return a.availablePrimaryAgentGroup()
+	return a.primaryAgentOptionGroups(fallbackKiloPrimaryAgents())
 }
 
 func (a *KiloAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return acpApplySetting(a.providerName, a.agentID, "model", s.GetModel(), a.setModel) &&
-		acpApplySetting(a.providerName, a.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], a.setPrimaryAgent)
-}
-
-func (a *KiloAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availablePrimaryAgents
-	if len(options) == 0 {
-		options = fallbackKiloPrimaryAgents()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OpenCodeExtraPrimaryAgent,
-		Label:   "Primary Agent",
-		Options: options,
-	}}
+	return a.primaryAgentUpdateSettings(s)
 }
 
 func init() {

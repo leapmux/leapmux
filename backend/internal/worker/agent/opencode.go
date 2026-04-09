@@ -231,43 +231,16 @@ func buildACPPromptBlocks(content string, classified []classifiedAttachment) []m
 	return prompt
 }
 
-// CurrentSettings returns the current settings for this agent.
 func (a *OpenCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	extra := map[string]string{}
-	if a.currentPrimaryAgent != "" {
-		extra[OpenCodeExtraPrimaryAgent] = a.currentPrimaryAgent
-	}
-	return &leapmuxv1.AgentSettings{
-		Model:         a.model,
-		ExtraSettings: extra,
-	}
+	return a.primaryAgentCurrentSettings()
 }
 
-// AvailableOptionGroups returns the available primary-agent group.
 func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return a.availablePrimaryAgentGroup()
+	return a.primaryAgentOptionGroups(fallbackOpenCodePrimaryAgents())
 }
 
-// UpdateSettings applies setting changes to a running agent.
 func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return acpApplySetting(a.providerName, a.agentID, "model", s.GetModel(), a.setModel) &&
-		acpApplySetting(a.providerName, a.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], a.setPrimaryAgent)
-}
-
-func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availablePrimaryAgents
-	if len(options) == 0 {
-		options = fallbackOpenCodePrimaryAgents()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OpenCodeExtraPrimaryAgent,
-		Label:   "Primary Agent",
-		Options: options,
-	}}
+	return a.primaryAgentUpdateSettings(s)
 }
 
 func init() {

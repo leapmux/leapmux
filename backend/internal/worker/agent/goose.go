@@ -128,17 +128,7 @@ func (a *GooseCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.At
 }
 
 func (a *GooseCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availableModes
-	if len(options) == 0 {
-		options = fallbackGooseCLIModes()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPermissionMode,
-		Label:   "Mode",
-		Options: options,
-	}}
+	return a.permissionModeOptionGroups("Mode", fallbackGooseCLIModes())
 }
 
 func init() {

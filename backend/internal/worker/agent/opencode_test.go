@@ -239,7 +239,7 @@ func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {
 
 func TestOpenCodeAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
 	agent := &OpenCodeAgent{}
-	groups := agent.availablePrimaryAgentGroup()
+	groups := agent.AvailableOptionGroups()
 	if len(groups) != 1 {
 		t.Fatalf("expected 1 option group, got %d", len(groups))
 	}

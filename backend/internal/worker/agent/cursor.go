@@ -141,17 +141,7 @@ func (a *CursorCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.A
 }
 
 func (a *CursorCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availableModes
-	if len(options) == 0 {
-		options = fallbackCursorCLIModes()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPermissionMode,
-		Label:   "Mode",
-		Options: options,
-	}}
+	return a.permissionModeOptionGroups("Mode", fallbackCursorCLIModes())
 }
 
 func (a *CursorCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
