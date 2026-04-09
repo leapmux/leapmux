@@ -1183,10 +1183,19 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 // These payloads are forwarded directly to the agent's stdin and are not
 // wrapped in a user message envelope or persisted as chat messages.
 func (svc *Context) handleControlRequestMessage(agentID, content string) {
+	// Persist set_permission_mode to the DB eagerly so that /clear
+	// (which reads the DB) always sees the latest mode. Some providers
+	// (e.g. Claude Code) don't echo the mode back in their
+	// control_response, so relying on the output handler alone would
+	// leave the DB stale.
+	mode, isSetMode := parseSetPermissionMode(content)
+	if isSetMode {
+		svc.setAgentPermissionMode(agentID, mode)
+	}
+
 	// If agent is not running, handle special cases locally.
 	if !svc.Agents.HasAgent(agentID) {
-		if mode, ok := parseSetPermissionMode(content); ok {
-			svc.setAgentPermissionMode(agentID, mode)
+		if isSetMode {
 			return
 		}
 		if isInterruptRequest(content) {
@@ -1258,6 +1267,9 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode string) db.Agent {
 	agentID := dbAgent.ID
 	oldMode := dbAgent.PermissionMode
+	if oldMode == mode {
+		return dbAgent
+	}
 	if err := svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
 		PermissionMode: mode,
 		ID:             agentID,
@@ -1270,7 +1282,7 @@ func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 
 	svc.broadcastSettingsStatusChange(dbAgent, nil)
 
-	if oldMode != "" && oldMode != mode {
+	if oldMode != "" {
 		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": "settings_changed",
 			"changes": map[string]interface{}{
@@ -1300,6 +1312,9 @@ func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode st
 	agentID := dbAgent.ID
 	extras := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	oldMode := extras[agent.CodexExtraCollaborationMode]
+	if oldMode == mode {
+		return dbAgent
+	}
 	extras[agent.CodexExtraCollaborationMode] = mode
 	newExtraSettings := marshalExtraSettings(extras)
 	if err := svc.Queries.SetAgentExtraSettings(bgCtx(), db.SetAgentExtraSettingsParams{
@@ -1320,18 +1335,16 @@ func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode st
 
 	svc.broadcastSettingsStatusChange(dbAgent, extras)
 
-	if oldMode != mode {
-		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": "settings_changed",
-			"changes": map[string]interface{}{
-				agent.CodexExtraCollaborationMode: map[string]string{
-					"old": oldMode, "new": mode,
-					"label":    svc.optionGroupLabel(agentID, agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
-					"oldLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
-				},
+	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type": "settings_changed",
+		"changes": map[string]interface{}{
+			agent.CodexExtraCollaborationMode: map[string]string{
+				"old": oldMode, "new": mode,
+				"label":    svc.optionGroupLabel(agentID, agent.CodexExtraCollaborationMode, dbAgent.AgentProvider),
+				"oldLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, oldMode, dbAgent.AgentProvider), "newLabel": svc.optionLabel(agentID, agent.CodexExtraCollaborationMode, mode, dbAgent.AgentProvider),
 			},
-		})
-	}
+		},
+	})
 
 	return dbAgent
 }
@@ -1942,6 +1955,9 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 // parseSetPermissionMode checks if a control_request is a set_permission_mode
 // request and returns the requested mode. Returns ("", false) if not a match.
 func parseSetPermissionMode(content string) (string, bool) {
+	if !strings.Contains(content, "set_permission_mode") {
+		return "", false
+	}
 	var msg struct {
 		Request struct {
 			Subtype string `json:"subtype"`

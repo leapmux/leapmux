@@ -71,16 +71,21 @@ type jsonrpcBase struct {
 // agents (GeminiCLIAgent, OpenCodeAgent, CopilotCLIAgent) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
-	sink               OutputSink
-	providerName       string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
-	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
-	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
-	sessionID          string
-	workingDir         string
-	model              string
-	availableModels    []*leapmuxv1.AvailableModel
-	turnAssistantText  strings.Builder
-	turnThinkingText   strings.Builder
+	sink                   OutputSink
+	providerName           string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
+	extraSessionUpdate     acpSessionUpdateHandler // optional provider-specific session update handler
+	extraMethod            acpMethodHandler        // optional provider-specific request/notification handler
+	reapplySettings        func()                  // called by ClearContext after session/new to re-apply model, mode, etc.
+	sessionID              string
+	workingDir             string
+	model                  string
+	permissionMode         string
+	currentPrimaryAgent    string
+	availableModels        []*leapmuxv1.AvailableModel
+	availableModes         []*leapmuxv1.AvailableOption
+	availablePrimaryAgents []*leapmuxv1.AvailableOption
+	turnAssistantText      strings.Builder
+	turnThinkingText       strings.Builder
 }
 
 // handleACPPromptResponse extracts accumulated turn text, calls the optional
@@ -179,7 +184,9 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 }
 
 // ClearContext sends a session/new request on the running ACP process,
-// replacing the current session with a fresh one.
+// replacing the current session with a fresh one. After the session is
+// created, the reapplySettings callback (if set) re-applies provider-
+// specific settings such as model and permission mode.
 func (b *acpBase) ClearContext() (string, bool) {
 	_, params := buildACPSessionRequest("", b.workingDir, acpMethodSessionNew, "")
 	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
@@ -207,7 +214,149 @@ func (b *acpBase) ClearContext() (string, bool) {
 	b.mu.Unlock()
 
 	b.sink.UpdateSessionID(session.SessionID)
+
+	if b.reapplySettings != nil {
+		b.reapplySettings()
+	}
 	return session.SessionID, true
+}
+
+// reapplyModelAndPermissionMode re-applies the current model and permission
+// mode after a session/new.
+func (b *acpBase) reapplyModelAndPermissionMode() {
+	b.mu.Lock()
+	model, mode := b.model, b.permissionMode
+	b.mu.Unlock()
+	acpApplySetting(b.providerName, b.agentID, "model", model, b.setModel)
+	acpApplySetting(b.providerName, b.agentID, "mode", mode, b.setPermissionMode)
+}
+
+// setPermissionMode sends a session/set_mode RPC and updates the local field.
+func (b *acpBase) setPermissionMode(mode string) error {
+	b.mu.Lock()
+	available := b.availableModes
+	b.mu.Unlock()
+
+	if err := b.acpSetMode(mode, available); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.permissionMode = mode
+	b.mu.Unlock()
+	return nil
+}
+
+// Concrete types that track additional settings (e.g. primaryAgent)
+// should override this method.
+func (b *acpBase) CurrentSettings() *leapmuxv1.AgentSettings {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return &leapmuxv1.AgentSettings{
+		Model:          b.model,
+		PermissionMode: b.permissionMode,
+	}
+}
+
+// Concrete types that use different settings (e.g. primaryAgent instead
+// of permissionMode) should override this method.
+func (b *acpBase) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
+	ok := acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel)
+	ok = acpApplySetting(b.providerName, b.agentID, "mode", s.GetPermissionMode(), b.setPermissionMode) && ok
+	return ok
+}
+
+// Used by agents that track primaryAgent instead of permissionMode
+// (Kilo, OpenCode).
+func (b *acpBase) setPrimaryAgent(agent string) error {
+	b.mu.Lock()
+	available := b.availablePrimaryAgents
+	b.mu.Unlock()
+
+	if err := b.acpSetMode(agent, available); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.currentPrimaryAgent = agent
+	b.mu.Unlock()
+	return nil
+}
+
+// reapplyModelAndPrimaryAgent re-applies the current model and primary
+// agent after a session/new.
+func (b *acpBase) reapplyModelAndPrimaryAgent() {
+	b.mu.Lock()
+	model, primaryAgent := b.model, b.currentPrimaryAgent
+	b.mu.Unlock()
+	acpApplySetting(b.providerName, b.agentID, "model", model, b.setModel)
+	acpApplySetting(b.providerName, b.agentID, "primary agent", primaryAgent, b.setPrimaryAgent)
+}
+
+// permissionModeOptionGroups returns AvailableOptionGroups for agents that
+// use permission-mode (e.g. Copilot, Cursor, Gemini, Goose).
+func (b *acpBase) permissionModeOptionGroups(label string, fallback []*leapmuxv1.AvailableOption) []*leapmuxv1.AvailableOptionGroup {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	options := b.availableModes
+	if len(options) == 0 {
+		options = fallback
+	}
+	return []*leapmuxv1.AvailableOptionGroup{{
+		Key:     OptionGroupKeyPermissionMode,
+		Label:   label,
+		Options: options,
+	}}
+}
+
+// primaryAgentOptionGroups returns AvailableOptionGroups for agents that
+// use primary-agent selection (e.g. Kilo, OpenCode).
+func (b *acpBase) primaryAgentOptionGroups(fallback []*leapmuxv1.AvailableOption) []*leapmuxv1.AvailableOptionGroup {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	options := b.availablePrimaryAgents
+	if len(options) == 0 {
+		options = fallback
+	}
+	return []*leapmuxv1.AvailableOptionGroup{{
+		Key:     OptionGroupKeyPrimaryAgent,
+		Label:   "Primary Agent",
+		Options: options,
+	}}
+}
+
+// Used by agents that track primaryAgent instead of permissionMode
+// (Kilo, OpenCode).
+func (b *acpBase) primaryAgentCurrentSettings() *leapmuxv1.AgentSettings {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var extra map[string]string
+	if b.currentPrimaryAgent != "" {
+		extra = map[string]string{OptionGroupKeyPrimaryAgent: b.currentPrimaryAgent}
+	}
+	return &leapmuxv1.AgentSettings{
+		Model:         b.model,
+		ExtraSettings: extra,
+	}
+}
+
+// Used by agents that track primaryAgent instead of permissionMode
+// (Kilo, OpenCode).
+func (b *acpBase) primaryAgentUpdateSettings(s *leapmuxv1.AgentSettings) bool {
+	ok := acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel)
+	ok = acpApplySetting(b.providerName, b.agentID, "primary agent", s.GetExtraSettings()[OptionGroupKeyPrimaryAgent], b.setPrimaryAgent) && ok
+	return ok
+}
+
+// acpApplySetting logs a warning and returns false on failure. Skips
+// empty values.
+func acpApplySetting(providerName, agentID, name, value string, apply func(string) error) bool {
+	if value == "" {
+		return true
+	}
+	if err := apply(value); err != nil {
+		slog.Warn("failed to apply setting", "setting", name, "provider", providerName, "agent_id", agentID, "error", err)
+		return false
+	}
+	return true
 }
 
 // buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.

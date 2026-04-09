@@ -21,6 +21,11 @@ type openCodeRecordedRequest struct {
 
 func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []openCodeRecordedRequest) {
 	t.Helper()
+	return newOpenCodeAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+}
+
+func newOpenCodeAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*OpenCodeAgent, func() []openCodeRecordedRequest) {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -62,7 +67,11 @@ func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []openCodeReco
 			requests = append(requests, openCodeRecordedRequest{Method: req.Method, Params: req.Params})
 			mu.Unlock()
 			if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-				ch.(chan json.RawMessage) <- json.RawMessage(`{}`)
+				body := json.RawMessage(`{}`)
+				if respond != nil {
+					body = respond(req.Method)
+				}
+				ch.(chan json.RawMessage) <- body
 			}
 		}
 	}()
@@ -138,8 +147,8 @@ func TestOpenCodeConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 	if len(recorded) != 1 {
 		t.Fatalf("expected 1 request, got %d", len(recorded))
 	}
-	if recorded[0].Method != "session/set_mode" {
-		t.Fatalf("expected session/set_mode, got %q", recorded[0].Method)
+	if recorded[0].Method != acpMethodSessionSetMode {
+		t.Fatalf("expected %s, got %q", acpMethodSessionSetMode, recorded[0].Method)
 	}
 	if got := recorded[0].Params["modeId"]; got != OpenCodePrimaryAgentPlan {
 		t.Fatalf("expected modeId %q, got %#v", OpenCodePrimaryAgentPlan, got)
@@ -173,7 +182,7 @@ func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentBuild
 
 	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		ExtraSettings: map[string]string{OpenCodeExtraPrimaryAgent: OpenCodePrimaryAgentPlan},
+		ExtraSettings: map[string]string{OptionGroupKeyPrimaryAgent: OpenCodePrimaryAgentPlan},
 	})
 	if !updated {
 		t.Fatalf("expected update to succeed")
@@ -182,30 +191,60 @@ func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
 		t.Fatalf("expected current primary agent %q, got %q", OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	}
 	recorded := requests()
-	if len(recorded) != 1 || recorded[0].Method != "session/set_mode" {
-		t.Fatalf("expected one session/set_mode request, got %#v", recorded)
+	if len(recorded) != 1 || recorded[0].Method != acpMethodSessionSetMode {
+		t.Fatalf("expected one %s request, got %#v", acpMethodSessionSetMode, recorded)
 	}
 }
 
+func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
+	agent, requests := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionNew {
+			return json.RawMessage(`{"sessionId":"session-2"}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.model = "openai/gpt-5"
+	agent.currentPrimaryAgent = OpenCodePrimaryAgentPlan
+	agent.availablePrimaryAgents = []*leapmuxv1.AvailableOption{
+		{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},
+		{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
+	}
+	agent.sink = &testSink{}
+	agent.reapplySettings = agent.reapplyModelAndPrimaryAgent
+
+	sessionID, ok := agent.ClearContext()
+	require.True(t, ok)
+	assert.Equal(t, "session-2", sessionID)
+	assert.Equal(t, "session-2", agent.sessionID)
+
+	recorded := requests()
+	require.Len(t, recorded, 3)
+	assert.Equal(t, acpMethodSessionNew, recorded[0].Method)
+	assert.Equal(t, acpMethodSessionSetModel, recorded[1].Method)
+	assert.Equal(t, "openai/gpt-5", recorded[1].Params["modelId"])
+	assert.Equal(t, acpMethodSessionSetMode, recorded[2].Method)
+	assert.Equal(t, OpenCodePrimaryAgentPlan, recorded[2].Params["modeId"])
+}
+
 func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {
-	agent := &OpenCodeAgent{acpBase: acpBase{model: "openai/gpt-5"}, currentPrimaryAgent: OpenCodePrimaryAgentPlan}
+	agent := &OpenCodeAgent{acpBase: acpBase{model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
 	settings := agent.CurrentSettings()
 	if settings.GetModel() != "openai/gpt-5" {
 		t.Fatalf("expected model to round-trip")
 	}
-	if got := settings.GetExtraSettings()[OpenCodeExtraPrimaryAgent]; got != OpenCodePrimaryAgentPlan {
+	if got := settings.GetExtraSettings()[OptionGroupKeyPrimaryAgent]; got != OpenCodePrimaryAgentPlan {
 		t.Fatalf("expected primaryAgent %q, got %q", OpenCodePrimaryAgentPlan, got)
 	}
 }
 
 func TestOpenCodeAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
 	agent := &OpenCodeAgent{}
-	groups := agent.availablePrimaryAgentGroup()
+	groups := agent.AvailableOptionGroups()
 	if len(groups) != 1 {
 		t.Fatalf("expected 1 option group, got %d", len(groups))
 	}
-	if groups[0].Key != OpenCodeExtraPrimaryAgent {
-		t.Fatalf("expected key %q, got %q", OpenCodeExtraPrimaryAgent, groups[0].Key)
+	if groups[0].Key != OptionGroupKeyPrimaryAgent {
+		t.Fatalf("expected key %q, got %q", OptionGroupKeyPrimaryAgent, groups[0].Key)
 	}
 	if len(groups[0].Options) != 2 {
 		t.Fatalf("expected 2 fallback options, got %d", len(groups[0].Options))

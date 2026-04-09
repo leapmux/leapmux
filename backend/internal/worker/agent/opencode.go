@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -13,7 +12,6 @@ import (
 )
 
 const (
-	OpenCodeExtraPrimaryAgent = "primaryAgent"
 	OpenCodePrimaryAgentBuild = "build"
 	OpenCodePrimaryAgentPlan  = "plan"
 	openCodeHiddenCompaction  = "compaction"
@@ -28,9 +26,6 @@ const (
 // OpenCodeAgent manages a single OpenCode ACP process.
 type OpenCodeAgent struct {
 	acpBase
-
-	currentPrimaryAgent    string
-	availablePrimaryAgents []*leapmuxv1.AvailableOption
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
@@ -73,6 +68,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		},
 	}
 	a.promptFunc = a.doSendPrompt
+	a.reapplySettings = a.reapplyModelAndPrimaryAgent
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -102,9 +98,15 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		a.Stop()
 		_ = a.Wait()
 	}
+	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
+		if err := a.setModel(requested); err != nil {
+			cleanup()
+			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
+		}
+	}
 	var requestedPrimaryAgent string
 	if opts.ExtraSettings != nil {
-		requestedPrimaryAgent = opts.ExtraSettings[OpenCodeExtraPrimaryAgent]
+		requestedPrimaryAgent = opts.ExtraSettings[OptionGroupKeyPrimaryAgent]
 	}
 	if err := a.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, requestedPrimaryAgent); err != nil {
 		cleanup()
@@ -228,68 +230,16 @@ func buildACPPromptBlocks(content string, classified []classifiedAttachment) []m
 	return prompt
 }
 
-// CurrentSettings returns the current settings for this agent.
 func (a *OpenCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	extra := map[string]string{}
-	if a.currentPrimaryAgent != "" {
-		extra[OpenCodeExtraPrimaryAgent] = a.currentPrimaryAgent
-	}
-	return &leapmuxv1.AgentSettings{
-		Model:         a.model,
-		ExtraSettings: extra,
-	}
+	return a.primaryAgentCurrentSettings()
 }
 
-// AvailableOptionGroups returns the available primary-agent group.
 func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return a.availablePrimaryAgentGroup()
+	return a.primaryAgentOptionGroups(fallbackOpenCodePrimaryAgents())
 }
 
-// UpdateSettings applies setting changes to a running agent.
 func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	if m := s.GetModel(); m != "" {
-		if err := a.setModel(m); err != nil {
-			slog.Warn("opencode session/set_model failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	if primaryAgent := s.GetExtraSettings()[OpenCodeExtraPrimaryAgent]; primaryAgent != "" {
-		if err := a.setPrimaryAgent(primaryAgent); err != nil {
-			slog.Warn("opencode session/set_mode failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	return true
-}
-
-func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {
-	a.mu.Lock()
-	available := a.availablePrimaryAgents
-	a.mu.Unlock()
-
-	if err := a.acpSetMode(agent, available); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.currentPrimaryAgent = agent
-	a.mu.Unlock()
-	return nil
-}
-
-func (a *OpenCodeAgent) availablePrimaryAgentGroup() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availablePrimaryAgents
-	if len(options) == 0 {
-		options = fallbackOpenCodePrimaryAgents()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OpenCodeExtraPrimaryAgent,
-		Label:   "Primary Agent",
-		Options: options,
-	}}
+	return a.primaryAgentUpdateSettings(s)
 }
 
 func init() {
@@ -300,7 +250,7 @@ func init() {
 		},
 		nil, // models discovered dynamically from newSession
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   OpenCodeExtraPrimaryAgent,
+			Key:   OptionGroupKeyPrimaryAgent,
 			Label: "Primary Agent",
 			Options: []*leapmuxv1.AvailableOption{
 				{Id: OpenCodePrimaryAgentBuild, Name: "Build", IsDefault: true},

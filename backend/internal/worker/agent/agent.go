@@ -34,6 +34,11 @@ const (
 // to identify the permission-mode option group across all providers.
 const OptionGroupKeyPermissionMode = "permissionMode"
 
+// OptionGroupKeyPrimaryAgent is the key used in AvailableOptionGroup
+// to identify the primary-agent option group across providers that
+// support agent selection (e.g. Kilo, OpenCode).
+const OptionGroupKeyPrimaryAgent = "primaryAgent"
+
 // DefaultAPITimeout is the fallback timeout for JSON-RPC requests to the
 // agent process, used when no configured value is provided.
 const DefaultAPITimeout = time.Duration(config.DefaultAPITimeoutSeconds) * time.Second

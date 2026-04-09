@@ -23,6 +23,11 @@ type cursorRecordedRequest struct {
 
 func newCursorAgentForRPC(t *testing.T) (*CursorCLIAgent, func() []cursorRecordedRequest) {
 	t.Helper()
+	return newCursorAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+}
+
+func newCursorAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CursorCLIAgent, func() []cursorRecordedRequest) {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -63,7 +68,11 @@ func newCursorAgentForRPC(t *testing.T) (*CursorCLIAgent, func() []cursorRecorde
 			mu.Unlock()
 			if req.ID != 0 {
 				if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-					ch.(chan json.RawMessage) <- json.RawMessage(`{}`)
+					body := json.RawMessage(`{}`)
+					if respond != nil {
+						body = respond(req.Method)
+					}
+					ch.(chan json.RawMessage) <- body
 				}
 			}
 		}
@@ -209,10 +218,43 @@ func TestCursorUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 
 	recorded := requests()
 	require.Len(t, recorded, 2)
-	assert.Equal(t, "session/set_model", recorded[0].Method)
+	assert.Equal(t, acpMethodSessionSetModel, recorded[0].Method)
 	assert.Equal(t, cursorCLIModelAutoWire, recorded[0].Params["modelId"])
-	assert.Equal(t, "session/set_mode", recorded[1].Method)
+	assert.Equal(t, acpMethodSessionSetMode, recorded[1].Method)
 	assert.Equal(t, CursorCLIModePlan, recorded[1].Params["modeId"])
+}
+
+func TestCursorClearContextReappliesModelAndMode(t *testing.T) {
+	agent, requests := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionNew {
+			return json.RawMessage(`{"sessionId":"session-2"}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.model = "auto"
+	agent.permissionMode = CursorCLIModePlan
+	agent.availableModes = []*leapmuxv1.AvailableOption{
+		{Id: CursorCLIModeAgent, Name: "Agent", IsDefault: true},
+		{Id: CursorCLIModePlan, Name: "Plan"},
+	}
+	agent.sink = &testSink{}
+	agent.reapplySettings = agent.reapplyModelAndMode
+
+	sessionID, ok := agent.ClearContext()
+	require.True(t, ok)
+	assert.Equal(t, "session-2", sessionID)
+	assert.Equal(t, "session-2", agent.sessionID)
+
+	// Verify model is preserved with wire format conversion.
+	assert.Equal(t, "auto", agent.model)
+
+	recorded := requests()
+	require.Len(t, recorded, 3)
+	assert.Equal(t, acpMethodSessionNew, recorded[0].Method)
+	assert.Equal(t, acpMethodSessionSetModel, recorded[1].Method)
+	assert.Equal(t, cursorCLIModelAutoWire, recorded[1].Params["modelId"])
+	assert.Equal(t, acpMethodSessionSetMode, recorded[2].Method)
+	assert.Equal(t, CursorCLIModePlan, recorded[2].Params["modeId"])
 }
 
 func TestBuildCursorCLIModelsNormalizesAuto(t *testing.T) {

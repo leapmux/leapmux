@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -19,9 +18,6 @@ const (
 // CopilotCLIAgent manages a single Copilot CLI ACP process.
 type CopilotCLIAgent struct {
 	acpBase
-
-	permissionMode string
-	availableModes []*leapmuxv1.AvailableOption
 }
 
 // StartCopilotCLI starts a Copilot CLI ACP agent process and performs the handshake.
@@ -61,6 +57,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.promptFunc = a.doSendPrompt
+	a.reapplySettings = a.reapplyModelAndPermissionMode
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -101,13 +98,13 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
 		if err := a.setPermissionMode(requested); err != nil {
 			cleanup()
-			return nil, a.formatStartupError("session/set_mode", err)
+			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
 		}
 	}
 	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
 		if err := a.setModel(requested); err != nil {
 			cleanup()
-			return nil, a.formatStartupError("session/set_model", err)
+			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
 		}
 	}
 
@@ -128,57 +125,8 @@ func (a *CopilotCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.
 	})
 }
 
-func (a *CopilotCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		PermissionMode: a.permissionMode,
-	}
-}
-
 func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availableModes
-	if len(options) == 0 {
-		options = fallbackCopilotCLIModes()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPermissionMode,
-		Label:   "Mode",
-		Options: options,
-	}}
-}
-
-func (a *CopilotCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	if model := s.GetModel(); model != "" {
-		if err := a.setModel(model); err != nil {
-			slog.Warn("copilot session/set_model failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	if mode := s.GetPermissionMode(); mode != "" {
-		if err := a.setPermissionMode(mode); err != nil {
-			slog.Warn("copilot session/set_mode failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	return true
-}
-
-func (a *CopilotCLIAgent) setPermissionMode(mode string) error {
-	a.mu.Lock()
-	available := a.availableModes
-	a.mu.Unlock()
-
-	if err := a.acpSetMode(mode, available); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.permissionMode = mode
-	a.mu.Unlock()
-	return nil
+	return a.permissionModeOptionGroups("Mode", fallbackCopilotCLIModes())
 }
 
 func init() {

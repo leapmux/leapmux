@@ -135,15 +135,15 @@ func TestHelperProcessGeminiCLI(t *testing.T) {
 		}
 
 		switch req.Method {
-		case "initialize":
+		case acpMethodInitialize:
 			writeResponse(req.ID, `{}`, false)
-		case "session/new":
+		case acpMethodSessionNew:
 			writeResponse(req.ID, `{"sessionId":"session-new","models":{"currentModelId":"gemini-2.5-pro","availableModels":[{"modelId":"auto","name":"Auto","description":"Automatic"},{"modelId":"gemini-2.5-pro","name":"Gemini 2.5 Pro","description":"Detailed"}]},"modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}`, false)
-		case "session/load":
+		case acpMethodSessionLoad:
 			if scenario == "load" {
 				writeResponse(req.ID, `{"models":{"currentModelId":"gemini-2.5-flash","availableModels":[{"modelId":"auto","name":"Auto"},{"modelId":"gemini-2.5-flash","name":"Gemini 2.5 Flash"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}]}}`, false)
 			}
-		case "session/set_mode", "session/set_model", "session/prompt":
+		case acpMethodSessionSetMode, acpMethodSessionSetModel, acpMethodSessionPrompt:
 			writeResponse(req.ID, `{}`, false)
 		}
 	}
@@ -197,6 +197,32 @@ func TestStartGeminiCLI_NewSessionHandshake(t *testing.T) {
 	assert.Equal(t, "default", agent.permissionMode)
 }
 
+func TestStartGeminiCLI_NewSessionAppliesRequestedModelAndMode(t *testing.T) {
+	installFakeGeminiCLI(t, "new")
+
+	// The fake CLI's session/new returns model="gemini-2.5-pro" and mode="default".
+	// Pass different requested values so that setModel and setPermissionMode are sent.
+	provider, err := StartGeminiCLI(context.Background(), Options{
+		AgentID:        "gemini-settings",
+		WorkingDir:     t.TempDir(),
+		Shell:          "/bin/sh",
+		LoginShell:     false,
+		Model:          "gemini-2.5-flash",
+		PermissionMode: GeminiCLIModePlan,
+		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+	}, &testSink{})
+	require.NoError(t, err)
+
+	agent := provider.(*GeminiCLIAgent)
+	t.Cleanup(func() {
+		agent.Stop()
+		_ = agent.Wait()
+	})
+
+	assert.Equal(t, "gemini-2.5-flash", agent.model)
+	assert.Equal(t, GeminiCLIModePlan, agent.permissionMode)
+}
+
 func TestStartGeminiCLI_LoadSessionUsesResumeID(t *testing.T) {
 	installFakeGeminiCLI(t, "load")
 
@@ -238,10 +264,40 @@ func TestGeminiUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 
 	recorded := requests()
 	require.Len(t, recorded, 2)
-	assert.Equal(t, "session/set_model", recorded[0].Method)
+	assert.Equal(t, acpMethodSessionSetModel, recorded[0].Method)
 	assert.Equal(t, "gemini-2.5-flash", recorded[0].Params["modelId"])
-	assert.Equal(t, "session/set_mode", recorded[1].Method)
+	assert.Equal(t, acpMethodSessionSetMode, recorded[1].Method)
 	assert.Equal(t, GeminiCLIModePlan, recorded[1].Params["modeId"])
+}
+
+func TestGeminiClearContextReappliesModelAndMode(t *testing.T) {
+	agent, requests := newGeminiAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionNew {
+			return json.RawMessage(`{"sessionId":"session-2"}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.model = "gemini-2.5-flash"
+	agent.permissionMode = GeminiCLIModePlan
+	agent.availableModes = []*leapmuxv1.AvailableOption{
+		{Id: GeminiCLIModeDefault, Name: "Default", IsDefault: true},
+		{Id: GeminiCLIModePlan, Name: "Plan"},
+	}
+	agent.sink = &testSink{}
+	agent.reapplySettings = agent.reapplyModelAndPermissionMode
+
+	sessionID, ok := agent.ClearContext()
+	require.True(t, ok)
+	assert.Equal(t, "session-2", sessionID)
+	assert.Equal(t, "session-2", agent.sessionID)
+
+	recorded := requests()
+	require.Len(t, recorded, 3)
+	assert.Equal(t, acpMethodSessionNew, recorded[0].Method)
+	assert.Equal(t, acpMethodSessionSetModel, recorded[1].Method)
+	assert.Equal(t, "gemini-2.5-flash", recorded[1].Params["modelId"])
+	assert.Equal(t, acpMethodSessionSetMode, recorded[2].Method)
+	assert.Equal(t, GeminiCLIModePlan, recorded[2].Params["modeId"])
 }
 
 func TestGeminiCancelSessionSendsACPMethod(t *testing.T) {

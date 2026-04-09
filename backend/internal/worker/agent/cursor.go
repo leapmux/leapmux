@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -22,9 +21,6 @@ const (
 // CursorCLIAgent manages a single Cursor CLI ACP process.
 type CursorCLIAgent struct {
 	acpBase
-
-	permissionMode string
-	availableModes []*leapmuxv1.AvailableOption
 }
 
 // StartCursorCLI starts a Cursor CLI ACP agent process and performs the handshake.
@@ -65,6 +61,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.extraMethod = a.handleExtraMethod
 	a.promptFunc = a.doSendPrompt
+	a.reapplySettings = a.reapplyModelAndMode
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -143,43 +140,14 @@ func (a *CursorCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.A
 	})
 }
 
-func (a *CursorCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		PermissionMode: a.permissionMode,
-	}
-}
-
 func (a *CursorCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availableModes
-	if len(options) == 0 {
-		options = fallbackCursorCLIModes()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPermissionMode,
-		Label:   "Mode",
-		Options: options,
-	}}
+	return a.permissionModeOptionGroups("Mode", fallbackCursorCLIModes())
 }
 
 func (a *CursorCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	if model := normalizeCursorModelID(s.GetModel()); model != "" {
-		if err := a.setCursorModel(model); err != nil {
-			slog.Warn("cursor session/set_model failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	if mode := s.GetPermissionMode(); mode != "" {
-		if err := a.setPermissionMode(mode); err != nil {
-			slog.Warn("cursor session/set_mode failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	return true
+	ok := acpApplySetting(a.providerName, a.agentID, "model", normalizeCursorModelID(s.GetModel()), a.setCursorModel)
+	ok = acpApplySetting(a.providerName, a.agentID, "mode", s.GetPermissionMode(), a.setPermissionMode) && ok
+	return ok
 }
 
 func (a *CursorCLIAgent) setCursorModel(model string) error {
@@ -193,18 +161,14 @@ func (a *CursorCLIAgent) setCursorModel(model string) error {
 	return nil
 }
 
-func (a *CursorCLIAgent) setPermissionMode(mode string) error {
+// reapplyModelAndMode re-applies the current model and permission mode
+// after a session/new. Uses setCursorModel for the model-ID wire format.
+func (a *CursorCLIAgent) reapplyModelAndMode() {
 	a.mu.Lock()
-	available := a.availableModes
+	model, mode := a.model, a.permissionMode
 	a.mu.Unlock()
-
-	if err := a.acpSetMode(mode, available); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.permissionMode = mode
-	a.mu.Unlock()
-	return nil
+	acpApplySetting(a.providerName, a.agentID, "model", model, a.setCursorModel)
+	acpApplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
 }
 
 var cursorCLIAvailableModels = []*leapmuxv1.AvailableModel{

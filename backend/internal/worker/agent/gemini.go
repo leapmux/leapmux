@@ -19,9 +19,6 @@ const (
 // GeminiCLIAgent manages a single Gemini CLI ACP process.
 type GeminiCLIAgent struct {
 	acpBase
-
-	permissionMode string
-	availableModes []*leapmuxv1.AvailableOption
 }
 
 // StartGeminiCLI starts a Gemini CLI ACP agent process and performs the handshake.
@@ -65,6 +62,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate
 	a.promptFunc = a.doSendPrompt
+	a.reapplySettings = a.reapplyModelAndPermissionMode
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -99,11 +97,20 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		a.permissionMode = GeminiCLIModeDefault
 	}
 
+	cleanup := func() {
+		a.Stop()
+		_ = a.Wait()
+	}
+	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
+		if err := a.setModel(requested); err != nil {
+			cleanup()
+			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
+		}
+	}
 	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
 		if err := a.setPermissionMode(requested); err != nil {
-			a.Stop()
-			_ = a.Wait()
-			return nil, a.formatStartupError("session/set_mode", err)
+			cleanup()
+			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
 		}
 	}
 
@@ -179,57 +186,8 @@ func broadcastGeminiQuotaSessionInfo(sink OutputSink, resp json.RawMessage) {
 	})
 }
 
-func (a *GeminiCLIAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		PermissionMode: a.permissionMode,
-	}
-}
-
 func (a *GeminiCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	options := a.availableModes
-	if len(options) == 0 {
-		options = fallbackGeminiCLIModes()
-	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPermissionMode,
-		Label:   "Permission Mode",
-		Options: options,
-	}}
-}
-
-func (a *GeminiCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	if model := s.GetModel(); model != "" {
-		if err := a.setModel(model); err != nil {
-			slog.Warn("gemini unstable_setSessionModel failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	if mode := s.GetPermissionMode(); mode != "" {
-		if err := a.setPermissionMode(mode); err != nil {
-			slog.Warn("gemini setSessionMode failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	return true
-}
-
-func (a *GeminiCLIAgent) setPermissionMode(mode string) error {
-	a.mu.Lock()
-	available := a.availableModes
-	a.mu.Unlock()
-
-	if err := a.acpSetMode(mode, available); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.permissionMode = mode
-	a.mu.Unlock()
-	return nil
+	return a.permissionModeOptionGroups("Permission Mode", fallbackGeminiCLIModes())
 }
 
 var geminiCLIAvailableModels = []*leapmuxv1.AvailableModel{

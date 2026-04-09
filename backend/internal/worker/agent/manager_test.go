@@ -212,7 +212,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 func TestManager_AvailableOptionGroupsPrefersRuntimeGroups(t *testing.T) {
 	m := NewManager(nil)
 	runtimeGroups := []*leapmuxv1.AvailableOptionGroup{{
-		Key:   OpenCodeExtraPrimaryAgent,
+		Key:   OptionGroupKeyPrimaryAgent,
 		Label: "Primary Agent",
 		Options: []*leapmuxv1.AvailableOption{
 			{Id: "build", Name: "build"},
@@ -228,7 +228,7 @@ func TestManager_AvailableOptionGroupsPrefersRuntimeGroups(t *testing.T) {
 
 	staticGroups := m.AvailableOptionGroups("missing-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
 	require.Len(t, staticGroups, 1)
-	assert.Equal(t, OpenCodeExtraPrimaryAgent, staticGroups[0].Key)
+	assert.Equal(t, OptionGroupKeyPrimaryAgent, staticGroups[0].Key)
 	assert.Equal(t, OpenCodePrimaryAgentBuild, staticGroups[0].Options[0].Id)
 }
 
