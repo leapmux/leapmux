@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -73,6 +72,13 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Provider
 		},
 	}
 	a.promptFunc = a.doSendPrompt
+	a.reapplySettings = func() {
+		a.mu.Lock()
+		model, primaryAgent := a.model, a.currentPrimaryAgent
+		a.mu.Unlock()
+		acpReapplySetting(a.providerName, a.agentID, "model", model, a.setModel)
+		acpReapplySetting(a.providerName, a.agentID, "primary agent", primaryAgent, a.setPrimaryAgent)
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -255,41 +261,8 @@ func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGrou
 
 // UpdateSettings applies setting changes to a running agent.
 func (a *OpenCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	if m := s.GetModel(); m != "" {
-		if err := a.setModel(m); err != nil {
-			slog.Warn("opencode session/set_model failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	if primaryAgent := s.GetExtraSettings()[OpenCodeExtraPrimaryAgent]; primaryAgent != "" {
-		if err := a.setPrimaryAgent(primaryAgent); err != nil {
-			slog.Warn("opencode session/set_mode failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	return true
-}
-
-func (a *OpenCodeAgent) ClearContext() (string, bool) {
-	sessionID, ok := a.clearSession()
-	if !ok {
-		return "", false
-	}
-	a.mu.Lock()
-	model := a.model
-	primaryAgent := a.currentPrimaryAgent
-	a.mu.Unlock()
-	if model != "" {
-		if err := a.setModel(model); err != nil {
-			slog.Warn("opencode ClearContext: failed to re-apply model", "agent_id", a.agentID, "error", err)
-		}
-	}
-	if primaryAgent != "" {
-		if err := a.setPrimaryAgent(primaryAgent); err != nil {
-			slog.Warn("opencode ClearContext: failed to re-apply primary agent", "agent_id", a.agentID, "error", err)
-		}
-	}
-	return sessionID, true
+	return acpUpdateSetting(a.providerName, a.agentID, "model", s.GetModel(), a.setModel) &&
+		acpUpdateSetting(a.providerName, a.agentID, "primary agent", s.GetExtraSettings()[OpenCodeExtraPrimaryAgent], a.setPrimaryAgent)
 }
 
 func (a *OpenCodeAgent) setPrimaryAgent(agent string) error {

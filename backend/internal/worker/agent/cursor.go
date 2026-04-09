@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -22,9 +21,6 @@ const (
 // CursorCLIAgent manages a single Cursor CLI ACP process.
 type CursorCLIAgent struct {
 	acpBase
-
-	permissionMode string
-	availableModes []*leapmuxv1.AvailableOption
 }
 
 // StartCursorCLI starts a Cursor CLI ACP agent process and performs the handshake.
@@ -65,6 +61,13 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.extraMethod = a.handleExtraMethod
 	a.promptFunc = a.doSendPrompt
+	a.reapplySettings = func() {
+		a.mu.Lock()
+		model, mode := a.model, a.permissionMode
+		a.mu.Unlock()
+		acpReapplySetting(a.providerName, a.agentID, "model", model, a.setCursorModel)
+		acpReapplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -167,41 +170,8 @@ func (a *CursorCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGro
 }
 
 func (a *CursorCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	if model := normalizeCursorModelID(s.GetModel()); model != "" {
-		if err := a.setCursorModel(model); err != nil {
-			slog.Warn("cursor session/set_model failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	if mode := s.GetPermissionMode(); mode != "" {
-		if err := a.setPermissionMode(mode); err != nil {
-			slog.Warn("cursor session/set_mode failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	return true
-}
-
-func (a *CursorCLIAgent) ClearContext() (string, bool) {
-	sessionID, ok := a.clearSession()
-	if !ok {
-		return "", false
-	}
-	a.mu.Lock()
-	model := a.model
-	mode := a.permissionMode
-	a.mu.Unlock()
-	if model != "" {
-		if err := a.setCursorModel(model); err != nil {
-			slog.Warn("cursor ClearContext: failed to re-apply model", "agent_id", a.agentID, "error", err)
-		}
-	}
-	if mode != "" {
-		if err := a.setPermissionMode(mode); err != nil {
-			slog.Warn("cursor ClearContext: failed to re-apply mode", "agent_id", a.agentID, "error", err)
-		}
-	}
-	return sessionID, true
+	return acpUpdateSetting(a.providerName, a.agentID, "model", normalizeCursorModelID(s.GetModel()), a.setCursorModel) &&
+		acpUpdateSetting(a.providerName, a.agentID, "mode", s.GetPermissionMode(), a.setPermissionMode)
 }
 
 func (a *CursorCLIAgent) setCursorModel(model string) error {
@@ -211,20 +181,6 @@ func (a *CursorCLIAgent) setCursorModel(model string) error {
 	}
 	a.mu.Lock()
 	a.model = model
-	a.mu.Unlock()
-	return nil
-}
-
-func (a *CursorCLIAgent) setPermissionMode(mode string) error {
-	a.mu.Lock()
-	available := a.availableModes
-	a.mu.Unlock()
-
-	if err := a.acpSetMode(mode, available); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.permissionMode = mode
 	a.mu.Unlock()
 	return nil
 }

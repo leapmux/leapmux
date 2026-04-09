@@ -75,10 +75,13 @@ type acpBase struct {
 	providerName       string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
+	reapplySettings    func()                  // called by ClearContext after session/new to re-apply model, mode, etc.
 	sessionID          string
 	workingDir         string
 	model              string
+	permissionMode     string
 	availableModels    []*leapmuxv1.AvailableModel
+	availableModes     []*leapmuxv1.AvailableOption
 	turnAssistantText  strings.Builder
 	turnThinkingText   strings.Builder
 }
@@ -178,11 +181,11 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	}
 }
 
-// clearSession sends a session/new request on the running ACP process,
-// replacing the current session with a fresh one and re-applying the
-// current model. Concrete providers should override ClearContext() to
-// call this and then re-apply their own settings (e.g. permission mode).
-func (b *acpBase) clearSession() (string, bool) {
+// ClearContext sends a session/new request on the running ACP process,
+// replacing the current session with a fresh one. After the session is
+// created, the reapplySettings callback (if set) re-applies provider-
+// specific settings such as model and permission mode.
+func (b *acpBase) ClearContext() (string, bool) {
 	_, params := buildACPSessionRequest("", b.workingDir, acpMethodSessionNew, "")
 	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
 	if err != nil {
@@ -209,7 +212,59 @@ func (b *acpBase) clearSession() (string, bool) {
 	b.mu.Unlock()
 
 	b.sink.UpdateSessionID(session.SessionID)
+
+	if b.reapplySettings != nil {
+		b.reapplySettings()
+	}
 	return session.SessionID, true
+}
+
+// setPermissionMode sends a session/set_mode RPC and updates the local field.
+// Used by Copilot, Cursor, Gemini, and Goose agents.
+func (b *acpBase) setPermissionMode(mode string) error {
+	b.mu.Lock()
+	available := b.availableModes
+	b.mu.Unlock()
+
+	if err := b.acpSetMode(mode, available); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.permissionMode = mode
+	b.mu.Unlock()
+	return nil
+}
+
+// UpdateSettings applies model and permission-mode changes to a running
+// ACP agent. Concrete types that use different settings (e.g. primaryAgent
+// instead of permissionMode) should override this method.
+func (b *acpBase) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
+	return acpUpdateSetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel) &&
+		acpUpdateSetting(b.providerName, b.agentID, "mode", s.GetPermissionMode(), b.setPermissionMode)
+}
+
+// acpUpdateSetting applies a single setting extracted from AgentSettings,
+// logging a warning and returning false on failure. Skips empty values.
+func acpUpdateSetting(providerName, agentID, name, value string, apply func(string) error) bool {
+	if value == "" {
+		return true
+	}
+	if err := apply(value); err != nil {
+		slog.Warn("UpdateSettings: failed to set "+name, "provider", providerName, "agent_id", agentID, "error", err)
+		return false
+	}
+	return true
+}
+
+// acpReapplySetting re-applies a single setting after a session/new,
+// logging a warning on failure.
+func acpReapplySetting(providerName, agentID, name, value string, apply func(string) error) {
+	if value == "" {
+		return
+	}
+	if err := apply(value); err != nil {
+		slog.Warn("ClearContext: failed to re-apply "+name, "provider", providerName, "agent_id", agentID, "error", err)
+	}
 }
 
 // buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.

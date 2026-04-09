@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -20,9 +19,6 @@ const (
 // GooseCLIAgent manages a single Goose CLI ACP process.
 type GooseCLIAgent struct {
 	acpBase
-
-	permissionMode string
-	availableModes []*leapmuxv1.AvailableOption
 }
 
 // StartGooseCLI starts a Goose CLI ACP agent process and performs the handshake.
@@ -62,6 +58,13 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Provider
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.promptFunc = a.doSendPrompt
+	a.reapplySettings = func() {
+		a.mu.Lock()
+		model, mode := a.model, a.permissionMode
+		a.mu.Unlock()
+		acpReapplySetting(a.providerName, a.agentID, "model", model, a.setModel)
+		acpReapplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -102,13 +105,13 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Provider
 	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
 		if err := a.setPermissionMode(requested); err != nil {
 			cleanup()
-			return nil, a.formatStartupError("session/set_mode", err)
+			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
 		}
 	}
 	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
 		if err := a.setModel(requested); err != nil {
 			cleanup()
-			return nil, a.formatStartupError("session/set_model", err)
+			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
 		}
 	}
 
@@ -151,58 +154,6 @@ func (a *GooseCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGrou
 		Label:   "Mode",
 		Options: options,
 	}}
-}
-
-func (a *GooseCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	if model := s.GetModel(); model != "" {
-		if err := a.setModel(model); err != nil {
-			slog.Warn("goose session/set_model failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	if mode := s.GetPermissionMode(); mode != "" {
-		if err := a.setPermissionMode(mode); err != nil {
-			slog.Warn("goose session/set_mode failed", "agent_id", a.agentID, "error", err)
-			return false
-		}
-	}
-	return true
-}
-
-func (a *GooseCLIAgent) ClearContext() (string, bool) {
-	sessionID, ok := a.clearSession()
-	if !ok {
-		return "", false
-	}
-	a.mu.Lock()
-	model := a.model
-	mode := a.permissionMode
-	a.mu.Unlock()
-	if model != "" {
-		if err := a.setModel(model); err != nil {
-			slog.Warn("goose ClearContext: failed to re-apply model", "agent_id", a.agentID, "error", err)
-		}
-	}
-	if mode != "" {
-		if err := a.setPermissionMode(mode); err != nil {
-			slog.Warn("goose ClearContext: failed to re-apply mode", "agent_id", a.agentID, "error", err)
-		}
-	}
-	return sessionID, true
-}
-
-func (a *GooseCLIAgent) setPermissionMode(mode string) error {
-	a.mu.Lock()
-	available := a.availableModes
-	a.mu.Unlock()
-
-	if err := a.acpSetMode(mode, available); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.permissionMode = mode
-	a.mu.Unlock()
-	return nil
 }
 
 func init() {

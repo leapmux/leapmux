@@ -1267,6 +1267,9 @@ func (svc *Context) setAgentPermissionMode(agentID, mode string) {
 func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode string) db.Agent {
 	agentID := dbAgent.ID
 	oldMode := dbAgent.PermissionMode
+	if oldMode == mode {
+		return dbAgent
+	}
 	if err := svc.Queries.SetAgentPermissionMode(bgCtx(), db.SetAgentPermissionModeParams{
 		PermissionMode: mode,
 		ID:             agentID,
