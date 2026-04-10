@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default permissions for the LeapMux desktop shell.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-set-size",
+    "core:window:allow-center",
+    "core:window:allow-maximize",
+    "core:webview:allow-create-webview-window"
+  ]
+}

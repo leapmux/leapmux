@@ -60,7 +60,7 @@ import type {
 import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
-import { arrayBufferToBase64, base64ToArrayBuffer, isWailsApp } from '~/api/desktopBridge'
+import { getCapabilities, isTauriApp, platformBridge } from '~/api/platformBridge'
 import { transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
@@ -147,6 +147,7 @@ import {
   WatchEventsRequestSchema,
   WatchEventsResponseSchema,
 } from '~/generated/leapmux/v1/workspace_pb'
+import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { ChannelManager } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 
@@ -195,8 +196,9 @@ class BrowserChannelTransport implements ChannelTransport {
   }
 
   createWebSocket(): WebSocket {
-    if (isWailsApp()) {
-      return new WailsWebSocket() as unknown as WebSocket
+    const capabilities = getCapabilities()
+    if (isTauriApp() && capabilities.hubTransport === 'proxy') {
+      return new TauriRelayWebSocket() as unknown as WebSocket
     }
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -222,14 +224,14 @@ class BrowserChannelTransport implements ChannelTransport {
 }
 
 /**
- * WailsWebSocket provides a WebSocket-like interface that bridges through
- * Wails Go bindings and events. Binary data is base64-encoded at the
+ * TauriRelayWebSocket provides a WebSocket-like interface that bridges through
+ * Tauri IPC and events. Binary data is base64-encoded at the
  * boundary.
  */
 type WSEventType = 'open' | 'close' | 'message' | 'error'
 interface WSListener { handler: EventListener, once: boolean }
 
-class WailsWebSocket {
+class TauriRelayWebSocket {
   readyState: number = WebSocket.CONNECTING
   binaryType: BinaryType = 'arraybuffer'
 
@@ -240,28 +242,36 @@ class WailsWebSocket {
 
   private listeners = new Map<WSEventType, WSListener[]>()
   private sendQueue: Promise<void> = Promise.resolve()
+  private unlistenMessage: (() => void) | null = null
+  private unlistenClose: (() => void) | null = null
 
   constructor() {
-    window.go!.main.App.OpenChannelRelay().then(() => {
-      // Listen for messages from Go.
-      window.runtime?.EventsOn?.('channel:message', (...args: unknown[]) => {
-        const b64 = args[0] as string
+    Promise.all([
+      platformBridge.onEvent('channel:message', (payload: unknown) => {
+        const b64 = payload as string
         const ev = { data: base64ToArrayBuffer(b64) } as MessageEvent
         this.onmessage?.(ev)
         this.dispatch('message', ev)
-      })
-      // Listen for relay close.
-      window.runtime?.EventsOn?.('channel:close', () => {
+      }),
+      platformBridge.onEvent('channel:close', () => {
         this.readyState = WebSocket.CLOSED
         const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
         this.onclose?.(ev)
         this.dispatch('close', ev)
-      })
+      }),
+    ]).then(async ([unlistenMessage, unlistenClose]) => {
+      this.unlistenMessage = unlistenMessage
+      this.unlistenClose = unlistenClose
+      await platformBridge.openChannelRelay()
       this.readyState = WebSocket.OPEN
       const ev = {} as Event
       this.onopen?.(ev)
       this.dispatch('open', ev)
     }).catch((err: unknown) => {
+      this.unlistenMessage?.()
+      this.unlistenClose?.()
+      this.unlistenMessage = null
+      this.unlistenClose = null
       this.readyState = WebSocket.CLOSED
       const ev = new ErrorEvent('error', { message: String(err) })
       this.onerror?.(ev)
@@ -302,20 +312,22 @@ class WailsWebSocket {
 
   send(data: ArrayBuffer | Uint8Array): void {
     // Serialize sends through a promise chain to preserve ordering.
-    // Wails binding calls spawn concurrent Go goroutines, so without
+    // Tauri command dispatch is async, so without
     // serialization, messages can arrive at the Hub out of order,
     // which breaks the Noise protocol's sequential nonce counter.
     const b64 = arrayBufferToBase64(data)
     this.sendQueue = this.sendQueue.then(
-      () => window.go!.main.App.SendChannelMessage(b64),
+      () => platformBridge.sendChannelMessage(b64),
     ).catch((err) => { log.warn('channel relay send failed', { error: String(err) }) })
   }
 
   close(): void {
-    window.go!.main.App.CloseChannelRelay()
+    platformBridge.closeChannelRelay()
     this.readyState = WebSocket.CLOSED
-    window.runtime?.EventsOff?.('channel:message')
-    window.runtime?.EventsOff?.('channel:close')
+    this.unlistenMessage?.()
+    this.unlistenClose?.()
+    this.unlistenMessage = null
+    this.unlistenClose = null
     const ev = { code: 1000, reason: '', wasClean: true } as CloseEvent
     this.onclose?.(ev)
     this.dispatch('close', ev)

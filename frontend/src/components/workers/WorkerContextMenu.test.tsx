@@ -8,9 +8,13 @@ vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: vi.fn(() => true),
 }))
 
-vi.mock('~/api/tunnelApi', () => ({
-  isTunnelAvailable: vi.fn(() => false),
-}))
+vi.mock('~/api/platformBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/platformBridge')>()
+  return {
+    ...actual,
+    isTunnelAvailable: vi.fn(() => false),
+  }
+})
 
 // Stub Popover API for DropdownMenu.
 beforeAll(() => {
@@ -48,7 +52,7 @@ describe('workerContextMenu', () => {
   })
 
   it('"add tunnel..." hidden when tunnel not available', async () => {
-    const { isTunnelAvailable } = await import('~/api/tunnelApi')
+    const { isTunnelAvailable } = await import('~/api/platformBridge')
     vi.mocked(isTunnelAvailable).mockReturnValue(false)
 
     renderMenu()
@@ -56,7 +60,7 @@ describe('workerContextMenu', () => {
   })
 
   it('"add tunnel..." hidden when not owner', async () => {
-    const { isTunnelAvailable } = await import('~/api/tunnelApi')
+    const { isTunnelAvailable } = await import('~/api/platformBridge')
     vi.mocked(isTunnelAvailable).mockReturnValue(true)
 
     renderMenu({ isOwner: false })
@@ -64,7 +68,7 @@ describe('workerContextMenu', () => {
   })
 
   it('"add tunnel..." visible when available + owner', async () => {
-    const { isTunnelAvailable } = await import('~/api/tunnelApi')
+    const { isTunnelAvailable } = await import('~/api/platformBridge')
     vi.mocked(isTunnelAvailable).mockReturnValue(true)
 
     renderMenu({ isOwner: true })
@@ -72,7 +76,7 @@ describe('workerContextMenu', () => {
   })
 
   it('clicking "add tunnel..." calls onAddTunnel', async () => {
-    const { isTunnelAvailable } = await import('~/api/tunnelApi')
+    const { isTunnelAvailable } = await import('~/api/platformBridge')
     vi.mocked(isTunnelAvailable).mockReturnValue(true)
 
     const { onAddTunnel } = renderMenu({ isOwner: true })

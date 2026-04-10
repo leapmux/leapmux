@@ -48,11 +48,11 @@ function assertCornerAlpha(pixels, width, height, shouldBeOpaque) {
 }
 
 // Copy the rounded SVG to public dir for modern browsers.
-copyFileSync(roundedSvgPath, join(publicDir, 'leapmux-icon-corners.svg'))
+copyFileSync(roundedSvgPath, join(publicDir, 'icons', 'leapmux-icon-corners.svg'))
 
 // Generate a favicon ICO from the rounded SVG.
 const ico48Png = renderPng(roundedSvg, 48)
-writeFileSync(join(publicDir, 'leapmux-icon-corners.ico'), buildIco(ico48Png, 48))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners.ico'), buildIco(ico48Png, 48))
 
 // Ensure the icons output directory exists.
 mkdirSync(join(publicDir, 'icons'), { recursive: true })

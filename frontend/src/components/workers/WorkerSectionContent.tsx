@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { TunnelInfo } from '~/api/tunnelApi'
+import type { TunnelInfo } from '~/api/platformBridge'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'

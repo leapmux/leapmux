@@ -31,7 +31,7 @@ RUN wget -qO- https://bun.sh/install | BUN_INSTALL=/usr bash
 # Download Go dependencies (cache layer)
 COPY go.work .
 COPY backend/go.mod backend/go.sum backend/
-COPY desktop/go.mod desktop/go.sum desktop/
+COPY desktop/go/go.mod desktop/go/go.sum desktop/go/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
@@ -106,7 +106,7 @@ RUN if [ -f /etc/alpine-release ]; then \
     fi
 
 # Copy binary
-COPY --from=builder /src/backend/build/bin/leapmux /usr/local/bin/leapmux
+COPY --from=builder /src/leapmux /usr/local/bin/leapmux
 
 # Copy s6 service definitions
 COPY docker/rootfs/ /

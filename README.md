@@ -169,7 +169,8 @@ Before you begin, ensure you have the following installed:
 - **SQLite** (usually pre-installed on most systems)
 - **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
 - **mprocs** (optional, for easier multi-process development)
-- **Wails** (optional, for building the desktop app)
+- **Rust toolchain** - Required for building the Tauri desktop app
+- **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
 
 ### macOS
 
@@ -178,7 +179,8 @@ Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install buf go go-task golangci-lint mprocs sqlc wails yq
+brew install buf go go-task golangci-lint mprocs sqlc yq
+rustup default stable
 ```
 
 ### Arch Linux
@@ -199,7 +201,8 @@ alias task=go-task
 Install the remaining dependencies from the [AUR](https://wiki.archlinux.org/title/Arch_User_Repository) (using [yay](https://github.com/Jguer/yay) or your preferred AUR helper):
 
 ```bash
-yay -S mprocs-bin wails
+yay -S mprocs-bin
+rustup default stable
 ```
 
 ### Operating System
@@ -249,12 +252,10 @@ Build individual components:
 ```bash
 task build-backend    # Build leapmux binary (Go)
 task build-frontend   # Build frontend assets
-task build-desktop    # Build desktop app for current platform (requires wails)
+task build-desktop    # Build desktop app for current platform (Tauri v2 + Rust)
 ```
 
-The `leapmux` binary is output to `backend/build/bin/`. The desktop app is output to `desktop/build/bin/`. On macOS, a `.dmg` installer is also created.
-
-`task build` skips the desktop build automatically if `wails` is not installed.
+The `leapmux` binary is output to `backend/build/bin/`. The Tauri desktop bundle is emitted under `desktop/src-tauri/target/`.
 
 ### Testing
 
@@ -295,7 +296,7 @@ Run specific linters:
 task lint-proto      # Lint Protocol Buffer definitions
 task lint-backend    # Lint Go code (hub + worker)
 task lint-frontend   # Lint frontend code (ESLint)
-task lint-desktop    # Lint desktop Go code (requires wails)
+task lint-desktop    # Lint desktop Go sidecar + Tauri Rust shell
 ```
 
 Auto-fix lint violations:
@@ -303,8 +304,19 @@ Auto-fix lint violations:
 task lint-fix            # Fix all (Go, frontend, desktop)
 task lint-fix-backend    # Fix Go code (golangci-lint --fix)
 task lint-fix-frontend   # Fix frontend code (ESLint --fix)
-task lint-fix-desktop    # Fix desktop Go code (requires wails)
+task lint-fix-desktop    # Fix desktop Go code + format Tauri Rust shell
 ```
+
+### Desktop and Mobile Prerequisites
+
+Desktop builds use Tauri v2:
+- macOS: Xcode Command Line Tools, Rust, WebKit (system)
+- Linux: Rust plus the WebKitGTK/Tauri native dependencies for your distro
+- Windows: Rust MSVC toolchain plus WebView2
+
+Future mobile builds use Tauri mobile tooling:
+- iOS: Xcode, CocoaPods, Rust iOS targets
+- Android: Android Studio, Android SDK/NDK, Java, Rust Android targets
 
 ### Code Generation
 
@@ -437,7 +449,8 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 
 ### Desktop (optional)
 
-- **[Wails](https://wails.io/)** - Desktop application framework (Go + WebView)
+- **[Tauri](https://tauri.app/)** - Desktop application framework (Rust + native WebView)
+- **Go desktop sidecar** - Desktop-only service for Solo startup, local proxying, tunnels, and OS integrations
 
 ### Build Tools
 
@@ -504,11 +517,9 @@ leapmux/
 │   └── worker/              # Worker public API (thin wrapper)
 │       └── runner.go        # Run(), RunConfig
 │
-├── desktop/                 # Wails desktop application (optional)
-│   ├── build/               # Build output (gitignored)
-│   ├── frontend/            # Minimal loader page (redirects to embedded UI)
-│   ├── platform/            # Platform-specific build resources (icons, manifests)
-│   └── scripts/             # Icon generation, DMG creation
+├── desktop/                 # Tauri desktop app + Go desktop sidecar
+│   ├── src-tauri/           # Tauri v2 Rust shell
+│   └── scripts/             # Packaging helpers
 │
 ├── docker/                  # Dockerfile and s6-overlay service definitions
 │

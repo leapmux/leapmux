@@ -606,12 +606,15 @@ export class ChannelManager {
         resolve()
       }
 
-      const onError = () => {
+      const onError = (event: Event) => {
         clearTimeout(timer)
         ws.removeEventListener('open', onOpen)
         this.ws = null
         this.wsPromise = null
-        reject(new ChannelError('transport', 'WebSocket connection failed'))
+        const message = event instanceof ErrorEvent && event.message
+          ? event.message
+          : 'WebSocket connection failed'
+        reject(new ChannelError('transport', message))
       }
       /* eslint-enable ts/no-use-before-define */
 
