@@ -4,14 +4,12 @@
 *~
 
 # Build output
-/NOTICE.html
-/backend/build/
-/backend/leapmux
-/desktop/build/
-/desktop/leapmux-desktop
-/desktop/spa/*
-!/desktop/spa/.gitkeep
-.task/
+/.task/
+/leapmux
+/leapmux.exe
+/LeapMux*.app/
+/LeapMux*.dmg
+/LeapMux*.exe
 
 # Generated code
 generated/
@@ -20,7 +18,7 @@ generated/
 vendor/
 go.work.sum
 
-# Node/Bun
+# Frontend
 node_modules/
 .vinxi/
 .output/
@@ -32,6 +30,16 @@ frontend/public/NOTICE.html
 frontend/public/leapmux-service-worker-*
 frontend/app.config.timestamp_*
 frontend/src/spinners/
+
+# Backend
+/backend/leapmux
+
+# Desktop
+/desktop/go/leapmux-desktop
+/desktop/go/bin/
+/desktop/rust/gen/
+/desktop/rust/icons/
+/desktop/rust/target/
 
 # IDE
 .idea/
@@ -57,4 +65,3 @@ test-results/
 frontend/test-results/
 frontend/playwright-report/
 coverage/
-/leapmux

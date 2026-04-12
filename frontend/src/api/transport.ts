@@ -1,7 +1,7 @@
 import type { CallOptions, Interceptor } from '@connectrpc/connect'
 import { Code, ConnectError, createClient } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-web'
-import { desktopFetch, isWailsApp } from '~/api/desktopBridge'
+import { desktopFetch, getCapabilities, isTauriApp } from '~/api/platformBridge'
 import { UserService } from '~/generated/leapmux/v1/user_pb'
 
 // Callbacks for auth state changes (set by AuthContext)
@@ -29,9 +29,26 @@ const credentialFetch: typeof globalThis.fetch = (input, init) => {
   return globalThis.fetch(input, { ...init, credentials: 'include' })
 }
 
+function getTransportFetch(): typeof globalThis.fetch {
+  if (!isTauriApp())
+    return credentialFetch
+
+  // Return a wrapper that checks capabilities on each call so the
+  // transport picks up runtime-state changes (e.g. switching from
+  // launcher → solo mode). The eager check at module-init time would
+  // use stale heuristics—especially in dev mode where the webview
+  // loads from http://localhost instead of tauri://localhost.
+  return (input, init) => {
+    const capabilities = getCapabilities()
+    if (capabilities.hubTransport === 'proxy')
+      return desktopFetch(input, init)
+    return credentialFetch(input, init)
+  }
+}
+
 export const transport = createConnectTransport({
-  baseUrl: isWailsApp() ? 'http://localhost' : window.location.origin,
-  fetch: isWailsApp() ? desktopFetch : credentialFetch,
+  baseUrl: window.location.origin,
+  fetch: getTransportFetch(),
   interceptors: [errorInterceptor],
   defaultTimeoutMs: 30_000,
 })

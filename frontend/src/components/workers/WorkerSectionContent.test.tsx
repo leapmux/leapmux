@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import type { TunnelInfo } from '~/api/tunnelApi'
+import type { TunnelInfo } from '~/api/platformBridge'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
@@ -11,12 +11,19 @@ import { WorkerSchema } from '~/generated/leapmux/v1/worker_pb'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { WorkerSectionContent } from './WorkerSectionContent'
 
-vi.mock('~/api/tunnelApi', () => ({
-  isTunnelAvailable: vi.fn(() => false),
-  createTunnel: vi.fn(),
-  deleteTunnel: vi.fn(),
-  listTunnels: vi.fn(),
-}))
+vi.mock('~/api/platformBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/platformBridge')>()
+  return {
+    ...actual,
+    isTunnelAvailable: vi.fn(() => false),
+    platformBridge: {
+      ...actual.platformBridge,
+      createTunnel: vi.fn(),
+      deleteTunnel: vi.fn(),
+      listTunnels: vi.fn(),
+    },
+  }
+})
 
 function makeWorker(id: string, registeredBy = 'user-1'): Worker {
   return create(WorkerSchema, { id, registeredBy, online: true })

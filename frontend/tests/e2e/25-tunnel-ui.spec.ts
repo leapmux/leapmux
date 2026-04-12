@@ -1,16 +1,13 @@
 import { expect, test } from './fixtures'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
-// The tunnel feature requires the desktop app (Wails), which isn't available
-// in E2E tests. These tests inject mock tunnel methods on window.go.main.App
-// before page load to verify the UI renders correctly when the tunnel API
-// is available. The mock is set via addInitScript so that isTunnelAvailable()
-// returns true at initial render time (Solid.js doesn't re-track plain globals).
+// The tunnel feature requires desktop capabilities, which aren't available in
+// normal browser E2E runs. These tests inject a mock desktop bridge before page
+// load so the UI renders the tunnel entrypoints at initial render time.
 
 /**
- * Add a page.addInitScript that sets up mock tunnel methods on
- * window.go.main.App. Only the tunnel-specific methods are set —
- * ProxyHTTP is intentionally left out so the app uses its normal transport.
+ * Add a page.addInitScript that sets up a mock Tauri desktop environment with
+ * tunnel methods only. Hub transport remains browser-native in the test page.
  */
 function addTunnelMockInitScript(page: import('@playwright/test').Page) {
   return page.addInitScript(() => {
@@ -25,36 +22,49 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
     }> = []
     let nextId = 1
 
-    // Set up window.go.main.App with tunnel methods only.
-    // This makes isTunnelAvailable() return true (checks CreateTunnel)
-    // without triggering isWailsApp() (checks ProxyHTTP).
-    ;(window as any).go = {
-      main: {
-        App: {
-          CreateTunnel: (config: any) => {
-            const tunnel = {
-              id: `tunnel-${nextId++}`,
-              workerId: config.workerId,
-              type: config.type,
-              bindAddr: config.bindAddr || '127.0.0.1',
-              bindPort: config.bindPort || (config.type === 'socks5' ? 1080 : config.targetPort),
-              targetAddr: config.targetAddr || '',
-              targetPort: config.targetPort || 0,
-            }
-            tunnels.push(tunnel)
-            return Promise.resolve(tunnel)
-          },
-          DeleteTunnel: (id: string) => {
-            const idx = tunnels.findIndex(t => t.id === id)
-            if (idx >= 0)
-              tunnels.splice(idx, 1)
-            return Promise.resolve()
-          },
-          ListTunnels: () => {
-            return Promise.resolve([...tunnels])
-          },
-        },
-      },
+    ;(window as any).__TAURI_INTERNALS__ = {}
+    ;(window as any).__TAURI_INVOKE__ = (cmd: string, args?: any) => {
+      switch (cmd) {
+        case 'create_tunnel': {
+          const config = args.config
+          const tunnel = {
+            id: `tunnel-${nextId++}`,
+            workerId: config.workerId,
+            type: config.type,
+            bindAddr: config.bindAddr || '127.0.0.1',
+            bindPort: config.bindPort || (config.type === 'socks5' ? 1080 : config.targetPort),
+            targetAddr: config.targetAddr || '',
+            targetPort: config.targetPort || 0,
+          }
+          tunnels.push(tunnel)
+          return Promise.resolve(tunnel)
+        }
+        case 'delete_tunnel': {
+          const idx = tunnels.findIndex(t => t.id === args.tunnelId)
+          if (idx >= 0)
+            tunnels.splice(idx, 1)
+          return Promise.resolve()
+        }
+        case 'list_tunnels':
+          return Promise.resolve([...tunnels])
+        case 'get_runtime_state':
+          return Promise.resolve({
+            shellMode: 'distributed',
+            connected: true,
+            hubUrl: window.location.origin,
+            capabilities: {
+              mode: 'tauri-desktop-distributed',
+              hubTransport: 'direct',
+              tunnels: true,
+              appControl: true,
+              windowControl: true,
+              systemPermissions: true,
+              localSolo: false,
+            },
+          })
+        default:
+          return Promise.reject(new Error(`unhandled Tauri invoke: ${cmd}`))
+      }
     }
   })
 }
@@ -84,8 +94,8 @@ async function openAddTunnelDialog(page: import('@playwright/test').Page) {
 }
 
 test.describe('Tunnel UI', () => {
-  // Use manual setup: inject the Wails tunnel mock via addInitScript before
-  // navigating so that isTunnelAvailable() returns true at first render.
+  // Inject the desktop capability mock before navigation so the tunnel UI is
+  // available on first render.
   test.beforeEach(async ({ page, workspace, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await addTunnelMockInitScript(page)
@@ -130,8 +140,30 @@ test.describe('Tunnel UI', () => {
   test('tunnel creation error is displayed in dialog', async ({ page, workspace }) => {
     // Override CreateTunnel to reject with an error.
     await page.evaluate(() => {
-      ;(window as any).go.main.App.CreateTunnel = () => {
-        return Promise.reject(new Error('bind 127.0.0.1:3000: address already in use'))
+      ;(window as any).__TAURI_INVOKE__ = (cmd: string) => {
+        if (cmd === 'create_tunnel')
+          return Promise.reject(new Error('bind 127.0.0.1:3000: address already in use'))
+        if (cmd === 'delete_tunnel')
+          return Promise.resolve()
+        if (cmd === 'list_tunnels')
+          return Promise.resolve([])
+        if (cmd === 'get_runtime_state') {
+          return Promise.resolve({
+            shellMode: 'distributed',
+            connected: true,
+            hubUrl: window.location.origin,
+            capabilities: {
+              mode: 'tauri-desktop-distributed',
+              hubTransport: 'direct',
+              tunnels: true,
+              appControl: true,
+              windowControl: true,
+              systemPermissions: true,
+              localSolo: false,
+            },
+          })
+        }
+        return Promise.reject(new Error(`unhandled Tauri invoke: ${cmd}`))
       }
     })
 

@@ -5,7 +5,8 @@
 // Usage: bun scripts/generate-notice.mjs
 //
 // Collects licenses from:
-//   - Go modules (via go.work workspace: backend + desktop)
+//   - Go modules (via go.work workspace: backend + desktop/go)
+//   - Rust crates (desktop/rust/Cargo.lock)
 //   - JavaScript runtime dependencies (frontend/node_modules)
 
 import process from 'node:process'
@@ -15,34 +16,57 @@ import { dirname, join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const FRONTEND = join(ROOT, 'frontend')
+const DESKTOP_RUST = join(ROOT, 'desktop/rust')
 const LICENSE_OVERRIDES_GO = join(ROOT, 'scripts/license-overrides/go')
+const LICENSE_OVERRIDES_RUST = join(ROOT, 'scripts/license-overrides/rust')
 const LICENSE_OVERRIDES_JS = join(ROOT, 'scripts/license-overrides/js')
+const CARGO_REGISTRY = join(process.env.HOME ?? '', '.cargo/registry/src/index.crates.io-1949cf8c6b5b557f')
+const RUST_SPDX_LICENSE_FILES = {
+  'Apache-2.0': join(CARGO_REGISTRY, 'anyhow-1.0.102/LICENSE-APACHE'),
+  'Apache-2.0 WITH LLVM-exception': join(CARGO_REGISTRY, 'wit-bindgen-0.51.0/LICENSE-Apache-2.0_WITH_LLVM-exception'),
+  'BSD-3-Clause': join(CARGO_REGISTRY, 'zerocopy-0.8.48/LICENSE-BSD'),
+  MIT: join(CARGO_REGISTRY, 'anyhow-1.0.102/LICENSE-MIT'),
+  'MPL-2.0': join(CARGO_REGISTRY, 'option-ext-0.2.0/LICENSE.txt'),
+  Zlib: join(CARGO_REGISTRY, 'bytemuck-1.25.0/LICENSE-ZLIB'),
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /** Names (case-insensitive) that indicate a license file. */
-const LICENSE_NAMES_RE = /^(licen[cs]e|copying|notice)(\..+)?$/i
+const LICENSE_NAMES_RE = /^(licen[cs]e|copying|notice|unlicense)([-_. ].+)?$/i
 
 /**
- * Find a license file in `dir`, optionally walking up parent directories
- * until `stopAt` (exclusive). Returns the file path or null.
+ * Find license files in `dir`, optionally walking up parent directories
+ * until `stopAt` (exclusive). Returns the paths from the first directory
+ * containing at least one license file.
  */
-function findLicenseFile(dir, stopAt) {
+function findLicenseFiles(dir, stopAt) {
   let current = dir
   while (current.startsWith(stopAt)) {
     try {
+      const matches = []
       for (const entry of readdirSync(current, { withFileTypes: true })) {
-        if (LICENSE_NAMES_RE.test(entry.name) && entry.isFile())
-          return join(current, entry.name)
+        if (LICENSE_NAMES_RE.test(entry.name) && entry.isFile()) {
+          matches.push(join(current, entry.name))
+        }
       }
+      if (matches.length > 0) return matches.sort()
     } catch { /* directory may not exist or be readable */ }
     const parent = dirname(current)
     if (parent === current) break
     current = parent
   }
-  return null
+  return []
+}
+
+/**
+ * Find a single license file in `dir`, optionally walking up parent directories
+ * until `stopAt` (exclusive). Returns the file path or null.
+ */
+function findLicenseFile(dir, stopAt) {
+  return findLicenseFiles(dir, stopAt)[0] ?? null
 }
 
 /** Normalize license text: strip \r, trim blank lines, remove triple+ backticks. */
@@ -60,6 +84,37 @@ function normalizeLicenseText(text) {
 /** Format a JS dependency heading with license name. */
 function jsHeading(dep) {
   return dep.license ? `${dep.name} ${dep.version} (${dep.license})` : `${dep.name} ${dep.version}`
+}
+
+/** Format a Rust dependency heading with license name. */
+function rustHeading(dep) {
+  return dep.license ? `${dep.name} ${dep.version} (${dep.license})` : `${dep.name} ${dep.version}`
+}
+
+function collectRustSpdxTexts(licenseExpression) {
+  if (!licenseExpression) return { texts: [], unsupportedTerms: [] }
+
+  const terms = licenseExpression
+    .replace(/\//g, ' OR ')
+    .split(/\s+(?:OR|AND)\s+/)
+    .map(term => term.replace(/[()]/g, '').trim())
+    .filter(Boolean)
+  const uniqueTerms = [...new Set(terms)]
+  const supportedTerms = []
+  const unsupportedTerms = []
+
+  for (const term of uniqueTerms) {
+    if (term in RUST_SPDX_LICENSE_FILES) {
+      supportedTerms.push(term)
+    } else {
+      unsupportedTerms.push(term)
+    }
+  }
+
+  return {
+    texts: supportedTerms.map(term => normalizeLicenseText(readFileSync(RUST_SPDX_LICENSE_FILES[term], 'utf-8'))),
+    unsupportedTerms,
+  }
 }
 
 /** Slugify a heading for use as a markdown anchor. */
@@ -141,6 +196,78 @@ function collectGoDeps() {
       name: mod.Path,
       version: mod.Version,
       licenseText: normalizeLicenseText(readFileSync(licFile, 'utf-8')),
+    })
+  }
+
+  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings, errors }
+}
+
+// ---------------------------------------------------------------------------
+// Rust dependencies
+// ---------------------------------------------------------------------------
+
+function collectRustDeps() {
+  console.log('Fetching Rust crates …')
+  execSync('cargo fetch --locked', { cwd: DESKTOP_RUST, stdio: 'inherit' })
+
+  console.log('Listing Rust crates …')
+  const raw = execSync('cargo metadata --format-version 1 --locked', {
+    cwd: DESKTOP_RUST,
+    encoding: 'utf-8',
+    maxBuffer: 32 * 1024 * 1024,
+  })
+  const metadata = JSON.parse(raw)
+
+  /** @type {Map<string, {name: string, version: string, license: string | null, licenseText: string}>} */
+  const deps = new Map()
+  const warnings = []
+  const errors = []
+
+  for (const pkg of metadata.packages ?? []) {
+    if (pkg.id === metadata.resolve?.root || pkg.source == null) continue
+
+    const key = `${pkg.name}@${pkg.version}`
+    if (deps.has(key)) continue
+
+    const manifestDir = dirname(pkg.manifest_path)
+    let licFile = null
+
+    if (pkg.license_file) {
+      const candidate = join(manifestDir, pkg.license_file)
+      if (existsSync(candidate)) licFile = candidate
+    }
+
+    if (!licFile) licFile = findLicenseFile(manifestDir, manifestDir)
+
+    if (!licFile) {
+      const overrideDir = join(LICENSE_OVERRIDES_RUST, pkg.name)
+      if (existsSync(join(overrideDir, 'expected.json'))) {
+        licFile = findLicenseFile(overrideDir, overrideDir)
+      }
+    }
+
+    let licenseText = null
+    if (licFile) {
+      const licenseFiles = pkg.license_file ? [licFile] : findLicenseFiles(manifestDir, manifestDir)
+      licenseText = licenseFiles.length > 0
+        ? licenseFiles.map(path => normalizeLicenseText(readFileSync(path, 'utf-8'))).join('\n\n-----\n\n')
+        : normalizeLicenseText(readFileSync(licFile, 'utf-8'))
+    } else {
+      const { texts, unsupportedTerms } = collectRustSpdxTexts(pkg.license)
+      const hasOnlyOrTerms = (pkg.license ?? '').includes(' OR ') && !(pkg.license ?? '').includes(' AND ')
+      if (unsupportedTerms.length === 0 || (hasOnlyOrTerms && texts.length > 0)) {
+        licenseText = texts.join('\n\n-----\n\n')
+      } else {
+        errors.push(`Rust: ${key} — no license file found in ${manifestDir}`)
+        continue
+      }
+    }
+
+    deps.set(key, {
+      name: pkg.name,
+      version: pkg.version,
+      license: pkg.license ?? null,
+      licenseText: licenseText ?? '',
     })
   }
 
@@ -242,7 +369,7 @@ function collectJsDeps() {
 // Generate NOTICE.md
 // ---------------------------------------------------------------------------
 
-function buildMarkdown(goDeps, jsDeps) {
+function buildMarkdown(goDeps, rustDeps, jsDeps) {
   const lines = []
 
   lines.push('# Third-Party Licenses')
@@ -260,6 +387,15 @@ function buildMarkdown(goDeps, jsDeps) {
     lines.push('')
     for (const dep of goDeps) {
       const heading = `${dep.name} ${dep.version}`
+      lines.push(`- [${heading}](#${toAnchor(heading)})`)
+    }
+    lines.push('')
+  }
+  if (rustDeps.length > 0) {
+    lines.push('### Rust Dependencies')
+    lines.push('')
+    for (const dep of rustDeps) {
+      const heading = rustHeading(dep)
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
@@ -282,6 +418,22 @@ function buildMarkdown(goDeps, jsDeps) {
     lines.push('')
     for (const dep of goDeps) {
       lines.push(`### ${dep.name} ${dep.version}`)
+      lines.push('')
+      lines.push('```')
+      lines.push(dep.licenseText)
+      lines.push('```')
+      lines.push('')
+    }
+  }
+
+  // Rust dependencies
+  if (rustDeps.length > 0) {
+    lines.push('---')
+    lines.push('')
+    lines.push('## Rust Dependencies')
+    lines.push('')
+    for (const dep of rustDeps) {
+      lines.push(`### ${rustHeading(dep)}`)
       lines.push('')
       lines.push('```')
       lines.push(dep.licenseText)
@@ -417,9 +569,10 @@ ${bodyHtml}
 
 async function generateNotice() {
   const go = collectGoDeps()
+  const rust = collectRustDeps()
   const js = collectJsDeps()
-  const allWarnings = [...go.warnings, ...js.warnings]
-  const allErrors = [...go.errors, ...js.errors]
+  const allWarnings = [...go.warnings, ...rust.warnings, ...js.warnings]
+  const allErrors = [...go.errors, ...rust.errors, ...js.errors]
 
   if (allWarnings.length > 0) {
     console.warn('\nWarnings:')
@@ -434,7 +587,7 @@ async function generateNotice() {
     process.exit(1)
   }
 
-  const markdown = buildMarkdown(go.deps, js.deps)
+  const markdown = buildMarkdown(go.deps, rust.deps, js.deps)
 
   const mdPath = join(ROOT, 'NOTICE.md')
   writeFileSync(mdPath, markdown, 'utf-8')
@@ -446,7 +599,7 @@ async function generateNotice() {
   writeFileSync(htmlPath, html, 'utf-8')
   console.log(`✓ Written ${htmlPath}`)
 
-  console.log(`  (${go.deps.length} Go + ${js.deps.length} JS dependencies)`)
+  console.log(`  (${go.deps.length} Go + ${rust.deps.length} Rust + ${js.deps.length} JS dependencies)`)
 }
 
 await generateNotice()

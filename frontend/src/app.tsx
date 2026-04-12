@@ -1,12 +1,13 @@
 import type { ParentComponent } from 'solid-js'
 import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
-import { createEffect, createResource, createSignal, ErrorBoundary, onCleanup, onMount, Show, Suspense } from 'solid-js'
-import { isWailsApp } from '~/api/desktopBridge'
+import { createEffect, createResource, createSignal, ErrorBoundary, Match, onCleanup, onMount, Show, Suspense, Switch } from 'solid-js'
+import { getRuntimeState, isTauriApp, platformBridge, refreshRuntimeState } from '~/api/platformBridge'
 import { channelManager } from '~/api/workerRpc'
 import { showInfoToast } from '~/components/common/Toast'
 import { LauncherView } from '~/components/desktop/LauncherView'
-import { UserMenuDialogs } from '~/components/shell/UserMenu'
+import { AboutDialog } from '~/components/shell/AboutDialog'
+import { setShowAboutDialog, showAboutDialog, UserMenuDialogs } from '~/components/shell/UserMenu'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
@@ -66,10 +67,10 @@ const PreferencesApplier: ParentComponent = (props) => {
  * opacity 0 and fades in after a short delay.
  */
 const DesktopFadeIn: ParentComponent = (props) => {
-  const [opacity, setOpacity] = createSignal(isWailsApp() ? 0 : 1)
+  const [opacity, setOpacity] = createSignal(isTauriApp() ? 0 : 1)
 
   onMount(() => {
-    if (!isWailsApp())
+    if (!isTauriApp())
       return
     // Delay slightly to let auth resolve before fading in.
     const timer = setTimeout(setOpacity, 150, 1)
@@ -111,14 +112,13 @@ export default function App() {
   const disposeStorageCleanup = initStorageCleanup()
   onCleanup(disposeStorageCleanup)
 
-  const [desktopConnected, setDesktopConnected] = createSignal(!isWailsApp())
+  type DesktopState = 'loading' | 'launcher' | 'connected'
+  const [desktopState, setDesktopState] = createSignal<DesktopState>(isTauriApp() ? 'loading' : 'connected')
   // Expose so UserMenu's "Switch mode..." can reset without page reload.
-  // Wails doesn't re-inject window.go after reload, so we switch in-place.
   ;(window as any).__leapmux_disconnectDesktop = () => {
-    // Close all cached channels and the WebSocket relay so the new
-    // Hub instance starts with a clean slate.
     channelManager.closeAll()
-    setDesktopConnected(false)
+    refreshRuntimeState()
+    setDesktopState('launcher')
   }
 
   const [themePreference, setThemePreference] = createSignal<ThemePreference>(getStoredTheme())
@@ -187,27 +187,41 @@ export default function App() {
 
     document.addEventListener('focusin', handleFocusIn, true)
     onCleanup(() => document.removeEventListener('focusin', handleFocusIn, true))
+
+    if (isTauriApp()) {
+      platformBridge.onEvent('menu:show-about', () => setShowAboutDialog(true))
+        .then(unlisten => onCleanup(unlisten))
+
+      getRuntimeState()
+        .then(state => setDesktopState(state.connected ? 'connected' : 'launcher'))
+        .catch(() => setDesktopState('launcher'))
+    }
   })
 
   return (
     <ErrorBoundary fallback={AppErrorFallback}>
       <div class={heightFull}>
-        <Show
-          when={desktopConnected()}
-          fallback={<LauncherView onConnected={() => setDesktopConnected(true)} />}
-        >
-          <DesktopFadeIn>
-            <AuthProvider>
-              <PreferencesProvider>
-                <PreferencesApplier>
-                  <Router root={props => <Suspense>{props.children}</Suspense>}>
-                    <FileRoutes />
-                  </Router>
-                </PreferencesApplier>
-                <UserMenuDialogs />
-              </PreferencesProvider>
-            </AuthProvider>
-          </DesktopFadeIn>
+        <Switch>
+          <Match when={desktopState() === 'connected'}>
+            <DesktopFadeIn>
+              <AuthProvider>
+                <PreferencesProvider>
+                  <PreferencesApplier>
+                    <Router root={props => <Suspense>{props.children}</Suspense>}>
+                      <FileRoutes />
+                    </Router>
+                  </PreferencesApplier>
+                  <UserMenuDialogs />
+                </PreferencesProvider>
+              </AuthProvider>
+            </DesktopFadeIn>
+          </Match>
+          <Match when={desktopState() === 'launcher'}>
+            <LauncherView onConnected={() => setDesktopState('connected')} />
+          </Match>
+        </Switch>
+        <Show when={showAboutDialog()}>
+          <AboutDialog onClose={() => setShowAboutDialog(false)} />
         </Show>
       </div>
     </ErrorBoundary>

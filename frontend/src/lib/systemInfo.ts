@@ -1,6 +1,6 @@
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 import { authClient } from '~/api/clients'
-import { isWailsApp } from '~/api/desktopBridge'
+import { getCapabilities, isTauriApp } from '~/api/platformBridge'
 
 export interface BuildInfo {
   version: string
@@ -73,7 +73,8 @@ export async function loadOAuthProviders(): Promise<OAuthProviderInfo[]> {
 }
 
 export function isDesktopApp(): boolean {
-  return isWailsApp()
+  const capabilities = getCapabilities()
+  return isTauriApp() && capabilities.mode !== 'tauri-mobile-distributed'
 }
 
 export function getBackendBuildInfo(): BuildInfo {

@@ -1,0 +1,5 @@
+procs:
+  frontend:
+    shell: "cd frontend && bun run dev"
+  tauri:
+    shell: "cd desktop/rust && ../../frontend/node_modules/.bin/tauri dev"

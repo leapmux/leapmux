@@ -33,13 +33,14 @@ vars:
 
 tasks:
   generate:
-    desc: Generate all code (proto + sqlc)
+    desc: Generate all code
     cmds:
       - task: generate-proto
       - task: generate-sqlc
+      - task: generate-spinners
 
   generate-proto:
-    desc: Generate Protocol Buffer code (Go + TypeScript)
+    desc: Generate Protocol Buffer code
     sources:
       - proto/**/*
       - buf.gen.yaml
@@ -56,22 +57,16 @@ tasks:
     deps: [generate-sqlc-hub, generate-sqlc-worker]
 
   generate-sqlc-hub:
-    desc: Generate type-safe SQL code for Hub (all SQL backends)
+    desc: Generate type-safe SQL code for Hub
     deps: [generate-proto]
     vars:
       BACKENDS: sqlite postgres mysql
     sources:
       - backend/generated/proto/**/*
-      - backend/internal/hub/store/sqlite/db/**/*.sql
-      - backend/internal/hub/store/sqlite/sqlc.yaml
-      - backend/internal/hub/store/postgres/db/**/*.sql
-      - backend/internal/hub/store/postgres/sqlc.yaml
-      - backend/internal/hub/store/mysql/db/**/*.sql
-      - backend/internal/hub/store/mysql/sqlc.yaml
+      - backend/internal/hub/store/*/sqlc.yaml
+      - backend/internal/hub/store/*/db/**/*.sql
     generates:
-      - backend/internal/hub/store/sqlite/generated/db/**/*
-      - backend/internal/hub/store/postgres/generated/db/**/*
-      - backend/internal/hub/store/mysql/generated/db/**/*
+      - backend/internal/hub/store/*/generated/db/**/*
     cmds:
       - for: { var: BACKENDS }
         cmd: rm -rf backend/internal/hub/store/{{.ITEM}}/generated/db/ && cd backend/internal/hub/store/{{.ITEM}} && sqlc generate
@@ -81,23 +76,13 @@ tasks:
     deps: [generate-proto]
     sources:
       - backend/generated/proto/**/*
-      - backend/internal/worker/db/**/*.sql
       - backend/internal/worker/sqlc.yaml
+      - backend/internal/worker/db/**/*.sql
     generates:
       - backend/internal/worker/generated/db/**/*
     cmds:
       - rm -rf backend/internal/worker/generated/db/
       - cd backend/internal/worker && sqlc generate
-
-  # --- Preparation ---
-
-  prepare:
-    desc: Prepare all dependencies
-    deps: [prepare-backend, prepare-frontend]
-
-  prepare-backend:
-    desc: Prepare backend (generate proto + sqlc)
-    deps: [generate]
 
   generate-spinners:
     desc: Download spinner verb JSON files from awesome-claude-spinners
@@ -116,123 +101,29 @@ tasks:
       - mkdir -p frontend/src/spinners
       - rsync -a --delete "{{.CACHE_DIR}}/spinners/" frontend/src/spinners/
 
+  # --- Preparation ---
+
+  prepare:
+    desc: Prepare all modules for builds
+    cmds:
+      - task: prepare-frontend
+      - task: prepare-backend
+      - task: prepare-desktop
+
   prepare-frontend:
-    desc: Install frontend dependencies
-    deps: [generate-proto, generate-spinners]
-    sources:
-      - frontend/package.json
-      - frontend/bun.lock
-    generates:
-      - frontend/node_modules/**/*
-    cmds:
-      - cd frontend && bun install
-
-  # --- Notice ---
-
-  generate-notice:
-    desc: Generate NOTICE.md with third-party licenses
-    deps: [prepare]
-    sources:
-      - scripts/generate-notice.mjs
-      - scripts/license-overrides/**/*
-      - backend/go.mod
-      - backend/go.sum
-      - desktop/go.mod
-      - desktop/go.sum
-      - frontend/package.json
-      - frontend/bun.lock
-    generates:
-      - NOTICE.md
-      - NOTICE.html
-    cmds:
-      - bun scripts/generate-notice.mjs
-
-  copy-notice:
-    desc: Copy NOTICE.html to frontend public dir for static serving
-    deps: [generate-notice]
+    desc: Prepare frontend for builds
     sources:
       - NOTICE.html
-    generates:
-      - frontend/public/NOTICE.html
-    cmds:
-      - cp NOTICE.html frontend/public/NOTICE.html
-
-  # --- Build ---
-
-  build:
-    desc: Build all (backend + frontend + desktop)
-    cmds:
-      - task: generate
-      - task: build-backend
-      - |
-        if command -v wails >/dev/null 2>&1; then
-          task build-desktop
-        else
-          echo "⚠ Skipping desktop build: 'wails' is not installed."
-          echo "  Install it with your package manager (e.g. brew install wails) to build the desktop app."
-        fi
-
-  embed-frontend:
-    desc: Embed frontend assets for go:embed
-    deps: [build-frontend]
-    sources:
-      - backend/internal/hub/frontend.embed
-      - frontend/.output/public/**/*
-    generates:
-      - backend/internal/hub/generated/frontend/embed.go
-      - backend/internal/hub/generated/frontend/public/**/*
-    cmds:
-      - mkdir -p backend/internal/hub/generated/frontend/public
-      - rsync -a backend/internal/hub/frontend.embed backend/internal/hub/generated/frontend/embed.go
-      - rsync -a --delete frontend/.output/public/ backend/internal/hub/generated/frontend/public/
-
-  embed-frontend-desktop:
-    desc: Embed frontend assets into desktop app for go:embed
-    deps: [build-frontend]
-    sources:
-      - frontend/.output/public/**/*
-    generates:
-      - desktop/spa/**/*
-    cmds:
-      - rsync -a --delete frontend/.output/public/ desktop/spa/
-
-  build-backend:
-    desc: Build leapmux binary
-    deps: [prepare-backend, embed-frontend]
-    dir: backend
-    sources:
-      - go.mod
-      - go.sum
-      - cmd/**/*
-      - generated/**/*
-      - hub/**/*
-      - internal/**/*
-      - worker/**/*
-      - "**/*.go"
-    generates:
-      - build/bin/leapmux
-    cmds:
-      - mkdir -p build/bin
-      - go build -ldflags "{{.VERSION_LDFLAGS}}" -o ./build/bin/leapmux ./cmd/leapmux
-
-  build-backend-docker:
-    desc: Build leapmux binary for Docker (static, cross-compiled)
-    deps: [prepare-backend, embed-frontend]
-    dir: backend
-    cmds:
-      - mkdir -p build/bin
-      - >-
-        CGO_ENABLED=0 GOOS={{.GOOS | default "linux"}} GOARCH={{.GOARCH | default "amd64"}}
-        go build -ldflags "-s -w {{.VERSION_LDFLAGS}}"
-        -o ./build/bin/leapmux ./cmd/leapmux
-
-  generate-web-icons:
-    desc: Generate web favicon and PNG icons from SVG sources
-    deps: [prepare-frontend]
-    sources:
       - icons/leapmux-icon-corners.svg
       - icons/leapmux-icon.svg
+      - frontend/package.json
+      - frontend/bun.lock
+      - frontend/scripts/**/*
+      - scripts/build-ico.mjs
+      - frontend/src/generated/**/*
     generates:
+      - frontend/node_modules/**/*
+      - frontend/public/NOTICE.html
       - frontend/public/leapmux-icon-corners.ico
       - frontend/public/leapmux-icon-corners.svg
       - frontend/public/icons/leapmux-icon-corners-192.png
@@ -240,54 +131,216 @@ tasks:
       - frontend/public/icons/leapmux-icon-corners-maskable-512.png
       - frontend/public/icons/leapmux-icon-apple-touch.png
     cmds:
+      - task: generate-proto
+      - task: generate-spinners
+      - cd frontend && bun install
+      - mkdir -p frontend/public/icons
       - NODE_PATH=frontend/node_modules bun frontend/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon.svg frontend/public
+      - "[ -a NOTICE.html ] && cp NOTICE.html frontend/public/NOTICE.html || true"
+
+  prepare-backend:
+    desc: Prepare backend for builds
+    sources:
+      - backend/internal/hub/frontend.embed
+      - frontend/.output/public/**/*
+      - backend/generated/proto/**/*
+      - backend/internal/hub/store/*/generated/db/**/*
+      - backend/internal/worker/generated/db/**/*
+    generates:
+      - backend/internal/hub/generated/frontend/embed.go
+      - backend/internal/hub/generated/frontend/public/**/*
+    cmds:
+      - task: generate-proto
+      - task: generate-sqlc
+      - task: build-frontend
+      - mkdir -p backend/internal/hub/generated/frontend/public
+      - rsync -a backend/internal/hub/frontend.embed backend/internal/hub/generated/frontend/embed.go
+      - rsync -a --delete frontend/.output/public/ backend/internal/hub/generated/frontend/public/
+
+  prepare-desktop:
+    desc: Prepare desktop for builds
+    sources:
+      - icons/leapmux-icon.svg
+      - icons/leapmux-icon-corners.svg
+      - desktop/rust/scripts/**/*
+      - scripts/build-ico.mjs
+      - frontend/.output/**/*
+      - backend/internal/hub/generated/frontend/public/**/*
+    generates:
+      - desktop/rust/icons/icon.png
+      - desktop/rust/icons/icon.ico
+    cmds:
+      - task: build-frontend
+      - task: prepare-backend
+      - mkdir -p desktop/rust/icons
+      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-corners.svg desktop/rust/icons/icon.png desktop/rust/icons/icon.ico opaque
+        if: '[ "{{OS}}" = "darwin" ]'
+      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon-corners.svg desktop/rust/icons/icon.png desktop/rust/icons/icon.ico transparent
+        if: '[ "{{OS}}" != "darwin" ]'
+
+  # --- Build ---
+
+  build:
+    desc: Build all modules
+    cmds:
+      - task: build-frontend
+      - task: build-backend
+      - task: build-desktop
 
   build-frontend:
-    desc: Build frontend assets
-    deps: [prepare-frontend, generate-web-icons, copy-notice]
+    desc: Build frontend
     sources:
       - frontend/package.json
       - frontend/bun.lock
+      - frontend/*config*
+      - frontend/scripts/**/*
       - frontend/src/**/*
+      - frontend/tests/**/*
+      - frontend/patches/**/*
       - frontend/public/**/*
-      - frontend/app.config.ts
-      - frontend/tsconfig.json
     generates:
       - frontend/.output/**/*
       - frontend/.vinxi/**/*
     cmds:
+      - task: prepare-frontend
       - cd frontend && LEAPMUX_VERSION={{.VERSION}} LEAPMUX_COMMIT_HASH={{.COMMIT_HASH}} LEAPMUX_COMMIT_TIME={{.COMMIT_TIME}} LEAPMUX_BUILD_TIME={{.BUILD_TIME}} bun run build
+
+  build-backend:
+    desc: Build backend
+    sources:
+      - backend/go.mod
+      - backend/go.sum
+      - backend/**/*.go
+      - backend/internal/hub/generated/frontend/public/**/*
+    generates:
+      - leapmux
+    cmds:
+      - task: prepare-backend
+      - cd backend && go build -ldflags "{{.VERSION_LDFLAGS}}" -o ../leapmux ./cmd/leapmux
+
+  build-backend-docker:
+    desc: Build backend for Docker images
+    sources:
+      - backend/go.mod
+      - backend/go.sum
+      - backend/**/*.go
+      - backend/internal/hub/generated/frontend/public/**/*
+    generates:
+      - leapmux
+    cmds:
+      - task: prepare-backend
+      - |
+        CGO_ENABLED=0
+        GOOS={{.GOOS | default "linux"}} GOARCH={{.GOARCH | default "amd64"}}
+        cd backend && go build -ldflags "-s -w {{.VERSION_LDFLAGS}}" -o ../leapmux ./cmd/leapmux
+
+  build-desktop:
+    desc: Build desktop
+    cmds:
+      - task: build-desktop-darwin
+        if: '[ "{{OS}}" = "darwin" ]'
+      - task: build-desktop-not-darwin
+        if: '[ "{{OS}}" != "darwin" ]'
+
+  build-desktop-darwin:
+    desc: Build desktop for macOS
+    sources:
+      - backend/go.mod
+      - backend/go.sum
+      - backend/**/*.go
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - desktop/go/**/*.go
+      - exclude: desktop/go/bin/**/*
+      - desktop/rust/*.rs
+      - desktop/rust/src/**/*
+      - desktop/rust/Cargo.*
+      - desktop/rust/capabilities/**/*
+      - desktop/rust/tauri*.conf.json
+      - desktop/rust/icons/icon.png
+      - desktop/rust/icons/icon.ico
+      - desktop/rust/scripts/**/*
+      - frontend/.output/**/*
+      - backend/internal/hub/generated/frontend/public/**/*
+    generates:
+      - "LeapMux Desktop.app/**/*"
+      - "LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg"
+    cmds:
+      - task: prepare-desktop
+      - task: build-desktop-sidecar
+      - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --bundles app --config '{"version":"{{.VERSION}}"}'
+      - rsync -a --delete "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/" "LeapMux Desktop.app/"
+      - cd frontend/node_modules/macos-alias && npx node-gyp rebuild 2>/dev/null || true
+      - mkdir -p desktop/rust/target/release/bundle/dmg
+      - >-
+        desktop/rust/scripts/create-dmg.sh
+        "{{.VERSION}}"
+        "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
+        "desktop/rust/target/release/bundle/dmg/LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg"
+      - cp -f "desktop/rust/target/release/bundle/dmg/LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg" "LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg"
+
+  build-desktop-not-darwin:
+    desc: Build desktop for Windows and linux
+    sources:
+      - backend/go.mod
+      - backend/go.sum
+      - backend/**/*.go
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - desktop/go/**/*.go
+      - exclude: desktop/go/bin/**/*
+      - desktop/rust/*.rs
+      - desktop/rust/src/**/*
+      - desktop/rust/Cargo.*
+      - desktop/rust/capabilities/**/*
+      - desktop/rust/tauri*.conf.json
+      - desktop/rust/icons/icon.png
+      - desktop/rust/icons/icon.ico
+      - desktop/rust/scripts/**/*
+      - frontend/.output/**/*
+      - backend/internal/hub/generated/frontend/public/**/*
+    generates:
+      - desktop/go/bin/leapmux-desktop-service-*
+    cmds:
+      - task: prepare-desktop
+      - task: build-desktop-sidecar
+      - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
 
   # --- Testing ---
 
   test:
     desc: Run all tests
     cmds:
-      - task: generate
-      - task: _test
-
-  _test:
-    internal: true
-    deps: [test-backend, test-frontend]
-
-  test-backend:
-    desc: Run Go tests (unit + integration)
-    deps: [lint-backend]
-    dir: backend
-    cmds:
-      - go test -tags integration {{.CLI_ARGS | default "./..."}}
+      - task: test-frontend
+      - task: test-backend
+      - task: test-desktop
 
   test-frontend:
-    desc: Run frontend unit tests
-    deps: [lint-frontend]
+    desc: Run frontend tests
     cmds:
+      - task: prepare-frontend
+      - task: lint-frontend
       - cd frontend && bun run test {{.CLI_ARGS}}
 
+  test-backend:
+    desc: Run backend tests
+    cmds:
+      - task: prepare-backend
+      - task: lint-backend
+      - cd backend && go test -tags integration {{.CLI_ARGS | default "./..."}}
+
+  test-desktop:
+    desc: Run desktop tests
+    cmds:
+      - task: prepare-desktop
+      - task: lint-desktop
+      - cd desktop/go && go test -tags integration {{.CLI_ARGS | default "./..."}}
 
   test-e2e:
     desc: Run end-to-end tests
-    deps: [lint-frontend]
     cmds:
+      - task: prepare-frontend
+      - task: lint-frontend
       - cd frontend && bun run test:e2e {{.CLI_ARGS}}
 
   # --- Linting ---
@@ -295,19 +348,10 @@ tasks:
   lint:
     desc: Run all linters
     cmds:
-      - task: generate
-      - task: _lint
-
-  _lint:
-    internal: true
-    deps: [lint-proto, lint-backend, lint-frontend]
-    cmds:
-      - |
-        if command -v wails >/dev/null 2>&1; then
-          task lint-desktop
-        else
-          echo "⚠ Skipping desktop lint: 'wails' is not installed."
-        fi
+      - task: lint-proto
+      - task: lint-frontend
+      - task: lint-backend
+      - task: lint-desktop
 
   lint-proto:
     desc: Lint Protocol Buffer definitions
@@ -317,65 +361,77 @@ tasks:
     cmds:
       - buf lint
 
-  lint-backend:
-    desc: Lint Go code
-    deps: [prepare-backend, embed-frontend]
-    dir: backend
-    sources:
-      - go.mod
-      - go.sum
-      - "**/*.go"
-      - "**/migrations/*.sql"
-      - .golangci.yml
-    cmds:
-      - golangci-lint run ./...
-
   lint-frontend:
     desc: Lint frontend code
     deps: [prepare-frontend]
     sources:
       - frontend/package.json
       - frontend/bun.lock
+      - frontend/*config*
+      - frontend/scripts/**/*
       - frontend/src/**/*
       - frontend/tests/**/*
+      - frontend/patches/**/*
       - frontend/public/**/*
-      - frontend/app.config.ts
-      - frontend/tsconfig.json
-      - frontend/vitest.config.ts
-      - frontend/eslint.config.ts
     cmds:
-      - cd frontend && bun run lint .
       - cd frontend && bun run typecheck
+      - cd frontend && bun run lint .
+
+  lint-backend:
+    desc: Lint Go code
+    deps: [prepare-backend]
+    sources:
+      - .golangci.yml
+      - backend/go.mod
+      - backend/go.sum
+      - backend/**/*.go
+    cmds:
+      - cd backend && golangci-lint run ./...
+
+  lint-desktop:
+    desc: Lint desktop sidecar and Tauri shell code
+    sources:
+      - .golangci.yml
+      - desktop/go.mod
+      - desktop/go.sum
+      - desktop/**/*.go
+      - exclude: desktop/go/bin/**/*
+      - desktop/rust/Cargo.toml
+      - desktop/rust/Cargo.lock
+      - desktop/rust/*.rs
+      - desktop/rust/src/**/*.rs
+      - exclude: desktop/rust/target/**/*
+    cmds:
+      - task: prepare-desktop
+      - task: build-desktop-sidecar
+      - cd desktop/go && golangci-lint run ./...
+      - cd desktop/rust && cargo clippy --all-targets -- -D warnings
 
   lint-fix:
-    desc: Auto-fix lint violations (Go + frontend)
+    desc: Auto-fix lint violations
     cmds:
-      - task: generate
-      - task: _lint-fix
-
-  _lint-fix:
-    internal: true
-    deps: [lint-fix-backend, lint-fix-frontend]
-    cmds:
-      - |
-        if command -v wails >/dev/null 2>&1; then
-          task lint-fix-desktop
-        else
-          echo "⚠ Skipping desktop lint-fix: 'wails' is not installed."
-        fi
-
-  lint-fix-backend:
-    desc: Auto-fix Go lint violations
-    deps: [prepare-backend, embed-frontend]
-    dir: backend
-    cmds:
-      - golangci-lint run --fix ./...
+      - task: lint-fix-frontend
+      - task: lint-fix-backend
+      - task: lint-fix-desktop
 
   lint-fix-frontend:
     desc: Auto-fix frontend lint violations
-    deps: [prepare-frontend]
     cmds:
+      - task: prepare-frontend
       - cd frontend && bun run lint . --fix
+
+  lint-fix-backend:
+    desc: Auto-fix backend lint violations
+    cmds:
+      - task: prepare-backend
+      - cd backend && golangci-lint run --fix ./...
+
+  lint-fix-desktop:
+    desc: Auto-fix desktop lint violations
+    cmds:
+      - task: prepare-desktop
+      - cd desktop/go && golangci-lint run --fix ./...
+      - cd desktop/rust && cargo clippy --fix --all-targets
 
   # --- Development ---
 
@@ -394,16 +450,39 @@ tasks:
       - mprocs --config mprocs-solo.yaml
 
   dev-desktop:
-    desc: Build and launch the desktop app
+    desc: Start desktop app for development
     cmds:
-      - task: build-desktop
-      - '{{if eq OS "darwin"}}desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux{{else if eq OS "windows"}}desktop/build/bin/LeapMux.exe{{else}}desktop/build/bin/leapmux-desktop{{end}}'
+      - task: generate
+      - task: prepare-frontend
+      - task: build-desktop-sidecar
+      - mprocs --config mprocs-desktop.yaml
+
+  build-desktop-sidecar:
+    desc: Build desktop sidecar binary
+    sources:
+      - backend/go.mod
+      - backend/go.sum
+      - backend/**/*.go
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - desktop/go/**/*.go
+      - exclude: desktop/go/bin/**/*
+    generates:
+      - desktop/go/bin/leapmux-desktop-service-*
+    cmds:
+      - mkdir -p desktop/go/bin
+      - |
+        TARGET="{{if eq OS "darwin"}}{{if eq ARCH "arm64"}}aarch64{{else}}x86_64{{end}}-apple-darwin{{else if eq OS "linux"}}{{if eq ARCH "arm64"}}aarch64{{else}}x86_64{{end}}-unknown-linux-gnu{{else}}x86_64-pc-windows-msvc{{end}}"
+        BIN="./bin/leapmux-desktop-service-${TARGET}{{if eq OS "windows"}}.exe{{end}}"
+        cd desktop/go && go build -ldflags "{{.VERSION_LDFLAGS}}" -o "${BIN}" .
 
   # --- Docker ---
 
   docker-build:
     desc: Build all Docker images
-    deps: [docker-build-alpine, docker-build-ubuntu]
+    cmds:
+      - task: docker-build-alpine
+      - task: docker-build-ubuntu
 
   docker-build-alpine:
     desc: Build Alpine Docker image
@@ -447,192 +526,72 @@ tasks:
         -t {{.TAG}}
         .
 
-  # --- Desktop ---
+  # --- Notice ---
 
-  generate-desktop-icons-non-darwin:
-    desc: Generate desktop icons for Linux and Windows
+  generate-notice:
+    desc: Generate third-party license notice
     deps: [prepare-frontend]
     sources:
-      - icons/leapmux-icon-corners.svg
+      - scripts/generate-notice.mjs
+      - scripts/license-overrides/**/*
+      - backend/go.mod
+      - backend/go.sum
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - desktop/rust/Cargo.toml
+      - desktop/rust/Cargo.lock
+      - frontend/package.json
+      - frontend/bun.lock
     generates:
-      - desktop/build/appicon.png
-      - desktop/build/windows/icon.ico
+      - NOTICE.md
+      - NOTICE.html
     cmds:
-      - mkdir -p desktop/build/windows
-      - NODE_PATH=frontend/node_modules bun desktop/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon-corners.svg desktop/build/appicon.png desktop/build/windows/icon.ico transparent
-
-  generate-desktop-icons-darwin:
-    desc: Generate Apple-safe desktop icons for macOS
-    deps: [prepare-frontend]
-    sources:
-      - icons/leapmux-icon.svg
-      - icons/leapmux-icon-corners.svg
-    generates:
-      - desktop/build/appicon.png
-      - desktop/build/windows/icon.ico
-    cmds:
-      - mkdir -p desktop/build/windows
-      - NODE_PATH=frontend/node_modules bun desktop/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-corners.svg desktop/build/appicon.png desktop/build/windows/icon.ico opaque
-
-  prepare-desktop-non-darwin:
-    desc: Prepare desktop build dependencies for Linux and Windows
-    cmds:
-      - task: generate
-      - task: embed-frontend
-      - task: embed-frontend-desktop
-      - rsync -a desktop/platform/ desktop/build/
-      - task: generate-desktop-icons-non-darwin
-
-  prepare-desktop-darwin:
-    desc: Prepare desktop build dependencies for macOS
-    cmds:
-      - task: generate
-      - task: embed-frontend
-      - task: embed-frontend-desktop
-      - rsync -a desktop/platform/ desktop/build/
-      - task: generate-desktop-icons-darwin
-
-  build-desktop:
-    desc: Build LeapMux desktop app for current platform
-    cmds:
-      - task: build-desktop-{{if eq OS "darwin"}}darwin{{else if eq OS "windows"}}windows{{else}}{{OS}}-{{ARCH}}{{end}}
-
-  build-desktop-darwin:
-    desc: Build LeapMux desktop app for macOS
-    dir: desktop
-    deps: [prepare-desktop-darwin]
-    sources:
-      - go.mod
-      - go.sum
-      - "**/*.go"
-      - frontend/**/*
-      - spa/**/*
-      - build/appicon.png
-      - ../backend/go.mod
-      - ../backend/go.sum
-      - "../backend/**/*.go"
-    generates:
-      - build/bin/LeapMux.app/Contents/MacOS/LeapMux
-    cmds:
-      - wails build -tags devtools -platform darwin/universal -ldflags "{{.VERSION_LDFLAGS}}"
-      - codesign --force --sign - --identifier dev.leapmux.desktop --options runtime build/bin/LeapMux.app
-      - task: package-desktop-dmg
-
-  package-desktop-dmg:
-    desc: Package LeapMux.app into a .dmg (macOS only)
-    platforms: [darwin]
-    deps: [prepare-frontend]
-    sources:
-      - desktop/build/bin/LeapMux.app/Contents/MacOS/LeapMux
-      - desktop/scripts/create-dmg.sh
-    generates:
-      - desktop/build/bin/LeapMux-{{.VERSION}}.dmg
-    cmds:
-      - cd frontend/node_modules/macos-alias && npx node-gyp rebuild 2>/dev/null || true
-      - >-
-        desktop/scripts/create-dmg.sh
-        "{{.VERSION}}"
-        desktop/build/bin/LeapMux.app
-        desktop/build/bin/LeapMux-{{.VERSION}}.dmg
-
-  build-desktop-linux-amd64:
-    desc: Build LeapMux desktop app for Linux (amd64)
-    dir: desktop
-    deps: [prepare-desktop-non-darwin]
-    sources:
-      - go.mod
-      - go.sum
-      - "**/*.go"
-      - frontend/**/*
-      - spa/**/*
-      - build/appicon.png
-      - build/windows/icon.ico
-      - ../backend/go.mod
-      - ../backend/go.sum
-      - "../backend/**/*.go"
-    generates:
-      - build/bin/leapmux-desktop
-    cmds:
-      - wails build -tags devtools -o leapmux-desktop -platform linux/amd64 -ldflags "{{.VERSION_LDFLAGS}}"
-      - cp build/linux/leapmux-desktop.desktop build/bin/
-      - cp build/appicon.png build/bin/leapmux-desktop.png
-      - cp ../icons/leapmux-icon-corners.svg build/bin/leapmux-desktop.svg
-
-  build-desktop-linux-arm64:
-    desc: Build LeapMux desktop app for Linux (arm64)
-    dir: desktop
-    deps: [prepare-desktop-non-darwin]
-    sources:
-      - go.mod
-      - go.sum
-      - "**/*.go"
-      - frontend/**/*
-      - spa/**/*
-      - build/appicon.png
-      - build/windows/icon.ico
-      - ../backend/go.mod
-      - ../backend/go.sum
-      - "../backend/**/*.go"
-    generates:
-      - build/bin/leapmux-desktop
-    cmds:
-      - wails build -tags devtools -o leapmux-desktop -platform linux/arm64 -ldflags "{{.VERSION_LDFLAGS}}"
-      - cp build/linux/leapmux-desktop.desktop build/bin/
-      - cp build/appicon.png build/bin/leapmux-desktop.png
-      - cp ../icons/leapmux-icon-corners.svg build/bin/leapmux-desktop.svg
-
-  build-desktop-windows:
-    desc: Build LeapMux desktop app for Windows
-    dir: desktop
-    deps: [prepare-desktop-non-darwin]
-    sources:
-      - go.mod
-      - go.sum
-      - "**/*.go"
-      - frontend/**/*
-      - spa/**/*
-      - build/appicon.png
-      - build/windows/icon.ico
-      - ../backend/go.mod
-      - ../backend/go.sum
-      - "../backend/**/*.go"
-    generates:
-      - build/bin/LeapMux.exe
-    cmds:
-      - wails build -tags devtools -platform windows/amd64 -ldflags "{{.VERSION_LDFLAGS}}"
-
-  lint-desktop:
-    desc: Lint desktop Go code
-    deps: [prepare-desktop-non-darwin]
-    dir: desktop
-    sources:
-      - go.mod
-      - go.sum
-      - "**/*.go"
-      - ../backend/go.mod
-      - ../backend/go.sum
-      - "../backend/**/*.go"
-      - "../backend/**/migrations/*.sql"
-      - ../backend/.golangci.yml
-    cmds:
-      - golangci-lint run ./...
-
-  lint-fix-desktop:
-    desc: Auto-fix desktop Go lint violations
-    deps: [prepare-desktop-non-darwin]
-    dir: desktop
-    cmds:
-      - golangci-lint run --fix ./...
+      - bun scripts/generate-notice.mjs
 
   # --- Clean ---
 
   clean:
-    desc: Remove all build artifacts and generated code
+    desc: Remove all build artifacts
     cmds:
-      - rm -rf backend/build/ backend/leapmux
-      - rm -rf backend/generated/ backend/*/generated/ backend/*/*/generated/ backend/*/*/*/generated/ backend/*/*/*/*/generated/
-      - rm -rf frontend/.output/ frontend/.vinxi/ frontend/node_modules/
-      - rm -rf frontend/src/spinners/
-      - rm -rf desktop/build/ desktop/leapmux-desktop
+      - task: clean-desktop
+      - task: clean-backend
+      - task: clean-frontend
+      - rm -f *.log */*.log
       - rm -rf .task/
-      - rm -rf *.log */*.log
+
+  clean-frontend:
+    desc: Remove frontend build artifacts
+    cmds:
+      - rm -rf frontend/.output/
+      - rm -rf frontend/.vinxi/
+      - rm -f  frontend/public/NOTICE.html
+      - rm -rf frontend/public/icons/
+      - rm -rf frontend/src/spinners/
+      - rm -rf frontend/node_modules/
+      - rm -rf frontend/generated/
+      - rm -rf frontend/*/generated/
+      - rm -rf frontend/*/*/generated/
+      - rm -rf frontend/*/*/*/generated/
+      - rm -rf frontend/*/*/*/*/generated/
+
+  clean-backend:
+    desc: Remove backend build artifacts
+    cmds:
+      - rm -f  leapmux
+      - rm -f  backend/leapmux
+      - rm -rf backend/generated/
+      - rm -rf backend/*/generated/
+      - rm -rf backend/*/*/generated/
+      - rm -rf backend/*/*/*/generated/
+      - rm -rf backend/*/*/*/*/generated/
+
+  clean-desktop:
+    desc: Remove desktop build artifacts
+    cmds:
+      - rm -f  LeapMux*.dmg
+      - rm -rf LeapMux*.app
+      - rm -f  desktop/go/leapmux-desktop
+      - rm -rf desktop/go/bin/
+      - rm -rf desktop/rust/gen/
+      - rm -rf desktop/rust/icons/
+      - rm -rf desktop/rust/target/

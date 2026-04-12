@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { TunnelInfo } from '~/api/tunnelApi'
+import type { TunnelInfo } from '~/api/platformBridge'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'

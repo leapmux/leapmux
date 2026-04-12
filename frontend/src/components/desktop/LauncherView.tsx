@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
 import { createSignal, onCleanup, onMount } from 'solid-js'
-import { animateWindowResize, waitForWailsBindings } from '~/api/desktopBridge'
+import { animateWindowResize, getRuntimeState, LAUNCHER_WINDOW_SIZE, maximizeWindow, platformBridge } from '~/api/platformBridge'
 import { createLogger } from '~/lib/logger'
-import { formatBuildTime } from '~/lib/systemInfo'
+import { formatVersionLine } from '~/lib/systemInfo'
 import * as styles from './LauncherView.css'
 
 const log = createLogger('launcher')
@@ -24,8 +24,8 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   const [visible, setVisible] = createSignal(false)
   let fdaPollTimer: ReturnType<typeof setInterval> | null = null
   let containerRef: HTMLDivElement | undefined
-
-  const app = () => window.go!.main.App
+  let resizedToWorkspace = false
+  let savedGeometry = { width: 0, height: 0, maximized: false }
 
   const isValidHubUrl = (value: string): boolean => {
     let s = value.trim()
@@ -57,12 +57,12 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
 
   const checkFDA = async () => {
     try {
-      const granted = await app().CheckFullDiskAccess()
+      const granted = await platformBridge.checkFullDiskAccess()
       const wasBlocked = !fdaGranted()
       setFdaGranted(granted)
       if (granted && wasBlocked) {
         stopFDAPoll()
-        app().Restart()
+        platformBridge.restart()
       }
     }
     catch {
@@ -99,23 +99,33 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
     })
   }
 
+  const resizeToWorkspace = async () => {
+    if (resizedToWorkspace)
+      return
+    resizedToWorkspace = true
+    if (savedGeometry.maximized)
+      await maximizeWindow()
+    else if (savedGeometry.width > 0 && savedGeometry.height > 0)
+      await animateWindowResize(savedGeometry.width, savedGeometry.height)
+    else
+      await animateWindowResize(1280, 800)
+  }
+
   const connect = async () => {
     setLoading(true)
     setError('')
     try {
       if (mode() === 'solo') {
-        await app().ConnectSolo()
+        await platformBridge.connectSolo()
+        await fadeOut()
+        await resizeToWorkspace()
+        props.onConnected()
       }
       else {
-        await app().ConnectDistributed(hubUrl().trim())
+        await fadeOut()
+        await resizeToWorkspace()
+        await platformBridge.connectDistributed(hubUrl().trim())
       }
-      // Fade out UI, then animate window to saved or default dimensions.
-      await fadeOut()
-      const config = await app().GetConfig()
-      const targetW = config.window_width > 0 ? config.window_width : 1280
-      const targetH = config.window_height > 0 ? config.window_height : 800
-      await animateWindowResize(targetW, targetH)
-      props.onConnected()
     }
     catch (err) {
       setVisible(true)
@@ -125,28 +135,22 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   }
 
   onMount(async () => {
-    await waitForWailsBindings()
-
     try {
-      const info = await app().GetBuildInfo()
-      if (info.version) {
-        let line = info.version
-        if (info.commit_hash)
-          line += ` (${info.commit_hash})`
-        const time = formatBuildTime(info.build_time)
-        if (time)
-          line += ` \u00B7 ${time}`
-        setVersionLine(line)
-      }
-    }
-    catch { /* ignore */ }
+      const [, { config, buildInfo }] = await Promise.all([
+        getRuntimeState(),
+        platformBridge.getStartupInfo(),
+      ])
+      if (buildInfo.version)
+        setVersionLine(formatVersionLine(buildInfo))
 
-    // Animate resize to launcher dimensions while still invisible
-    // (opacity 0), so the user sees a smooth resize without content.
-    await animateWindowResize(900, 680)
+      // Remember saved window geometry for resizeToWorkspace().
+      savedGeometry = { width: config.window_width, height: config.window_height, maximized: config.window_maximized }
 
-    try {
-      const config = await app().GetConfig()
+      // Ensure the window starts at the default launcher size.
+      // On first launch it's already 900×680 (from tauri.conf.json).
+      // After Switch Mode it may be larger — shrink it back.
+      await animateWindowResize(LAUNCHER_WINDOW_SIZE.width, LAUNCHER_WINDOW_SIZE.height)
+
       if (config.mode === 'distributed' && config.hub_url) {
         setHubUrl(config.hub_url)
       }
@@ -164,6 +168,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
             return
           }
         }
+
+        // Resize to the saved workspace size before connecting.
+        await resizeToWorkspace()
+
         // Auto-connect silently — don't fade in unless it takes > 1s.
         const showTimer = setTimeout(setVisible, 1000, true)
         await connect()
@@ -263,7 +271,7 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
               </p>
               <button
                 class={styles.fdaButton}
-                onClick={() => app().OpenFullDiskAccessSettings()}
+                onClick={() => platformBridge.openFullDiskAccessSettings()}
               >
                 Open System Settings
               </button>

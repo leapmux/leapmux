@@ -4,11 +4,18 @@ import { createTunnelStore } from './tunnel.store'
 const mockTunnel1 = { id: 't1', workerId: 'w1', type: 'port_forward' as const, bindAddr: '127.0.0.1', bindPort: 3000, targetAddr: '127.0.0.1', targetPort: 3000 }
 const mockTunnel2 = { id: 't2', workerId: 'w2', type: 'socks5' as const, bindAddr: '127.0.0.1', bindPort: 1080, targetAddr: '', targetPort: 0 }
 
-vi.mock('~/api/tunnelApi', () => ({
-  createTunnel: vi.fn(),
-  deleteTunnel: vi.fn(),
-  listTunnels: vi.fn(),
-}))
+vi.mock('~/api/platformBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/platformBridge')>()
+  return {
+    ...actual,
+    platformBridge: {
+      ...actual.platformBridge,
+      createTunnel: vi.fn(),
+      deleteTunnel: vi.fn(),
+      listTunnels: vi.fn(),
+    },
+  }
+})
 
 describe('tunnel store', () => {
   afterEach(() => {
@@ -16,11 +23,11 @@ describe('tunnel store', () => {
   })
 
   it('tunnelsForWorker filters correctly', async () => {
-    const { createTunnel } = await import('~/api/tunnelApi')
+    const { platformBridge } = await import('~/api/platformBridge')
     const store = createTunnelStore()
 
-    vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel1)
-    vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel2)
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce(mockTunnel1)
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce(mockTunnel2)
 
     await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' })
     await store.add({ workerId: 'w2', type: 'socks5', targetAddr: '', targetPort: 0, bindAddr: '127.0.0.1', bindPort: 1080, hubURL: '', userId: '' })
@@ -31,8 +38,8 @@ describe('tunnel store', () => {
   })
 
   it('add appends to tunnel list', async () => {
-    const { createTunnel } = await import('~/api/tunnelApi')
-    vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel1)
+    const { platformBridge } = await import('~/api/platformBridge')
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce(mockTunnel1)
 
     const store = createTunnelStore()
     const result = await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' })
@@ -42,10 +49,10 @@ describe('tunnel store', () => {
   })
 
   it('remove filters from tunnel list', async () => {
-    const { createTunnel, deleteTunnel } = await import('~/api/tunnelApi')
-    vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel1)
-    vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel2)
-    vi.mocked(deleteTunnel).mockResolvedValueOnce(undefined)
+    const { platformBridge } = await import('~/api/platformBridge')
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce(mockTunnel1)
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce(mockTunnel2)
+    vi.mocked(platformBridge.deleteTunnel).mockResolvedValueOnce(undefined)
 
     const store = createTunnelStore()
     await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' })
@@ -56,8 +63,8 @@ describe('tunnel store', () => {
   })
 
   it('add propagates API errors', async () => {
-    const { createTunnel } = await import('~/api/tunnelApi')
-    vi.mocked(createTunnel).mockRejectedValueOnce(new Error('bind failed'))
+    const { platformBridge } = await import('~/api/platformBridge')
+    vi.mocked(platformBridge.createTunnel).mockRejectedValueOnce(new Error('bind failed'))
 
     const store = createTunnelStore()
     await expect(store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' }))
@@ -67,9 +74,9 @@ describe('tunnel store', () => {
   })
 
   it('remove propagates API errors', async () => {
-    const { createTunnel, deleteTunnel } = await import('~/api/tunnelApi')
-    vi.mocked(createTunnel).mockResolvedValueOnce(mockTunnel1)
-    vi.mocked(deleteTunnel).mockRejectedValueOnce(new Error('not found'))
+    const { platformBridge } = await import('~/api/platformBridge')
+    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce(mockTunnel1)
+    vi.mocked(platformBridge.deleteTunnel).mockRejectedValueOnce(new Error('not found'))
 
     const store = createTunnelStore()
     await store.add({ workerId: 'w1', type: 'port_forward', targetAddr: '127.0.0.1', targetPort: 3000, bindAddr: '127.0.0.1', bindPort: 3000, hubURL: '', userId: '' })

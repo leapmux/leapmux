@@ -1,6 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
 import { createSignal, For, Show } from 'solid-js'
+import { animateWindowResize, LAUNCHER_WINDOW_SIZE, platformBridge } from '~/api/platformBridge'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
 import { ProfileDialog } from '~/components/settings/ProfileDialog'
@@ -8,7 +9,6 @@ import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
-import { AboutDialog } from './AboutDialog'
 import * as styles from './UserMenu.css'
 
 interface UserMenuProps {
@@ -23,7 +23,7 @@ interface UserMenuProps {
  */
 const [showProfileDialog, setShowProfileDialog] = createSignal(false)
 const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
-const [showAboutDialog, setShowAboutDialog] = createSignal(false)
+export const [showAboutDialog, setShowAboutDialog] = createSignal(false)
 
 /** Renders dialogs triggered by UserMenu. Mount once in a stable parent. */
 export const UserMenuDialogs: Component = () => (
@@ -33,9 +33,6 @@ export const UserMenuDialogs: Component = () => (
     </Show>
     <Show when={showPreferencesDialog()}>
       <PreferencesDialog onClose={() => setShowPreferencesDialog(false)} />
-    </Show>
-    <Show when={showAboutDialog()}>
-      <AboutDialog onClose={() => setShowAboutDialog(false)} />
     </Show>
   </>
 )
@@ -64,12 +61,13 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
       setTimeout(resolve, 400)
     })
 
-    await window.go?.main?.App?.SwitchMode()
-    // Remove the overlay before switching views — the LauncherView
-    // handles its own fade-in.
+    await platformBridge.switchMode()
+
+    // Resize back to the default launcher size while the overlay hides
+    // the transition. The LauncherView will handle its own fade-in.
+    await animateWindowResize(LAUNCHER_WINDOW_SIZE.width, LAUNCHER_WINDOW_SIZE.height)
+
     overlay.remove()
-    // Reset SPA state in-place. Wails doesn't re-inject window.go
-    // after page reload, so we switch without reloading.
     ;(window as any).__leapmux_disconnectDesktop?.()
   }
 

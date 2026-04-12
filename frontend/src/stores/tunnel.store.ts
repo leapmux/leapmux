@@ -1,6 +1,6 @@
-import type { TunnelConfig, TunnelInfo } from '~/api/tunnelApi'
+import type { TunnelConfig, TunnelInfo } from '~/api/platformBridge'
 import { createSignal } from 'solid-js'
-import { createTunnel, deleteTunnel, listTunnels } from '~/api/tunnelApi'
+import { platformBridge } from '~/api/platformBridge'
 
 export interface TunnelStore {
   tunnels: () => TunnelInfo[]
@@ -18,20 +18,20 @@ export function createTunnelStore(): TunnelStore {
     tunnels,
     tunnelsForWorker: (workerId: string) => tunnels().filter(t => t.workerId === workerId),
     refresh: async () => {
-      setTunnels(await listTunnels())
+      setTunnels(await platformBridge.listTunnels())
     },
     add: async (config: TunnelConfig) => {
-      const tunnel = await createTunnel(config)
+      const tunnel = await platformBridge.createTunnel(config)
       setTunnels(prev => [...prev, tunnel])
       return tunnel
     },
     remove: async (tunnelId: string) => {
-      await deleteTunnel(tunnelId)
+      await platformBridge.deleteTunnel(tunnelId)
       setTunnels(prev => prev.filter(t => t.id !== tunnelId))
     },
     removeAllForWorker: async (workerId: string) => {
       const toDelete = tunnels().filter(t => t.workerId === workerId)
-      await Promise.all(toDelete.map(t => deleteTunnel(t.id)))
+      await Promise.all(toDelete.map(t => platformBridge.deleteTunnel(t.id)))
       setTunnels(prev => prev.filter(t => t.workerId !== workerId))
     },
   }

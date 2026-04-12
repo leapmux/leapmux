@@ -146,7 +146,6 @@ export default defineConfig({
         'diff',
         'fracturedjsonjs',
         'fzstd',
-        'tslog',
         'random-word-slugs',
       ],
     },

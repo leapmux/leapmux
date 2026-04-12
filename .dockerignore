@@ -39,8 +39,8 @@ docker/Dockerfile
 
 # Desktop app (only go.mod/go.sum needed for workspace-aware go mod download)
 desktop/
-!desktop/go.mod
-!desktop/go.sum
+!desktop/go/go.mod
+!desktop/go/go.sum
 
 # Misc
 .DS_Store
