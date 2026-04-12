@@ -1,4 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "mainBinaryName": "leapmux-desktop"
+  "productName": "leapmux-desktop",
+  "mainBinaryName": "leapmux-desktop",
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "desktop-template.desktop"
+      }
+    }
+  }
 }

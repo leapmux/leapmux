@@ -122,9 +122,6 @@ const DISTRIBUTED_DESKTOP_CAPABILITIES = caps('tauri-desktop-distributed', {
   systemPermissions: true,
 })
 
-/** Default launcher window dimensions (must match tauri.conf.json). */
-export const LAUNCHER_WINDOW_SIZE = { width: 900, height: 680 }
-
 export function isTauriApp(): boolean {
   return typeof window.__TAURI_INTERNALS__ !== 'undefined'
 }
@@ -237,86 +234,94 @@ export async function refreshRuntimeState(): Promise<DesktopRuntimeState> {
   return getRuntimeState()
 }
 
-export async function animateWindowResize(targetW: number, targetH: number, durationMs = 400): Promise<void> {
+/**
+ * Restore the window to the saved geometry on startup and install a
+ * resize listener that debounces and saves via the Rust sidecar.
+ *
+ * Uses `window.innerWidth/Height` (CSS viewport) which matches what
+ * Tauri's `setSize()` expects — this avoids the GTK CSD offset issue
+ * where `appWindow.innerSize()` includes shadow + header bar.
+ */
+export async function restoreWindowGeometry(width: number, height: number, maximized: boolean): Promise<void> {
   if (!isTauriApp())
     return
 
   try {
     const { LogicalSize } = await loadTauriDpi()
-    const { getCurrentWindow, currentMonitor } = await loadTauriWindow()
+    const { getCurrentWindow } = await loadTauriWindow()
     const appWindow = getCurrentWindow()
 
-    // Fetch scale factor, current size, and monitor info in parallel
-    // to minimize IPC round-trips before the first animation frame.
-    const [scaleFactor, innerSize, monitor] = await Promise.all([
-      appWindow.scaleFactor(),
-      appWindow.innerSize(),
-      currentMonitor().catch(() => null),
-    ])
-
-    // Clamp target to the current monitor size.
-    if (monitor) {
-      const monitorSize = monitor.size.toLogical(scaleFactor)
-      if (monitorSize.width > 0 && monitorSize.height > 0) {
-        targetW = Math.min(targetW, monitorSize.width)
-        targetH = Math.min(targetH, monitorSize.height)
-      }
+    if (maximized) {
+      await appWindow.maximize()
+    }
+    else if (width > 0 && height > 0) {
+      await appWindow.setSize(new LogicalSize(width, height))
     }
 
-    const cur = innerSize.toLogical(scaleFactor)
-    if (durationMs <= 0) {
-      await appWindow.setSize(new LogicalSize(targetW, targetH))
-      await appWindow.center()
-      return
+    // Show the window now that it's at the correct size.
+    // The window starts hidden (visible: false in tauri.conf.json) so
+    // the Wayland compositor sees the final size at first map.
+    await appWindow.show()
+
+    // Hide the menu bar on Linux/Windows — toggled with ALT.
+    // Must be done after show() due to a GTK bug (tao#1201).
+    await tauriInvoke('hide_menu_bar').catch(() => {})
+
+    // Save window geometry on resize / maximize / unmaximize, debounced.
+    let saveTimer: ReturnType<typeof setTimeout> | null = null
+    const saveGeometry = () => {
+      if (saveTimer)
+        clearTimeout(saveTimer)
+      saveTimer = setTimeout(async () => {
+        try {
+          const isMax = await appWindow.isMaximized()
+          tauriInvoke('save_window_geometry', {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            maximized: isMax,
+          }).catch(() => {})
+        }
+        catch { /* best-effort */ }
+      }, 500)
     }
-
-    if (cur.width === targetW && cur.height === targetH)
-      return
-
-    const startW = cur.width
-    const startH = cur.height
-    const steps = Math.max(Math.round(durationMs / 8), 1)
-    const stepDelayMs = durationMs / steps
-
-    for (let step = 1; step <= steps; step += 1) {
-      const t = step / steps
-      const eased = 1 - (1 - t) ** 3
-      const w = Math.round(startW + (targetW - startW) * eased)
-      const h = Math.round(startH + (targetH - startH) * eased)
-      await appWindow.setSize(new LogicalSize(w, h))
-      await appWindow.center()
-      if (step < steps)
-        await new Promise(resolve => setTimeout(resolve, stepDelayMs))
-    }
-    await appWindow.setSize(new LogicalSize(targetW, targetH))
-    await appWindow.center()
+    window.addEventListener('resize', saveGeometry)
   }
   catch (err) {
-    log.warn('animateWindowResize fallback', err)
-    try {
-      const { LogicalSize } = await loadTauriDpi()
-      const { getCurrentWindow } = await loadTauriWindow()
-      const appWindow = getCurrentWindow()
-      await appWindow.setSize(new LogicalSize(targetW, targetH))
-      await appWindow.center()
-    }
-    catch (fallbackErr) {
-      log.warn('animateWindowResize failed', fallbackErr)
-    }
+    log.warn('restoreWindowGeometry failed', err)
   }
 }
 
-export async function maximizeWindow(): Promise<void> {
+/**
+ * Install a global ALT key listener that toggles the menu bar on
+ * Linux/Windows.  Fires on ALT release only if no other key was
+ * pressed between ALT-down and ALT-up (standard desktop behavior).
+ */
+export function installMenuBarToggle(): void {
   if (!isTauriApp())
     return
 
-  try {
-    const { getCurrentWindow } = await loadTauriWindow()
-    await getCurrentWindow().maximize()
-  }
-  catch (err) {
-    log.warn('maximizeWindow failed', err)
-  }
+  let altDown = false
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Alt') {
+      altDown = true
+    }
+    else {
+      altDown = false
+    }
+
+    // Handle menu shortcuts directly — GTK disables accelerators
+    // when the menu bar is hidden.
+    if (e.key === 'q' && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      e.preventDefault()
+      tauriInvoke('quit_app').catch(() => {})
+    }
+  })
+  window.addEventListener('keyup', (e) => {
+    if (e.key === 'Alt' && altDown) {
+      altDown = false
+      tauriInvoke('toggle_menu_bar').catch(() => {})
+    }
+  })
 }
 
 export const platformBridge = {

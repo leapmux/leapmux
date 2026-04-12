@@ -1,0 +1,8 @@
+[Desktop Entry]
+Categories=
+Exec=leapmux-desktop
+StartupWMClass=leapmux-desktop
+Icon=leapmux-desktop
+Name=LeapMux Desktop
+Terminal=false
+Type=Application

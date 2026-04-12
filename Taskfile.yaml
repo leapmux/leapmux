@@ -304,6 +304,7 @@ tasks:
     cmds:
       - task: prepare-desktop
       - task: build-desktop-sidecar
+      - desktop/rust/scripts/patch-linuxdeploy.sh
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
 
   # --- Testing ---

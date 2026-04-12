@@ -18,7 +18,6 @@ use std::{
     Arc, Mutex,
   },
   thread,
-  time::Duration,
 };
 use tauri::{
   menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID},
@@ -37,6 +36,7 @@ use tokio::sync::oneshot;
 const SHOW_ABOUT_MENU_ID: &str = "show-about";
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
 const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024; // 16 MB
+
 
 // --- Frame read/write utilities ---
 
@@ -212,8 +212,6 @@ struct DesktopShell {
   close_in_progress: AtomicBool,
   exit_in_progress: AtomicBool,
   state: Mutex<ShellState>,
-  resize_debounce_tx: tokio::sync::mpsc::Sender<(u32, u32, bool)>,
-  resize_debounce_rx: Mutex<Option<tokio::sync::mpsc::Receiver<(u32, u32, bool)>>>,
 }
 
 impl DesktopShell {
@@ -260,10 +258,6 @@ impl DesktopShell {
       }
     });
 
-    // Debounce resize events: persist via sidecar RPC only after
-    // 500ms of inactivity instead of on every pixel during a drag.
-    let (resize_tx, resize_rx) = tokio::sync::mpsc::channel::<(u32, u32, bool)>(4);
-
     Ok(Self {
       app_handle,
       sidecar: SidecarProcess {
@@ -280,13 +274,7 @@ impl DesktopShell {
         hub_url: String::new(),
         local_app_url,
       }),
-      resize_debounce_tx: resize_tx,
-      resize_debounce_rx: Mutex::new(Some(resize_rx)),
     })
-  }
-
-  fn take_resize_rx(&self) -> tokio::sync::mpsc::Receiver<(u32, u32, bool)> {
-    self.resize_debounce_rx.lock().unwrap().take().expect("resize_rx already taken")
   }
 
   async fn send_request_async(&self, method: proto::request::Method) -> Result<proto::Response, String> {
@@ -401,17 +389,6 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
 
 // --- Static helpers ---
 
-/// Extract logical window geometry (width, height, maximized) from any
-/// Tauri window type that provides inner_size, scale_factor, and is_maximized.
-macro_rules! window_geometry {
-  ($window:expr) => {{
-    let size = $window.inner_size().map_err(|err| format!("read window size: {err}"))?;
-    let scale_factor = $window.scale_factor().map_err(|err| format!("read scale factor: {err}"))?;
-    let size = size.to_logical::<u32>(scale_factor);
-    let maximized = $window.is_maximized().map_err(|err| format!("read maximized state: {err}"))?;
-    (size.width, size.height, maximized)
-  }};
-}
 
 
 fn capabilities_for(state: &ShellState) -> PlatformCapabilities {
@@ -712,8 +689,6 @@ fn proto_to_tunnel_info(info: &proto::TunnelInfo) -> TunnelInfoResponse {
 
 #[tauri::command]
 async fn switch_mode(shell: State<'_, Arc<DesktopShell>>, window: WebviewWindow) -> Result<(), String> {
-  let (w, h, m) = window_geometry!(&window);
-  shell.save_window_size(w, h, m).await?;
   check_response(
     shell.send_request_async(proto::request::Method::SwitchMode(proto::SwitchModeRequest {})).await?,
   )?;
@@ -732,15 +707,45 @@ async fn switch_mode(shell: State<'_, Arc<DesktopShell>>, window: WebviewWindow)
 }
 
 #[tauri::command]
-async fn restart_app(shell: State<'_, Arc<DesktopShell>>, window: WebviewWindow) -> Result<(), String> {
-  let (w, h, m) = window_geometry!(&window);
-  shell.save_window_size(w, h, m).await?;
+async fn restart_app(shell: State<'_, Arc<DesktopShell>>, _window: WebviewWindow) -> Result<(), String> {
   let current_exe = std::env::current_exe().map_err(|err| format!("resolve current exe: {err}"))?;
   Command::new(current_exe)
     .spawn()
     .map_err(|err| format!("restart app: {err}"))?;
   shell.app_handle.exit(0);
   Ok(())
+}
+
+#[tauri::command]
+async fn save_window_geometry(shell: State<'_, Arc<DesktopShell>>, width: u32, height: u32, maximized: bool) -> Result<(), String> {
+  shell.save_window_size(width, height, maximized).await
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+  app.exit(0);
+}
+
+#[tauri::command]
+fn hide_menu_bar(app: AppHandle) {
+  #[cfg(not(target_os = "macos"))]
+  if let Some(w) = app.get_webview_window("main") {
+    let _ = w.hide_menu();
+  }
+  let _ = app;
+}
+
+#[tauri::command]
+fn toggle_menu_bar(app: AppHandle) {
+  #[cfg(not(target_os = "macos"))]
+  if let Some(w) = app.get_webview_window("main") {
+    if w.is_menu_visible().unwrap_or(false) {
+      let _ = w.hide_menu();
+    } else {
+      let _ = w.show_menu();
+    }
+  }
+  let _ = app;
 }
 
 // --- Window/app helpers ---
@@ -759,13 +764,6 @@ fn open_main_web_inspector(app: &AppHandle) {
   }
 }
 
-macro_rules! try_save_window_geometry {
-  ($shell:expr, $window:expr) => {
-    if let Ok((w, h, m)) = (|| -> Result<(u32, u32, bool), String> { Ok(window_geometry!($window)) })() {
-      let _ = $shell.save_window_size(w, h, m).await;
-    }
-  };
-}
 
 fn handle_main_window_close(shell: Arc<DesktopShell>, window: Window) {
   if shell
@@ -777,7 +775,6 @@ fn handle_main_window_close(shell: Arc<DesktopShell>, window: Window) {
   }
 
   tauri::async_runtime::spawn(async move {
-    try_save_window_geometry!(&shell, &window);
     let _ = window.close();
   });
 }
@@ -792,20 +789,16 @@ fn handle_app_exit(shell: Arc<DesktopShell>) {
   }
 
   tauri::async_runtime::spawn(async move {
-    if let Some(window) = shell.app_handle.get_webview_window("main") {
-      try_save_window_geometry!(&shell, &window);
-    }
     shell.app_handle.exit(0);
   });
 }
 
 fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-  let pkg_info = app.package_info();
 
   let show_about = MenuItem::with_id(
     app,
     SHOW_ABOUT_MENU_ID,
-    format!("About {}", pkg_info.name),
+    "About LeapMux Desktop...",
     true,
     None::<&str>,
   )?;
@@ -821,7 +814,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
   #[cfg(target_os = "macos")]
   let app_menu = Submenu::with_items(
     app,
-    pkg_info.name.clone(),
+    "LeapMux Desktop",
     true,
     &[
       &show_about,
@@ -835,21 +828,21 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     ],
   )?;
 
-  #[cfg(not(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
-  )))]
   let file_menu = Submenu::with_items(
     app,
     "File",
     true,
     &[
+      #[cfg(not(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+      )))]
       &PredefinedMenuItem::close_window(app, None)?,
       #[cfg(not(target_os = "macos"))]
-      &PredefinedMenuItem::quit(app, None)?,
+      &MenuItem::with_id(app, "quit", "Quit", true, Some("Ctrl+Q"))?,
     ],
   )?;
 
@@ -881,11 +874,8 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     "Window",
     true,
     &[
-      &PredefinedMenuItem::minimize(app, None)?,
-      &PredefinedMenuItem::maximize(app, None)?,
-      #[cfg(target_os = "macos")]
-      &PredefinedMenuItem::separator(app)?,
-      &PredefinedMenuItem::close_window(app, None)?,
+      &MenuItem::with_id(app, "minimize", "Minimize", true, None::<&str>)?,
+      &MenuItem::with_id(app, "maximize", "Maximize", true, None::<&str>)?,
     ],
   )?;
 
@@ -906,13 +896,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     &[
       #[cfg(target_os = "macos")]
       &app_menu,
-      #[cfg(not(any(
-        target_os = "linux",
-        target_os = "dragonfly",
-        target_os = "freebsd",
-        target_os = "netbsd",
-        target_os = "openbsd"
-      )))]
       &file_menu,
       &edit_menu,
       #[cfg(target_os = "macos")]
@@ -924,6 +907,18 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 fn main() {
+  // Work around known WebKitGTK issues on Linux:
+  // - DMA-BUF renderer fails with "Failed to create GBM buffer"
+  // - Hardware compositing can trigger Wayland protocol errors
+  //   (tauri-apps/tauri#8541)
+  // Disabling both avoids GPU buffer management issues while
+  // keeping native Wayland support.
+  #[cfg(target_os = "linux")]
+  {
+    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+  }
+
   tauri::Builder::default()
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -935,6 +930,22 @@ fn main() {
         let _ = app.emit("menu:show-about", ());
       } else if event.id() == OPEN_WEB_INSPECTOR_MENU_ID {
         open_main_web_inspector(app);
+      } else if event.id() == "quit" {
+        app.exit(0);
+      } else if event.id() == "minimize" {
+        if let Some(w) = app.get_webview_window("main") {
+          let _ = w.minimize();
+        }
+      } else if event.id() == "maximize" {
+        if let Some(w) = app.get_webview_window("main") {
+          let is_max = w.is_maximized().unwrap_or(false);
+          if is_max { let _ = w.unmaximize(); } else { let _ = w.maximize(); }
+        }
+      }
+      // Re-hide the menu bar after a menu item is selected (Linux/Windows).
+      #[cfg(not(target_os = "macos"))]
+      if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide_menu();
       }
     })
     .on_window_event(|window, event| {
@@ -942,54 +953,27 @@ fn main() {
         return;
       }
 
-      match event {
-        WindowEvent::Resized(_) => {
-          if let Some(shell) = window.app_handle().try_state::<Arc<DesktopShell>>() {
-            if let Ok((w, h, m)) = (|| -> Result<(u32, u32, bool), String> { Ok(window_geometry!(window)) })() {
-              let _ = shell.resize_debounce_tx.try_send((w, h, m));
-            }
+      if let WindowEvent::CloseRequested { api, .. } = event {
+        if let Some(shell) = window.app_handle().try_state::<Arc<DesktopShell>>() {
+          if !shell.close_in_progress.load(Ordering::SeqCst) {
+            api.prevent_close();
+            handle_main_window_close(shell.inner().clone(), window.clone());
           }
         }
-        WindowEvent::CloseRequested { api, .. } => {
-          if let Some(shell) = window.app_handle().try_state::<Arc<DesktopShell>>() {
-            if !shell.close_in_progress.load(Ordering::SeqCst) {
-              api.prevent_close();
-              handle_main_window_close(shell.inner().clone(), window.clone());
-            }
-          }
-        }
-        _ => {}
       }
     })
     .setup(|app| {
-      let shell = Arc::new(DesktopShell::new(app.handle().clone())?);
-      let shell_for_debounce = shell.clone();
-      let mut resize_rx = shell.take_resize_rx();
-      tauri::async_runtime::spawn(async move {
-        let mut latest: Option<(u32, u32, bool)> = None;
-        let mut persisted: Option<(u32, u32, bool)> = None;
-        loop {
-          tokio::select! {
-            msg = resize_rx.recv() => {
-              match msg {
-                Some(state) => { latest = Some(state); }
-                None => break,
-              }
-            }
-            _ = tokio::time::sleep(Duration::from_millis(500)), if latest.is_some() => {
-              if let Some(state) = latest.take() {
-                if persisted != Some(state) {
-                  if let Err(err) = shell_for_debounce.save_window_size(state.0, state.1, state.2).await {
-                    eprintln!("save desktop window state on resize: {err}");
-                  } else {
-                    persisted = Some(state);
-                  }
-                }
-              }
-            }
-          }
+      // Safety net: if the frontend doesn't show the window within 5s
+      // (e.g. JS error), show it anyway to avoid an invisible app.
+      let handle = app.handle().clone();
+      std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        if let Some(w) = handle.get_webview_window("main") {
+          let _ = w.show();
         }
       });
+
+      let shell = Arc::new(DesktopShell::new(app.handle().clone())?);
       app.manage(shell);
       Ok(())
     })
@@ -1009,6 +993,10 @@ fn main() {
       list_tunnels,
       switch_mode,
       restart_app,
+      save_window_geometry,
+      quit_app,
+      hide_menu_bar,
+      toggle_menu_bar,
     ])
     .build(tauri::generate_context!())
     .expect("error while building LeapMux desktop")
