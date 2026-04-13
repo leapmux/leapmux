@@ -51,6 +51,12 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInternalError(sender, gmErr.Error())
 			return
 		}
+		openSucceeded := false
+		defer func() {
+			if !openSucceeded {
+				svc.rollbackGitMode(gm)
+			}
+		}()
 		workingDir = gm.WorkingDir
 		worktreeID := gm.WorktreeID
 
@@ -117,7 +123,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			})
 		}
 
-		err := svc.Terminals.StartTerminal(terminal.Options{
+		err := svc.startTerminal(terminal.Options{
 			ID:            terminalID,
 			WorkspaceID:   workspaceID,
 			Shell:         shell,
@@ -161,6 +167,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			resp.GitBranch = gs.Branch
 			resp.GitOriginUrl = gs.OriginUrl
 		}
+		openSucceeded = true
 		sendProtoResponse(sender, resp)
 	})
 

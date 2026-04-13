@@ -15,6 +15,26 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
 
+type rollbackWorktree struct {
+	WorktreeID   string
+	WorktreePath string
+	RepoRoot     string
+	BranchName   string
+}
+
+type rollbackBranch struct {
+	WorkingDir       string
+	CreatedBranch    string
+	OriginalBranch   string
+	OriginalCommit   string
+	OriginalDetached bool
+}
+
+type gitModeRollback struct {
+	CreatedWorktree *rollbackWorktree
+	CreatedBranch   *rollbackBranch
+}
+
 // createWorktreeIfRequested creates a git worktree on the local filesystem if
 // requested. Returns the final working directory (which may be the worktree
 // path) and the DB worktree ID (empty if no worktree was created/reused).
@@ -23,26 +43,26 @@ func (svc *Context) createWorktreeIfRequested(
 	createWorktree bool,
 	branchName string,
 	baseBranch string,
-) (finalWorkingDir string, worktreeID string, err error) {
+) (finalWorkingDir string, worktreeID string, rollback *rollbackWorktree, err error) {
 	if !createWorktree {
-		return workingDir, "", nil
+		return workingDir, "", nil, nil
 	}
 
 	if err := gitutil.ValidateBranchName(branchName); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
 	ctx := bgCtx()
 
 	// Fail early if a local branch with this name already exists.
 	if branchExists(ctx, workingDir, branchName) {
-		return "", "", fmt.Errorf("branch %q already exists", branchName)
+		return "", "", nil, fmt.Errorf("branch %q already exists", branchName)
 	}
 
 	// Resolve to the main repo root (handles linked worktrees).
 	repoRoot, err := resolveMainRepoRoot(ctx, workingDir)
 	if err != nil {
-		return "", "", errNotGitRepo
+		return "", "", nil, errNotGitRepo
 	}
 
 	repoDirName := filepath.Base(repoRoot)
@@ -59,19 +79,26 @@ func (svc *Context) createWorktreeIfRequested(
 
 	// Compute worktree path.
 	worktreePath := filepath.Join(filepath.Dir(repoRoot), repoDirName+"-worktrees", branchName)
+	rollback = &rollbackWorktree{
+		WorktreePath: worktreePath,
+		RepoRoot:     repoRoot,
+		BranchName:   branchName,
+	}
 
 	// Create the worktree on disk.
 	if err := gitCommand(ctx, repoRoot, "worktree", "add", "-b", branchName, worktreePath, startPoint); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
 	slog.Info("worktree created", "worktree_path", worktreePath, "branch_name", branchName)
 
 	wtID, err := svc.ensureTrackedWorktree(ctx, worktreePath)
 	if err != nil {
-		return "", "", err
+		svc.rollbackCreatedWorktree(*rollback)
+		return "", "", nil, err
 	}
-	return worktreePath, wtID, nil
+	rollback.WorktreeID = wtID
+	return worktreePath, wtID, rollback, nil
 }
 
 // registerTabForWorktree associates a tab with a worktree.
@@ -152,6 +179,86 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) {
 	if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
 		slog.Warn("failed to delete worktree record",
 			"worktree_id", wt.ID, "error", err)
+	}
+}
+
+func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBranch, error) {
+	branchName, err := currentLocalBranchForPath(ctx, workingDir)
+	if err == nil && branchName != "" {
+		return &rollbackBranch{
+			WorkingDir:     workingDir,
+			OriginalBranch: branchName,
+		}, nil
+	}
+
+	commitSHA, err := gitOutput(ctx, workingDir, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	commitSHA = strings.TrimSpace(commitSHA)
+	if commitSHA == "" {
+		return nil, errors.New("failed to resolve current HEAD")
+	}
+
+	return &rollbackBranch{
+		WorkingDir:       workingDir,
+		OriginalCommit:   commitSHA,
+		OriginalDetached: true,
+	}, nil
+}
+
+func (svc *Context) rollbackGitMode(result gitModeResult) {
+	if result.Rollback.CreatedBranch != nil {
+		svc.rollbackCreatedBranch(*result.Rollback.CreatedBranch)
+	}
+	if result.Rollback.CreatedWorktree != nil {
+		svc.rollbackCreatedWorktree(*result.Rollback.CreatedWorktree)
+	}
+}
+
+func (svc *Context) rollbackCreatedWorktree(r rollbackWorktree) {
+	ctx := bgCtx()
+
+	if err := gitCommand(ctx, r.RepoRoot, "worktree", "remove", "--force", r.WorktreePath); err != nil {
+		slog.Warn("failed to roll back worktree",
+			"worktree_path", r.WorktreePath, "repo_root", r.RepoRoot, "error", err)
+	}
+
+	if r.BranchName != "" {
+		if err := gitCommand(ctx, r.RepoRoot, "branch", "-D", r.BranchName); err != nil {
+			slog.Warn("failed to roll back worktree branch",
+				"branch", r.BranchName, "repo_root", r.RepoRoot, "error", err)
+		}
+	}
+
+	if r.WorktreeID != "" {
+		if err := svc.Queries.DeleteWorktree(ctx, r.WorktreeID); err != nil {
+			slog.Warn("failed to roll back tracked worktree",
+				"worktree_id", r.WorktreeID, "error", err)
+		}
+	}
+}
+
+func (svc *Context) rollbackCreatedBranch(r rollbackBranch) {
+	ctx := bgCtx()
+
+	if r.OriginalDetached {
+		if err := gitCommand(ctx, r.WorkingDir, "checkout", "--detach", r.OriginalCommit); err != nil {
+			slog.Warn("failed to restore detached HEAD before deleting branch",
+				"working_dir", r.WorkingDir, "commit", r.OriginalCommit, "error", err)
+			return
+		}
+	} else {
+		if err := gitCommand(ctx, r.WorkingDir, "checkout", r.OriginalBranch); err != nil {
+			slog.Warn("failed to restore branch before deleting branch",
+				"working_dir", r.WorkingDir, "branch", r.OriginalBranch, "error", err)
+			return
+		}
+	}
+
+	if err := gitCommand(ctx, r.WorkingDir, "branch", "-D", r.CreatedBranch); err != nil {
+		slog.Warn("failed to roll back branch creation",
+			"working_dir", r.WorkingDir, "branch", r.CreatedBranch, "error", err)
 	}
 }
 
@@ -332,16 +439,18 @@ type gitModeRequest interface {
 type gitModeResult struct {
 	WorkingDir string
 	WorktreeID string
+	Rollback   gitModeRollback
 }
 
 // applyGitMode applies the git-mode options from a request to the working
 // directory, returning the (possibly changed) working directory and worktree ID.
 func (svc *Context) applyGitMode(workingDir string, r gitModeRequest) (gitModeResult, error) {
 	var worktreeID string
+	var rollback gitModeRollback
 
 	// Create a worktree if requested.
 	if r.GetCreateWorktree() {
-		finalDir, wtID, err := svc.createWorktreeIfRequested(
+		finalDir, wtID, wtRollback, err := svc.createWorktreeIfRequested(
 			workingDir, true, r.GetWorktreeBranch(), r.GetWorktreeBaseBranch(),
 		)
 		if err != nil {
@@ -349,6 +458,7 @@ func (svc *Context) applyGitMode(workingDir string, r gitModeRequest) (gitModeRe
 		}
 		workingDir = finalDir
 		worktreeID = wtID
+		rollback.CreatedWorktree = wtRollback
 	}
 
 	// Checkout branch if requested.
@@ -360,9 +470,15 @@ func (svc *Context) applyGitMode(workingDir string, r gitModeRequest) (gitModeRe
 
 	// Create new branch if requested.
 	if branch := r.GetCreateBranch(); branch != "" {
+		currentTarget, err := currentCheckoutTarget(bgCtx(), workingDir)
+		if err != nil {
+			return gitModeResult{}, fmt.Errorf("failed to capture current checkout: %w", err)
+		}
 		if err := svc.createBranchIfRequested(workingDir, branch, r.GetCreateBranchBase()); err != nil {
 			return gitModeResult{}, fmt.Errorf("failed to create branch: %w", err)
 		}
+		currentTarget.CreatedBranch = branch
+		rollback.CreatedBranch = currentTarget
 	}
 
 	// Use existing worktree if requested.
@@ -388,7 +504,11 @@ func (svc *Context) applyGitMode(workingDir string, r gitModeRequest) (gitModeRe
 		}
 	}
 
-	return gitModeResult{WorkingDir: workingDir, WorktreeID: worktreeID}, nil
+	return gitModeResult{
+		WorkingDir: workingDir,
+		WorktreeID: worktreeID,
+		Rollback:   rollback,
+	}, nil
 }
 
 var errNotGitRepo = errors.New("path is not inside a git repository")

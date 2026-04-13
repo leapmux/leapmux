@@ -46,6 +46,11 @@ type Context struct {
 	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
 	RegisteredBy        string                    // User ID who registered this worker (for tunnel authorization)
+
+	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error)
+	startTerminalFn     func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
+	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
+	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -70,7 +75,7 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 	queries := db.New(sqlDB)
 	watchers := NewWatcherManager()
 	output := NewOutputHandler(queries, watchers, agents, wl)
-	return &Context{
+	svc := &Context{
 		DB:        sqlDB,
 		Queries:   queries,
 		Agents:    agents,
@@ -81,6 +86,39 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 		Output:    output,
 		WakeLock:  wl,
 	}
+	svc.startAgentFn = svc.Agents.StartAgent
+	svc.startTerminalFn = svc.Terminals.StartTerminal
+	svc.createAgentRecordFn = svc.Queries.CreateAgent
+	svc.getAgentByIDFn = svc.Queries.GetAgentByID
+	return svc
+}
+
+func (svc *Context) startAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	if svc.startAgentFn != nil {
+		return svc.startAgentFn(ctx, opts, sink)
+	}
+	return svc.Agents.StartAgent(ctx, opts, sink)
+}
+
+func (svc *Context) startTerminal(opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
+	if svc.startTerminalFn != nil {
+		return svc.startTerminalFn(opts, outputFn, exitFn)
+	}
+	return svc.Terminals.StartTerminal(opts, outputFn, exitFn)
+}
+
+func (svc *Context) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {
+	if svc.createAgentRecordFn != nil {
+		return svc.createAgentRecordFn(ctx, params)
+	}
+	return svc.Queries.CreateAgent(ctx, params)
+}
+
+func (svc *Context) getAgentByID(ctx context.Context, agentID string) (db.Agent, error) {
+	if svc.getAgentByIDFn != nil {
+		return svc.getAgentByIDFn(ctx, agentID)
+	}
+	return svc.Queries.GetAgentByID(ctx, agentID)
 }
 
 // Init performs one-time startup tasks such as clearing stale agent state
