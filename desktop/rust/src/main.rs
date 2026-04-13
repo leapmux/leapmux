@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+compile_error!("LeapMux Desktop only supports macOS, Linux, and Windows");
+
 mod proto {
   include!(concat!(env!("OUT_DIR"), "/leapmux.desktop.v1.rs"));
 }
@@ -449,7 +452,7 @@ fn sidecar_binary_name() -> String {
   {
     format!("{name}.exe")
   }
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(any(target_os = "macos", target_os = "linux"))]
   {
     name
   }
@@ -728,7 +731,7 @@ fn quit_app(app: AppHandle) {
 
 #[tauri::command]
 fn hide_menu_bar(app: AppHandle) {
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(any(target_os = "linux", target_os = "windows"))]
   if let Some(w) = app.get_webview_window("main") {
     let _ = w.hide_menu();
   }
@@ -737,7 +740,7 @@ fn hide_menu_bar(app: AppHandle) {
 
 #[tauri::command]
 fn toggle_menu_bar(app: AppHandle) {
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(any(target_os = "linux", target_os = "windows"))]
   if let Some(w) = app.get_webview_window("main") {
     if w.is_menu_visible().unwrap_or(false) {
       let _ = w.hide_menu();
@@ -833,15 +836,9 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     "File",
     true,
     &[
-      #[cfg(not(any(
-        target_os = "linux",
-        target_os = "dragonfly",
-        target_os = "freebsd",
-        target_os = "netbsd",
-        target_os = "openbsd"
-      )))]
+      #[cfg(any(target_os = "macos", target_os = "windows"))]
       &PredefinedMenuItem::close_window(app, None)?,
-      #[cfg(not(target_os = "macos"))]
+      #[cfg(any(target_os = "linux", target_os = "windows"))]
       &MenuItem::with_id(app, "quit", "Quit", true, Some("Ctrl+Q"))?,
     ],
   )?;
@@ -885,7 +882,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     "Help",
     true,
     &[
-      #[cfg(not(target_os = "macos"))]
+      #[cfg(any(target_os = "linux", target_os = "windows"))]
       &show_about,
       &open_web_inspector,
     ],
@@ -943,7 +940,7 @@ fn main() {
         }
       }
       // Re-hide the menu bar after a menu item is selected (Linux/Windows).
-      #[cfg(not(target_os = "macos"))]
+      #[cfg(any(target_os = "linux", target_os = "windows"))]
       if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide_menu();
       }

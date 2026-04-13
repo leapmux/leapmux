@@ -159,6 +159,9 @@ tasks:
 
   prepare-desktop:
     desc: Prepare desktop for builds
+    preconditions:
+      - sh: '[ "{{OS}}" = "darwin" ] || [ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
+        msg: "Unsupported OS: {{OS}}. Desktop builds require macOS, Linux, or Windows."
     sources:
       - icons/leapmux-icon.svg
       - icons/leapmux-icon-corners.svg
@@ -176,7 +179,7 @@ tasks:
       - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-corners.svg desktop/rust/icons/icon.png desktop/rust/icons/icon.ico opaque
         if: '[ "{{OS}}" = "darwin" ]'
       - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon-corners.svg desktop/rust/icons/icon.png desktop/rust/icons/icon.ico transparent
-        if: '[ "{{OS}}" != "darwin" ]'
+        if: '[ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
 
   # --- Build ---
 
@@ -236,11 +239,16 @@ tasks:
 
   build-desktop:
     desc: Build desktop
+    preconditions:
+      - sh: '[ "{{OS}}" = "darwin" ] || [ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
+        msg: "Unsupported OS: {{OS}}. Desktop builds require macOS, Linux, or Windows."
     cmds:
       - task: build-desktop-darwin
         if: '[ "{{OS}}" = "darwin" ]'
-      - task: build-desktop-not-darwin
-        if: '[ "{{OS}}" != "darwin" ]'
+      - task: build-desktop-linux
+        if: '[ "{{OS}}" = "linux" ]'
+      - task: build-desktop-windows
+        if: '[ "{{OS}}" = "windows" ]'
 
   build-desktop-darwin:
     desc: Build desktop for macOS
@@ -256,9 +264,8 @@ tasks:
       - desktop/rust/src/**/*
       - desktop/rust/Cargo.*
       - desktop/rust/capabilities/**/*
-      - desktop/rust/tauri*.conf.json
+      - desktop/rust/tauri.conf.json
       - desktop/rust/icons/icon.png
-      - desktop/rust/icons/icon.ico
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
@@ -279,8 +286,8 @@ tasks:
         "desktop/rust/target/release/bundle/dmg/LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg"
       - cp -f "desktop/rust/target/release/bundle/dmg/LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg" "LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg"
 
-  build-desktop-not-darwin:
-    desc: Build desktop for Windows and linux
+  build-desktop-linux:
+    desc: Build desktop for Linux
     sources:
       - backend/go.mod
       - backend/go.sum
@@ -293,19 +300,52 @@ tasks:
       - desktop/rust/src/**/*
       - desktop/rust/Cargo.*
       - desktop/rust/capabilities/**/*
-      - desktop/rust/tauri*.conf.json
+      - desktop/rust/tauri.conf.json
+      - desktop/rust/tauri.linux.conf.json
+      - desktop/rust/desktop-template.desktop
       - desktop/rust/icons/icon.png
-      - desktop/rust/icons/icon.ico
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
     generates:
-      - desktop/go/bin/leapmux-desktop-service-*
+      - leapmux-desktop*.deb
+      - leapmux-desktop*.AppImage
     cmds:
       - task: prepare-desktop
       - task: build-desktop-sidecar
       - desktop/rust/scripts/patch-linuxdeploy.sh
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
+      - cp -f desktop/rust/target/release/bundle/deb/leapmux-desktop*.deb .
+      - cp -f desktop/rust/target/release/bundle/appimage/leapmux-desktop*.AppImage .
+
+  build-desktop-windows:
+    desc: Build desktop for Windows
+    sources:
+      - backend/go.mod
+      - backend/go.sum
+      - backend/**/*.go
+      - desktop/go/go.mod
+      - desktop/go/go.sum
+      - desktop/go/**/*.go
+      - exclude: desktop/go/bin/**/*
+      - desktop/rust/*.rs
+      - desktop/rust/src/**/*
+      - desktop/rust/Cargo.*
+      - desktop/rust/capabilities/**/*
+      - desktop/rust/tauri.conf.json
+      - desktop/rust/icons/icon.ico
+      - desktop/rust/scripts/**/*
+      - frontend/.output/**/*
+      - backend/internal/hub/generated/frontend/public/**/*
+    generates:
+      - LeapMux*.exe
+      - LeapMux*.msi
+    cmds:
+      - task: prepare-desktop
+      - task: build-desktop-sidecar
+      - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
+      - cp -f desktop/rust/target/release/bundle/nsis/LeapMux*.exe .
+      - cp -f desktop/rust/target/release/bundle/msi/LeapMux*.msi .
 
   # --- Testing ---
 
@@ -591,6 +631,9 @@ tasks:
     cmds:
       - rm -f  LeapMux*.dmg
       - rm -rf LeapMux*.app
+      - rm -f  leapmux-desktop*.deb
+      - rm -f  leapmux-desktop*.AppImage
+      - rm -f  LeapMux*.msi
       - rm -f  desktop/go/leapmux-desktop
       - rm -rf desktop/go/bin/
       - rm -rf desktop/rust/gen/

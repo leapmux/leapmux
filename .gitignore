@@ -10,6 +10,9 @@
 /LeapMux*.app/
 /LeapMux*.dmg
 /LeapMux*.exe
+/LeapMux*.msi
+/leapmux-desktop*.deb
+/leapmux-desktop*.AppImage
 
 # Generated code
 generated/
