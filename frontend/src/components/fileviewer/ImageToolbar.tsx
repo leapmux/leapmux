@@ -46,39 +46,35 @@ export function ImageToolbar(props: {
 }): JSX.Element {
   return (
     <div class={styles.imageToolbar}>
-      <Tooltip text="Zoom out">
+      <Tooltip text="Zoom out" targetAriaLabel>
         <button
           class={styles.imageToolbarButton}
           onClick={() => props.onZoomChange(zoomOut(props.zoom, props.fitScale))}
-          aria-label="Zoom out"
         >
           <Icon icon={ZoomOut} size="sm" />
         </button>
       </Tooltip>
       <span class={styles.imageToolbarLabel}>{zoomLabel(props.zoom, props.fitScale)}</span>
-      <Tooltip text="Zoom in">
+      <Tooltip text="Zoom in" targetAriaLabel>
         <button
           class={styles.imageToolbarButton}
           onClick={() => props.onZoomChange(zoomIn(props.zoom, props.fitScale))}
-          aria-label="Zoom in"
         >
           <Icon icon={ZoomIn} size="sm" />
         </button>
       </Tooltip>
-      <Tooltip text="Fit to view">
+      <Tooltip text="Fit to view" targetAriaLabel>
         <button
           class={styles.imageToolbarButton}
           onClick={() => props.onZoomChange('fit')}
-          aria-label="Fit to view"
         >
           <Icon icon={Maximize2} size="sm" />
         </button>
       </Tooltip>
-      <Tooltip text="Actual size (100%)">
+      <Tooltip text="Actual size (100%)" targetAriaLabel>
         <button
           class={styles.imageToolbarTextButton}
           onClick={() => props.onZoomChange('actual')}
-          aria-label="Actual size (100%)"
         >
           100%
         </button>

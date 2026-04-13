@@ -18,45 +18,41 @@ export function ViewToggle(props: {
 }): JSX.Element {
   return (
     <div class={styles.viewToggle}>
-      <Tooltip text="Rendered view">
+      <Tooltip text="Rendered view" targetAriaLabel>
         <button
           class={styles.viewToggleButton}
           classList={{ [styles.viewToggleActive]: props.mode === 'render' }}
           onClick={() => props.onToggle('render')}
-          aria-label="Rendered view"
         >
           <Icon icon={Eye} size="sm" />
         </button>
       </Tooltip>
       <Show when={props.showSplit}>
-        <Tooltip text="Side-by-side view">
+        <Tooltip text="Side-by-side view" targetAriaLabel>
           <button
             class={styles.viewToggleButton}
             classList={{ [styles.viewToggleActive]: props.mode === 'split' }}
             onClick={() => props.onToggle('split')}
-            aria-label="Side-by-side view"
           >
             <Icon icon={Columns2} size="sm" />
           </button>
         </Tooltip>
       </Show>
-      <Tooltip text="Source view">
+      <Tooltip text="Source view" targetAriaLabel>
         <button
           class={styles.viewToggleButton}
           classList={{ [styles.viewToggleActive]: props.mode === 'source' }}
           onClick={() => props.onToggle('source')}
-          aria-label="Source view"
         >
           <Icon icon={Code} size="sm" />
         </button>
       </Tooltip>
       <Show when={props.onMention}>
         <div style={{ 'border-left': '1px solid var(--border)' }} />
-        <Tooltip text="Mention in the chat">
+        <Tooltip text="Mention in the chat" targetAriaLabel>
           <button
             class={styles.viewToggleButton}
             onClick={() => props.onMention?.()}
-            aria-label="Mention in the chat"
             data-testid="file-mention-button"
           >
             <Icon icon={AtSign} size="sm" />

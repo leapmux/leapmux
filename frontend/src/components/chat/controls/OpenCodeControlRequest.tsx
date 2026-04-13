@@ -180,7 +180,6 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
                         data-variant="secondary"
                         onClick={handleBypassPermissions}
                         data-testid="control-bypass-btn"
-                        aria-label="Allow this request and stop asking for permissions"
                       >
                         & Bypass Permissions
                       </button>
@@ -207,7 +206,6 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
                       data-variant="secondary"
                       onClick={handleBypassPermissions}
                       data-testid="control-bypass-btn"
-                      aria-label="Allow this request and stop asking for permissions"
                     >
                       & Bypass Permissions
                     </button>

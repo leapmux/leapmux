@@ -1,5 +1,5 @@
 import type { FileAttachment } from '~/components/chat/attachments'
-import { render } from '@solidjs/testing-library'
+import { render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AttachmentStrip } from '~/components/chat/AttachmentStrip'
@@ -60,9 +60,8 @@ describe('attachmentStrip', () => {
     const { container } = render(() => (
       <AttachmentStrip attachments={attachments} onRemove={() => {}} />
     ))
-    const filename = container.querySelector('[data-testid="attachment-pill"] span[title]') as HTMLSpanElement
+    const filename = container.querySelector('[data-testid="attachment-pill"] > span:nth-of-type(2)') as HTMLSpanElement
     expect(filename).toBeInTheDocument()
-    expect(filename.title).toBe('very/long/nested/path/to/screenshot.png')
     expect(filename).toHaveTextContent('very/long/nested/path/to/screenshot.png')
   })
 

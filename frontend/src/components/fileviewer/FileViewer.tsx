@@ -275,11 +275,10 @@ export const FileViewer: Component<{
       </Show>
       <Show when={showOuterMention()}>
         <div class={styles.viewToggle}>
-          <Tooltip text="Mention in the chat">
+          <Tooltip text="Mention in the chat" targetAriaLabel>
             <button
               class={styles.viewToggleButton}
               onClick={() => props.onMention?.()}
-              aria-label="Mention in the chat"
               data-testid="file-mention-button"
             >
               <Icon icon={AtSign} size="sm" />

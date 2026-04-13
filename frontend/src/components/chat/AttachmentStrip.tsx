@@ -44,12 +44,11 @@ export const AttachmentStrip: Component<AttachmentStripProps> = (props) => {
               <Tooltip text={attachment.filename}>
                 <span class={styles.pillFilename}>{attachment.filename}</span>
               </Tooltip>
-              <Tooltip text="Remove attachment">
+              <Tooltip text="Remove attachment" targetAriaLabel>
                 <button
                   class={styles.removeButton}
                   onClick={() => props.onRemove(attachment.id)}
                   data-testid="attachment-remove"
-                  aria-label="Remove attachment"
                 >
                   <Icon icon={X} size="xs" />
                 </button>

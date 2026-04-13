@@ -354,7 +354,6 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
             onClick={handleYolo}
             disabled={!anyUnanswered()}
             data-testid="control-yolo-btn"
-            aria-label="Auto-fill unanswered questions and submit"
           >
             YOLO
           </button>

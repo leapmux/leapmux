@@ -91,13 +91,12 @@ export const IconButton: Component<IconButtonProps> = (props) => {
   }
 
   return (
-    <Tooltip text={local.title}>
+    <Tooltip text={local.title} targetAriaLabel>
       <button
         type="button"
         class={classes()}
         style={local.style}
         disabled={isDisabled()}
-        aria-label={local.title}
         // eslint-disable-next-line solid/reactivity -- native event binding; onClick identity doesn't change at runtime
         onClick={local.onClick}
         {...rest}
