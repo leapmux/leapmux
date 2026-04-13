@@ -23,7 +23,7 @@ use std::{
   thread,
 };
 use tauri::{
-  menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID},
+  menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID},
   AppHandle,
   Emitter,
   Manager,
@@ -872,7 +872,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
   #[cfg(target_os = "macos")]
   let window_menu = Submenu::with_id_and_items(
     app,
-    WINDOW_SUBMENU_ID,
+    tauri::menu::WINDOW_SUBMENU_ID,
     "Window",
     true,
     &[
