@@ -1,5 +1,5 @@
 import type { FileAttachment } from '~/components/chat/attachments'
-import { render, screen } from '@solidjs/testing-library'
+import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AttachmentStrip } from '~/components/chat/AttachmentStrip'
