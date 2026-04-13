@@ -167,6 +167,52 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 		"session-B should be resumable after a user message is sent")
 }
 
+func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+
+	// Create a non-resumed agent (simulates opening a fresh tab).
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          "agent-idle",
+		WorkspaceID: "ws-1",
+		WorkingDir:  t.TempDir(),
+		HomeDir:     t.TempDir(),
+		Model:       "opus",
+	}))
+	// Simulate Claude Code's init message storing a session ID.
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		AgentSessionID: "session-idle",
+		ID:             "agent-idle",
+	}))
+
+	// Resolve BEFORE the user message is persisted — this is the fix.
+	// Without the fix, the caller would persist the message first, and
+	// resolveResumeSessionID would see the just-created message and
+	// incorrectly return the session ID.
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-idle")
+	require.NoError(t, err)
+	result := svc.resolveResumeSessionID("agent-idle", dbAgent.AgentSessionID, dbAgent.Resumed)
+	assert.Empty(t, result,
+		"should NOT resume — no user messages were exchanged before this send")
+
+	// Now persist the user message (simulating the SendAgentMessage flow).
+	_, err = svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
+		ID:        "msg-first",
+		AgentID:   "agent-idle",
+		Role:      leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Content:   []byte(`{"content":"hello"}`),
+		CreatedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
+	// After the message is persisted, resolveResumeSessionID would
+	// now find it — but the caller already has the pre-resolved value,
+	// so the agent starts without --resume.
+	postResult := svc.resolveResumeSessionID("agent-idle", dbAgent.AgentSessionID, dbAgent.Resumed)
+	assert.Equal(t, "session-idle", postResult,
+		"after the message is in the DB, HasUserMessages returns true (demonstrates the ordering bug)")
+}
+
 func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")

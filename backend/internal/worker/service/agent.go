@@ -216,6 +216,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		// Pre-resolve the resume session ID BEFORE persisting the user
+		// message. HasUserMessages must run before the current message is
+		// written; otherwise the just-persisted message is counted as a
+		// prior conversation and --resume is used for a session that never
+		// had any messages (e.g. after an app restart on an idle tab).
+		resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+
 		attachments, err = agent.NormalizeAttachmentsForProvider(
 			leapmuxv1.AgentProvider(dbAgent.AgentProvider),
 			attachments,
@@ -308,7 +315,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			svc.handleClearContext(agentID)
 		} else if !svc.Agents.HasAgent(agentID) {
 			// Agent is not running — try to auto-start it (e.g. after worker restart).
-			if startErr := svc.ensureAgentRunning(agentID); startErr != nil {
+			if startErr := svc.ensureAgentRunning(agentID, &resumeSessionID); startErr != nil {
 				deliveryError = "agent is not running"
 			} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
 				slog.Error("failed to send input to agent after auto-start", "agent_id", agentID, "error", sendErr)
@@ -1142,7 +1149,12 @@ func (svc *Context) resolveResumeSessionID(agentID, currentSessionID string, res
 // ensureAgentRunning starts the agent process if it is not already running.
 // It fetches the agent configuration from the DB and resumes the session
 // if a session ID is stored (e.g. after worker restart).
-func (svc *Context) ensureAgentRunning(agentID string) error {
+//
+// When the caller has already resolved the resume session ID (e.g. before
+// persisting a user message that would skew the HasUserMessages check),
+// pass it via preResolvedResumeSessionID. Pass nil to let this function
+// resolve it from the DB.
+func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionID *string) error {
 	if svc.Agents.HasAgent(agentID) {
 		return nil
 	}
@@ -1153,7 +1165,12 @@ func (svc *Context) ensureAgentRunning(agentID string) error {
 		return fmt.Errorf("agent not found: %w", err)
 	}
 
-	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+	var resumeSessionID string
+	if preResolvedResumeSessionID != nil {
+		resumeSessionID = *preResolvedResumeSessionID
+	} else {
+		resumeSessionID = svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+	}
 	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
 	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 
@@ -1210,7 +1227,7 @@ func (svc *Context) handleControlRequestMessage(agentID, content string) {
 			return
 		}
 		// Other control requests need the agent running.
-		if err := svc.ensureAgentRunning(agentID); err != nil {
+		if err := svc.ensureAgentRunning(agentID, nil); err != nil {
 			slog.Error("failed to start agent for control request", "agent_id", agentID, "error", err)
 			return
 		}
@@ -1421,6 +1438,10 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 		return
 	}
 
+	// Pre-resolve the resume session ID before persisting (same reason
+	// as in SendAgentMessage — see comment there).
+	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+
 	messageID := id.Generate()
 	now := time.Now().UTC()
 	innerJSON, err := json.Marshal(map[string]string{"content": content})
@@ -1451,7 +1472,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 
 	deliveryError := ""
 	if !svc.Agents.HasAgent(agentID) {
-		if startErr := svc.ensureAgentRunning(agentID); startErr != nil {
+		if startErr := svc.ensureAgentRunning(agentID, &resumeSessionID); startErr != nil {
 			deliveryError = "agent is not running"
 		} else if sendErr := svc.Agents.SendInput(agentID, content, nil); sendErr != nil {
 			slog.Error("synthetic user message: failed to send after auto-start", "agent_id", agentID, "error", sendErr)
