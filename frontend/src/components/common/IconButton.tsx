@@ -91,7 +91,7 @@ export const IconButton: Component<IconButtonProps> = (props) => {
   }
 
   return (
-    <Tooltip text={local.title} targetAriaLabel>
+    <Tooltip text={local.title} ariaLabel>
       <button
         type="button"
         class={classes()}

@@ -28,7 +28,7 @@ function formatTokenCount(tokens: number): string {
 function CopyButton(props: { getText: () => string | undefined, title: string, testId?: string }) {
   const { copied, copy: handleCopy } = useCopyButton(() => props.getText())
   return (
-    <Tooltip text={props.title} targetAriaLabel>
+    <Tooltip text={props.title} ariaLabel>
       <button
         class={styles.infoCopyButton}
         onClick={handleCopy}

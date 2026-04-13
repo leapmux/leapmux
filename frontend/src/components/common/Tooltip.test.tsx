@@ -34,9 +34,9 @@ describe('tooltip', () => {
     expect(button).not.toHaveAttribute('aria-describedby')
   })
 
-  it('uses tooltip text as aria-label when targetAriaLabel is true', () => {
+  it('uses tooltip text as aria-label when ariaLabel is true', () => {
     render(() => (
-      <Tooltip text="Zoom in" targetAriaLabel>
+      <Tooltip text="Zoom in" ariaLabel>
         <button type="button">
           +
         </button>
@@ -46,9 +46,9 @@ describe('tooltip', () => {
     expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'Zoom in')
   })
 
-  it('uses the explicit targetAriaLabel when provided', () => {
+  it('uses the explicit ariaLabel when provided', () => {
     render(() => (
-      <Tooltip text="Tooltip text" targetAriaLabel="Explicit label">
+      <Tooltip text="Tooltip text" ariaLabel="Explicit label">
         <button type="button">
           +
         </button>

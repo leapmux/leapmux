@@ -18,7 +18,7 @@ export function ViewToggle(props: {
 }): JSX.Element {
   return (
     <div class={styles.viewToggle}>
-      <Tooltip text="Rendered view" targetAriaLabel>
+      <Tooltip text="Rendered view" ariaLabel>
         <button
           class={styles.viewToggleButton}
           classList={{ [styles.viewToggleActive]: props.mode === 'render' }}
@@ -28,7 +28,7 @@ export function ViewToggle(props: {
         </button>
       </Tooltip>
       <Show when={props.showSplit}>
-        <Tooltip text="Side-by-side view" targetAriaLabel>
+        <Tooltip text="Side-by-side view" ariaLabel>
           <button
             class={styles.viewToggleButton}
             classList={{ [styles.viewToggleActive]: props.mode === 'split' }}
@@ -38,7 +38,7 @@ export function ViewToggle(props: {
           </button>
         </Tooltip>
       </Show>
-      <Tooltip text="Source view" targetAriaLabel>
+      <Tooltip text="Source view" ariaLabel>
         <button
           class={styles.viewToggleButton}
           classList={{ [styles.viewToggleActive]: props.mode === 'source' }}
@@ -49,7 +49,7 @@ export function ViewToggle(props: {
       </Tooltip>
       <Show when={props.onMention}>
         <div style={{ 'border-left': '1px solid var(--border)' }} />
-        <Tooltip text="Mention in the chat" targetAriaLabel>
+        <Tooltip text="Mention in the chat" ariaLabel>
           <button
             class={styles.viewToggleButton}
             onClick={() => props.onMention?.()}

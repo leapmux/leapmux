@@ -97,7 +97,7 @@ export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
 
   return (
     <Show when={percentage() != null} fallback={<Info size={props.size} />}>
-      <Tooltip text={tooltip()} targetAriaLabel>
+      <Tooltip text={tooltip()} ariaLabel>
         <svg
           width={props.size}
           height={props.size}

@@ -19,7 +19,7 @@ export interface TooltipProps {
    * When set, applies an aria-label to the target element.
    * Use `true` to reuse `text`, or pass a string for an explicit label.
    */
-  targetAriaLabel?: string | true
+  ariaLabel?: string | true
   children: JSX.Element
 }
 
@@ -216,9 +216,9 @@ export function Tooltip(props: TooltipProps) {
     const originalAriaLabel = target.getAttribute('aria-label')
 
     createEffect(() => {
-      const nextAriaLabel = props.targetAriaLabel === true
+      const nextAriaLabel = props.ariaLabel === true
         ? props.text
-        : props.targetAriaLabel
+        : props.ariaLabel
       if (nextAriaLabel)
         target.setAttribute('aria-label', nextAriaLabel)
       else if (originalAriaLabel != null)
