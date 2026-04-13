@@ -215,7 +215,6 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
 	assert.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
-	assert.Equal(t, "Continue.", schedule.Content)
 	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.DueAt)
 	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000}`, string(schedule.SourcePayload))
 }

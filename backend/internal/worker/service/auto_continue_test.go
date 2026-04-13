@@ -64,14 +64,12 @@ func TestAutoContinueSchedule_RescheduleUpdatesSingleRow(t *testing.T) {
 	secondDueAt := firstDueAt.Add(20 * time.Minute)
 
 	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
-		Reason:  agent.AutoContinueReasonRateLimit,
-		DueAt:   firstDueAt,
-		Content: autoContinueContent,
+		Reason: agent.AutoContinueReasonRateLimit,
+		DueAt:  firstDueAt,
 	})
 	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
-		Reason:  agent.AutoContinueReasonRateLimit,
-		DueAt:   secondDueAt,
-		Content: autoContinueContent,
+		Reason: agent.AutoContinueReasonRateLimit,
+		DueAt:  secondDueAt,
 	})
 	t.Cleanup(func() { h.cleanupAutoContinue("agent-1") })
 
@@ -89,14 +87,12 @@ func TestAutoContinueSchedule_ReasonsCanCoexist(t *testing.T) {
 
 	h := NewOutputHandler(queries, nil, nil, nil)
 	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
-		Reason:  agent.AutoContinueReasonAPIError,
-		DueAt:   time.Now().UTC(),
-		Content: autoContinueContent,
+		Reason: agent.AutoContinueReasonAPIError,
+		DueAt:  time.Now().UTC(),
 	})
 	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
-		Reason:  agent.AutoContinueReasonRateLimit,
-		DueAt:   time.Now().UTC().Add(time.Hour),
-		Content: autoContinueContent,
+		Reason: agent.AutoContinueReasonRateLimit,
+		DueAt:  time.Now().UTC().Add(time.Hour),
 	})
 	t.Cleanup(func() { h.cleanupAutoContinue("agent-1") })
 
@@ -111,14 +107,12 @@ func TestAutoContinueSchedule_CancelOneReasonLeavesOtherIntact(t *testing.T) {
 
 	h := NewOutputHandler(queries, nil, nil, nil)
 	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
-		Reason:  agent.AutoContinueReasonAPIError,
-		DueAt:   time.Now().UTC(),
-		Content: autoContinueContent,
+		Reason: agent.AutoContinueReasonAPIError,
+		DueAt:  time.Now().UTC(),
 	})
 	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
-		Reason:  agent.AutoContinueReasonRateLimit,
-		DueAt:   time.Now().UTC().Add(time.Hour),
-		Content: autoContinueContent,
+		Reason: agent.AutoContinueReasonRateLimit,
+		DueAt:  time.Now().UTC().Add(time.Hour),
 	})
 
 	h.cancelAutoContinue("agent-1", agent.AutoContinueReasonAPIError)

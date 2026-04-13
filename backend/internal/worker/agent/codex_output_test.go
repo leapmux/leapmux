@@ -275,9 +275,6 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	if schedule.Reason != AutoContinueReasonRateLimit {
 		t.Fatalf("expected rate_limit reason, got %q", schedule.Reason)
 	}
-	if schedule.Content != "Continue." {
-		t.Fatalf("expected Continue. content, got %q", schedule.Content)
-	}
 	if !schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()) {
 		t.Fatalf("expected reset time dueAt, got %v", schedule.DueAt)
 	}

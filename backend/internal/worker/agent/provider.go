@@ -32,7 +32,6 @@ const (
 type AutoContinueSchedule struct {
 	Reason        AutoContinueReason
 	DueAt         time.Time
-	Content       string
 	SourcePayload []byte
 }
 

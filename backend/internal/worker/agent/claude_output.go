@@ -363,9 +363,8 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		// Auto-continue on synthetic API 5xx errors; reset on normal results.
 		if env.IsError && hasSyntheticAPI5xxPrefix(env.Result) {
 			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
-				Reason:  AutoContinueReasonAPIError,
-				DueAt:   time.Now().UTC(),
-				Content: "Continue.",
+				Reason: AutoContinueReasonAPIError,
+				DueAt:  time.Now().UTC(),
 			})
 		} else {
 			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
@@ -445,18 +444,21 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		return
 	}
 
-	var rlType struct {
+	var rlInfo struct {
 		RateLimitType string `json:"rateLimitType"`
+		Status        string `json:"status"`
+		ResetsAt      *int64 `json:"resetsAt"`
 	}
-	if err := json.Unmarshal(rle.RateLimitInfo, &rlType); err != nil {
+	if err := json.Unmarshal(rle.RateLimitInfo, &rlInfo); err != nil {
 		slog.Warn("claude rate limit info unmarshal failed", "agent_id", a.agentID, "error", err)
+		return
 	}
-	if rlType.RateLimitType == "" {
-		rlType.RateLimitType = "unknown"
+	if rlInfo.RateLimitType == "" {
+		rlInfo.RateLimitType = "unknown"
 	}
 
 	rateLimits := map[string]json.RawMessage{
-		rlType.RateLimitType: rle.RateLimitInfo,
+		rlInfo.RateLimitType: rle.RateLimitInfo,
 	}
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		"rateLimits": rateLimits,
@@ -474,26 +476,17 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}
 
-	var scheduleInfo struct {
-		Status   string `json:"status"`
-		ResetsAt *int64 `json:"resetsAt"`
-	}
-	if err := json.Unmarshal(rle.RateLimitInfo, &scheduleInfo); err != nil {
-		slog.Warn("claude rate limit scheduling parse failed", "agent_id", a.agentID, "error", err)
-		return
-	}
-	if scheduleInfo.Status == "allowed" {
+	if rlInfo.Status == "allowed" {
 		a.sink.CancelAutoContinue(AutoContinueReasonRateLimit)
 		return
 	}
-	if scheduleInfo.ResetsAt == nil {
+	if rlInfo.ResetsAt == nil {
 		return
 	}
 
 	a.sink.ScheduleAutoContinue(AutoContinueSchedule{
 		Reason:        AutoContinueReasonRateLimit,
-		DueAt:         time.Unix(*scheduleInfo.ResetsAt, 0).UTC(),
-		Content:       "Continue.",
+		DueAt:         time.Unix(*rlInfo.ResetsAt, 0).UTC(),
 		SourcePayload: append([]byte(nil), rle.RateLimitInfo...),
 	})
 }

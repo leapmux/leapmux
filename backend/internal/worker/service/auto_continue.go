@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"log/slog"
@@ -38,7 +39,6 @@ type autoContinueKey struct {
 type autoContinueTimerState struct {
 	mu    sync.Mutex
 	timer *time.Timer
-	dueAt time.Time
 }
 
 func (h *OutputHandler) restoreAutoContinueSchedules() {
@@ -55,9 +55,6 @@ func (h *OutputHandler) restoreAutoContinueSchedules() {
 
 func (h *OutputHandler) scheduleAutoContinue(agentID string, schedule agent.AutoContinueSchedule) {
 	now := time.Now().UTC()
-	if schedule.Content == "" {
-		schedule.Content = autoContinueContent
-	}
 
 	record, err := h.buildAutoContinueRecord(agentID, schedule, now)
 	if err != nil {
@@ -135,11 +132,11 @@ func (h *OutputHandler) buildAPIErrorScheduleRecord(agentID string, schedule age
 	return db.UpsertAutoContinueScheduleParams{
 		AgentID:       agentID,
 		Reason:        string(schedule.Reason),
-		Content:       schedule.Content,
+		Content:       autoContinueContent,
 		DueAt:         dueAt,
 		JitterMs:      jitter.Milliseconds(),
 		NextBackoffMs: nextBackoff.Milliseconds(),
-		SourcePayload: cloneBytes(schedule.SourcePayload),
+		SourcePayload: cloneOrEmpty(schedule.SourcePayload),
 	}, nil
 }
 
@@ -149,11 +146,11 @@ func (h *OutputHandler) buildRateLimitScheduleRecord(agentID string, schedule ag
 	return db.UpsertAutoContinueScheduleParams{
 		AgentID:       agentID,
 		Reason:        string(schedule.Reason),
-		Content:       schedule.Content,
+		Content:       autoContinueContent,
 		DueAt:         dueAt,
 		JitterMs:      jitter.Milliseconds(),
 		NextBackoffMs: 0,
-		SourcePayload: cloneBytes(schedule.SourcePayload),
+		SourcePayload: cloneOrEmpty(schedule.SourcePayload),
 	}
 }
 
@@ -167,7 +164,6 @@ func (h *OutputHandler) armAutoContinueTimer(key autoContinueKey, dueAt time.Tim
 	if state.timer != nil {
 		state.timer.Stop()
 	}
-	state.dueAt = dueAt
 
 	delay := time.Until(dueAt)
 	if delay < 0 {
@@ -267,17 +263,12 @@ func positiveRateLimitJitter(remaining time.Duration) time.Duration {
 	if target > rateLimitJitterMax {
 		target = rateLimitJitterMax
 	}
-	if target <= 0 {
-		return rateLimitJitterMin
-	}
 	return time.Duration(rand.Int64N(int64(target))) + 1
 }
 
-func cloneBytes(src []byte) []byte {
+func cloneOrEmpty(src []byte) []byte {
 	if len(src) == 0 {
 		return []byte{}
 	}
-	dst := make([]byte, len(src))
-	copy(dst, src)
-	return dst
+	return bytes.Clone(src)
 }

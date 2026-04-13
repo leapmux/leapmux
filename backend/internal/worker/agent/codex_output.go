@@ -640,7 +640,6 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 		a.sink.ScheduleAutoContinue(AutoContinueSchedule{
 			Reason:        AutoContinueReasonRateLimit,
 			DueAt:         *latestExceededReset,
-			Content:       "Continue.",
 			SourcePayload: append([]byte(nil), content...),
 		})
 	} else {
