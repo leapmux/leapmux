@@ -3,9 +3,10 @@ import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createSectionStore } from '~/stores/section.store'
 import Plus from 'lucide-solid/icons/plus'
-import { createSignal, onCleanup, Show } from 'solid-js'
+import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
+import { useShortcutContext } from '~/hooks/useShortcutContext'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
 import { TabDragProvider } from './TabDragContext'
@@ -63,6 +64,8 @@ interface DesktopLayoutProps {
   floatingWindowLayer?: JSX.Element
   onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
   fileDropDisabled?: boolean
+  /** Ref callback: receives a toggle function for the left sidebar (used by keyboard shortcuts). */
+  setToggleLeftSidebar?: (fn: () => void) => void
 }
 
 function useSidebarDrag(opts: {
@@ -130,6 +133,9 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   const [autoCollapsedLeft, setAutoCollapsedLeft] = createSignal(savedSidebar?.autoCollapsedLeft ?? false)
   const [autoCollapsedRight, setAutoCollapsedRight] = createSignal(savedSidebar?.autoCollapsedRight ?? false)
 
+  // Expose sidebar visibility as shortcut context key
+  useShortcutContext('sidebarVisible', () => !leftCollapsed())
+
   let leftWidthBeforeCollapse = initLeftPx
   let rightWidthBeforeCollapse = initRightPx
 
@@ -172,6 +178,17 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     setLeftWidth(leftWidthBeforeCollapse)
     saveSidebarState()
   }
+
+  // Expose toggle for keyboard shortcuts
+  onMount(() => {
+    props.setToggleLeftSidebar?.(() => {
+      if (leftCollapsed())
+        expandLeft()
+      else
+        collapseLeft()
+    })
+  })
+
   const collapseRight = () => {
     rightWidthBeforeCollapse = rightWidth()
     setAutoCollapsedRight(false)

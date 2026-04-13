@@ -308,13 +308,6 @@ export function installMenuBarToggle(): void {
     else {
       altDown = false
     }
-
-    // Handle menu shortcuts directly — GTK disables accelerators
-    // when the menu bar is hidden.
-    if (e.key === 'q' && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
-      e.preventDefault()
-      tauriInvoke('quit_app').catch(() => {})
-    }
   })
   window.addEventListener('keyup', (e) => {
     if (e.key === 'Alt' && altDown) {
@@ -322,6 +315,10 @@ export function installMenuBarToggle(): void {
       tauriInvoke('toggle_menu_bar').catch(() => {})
     }
   })
+}
+
+export function quitApp(): void {
+  tauriInvoke('quit_app').catch(() => {})
 }
 
 export const platformBridge = {

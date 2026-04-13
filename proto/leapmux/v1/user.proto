@@ -97,6 +97,10 @@ message UpdatePreferencesRequest {
   TurnEndSound turn_end_sound = 8;
   optional uint32 turn_end_sound_volume = 9;
   bool debug_logging = 10;
+  // JSON-encoded array of custom keybinding overrides.
+  // Each element: {"key": "<tinykeys-combo>", "command": "<command-id>", "when": "<optional-expr>"}
+  // Empty string means "no change"; explicit "[]" clears all overrides.
+  optional string custom_keybindings_json = 11;
 }
 
 message UpdatePreferencesResponse {
@@ -122,4 +126,6 @@ message UserPreferences {
   TurnEndSound turn_end_sound = 8;
   optional uint32 turn_end_sound_volume = 9;
   bool debug_logging = 10;
+  // JSON-encoded array of custom keybinding overrides.
+  string custom_keybindings_json = 11;
 }

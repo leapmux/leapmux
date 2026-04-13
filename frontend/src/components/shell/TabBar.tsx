@@ -20,6 +20,9 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useMruProviders } from '~/hooks/useMruProviders'
+import { formatShortcut } from '~/lib/shortcuts/display'
+import { getBindingForCommand } from '~/lib/shortcuts/keybindings'
+import { getPlatform } from '~/lib/shortcuts/platform'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -27,6 +30,14 @@ import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
 
 const MENU_CHECK = '\u2713 ' // ✓ + space
 const MENU_NOCHECK = '\u2003 ' // em-space placeholder
+
+/** Append a keyboard shortcut hint to tooltip text, e.g. "New Agent (⌘N)". */
+function shortcutHint(text: string, commandId: string): string {
+  const key = getBindingForCommand(commandId)
+  if (!key)
+    return text
+  return `${text} (${formatShortcut(key, getPlatform())})`
+}
 
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (
   <Tooltip text={tipProps.text}>
@@ -286,7 +297,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
         <li class={styles.providerIconsRow}>
           <For each={props.availableProviders}>
             {provider => (
-              <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
+              <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
                 <button
                   type="button"
                   class={styles.providerButton}
@@ -398,7 +409,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           >
             <For each={mruProviders()}>
               {provider => (
-                <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
+                <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
                   <Show
                     when={props.newAgentLoadingProvider !== provider}
                     fallback={(
@@ -424,7 +435,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
               )}
             </For>
           </Show>
-          <TabBarTooltip text={newTerminalLabel()}>
+          <TabBarTooltip text={shortcutHint(newTerminalLabel(), 'app.newTerminal')}>
             <IconButton
               icon={Terminal}
               iconSize="md"

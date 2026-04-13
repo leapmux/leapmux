@@ -1,6 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import type { ThemePreference } from '~/app'
 import type { BrowserPreferences, EnterKeyMode } from '~/lib/browserStorage'
+import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemePreference } from '~/lib/terminal'
 import { createContext, createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
@@ -44,6 +45,9 @@ interface PreferencesState {
   /** Resolved enter key mode. */
   enterKeyMode: () => EnterKeyMode
   setEnterKeyMode: (value: EnterKeyMode) => void
+  /** Custom keybinding overrides (account-level, stored in Hub DB). */
+  customKeybindings: () => UserKeybindingOverride[]
+  setCustomKeybindings: (value: UserKeybindingOverride[]) => void
 
   // --- Browser-level overrides (localStorage) ---
   /** Raw browser-level theme override. null means "use account default". */
@@ -213,6 +217,15 @@ export const PreferencesProvider: ParentComponent = (props) => {
     updateBrowserPref('enterKeyMode', value)
   }
 
+  // --- Custom keybindings (account-level, loaded from Hub DB) ---
+  const [customKeybindings, setCustomKeybindingsSignal] = createSignal<UserKeybindingOverride[]>([])
+  const setCustomKeybindings = (value: UserKeybindingOverride[]) => {
+    setCustomKeybindingsSignal(value)
+    // Persist to Hub DB. Fire-and-forget — the value is already in the signal.
+    const json = value.length > 0 ? JSON.stringify(value) : ''
+    userClient.updatePreferences({ customKeybindingsJson: json }).catch(() => {})
+  }
+
   // --- Resolved values (browser override → account default → hardcoded) ---
   const theme = (): ThemePreference => browserTheme() ?? accountTheme()
   const terminalTheme = (): TerminalThemePreference => browserTerminalTheme() ?? accountTerminalTheme()
@@ -252,6 +265,19 @@ export const PreferencesProvider: ParentComponent = (props) => {
         setAccountTurnEndSound(turnEndSoundFromProto(p.turnEndSound))
         setAccountTurnEndSoundVolume(p.turnEndSoundVolume ?? 100)
         setAccountDebugLogging(p.debugLogging)
+        // Parse custom keybindings JSON
+        if (p.customKeybindingsJson) {
+          try {
+            const parsed = JSON.parse(p.customKeybindingsJson) as UserKeybindingOverride[]
+            setCustomKeybindingsSignal(parsed)
+          }
+          catch {
+            setCustomKeybindingsSignal([])
+          }
+        }
+        else {
+          setCustomKeybindingsSignal([])
+        }
       }
     }
     catch {
@@ -291,6 +317,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setShowHiddenMessages,
       enterKeyMode,
       setEnterKeyMode,
+      customKeybindings,
+      setCustomKeybindings,
       uiFontCustomEnabled,
       monoFontCustomEnabled,
       uiFonts,
