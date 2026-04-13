@@ -64,8 +64,8 @@ interface DesktopLayoutProps {
   floatingWindowLayer?: JSX.Element
   onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
   fileDropDisabled?: boolean
-  /** Ref callback: receives a toggle function for the left sidebar (used by keyboard shortcuts). */
   setToggleLeftSidebar?: (fn: () => void) => void
+  setToggleRightSidebar?: (fn: () => void) => void
 }
 
 function useSidebarDrag(opts: {
@@ -133,7 +133,6 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   const [autoCollapsedLeft, setAutoCollapsedLeft] = createSignal(savedSidebar?.autoCollapsedLeft ?? false)
   const [autoCollapsedRight, setAutoCollapsedRight] = createSignal(savedSidebar?.autoCollapsedRight ?? false)
 
-  // Expose sidebar visibility as shortcut context key
   useShortcutContext('sidebarVisible', () => !leftCollapsed())
 
   let leftWidthBeforeCollapse = initLeftPx
@@ -179,14 +178,14 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     saveSidebarState()
   }
 
-  // Expose toggle for keyboard shortcuts
+  const toggleLeft = () => {
+    if (leftCollapsed())
+      expandLeft()
+    else
+      collapseLeft()
+  }
   onMount(() => {
-    props.setToggleLeftSidebar?.(() => {
-      if (leftCollapsed())
-        expandLeft()
-      else
-        collapseLeft()
-    })
+    props.setToggleLeftSidebar?.(toggleLeft)
   })
 
   const collapseRight = () => {
@@ -201,6 +200,15 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     setRightWidth(rightWidthBeforeCollapse)
     saveSidebarState()
   }
+  const toggleRight = () => {
+    if (rightCollapsed())
+      expandRight()
+    else
+      collapseRight()
+  }
+  onMount(() => {
+    props.setToggleRightSidebar?.(toggleRight)
+  })
 
   // --- Drag handles ---
   const leftDrag = useSidebarDrag({

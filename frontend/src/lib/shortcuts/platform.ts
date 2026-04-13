@@ -1,7 +1,7 @@
 import type { Platform } from './types'
 
 const MAC_RE = /Mac|iPod|iPhone|iPad/
-const WIN_RE = /Win/
+const WIN_RE = /Windows/
 
 let cachedPlatform: Platform | undefined
 

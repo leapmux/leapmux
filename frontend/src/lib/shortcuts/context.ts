@@ -1,12 +1,6 @@
 import type { ContextValue } from './types'
 
-// ---------------------------------------------------------------------------
-// Context key store
-// ---------------------------------------------------------------------------
-
 const contextMap = new Map<string, ContextValue>()
-
-/** Lazy context providers — evaluated at dispatch time, not stored. */
 const lazyProviders = new Map<string, () => ContextValue>()
 
 export function setContext(key: string, value: ContextValue): void {
@@ -41,10 +35,6 @@ export function resetContext(): void {
   contextMap.clear()
   lazyProviders.clear()
 }
-
-// ---------------------------------------------------------------------------
-// When-expression parser & evaluator
-// ---------------------------------------------------------------------------
 
 /**
  * AST node types for when-expressions.
@@ -99,7 +89,12 @@ function tokenize(expr: string): Token[] {
       i++
       continue
     }
-    if (ch === '!' && expr[i + 1] !== '=') {
+    if (ch === '!' && expr[i + 1] === '=') {
+      tokens.push({ type: 'op', value: '!=' })
+      i += 2
+      continue
+    }
+    if (ch === '!') {
       tokens.push({ type: 'op', value: '!' })
       i++
       continue
@@ -116,11 +111,6 @@ function tokenize(expr: string): Token[] {
     }
     if (ch === '=' && expr[i + 1] === '=') {
       tokens.push({ type: 'op', value: '==' })
-      i += 2
-      continue
-    }
-    if (ch === '!' && expr[i + 1] === '=') {
-      tokens.push({ type: 'op', value: '!=' })
       i += 2
       continue
     }
@@ -143,13 +133,7 @@ function tokenize(expr: string): Token[] {
         ident += expr[i]
         i++
       }
-      // Handle boolean literals
-      if (ident === 'true' || ident === 'false') {
-        tokens.push({ type: 'ident', value: ident })
-      }
-      else {
-        tokens.push({ type: 'ident', value: ident })
-      }
+      tokens.push({ type: 'ident', value: ident })
       continue
     }
     // Skip unknown characters
@@ -179,8 +163,7 @@ class Parser {
   parse(): WhenNode {
     if (this.tokens.length === 0)
       return { type: 'true' }
-    const node = this.parseOr()
-    return node
+    return this.parseOr()
   }
 
   private parseOr(): WhenNode {

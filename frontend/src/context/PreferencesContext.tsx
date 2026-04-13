@@ -217,7 +217,6 @@ export const PreferencesProvider: ParentComponent = (props) => {
     updateBrowserPref('enterKeyMode', value)
   }
 
-  // --- Custom keybindings (account-level, loaded from Hub DB) ---
   const [customKeybindings, setCustomKeybindingsSignal] = createSignal<UserKeybindingOverride[]>([])
   const setCustomKeybindings = (value: UserKeybindingOverride[]) => {
     setCustomKeybindingsSignal(value)
@@ -265,7 +264,6 @@ export const PreferencesProvider: ParentComponent = (props) => {
         setAccountTurnEndSound(turnEndSoundFromProto(p.turnEndSound))
         setAccountTurnEndSoundVolume(p.turnEndSoundVolume ?? 100)
         setAccountDebugLogging(p.debugLogging)
-        // Parse custom keybindings JSON
         if (p.customKeybindingsJson) {
           try {
             const parsed = JSON.parse(p.customKeybindingsJson) as UserKeybindingOverride[]

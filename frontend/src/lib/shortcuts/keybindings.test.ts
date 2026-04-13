@@ -13,7 +13,7 @@ const DEFAULTS: Keybinding[] = [
   { key: '$mod+t', command: 'app.newTerminal', when: '!dialogOpen' },
   { key: '$mod+w', command: 'app.closeActiveTab' },
   { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
-  { key: '$mod+b', command: 'app.toggleSidebar' },
+  { key: '$mod+b', command: 'app.toggleLeftSidebar' },
 ]
 
 describe('mergeKeybindings', () => {
@@ -121,8 +121,8 @@ describe('resolve', () => {
 
   it('returns command when no when clause is set', () => {
     const bindings: Keybinding[] = [
-      { key: '$mod+b', command: 'app.toggleSidebar' },
+      { key: '$mod+b', command: 'app.toggleLeftSidebar' },
     ]
-    expect(resolve(bindings, '$mod+b')).toBe('app.toggleSidebar')
+    expect(resolve(bindings, '$mod+b')).toBe('app.toggleLeftSidebar')
   })
 })

@@ -1,14 +1,10 @@
 import type { Keybinding, UserKeybindingOverride } from './types'
-import tinykeys from 'tinykeys'
+import { tinykeys } from 'tinykeys'
 import { createLogger } from '~/lib/logger'
 import { executeCommand } from './commands'
 import { evaluateWhen, getContext } from './context'
 
 const log = createLogger('shortcuts')
-
-// ---------------------------------------------------------------------------
-// Merge algorithm
-// ---------------------------------------------------------------------------
 
 /**
  * Merge default keybindings with user overrides.
@@ -22,7 +18,6 @@ export function mergeKeybindings(
   defaults: readonly Keybinding[],
   overrides: readonly UserKeybindingOverride[],
 ): Keybinding[] {
-  // Index overrides by command for O(1) lookup
   const overrideMap = new Map<string, UserKeybindingOverride>()
   for (const o of overrides)
     overrideMap.set(o.command, o)
@@ -65,10 +60,6 @@ export function mergeKeybindings(
   return result
 }
 
-// ---------------------------------------------------------------------------
-// Binding groups
-// ---------------------------------------------------------------------------
-
 interface BindingGroup {
   key: string
   bindings: Keybinding[]
@@ -88,10 +79,6 @@ export function groupBindings(bindings: readonly Keybinding[]): BindingGroup[] {
   return Array.from(map.entries(), ([key, bindings]) => ({ key, bindings }))
 }
 
-// ---------------------------------------------------------------------------
-// Resolver
-// ---------------------------------------------------------------------------
-
 const MODIFIER_RE = /\$mod|Control|Alt|Meta|Shift/
 
 /** Check if a key string contains modifier keys. */
@@ -100,28 +87,12 @@ function hasModifier(key: string): boolean {
   return MODIFIER_RE.test(first)
 }
 
-/** Check if focus is on an interactive input element. */
-function isInputFocused(): boolean {
-  const el = document.activeElement
-  if (!el)
-    return false
-
-  const tag = el.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')
-    return true
-
-  if (el.getAttribute('contenteditable') === 'true')
-    return true
-
-  return false
-}
-
 /**
  * Resolve which binding to execute for a given key event.
  * Returns the command ID to execute, or null if no match.
  */
 export function resolve(bindings: readonly Keybinding[], key: string): string | null {
-  const inputFocused = isInputFocused()
+  const inputFocused = !!getContext('inputFocused')
   const modifier = hasModifier(key)
 
   for (const binding of bindings) {
@@ -136,10 +107,6 @@ export function resolve(bindings: readonly Keybinding[], key: string): string | 
 
   return null
 }
-
-// ---------------------------------------------------------------------------
-// Tinykeys integration
-// ---------------------------------------------------------------------------
 
 let currentUnsubscribe: (() => void) | null = null
 
@@ -173,13 +140,8 @@ export function unbindAll(): void {
   currentUnsubscribe = null
 }
 
-// ---------------------------------------------------------------------------
-// Binding lookup (for display helpers)
-// ---------------------------------------------------------------------------
-
 let activeBindings: readonly Keybinding[] = []
 
-/** Update the active bindings reference (called by bindAll internally and useShortcuts). */
 export function setActiveBindings(bindings: readonly Keybinding[]): void {
   activeBindings = bindings
 }
@@ -188,11 +150,9 @@ export function setActiveBindings(bindings: readonly Keybinding[]): void {
 export function getBindingForCommand(commandId: string): string | undefined {
   for (const b of activeBindings) {
     if (b.command === commandId) {
-      // Evaluate the when-clause to find the applicable binding
-      if (evaluateWhen(b.when, getContext))
+      if (evaluateWhen(b.when))
         return b.key
     }
   }
-  // Fallback: return first binding for command regardless of context
   return activeBindings.find(b => b.command === commandId)?.key
 }

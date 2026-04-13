@@ -9,7 +9,7 @@ declare module 'tinykeys' {
     timeout?: number
   }
 
-  export default function tinykeys(
+  export function tinykeys(
     target: Window | HTMLElement,
     keyBindingMap: KeyBindingMap,
     options?: KeyBindingHandlerOptions,

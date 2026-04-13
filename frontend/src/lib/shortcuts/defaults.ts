@@ -23,8 +23,10 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   { key: '$mod+BracketRight', command: 'app.nextTab' },
 
   // Layout
-  { key: '$mod+Backslash', command: 'app.splitTile' },
-  { key: '$mod+b', command: 'app.toggleSidebar' },
+  { key: '$mod+Backslash', command: 'app.splitTileHorizontal' },
+  { key: '$mod+Shift+Backslash', command: 'app.splitTileVertical' },
+  { key: '$mod+b', command: 'app.toggleLeftSidebar' },
+  { key: '$mod+Shift+b', command: 'app.toggleRightSidebar' },
 
   // Preferences
   { key: '$mod+Comma', command: 'app.openPreferences' },

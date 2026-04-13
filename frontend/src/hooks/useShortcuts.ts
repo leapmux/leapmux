@@ -12,6 +12,7 @@ import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/sh
 import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { bindAll, mergeKeybindings, setActiveBindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { getPlatform } from '~/lib/shortcuts/platform'
+import { tabKey } from '~/stores/tab.store'
 
 interface UseShortcutsProps {
   tabStore: ReturnType<typeof createTabStore>
@@ -23,8 +24,8 @@ interface UseShortcutsProps {
   setShowNewTerminalDialog: (v: boolean) => void
   setShowNewWorkspace: (v: boolean) => void
 
-  // Sidebar toggle (desktop layout)
   toggleLeftSidebar: () => void
+  toggleRightSidebar: () => void
 
   // Active tab type (reactive)
   activeTabType: Accessor<TabType | null>
@@ -53,13 +54,10 @@ export function useShortcuts(props: UseShortcutsProps): void {
     setShowNewTerminalDialog,
     setShowNewWorkspace,
     toggleLeftSidebar,
+    toggleRightSidebar,
     activeTabType,
     customKeybindings,
   } = props
-
-  // -----------------------------------------------------------------------
-  // Register commands
-  // -----------------------------------------------------------------------
 
   const cleanups: (() => void)[] = []
 
@@ -67,7 +65,6 @@ export function useShortcuts(props: UseShortcutsProps): void {
     cleanups.push(registerCommand({ id, title, handler, category }))
   }
 
-  // App-level commands
   cmd('app.newAgent', 'New Agent', () => setShowNewAgentDialog(true), 'App')
   cmd('app.newTerminal', 'New Terminal', () => setShowNewTerminalDialog(true), 'App')
   cmd('app.newWorkspace', 'New Workspace', () => setShowNewWorkspace(true), 'App')
@@ -76,11 +73,17 @@ export function useShortcuts(props: UseShortcutsProps): void {
     if (tab)
       tabOps.handleTabClose(tab)
   }, 'Tab')
-  cmd('app.toggleSidebar', 'Toggle Sidebar', toggleLeftSidebar, 'Layout')
-  cmd('app.splitTile', 'Split Tile', () => {
+  cmd('app.toggleLeftSidebar', 'Toggle Left Sidebar', toggleLeftSidebar, 'Layout')
+  cmd('app.toggleRightSidebar', 'Toggle Right Sidebar', toggleRightSidebar, 'Layout')
+  cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => {
     const focusedId = layoutStore.focusedTileId()
     if (focusedId)
       layoutStore.splitTileHorizontal(focusedId)
+  }, 'Layout')
+  cmd('app.splitTileVertical', 'Split Tile Vertically', () => {
+    const focusedId = layoutStore.focusedTileId()
+    if (focusedId)
+      layoutStore.splitTileVertical(focusedId)
   }, 'Layout')
   cmd('app.openPreferences', 'Open Preferences', () => {
     setShowPreferencesDialog(true)
@@ -107,40 +110,25 @@ export function useShortcuts(props: UseShortcutsProps): void {
     }, 'Tab')
   }
 
-  // Tab navigation (previous/next via MRU within focused tile)
-  cmd('app.previousTab', 'Previous Tab', () => {
+  // Tab navigation
+  function navigateTab(direction: -1 | 1) {
     const focusedTile = layoutStore.focusedTileId()
     const tabs = focusedTile ? tabStore.getTabsForTile(focusedTile) : tabStore.state.tabs
     if (tabs.length < 2)
       return
     const activeKey = tabStore.state.activeTabKey
-    const idx = tabs.findIndex(t => `${t.type}:${t.id}` === activeKey)
-    const prev = tabs[(idx - 1 + tabs.length) % tabs.length]
-    if (prev)
-      tabOps.handleTabSelect(prev)
-  }, 'Tab')
+    const idx = tabs.findIndex(t => tabKey(t) === activeKey)
+    const target = tabs[(idx + direction + tabs.length) % tabs.length]
+    if (target)
+      tabOps.handleTabSelect(target)
+  }
 
-  cmd('app.nextTab', 'Next Tab', () => {
-    const focusedTile = layoutStore.focusedTileId()
-    const tabs = focusedTile ? tabStore.getTabsForTile(focusedTile) : tabStore.state.tabs
-    if (tabs.length < 2)
-      return
-    const activeKey = tabStore.state.activeTabKey
-    const idx = tabs.findIndex(t => `${t.type}:${t.id}` === activeKey)
-    const next = tabs[(idx + 1) % tabs.length]
-    if (next)
-      tabOps.handleTabSelect(next)
-  }, 'Tab')
+  cmd('app.previousTab', 'Previous Tab', () => navigateTab(-1), 'Tab')
+  cmd('app.nextTab', 'Next Tab', () => navigateTab(1), 'Tab')
 
-  // -----------------------------------------------------------------------
-  // Context tracking
-  // -----------------------------------------------------------------------
-
-  // Static context
   setContext('platform', getPlatform())
   setContext('isDesktop', isTauriApp())
 
-  // Lazy context (evaluated at dispatch time)
   registerLazyContext('inputFocused', () => {
     const el = document.activeElement
     if (!el)
@@ -163,28 +151,24 @@ export function useShortcuts(props: UseShortcutsProps): void {
     return !!el?.closest('.xterm')
   })
 
-  // Reactive context: dialogOpen (via MutationObserver)
   const updateDialogOpen = () => {
     setContext('dialogOpen', document.querySelector('dialog[open]') !== null)
   }
   let observer: MutationObserver | undefined
+  let dialogRafId = 0
   onMount(() => {
     updateDialogOpen()
-    observer = new MutationObserver(updateDialogOpen)
+    observer = new MutationObserver(() => {
+      cancelAnimationFrame(dialogRafId)
+      dialogRafId = requestAnimationFrame(updateDialogOpen)
+    })
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] })
   })
-
-  // Reactive context: activeTabType
   createEffect(() => {
     const type = activeTabType()
     setContext('activeTabType', type !== null ? (TAB_TYPE_LABELS[type] ?? '') : undefined)
   })
 
-  // -----------------------------------------------------------------------
-  // Bind keys (react to custom keybinding changes)
-  // -----------------------------------------------------------------------
-
-  // Auto-tracks customKeybindings — runs on initial value and on every change.
   createEffect(() => {
     const overrides = customKeybindings()
     const merged = mergeKeybindings(DEFAULT_KEYBINDINGS, overrides)
@@ -192,15 +176,12 @@ export function useShortcuts(props: UseShortcutsProps): void {
     bindAll(merged)
   })
 
-  // -----------------------------------------------------------------------
-  // Cleanup
-  // -----------------------------------------------------------------------
-
   onCleanup(() => {
     unbindAll()
     for (const cleanup of cleanups)
       cleanup()
     resetCommands()
+    cancelAnimationFrame(dialogRafId)
     observer?.disconnect()
     unregisterLazyContext('inputFocused')
     unregisterLazyContext('editorFocused')

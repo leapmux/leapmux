@@ -424,8 +424,9 @@ export const AppShell: ParentComponent = (props) => {
     return { workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
   }
 
-  // Mutable refs for editor/scroll callbacks and sidebar toggle
+  // Mutable refs for editor/scroll callbacks
   const toggleLeftSidebarRef: { current: (() => void) | undefined } = { current: undefined }
+  const toggleRightSidebarRef: { current: (() => void) | undefined } = { current: undefined }
   const focusEditorRef: { current: (() => void) | undefined } = { current: undefined }
   const getScrollStateRef: { current: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined } = { current: undefined }
   const forceScrollToBottomRef: { current: (() => void) | undefined } = { current: undefined }
@@ -991,7 +992,6 @@ export const AppShell: ParentComponent = (props) => {
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
 
-  // Keyboard shortcuts
   useShortcuts({
     tabStore,
     layoutStore,
@@ -1007,6 +1007,7 @@ export const AppShell: ParentComponent = (props) => {
         toggleLeftSidebarRef.current?.()
       }
     },
+    toggleRightSidebar: () => toggleRightSidebarRef.current?.(),
     activeTabType,
     customKeybindings: preferences.customKeybindings,
   })
@@ -1137,6 +1138,7 @@ export const AppShell: ParentComponent = (props) => {
           >
             <DesktopLayout
               setToggleLeftSidebar={fn => toggleLeftSidebarRef.current = fn}
+              setToggleRightSidebar={fn => toggleRightSidebarRef.current = fn}
               sectionStore={sectionStore}
               layoutStore={layoutStore}
               onMoveSection={handleMoveSection}
