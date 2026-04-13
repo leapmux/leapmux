@@ -11,6 +11,7 @@
 /LeapMux*.dmg
 /LeapMux*.exe
 /LeapMux*.msi
+/LeapMux*.zip
 /leapmux-desktop
 /leapmux-desktop*.deb
 /leapmux-desktop*.AppImage
