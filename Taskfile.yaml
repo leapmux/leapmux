@@ -308,6 +308,7 @@ tasks:
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
     generates:
+      - leapmux-desktop
       - leapmux-desktop*.deb
       - leapmux-desktop*.AppImage
     cmds:
@@ -315,6 +316,7 @@ tasks:
       - task: build-desktop-sidecar
       - desktop/rust/scripts/patch-linuxdeploy.sh
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
+      - cp -f desktop/rust/target/release/leapmux-desktop .
       - cp -f desktop/rust/target/release/bundle/deb/leapmux-desktop*.deb .
       - cp -f desktop/rust/target/release/bundle/appimage/leapmux-desktop*.AppImage .
 
@@ -631,6 +633,7 @@ tasks:
     cmds:
       - rm -f  LeapMux*.dmg
       - rm -rf LeapMux*.app
+      - rm -f  leapmux-desktop
       - rm -f  leapmux-desktop*.deb
       - rm -f  leapmux-desktop*.AppImage
       - rm -f  LeapMux*.msi
