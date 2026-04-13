@@ -23,7 +23,7 @@ use std::{
   thread,
 };
 use tauri::{
-  menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID},
+  menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID},
   AppHandle,
   Emitter,
   Manager,
@@ -38,8 +38,11 @@ use tokio::sync::oneshot;
 
 const SHOW_ABOUT_MENU_ID: &str = "show-about";
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const QUIT_MENU_ID: &str = "quit";
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const MINIMIZE_MENU_ID: &str = "minimize";
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const MAXIMIZE_MENU_ID: &str = "maximize";
 const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024; // 16 MB
 
@@ -866,6 +869,21 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     &[&PredefinedMenuItem::fullscreen(app, None)?],
   )?;
 
+  #[cfg(target_os = "macos")]
+  let window_menu = Submenu::with_id_and_items(
+    app,
+    WINDOW_SUBMENU_ID,
+    "Window",
+    true,
+    &[
+      &PredefinedMenuItem::minimize(app, None)?,
+      &PredefinedMenuItem::maximize(app, None)?,
+      &PredefinedMenuItem::separator(app)?,
+      &PredefinedMenuItem::close_window(app, None)?,
+    ],
+  )?;
+
+  #[cfg(any(target_os = "linux", target_os = "windows"))]
   let window_menu = Submenu::with_items(
     app,
     "Window",
@@ -927,16 +945,20 @@ fn main() {
         let _ = app.emit("menu:show-about", ());
       } else if event.id() == OPEN_WEB_INSPECTOR_MENU_ID {
         open_main_web_inspector(app);
-      } else if event.id() == QUIT_MENU_ID {
-        app.exit(0);
-      } else if event.id() == MINIMIZE_MENU_ID {
-        if let Some(w) = app.get_webview_window("main") {
-          let _ = w.minimize();
-        }
-      } else if event.id() == MAXIMIZE_MENU_ID {
-        if let Some(w) = app.get_webview_window("main") {
-          let is_max = w.is_maximized().unwrap_or(false);
-          if is_max { let _ = w.unmaximize(); } else { let _ = w.maximize(); }
+      }
+      #[cfg(any(target_os = "linux", target_os = "windows"))]
+      {
+        if event.id() == QUIT_MENU_ID {
+          app.exit(0);
+        } else if event.id() == MINIMIZE_MENU_ID {
+          if let Some(w) = app.get_webview_window("main") {
+            let _ = w.minimize();
+          }
+        } else if event.id() == MAXIMIZE_MENU_ID {
+          if let Some(w) = app.get_webview_window("main") {
+            let is_max = w.is_maximized().unwrap_or(false);
+            if is_max { let _ = w.unmaximize(); } else { let _ = w.maximize(); }
+          }
         }
       }
       // Re-hide the menu bar after a menu item is selected (Linux/Windows).
