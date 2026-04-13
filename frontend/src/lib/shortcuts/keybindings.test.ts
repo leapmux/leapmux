@@ -69,6 +69,62 @@ describe('mergeKeybindings', () => {
     expect(result).toHaveLength(DEFAULTS.length)
   })
 
+  it('supports multiple overrides for the same command', () => {
+    const overrides: UserKeybindingOverride[] = [
+      { key: '$mod+n', command: 'app.newAgent', when: '!dialogOpen' },
+      { key: '$mod+Shift+n', command: 'app.newAgent', when: 'editorFocused' },
+    ]
+    const result = mergeKeybindings(DEFAULTS, overrides)
+    const newAgentBindings = result.filter(b => b.command === 'app.newAgent')
+    expect(newAgentBindings).toHaveLength(2)
+    expect(newAgentBindings[0].key).toBe('$mod+n')
+    expect(newAgentBindings[0].when).toBe('!dialogOpen')
+    expect(newAgentBindings[1].key).toBe('$mod+Shift+n')
+    expect(newAgentBindings[1].when).toBe('editorFocused')
+  })
+
+  it('inherits default when-clause for multi-override entries without when', () => {
+    const overrides: UserKeybindingOverride[] = [
+      { key: '$mod+Shift+a', command: 'app.newAgent' },
+      { key: '$mod+Alt+a', command: 'app.newAgent', when: 'editorFocused' },
+    ]
+    const result = mergeKeybindings(DEFAULTS, overrides)
+    const newAgentBindings = result.filter(b => b.command === 'app.newAgent')
+    expect(newAgentBindings).toHaveLength(2)
+    expect(newAgentBindings[0].when).toBe('!dialogOpen') // inherited from default
+    expect(newAgentBindings[1].when).toBe('editorFocused') // explicit
+  })
+
+  it('unbinds default when all overrides have empty key', () => {
+    const overrides: UserKeybindingOverride[] = [
+      { key: '', command: 'app.newAgent' },
+      { key: '', command: 'app.newAgent' },
+    ]
+    const result = mergeKeybindings(DEFAULTS, overrides)
+    expect(result.filter(b => b.command === 'app.newAgent')).toHaveLength(0)
+  })
+
+  it('filters empty keys from mixed multi-overrides', () => {
+    const overrides: UserKeybindingOverride[] = [
+      { key: '', command: 'app.newAgent' },
+      { key: '$mod+Shift+n', command: 'app.newAgent', when: 'editorFocused' },
+    ]
+    const result = mergeKeybindings(DEFAULTS, overrides)
+    const newAgentBindings = result.filter(b => b.command === 'app.newAgent')
+    expect(newAgentBindings).toHaveLength(1)
+    expect(newAgentBindings[0].key).toBe('$mod+Shift+n')
+  })
+
+  it('supports multiple overrides for new commands not in defaults', () => {
+    const overrides: UserKeybindingOverride[] = [
+      { key: '$mod+Shift+p', command: 'app.commandPalette', when: '!dialogOpen' },
+      { key: '$mod+p', command: 'app.commandPalette', when: 'editorFocused' },
+    ]
+    const result = mergeKeybindings(DEFAULTS, overrides)
+    const paletteBindings = result.filter(b => b.command === 'app.commandPalette')
+    expect(paletteBindings).toHaveLength(2)
+  })
+
   it('does not mutate the defaults array', () => {
     const original = DEFAULTS.map(b => ({ ...b }))
     mergeKeybindings(DEFAULTS, [{ key: '$mod+Shift+a', command: 'app.newAgent' }])

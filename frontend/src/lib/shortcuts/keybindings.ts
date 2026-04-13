@@ -9,44 +9,58 @@ const log = createLogger('shortcuts')
 /**
  * Merge default keybindings with user overrides.
  *
- * For each override:
- * - Find the default with the same command ID → replace key (and when if provided)
- * - If user override key is "", remove the binding (unbind)
- * - Overrides with command IDs not in defaults are appended as new bindings
+ * Multiple overrides for the same command are supported — each non-empty-key
+ * override becomes a separate binding (e.g. to bind the same command to
+ * different keys with different when-clauses).
+ *
+ * For each command with overrides:
+ * - The default entry is replaced by all non-empty-key overrides
+ * - Each override inherits the default's when-clause if it doesn't specify one
+ * - If all overrides have empty keys, the command is fully unbound
+ *
+ * Overrides for commands not in defaults are appended as new bindings.
  */
 export function mergeKeybindings(
   defaults: readonly Keybinding[],
   overrides: readonly UserKeybindingOverride[],
 ): Keybinding[] {
-  const overrideMap = new Map<string, UserKeybindingOverride>()
-  for (const o of overrides)
-    overrideMap.set(o.command, o)
+  const overrideMap = new Map<string, UserKeybindingOverride[]>()
+  for (const o of overrides) {
+    let list = overrideMap.get(o.command)
+    if (!list) {
+      list = []
+      overrideMap.set(o.command, list)
+    }
+    list.push(o)
+  }
 
   const result: Keybinding[] = []
-  const usedOverrideCommands = new Set<string>()
+  const processedCommands = new Set<string>()
 
   for (const def of defaults) {
-    const override = overrideMap.get(def.command)
-    if (override) {
-      usedOverrideCommands.add(def.command)
-      // Empty key = unbind
-      if (override.key === '')
-        continue
-      result.push({
-        key: override.key,
-        command: def.command,
-        when: override.when ?? def.when,
-        args: def.args,
-      })
+    const commandOverrides = overrideMap.get(def.command)
+    if (commandOverrides) {
+      processedCommands.add(def.command)
+      for (const o of commandOverrides) {
+        if (o.key === '')
+          continue
+        result.push({
+          key: o.key,
+          command: def.command,
+          when: o.when ?? def.when,
+          args: def.args,
+        })
+      }
     }
     else {
       result.push({ ...def })
     }
   }
 
-  // Append overrides for commands not in defaults (new bindings)
-  for (const o of overrides) {
-    if (!usedOverrideCommands.has(o.command)) {
+  for (const [command, commandOverrides] of overrideMap) {
+    if (processedCommands.has(command))
+      continue
+    for (const o of commandOverrides) {
       if (o.key === '')
         continue
       result.push({
