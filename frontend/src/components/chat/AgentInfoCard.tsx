@@ -28,16 +28,18 @@ function formatTokenCount(tokens: number): string {
 function CopyButton(props: { getText: () => string | undefined, title: string, testId?: string }) {
   const { copied, copy: handleCopy } = useCopyButton(() => props.getText())
   return (
-    <button
-      class={styles.infoCopyButton}
-      onClick={handleCopy}
-      title={props.title}
-      data-testid={props.testId}
-    >
-      <Show when={copied()} fallback={<Icon icon={Copy} size="xs" />}>
-        <Icon icon={Check} size="xs" />
-      </Show>
-    </button>
+    <Tooltip text={props.title}>
+      <button
+        class={styles.infoCopyButton}
+        onClick={handleCopy}
+        aria-label={props.title}
+        data-testid={props.testId}
+      >
+        <Show when={copied()} fallback={<Icon icon={Copy} size="xs" />}>
+          <Icon icon={Check} size="xs" />
+        </Show>
+      </button>
+    </Tooltip>
   )
 }
 

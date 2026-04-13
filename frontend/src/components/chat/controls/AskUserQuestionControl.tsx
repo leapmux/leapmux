@@ -5,6 +5,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createUniqueId, For, Show } from 'solid-js'
 import { agentLoadingTimeoutMs, apiLoadingTimeoutMs } from '~/api/transport'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { spinner } from '~/styles/animations.css'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
@@ -347,15 +348,17 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
           <Show when={stopping()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
           {stopping() ? 'Stopping...' : 'Stop'}
         </button>
-        <button
-          class="outline"
-          onClick={handleYolo}
-          disabled={!anyUnanswered()}
-          data-testid="control-yolo-btn"
-          title="Auto-fill unanswered questions and submit"
-        >
-          YOLO
-        </button>
+        <Tooltip text="Auto-fill unanswered questions and submit">
+          <button
+            class="outline"
+            onClick={handleYolo}
+            disabled={!anyUnanswered()}
+            data-testid="control-yolo-btn"
+            aria-label="Auto-fill unanswered questions and submit"
+          >
+            YOLO
+          </button>
+        </Tooltip>
         {props.infoTrigger}
       </div>
       <Show when={questions().length > 1}>
