@@ -22,7 +22,6 @@ import { usePreferences } from '~/context/PreferencesContext'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { formatShortcut } from '~/lib/shortcuts/display'
 import { getBindingForCommand } from '~/lib/shortcuts/keybindings'
-import { getPlatform } from '~/lib/shortcuts/platform'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -36,7 +35,7 @@ function shortcutHint(text: string, commandId: string): string {
   const key = getBindingForCommand(commandId)
   if (!key)
     return text
-  return `${text} (${formatShortcut(key, getPlatform())})`
+  return `${text} (${formatShortcut(key)})`
 }
 
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (

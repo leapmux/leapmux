@@ -1,4 +1,5 @@
 import type { Platform } from './types'
+import { getPlatform } from './platform'
 
 const MAC_MODIFIER_SYMBOLS: Record<string, string> = {
   $mod: '\u2318', // ⌘ Cmd
@@ -80,7 +81,7 @@ function formatChord(chord: string, platform: Platform): string {
  * Format a keybinding string for display.
  * Supports chords (space-separated sequences like '$mod+k $mod+s').
  */
-export function formatShortcut(key: string, platform: Platform): string {
+export function formatShortcut(key: string, platform: Platform = getPlatform()): string {
   const chords = key.split(' ')
   return chords.map(c => formatChord(c, platform)).join(' ')
 }

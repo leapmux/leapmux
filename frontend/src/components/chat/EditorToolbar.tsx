@@ -34,10 +34,10 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { positionPopoverAbove } from '~/lib/popoverPosition'
+import { formatShortcut } from '~/lib/shortcuts/display'
 import * as styles from './MarkdownEditor.css'
 
-const isMac = typeof navigator !== 'undefined'
-  && /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+const modEnterLabel = formatShortcut('$mod+Enter')
 
 export interface EditorToolbarProps {
   editorInstance: Accessor<Editor | undefined>
@@ -235,13 +235,11 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
     return `Heading ${level}`
   }
 
-  const modKeyLabel = isMac ? '⌘' : 'Ctrl'
-
   const enterModeTitle = () => {
     if (props.enterMode() === 'enter-sends') {
-      return `Enter to send, Shift+Enter for new line. Click to switch to ${modKeyLabel}+Enter mode.`
+      return `Enter to send, Shift+Enter for new line. Click to switch to ${modEnterLabel} mode.`
     }
-    return `${modKeyLabel}+Enter to send, Enter for new line. Click to switch to Enter mode.`
+    return `${modEnterLabel} to send, Enter for new line. Click to switch to Enter mode.`
   }
 
   const handleLinkTriggerClick = () => {
@@ -486,7 +484,7 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
           >
             <Show
               when={props.enterMode() === 'enter-sends'}
-              fallback={isMac ? '⌘+Enter sends' : 'Ctrl+Enter sends'}
+              fallback={`${modEnterLabel} sends`}
             >
               Enter sends
             </Show>
