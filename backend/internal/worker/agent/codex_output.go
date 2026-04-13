@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
@@ -601,6 +602,7 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 	}
 
 	rateLimits := map[string]interface{}{}
+	var latestExceededReset *time.Time
 	for _, tier := range []*codexRateLimitTier{notif.RateLimits.Primary, notif.RateLimits.Secondary} {
 		if tier == nil {
 			continue
@@ -619,6 +621,12 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 		}
 		if tier.ResetsAt != nil {
 			info["resetsAt"] = *tier.ResetsAt
+			if status == "exceeded" {
+				resetAt := time.Unix(*tier.ResetsAt, 0).UTC()
+				if latestExceededReset == nil || resetAt.After(*latestExceededReset) {
+					latestExceededReset = &resetAt
+				}
+			}
 		}
 		rateLimits[rlType] = info
 	}
@@ -626,6 +634,16 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
 			"rateLimits": rateLimits,
 		})
+	}
+
+	if latestExceededReset != nil {
+		a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+			Reason:        AutoContinueReasonRateLimit,
+			DueAt:         *latestExceededReset,
+			SourcePayload: append([]byte(nil), content...),
+		})
+	} else {
+		a.sink.CancelAutoContinue(AutoContinueReasonRateLimit)
 	}
 }
 

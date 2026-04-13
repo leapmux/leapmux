@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -257,6 +258,40 @@ func TestHandleCodexOutput_McpStartupStatusPersistsNotification(t *testing.T) {
 	}
 	if string(sink.LastNotification().Content) != input {
 		t.Fatalf("expected raw startup status notification to be preserved, got %s", string(sink.LastNotification().Content))
+	}
+}
+
+func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	if sink.AutoScheduleCount() != 1 {
+		t.Fatalf("expected 1 auto-continue schedule, got %d", sink.AutoScheduleCount())
+	}
+	schedule := sink.LastAutoSchedule()
+	if schedule.Reason != AutoContinueReasonRateLimit {
+		t.Fatalf("expected rate_limit reason, got %q", schedule.Reason)
+	}
+	if !schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()) {
+		t.Fatalf("expected reset time dueAt, got %v", schedule.DueAt)
+	}
+}
+
+func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":75,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	if sink.AutoCancelCount() != 1 {
+		t.Fatalf("expected 1 auto-continue cancel, got %d", sink.AutoCancelCount())
+	}
+	if sink.LastAutoCancel() != AutoContinueReasonRateLimit {
+		t.Fatalf("expected rate_limit cancel, got %q", sink.LastAutoCancel())
 	}
 }
 

@@ -57,6 +57,22 @@ CREATE TABLE control_requests (
     PRIMARY KEY (agent_id, request_id)
 );
 
+-- Scheduled synthetic auto-continue messages
+CREATE TABLE auto_continue_schedules (
+    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    reason          TEXT NOT NULL,
+    content         TEXT NOT NULL DEFAULT 'Continue.',
+    due_at          DATETIME NOT NULL,
+    jitter_ms       INTEGER NOT NULL DEFAULT 0,
+    next_backoff_ms INTEGER NOT NULL DEFAULT 0,
+    state           TEXT NOT NULL DEFAULT 'active',
+    source_payload  BLOB NOT NULL DEFAULT x'',
+    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, reason)
+);
+CREATE INDEX idx_auto_continue_schedules_state_due_at ON auto_continue_schedules(state, due_at);
+
 -- Worktrees created by LeapMux (for lifecycle tracking)
 CREATE TABLE worktrees (
     id              TEXT PRIMARY KEY,
@@ -100,6 +116,7 @@ CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id);
 DROP TABLE IF EXISTS terminals;
 DROP TABLE IF EXISTS worktree_tabs;
 DROP TABLE IF EXISTS worktrees;
+DROP TABLE IF EXISTS auto_continue_schedules;
 DROP TABLE IF EXISTS control_requests;
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS agents;

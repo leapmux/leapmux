@@ -362,9 +362,12 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	if msgType == "result" {
 		// Auto-continue on synthetic API 5xx errors; reset on normal results.
 		if env.IsError && hasSyntheticAPI5xxPrefix(env.Result) {
-			a.sink.ScheduleAutoContinue()
+			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+				Reason: AutoContinueReasonAPIError,
+				DueAt:  time.Now().UTC(),
+			})
 		} else {
-			a.sink.ResetAutoContinue()
+			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
 		}
 
 		// Reset all span tracking so the next turn starts clean.
@@ -441,18 +444,21 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		return
 	}
 
-	var rlType struct {
+	var rlInfo struct {
 		RateLimitType string `json:"rateLimitType"`
+		Status        string `json:"status"`
+		ResetsAt      *int64 `json:"resetsAt"`
 	}
-	if err := json.Unmarshal(rle.RateLimitInfo, &rlType); err != nil {
+	if err := json.Unmarshal(rle.RateLimitInfo, &rlInfo); err != nil {
 		slog.Warn("claude rate limit info unmarshal failed", "agent_id", a.agentID, "error", err)
+		return
 	}
-	if rlType.RateLimitType == "" {
-		rlType.RateLimitType = "unknown"
+	if rlInfo.RateLimitType == "" {
+		rlInfo.RateLimitType = "unknown"
 	}
 
 	rateLimits := map[string]json.RawMessage{
-		rlType.RateLimitType: rle.RateLimitInfo,
+		rlInfo.RateLimitType: rle.RateLimitInfo,
 	}
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		"rateLimits": rateLimits,
@@ -469,6 +475,20 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, notifContent); err != nil {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}
+
+	if rlInfo.Status == "allowed" {
+		a.sink.CancelAutoContinue(AutoContinueReasonRateLimit)
+		return
+	}
+	if rlInfo.ResetsAt == nil {
+		return
+	}
+
+	a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+		Reason:        AutoContinueReasonRateLimit,
+		DueAt:         time.Unix(*rlInfo.ResetsAt, 0).UTC(),
+		SourcePayload: append([]byte(nil), rle.RateLimitInfo...),
+	})
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.

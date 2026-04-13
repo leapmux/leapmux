@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/base64"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -19,6 +20,19 @@ type SpanInfo struct {
 	SpanType        string
 	SpanColor       int32
 	Closing         bool
+}
+
+type AutoContinueReason string
+
+const (
+	AutoContinueReasonAPIError  AutoContinueReason = "api_error"
+	AutoContinueReasonRateLimit AutoContinueReason = "rate_limit"
+)
+
+type AutoContinueSchedule struct {
+	Reason        AutoContinueReason
+	DueAt         time.Time
+	SourcePayload []byte
 }
 
 // OutputSink provides generic primitives for persisting and broadcasting
@@ -46,8 +60,8 @@ type OutputSink interface {
 	StorePlanModeToolUse(toolUseID, targetMode string)
 	LoadAndDeletePlanModeToolUse(toolUseID string) (targetMode string, ok bool)
 	UpdatePlan(filePath string, content []byte, compression leapmuxv1.ContentCompression, title string)
-	ScheduleAutoContinue()
-	ResetAutoContinue()
+	ScheduleAutoContinue(schedule AutoContinueSchedule)
+	CancelAutoContinue(reason AutoContinueReason)
 }
 
 // Provider is the interface that all coding agent providers must implement.

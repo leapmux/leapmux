@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
@@ -196,6 +197,67 @@ func TestHandleOutput_AssistantNoToolUse(t *testing.T) {
 	// No spans opened.
 	assert.Empty(t, sink.OpenedSpans())
 	assert.Equal(t, 0, agent.turnToolUses)
+}
+
+func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type":"rate_limit_event",
+		"rate_limit_info":{
+			"rateLimitType":"five_hour",
+			"status":"exceeded",
+			"resetsAt":1893456000
+		}
+	}`))
+
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	schedule := sink.LastAutoSchedule()
+	assert.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
+	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.DueAt)
+	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000}`, string(schedule.SourcePayload))
+}
+
+func TestClaudeRateLimitEvent_AllowedCancelsResume(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type":"rate_limit_event",
+		"rate_limit_info":{
+			"rateLimitType":"five_hour",
+			"status":"allowed",
+			"resetsAt":1893456000
+		}
+	}`))
+
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	assert.Equal(t, 0, sink.AutoScheduleCount())
+}
+
+func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type":"result",
+		"is_error":true,
+		"result":"API Error: 500 Internal Server Error"
+	}`))
+
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	assert.Equal(t, AutoContinueReasonAPIError, sink.LastAutoSchedule().Reason)
+
+	agent.HandleOutput([]byte(`{
+		"type":"result",
+		"is_error":false,
+		"result":"ok"
+	}`))
+
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
 func TestHandleOutput_MalformedJSON(t *testing.T) {

@@ -37,6 +37,7 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 		}
 		for _, row := range agentIDs {
 			svc.Agents.StopAgent(row)
+			svc.Output.CleanupAgent(row)
 			_ = svc.Queries.CloseAgent(bgCtx(), row)
 
 			svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, row)
