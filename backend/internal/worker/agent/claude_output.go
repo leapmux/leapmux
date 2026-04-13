@@ -362,9 +362,13 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	if msgType == "result" {
 		// Auto-continue on synthetic API 5xx errors; reset on normal results.
 		if env.IsError && hasSyntheticAPI5xxPrefix(env.Result) {
-			a.sink.ScheduleAutoContinue()
+			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+				Reason:  AutoContinueReasonAPIError,
+				DueAt:   time.Now().UTC(),
+				Content: "Continue.",
+			})
 		} else {
-			a.sink.ResetAutoContinue()
+			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
 		}
 
 		// Reset all span tracking so the next turn starts clean.
@@ -469,6 +473,29 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, notifContent); err != nil {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}
+
+	var scheduleInfo struct {
+		Status   string `json:"status"`
+		ResetsAt *int64 `json:"resetsAt"`
+	}
+	if err := json.Unmarshal(rle.RateLimitInfo, &scheduleInfo); err != nil {
+		slog.Warn("claude rate limit scheduling parse failed", "agent_id", a.agentID, "error", err)
+		return
+	}
+	if scheduleInfo.Status == "allowed" {
+		a.sink.CancelAutoContinue(AutoContinueReasonRateLimit)
+		return
+	}
+	if scheduleInfo.ResetsAt == nil {
+		return
+	}
+
+	a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+		Reason:        AutoContinueReasonRateLimit,
+		DueAt:         time.Unix(*scheduleInfo.ResetsAt, 0).UTC(),
+		Content:       "Continue.",
+		SourcePayload: append([]byte(nil), rle.RateLimitInfo...),
+	})
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.

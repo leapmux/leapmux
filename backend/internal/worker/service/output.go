@@ -371,8 +371,8 @@ type OutputHandler struct {
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
 
-	// Auto-continue state (per-agent).
-	autoContinue sync.Map // agentID -> *autoContinueState
+	// Auto-continue timers keyed by agent_id + reason.
+	autoContinue sync.Map // scheduleKey -> *autoContinueTimerState
 
 	// sendMessageFunc is called by auto-continue to inject a synthetic
 	// user message. Set via SetSendMessageFunc during service Init.
@@ -669,12 +669,12 @@ func (s *agentOutputSink) UpdatePlan(filePath string, content []byte, compressio
 	s.h.updatePlan(s.agentID, filePath, content, compression, title)
 }
 
-func (s *agentOutputSink) ScheduleAutoContinue() {
-	s.h.scheduleAutoContinue(s.agentID)
+func (s *agentOutputSink) ScheduleAutoContinue(schedule agent.AutoContinueSchedule) {
+	s.h.scheduleAutoContinue(s.agentID, schedule)
 }
 
-func (s *agentOutputSink) ResetAutoContinue() {
-	s.h.resetAutoContinue(s.agentID)
+func (s *agentOutputSink) CancelAutoContinue(reason agent.AutoContinueReason) {
+	s.h.cancelAutoContinue(s.agentID, reason)
 }
 
 // --- Internal helpers ---

@@ -138,6 +138,7 @@ func (svc *Context) Init() {
 
 	// Wire auto-continue so OutputHandler can send synthetic user messages.
 	svc.Output.SetSendMessageFunc(svc.sendSyntheticUserMessage)
+	svc.Output.restoreAutoContinueSchedules()
 
 	// No need to deactivate agents/terminals on startup — status is now
 	// derived from runtime state (HasAgent/HasTerminal), not from the DB.

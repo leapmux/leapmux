@@ -20,6 +20,8 @@ type testSink struct {
 	openSpans        []testSinkSpanOpen
 	closedSpans      []string
 	resetSpanCount   int
+	autoSchedules    []AutoContinueSchedule
+	autoCancels      []AutoContinueReason
 	planModeToolUses sync.Map
 }
 
@@ -145,8 +147,16 @@ func (s *testSink) LoadAndDeletePlanModeToolUse(toolUseID string) (string, bool)
 }
 
 func (s *testSink) UpdatePlan(string, []byte, leapmuxv1.ContentCompression, string) {}
-func (s *testSink) ScheduleAutoContinue()                                           {}
-func (s *testSink) ResetAutoContinue()                                              {}
+func (s *testSink) ScheduleAutoContinue(schedule AutoContinueSchedule) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoSchedules = append(s.autoSchedules, schedule)
+}
+func (s *testSink) CancelAutoContinue(reason AutoContinueReason) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoCancels = append(s.autoCancels, reason)
+}
 
 // MessageCount returns the number of persisted messages.
 func (s *testSink) MessageCount() int {
@@ -272,6 +282,30 @@ func (s *testSink) ResetSpanCount() int {
 	return s.resetSpanCount
 }
 
+func (s *testSink) AutoScheduleCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.autoSchedules)
+}
+
+func (s *testSink) LastAutoSchedule() AutoContinueSchedule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.autoSchedules[len(s.autoSchedules)-1]
+}
+
+func (s *testSink) AutoCancelCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.autoCancels)
+}
+
+func (s *testSink) LastAutoCancel() AutoContinueReason {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.autoCancels[len(s.autoCancels)-1]
+}
+
 // noopSink is a no-op implementation of OutputSink for tests that don't
 // need to verify output.
 type noopSink struct{}
@@ -300,5 +334,5 @@ func (noopSink) BroadcastNotification(map[string]interface{})                   
 func (noopSink) StorePlanModeToolUse(string, string)                             {}
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)              { return "", false }
 func (noopSink) UpdatePlan(string, []byte, leapmuxv1.ContentCompression, string) {}
-func (noopSink) ScheduleAutoContinue()                                           {}
-func (noopSink) ResetAutoContinue()                                              {}
+func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                       {}
+func (noopSink) CancelAutoContinue(AutoContinueReason)                           {}

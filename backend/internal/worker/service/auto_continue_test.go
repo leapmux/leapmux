@@ -7,93 +7,168 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func TestScheduleAutoContinue_FiresAfterDelay(t *testing.T) {
-	h := &OutputHandler{}
-
-	var called atomic.Int32
-
-	h.sendMessageFunc = func(agentID, content string) {
-		called.Add(1)
-	}
-
-	h.scheduleAutoContinue("agent-1")
-
-	// Should not fire immediately.
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, int32(0), called.Load())
-
-	// Wait for the initial delay (10s) + some margin.
-	// We can't wait that long in a unit test, so we test via
-	// the internal state instead: verify the state was created.
-	v, ok := h.autoContinue.Load("agent-1")
-	require.True(t, ok)
-	st := v.(*autoContinueState)
-	st.mu.Lock()
-	assert.NotNil(t, st.timer, "timer should be set")
-	assert.Equal(t, 1, st.generation)
-	// Backoff should have doubled from initial 10s to 20s.
-	assert.Equal(t, time.Duration(float64(autoContinueInitialDelay)*autoContinueMultiplier), st.backoff)
-	st.mu.Unlock()
-
-	// Cleanup.
-	h.cleanupAutoContinue("agent-1")
+func createAutoContinueTestAgent(t *testing.T, queries *db.Queries, agentID string) {
+	t.Helper()
+	require.NoError(t, queries.CreateAgent(bgCtx(), db.CreateAgentParams{
+		ID:          agentID,
+		WorkspaceID: "ws-1",
+		WorkingDir:  "/tmp",
+		HomeDir:     "/tmp",
+	}))
 }
 
-func TestResetAutoContinue_StopsTimer(t *testing.T) {
-	h := &OutputHandler{}
-	h.sendMessageFunc = func(string, string) {}
+func TestAutoContinueSchedule_SurvivesRestart(t *testing.T) {
+	_, queries := setupTestDB(t)
+	createAutoContinueTestAgent(t, queries, "agent-1")
 
-	h.scheduleAutoContinue("agent-1")
+	require.NoError(t, queries.UpsertAutoContinueSchedule(bgCtx(), db.UpsertAutoContinueScheduleParams{
+		AgentID:       "agent-1",
+		Reason:        string(agent.AutoContinueReasonRateLimit),
+		Content:       autoContinueContent,
+		DueAt:         time.Now().UTC().Add(100 * time.Millisecond),
+		JitterMs:      0,
+		NextBackoffMs: 0,
+		SourcePayload: []byte{},
+	}))
 
-	v, ok := h.autoContinue.Load("agent-1")
-	require.True(t, ok)
-	st := v.(*autoContinueState)
+	var fired atomic.Int32
+	h2 := NewOutputHandler(queries, nil, nil, nil)
+	h2.SetSendMessageFunc(func(agentID, content string) {
+		if agentID == "agent-1" && content == autoContinueContent {
+			fired.Add(1)
+		}
+	})
+	h2.restoreAutoContinueSchedules()
 
-	h.resetAutoContinue("agent-1")
+	require.Eventually(t, func() bool { return fired.Load() == 1 }, 2*time.Second, 25*time.Millisecond)
 
-	st.mu.Lock()
-	assert.Nil(t, st.timer, "timer should be nil after reset")
-	assert.Equal(t, autoContinueInitialDelay, st.backoff, "backoff should be reset to initial")
-	st.mu.Unlock()
+	row, err := queries.GetAutoContinueSchedule(bgCtx(), db.GetAutoContinueScheduleParams{
+		AgentID: "agent-1",
+		Reason:  string(agent.AutoContinueReasonRateLimit),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, autoContinueStateFired, row.State)
 }
 
-func TestResetAutoContinue_NoopWhenNoState(t *testing.T) {
-	h := &OutputHandler{}
-	// Should not panic.
-	h.resetAutoContinue("nonexistent")
+func TestAutoContinueSchedule_RescheduleUpdatesSingleRow(t *testing.T) {
+	_, queries := setupTestDB(t)
+	createAutoContinueTestAgent(t, queries, "agent-1")
+
+	h := NewOutputHandler(queries, nil, nil, nil)
+	firstDueAt := time.Now().UTC().Add(10 * time.Minute)
+	secondDueAt := firstDueAt.Add(20 * time.Minute)
+
+	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
+		Reason:  agent.AutoContinueReasonRateLimit,
+		DueAt:   firstDueAt,
+		Content: autoContinueContent,
+	})
+	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
+		Reason:  agent.AutoContinueReasonRateLimit,
+		DueAt:   secondDueAt,
+		Content: autoContinueContent,
+	})
+	t.Cleanup(func() { h.cleanupAutoContinue("agent-1") })
+
+	rows, err := queries.ListActiveAutoContinueSchedules(bgCtx())
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "agent-1", rows[0].AgentID)
+	assert.Equal(t, string(agent.AutoContinueReasonRateLimit), rows[0].Reason)
+	assert.True(t, rows[0].DueAt.After(firstDueAt))
 }
 
-func TestCleanupAutoContinue_RemovesState(t *testing.T) {
-	h := &OutputHandler{}
-	h.sendMessageFunc = func(string, string) {}
+func TestAutoContinueSchedule_ReasonsCanCoexist(t *testing.T) {
+	_, queries := setupTestDB(t)
+	createAutoContinueTestAgent(t, queries, "agent-1")
 
-	h.scheduleAutoContinue("agent-1")
-	_, ok := h.autoContinue.Load("agent-1")
-	require.True(t, ok)
+	h := NewOutputHandler(queries, nil, nil, nil)
+	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
+		Reason:  agent.AutoContinueReasonAPIError,
+		DueAt:   time.Now().UTC(),
+		Content: autoContinueContent,
+	})
+	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
+		Reason:  agent.AutoContinueReasonRateLimit,
+		DueAt:   time.Now().UTC().Add(time.Hour),
+		Content: autoContinueContent,
+	})
+	t.Cleanup(func() { h.cleanupAutoContinue("agent-1") })
 
-	h.cleanupAutoContinue("agent-1")
-	_, ok = h.autoContinue.Load("agent-1")
-	assert.False(t, ok, "state should be removed after cleanup")
+	rows, err := queries.ListActiveAutoContinueSchedules(bgCtx())
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
 }
 
-func TestScheduleAutoContinue_BackoffIncreases(t *testing.T) {
-	h := &OutputHandler{}
-	h.sendMessageFunc = func(string, string) {}
+func TestAutoContinueSchedule_CancelOneReasonLeavesOtherIntact(t *testing.T) {
+	_, queries := setupTestDB(t)
+	createAutoContinueTestAgent(t, queries, "agent-1")
 
-	// Schedule twice to see backoff increase.
-	h.scheduleAutoContinue("agent-1")
-	h.scheduleAutoContinue("agent-1")
+	h := NewOutputHandler(queries, nil, nil, nil)
+	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
+		Reason:  agent.AutoContinueReasonAPIError,
+		DueAt:   time.Now().UTC(),
+		Content: autoContinueContent,
+	})
+	h.scheduleAutoContinue("agent-1", agent.AutoContinueSchedule{
+		Reason:  agent.AutoContinueReasonRateLimit,
+		DueAt:   time.Now().UTC().Add(time.Hour),
+		Content: autoContinueContent,
+	})
 
-	v, _ := h.autoContinue.Load("agent-1")
-	st := v.(*autoContinueState)
-	st.mu.Lock()
-	// After two schedules: initial 10s -> 20s (first) -> 40s (second).
-	expected := time.Duration(float64(autoContinueInitialDelay) * autoContinueMultiplier * autoContinueMultiplier)
-	assert.Equal(t, expected, st.backoff)
-	assert.Equal(t, 2, st.generation, "generation should increment on each schedule")
-	st.mu.Unlock()
+	h.cancelAutoContinue("agent-1", agent.AutoContinueReasonAPIError)
+	t.Cleanup(func() { h.cleanupAutoContinue("agent-1") })
 
-	h.cleanupAutoContinue("agent-1")
+	rows, err := queries.ListActiveAutoContinueSchedules(bgCtx())
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, string(agent.AutoContinueReasonRateLimit), rows[0].Reason)
+
+	apiRow, err := queries.GetAutoContinueSchedule(bgCtx(), db.GetAutoContinueScheduleParams{
+		AgentID: "agent-1",
+		Reason:  string(agent.AutoContinueReasonAPIError),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, autoContinueStateCancelled, apiRow.State)
+}
+
+func TestAutoContinueSchedule_FiresOnceAndDoesNotRefireAfterRestart(t *testing.T) {
+	_, queries := setupTestDB(t)
+	createAutoContinueTestAgent(t, queries, "agent-1")
+
+	require.NoError(t, queries.UpsertAutoContinueSchedule(bgCtx(), db.UpsertAutoContinueScheduleParams{
+		AgentID:       "agent-1",
+		Reason:        string(agent.AutoContinueReasonRateLimit),
+		Content:       autoContinueContent,
+		DueAt:         time.Now().UTC().Add(100 * time.Millisecond),
+		JitterMs:      0,
+		NextBackoffMs: 0,
+		SourcePayload: []byte{},
+	}))
+
+	var fired atomic.Int32
+	h1 := NewOutputHandler(queries, nil, nil, nil)
+	h1.SetSendMessageFunc(func(agentID, content string) {
+		if agentID == "agent-1" && content == autoContinueContent {
+			fired.Add(1)
+		}
+	})
+	h1.restoreAutoContinueSchedules()
+	require.Eventually(t, func() bool { return fired.Load() == 1 }, 2*time.Second, 25*time.Millisecond)
+
+	h2 := NewOutputHandler(queries, nil, nil, nil)
+	h2.SetSendMessageFunc(func(agentID, content string) {
+		if agentID == "agent-1" && content == autoContinueContent {
+			fired.Add(1)
+		}
+	})
+	h2.restoreAutoContinueSchedules()
+	time.Sleep(250 * time.Millisecond)
+
+	assert.Equal(t, int32(1), fired.Load())
 }
