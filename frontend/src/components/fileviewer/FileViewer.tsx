@@ -8,6 +8,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { diffAdded, diffRemoved } from '~/components/chat/diffStyles.css'
 import { DiffView, rawDiffToHunks } from '~/components/chat/diffUtils'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import { GitFileRef } from '~/generated/leapmux/v1/git_pb'
 import { detectFileViewMode, isImageExtension } from '~/lib/fileType'
 import { DiffModeToolbar } from './DiffModeToolbar'
@@ -274,14 +275,15 @@ export const FileViewer: Component<{
       </Show>
       <Show when={showOuterMention()}>
         <div class={styles.viewToggle}>
-          <button
-            class={styles.viewToggleButton}
-            onClick={() => props.onMention?.()}
-            title="Mention in the chat"
-            data-testid="file-mention-button"
-          >
-            <Icon icon={AtSign} size="sm" />
-          </button>
+          <Tooltip text="Mention in the chat" ariaLabel>
+            <button
+              class={styles.viewToggleButton}
+              onClick={() => props.onMention?.()}
+              data-testid="file-mention-button"
+            >
+              <Icon icon={AtSign} size="sm" />
+            </button>
+          </Tooltip>
         </div>
       </Show>
       <div class={`${styles.content}${showToolbar() || showOuterMention() ? ` ${styles.hasFloatingToolbar}` : ''}`} ref={contentRef}>

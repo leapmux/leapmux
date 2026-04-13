@@ -4,6 +4,7 @@ import type { ControlRequest } from '~/stores/control.store'
 
 import { Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
+import { Tooltip } from '~/components/common/Tooltip'
 import { buildAllowResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleText } from './CollapsibleText'
@@ -66,14 +67,15 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
             Allow
           </button>
           <Show when={props.bypassPermissionMode}>
-            <button
-              data-variant="secondary"
-              onClick={handleBypassPermissions}
-              data-testid="control-bypass-btn"
-              title="Allow this request and stop asking for permissions"
-            >
-              & Bypass Permissions
-            </button>
+            <Tooltip text="Allow this request and stop asking for permissions">
+              <button
+                data-variant="secondary"
+                onClick={handleBypassPermissions}
+                data-testid="control-bypass-btn"
+              >
+                & Bypass Permissions
+              </button>
+            </Tooltip>
           </Show>
         </ButtonGroup>
       </Show>

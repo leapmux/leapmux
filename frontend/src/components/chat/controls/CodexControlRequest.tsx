@@ -3,6 +3,7 @@ import type { ActionsProps, AskQuestionState, ContentProps, Question } from './t
 
 import { For, Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
+import { Tooltip } from '~/components/common/Tooltip'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
@@ -276,14 +277,15 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
                   <button class="outline" onClick={() => handleDecision('cancel')} data-testid="control-deny-btn">Cancel</button>
                   <button onClick={() => handleDecision('accept')} data-testid="control-allow-btn">Allow</button>
                   <Show when={props.bypassPermissionMode}>
-                    <button
-                      data-variant="secondary"
-                      onClick={handleBypassPermissions}
-                      data-testid="control-bypass-btn"
-                      title="Allow this request and stop asking for permissions"
-                    >
-                      & Bypass Permissions
-                    </button>
+                    <Tooltip text="Allow this request and stop asking for permissions">
+                      <button
+                        data-variant="secondary"
+                        onClick={handleBypassPermissions}
+                        data-testid="control-bypass-btn"
+                      >
+                        & Bypass Permissions
+                      </button>
+                    </Tooltip>
                   </Show>
                 </ButtonGroup>
               )}
@@ -302,14 +304,15 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
                     )}
                   </For>
                   <Show when={props.bypassPermissionMode}>
-                    <button
-                      data-variant="secondary"
-                      onClick={handleBypassPermissions}
-                      data-testid="control-bypass-btn"
-                      title="Allow this request and stop asking for permissions"
-                    >
-                      & Bypass Permissions
-                    </button>
+                    <Tooltip text="Allow this request and stop asking for permissions">
+                      <button
+                        data-variant="secondary"
+                        onClick={handleBypassPermissions}
+                        data-testid="control-bypass-btn"
+                      >
+                        & Bypass Permissions
+                      </button>
+                    </Tooltip>
                   </Show>
                 </ButtonGroup>
               )}

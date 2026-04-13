@@ -104,7 +104,7 @@ export function ToolUseLayout(props: {
   return (
     <div class={toolMessage} data-tool-message>
       <div class={toolUseHeader}>
-        <Tooltip text={props.toolName}>
+        <Tooltip text={props.toolName} ariaLabel>
           <span class={`${inlineFlex} ${toolUseIcon}`}>
             <Icon icon={props.icon} size="md" />
           </span>

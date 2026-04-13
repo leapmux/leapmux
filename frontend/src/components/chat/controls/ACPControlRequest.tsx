@@ -3,6 +3,7 @@ import type { ActionsProps, ContentProps } from './types'
 
 import { For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
+import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from '../ControlRequestBanner.css'
 import { toRpcId } from './CodexControlRequest'
 import { sendResponse } from './types'
@@ -94,14 +95,15 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
             )}
           </For>
           <Show when={props.bypassPermissionMode && defaultAllowOptionId(props.request.payload)}>
-            <button
-              data-variant="secondary"
-              onClick={handleBypassPermissions}
-              data-testid="control-bypass-btn"
-              title="Allow this request and stop asking for permissions"
-            >
-              & Bypass Permissions
-            </button>
+            <Tooltip text="Allow this request and stop asking for permissions">
+              <button
+                data-variant="secondary"
+                onClick={handleBypassPermissions}
+                data-testid="control-bypass-btn"
+              >
+                & Bypass Permissions
+              </button>
+            </Tooltip>
           </Show>
         </ButtonGroup>
       </div>

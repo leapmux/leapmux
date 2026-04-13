@@ -725,7 +725,7 @@ export function codexReasoningRenderer(parsed: unknown, _role: MessageRole, _con
   return (
     <div>
       <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
-        <Tooltip text="Reasoning">
+        <Tooltip text="Reasoning" ariaLabel>
           <span class={`${inlineFlex} ${toolUseIcon}`}>
             <Icon icon={Brain} size="md" />
           </span>

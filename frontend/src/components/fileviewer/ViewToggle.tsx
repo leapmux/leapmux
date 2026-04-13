@@ -5,6 +5,7 @@ import Columns2 from 'lucide-solid/icons/columns-2'
 import Eye from 'lucide-solid/icons/eye'
 import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from './FileViewer.css'
 
 export type ViewMode = 'render' | 'source' | 'split'
@@ -17,42 +18,46 @@ export function ViewToggle(props: {
 }): JSX.Element {
   return (
     <div class={styles.viewToggle}>
-      <button
-        class={styles.viewToggleButton}
-        classList={{ [styles.viewToggleActive]: props.mode === 'render' }}
-        onClick={() => props.onToggle('render')}
-        title="Rendered view"
-      >
-        <Icon icon={Eye} size="sm" />
-      </button>
-      <Show when={props.showSplit}>
+      <Tooltip text="Rendered view" ariaLabel>
         <button
           class={styles.viewToggleButton}
-          classList={{ [styles.viewToggleActive]: props.mode === 'split' }}
-          onClick={() => props.onToggle('split')}
-          title="Side-by-side view"
+          classList={{ [styles.viewToggleActive]: props.mode === 'render' }}
+          onClick={() => props.onToggle('render')}
         >
-          <Icon icon={Columns2} size="sm" />
+          <Icon icon={Eye} size="sm" />
         </button>
+      </Tooltip>
+      <Show when={props.showSplit}>
+        <Tooltip text="Side-by-side view" ariaLabel>
+          <button
+            class={styles.viewToggleButton}
+            classList={{ [styles.viewToggleActive]: props.mode === 'split' }}
+            onClick={() => props.onToggle('split')}
+          >
+            <Icon icon={Columns2} size="sm" />
+          </button>
+        </Tooltip>
       </Show>
-      <button
-        class={styles.viewToggleButton}
-        classList={{ [styles.viewToggleActive]: props.mode === 'source' }}
-        onClick={() => props.onToggle('source')}
-        title="Source view"
-      >
-        <Icon icon={Code} size="sm" />
-      </button>
+      <Tooltip text="Source view" ariaLabel>
+        <button
+          class={styles.viewToggleButton}
+          classList={{ [styles.viewToggleActive]: props.mode === 'source' }}
+          onClick={() => props.onToggle('source')}
+        >
+          <Icon icon={Code} size="sm" />
+        </button>
+      </Tooltip>
       <Show when={props.onMention}>
         <div style={{ 'border-left': '1px solid var(--border)' }} />
-        <button
-          class={styles.viewToggleButton}
-          onClick={() => props.onMention?.()}
-          title="Mention in the chat"
-          data-testid="file-mention-button"
-        >
-          <Icon icon={AtSign} size="sm" />
-        </button>
+        <Tooltip text="Mention in the chat" ariaLabel>
+          <button
+            class={styles.viewToggleButton}
+            onClick={() => props.onMention?.()}
+            data-testid="file-mention-button"
+          >
+            <Icon icon={AtSign} size="sm" />
+          </button>
+        </Tooltip>
       </Show>
     </div>
   )

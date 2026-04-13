@@ -3,6 +3,7 @@ import Maximize2 from 'lucide-solid/icons/maximize-2'
 import ZoomIn from 'lucide-solid/icons/zoom-in'
 import ZoomOut from 'lucide-solid/icons/zoom-out'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from './FileViewer.css'
 
 export type ZoomMode = 'fit' | 'actual' | number
@@ -45,35 +46,39 @@ export function ImageToolbar(props: {
 }): JSX.Element {
   return (
     <div class={styles.imageToolbar}>
-      <button
-        class={styles.imageToolbarButton}
-        onClick={() => props.onZoomChange(zoomOut(props.zoom, props.fitScale))}
-        title="Zoom out"
-      >
-        <Icon icon={ZoomOut} size="sm" />
-      </button>
+      <Tooltip text="Zoom out" ariaLabel>
+        <button
+          class={styles.imageToolbarButton}
+          onClick={() => props.onZoomChange(zoomOut(props.zoom, props.fitScale))}
+        >
+          <Icon icon={ZoomOut} size="sm" />
+        </button>
+      </Tooltip>
       <span class={styles.imageToolbarLabel}>{zoomLabel(props.zoom, props.fitScale)}</span>
-      <button
-        class={styles.imageToolbarButton}
-        onClick={() => props.onZoomChange(zoomIn(props.zoom, props.fitScale))}
-        title="Zoom in"
-      >
-        <Icon icon={ZoomIn} size="sm" />
-      </button>
-      <button
-        class={styles.imageToolbarButton}
-        onClick={() => props.onZoomChange('fit')}
-        title="Fit to view"
-      >
-        <Icon icon={Maximize2} size="sm" />
-      </button>
-      <button
-        class={styles.imageToolbarTextButton}
-        onClick={() => props.onZoomChange('actual')}
-        title="Actual size (100%)"
-      >
-        100%
-      </button>
+      <Tooltip text="Zoom in" ariaLabel>
+        <button
+          class={styles.imageToolbarButton}
+          onClick={() => props.onZoomChange(zoomIn(props.zoom, props.fitScale))}
+        >
+          <Icon icon={ZoomIn} size="sm" />
+        </button>
+      </Tooltip>
+      <Tooltip text="Fit to view" ariaLabel>
+        <button
+          class={styles.imageToolbarButton}
+          onClick={() => props.onZoomChange('fit')}
+        >
+          <Icon icon={Maximize2} size="sm" />
+        </button>
+      </Tooltip>
+      <Tooltip text="Actual size (100%)" ariaLabel>
+        <button
+          class={styles.imageToolbarTextButton}
+          onClick={() => props.onZoomChange('actual')}
+        >
+          100%
+        </button>
+      </Tooltip>
     </div>
   )
 }

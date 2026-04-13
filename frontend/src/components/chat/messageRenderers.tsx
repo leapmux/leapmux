@@ -156,7 +156,7 @@ function CollapsibleMessage(props: { text: string, icon: LucideIcon, label: stri
   return (
     <>
       <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
-        <Tooltip text={props.label}>
+        <Tooltip text={props.label} ariaLabel>
           <span class={inlineFlex}>
             <Icon icon={props.icon} size="md" class={toolUseIcon} />
           </span>
@@ -224,7 +224,7 @@ const taskStartedRenderer: MessageContentRenderer = {
     return (
       <div class={toolMessage}>
         <div class={toolUseHeader}>
-          <Tooltip text="Task Started">
+          <Tooltip text="Task Started" ariaLabel>
             <span class={inlineFlex}>
               <Icon icon={Bot} size="md" class={toolUseIcon} />
             </span>

@@ -235,7 +235,7 @@ export const FontSettings: Component = () => {
                       </Show>
                     </div>
                   </Show>
-                  <Tooltip text="Remove">
+                  <Tooltip text="Remove" ariaLabel>
                     <button
                       class={styles.fontRemoveButton}
                       onClick={() => removeFont(list, i())}
@@ -261,7 +261,7 @@ export const FontSettings: Component = () => {
             }}
             disabled={fontSaving()}
           />
-          <Tooltip text={`Add ${label.toLowerCase()}`}>
+          <Tooltip text={`Add ${label.toLowerCase()}`} ariaLabel>
             <button
               class="small outline"
               onClick={() => addFont(list)}

@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import { createSignal, createUniqueId, onCleanup, Show } from 'solid-js'
+import { createEffect, createSignal, createUniqueId, onCleanup, onMount, Show } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import * as styles from './Tooltip.css'
 
@@ -7,6 +7,7 @@ const SHOW_DELAY_MS = 700
 const HIDE_DELAY_MS = 100
 /** Extra margin around trigger rect for the pointermove hit-test. */
 const HOVER_MARGIN_PX = 4
+const WHITESPACE_RE = /\s+/
 
 /** Dismiss callback of the currently visible tooltip (at most one). */
 let activeHide: (() => void) | undefined
@@ -14,7 +15,21 @@ let activeHide: (() => void) | undefined
 export interface TooltipProps {
   /** Tooltip text. When empty/undefined, the tooltip is disabled. */
   text: string | undefined
+  /**
+   * When set, applies an aria-label to the target element.
+   * Use `true` to reuse `text`, or pass a string for an explicit label.
+   */
+  ariaLabel?: string | true
   children: JSX.Element
+}
+
+type TooltipTarget = Element & {
+  addEventListener: Element['addEventListener']
+  removeEventListener: Element['removeEventListener']
+  getBoundingClientRect: Element['getBoundingClientRect']
+  getAttribute: Element['getAttribute']
+  setAttribute: Element['setAttribute']
+  removeAttribute: Element['removeAttribute']
 }
 
 /**
@@ -29,13 +44,27 @@ export interface TooltipProps {
  * via a SolidJS Portal and positioning it with getBoundingClientRect().
  */
 export function Tooltip(props: TooltipProps) {
-  let triggerEl: HTMLElement | undefined
+  let triggerWrapperEl: HTMLSpanElement | undefined
   let tooltipEl: HTMLDivElement | undefined
   const tooltipId = createUniqueId()
   const [visible, setVisible] = createSignal(false)
   const [pos, setPos] = createSignal({ top: 0, left: 0 })
+  const [targetEl, setTargetEl] = createSignal<TooltipTarget | undefined>()
   let showTimer: ReturnType<typeof setTimeout> | undefined
   let hideTimer: ReturnType<typeof setTimeout> | undefined
+  let warnedInvalidChild = false
+
+  const resolveTargetEl = (): TooltipTarget | undefined => {
+    const node = triggerWrapperEl?.firstElementChild
+    if (!(node instanceof Element) || triggerWrapperEl?.childElementCount !== 1) {
+      if (import.meta.env.DEV && !warnedInvalidChild) {
+        warnedInvalidChild = true
+        console.warn('Tooltip requires exactly one direct DOM element child.')
+      }
+      return undefined
+    }
+    return node as TooltipTarget
+  }
 
   const clearTimers = () => {
     clearTimeout(showTimer)
@@ -44,9 +73,7 @@ export function Tooltip(props: TooltipProps) {
     hideTimer = undefined
   }
 
-  /** The wrapper uses display:contents, so get the rect from the first child. */
-  const getTriggerRect = () =>
-    (triggerEl?.firstElementChild ?? triggerEl)?.getBoundingClientRect()
+  const getTriggerRect = () => targetEl()?.getBoundingClientRect()
 
   /** Dismiss this tooltip immediately. */
   const dismiss = () => {
@@ -127,18 +154,96 @@ export function Tooltip(props: TooltipProps) {
     hideTimer = setTimeout(dismiss, HIDE_DELAY_MS)
   }
 
+  onMount(() => {
+    setTargetEl(resolveTargetEl())
+  })
+
+  createEffect(() => {
+    const target = targetEl()
+    if (!target)
+      return
+
+    const handleShow = () => show()
+    const handleHide = () => hide()
+
+    target.addEventListener('mouseenter', handleShow)
+    target.addEventListener('mouseleave', handleHide)
+    target.addEventListener('focusin', handleShow)
+    target.addEventListener('focusout', handleHide)
+
+    onCleanup(() => {
+      target.removeEventListener('mouseenter', handleShow)
+      target.removeEventListener('mouseleave', handleHide)
+      target.removeEventListener('focusin', handleShow)
+      target.removeEventListener('focusout', handleHide)
+    })
+  })
+
+  createEffect(() => {
+    const target = targetEl()
+    if (!target)
+      return
+
+    const originalDescribedBy = target.getAttribute('aria-describedby')
+    const baseIds = (originalDescribedBy ?? '')
+      .split(WHITESPACE_RE)
+      .filter(Boolean)
+      .filter(id => id !== `tooltip-${tooltipId}`)
+
+    createEffect(() => {
+      const nextIds = visible() && props.text
+        ? [...baseIds, `tooltip-${tooltipId}`]
+        : baseIds
+      if (nextIds.length > 0)
+        target.setAttribute('aria-describedby', nextIds.join(' '))
+      else
+        target.removeAttribute('aria-describedby')
+    })
+
+    onCleanup(() => {
+      if (originalDescribedBy != null)
+        target.setAttribute('aria-describedby', originalDescribedBy)
+      else
+        target.removeAttribute('aria-describedby')
+    })
+  })
+
+  createEffect(() => {
+    const target = targetEl()
+    if (!target)
+      return
+
+    const originalAriaLabel = target.getAttribute('aria-label')
+
+    createEffect(() => {
+      const nextAriaLabel = props.ariaLabel === true
+        ? props.text
+        : props.ariaLabel
+      if (nextAriaLabel)
+        target.setAttribute('aria-label', nextAriaLabel)
+      else if (originalAriaLabel != null)
+        target.setAttribute('aria-label', originalAriaLabel)
+      else
+        target.removeAttribute('aria-label')
+    })
+
+    onCleanup(() => {
+      if (originalAriaLabel != null)
+        target.setAttribute('aria-label', originalAriaLabel)
+      else
+        target.removeAttribute('aria-label')
+    })
+  })
+
   onCleanup(dismiss)
 
   return (
     <>
       <span
-        ref={(el) => { triggerEl = el }}
+        ref={(el) => {
+          triggerWrapperEl = el
+        }}
         style={{ display: 'contents' }}
-        onMouseEnter={show}
-        onMouseLeave={hide}
-        onFocusIn={show}
-        onFocusOut={hide}
-        aria-describedby={visible() ? `tooltip-${tooltipId}` : undefined}
       >
         {props.children}
       </span>
