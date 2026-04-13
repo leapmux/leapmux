@@ -23,6 +23,7 @@ interface UserMenuProps {
  */
 const [showProfileDialog, setShowProfileDialog] = createSignal(false)
 const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
+export { setShowPreferencesDialog }
 export const [showAboutDialog, setShowAboutDialog] = createSignal(false)
 
 /** Renders dialogs triggered by UserMenu. Mount once in a stable parent. */

@@ -28,6 +28,56 @@ type storedPreferences struct {
 	TurnEndSound          int      `json:"turnEndSound,omitempty"`
 	TurnEndSoundVolume    *int     `json:"turnEndSoundVolume,omitempty"`
 	DebugLogging          bool     `json:"debugLogging,omitempty"`
+	CustomKeybindingsJSON string   `json:"customKeybindingsJSON,omitempty"`
+}
+
+// maxCustomKeybindings is the maximum number of keybinding overrides allowed.
+const maxCustomKeybindings = 200
+
+// maxKeybindingFieldLen is the maximum length of any single field in a keybinding override.
+const maxKeybindingFieldLen = 256
+
+// customKeybindingEntry matches the expected shape of each element in the
+// custom keybindings JSON array.
+type customKeybindingEntry struct {
+	Key     string `json:"key"`
+	Command string `json:"command"`
+	When    string `json:"when,omitempty"`
+}
+
+// validateCustomKeybindingsJSON validates the custom keybindings JSON string.
+// Returns an error if the JSON is invalid or exceeds limits.
+// An empty string or "[]" is always valid.
+func validateCustomKeybindingsJSON(raw string) error {
+	if raw == "" || raw == "[]" {
+		return nil
+	}
+
+	var entries []customKeybindingEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	if len(entries) > maxCustomKeybindings {
+		return fmt.Errorf("too many keybinding overrides: %d (max %d)", len(entries), maxCustomKeybindings)
+	}
+
+	for i, e := range entries {
+		if e.Command == "" {
+			return fmt.Errorf("entry %d: command is required", i)
+		}
+		if len(e.Key) > maxKeybindingFieldLen {
+			return fmt.Errorf("entry %d: key too long (%d > %d)", i, len(e.Key), maxKeybindingFieldLen)
+		}
+		if len(e.Command) > maxKeybindingFieldLen {
+			return fmt.Errorf("entry %d: command too long (%d > %d)", i, len(e.Command), maxKeybindingFieldLen)
+		}
+		if len(e.When) > maxKeybindingFieldLen {
+			return fmt.Errorf("entry %d: when too long (%d > %d)", i, len(e.When), maxKeybindingFieldLen)
+		}
+	}
+
+	return nil
 }
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
@@ -330,6 +380,7 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 			TurnEndSound:          leapmuxv1.TurnEndSound(sp.TurnEndSound),
 			TurnEndSoundVolume:    ptrconv.Convert[int, uint32](sp.TurnEndSoundVolume),
 			DebugLogging:          sp.DebugLogging,
+			CustomKeybindingsJson: sp.CustomKeybindingsJSON,
 		},
 	}), nil
 }
@@ -385,6 +436,24 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		}
 	}
 
+	// Validate custom keybindings JSON if provided.
+	customKeybindingsJSON := ""
+	if req.Msg.CustomKeybindingsJson != nil {
+		customKeybindingsJSON = *req.Msg.CustomKeybindingsJson
+		if err := validateCustomKeybindingsJSON(customKeybindingsJSON); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("custom_keybindings_json: %w", err))
+		}
+	} else {
+		// Preserve existing value when the field is not provided.
+		existing, err := s.store.Users().GetPrefs(ctx, userInfo.ID)
+		if err == nil {
+			var prev storedPreferences
+			if json.Unmarshal([]byte(existing), &prev) == nil {
+				customKeybindingsJSON = prev.CustomKeybindingsJSON
+			}
+		}
+	}
+
 	sp := storedPreferences{
 		Theme:                 theme,
 		TerminalTheme:         terminalTheme,
@@ -396,6 +465,7 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 		TurnEndSound:          int(req.Msg.GetTurnEndSound()),
 		TurnEndSoundVolume:    ptrconv.Convert[uint32, int](req.Msg.TurnEndSoundVolume),
 		DebugLogging:          req.Msg.GetDebugLogging(),
+		CustomKeybindingsJSON: customKeybindingsJSON,
 	}
 
 	prefsJSON, err := json.Marshal(sp)
@@ -422,6 +492,7 @@ func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Reques
 			TurnEndSound:          req.Msg.GetTurnEndSound(),
 			TurnEndSoundVolume:    req.Msg.TurnEndSoundVolume,
 			DebugLogging:          req.Msg.GetDebugLogging(),
+			CustomKeybindingsJson: customKeybindingsJSON,
 		},
 	}), nil
 }

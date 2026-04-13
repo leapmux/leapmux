@@ -1,6 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import type { ThemePreference } from '~/app'
 import type { BrowserPreferences, EnterKeyMode } from '~/lib/browserStorage'
+import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemePreference } from '~/lib/terminal'
 import { createContext, createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
@@ -44,6 +45,9 @@ interface PreferencesState {
   /** Resolved enter key mode. */
   enterKeyMode: () => EnterKeyMode
   setEnterKeyMode: (value: EnterKeyMode) => void
+  /** Custom keybinding overrides (account-level, stored in Hub DB). */
+  customKeybindings: () => UserKeybindingOverride[]
+  setCustomKeybindings: (value: UserKeybindingOverride[]) => void
 
   // --- Browser-level overrides (localStorage) ---
   /** Raw browser-level theme override. null means "use account default". */
@@ -213,6 +217,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
     updateBrowserPref('enterKeyMode', value)
   }
 
+  const [customKeybindings, setCustomKeybindingsSignal] = createSignal<UserKeybindingOverride[]>([])
+
   // --- Resolved values (browser override → account default → hardcoded) ---
   const theme = (): ThemePreference => browserTheme() ?? accountTheme()
   const terminalTheme = (): TerminalThemePreference => browserTerminalTheme() ?? accountTerminalTheme()
@@ -252,6 +258,18 @@ export const PreferencesProvider: ParentComponent = (props) => {
         setAccountTurnEndSound(turnEndSoundFromProto(p.turnEndSound))
         setAccountTurnEndSoundVolume(p.turnEndSoundVolume ?? 100)
         setAccountDebugLogging(p.debugLogging)
+        if (p.customKeybindingsJson) {
+          try {
+            const parsed = JSON.parse(p.customKeybindingsJson)
+            setCustomKeybindingsSignal(Array.isArray(parsed) ? parsed as UserKeybindingOverride[] : [])
+          }
+          catch {
+            setCustomKeybindingsSignal([])
+          }
+        }
+        else {
+          setCustomKeybindingsSignal([])
+        }
       }
     }
     catch {
@@ -259,19 +277,45 @@ export const PreferencesProvider: ParentComponent = (props) => {
     }
   }
 
+  // Serialize saves so concurrent callers don't clobber each other.
+  // If a save is requested while one is in flight, we queue a re-save
+  // that will read the latest signal values when it runs.
+  let saveInFlight = false
+  let saveQueued = false
+
   const saveAccountPreferences = async () => {
-    await userClient.updatePreferences({
-      theme: accountTheme(),
-      terminalTheme: accountTerminalTheme(),
-      uiFontCustomEnabled: accountUiFontCustomEnabled(),
-      monoFontCustomEnabled: accountMonoFontCustomEnabled(),
-      uiFonts: uiFonts(),
-      monoFonts: monoFonts(),
-      diffView: diffViewToProto(accountDiffView()),
-      turnEndSound: turnEndSoundToProto(accountTurnEndSound()),
-      turnEndSoundVolume: accountTurnEndSoundVolume(),
-      debugLogging: accountDebugLogging(),
-    })
+    if (saveInFlight) {
+      saveQueued = true
+      return
+    }
+    saveInFlight = true
+    try {
+      await userClient.updatePreferences({
+        theme: accountTheme(),
+        terminalTheme: accountTerminalTheme(),
+        uiFontCustomEnabled: accountUiFontCustomEnabled(),
+        monoFontCustomEnabled: accountMonoFontCustomEnabled(),
+        uiFonts: uiFonts(),
+        monoFonts: monoFonts(),
+        diffView: diffViewToProto(accountDiffView()),
+        turnEndSound: turnEndSoundToProto(accountTurnEndSound()),
+        turnEndSoundVolume: accountTurnEndSoundVolume(),
+        debugLogging: accountDebugLogging(),
+        customKeybindingsJson: customKeybindings().length > 0 ? JSON.stringify(customKeybindings()) : '',
+      })
+    }
+    finally {
+      saveInFlight = false
+      if (saveQueued) {
+        saveQueued = false
+        saveAccountPreferences().catch(() => {})
+      }
+    }
+  }
+
+  const setCustomKeybindings = (value: UserKeybindingOverride[]) => {
+    setCustomKeybindingsSignal(value)
+    saveAccountPreferences().catch(() => {})
   }
 
   createEffect(() => {
@@ -291,6 +335,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setShowHiddenMessages,
       enterKeyMode,
       setEnterKeyMode,
+      customKeybindings,
+      setCustomKeybindings,
       uiFontCustomEnabled,
       monoFontCustomEnabled,
       uiFonts,

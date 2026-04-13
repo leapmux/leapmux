@@ -20,6 +20,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useMruProviders } from '~/hooks/useMruProviders'
+import { shortcutHint } from '~/lib/shortcuts/display'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -286,7 +287,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
         <li class={styles.providerIconsRow}>
           <For each={props.availableProviders}>
             {provider => (
-              <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
+              <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
                 <button
                   type="button"
                   class={styles.providerButton}
@@ -398,7 +399,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           >
             <For each={mruProviders()}>
               {provider => (
-                <TabBarTooltip text={`New ${agentProviderLabel(provider)} agent`}>
+                <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
                   <Show
                     when={props.newAgentLoadingProvider !== provider}
                     fallback={(
@@ -424,7 +425,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
               )}
             </For>
           </Show>
-          <TabBarTooltip text={newTerminalLabel()}>
+          <TabBarTooltip text={shortcutHint(newTerminalLabel(), 'app.newTerminal')}>
             <IconButton
               icon={Terminal}
               iconSize="md"

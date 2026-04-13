@@ -59,6 +59,7 @@
     "shiki": "^4.0.2",
     "solid-js": "^1.9.12",
     "source-map-js": "^1.2.1",
+    "tinykeys": "^3.0.0",
     "unified": "^11.0.5",
     "vinxi": "^0.5.11"
   },

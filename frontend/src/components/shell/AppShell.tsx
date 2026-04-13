@@ -25,6 +25,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobile } from '~/hooks/useIsMobile'
+import { useShortcuts } from '~/hooks/useShortcuts'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createLogger } from '~/lib/logger'
 import { printConsoleBanner } from '~/lib/systemInfo'
@@ -424,6 +425,8 @@ export const AppShell: ParentComponent = (props) => {
   }
 
   // Mutable refs for editor/scroll callbacks
+  const toggleLeftSidebarRef: { current: (() => void) | undefined } = { current: undefined }
+  const toggleRightSidebarRef: { current: (() => void) | undefined } = { current: undefined }
   const focusEditorRef: { current: (() => void) | undefined } = { current: undefined }
   const getScrollStateRef: { current: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined } = { current: undefined }
   const forceScrollToBottomRef: { current: (() => void) | undefined } = { current: undefined }
@@ -989,6 +992,26 @@ export const AppShell: ParentComponent = (props) => {
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
 
+  useShortcuts({
+    tabStore,
+    layoutStore,
+    tabOps,
+    setShowNewAgentDialog,
+    setShowNewTerminalDialog,
+    setShowNewWorkspace,
+    toggleLeftSidebar: () => {
+      if (isMobile()) {
+        toggleLeftSidebar()
+      }
+      else {
+        toggleLeftSidebarRef.current?.()
+      }
+    },
+    toggleRightSidebar: () => toggleRightSidebarRef.current?.(),
+    activeTabType,
+    customKeybindings: preferences.customKeybindings,
+  })
+
   // Sidebar element factories
   // Use getters for reactive values so that LeftSidebar/RightSidebar props
   // remain reactive when accessed through the intermediate opts object.
@@ -1114,6 +1137,8 @@ export const AppShell: ParentComponent = (props) => {
             )}
           >
             <DesktopLayout
+              setToggleLeftSidebar={fn => toggleLeftSidebarRef.current = fn}
+              setToggleRightSidebar={fn => toggleRightSidebarRef.current = fn}
               sectionStore={sectionStore}
               layoutStore={layoutStore}
               onMoveSection={handleMoveSection}
