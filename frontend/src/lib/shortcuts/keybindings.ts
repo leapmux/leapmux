@@ -141,12 +141,13 @@ export function activateBindings(bindings: readonly Keybinding[]): void {
       const commandId = resolve(group.bindings, group.key)
       if (commandId) {
         e.preventDefault()
+        e.stopPropagation()
         executeCommand(commandId)
       }
     }
   }
 
-  currentUnsubscribe = tinykeys(window, keyMap)
+  currentUnsubscribe = tinykeys(window, keyMap, { capture: true })
   log.debug(`Bound ${groups.length} key groups (${bindings.length} bindings)`)
 }
 

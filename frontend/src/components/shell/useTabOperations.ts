@@ -84,6 +84,9 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         chatStore.saveViewportScroll(prevAgentId, scrollState.distFromBottom, scrollState.atBottom)
       }
       tabStore.setActiveTab(tab.type, tab.id)
+      if (tab.tileId) {
+        tabStore.setActiveTabForTile(tab.tileId, tab.type, tab.id)
+      }
       if (tab.type === TabType.AGENT) {
         agentStore.setActiveAgent(tab.id)
       }

@@ -6,6 +6,7 @@ import type { createTabStore } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { isTauriApp, quitApp } from '~/api/platformBridge'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenu'
+import { writeToActiveTerminal } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/shortcuts/context'
@@ -108,7 +109,10 @@ export function useShortcuts(props: UseShortcutsProps): void {
     const tabs = getVisibleTabs()
     if (tabs.length < 2)
       return
-    const activeKey = tabStore.state.activeTabKey
+    const focusedTile = layoutStore.focusedTileId()
+    const activeKey = focusedTile
+      ? tabStore.getActiveTabKeyForTile(focusedTile)
+      : tabStore.state.activeTabKey
     const idx = tabs.findIndex(t => tabKey(t) === activeKey)
     const target = tabs[(idx + direction + tabs.length) % tabs.length]
     if (target)
@@ -117,6 +121,12 @@ export function useShortcuts(props: UseShortcutsProps): void {
 
   cmd('app.previousTab', 'Previous Tab', () => navigateTab(-1), 'Tab')
   cmd('app.nextTab', 'Next Tab', () => navigateTab(1), 'Tab')
+
+  // Terminal cursor navigation
+  cmd('terminal.lineStart', 'Go to Line Start', () => writeToActiveTerminal('\x01'), 'Terminal')
+  cmd('terminal.lineEnd', 'Go to Line End', () => writeToActiveTerminal('\x05'), 'Terminal')
+  cmd('terminal.wordLeft', 'Go to Previous Word', () => writeToActiveTerminal('\x1Bb'), 'Terminal')
+  cmd('terminal.wordRight', 'Go to Next Word', () => writeToActiveTerminal('\x1Bf'), 'Terminal')
 
   setContext('platform', getPlatform())
   setContext('isDesktop', isTauriApp())

@@ -34,6 +34,12 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   // Dialog close
   { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
 
+  // Terminal cursor navigation (macOS)
+  { key: '$mod+ArrowLeft', command: 'terminal.lineStart', when: 'terminalFocused && platform == "mac"' },
+  { key: '$mod+ArrowRight', command: 'terminal.lineEnd', when: 'terminalFocused && platform == "mac"' },
+  { key: 'Alt+ArrowLeft', command: 'terminal.wordLeft', when: 'terminalFocused && platform == "mac"' },
+  { key: 'Alt+ArrowRight', command: 'terminal.wordRight', when: 'terminalFocused && platform == "mac"' },
+
   // Desktop-only
   { key: '$mod+q', command: 'app.quit', when: 'isDesktop' },
 ]

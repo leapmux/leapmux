@@ -22,6 +22,8 @@ export interface TerminalInstance {
   screenRestored: boolean
   /** When true, onData responses are suppressed (e.g. during snapshot replay). */
   suppressInput: boolean
+  /** Send raw input data to the PTY backing this terminal. */
+  sendInput?: (data: Uint8Array) => void
   dispose: () => void
 }
 

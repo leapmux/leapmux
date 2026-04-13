@@ -4,6 +4,7 @@ import type { TerminalInstance } from '~/lib/terminal'
 import type { TerminalInfo } from '~/stores/terminal.store'
 import { createEffect, For, onCleanup, onMount } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
+import { isMac } from '~/lib/shortcuts/platform'
 import { createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
@@ -22,6 +23,18 @@ const instances = new Map<string, TerminalInstance>()
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
+}
+
+/** Send raw input to the currently active (visible) terminal's PTY. */
+export function writeToActiveTerminal(data: string): void {
+  const encoded = new TextEncoder().encode(data)
+  for (const [id, instance] of instances) {
+    const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
+    if (container && container.style.display !== 'none' && instance.sendInput) {
+      instance.sendInput(encoded)
+      return
+    }
+  }
 }
 
 // Expose terminal text reader for E2E tests (WebGL renderer makes DOM rows empty)
@@ -91,6 +104,18 @@ const TerminalContainer: Component<{
       const onInput = props.onInput
       const onTitleChange = props.onTitleChange
       const onBell = props.onBell
+      instance.sendInput = data => onInput(id, data)
+
+      // On macOS, suppress CMD+Arrow and ALT+Arrow so xterm.js doesn't
+      // process them — the shortcut system sends the correct escape sequences.
+      if (isMac()) {
+        instance.terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+          if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && (e.metaKey || e.altKey))
+            return false
+          return true
+        })
+      }
+
       instance.terminal.onData((data) => {
         if (!instances.get(id)?.suppressInput) {
           onInput(id, new TextEncoder().encode(data))

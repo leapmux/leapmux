@@ -137,7 +137,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
       onSelect={(tab) => {
         layoutStore.setFocusedTile(tileId)
         handleTabSelect(tab)
-        tabStore.setActiveTabForTile(tileId, tab.type, tab.id)
       }}
       onClose={handleTabClose}
       onRename={(tab, title) => {
