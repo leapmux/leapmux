@@ -38,8 +38,10 @@ use tokio::sync::oneshot;
 
 const SHOW_ABOUT_MENU_ID: &str = "show-about";
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
+const QUIT_MENU_ID: &str = "quit";
+const MINIMIZE_MENU_ID: &str = "minimize";
+const MAXIMIZE_MENU_ID: &str = "maximize";
 const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024; // 16 MB
-
 
 // --- Frame read/write utilities ---
 
@@ -391,8 +393,6 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
 }
 
 // --- Static helpers ---
-
-
 
 fn capabilities_for(state: &ShellState) -> PlatformCapabilities {
   match state.shell_mode {
@@ -839,7 +839,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
       #[cfg(any(target_os = "macos", target_os = "windows"))]
       &PredefinedMenuItem::close_window(app, None)?,
       #[cfg(any(target_os = "linux", target_os = "windows"))]
-      &MenuItem::with_id(app, "quit", "Quit", true, Some("Ctrl+Q"))?,
+      &MenuItem::with_id(app, QUIT_MENU_ID, "Quit", true, Some("Ctrl+Q"))?,
     ],
   )?;
 
@@ -871,8 +871,8 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     "Window",
     true,
     &[
-      &MenuItem::with_id(app, "minimize", "Minimize", true, None::<&str>)?,
-      &MenuItem::with_id(app, "maximize", "Maximize", true, None::<&str>)?,
+      &MenuItem::with_id(app, MINIMIZE_MENU_ID, "Minimize", true, None::<&str>)?,
+      &MenuItem::with_id(app, MAXIMIZE_MENU_ID, "Maximize", true, None::<&str>)?,
     ],
   )?;
 
@@ -927,13 +927,13 @@ fn main() {
         let _ = app.emit("menu:show-about", ());
       } else if event.id() == OPEN_WEB_INSPECTOR_MENU_ID {
         open_main_web_inspector(app);
-      } else if event.id() == "quit" {
+      } else if event.id() == QUIT_MENU_ID {
         app.exit(0);
-      } else if event.id() == "minimize" {
+      } else if event.id() == MINIMIZE_MENU_ID {
         if let Some(w) = app.get_webview_window("main") {
           let _ = w.minimize();
         }
-      } else if event.id() == "maximize" {
+      } else if event.id() == MAXIMIZE_MENU_ID {
         if let Some(w) = app.get_webview_window("main") {
           let is_max = w.is_maximized().unwrap_or(false);
           if is_max { let _ = w.unmaximize(); } else { let _ = w.maximize(); }
