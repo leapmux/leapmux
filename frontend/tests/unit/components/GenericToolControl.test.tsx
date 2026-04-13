@@ -23,6 +23,16 @@ function makeAskState(): AskQuestionState {
 }
 
 describe('genericToolActions', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    HTMLElement.prototype.showPopover = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
   it('shows Reject, Allow, and Bypass Permissions when no editor content', () => {
     render(() => (
       <GenericToolActions
@@ -133,7 +143,11 @@ describe('genericToolActions', () => {
       />
     ))
 
-    expect(screen.getByTestId('control-bypass-btn'))
-      .toHaveAttribute('title', 'Allow this request and stop asking for permissions')
+    const button = screen.getByTestId('control-bypass-btn')
+    fireEvent.mouseEnter(button)
+    vi.advanceTimersByTime(700)
+
+    expect(screen.getByRole('tooltip', { hidden: true }))
+      .toHaveTextContent('Allow this request and stop asking for permissions')
   })
 })

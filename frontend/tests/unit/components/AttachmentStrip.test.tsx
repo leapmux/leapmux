@@ -60,7 +60,7 @@ describe('attachmentStrip', () => {
     const { container } = render(() => (
       <AttachmentStrip attachments={attachments} onRemove={() => {}} />
     ))
-    const filename = container.querySelector('[data-testid="attachment-pill"] > span:nth-of-type(2)') as HTMLSpanElement
+    const filename = container.querySelector('[data-testid="attachment-pill"] > span:nth-of-type(2) > span') as HTMLSpanElement
     expect(filename).toBeInTheDocument()
     expect(filename).toHaveTextContent('very/long/nested/path/to/screenshot.png')
   })
