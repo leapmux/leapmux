@@ -65,6 +65,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInternalError(sender, gmErr.Error())
 			return
 		}
+		openSucceeded := false
+		defer func() {
+			if !openSucceeded {
+				svc.rollbackGitMode(gm)
+			}
+		}()
 		workingDir = gm.WorkingDir
 		worktreeID := gm.WorktreeID
 
@@ -80,7 +86,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		resumed := ptrconv.BoolToInt64(r.GetAgentSessionId() != "")
 
 		// Create the agent record in the database.
-		if err := svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
+		if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
 			ID:            agentID,
 			WorkspaceID:   r.GetWorkspaceId(),
 			WorkingDir:    workingDir,
@@ -116,7 +122,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		sink := svc.Output.NewSink(agentID, agentProvider)
 
-		confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink)
+		confirmedSettings, err := svc.startAgent(bgCtx(), agentOpts, sink)
 		if err != nil {
 			slog.Error("failed to start agent", "agent_id", agentID, "error", err)
 			// Mark the agent as closed since the process failed to start.
@@ -135,13 +141,14 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		svc.registerTabForWorktree(worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 
 		// Fetch the created agent for the response.
-		dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+		dbAgent, err := svc.getAgentByID(bgCtx(), agentID)
 		if err != nil {
 			slog.Error("failed to fetch created agent", "error", err)
 			sendInternalError(sender, "failed to fetch created agent")
 			return
 		}
 
+		openSucceeded = true
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
 			Agent: agentToProto(&dbAgent, dbAgent.PermissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(agentID, dbAgent.AgentProvider)),
 		})
