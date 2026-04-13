@@ -284,6 +284,31 @@ export function evaluateWhen(expr: string | undefined, get?: (key: string) => Co
   return evalNode(node, get ?? getContext)
 }
 
+/** Check if a when-expression references a specific context key in its AST. */
+export function whenReferencesKey(expr: string | undefined, key: string): boolean {
+  if (!expr)
+    return false
+  const node = parseWhen(expr)
+  return nodeReferencesKey(node, key)
+}
+
+function nodeReferencesKey(node: WhenNode, key: string): boolean {
+  switch (node.type) {
+    case 'true':
+      return false
+    case 'ident':
+      return node.name === key
+    case 'not':
+      return nodeReferencesKey(node.child, key)
+    case 'and':
+    case 'or':
+      return nodeReferencesKey(node.left, key) || nodeReferencesKey(node.right, key)
+    case 'eq':
+    case 'neq':
+      return node.key === key
+  }
+}
+
 /** Clear the parse cache — mainly useful for tests. */
 export function resetParseCache(): void {
   parseCache.clear()

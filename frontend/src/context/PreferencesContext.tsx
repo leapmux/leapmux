@@ -260,8 +260,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
         setAccountDebugLogging(p.debugLogging)
         if (p.customKeybindingsJson) {
           try {
-            const parsed = JSON.parse(p.customKeybindingsJson) as UserKeybindingOverride[]
-            setCustomKeybindingsSignal(parsed)
+            const parsed = JSON.parse(p.customKeybindingsJson)
+            setCustomKeybindingsSignal(Array.isArray(parsed) ? parsed as UserKeybindingOverride[] : [])
           }
           catch {
             setCustomKeybindingsSignal([])
@@ -277,20 +277,40 @@ export const PreferencesProvider: ParentComponent = (props) => {
     }
   }
 
+  // Serialize saves so concurrent callers don't clobber each other.
+  // If a save is requested while one is in flight, we queue a re-save
+  // that will read the latest signal values when it runs.
+  let saveInFlight = false
+  let saveQueued = false
+
   const saveAccountPreferences = async () => {
-    await userClient.updatePreferences({
-      theme: accountTheme(),
-      terminalTheme: accountTerminalTheme(),
-      uiFontCustomEnabled: accountUiFontCustomEnabled(),
-      monoFontCustomEnabled: accountMonoFontCustomEnabled(),
-      uiFonts: uiFonts(),
-      monoFonts: monoFonts(),
-      diffView: diffViewToProto(accountDiffView()),
-      turnEndSound: turnEndSoundToProto(accountTurnEndSound()),
-      turnEndSoundVolume: accountTurnEndSoundVolume(),
-      debugLogging: accountDebugLogging(),
-      customKeybindingsJson: customKeybindings().length > 0 ? JSON.stringify(customKeybindings()) : '',
-    })
+    if (saveInFlight) {
+      saveQueued = true
+      return
+    }
+    saveInFlight = true
+    try {
+      await userClient.updatePreferences({
+        theme: accountTheme(),
+        terminalTheme: accountTerminalTheme(),
+        uiFontCustomEnabled: accountUiFontCustomEnabled(),
+        monoFontCustomEnabled: accountMonoFontCustomEnabled(),
+        uiFonts: uiFonts(),
+        monoFonts: monoFonts(),
+        diffView: diffViewToProto(accountDiffView()),
+        turnEndSound: turnEndSoundToProto(accountTurnEndSound()),
+        turnEndSoundVolume: accountTurnEndSoundVolume(),
+        debugLogging: accountDebugLogging(),
+        customKeybindingsJson: customKeybindings().length > 0 ? JSON.stringify(customKeybindings()) : '',
+      })
+    }
+    finally {
+      saveInFlight = false
+      if (saveQueued) {
+        saveQueued = false
+        saveAccountPreferences().catch(() => {})
+      }
+    }
   }
 
   const setCustomKeybindings = (value: UserKeybindingOverride[]) => {

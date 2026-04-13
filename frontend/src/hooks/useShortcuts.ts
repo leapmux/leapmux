@@ -28,7 +28,7 @@ interface UseShortcutsProps {
   customKeybindings: Accessor<UserKeybindingOverride[]>
 }
 
-const TAB_TYPE_LABELS: Record<number, string> = {
+const TAB_TYPE_LABELS: Partial<Record<TabType, string>> = {
   [TabType.AGENT]: 'agent',
   [TabType.TERMINAL]: 'terminal',
   [TabType.FILE]: 'file',
@@ -91,19 +91,21 @@ export function useShortcuts(props: UseShortcutsProps): void {
   }, 'App')
   cmd('app.quit', 'Quit Application', () => quitApp(), 'App')
 
+  function getVisibleTabs() {
+    const focusedTile = layoutStore.focusedTileId()
+    return focusedTile ? tabStore.getTabsForTile(focusedTile) : tabStore.state.tabs
+  }
+
   for (let i = 1; i <= 9; i++) {
     cmd(`app.switchToTab${i}`, `Switch to Tab ${i}`, () => {
-      const focusedTile = layoutStore.focusedTileId()
-      const tabs = focusedTile ? tabStore.getTabsForTile(focusedTile) : tabStore.state.tabs
-      const target = tabs[i - 1]
+      const target = getVisibleTabs()[i - 1]
       if (target)
         tabOps.handleTabSelect(target)
     }, 'Tab')
   }
 
   function navigateTab(direction: -1 | 1) {
-    const focusedTile = layoutStore.focusedTileId()
-    const tabs = focusedTile ? tabStore.getTabsForTile(focusedTile) : tabStore.state.tabs
+    const tabs = getVisibleTabs()
     if (tabs.length < 2)
       return
     const activeKey = tabStore.state.activeTabKey

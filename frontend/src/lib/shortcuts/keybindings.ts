@@ -2,7 +2,7 @@ import type { Keybinding, UserKeybindingOverride } from './types'
 import { tinykeys } from 'tinykeys'
 import { createLogger } from '~/lib/logger'
 import { executeCommand } from './commands'
-import { evaluateWhen, getContext } from './context'
+import { evaluateWhen, getContext, whenReferencesKey } from './context'
 
 const log = createLogger('shortcuts')
 
@@ -96,9 +96,9 @@ export function resolve(bindings: readonly Keybinding[], key: string): string | 
   const modifier = hasModifier(key)
 
   for (const binding of bindings) {
-    // For non-modifier shortcuts, suppress when input is focused
-    // unless the when-clause explicitly depends on input focus
-    if (!modifier && inputFocused && !binding.when?.includes('inputFocused'))
+    // Non-modifier shortcuts are suppressed when input is focused,
+    // unless the when-clause explicitly references inputFocused.
+    if (!modifier && inputFocused && !whenReferencesKey(binding.when, 'inputFocused'))
       continue
 
     if (evaluateWhen(binding.when))

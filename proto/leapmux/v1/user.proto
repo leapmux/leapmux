@@ -99,7 +99,7 @@ message UpdatePreferencesRequest {
   bool debug_logging = 10;
   // JSON-encoded array of custom keybinding overrides.
   // Each element: {"key": "<tinykeys-combo>", "command": "<command-id>", "when": "<optional-expr>"}
-  // Empty string means "no change"; explicit "[]" clears all overrides.
+  // Omit the field to preserve existing value; set to "[]" to clear all overrides.
   optional string custom_keybindings_json = 11;
 }
 
