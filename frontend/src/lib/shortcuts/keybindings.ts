@@ -109,13 +109,15 @@ export function resolve(bindings: readonly Keybinding[], key: string): string | 
 }
 
 let currentUnsubscribe: (() => void) | null = null
+let activeBindings: readonly Keybinding[] = []
 
 /**
- * Bind all keybindings via tinykeys.
+ * Activate keybindings: store them for tooltip lookup and bind via tinykeys.
  * Call this when the binding table changes (init, user override change).
  */
-export function bindAll(bindings: readonly Keybinding[]): void {
+export function activateBindings(bindings: readonly Keybinding[]): void {
   unbindAll()
+  activeBindings = bindings
 
   const groups = groupBindings(bindings)
   const keyMap: Record<string, (e: KeyboardEvent) => void> = {}
@@ -140,19 +142,15 @@ export function unbindAll(): void {
   currentUnsubscribe = null
 }
 
-let activeBindings: readonly Keybinding[] = []
-
-export function setActiveBindings(bindings: readonly Keybinding[]): void {
-  activeBindings = bindings
-}
-
 /** Get the key string for a command ID (for displaying in tooltips). */
 export function getBindingForCommand(commandId: string): string | undefined {
+  let firstKey: string | undefined
   for (const b of activeBindings) {
     if (b.command === commandId) {
       if (evaluateWhen(b.when))
         return b.key
+      firstKey ??= b.key
     }
   }
-  return activeBindings.find(b => b.command === commandId)?.key
+  return firstKey
 }

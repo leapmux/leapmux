@@ -218,12 +218,6 @@ export const PreferencesProvider: ParentComponent = (props) => {
   }
 
   const [customKeybindings, setCustomKeybindingsSignal] = createSignal<UserKeybindingOverride[]>([])
-  const setCustomKeybindings = (value: UserKeybindingOverride[]) => {
-    setCustomKeybindingsSignal(value)
-    // Persist to Hub DB. Fire-and-forget — the value is already in the signal.
-    const json = value.length > 0 ? JSON.stringify(value) : ''
-    userClient.updatePreferences({ customKeybindingsJson: json }).catch(() => {})
-  }
 
   // --- Resolved values (browser override → account default → hardcoded) ---
   const theme = (): ThemePreference => browserTheme() ?? accountTheme()
@@ -295,7 +289,13 @@ export const PreferencesProvider: ParentComponent = (props) => {
       turnEndSound: turnEndSoundToProto(accountTurnEndSound()),
       turnEndSoundVolume: accountTurnEndSoundVolume(),
       debugLogging: accountDebugLogging(),
+      customKeybindingsJson: customKeybindings().length > 0 ? JSON.stringify(customKeybindings()) : '',
     })
+  }
+
+  const setCustomKeybindings = (value: UserKeybindingOverride[]) => {
+    setCustomKeybindingsSignal(value)
+    saveAccountPreferences().catch(() => {})
   }
 
   createEffect(() => {

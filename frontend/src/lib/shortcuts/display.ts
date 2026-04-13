@@ -1,4 +1,5 @@
 import type { Platform } from './types'
+import { getBindingForCommand } from './keybindings'
 import { getPlatform } from './platform'
 
 const MAC_MODIFIER_SYMBOLS: Record<string, string> = {
@@ -84,4 +85,12 @@ function formatChord(chord: string, platform: Platform): string {
 export function formatShortcut(key: string, platform: Platform = getPlatform()): string {
   const chords = key.split(' ')
   return chords.map(c => formatChord(c, platform)).join(' ')
+}
+
+/** Append a keyboard shortcut hint to text, e.g. "New Agent (⌘N)". */
+export function shortcutHint(text: string, commandId: string): string {
+  const key = getBindingForCommand(commandId)
+  if (!key)
+    return text
+  return `${text} (${formatShortcut(key)})`
 }

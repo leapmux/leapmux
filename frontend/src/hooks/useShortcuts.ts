@@ -10,7 +10,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/shortcuts/context'
 import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
-import { bindAll, mergeKeybindings, setActiveBindings, unbindAll } from '~/lib/shortcuts/keybindings'
+import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { getPlatform } from '~/lib/shortcuts/platform'
 import { tabKey } from '~/stores/tab.store'
 
@@ -19,18 +19,12 @@ interface UseShortcutsProps {
   layoutStore: ReturnType<typeof createLayoutStore>
   tabOps: ReturnType<typeof useTabOperations>
 
-  // Dialog setters
   setShowNewAgentDialog: (v: boolean) => void
   setShowNewTerminalDialog: (v: boolean) => void
   setShowNewWorkspace: (v: boolean) => void
-
   toggleLeftSidebar: () => void
   toggleRightSidebar: () => void
-
-  // Active tab type (reactive)
   activeTabType: Accessor<TabType | null>
-
-  // Custom keybinding overrides (from preferences)
   customKeybindings: Accessor<UserKeybindingOverride[]>
 }
 
@@ -75,16 +69,14 @@ export function useShortcuts(props: UseShortcutsProps): void {
   }, 'Tab')
   cmd('app.toggleLeftSidebar', 'Toggle Left Sidebar', toggleLeftSidebar, 'Layout')
   cmd('app.toggleRightSidebar', 'Toggle Right Sidebar', toggleRightSidebar, 'Layout')
-  cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => {
-    const focusedId = layoutStore.focusedTileId()
-    if (focusedId)
-      layoutStore.splitTileHorizontal(focusedId)
-  }, 'Layout')
-  cmd('app.splitTileVertical', 'Split Tile Vertically', () => {
-    const focusedId = layoutStore.focusedTileId()
-    if (focusedId)
-      layoutStore.splitTileVertical(focusedId)
-  }, 'Layout')
+  function withFocusedTile(fn: (id: string) => void) {
+    const id = layoutStore.focusedTileId()
+    if (id)
+      fn(id)
+  }
+
+  cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => withFocusedTile(id => layoutStore.splitTileHorizontal(id)), 'Layout')
+  cmd('app.splitTileVertical', 'Split Tile Vertically', () => withFocusedTile(id => layoutStore.splitTileVertical(id)), 'Layout')
   cmd('app.openPreferences', 'Open Preferences', () => {
     setShowPreferencesDialog(true)
   }, 'App')
@@ -99,7 +91,6 @@ export function useShortcuts(props: UseShortcutsProps): void {
   }, 'App')
   cmd('app.quit', 'Quit Application', () => quitApp(), 'App')
 
-  // Tab switching by index
   for (let i = 1; i <= 9; i++) {
     cmd(`app.switchToTab${i}`, `Switch to Tab ${i}`, () => {
       const focusedTile = layoutStore.focusedTileId()
@@ -110,7 +101,6 @@ export function useShortcuts(props: UseShortcutsProps): void {
     }, 'Tab')
   }
 
-  // Tab navigation
   function navigateTab(direction: -1 | 1) {
     const focusedTile = layoutStore.focusedTileId()
     const tabs = focusedTile ? tabStore.getTabsForTile(focusedTile) : tabStore.state.tabs
@@ -172,8 +162,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   createEffect(() => {
     const overrides = customKeybindings()
     const merged = mergeKeybindings(DEFAULT_KEYBINDINGS, overrides)
-    setActiveBindings(merged)
-    bindAll(merged)
+    activateBindings(merged)
   })
 
   onCleanup(() => {
