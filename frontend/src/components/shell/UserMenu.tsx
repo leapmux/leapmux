@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
 import { createSignal, For, Show } from 'solid-js'
-import { animateWindowResize, LAUNCHER_WINDOW_SIZE, platformBridge } from '~/api/platformBridge'
+import { platformBridge } from '~/api/platformBridge'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
 import { ProfileDialog } from '~/components/settings/ProfileDialog'
@@ -62,10 +62,6 @@ export const UserMenu: Component<UserMenuProps> = (props) => {
     })
 
     await platformBridge.switchMode()
-
-    // Resize back to the default launcher size while the overlay hides
-    // the transition. The LauncherView will handle its own fade-in.
-    await animateWindowResize(LAUNCHER_WINDOW_SIZE.width, LAUNCHER_WINDOW_SIZE.height)
 
     overlay.remove()
     ;(window as any).__leapmux_disconnectDesktop?.()

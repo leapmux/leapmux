@@ -15,12 +15,13 @@
       {
         "label": "main",
         "title": "LeapMux Desktop",
-        "width": 900,
-        "height": 680,
+        "width": 1280,
+        "height": 800,
         "minWidth": 800,
         "minHeight": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "visible": false
       }
     ]
   },

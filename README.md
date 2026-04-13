@@ -90,24 +90,26 @@ Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and W
 
 For multi-user and remote setups, run `leapmux hub` and `leapmux worker` separately. The Hub handles authentication and relays end-to-end encrypted traffic between the Frontend and Workers. Workers can be on different machines, behind NATs — they initiate outbound connections to the Hub.
 
+The Hub supports multiple database backends — **SQLite** (default), **PostgreSQL**, **MySQL**, **CockroachDB**, **YugabyteDB**, and **TiDB** — configured via the `storage.type` option. Workers always use SQLite locally.
+
 ```
-┌─────────────────┐              ┌──────────────────┐              ┌───────────────────┐
-│                 │  ConnectRPC  │                  │     gRPC     │  Worker 1         │
-│    Frontend     │◄────────────►│       Hub        │◄────────────►│  ┌─────────────┐  │
-│   (Browser /    │  WebSocket   │     (Relay)      │              │  │   Agents    │  │
-│   Desktop App)  │              │                  │              │  │ (multiple)  │  │
-│                 │              │    Go Service    │              │  └─────────────┘  │
-└─────────────────┘              │    + Database    │              │  + SQLite         │
-                                 │                  │              └───────────────────┘
-                                 └──────────────────┘                        ⋮
-                                                                   ┌───────────────────┐
-                                                                   │  Worker N         │
-                                                                   │  ┌─────────────┐  │
-                                                                   │  │   Agents    │  │
-                                                                   │  │ (multiple)  │  │
-                                                                   │  └─────────────┘  │
-                                                                   │  + SQLite         │
-                                                                   └───────────────────┘
+┌────────────────┐              ┌──────────────────┐              ┌──────────────────┐
+│                │  ConnectRPC  │                  │     gRPC     │  Worker 1        │
+│   Frontend     │◄────────────►│       Hub        │◄────────────►│  ┌────────────┐  │
+│  (Browser /    │  WebSocket   │     (Relay)      │              │  │   Agents   │  │
+│  Desktop App)  │              │                  │              │  │ (multiple) │  │
+│                │              │    Go Service    │              │  └────────────┘  │
+└────────────────┘              │  + Database      │              │  + SQLite        │
+                                │   (SQLite,       │              └──────────────────┘
+                                │    PostgreSQL,   │                        ⋮
+                                │    MySQL, ...)   │              ┌──────────────────┐
+                                └──────────────────┘              │  Worker N        │
+                                                                  │  ┌────────────┐  │
+                                                                  │  │   Agents   │  │
+                                                                  │  │ (multiple) │  │
+                                                                  │  └────────────┘  │
+                                                                  │  + SQLite        │
+                                                                  └──────────────────┘
 ```
 
 ### Modes
@@ -120,8 +122,9 @@ LeapMux is a single binary with these subcommands:
 | `leapmux hub` | Hub | Central service only (authentication, relay, database) |
 | `leapmux worker` | Worker | Connects to a remote Hub |
 | `leapmux dev` | Dev | Hub + Worker on `:4327` (all interfaces), login required, all features |
+| `leapmux admin` | Admin | CLI for managing orgs, users, sessions, workers, OAuth providers, encryption keys, and database |
 | `leapmux version` | — | Prints version and exits |
-| Desktop app | Solo | Native desktop app — runs solo mode in an embedded WebView |
+| Desktop app | — | Native desktop app — runs solo mode or connects to a remote hub in an embedded WebView |
 
 ### Components
 
@@ -135,7 +138,7 @@ LeapMux is a single binary with these subcommands:
 **Hub (Go)**
 - Authentication, workspace management, and worker registration service
 - Relays encrypted Frontend-Worker traffic without decrypting it
-- Stores persistent data in SQLite (users, workspaces, worker registry)
+- Pluggable storage backend: SQLite (default), PostgreSQL, MySQL, CockroachDB, YugabyteDB, or TiDB
 - No access to channel plaintext — acts as an authenticated relay
 
 **Worker (Go)**
@@ -176,11 +179,17 @@ Before you begin, ensure you have the following installed:
 
 Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 
+Install the [Rust toolchain](https://rustup.rs/) for desktop app builds:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup default stable
+```
+
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
 brew install buf go go-task golangci-lint mprocs sqlc yq
-rustup default stable
 ```
 
 ### Arch Linux
@@ -203,6 +212,12 @@ Install the remaining dependencies from the [AUR](https://wiki.archlinux.org/tit
 ```bash
 yay -S mprocs-bin
 rustup default stable
+```
+
+For desktop app builds, install the [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux):
+
+```bash
+sudo pacman -S webkit2gtk-4.1 libappindicator-gtk3 librsvg patchelf
 ```
 
 ### Operating System
@@ -239,6 +254,11 @@ To run in solo mode (localhost-only, no login) instead of dev mode during develo
 task dev-solo
 ```
 
+To develop the desktop app (Tauri + Go sidecar):
+```bash
+task dev-desktop
+```
+
 ## Development
 
 ### Building
@@ -255,7 +275,7 @@ task build-frontend   # Build frontend assets
 task build-desktop    # Build desktop app for current platform (Tauri v2 + Rust)
 ```
 
-The `leapmux` binary is output to `backend/build/bin/`. The Tauri desktop bundle is emitted under `desktop/src-tauri/target/`.
+The `leapmux` binary is output to the repository root. The Tauri desktop bundle is emitted under `desktop/rust/target/`.
 
 ### Testing
 
@@ -268,6 +288,7 @@ Run specific test suites:
 ```bash
 task test-backend       # Backend tests
 task test-frontend      # Frontend tests (Vitest)
+task test-desktop       # Desktop sidecar tests
 task test-e2e           # End-to-end tests (Playwright)
 ```
 
@@ -296,7 +317,7 @@ Run specific linters:
 task lint-proto      # Lint Protocol Buffer definitions
 task lint-backend    # Lint Go code (hub + worker)
 task lint-frontend   # Lint frontend code (ESLint)
-task lint-desktop    # Lint desktop Go sidecar + Tauri Rust shell
+task lint-desktop    # Lint desktop Go sidecar + Tauri Rust shell (clippy)
 ```
 
 Auto-fix lint violations:
@@ -304,14 +325,14 @@ Auto-fix lint violations:
 task lint-fix            # Fix all (Go, frontend, desktop)
 task lint-fix-backend    # Fix Go code (golangci-lint --fix)
 task lint-fix-frontend   # Fix frontend code (ESLint --fix)
-task lint-fix-desktop    # Fix desktop Go code + format Tauri Rust shell
+task lint-fix-desktop    # Fix desktop Go code + Tauri Rust code (clippy --fix)
 ```
 
 ### Desktop and Mobile Prerequisites
 
-Desktop builds use Tauri v2:
+Desktop builds use [Tauri v2](https://v2.tauri.app/start/prerequisites/):
 - macOS: Xcode Command Line Tools, Rust, WebKit (system)
-- Linux: Rust plus the WebKitGTK/Tauri native dependencies for your distro
+- Linux: Rust plus the WebKitGTK/Tauri native dependencies for your distro (see [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux))
 - Windows: Rust MSVC toolchain plus WebView2
 
 Future mobile builds use Tauri mobile tooling:
@@ -334,7 +355,7 @@ task generate-sqlc    # Generate type-safe SQL code (hub and worker)
 Task uses checksums to skip generation when source files haven't changed. To force regeneration, use `task --force generate`.
 
 Always run `task generate-proto` after modifying `.proto` files in `/proto/leapmux/v1/`.
-Always run `task generate-sqlc` after modifying `.sql` files in `/backend/internal/hub/db/queries/` or `/backend/internal/worker/db/queries/`.
+Always run `task generate-sqlc` after modifying `.sql` files in `/backend/internal/hub/store/*/db/queries/` or `/backend/internal/worker/db/queries/`.
 
 ### Preparation
 
@@ -436,8 +457,8 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 - **[Goose](https://pressly.github.io/goose/)** - Database migrations
 - **[gRPC](https://grpc.io/)** - Standard gRPC (Worker communication)
 - **[Protocol Buffers](https://protobuf.dev/)** - Service and message definitions
-- **[SQLite](https://sqlite.org/)** - Embedded database
-- **[sqlc](https://sqlc.dev/)** - Type-safe SQL code generation
+- **Pluggable database** - SQLite (default), PostgreSQL, MySQL, CockroachDB, YugabyteDB, or TiDB
+- **[sqlc](https://sqlc.dev/)** - Type-safe SQL code generation (per-backend: SQLite, PostgreSQL, MySQL)
 
 ### Worker (Agent Wrapper)
 
@@ -449,7 +470,7 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 
 ### Desktop (optional)
 
-- **[Tauri](https://tauri.app/)** - Desktop application framework (Rust + native WebView)
+- **[Tauri v2](https://v2.tauri.app/)** - Desktop application framework (Rust + native WebView)
 - **Go desktop sidecar** - Desktop-only service for Solo startup, local proxying, tunnels, and OS integrations
 
 ### Build Tools
@@ -467,11 +488,12 @@ leapmux/
 ├── .github/workflows/       # CI, Docker, and release workflows
 │
 ├── backend/                 # Go backend module
-│   ├── build/               # Build output (gitignored)
+│   ├── channelwire/         # E2EE channel wire format definitions
 │   │
 │   ├── cmd/leapmux/         # Unified binary entry point
+│   │   ├── admin*.go        # Admin CLI (org, user, session, worker, oauth, encryption, db)
 │   │   ├── hub.go           # Hub mode
-│   │   ├── main.go          # Subcommand routing (hub, worker, solo, dev)
+│   │   ├── main.go          # Subcommand routing (hub, worker, solo, dev, admin)
 │   │   ├── solo.go          # Solo/dev mode (hub + worker, default)
 │   │   └── worker.go        # Worker mode
 │   │
@@ -487,24 +509,37 @@ leapmux/
 │   │   │   ├── auth/        # Session-based authentication
 │   │   │   ├── bootstrap/   # Database initialization and seeding
 │   │   │   ├── channelmgr/  # E2EE channel routing and chunk validation
-│   │   │   ├── config/      # Hub configuration
-│   │   │   ├── db/          # Database driver, migrations, and queries
+│   │   │   ├── cleanup/     # Periodic cleanup of expired data
+│   │   │   ├── config/      # Hub configuration (incl. storage backend selection)
 │   │   │   ├── frontend/    # Frontend asset embedding and dev proxy
+│   │   │   ├── keystore/    # Encryption key management and rotation
 │   │   │   ├── layout/      # Workspace tiling layout management
 │   │   │   ├── notifier/    # Worker notification queue (persistent delivery with retries)
+│   │   │   ├── oauth/       # OAuth/OIDC provider integrations (GitHub, OIDC)
+│   │   │   ├── password/    # Password hashing and verification
 │   │   │   ├── service/     # RPC service implementations (auth, workspace, channel relay)
+│   │   │   ├── store/       # Storage abstraction and backend implementations
+│   │   │   │   ├── sqlite/      # SQLite backend (default)
+│   │   │   │   ├── postgres/    # PostgreSQL backend (also used by CockroachDB, YugabyteDB)
+│   │   │   │   ├── mysql/       # MySQL backend (also used by TiDB)
+│   │   │   │   ├── cockroachdb/ # CockroachDB integration tests
+│   │   │   │   ├── yugabytedb/  # YugabyteDB integration tests
+│   │   │   │   ├── tidb/        # TiDB integration tests
+│   │   │   │   ├── sqlutil/     # Shared SQL helpers (migrations, bulk ops, converters)
+│   │   │   │   └── storetest/   # Backend-agnostic test suite
+│   │   │   ├── storeopen/   # Store factory (opens backend from config)
 │   │   │   └── workermgr/   # Worker connection registry and pending approvals
 │   │   │
 │   │   ├── logging/         # Structured logging and middleware
 │   │   ├── metrics/         # Prometheus metrics and interceptors
 │   │   ├── noise/           # Noise_NK protocol and key fingerprinting
-│   │   ├── util/            # Shared utilities (id, lexorank, msgcodec, timefmt, testutil)
+│   │   ├── util/            # Shared utilities (id, lexorank, msgcodec, ptrconv, sqlitedb, timefmt, validate, testutil)
 │   │   │
 │   │   └── worker/          # Worker implementation
 │   │       ├── agent/       # Agent process management
 │   │       ├── channel/     # E2EE channel session management and dispatch
 │   │       ├── config/      # Worker configuration
-│   │       ├── db/          # Worker database driver, migrations, and queries
+│   │       ├── db/          # Worker database (SQLite-only), migrations, and queries
 │   │       ├── filebrowser/ # File system access
 │   │       ├── gitutil/     # Git repository utilities
 │   │       ├── hub/         # gRPC client to Hub (with auto-reconnect)
@@ -513,17 +548,22 @@ leapmux/
 │   │       └── wakelock/    # System wake lock management
 │   │
 │   ├── solo/                # Shared solo mode startup logic
+│   ├── spautil/             # SPA HTTP handler utilities
+│   ├── tunnel/              # Tunnel channel and connection management
+│   ├── util/version/        # Build version information
 │   │
 │   └── worker/              # Worker public API (thin wrapper)
 │       └── runner.go        # Run(), RunConfig
 │
-├── desktop/                 # Tauri desktop app + Go desktop sidecar
-│   ├── src-tauri/           # Tauri v2 Rust shell
-│   └── scripts/             # Packaging helpers
+├── desktop/                 # Tauri v2 desktop app + Go desktop sidecar
+│   ├── go/                  # Go desktop sidecar (solo startup, proxy, tunnels, OS integrations)
+│   └── rust/                # Tauri v2 Rust shell (WebView, packaging, icons)
+│       └── scripts/         # Packaging helpers (DMG creation, icon generation)
 │
 ├── docker/                  # Dockerfile and s6-overlay service definitions
 │
 ├── frontend/                # SolidJS web application
+│   ├── scripts/             # Build and development scripts
 │   ├── src/
 │   │   ├── api/             # ConnectRPC client setup
 │   │   ├── components/      # UI components (chat, terminal, filebrowser, shell, etc.)
@@ -532,11 +572,14 @@ leapmux/
 │   │   ├── hooks/           # Custom hooks
 │   │   ├── lib/             # Utility libraries
 │   │   ├── routes/          # Route definitions
+│   │   ├── spinners/        # Spinner verb JSON files (generated, gitignored)
 │   │   ├── stores/          # State management (agents, chat, terminals, etc.)
 │   │   ├── styles/          # Global styles and themes
 │   │   ├── types/           # TypeScript type definitions
 │   │   └── utils/           # Shared utility functions
-│   └── tests/               # Unit tests (Vitest) and E2E tests (Playwright)
+│   └── tests/
+│       ├── e2e/             # End-to-end tests (Playwright)
+│       └── unit/            # Unit tests (Vitest)
 │
 ├── icons/                   # SVG icons (app logo and agent provider icons)
 │
@@ -544,13 +587,15 @@ leapmux/
 │   └── leapmux/v1/          # Service and message definitions
 │
 ├── scripts/                 # Utility scripts
-│   ├── license-overrides/   # Vendored licenses for packages missing them
-│   └── generate-notice.mjs  # License collection and NOTICE.md/HTML generation
+│   ├── build-ico.mjs        # ICO file builder
+│   ├── generate-notice.mjs  # License collection and NOTICE.md/HTML generation
+│   └── license-overrides/   # Vendored licenses for packages missing them
 │
 ├── buf.gen.yaml             # Protocol Buffer code generation targets
 ├── buf.yaml                 # Protocol Buffer linting configuration
-├── go.work                  # Go workspace (backend + desktop modules)
+├── go.work                  # Go workspace (backend + desktop/go modules)
 ├── mprocs.yaml              # Dev mode process configuration (task dev)
+├── mprocs-desktop.yaml      # Desktop dev mode process configuration (task dev-desktop)
 ├── mprocs-solo.yaml         # Solo mode process configuration (task dev-solo)
 ├── NOTICE.md                # Third-party dependency licenses (generated)
 ├── README.md                # This file

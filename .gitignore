@@ -10,6 +10,10 @@
 /LeapMux*.app/
 /LeapMux*.dmg
 /LeapMux*.exe
+/LeapMux*.msi
+/leapmux-desktop
+/leapmux-desktop*.deb
+/leapmux-desktop*.AppImage
 
 # Generated code
 generated/
@@ -39,6 +43,7 @@ frontend/src/spinners/
 /desktop/go/bin/
 /desktop/rust/gen/
 /desktop/rust/icons/
+/desktop/rust/scripts/linuxdeploy-wrapper
 /desktop/rust/target/
 
 # IDE

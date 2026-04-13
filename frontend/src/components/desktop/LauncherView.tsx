@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import { createSignal, onCleanup, onMount } from 'solid-js'
-import { animateWindowResize, getRuntimeState, LAUNCHER_WINDOW_SIZE, maximizeWindow, platformBridge } from '~/api/platformBridge'
+import { getRuntimeState, platformBridge, restoreWindowGeometry } from '~/api/platformBridge'
 import { createLogger } from '~/lib/logger'
 import { formatVersionLine } from '~/lib/systemInfo'
 import * as styles from './LauncherView.css'
@@ -24,8 +24,6 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   const [visible, setVisible] = createSignal(false)
   let fdaPollTimer: ReturnType<typeof setInterval> | null = null
   let containerRef: HTMLDivElement | undefined
-  let resizedToWorkspace = false
-  let savedGeometry = { width: 0, height: 0, maximized: false }
 
   const isValidHubUrl = (value: string): boolean => {
     let s = value.trim()
@@ -99,18 +97,6 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
     })
   }
 
-  const resizeToWorkspace = async () => {
-    if (resizedToWorkspace)
-      return
-    resizedToWorkspace = true
-    if (savedGeometry.maximized)
-      await maximizeWindow()
-    else if (savedGeometry.width > 0 && savedGeometry.height > 0)
-      await animateWindowResize(savedGeometry.width, savedGeometry.height)
-    else
-      await animateWindowResize(1280, 800)
-  }
-
   const connect = async () => {
     setLoading(true)
     setError('')
@@ -118,12 +104,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       if (mode() === 'solo') {
         await platformBridge.connectSolo()
         await fadeOut()
-        await resizeToWorkspace()
         props.onConnected()
       }
       else {
         await fadeOut()
-        await resizeToWorkspace()
         await platformBridge.connectDistributed(hubUrl().trim())
       }
     }
@@ -143,13 +127,8 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       if (buildInfo.version)
         setVersionLine(formatVersionLine(buildInfo))
 
-      // Remember saved window geometry for resizeToWorkspace().
-      savedGeometry = { width: config.window_width, height: config.window_height, maximized: config.window_maximized }
-
-      // Ensure the window starts at the default launcher size.
-      // On first launch it's already 900×680 (from tauri.conf.json).
-      // After Switch Mode it may be larger — shrink it back.
-      await animateWindowResize(LAUNCHER_WINDOW_SIZE.width, LAUNCHER_WINDOW_SIZE.height)
+      // Restore saved window geometry on startup.
+      await restoreWindowGeometry(config.window_width, config.window_height, config.window_maximized)
 
       if (config.mode === 'distributed' && config.hub_url) {
         setHubUrl(config.hub_url)
@@ -168,9 +147,6 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
             return
           }
         }
-
-        // Resize to the saved workspace size before connecting.
-        await resizeToWorkspace()
 
         // Auto-connect silently — don't fade in unless it takes > 1s.
         const showTimer = setTimeout(setVisible, 1000, true)
