@@ -58,7 +58,6 @@ export interface SidebarElementsOpts {
 interface SidebarDisplayOpts {
   isCollapsed: Accessor<boolean>
   onExpand: () => void
-  onCollapse?: () => void
   saveSidebarState?: () => void
   initialOpenSections?: Record<string, boolean>
   initialSectionSizes?: Record<string, number>
@@ -81,7 +80,6 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       onPostArchiveWorkspace={opts.onPostArchiveWorkspace}
       isCollapsed={display?.isCollapsed() ?? false}
       onExpand={display?.onExpand ?? (() => {})}
-      onCollapse={display?.onCollapse}
       initialOpenSections={display?.initialOpenSections}
       initialSectionSizes={display?.initialSectionSizes}
       onSectionStateChange={display?.onStateChange}
@@ -144,7 +142,6 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       sectionStore={opts.sectionStore}
       isCollapsed={display?.isCollapsed() ?? false}
       onExpand={display?.onExpand ?? (() => {})}
-      onCollapse={display?.onCollapse}
       initialOpenSections={display?.initialOpenSections}
       initialSectionSizes={display?.initialSectionSizes}
       onSectionStateChange={display?.onStateChange}

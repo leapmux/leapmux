@@ -20,7 +20,6 @@ const COLLAPSED_SIZE_PX = 45
 interface SidebarFactoryOpts {
   isCollapsed: Accessor<boolean>
   onExpand: () => void
-  onCollapse: () => void
   initialOpenSections?: Record<string, boolean>
   initialSectionSizes?: Record<string, number>
   onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
@@ -335,7 +334,6 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             {props.createLeftSidebar({
               isCollapsed: leftCollapsed,
               onExpand: expandLeft,
-              onCollapse: collapseLeft,
               initialOpenSections: savedSidebar?.leftOpenSections,
               initialSectionSizes: savedSidebar?.leftSectionSizes,
               onStateChange: (open, sizes) => {
@@ -411,7 +409,6 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             {props.createRightSidebar({
               isCollapsed: rightCollapsed,
               onExpand: expandRight,
-              onCollapse: collapseRight,
               initialOpenSections: savedSidebar?.rightOpenSections,
               initialSectionSizes: savedSidebar?.rightSectionSizes,
               onStateChange: (open, sizes) => {

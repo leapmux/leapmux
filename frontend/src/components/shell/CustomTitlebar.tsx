@@ -16,8 +16,10 @@ import { PanelLeftFilled, PanelRightFilled } from './SidebarIcons'
 const platform = getPlatform()
 const desktop = isDesktopApp()
 const isLinuxDesktop = desktop && platform === 'linux'
-const macPadding = desktop && platform === 'mac' ? '78px' : undefined
-const windowsPadding = desktop && platform === 'windows' ? '138px' : undefined
+const MAC_TRAFFIC_LIGHT_INSET = '78px'
+const WINDOWS_CAPTION_BUTTON_INSET = '138px'
+const macPadding = desktop && platform === 'mac' ? MAC_TRAFFIC_LIGHT_INSET : undefined
+const windowsPadding = desktop && platform === 'windows' ? WINDOWS_CAPTION_BUTTON_INSET : undefined
 
 interface CustomTitlebarProps {
   onToggleLeftSidebar: () => void

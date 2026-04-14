@@ -46,7 +46,6 @@ export interface SidebarCommonProps {
   // Display
   isCollapsed: boolean
   onExpand: () => void
-  onCollapse?: () => void
   initialOpenSections?: Record<string, boolean>
   initialSectionSizes?: Record<string, number>
   onSectionStateChange?: (openSections: Record<string, boolean>, sectionSizes: Record<string, number>) => void

@@ -67,8 +67,6 @@ export interface CollapsibleSidebarProps {
   isCollapsed: boolean
   /** Expand the outer Resizable panel. */
   onExpand: () => void
-  /** Collapse the outer Resizable panel. */
-  onCollapse?: () => void
   /** Initial open/closed state per section. Read once on mount. */
   initialOpenSections?: Record<string, boolean>
   /** Initial per-section sizes (fractions). Read once on mount. */

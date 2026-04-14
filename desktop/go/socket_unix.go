@@ -41,11 +41,15 @@ func RunSocketServer(socketPath string, binaryHash string) error {
 	defer idleTimer.Stop()
 
 	go func() {
-		select {
-		case <-idleTimer.C:
-			slog.Info("desktop sidecar idle timeout reached; shutting down")
-			app.Shutdown()
-		case <-app.ctx.Done():
+		for {
+			select {
+			case <-idleTimer.C:
+				slog.Info("desktop sidecar idle timeout reached; shutting down")
+				app.Shutdown()
+				return
+			case <-app.ctx.Done():
+				return
+			}
 		}
 	}()
 

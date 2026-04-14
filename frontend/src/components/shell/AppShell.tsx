@@ -608,7 +608,6 @@ export const AppShell: ParentComponent = (props) => {
   }
 
   const handleActivateFloatingWindow = (windowId: string) => {
-    floatingWindowStore.bringToFront(windowId)
     const tileId = floatingWindowStore.getWindow(windowId)?.focusedTileId
     if (tileId)
       focusTile(tileId)
