@@ -50,6 +50,8 @@ interface ChatViewProps {
   scrollStateRef?: (fn: () => { distFromBottom: number, atBottom: boolean } | undefined) => void
   /** Ref to expose a function that forces an immediate scroll-to-bottom (e.g. when sending a message). */
   scrollToBottomRef?: (fn: () => void) => void
+  /** Ref to expose page-wise scrolling for the local chat viewport. */
+  pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
   /** Monotonic counter that increments on every addMessage (including thread merges). */
   messageVersion?: number
   /** Called when the user quotes selected text in a chat message. */
@@ -290,9 +292,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     setPreserveBrowsingPosition(false)
   }
 
+  const pageScroll = (direction: -1 | 1) => {
+    if (!messageListRef)
+      return
+    messageListRef.scrollBy({
+      top: direction * messageListRef.clientHeight,
+      behavior: 'auto',
+    })
+    messageListRef.dispatchEvent(new Event('scroll'))
+  }
+
   onMount(() => {
     props.scrollStateRef?.(getScrollState)
     props.scrollToBottomRef?.(forceScrollToBottom)
+    props.pageScrollRef?.(pageScroll)
   })
 
   let prevMessageCount = 0
@@ -647,19 +660,4 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       </div>
     </div>
   )
-}
-
-export function scrollActiveChatPage(direction: -1 | 1): void {
-  const activeChat = [...document.querySelectorAll('[data-chat-scroll-container="true"]')]
-    .find((el) => {
-      const node = el as HTMLElement
-      return node.offsetParent !== null
-    }) as HTMLDivElement | undefined
-  if (!activeChat)
-    return
-  activeChat.scrollBy({
-    top: direction * activeChat.clientHeight,
-    behavior: 'auto',
-  })
-  activeChat.dispatchEvent(new Event('scroll'))
 }

@@ -17,36 +17,20 @@ interface TerminalViewProps {
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
   onBell: (id: string) => void
+  pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
+  writeRef?: (fn: (data: string) => void) => void
 }
 
 const instances = new Map<string, TerminalInstance>()
+let lastActiveTerminalId: string | null = null
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
 }
 
-function findActiveTerminal(): TerminalInstance | undefined {
-  for (const [id, instance] of instances) {
-    const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
-    if (container && container.style.display !== 'none')
-      return instance
-  }
-  return undefined
-}
-
-export function writeToActiveTerminal(data: string): void {
-  const instance = findActiveTerminal()
-  if (instance?.sendInput)
-    instance.sendInput(new TextEncoder().encode(data))
-}
-
-export function scrollActiveTerminalPage(direction: -1 | 1): void {
-  findActiveTerminal()?.terminal.scrollPages(direction)
-}
-
 if (typeof window !== 'undefined') {
   (window as any).__getActiveTerminalText = () => {
-    const instance = findActiveTerminal()
+    const instance = lastActiveTerminalId ? instances.get(lastActiveTerminalId) : undefined
     if (!instance)
       return ''
     const buffer = instance.terminal.buffer.active
@@ -59,7 +43,7 @@ if (typeof window !== 'undefined') {
     return text
   }
   ;(window as any).__getActiveTerminalRows = () => {
-    return findActiveTerminal()?.terminal.rows ?? 0
+    return (lastActiveTerminalId ? instances.get(lastActiveTerminalId)?.terminal.rows : 0) ?? 0
   }
 }
 
@@ -193,6 +177,20 @@ const TerminalContainer: Component<{
 export const TerminalView: Component<TerminalViewProps> = (props) => {
   const preferences = usePreferences()
 
+  const pageScroll = (direction: -1 | 1) => {
+    if (!props.activeTerminalId)
+      return
+    instances.get(props.activeTerminalId)?.terminal.scrollPages(direction)
+  }
+
+  const write = (data: string) => {
+    if (!props.activeTerminalId)
+      return
+    const instance = instances.get(props.activeTerminalId)
+    if (instance?.sendInput)
+      instance.sendInput(new TextEncoder().encode(data))
+  }
+
   // React to font preference changes and update existing terminal instances
   createEffect(() => {
     const family = preferences.monoFontFamily()
@@ -208,6 +206,12 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     for (const [, instance] of instances) {
       instance.terminal.options.theme = theme
     }
+  })
+
+  createEffect(() => {
+    lastActiveTerminalId = props.activeTerminalId
+    props.pageScrollRef?.(pageScroll)
+    props.writeRef?.(write)
   })
 
   // Clean up instances when component unmounts

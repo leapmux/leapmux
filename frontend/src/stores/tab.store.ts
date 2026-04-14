@@ -258,6 +258,14 @@ export function createTabStore() {
       return state.tileActiveTabKeys[tileId] ?? null
     },
 
+    /** Get the active tab object for a specific tile. */
+    getActiveTabForTile(tileId: string): Tab | null {
+      const key = state.tileActiveTabKeys[tileId]
+      if (!key)
+        return null
+      return state.tabs.find(t => tabKey(t) === key) ?? null
+    },
+
     /** Set the active tab for a specific tile. */
     setActiveTabForTile(tileId: string, type: TabType, id: string) {
       const key = tabKey({ type, id })

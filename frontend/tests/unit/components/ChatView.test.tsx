@@ -2,8 +2,8 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { CommandStreamSegment } from '~/stores/chat.store'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { beforeAll, describe, expect, it } from 'vitest'
-import { ChatView, scrollActiveChatPage } from '~/components/chat/ChatView'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
@@ -712,12 +712,14 @@ describe('chatView', () => {
       makeMessage('assistant', 'Retained 1', 'msg-1'),
       makeMessage('assistant', 'Retained 2', 'msg-2'),
     ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    let pageScroll!: (direction: -1 | 1) => void
 
     render(() => (
       <PreferencesProvider>
         <ChatView
           messages={messages}
           streamingText=""
+          pageScrollRef={(fn) => { pageScroll = fn }}
         />
       </PreferencesProvider>
     ))
@@ -725,27 +727,36 @@ describe('chatView', () => {
     const chatContainer = screen.getByTestId('chat-container')
     const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
     messageList.scrollBy = vi.fn()
-    Object.defineProperty(messageList, 'offsetParent', { configurable: true, get: () => document.body })
     Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 240 })
 
-    scrollActiveChatPage(1)
+    pageScroll(1)
     expect(messageList.scrollBy).toHaveBeenCalledWith({ top: 240, behavior: 'auto' })
   })
 
-  it('scrolls the visible chat when multiple chat views are mounted', () => {
+  it('scrolls only the targeted chat when multiple chat views are mounted', () => {
     const messages = [
       makeMessage('assistant', 'Retained 1', 'msg-1'),
       makeMessage('assistant', 'Retained 2', 'msg-2'),
     ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    let hiddenPageScroll!: (direction: -1 | 1) => void
+    let visiblePageScroll!: (direction: -1 | 1) => void
 
     render(() => (
       <PreferencesProvider>
         <div>
           <div style={{ display: 'none' }}>
-            <ChatView messages={messages} streamingText="" />
+            <ChatView
+              messages={messages}
+              streamingText=""
+              pageScrollRef={(fn) => { hiddenPageScroll = fn }}
+            />
           </div>
           <div>
-            <ChatView messages={messages} streamingText="" />
+            <ChatView
+              messages={messages}
+              streamingText=""
+              pageScrollRef={(fn) => { visiblePageScroll = fn }}
+            />
           </div>
         </div>
       </PreferencesProvider>
@@ -755,17 +766,19 @@ describe('chatView', () => {
     const hiddenList = chatContainers[0].firstElementChild?.firstElementChild as HTMLDivElement
     const visibleList = chatContainers[1].firstElementChild?.firstElementChild as HTMLDivElement
 
-    Object.defineProperty(hiddenList, 'offsetParent', { configurable: true, get: () => null })
-    Object.defineProperty(visibleList, 'offsetParent', { configurable: true, get: () => document.body })
     Object.defineProperty(hiddenList, 'clientHeight', { configurable: true, get: () => 120 })
     Object.defineProperty(visibleList, 'clientHeight', { configurable: true, get: () => 240 })
     hiddenList.scrollBy = vi.fn()
     visibleList.scrollBy = vi.fn()
 
-    scrollActiveChatPage(-1)
+    visiblePageScroll(-1)
 
     expect(hiddenList.scrollBy).not.toHaveBeenCalled()
     expect(visibleList.scrollBy).toHaveBeenCalledWith({ top: -240, behavior: 'auto' })
+
+    hiddenPageScroll(1)
+
+    expect(hiddenList.scrollBy).toHaveBeenCalledWith({ top: 120, behavior: 'auto' })
   })
 
   it('loads older messages on touch and pointer overscroll intent while at top', () => {

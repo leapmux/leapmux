@@ -8,6 +8,7 @@ import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
+import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
@@ -32,7 +33,6 @@ import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
-import { tabKey } from '~/stores/tab.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { TabBar } from './TabBar'
@@ -72,6 +72,7 @@ interface TileRendererOpts {
   getScrollStateRef: { current: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined }
   forceScrollToBottomRef: { current: (() => void) | undefined }
   gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
+  floatingWindowStore?: ReturnType<typeof createFloatingWindowStore>
   // Floating window support
   isFloatingWindowTile?: (tileId: string) => boolean
   onDetachTab?: (tab: Tab) => void
@@ -114,11 +115,75 @@ export function createTileRenderer(opts: TileRendererOpts) {
     forceScrollToBottomRef,
   } = opts
 
-  const getActiveTabForTile = (tileId: string): Tab | null => {
-    const key = tabStore.getActiveTabKeyForTile(tileId)
-    if (!key)
-      return null
-    return tabStore.state.tabs.find(t => tabKey(t) === key) ?? null
+  const chatHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void }>()
+  const terminalHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void, write: (data: string) => void }>()
+
+  const getActiveTabForTile = (tileId: string): Tab | null =>
+    tabStore.getActiveTabForTile(tileId)
+
+  const getWindowIdForTile = (tileId: string) => opts.floatingWindowStore?.getWindowForTile(tileId) ?? null
+
+  const focusTile = (tileId: string) => {
+    const windowId = getWindowIdForTile(tileId)
+    if (windowId)
+      opts.floatingWindowStore?.setFocusedTile(windowId, tileId)
+    layoutStore.setFocusedTile(tileId)
+  }
+
+  const closeTile = (tileId: string) => {
+    const windowId = getWindowIdForTile(tileId)
+    if (!windowId) {
+      layoutStore.closeTile(tileId)
+      persistLayout()
+      return
+    }
+
+    const focusedTileId = layoutStore.focusedTileId()
+    const windowTileIds = new Set(opts.floatingWindowStore?.getWindowTileIds(windowId) ?? [])
+    const closedFocusedTile = focusedTileId === tileId
+    const removedWindow = opts.floatingWindowStore?.closeTile(windowId, tileId) ?? false
+
+    if (closedFocusedTile) {
+      if (!removedWindow) {
+        const replacementTileId = opts.floatingWindowStore?.getWindow(windowId)?.focusedTileId
+        if (replacementTileId)
+          layoutStore.setFocusedTile(replacementTileId)
+      }
+      else {
+        const mainTileId = layoutStore.getAllTileIds()[0]
+        if (mainTileId)
+          layoutStore.setFocusedTile(mainTileId)
+      }
+    }
+    else if (removedWindow && windowTileIds.has(focusedTileId)) {
+      const mainTileId = layoutStore.getAllTileIds()[0]
+      if (mainTileId)
+        layoutStore.setFocusedTile(mainTileId)
+    }
+
+    persistLayout()
+  }
+
+  const splitTile = (tileId: string, direction: 'horizontal' | 'vertical') => {
+    const windowId = getWindowIdForTile(tileId)
+    if (windowId) {
+      opts.floatingWindowStore?.splitTile(windowId, tileId, direction)
+    }
+    else if (direction === 'horizontal') {
+      layoutStore.splitTileHorizontal(tileId)
+    }
+    else {
+      layoutStore.splitTileVertical(tileId)
+    }
+    persistLayout()
+  }
+
+  const canSplitTile = (tileId: string) =>
+    getWindowIdForTile(tileId) ? true : layoutStore.canSplitTile(tileId)
+
+  const resolveFocusedTab = (): Tab | null => {
+    const tileId = layoutStore.focusedTileId()
+    return tileId ? getActiveTabForTile(tileId) : null
   }
 
   const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
@@ -137,7 +202,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       showAddButton={isActiveWorkspaceMutatable()}
       readOnly={isActiveWorkspaceArchived()}
       onSelect={(tab) => {
-        layoutStore.setFocusedTile(tileId)
+        focusTile(tileId)
         handleTabSelect(tab)
       }}
       onClose={handleTabClose}
@@ -168,20 +233,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
       onToggleLeftSidebar={toggleLeftSidebar}
       onToggleRightSidebar={toggleRightSidebar}
       tileActions={{
-        canSplit: layoutStore.canSplitTile(tileId),
+        canSplit: canSplitTile(tileId),
         canClose: hasMultipleTiles(),
         onSplitHorizontal: () => {
-          layoutStore.splitTileHorizontal(tileId)
-          persistLayout()
+          splitTile(tileId, 'horizontal')
         },
         onSplitVertical: () => {
-          layoutStore.splitTileVertical(tileId)
-          persistLayout()
+          splitTile(tileId, 'vertical')
         },
-        onClose: () => {
-          layoutStore.closeTile(tileId)
-          persistLayout()
-        },
+        onClose: () => closeTile(tileId),
       }}
     />
   )
@@ -208,10 +268,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const agentScrollToBottoms = new Map<string, () => void>()
     createEffect(() => {
       const activeId = agentTab()?.id
-      if (activeId) {
-        getScrollStateRef.current = agentScrollStates.get(activeId)
-        forceScrollToBottomRef.current = agentScrollToBottoms.get(activeId)
-      }
+      if (layoutStore.focusedTileId() !== tileId)
+        return
+      getScrollStateRef.current = activeId ? agentScrollStates.get(activeId) : undefined
+      forceScrollToBottomRef.current = activeId ? agentScrollToBottoms.get(activeId) : undefined
     })
     const tileTerminalIds = () => new Set(
       tabStore.getTabsForTile(tileId)
@@ -233,6 +293,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             onCleanup(() => {
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
+              chatHandlers.delete(agentId)
             })
             return (
               <div class={styles.centerContent} classList={{ [styles.layoutHidden]: agentTab()?.id !== at.id }}>
@@ -267,6 +328,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       if (agentTab()?.id === at.id)
                         forceScrollToBottomRef.current = fn
                     }}
+                    pageScrollRef={(fn) => {
+                      chatHandlers.set(agentId, { pageScroll: fn })
+                    }}
                     getMessageBySpanId={spanId => chatStore.getMessageBySpanId(agentId, spanId)}
                     getToolResultBySpanId={spanId => chatStore.getToolResultBySpanId(agentId, spanId)}
                     getCommandStreamBySpanId={spanId => chatStore.getCommandStream(agentId, spanId)}
@@ -290,20 +354,52 @@ export function createTileRenderer(opts: TileRendererOpts) {
         </For>
 
         <Show when={hasTerminals()}>
-          <div
-            class={styles.centerContent}
-            classList={{ [styles.layoutHidden]: !terminalTab() }}
-          >
-            <TerminalView
-              terminals={tileTerminals()}
-              activeTerminalId={terminalTab()?.id ?? null}
-              visible={!!terminalTab()}
-              onInput={termOps.handleTerminalInput}
-              onResize={termOps.handleTerminalResize}
-              onTitleChange={termOps.handleTerminalTitleChange}
-              onBell={termOps.handleTerminalBell}
-            />
-          </div>
+          {(() => {
+            let terminalPageScroll: ((direction: -1 | 1) => void) | undefined
+            let terminalWrite: ((data: string) => void) | undefined
+            let registeredTerminalId: string | null = null
+            const syncTerminalHandler = () => {
+              const activeTerminalId = terminalTab()?.id ?? null
+              if (registeredTerminalId && registeredTerminalId !== activeTerminalId)
+                terminalHandlers.delete(registeredTerminalId)
+              registeredTerminalId = activeTerminalId
+              if (activeTerminalId && terminalPageScroll && terminalWrite) {
+                terminalHandlers.set(activeTerminalId, {
+                  pageScroll: terminalPageScroll,
+                  write: terminalWrite,
+                })
+              }
+            }
+            createEffect(syncTerminalHandler)
+            onCleanup(() => {
+              for (const terminal of tileTerminals())
+                terminalHandlers.delete(terminal.id)
+            })
+            return (
+              <div
+                class={styles.centerContent}
+                classList={{ [styles.layoutHidden]: !terminalTab() }}
+              >
+                <TerminalView
+                  terminals={tileTerminals()}
+                  activeTerminalId={terminalTab()?.id ?? null}
+                  visible={!!terminalTab()}
+                  onInput={termOps.handleTerminalInput}
+                  onResize={termOps.handleTerminalResize}
+                  onTitleChange={termOps.handleTerminalTitleChange}
+                  onBell={termOps.handleTerminalBell}
+                  pageScrollRef={(fn) => {
+                    terminalPageScroll = fn
+                    syncTerminalHandler()
+                  }}
+                  writeRef={(fn) => {
+                    terminalWrite = fn
+                    syncTerminalHandler()
+                  }}
+                />
+              </div>
+            )
+          })()}
         </Show>
 
         <For each={tileFileTabs()}>
@@ -374,7 +470,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   data-testid="empty-tile-open-agent"
                   title={shortcutHint('Open a new agent tab...', 'app.newAgent')}
                   onClick={() => {
-                    layoutStore.setFocusedTile(tileId)
+                    focusTile(tileId)
                     agentOps.handleOpenAgent()
                   }}
                 >
@@ -387,7 +483,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   data-testid="empty-tile-open-terminal"
                   title={shortcutHint('Open a new terminal tab...', 'app.newTerminal')}
                   onClick={() => {
-                    layoutStore.setFocusedTile(tileId)
+                    focusTile(tileId)
                     termOps.handleOpenTerminal()
                   }}
                 >
@@ -532,10 +628,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
       tileId={tileId}
       isFocused={layoutStore.focusedTileId() === tileId}
       canClose={hasMultipleTiles()}
-      canSplit={layoutStore.canSplitTile(tileId)}
+      canSplit={canSplitTile(tileId)}
       tabBar={createTabBarForTile(tileId)}
       onFocus={() => {
-        layoutStore.setFocusedTile(tileId)
+        focusTile(tileId)
         const tab = getActiveTabForTile(tileId)
         if (tab) {
           tabStore.setActiveTab(tab.type, tab.id)
@@ -548,17 +644,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
         }
       }}
       onSplitHorizontal={() => {
-        layoutStore.splitTileHorizontal(tileId)
-        persistLayout()
+        splitTile(tileId, 'horizontal')
       }}
       onSplitVertical={() => {
-        layoutStore.splitTileVertical(tileId)
-        persistLayout()
+        splitTile(tileId, 'vertical')
       }}
-      onClose={() => {
-        layoutStore.closeTile(tileId)
-        persistLayout()
-      }}
+      onClose={() => closeTile(tileId)}
       onPopOut={!opts.isFloatingWindowTile?.(tileId) && opts.onDetachTab && getActiveTabForTile(tileId)
         ? () => {
             const tab = getActiveTabForTile(tileId)
@@ -580,10 +671,33 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   return {
     getActiveTabForTile,
+    resolveFocusedTab,
     createTabBarForTile,
     tabBarElement,
     renderTileContent,
     focusedAgentId,
+    splitFocusedTile(direction: 'horizontal' | 'vertical') {
+      const tileId = layoutStore.focusedTileId()
+      if (tileId)
+        splitTile(tileId, direction)
+    },
+    scrollFocusedTabPage(direction: -1 | 1) {
+      const tab = resolveFocusedTab()
+      if (!tab)
+        return
+      if (tab.type === TabType.AGENT) {
+        chatHandlers.get(tab.id)?.pageScroll(direction)
+      }
+      else if (tab.type === TabType.TERMINAL) {
+        terminalHandlers.get(tab.id)?.pageScroll(direction)
+      }
+    },
+    writeToFocusedTerminal(data: string) {
+      const tab = resolveFocusedTab()
+      if (tab?.type !== TabType.TERMINAL)
+        return
+      terminalHandlers.get(tab.id)?.write(data)
+    },
     FocusedAgentEditorPanel,
     renderTile,
     handleFileDrop,

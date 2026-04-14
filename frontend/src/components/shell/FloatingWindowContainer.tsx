@@ -16,6 +16,7 @@ interface FloatingWindowContainerProps {
   title: string
   floatingWindowStore: FloatingWindowStoreType
   onClose: () => void
+  onActivate?: () => void
   onGeometryChange?: () => void
   children: JSX.Element
 }
@@ -113,6 +114,7 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
       return
     e.preventDefault()
     props.floatingWindowStore.bringToFront(props.windowId)
+    props.onActivate?.()
 
     const startX = e.clientX
     const startY = e.clientY
@@ -150,6 +152,7 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     e.preventDefault()
     e.stopPropagation()
     props.floatingWindowStore.bringToFront(props.windowId)
+    props.onActivate?.()
 
     const startX = e.clientX
     const startY = e.clientY
@@ -219,7 +222,10 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
         'z-index': props.zIndex,
         'opacity': props.opacity,
       }}
-      onMouseDown={() => props.floatingWindowStore.bringToFront(props.windowId)}
+      onMouseDown={() => {
+        props.floatingWindowStore.bringToFront(props.windowId)
+        props.onActivate?.()
+      }}
       data-testid="floating-window"
       data-window-id={props.windowId}
     >

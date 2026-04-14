@@ -4,12 +4,10 @@ import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { isTauriApp, openWebInspector, quitApp, resetWebviewZoom, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
-import { scrollActiveChatPage } from '~/components/chat/ChatView'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenu'
-import { scrollActiveTerminalPage, writeToActiveTerminal } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
@@ -33,6 +31,10 @@ interface UseShortcutsProps {
   toggleLeftSidebar: () => void
   toggleRightSidebar: () => void
   activeTabType: Accessor<TabType | null>
+  resolveFocusedTab: () => Tab | null
+  splitFocusedTile: (direction: 'horizontal' | 'vertical') => void
+  scrollFocusedTabPage: (direction: -1 | 1) => void
+  writeToFocusedTerminal: (data: string) => void
   customKeybindings: Accessor<UserKeybindingOverride[]>
 }
 
@@ -61,6 +63,10 @@ export function useShortcuts(props: UseShortcutsProps): void {
     toggleLeftSidebar,
     toggleRightSidebar,
     activeTabType,
+    resolveFocusedTab,
+    splitFocusedTile,
+    scrollFocusedTabPage,
+    writeToFocusedTerminal,
     customKeybindings,
   } = props
 
@@ -79,7 +85,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.toggleHiddenFiles', 'Toggle Hidden Files', () => toggleHiddenFiles(), 'Files')
   cmd('app.toggleFloatingTab', 'Toggle Floating Tab', toggleFloatingTab, 'Tab')
   cmd('app.closeActiveTab', 'Close Active Tab', () => {
-    const tab = tabStore.activeTab()
+    const tab = resolveFocusedTab()
     if (tab)
       tabOps.handleTabClose(tab)
   }, 'Tab')
@@ -91,8 +97,8 @@ export function useShortcuts(props: UseShortcutsProps): void {
       fn(id)
   }
 
-  cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => withFocusedTile(id => layoutStore.splitTileHorizontal(id)), 'Layout')
-  cmd('app.splitTileVertical', 'Split Tile Vertically', () => withFocusedTile(id => layoutStore.splitTileVertical(id)), 'Layout')
+  cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => withFocusedTile(() => splitFocusedTile('horizontal')), 'Layout')
+  cmd('app.splitTileVertical', 'Split Tile Vertically', () => withFocusedTile(() => splitFocusedTile('vertical')), 'Layout')
   cmd('app.openPreferences', 'Open Preferences', () => {
     setShowPreferencesDialog(true)
   }, 'App')
@@ -142,19 +148,17 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.nextTab', 'Next Tab', () => navigateTab(1), 'Tab')
   const scrollActiveTabPage = (direction: -1 | 1) => {
     const tabType = activeTabType()
-    if (tabType === TabType.AGENT)
-      scrollActiveChatPage(direction)
-    else if (tabType === TabType.TERMINAL)
-      scrollActiveTerminalPage(direction)
+    if (tabType === TabType.AGENT || tabType === TabType.TERMINAL)
+      scrollFocusedTabPage(direction)
   }
   cmd('app.scrollActiveTabPageUp', 'Scroll Active Tab Up One Page', () => scrollActiveTabPage(-1), 'View')
   cmd('app.scrollActiveTabPageDown', 'Scroll Active Tab Down One Page', () => scrollActiveTabPage(1), 'View')
 
   // Terminal cursor navigation
-  cmd('terminal.lineStart', 'Go to Line Start', () => writeToActiveTerminal('\x01'), 'Terminal')
-  cmd('terminal.lineEnd', 'Go to Line End', () => writeToActiveTerminal('\x05'), 'Terminal')
-  cmd('terminal.wordLeft', 'Go to Previous Word', () => writeToActiveTerminal('\x1Bb'), 'Terminal')
-  cmd('terminal.wordRight', 'Go to Next Word', () => writeToActiveTerminal('\x1Bf'), 'Terminal')
+  cmd('terminal.lineStart', 'Go to Line Start', () => writeToFocusedTerminal('\x01'), 'Terminal')
+  cmd('terminal.lineEnd', 'Go to Line End', () => writeToFocusedTerminal('\x05'), 'Terminal')
+  cmd('terminal.wordLeft', 'Go to Previous Word', () => writeToFocusedTerminal('\x1Bb'), 'Terminal')
+  cmd('terminal.wordRight', 'Go to Next Word', () => writeToFocusedTerminal('\x1Bf'), 'Terminal')
 
   setContext('platform', getPlatform())
   setContext('isDesktop', isTauriApp())

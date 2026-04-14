@@ -14,7 +14,6 @@ vi.mock('~/lib/terminal', async () => {
 })
 
 const { TerminalView } = await import('~/components/terminal/TerminalView')
-const { scrollActiveTerminalPage } = await import('~/components/terminal/TerminalView')
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -104,6 +103,7 @@ describe('terminalView', () => {
   it('scrolls the active terminal by one page', async () => {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)
+    let pageScroll!: (direction: -1 | 1) => void
 
     render(() => (
       <PreferencesProvider>
@@ -119,6 +119,7 @@ describe('terminalView', () => {
           onResize={vi.fn()}
           onTitleChange={vi.fn()}
           onBell={vi.fn()}
+          pageScrollRef={(fn) => { pageScroll = fn }}
         />
       </PreferencesProvider>
     ))
@@ -127,7 +128,7 @@ describe('terminalView', () => {
       expect(instance.terminal.open).toHaveBeenCalled()
     })
 
-    scrollActiveTerminalPage(-1)
+    pageScroll(-1)
     expect(instance.terminal.scrollPages).toHaveBeenCalledWith(-1)
   })
 })

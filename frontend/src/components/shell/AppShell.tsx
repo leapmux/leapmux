@@ -216,8 +216,8 @@ export const AppShell: ParentComponent = (props) => {
     settingsLoading,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     getWorkerId: () => {
-      // Derive workerId from active tab's agent/terminal store data.
-      const tab = tabStore.activeTab()
+      const tileId = layoutStore.focusedTileId()
+      const tab = tileId ? tabStore.getActiveTabForTile(tileId) : null
       if (!tab)
         return ''
       if (tab.type === TabType.AGENT) {
@@ -325,7 +325,10 @@ export const AppShell: ParentComponent = (props) => {
   )
 
   // Active tab derived state
-  const activeTab = createMemo(() => tabStore.activeTab())
+  const activeTab = createMemo(() => {
+    const tileId = layoutStore.focusedTileId()
+    return tileId ? tabStore.getActiveTabForTile(tileId) : null
+  })
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
   // Get worker, working directory, and home directory from the currently active tab
@@ -522,13 +525,19 @@ export const AppShell: ParentComponent = (props) => {
   // Tile drag-and-drop
   const tileDrag = useTileDragDrop({ tabStore, layoutStore, floatingWindowStore, persistLayout })
 
+  const focusTile = (tileId: string) => {
+    const windowId = floatingWindowStore.getWindowForTile(tileId)
+    if (windowId)
+      floatingWindowStore.setFocusedTile(windowId, tileId)
+    layoutStore.setFocusedTile(tileId)
+  }
+
   // --- Floating window tab movement operations ---
   const handleDetachTab = (tab: import('~/stores/tab.store').Tab) => {
     const sourceTileId = tab.tileId
     const { tileId } = floatingWindowStore.addWindow()
     tabStore.moveTabToTile(tabKey(tab), tileId)
     tabStore.setActiveTabForTile(tileId, tab.type, tab.id)
-    layoutStore.setFocusedTile(tileId)
     // Close the source tile if it's now empty and the main layout has multiple tiles
     if (sourceTileId && tabStore.getTabsForTile(sourceTileId).length === 0) {
       const mainTileIds = layoutStore.getAllTileIds()
@@ -536,6 +545,7 @@ export const AppShell: ParentComponent = (props) => {
         layoutStore.closeTile(sourceTileId)
       }
     }
+    focusTile(tileId)
     persistLayout()
   }
 
@@ -567,10 +577,7 @@ export const AppShell: ParentComponent = (props) => {
 
   const handleToggleFloatingTab = () => {
     const tileId = layoutStore.focusedTileId()
-    const activeKey = tabStore.getActiveTabKeyForTile(tileId)
-    const tab = activeKey
-      ? tabStore.getTabsForTile(tileId).find(t => tabKey(t) === activeKey)
-      : undefined
+    const tab = tileId ? tabStore.getActiveTabForTile(tileId) : null
     if (!tab)
       return
     if (floatingWindowStore.getWindowForTile(tileId))
@@ -598,6 +605,13 @@ export const AppShell: ParentComponent = (props) => {
       }
     }
     persistLayout()
+  }
+
+  const handleActivateFloatingWindow = (windowId: string) => {
+    floatingWindowStore.bringToFront(windowId)
+    const tileId = floatingWindowStore.getWindow(windowId)?.focusedTileId
+    if (tileId)
+      focusTile(tileId)
   }
 
   // Cross-workspace tab move handler (drag a tab to another workspace in the sidebar)
@@ -686,6 +700,8 @@ export const AppShell: ParentComponent = (props) => {
       const activeTileId = targetTileId
         ?? (!isSourceActive ? (layoutStore.focusedTileId() ?? tab.tileId) : tab.tileId)
       tabStore.addTab({ ...tab, tileId: activeTileId })
+      if (activeTileId)
+        focusTile(activeTileId)
     }
     else {
       // Get or create a snapshot for the target workspace.
@@ -1032,6 +1048,7 @@ export const AppShell: ParentComponent = (props) => {
     getScrollStateRef,
     forceScrollToBottomRef,
     gitFileStatusStore,
+    floatingWindowStore,
     isFloatingWindowTile: (tileId: string) => !!floatingWindowStore.getWindowForTile(tileId),
     onDetachTab: handleDetachTab,
     onAttachTab: handleAttachTab,
@@ -1059,6 +1076,10 @@ export const AppShell: ParentComponent = (props) => {
     },
     toggleRightSidebar: () => toggleRightSidebarRef.current?.(),
     activeTabType,
+    resolveFocusedTab: tileRenderer.resolveFocusedTab,
+    splitFocusedTile: tileRenderer.splitFocusedTile,
+    scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
+    writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
     customKeybindings: preferences.customKeybindings,
   })
 
@@ -1244,6 +1265,7 @@ export const AppShell: ParentComponent = (props) => {
                         persistLayout()
                       }}
                       onCloseWindow={handleCloseFloatingWindow}
+                      onActivateWindow={handleActivateFloatingWindow}
                       onGeometryChange={persistLayout}
                       onFileDrop={tileRenderer.handleFileDrop}
                       fileDropDisabled={tileRenderer.fileDropDisabled()}
