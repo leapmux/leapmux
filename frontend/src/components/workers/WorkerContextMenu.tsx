@@ -11,6 +11,7 @@ import { menuTrigger } from '~/components/tree/sidebarActions.css'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
+import * as styles from './workerContextMenu.css'
 
 interface WorkerContextMenuProps {
   workerInfo: WorkerInfo | null
@@ -76,7 +77,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
         {rows => (
           <button
             role="menuitem"
-            style={{ 'text-align': 'left', 'line-height': '1.35' }}
+            class={styles.infoButton}
             onClick={() => {
               const json = infoJson()
               if (json)
@@ -84,7 +85,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
               showInfoToast('Worker info copied to clipboard')
             }}
           >
-            <span style={{ 'display': 'grid', 'grid-template-columns': 'max-content 1fr', 'gap': '0 var(--space-2)', 'align-items': 'start' }}>
+            <span class={styles.infoGrid}>
               <For each={rows()}>
                 {row => (
                   <>

@@ -140,20 +140,15 @@ export function useShortcuts(props: UseShortcutsProps): void {
 
   cmd('app.previousTab', 'Previous Tab', () => navigateTab(-1), 'Tab')
   cmd('app.nextTab', 'Next Tab', () => navigateTab(1), 'Tab')
-  cmd('app.scrollActiveTabPageUp', 'Scroll Active Tab Up One Page', () => {
+  const scrollActiveTabPage = (direction: -1 | 1) => {
     const tabType = activeTabType()
     if (tabType === TabType.AGENT)
-      scrollActiveChatPage(-1)
+      scrollActiveChatPage(direction)
     else if (tabType === TabType.TERMINAL)
-      scrollActiveTerminalPage(-1)
-  }, 'View')
-  cmd('app.scrollActiveTabPageDown', 'Scroll Active Tab Down One Page', () => {
-    const tabType = activeTabType()
-    if (tabType === TabType.AGENT)
-      scrollActiveChatPage(1)
-    else if (tabType === TabType.TERMINAL)
-      scrollActiveTerminalPage(1)
-  }, 'View')
+      scrollActiveTerminalPage(direction)
+  }
+  cmd('app.scrollActiveTabPageUp', 'Scroll Active Tab Up One Page', () => scrollActiveTabPage(-1), 'View')
+  cmd('app.scrollActiveTabPageDown', 'Scroll Active Tab Down One Page', () => scrollActiveTabPage(1), 'View')
 
   // Terminal cursor navigation
   cmd('terminal.lineStart', 'Go to Line Start', () => writeToActiveTerminal('\x01'), 'Terminal')

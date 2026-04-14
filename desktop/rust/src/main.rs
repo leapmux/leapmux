@@ -398,9 +398,9 @@ fn try_connect_dev_sidecar(
 }
 
 #[cfg(unix)]
-fn connect_and_handshake_dev_sidecar(
+fn connect_sidecar_socket(
     socket_path: &Path,
-) -> Result<Option<(UnixStream, UnixStream, proto::SidecarInfo)>, String> {
+) -> Result<Option<(UnixStream, UnixStream)>, String> {
     let stream = match UnixStream::connect(socket_path) {
         Ok(stream) => stream,
         Err(err)
@@ -411,16 +411,28 @@ fn connect_and_handshake_dev_sidecar(
         }
         Err(err) => return Err(format!("connect desktop sidecar socket: {err}")),
     };
-    stream
-        .set_read_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
-        .map_err(|err| format!("set sidecar socket read timeout: {err}"))?;
-    stream
-        .set_write_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
-        .map_err(|err| format!("set sidecar socket write timeout: {err}"))?;
-    let mut reader = stream
+    let reader = stream
         .try_clone()
         .map_err(|err| format!("clone sidecar socket: {err}"))?;
     let mut writer = stream;
+    writer
+        .set_write_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
+        .map_err(|err| format!("set sidecar socket write timeout: {err}"))?;
+    let mut reader = reader;
+    reader
+        .set_read_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
+        .map_err(|err| format!("set sidecar socket read timeout: {err}"))?;
+    Ok(Some((reader, writer)))
+}
+
+#[cfg(unix)]
+fn connect_and_handshake_dev_sidecar(
+    socket_path: &Path,
+) -> Result<Option<(UnixStream, UnixStream, proto::SidecarInfo)>, String> {
+    let (mut reader, mut writer) = match connect_sidecar_socket(socket_path)? {
+        Some(pair) => pair,
+        None => return Ok(None),
+    };
     let info = fetch_sidecar_info(&mut reader, &mut writer)?;
     // The handshake timeouts guarded against a wedged sidecar replying
     // to GetSidecarInfo. The reader/writer are about to be handed to a
@@ -466,17 +478,7 @@ fn fetch_sidecar_info(
 
 #[cfg(unix)]
 fn request_sidecar_shutdown(socket_path: &Path, pid: u32) -> Result<(), String> {
-    if let Ok(stream) = UnixStream::connect(socket_path) {
-        let mut reader = stream
-            .try_clone()
-            .map_err(|err| format!("clone sidecar socket: {err}"))?;
-        let mut writer = stream;
-        writer
-            .set_write_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
-            .map_err(|err| format!("set sidecar socket write timeout: {err}"))?;
-        reader
-            .set_read_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
-            .map_err(|err| format!("set sidecar socket read timeout: {err}"))?;
+    if let Ok(Some((mut reader, mut writer))) = connect_sidecar_socket(socket_path) {
         let frame = proto::Frame {
             message: Some(proto::frame::Message::Request(proto::Request {
                 id: 1,

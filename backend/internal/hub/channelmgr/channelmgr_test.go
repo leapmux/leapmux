@@ -9,6 +9,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
+var noopSender = func(*leapmuxv1.ChannelMessage) error { return nil }
+
 func TestRegisterAndExists(t *testing.T) {
 	m := New()
 	assert.False(t, m.Exists("ch1"))
@@ -289,7 +291,6 @@ func TestUnregister_CloseNotification_NoConnID(t *testing.T) {
 
 func TestUnbindUserAndCleanup_RemovesBoundAndUnboundChannels(t *testing.T) {
 	m := New()
-	noopSender := func(*leapmuxv1.ChannelMessage) error { return nil }
 
 	m.BindUser("u1", "conn1", noopSender, nil)
 
@@ -324,7 +325,6 @@ func TestUnbindUserAndCleanup_RemovesBoundAndUnboundChannels(t *testing.T) {
 // channels that the NEW session is about to use.
 func TestUnbindUserAndCleanup_PreservesUnboundChannelsWhenAnotherConnExists(t *testing.T) {
 	m := New()
-	noopSender := func(*leapmuxv1.ChannelMessage) error { return nil }
 
 	m.BindUser("u1", "old", noopSender, nil)
 	m.BindUser("u1", "new", noopSender, nil)
@@ -354,7 +354,6 @@ func TestUnbindUserAndCleanup_UnknownConn(t *testing.T) {
 
 func TestUnbindUserAndCleanup_CallsConnCancel(t *testing.T) {
 	m := New()
-	noopSender := func(*leapmuxv1.ChannelMessage) error { return nil }
 
 	cancelled := false
 	m.BindUser("u1", "conn1", noopSender, func() { cancelled = true })
@@ -377,7 +376,6 @@ func TestUnbindUserAndCleanup_CallsConnCancel(t *testing.T) {
 // been registered yet, so the new channel always survives.
 func TestUnbindUserAndCleanup_RaceWithConcurrentBind(t *testing.T) {
 	const iterations = 5000
-	noopSender := func(*leapmuxv1.ChannelMessage) error { return nil }
 
 	for i := 0; i < iterations; i++ {
 		m := New()
