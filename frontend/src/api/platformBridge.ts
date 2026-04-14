@@ -346,16 +346,22 @@ export function openWebInspector(): void {
 }
 
 export async function windowMinimize(): Promise<void> {
+  if (!isTauriApp())
+    return
   const { getCurrentWindow } = await loadTauriWindow()
   await getCurrentWindow().minimize()
 }
 
 export async function windowClose(): Promise<void> {
+  if (!isTauriApp())
+    return
   const { getCurrentWindow } = await loadTauriWindow()
   await getCurrentWindow().close()
 }
 
 export async function windowToggleMaximize(): Promise<void> {
+  if (!isTauriApp())
+    return
   const { getCurrentWindow } = await loadTauriWindow()
   await getCurrentWindow().toggleMaximize()
 }

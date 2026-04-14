@@ -99,11 +99,6 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	slog.Info("channel relay connected", "user_id", user.ID, "conn_id", connID)
 	defer func() {
 		slog.Info("channel relay disconnected", "user_id", user.ID, "conn_id", connID)
-
-		// Atomically unbind and clean up channels affected by this disconnect.
-		// Doing it under a single lock prevents a race where a concurrent
-		// BindUser+Register from a freshly-loaded page (e.g. a dev refresh)
-		// would be wiped by a stale unbound-channel sweep.
 		closed := h.channelMgr.UnbindUserAndCleanup(user.ID, connID)
 
 		for _, cc := range closed {

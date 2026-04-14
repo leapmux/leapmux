@@ -1,6 +1,5 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
 import { node } from '../tree/sharedTree.css'
-import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
 
 export const treeWrapper = style({
   paddingBottom: 'var(--space-1)',
@@ -47,14 +46,6 @@ export const tabLabel = style({
 
 export const leafActions = style({
   minWidth: 0,
-})
-
-globalStyle(`${leafNode}:hover > ${sidebarActions}`, {
-  backgroundColor: 'inherit',
-})
-
-globalStyle(`${leafNode}:hover > ${sidebarActions} ${menuTrigger}`, {
-  opacity: 1,
 })
 
 export const groupLabel = style({

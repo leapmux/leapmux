@@ -98,10 +98,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     if (activeTab?.type === TabType.AGENT && activeTab.agentProvider && available.includes(activeTab.agentProvider))
       return activeTab.agentProvider
 
-    for (const provider of getMruProviders()) {
-      if (available.includes(provider))
-        return provider
-    }
+    const mru = getMruProviders().find(p => available.includes(p))
+    if (mru)
+      return mru
 
     return available[0] ?? null
   }
