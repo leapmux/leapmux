@@ -31,8 +31,18 @@ export interface Tab {
   gitDiffUntracked?: number
 }
 
+export interface TabItemOps {
+  onClose?: (tab: Tab) => void
+  onRename?: (tab: Tab, title: string) => void
+  closingKeys?: Set<string>
+}
+
 export function tabKey(tab: Tab): string {
   return `${tab.type}:${tab.id}`
+}
+
+export function canCloseTab(readOnly: boolean | undefined, tab: Tab): boolean {
+  return !readOnly || tab.type === TabType.FILE
 }
 
 export interface TabStoreState {
@@ -246,6 +256,14 @@ export function createTabStore() {
     /** Get the active tab key for a specific tile. */
     getActiveTabKeyForTile(tileId: string): string | null {
       return state.tileActiveTabKeys[tileId] ?? null
+    },
+
+    /** Get the active tab object for a specific tile. */
+    getActiveTabForTile(tileId: string): Tab | null {
+      const key = state.tileActiveTabKeys[tileId]
+      if (!key)
+        return null
+      return state.tabs.find(t => tabKey(t) === key) ?? null
     },
 
     /** Set the active tab for a specific tile. */

@@ -14,6 +14,7 @@ interface FloatingWindowLayerProps {
   renderTile: (tileId: string) => JSX.Element
   onRatioChange: (windowId: string, splitId: string, ratios: number[]) => void
   onCloseWindow: (windowId: string) => void
+  onActivateWindow?: (windowId: string) => void
   onGeometryChange?: () => void
   editorPanel?: (windowId: string) => JSX.Element | false
   onFileDrop?: (dataTransfer: DataTransfer, shiftKey: boolean) => void
@@ -50,6 +51,7 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
             title={getWindowTitle(win.id)}
             floatingWindowStore={props.floatingWindowStore}
             onClose={() => props.onCloseWindow(win.id)}
+            onActivate={() => props.onActivateWindow?.(win.id)}
             onGeometryChange={props.onGeometryChange}
           >
             <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>

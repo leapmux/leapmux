@@ -12,7 +12,7 @@ export const iconSize = {
   },
 }
 
-export const headerHeightPx = 36
+export const headerHeightPx = 34
 export const headerHeight = `${headerHeightPx}px`
 
 export const breakpoints = {

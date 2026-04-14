@@ -393,7 +393,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 	// Parse once: enrich with num_tool_uses and extract turn data
 	// from the same map to avoid a second json.Unmarshal.
-	var turnStatus, turnID, turnErrorMessage string
+	var turnStatus, turnID, turnErrorMessage, turnErrorInfo string
 	parsed := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(params, &parsed); err == nil {
 		if b, err := json.Marshal(numToolUses); err == nil {
@@ -404,13 +404,15 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				ID     string `json:"id"`
 				Status string `json:"status"`
 				Error  struct {
-					Message string `json:"message"`
+					Message        string `json:"message"`
+					CodexErrorInfo string `json:"codexErrorInfo"`
 				} `json:"error"`
 			}
 			if json.Unmarshal(turnRaw, &turn) == nil {
 				turnStatus = turn.Status
 				turnID = turn.ID
 				turnErrorMessage = turn.Error.Message
+				turnErrorInfo = turn.Error.CodexErrorInfo
 			}
 		}
 		if b, err := json.Marshal(parsed); err == nil {
@@ -428,16 +430,12 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.resetCollabReceivers()
 
 	if turnStatus != "" {
-		if turnStatus == "failed" {
-			if isRetryableCodexTurnFailure(turnErrorMessage) {
-				a.sink.ScheduleAutoContinue(AutoContinueSchedule{
-					Reason:        AutoContinueReasonAPIError,
-					DueAt:         time.Now().UTC(),
-					SourcePayload: append([]byte(nil), params...),
-				})
-			} else {
-				a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
-			}
+		if turnStatus == "failed" && (turnErrorInfo == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage)) {
+			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+				Reason:        AutoContinueReasonAPIError,
+				DueAt:         time.Now().UTC(),
+				SourcePayload: append([]byte(nil), params...),
+			})
 		} else {
 			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
 		}

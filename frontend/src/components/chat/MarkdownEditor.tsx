@@ -6,7 +6,7 @@ import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { createCodeBlockCommand, toggleInlineCodeCommand } from '@milkdown/preset-commonmark'
 import { TextSelection } from '@milkdown/prose/state'
 import { callCommand, replaceAll } from '@milkdown/utils'
-import { createEffect, createSignal, on, onCleanup, onMount } from 'solid-js'
+import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
@@ -92,6 +92,11 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   const [codeLangNodePos, setCodeLangNodePos] = createSignal(-1)
   const [codeLangAnchorEl, setCodeLangAnchorEl] = createSignal<HTMLElement | undefined>(undefined)
   const [codeLangFilter, setCodeLangFilter] = createSignal('')
+  // Mirror callback/flag props used from DOM-event handlers into plain refs so
+  // Solid does not create lazy prop computations outside a component root.
+  let onSendRef: MarkdownEditorProps['onSend'] = () => undefined
+  let allowEmptySendRef = false
+  let onContentChangeRef: MarkdownEditorProps['onContentChange']
 
   const toggleEnterMode = () => {
     const next = enterMode() === 'enter-sends' ? 'cmd-enter-sends' : 'enter-sends'
@@ -131,19 +136,19 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
     if (!text) {
       // Allow sending empty text only when explicitly enabled (e.g. Enter-to-approve for control requests).
-      if (props.allowEmptySend) {
-        props.onSend('')
+      if (allowEmptySendRef) {
+        onSendRef('')
       }
       focusEditor()
       return
     }
-    if (props.onSend(text) === false) {
+    if (onSendRef(text) === false) {
       focusEditor()
       return
     }
     editorInstance.action(replaceAll(''))
     setMarkdown('')
-    props.onContentChange?.(false)
+    onContentChangeRef?.(false)
     const key = getDraftKey()
     if (key) {
       clearDraft(key)
@@ -157,11 +162,15 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     enterModeRef = enterMode()
   })
   let disabledRef = false
-  // eslint-disable-next-line solid/reactivity -- initial value; tracked by createEffect below
-  let placeholderRef = props.placeholder ?? 'Send a message...'
+  let placeholderRef = 'Send a message...'
   let onTogglePlanModeRef: (() => void) | undefined
   createEffect(() => {
     onTogglePlanModeRef = props.onTogglePlanMode
+  })
+  createEffect(() => {
+    onSendRef = props.onSend
+    allowEmptySendRef = props.allowEmptySend ?? false
+    onContentChangeRef = props.onContentChange
   })
 
   // Force ProseMirror to re-render decorations when disabled or placeholder changes.
@@ -218,6 +227,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     if (!editorRef)
       return
 
+    const owner = getOwner()
     const initialDraftKey = getDraftKey()
     const initialDraft = initialDraftKey ? loadDraft(initialDraftKey) : { content: '', cursor: -1 }
 
@@ -286,10 +296,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         })
       })
       resizeObserver.observe(proseMirrorEl)
-      onCleanup(() => {
+      runWithOwner(owner, () => onCleanup(() => {
         cancelAnimationFrame(rafId)
         resizeObserver.disconnect()
-      })
+      }))
     }
     // Notify parent if we loaded a draft with content, and restore cursor position
     if (initialDraftKey && initialDraft.content) {
@@ -338,10 +348,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
     editorRef?.addEventListener('paste', handlePaste, true)
     editorRef?.addEventListener('drop', handleDrop, true)
-    onCleanup(() => {
+    runWithOwner(owner, () => onCleanup(() => {
       editorRef?.removeEventListener('paste', handlePaste, true)
       editorRef?.removeEventListener('drop', handleDrop, true)
-    })
+    }))
   })
 
   onCleanup(() => {

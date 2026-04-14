@@ -81,6 +81,22 @@ type VersionInfo struct {
 	BuildTime  string
 }
 
+func formatLocalTimestamp(iso string) string {
+	if iso == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return iso
+	}
+	local := t.Local()
+	zone, _ := local.Zone()
+	if zone == "" {
+		zone = local.Format("-07:00")
+	}
+	return local.Format("Mon, 1/2/2006, 3:04:05 PM") + " " + zone
+}
+
 // PrintBanner prints the LeapMux ASCII art logo with mode-specific
 // art appended to the right. Below the art it prints version info
 // and copyright. Colors are used only when stderr is a TTY.
@@ -123,10 +139,7 @@ func PrintBanner(mode string, vi VersionInfo) {
 		info += " (" + vi.CommitHash + ")"
 	}
 	if vi.BuildTime != "" {
-		display := vi.BuildTime
-		if t, err := time.Parse(time.RFC3339, vi.BuildTime); err == nil {
-			display = t.Local().Format("Mon, 1/2/2006, 3:04:05 PM")
-		}
+		display := formatLocalTimestamp(vi.BuildTime)
 		info += " \u00b7 " + display
 	}
 

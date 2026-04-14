@@ -317,9 +317,42 @@ export function installMenuBarToggle(): void {
   })
 }
 
-export function quitApp(): void {
-  tauriInvoke('quit_app').catch(() => {})
+function tauriFireAndForget(cmd: string): void {
+  if (!isTauriApp())
+    return
+  tauriInvoke(cmd).catch(() => {})
 }
+
+export function quitApp(): void {
+  tauriFireAndForget('quit_app')
+}
+
+export function zoomInWebview(): void {
+  tauriFireAndForget('zoom_in_webview')
+}
+
+export function zoomOutWebview(): void {
+  tauriFireAndForget('zoom_out_webview')
+}
+
+export function resetWebviewZoom(): void {
+  tauriFireAndForget('reset_webview_zoom')
+}
+
+export function openWebInspector(): void {
+  tauriFireAndForget('open_web_inspector')
+}
+
+async function tauriWindowOp(fn: (win: import('@tauri-apps/api/window').Window) => Promise<void>): Promise<void> {
+  if (!isTauriApp())
+    return
+  const { getCurrentWindow } = await loadTauriWindow()
+  await fn(getCurrentWindow())
+}
+
+export const windowMinimize = () => tauriWindowOp(w => w.minimize())
+export const windowClose = () => tauriWindowOp(w => w.close())
+export const windowToggleMaximize = () => tauriWindowOp(w => w.toggleMaximize())
 
 export const platformBridge = {
   getCapabilities,

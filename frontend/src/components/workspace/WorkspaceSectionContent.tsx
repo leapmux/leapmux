@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
-import type { Tab, TabType } from '~/stores/tab.store'
+import type { Tab, TabItemOps, TabType } from '~/stores/tab.store'
 
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -49,7 +49,7 @@ export interface WorkspaceSectionContentProps {
   getTabsForWorkspace: (workspaceId: string) => Tab[]
   getActiveTabKeyForWorkspace: (workspaceId: string) => string | null
   onTabClick: (type: TabType, id: string) => void
-  onTabRename?: (tab: Tab, title: string) => void
+  tabItemOps?: TabItemOps
   readOnly?: boolean
   onExpandWorkspace?: (workspaceId: string) => void
 }
@@ -321,7 +321,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                             props.onTabClick(type, tabId)
                           }
                         }}
-                        onTabRename={props.onTabRename}
+                        tabItemOps={props.tabItemOps}
                         readOnly={props.readOnly}
                         workspaceId={id}
                       />

@@ -32,6 +32,8 @@ const KEY_DISPLAY_NAMES: Record<string, string> = {
   'ArrowLeft': '\u2190',
   'ArrowRight': '\u2192',
   'Tab': 'Tab',
+  'PageUp': 'PageUp',
+  'PageDown': 'PageDown',
   ' ': 'Space',
   'Comma': ',',
   'Period': '.',
@@ -39,6 +41,9 @@ const KEY_DISPLAY_NAMES: Record<string, string> = {
   'Backslash': '\\',
   'BracketLeft': '[',
   'BracketRight': ']',
+  'NumpadAdd': 'Num+',
+  'NumpadSubtract': 'Num-',
+  'Numpad0': 'Num0',
 }
 
 /** Mac modifier display order: ⌃ ⌥ ⇧ ⌘ (Apple HIG standard). */
@@ -93,4 +98,9 @@ export function shortcutHint(text: string, commandId: string): string {
   if (!key)
     return text
   return `${text} (${formatShortcut(key)})`
+}
+
+export function getShortcutHint(commandId: string): string | undefined {
+  const key = getBindingForCommand(commandId)
+  return key ? formatShortcut(key) : undefined
 }

@@ -42,6 +42,7 @@ function makeMockTerminalInstance(): TerminalInstance {
       cb?.()
     }),
     focus: vi.fn(),
+    scrollPages: vi.fn(),
     options: {},
     buffer: {
       active: {
@@ -97,5 +98,37 @@ describe('terminalView', () => {
     })
 
     expect(onBell).not.toHaveBeenCalled()
+  })
+
+  it('scrolls the active terminal by one page', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    let pageScroll!: (direction: -1 | 1) => void
+
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{
+            id: 'term-1',
+            workspaceId: 'ws-1',
+            screen: new Uint8Array(),
+          }]}
+          activeTerminalId="term-1"
+          visible
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          pageScrollRef={(fn) => { pageScroll = fn }}
+        />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => {
+      expect(instance.terminal.open).toHaveBeenCalled()
+    })
+
+    pageScroll(-1)
+    expect(instance.terminal.scrollPages).toHaveBeenCalledWith(-1)
   })
 })

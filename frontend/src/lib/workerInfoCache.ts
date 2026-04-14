@@ -11,6 +11,8 @@ export interface WorkerInfo {
   arch: string
   homeDir: string
   version: string
+  commitHash: string
+  buildTime: string
   updatedAt: number // Date.now()
 }
 

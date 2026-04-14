@@ -9,7 +9,7 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore, TabItemOps } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
@@ -22,6 +22,7 @@ import { WorkerSectionContent } from '~/components/workers/WorkerSectionContent'
 import { emptySection as emptySectionStyle } from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
+import { shortcutHint } from '~/lib/shortcuts/display'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
 
@@ -43,7 +44,7 @@ export interface SectionDefContext {
   tabStore?: ReturnType<typeof createTabStore>
   registry?: WorkspaceStoreRegistryType
   onTabClick?: (type: number, id: string) => void
-  onTabRename?: (tab: Tab, title: string) => void
+  tabItemOps?: TabItemOps
   onExpandWorkspace?: (workspaceId: string) => void
 
   // Files section
@@ -106,7 +107,7 @@ export function buildSectionDef(
               icon={Plus}
               iconSize="sm"
               size="md"
-              title={`New workspace in ${section.name}`}
+              title={shortcutHint(`New workspace in ${section.name}`, 'app.newWorkspaceDialog')}
               data-testid={sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
               onClick={(e) => {
                 e.stopPropagation()
@@ -150,7 +151,7 @@ export function buildSectionDef(
             return snap?.tabs.activeTabKey ?? null
           }}
           onTabClick={ctx.onTabClick ?? (() => {})}
-          onTabRename={ctx.onTabRename}
+          tabItemOps={ctx.tabItemOps}
           onExpandWorkspace={ctx.onExpandWorkspace}
         />
       ),

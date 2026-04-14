@@ -20,6 +20,10 @@ describe('formatShortcut', () => {
       expect(formatShortcut('Alt+n', 'mac')).toBe('\u2325N')
     })
 
+    it('orders Alt before Cmd in combined shortcuts', () => {
+      expect(formatShortcut('$mod+Alt+n', 'mac')).toBe('\u2325\u2318N')
+    })
+
     it('formats Escape', () => {
       expect(formatShortcut('Escape', 'mac')).toBe('Esc')
     })
@@ -33,6 +37,14 @@ describe('formatShortcut', () => {
       expect(formatShortcut('$mod+Backslash', 'mac')).toBe('\u2318\\')
       expect(formatShortcut('$mod+BracketLeft', 'mac')).toBe('\u2318[')
       expect(formatShortcut('$mod+BracketRight', 'mac')).toBe('\u2318]')
+      expect(formatShortcut('$mod+PageUp', 'mac')).toBe('\u2318PageUp')
+      expect(formatShortcut('Alt+PageDown', 'mac')).toBe('\u2325PageDown')
+    })
+
+    it('formats keypad keys', () => {
+      expect(formatShortcut('$mod+NumpadAdd', 'mac')).toBe('\u2318Num+')
+      expect(formatShortcut('$mod+NumpadSubtract', 'mac')).toBe('\u2318Num-')
+      expect(formatShortcut('$mod+Numpad0', 'mac')).toBe('\u2318Num0')
     })
 
     it('formats number keys', () => {
@@ -69,6 +81,17 @@ describe('formatShortcut', () => {
 
     it('formats Control+q', () => {
       expect(formatShortcut('Control+q', 'linux')).toBe('Ctrl+Q')
+    })
+
+    it('formats page navigation keys', () => {
+      expect(formatShortcut('$mod+PageUp', 'linux')).toBe('Ctrl+PageUp')
+      expect(formatShortcut('Alt+PageDown', 'linux')).toBe('Alt+PageDown')
+    })
+
+    it('formats keypad keys', () => {
+      expect(formatShortcut('$mod+NumpadAdd', 'linux')).toBe('Ctrl+Num+')
+      expect(formatShortcut('$mod+NumpadSubtract', 'linux')).toBe('Ctrl+Num-')
+      expect(formatShortcut('$mod+Numpad0', 'linux')).toBe('Ctrl+Num0')
     })
   })
 

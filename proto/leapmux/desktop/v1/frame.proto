@@ -20,6 +20,7 @@ message Request {
     SetWindowSizeRequest set_window_size = 11;
     GetBuildInfoRequest get_build_info = 12;
     CheckFullDiskAccessRequest check_full_disk_access = 13;
+    GetSidecarInfoRequest get_sidecar_info = 28;
     GetStartupInfoRequest get_startup_info = 27;
     OpenFullDiskAccessSettingsRequest open_full_disk_access_settings = 14;
     ConnectSoloRequest connect_solo = 15;
@@ -33,6 +34,7 @@ message Request {
     CreateTunnelRequest create_tunnel = 24;
     DeleteTunnelRequest delete_tunnel = 25;
     ListTunnelsRequest list_tunnels = 26;
+    ShutdownRequest shutdown = 29;
   }
 }
 
@@ -41,12 +43,14 @@ message GetConfigRequest {}
 message GetBuildInfoRequest {}
 message GetStartupInfoRequest {}
 message CheckFullDiskAccessRequest {}
+message GetSidecarInfoRequest {}
 message OpenFullDiskAccessSettingsRequest {}
 message ConnectSoloRequest {}
 message OpenChannelRelayRequest {}
 message CloseChannelRelayRequest {}
 message SwitchModeRequest {}
 message ListTunnelsRequest {}
+message ShutdownRequest {}
 
 // Parameterized requests
 message SetWindowSizeRequest {
@@ -94,6 +98,7 @@ message Response {
     CreateTunnelResponse create_tunnel = 17;
     ListTunnelsResponse list_tunnels = 18;
     StartupInfo startup_info = 19;
+    SidecarInfo sidecar_info = 20;
   }
 }
 
@@ -122,6 +127,22 @@ message ListTunnelsResponse {
 message StartupInfo {
   DesktopConfig config = 1;
   BuildInfo build_info = 2;
+}
+
+enum SidecarShellMode {
+  SIDECAR_SHELL_MODE_UNSPECIFIED = 0;
+  SIDECAR_SHELL_MODE_LAUNCHER = 1;
+  SIDECAR_SHELL_MODE_SOLO = 2;
+  SIDECAR_SHELL_MODE_DISTRIBUTED = 3;
+}
+
+message SidecarInfo {
+  string protocol_version = 1;
+  string binary_hash = 2;
+  int64 pid = 3;
+  SidecarShellMode shell_mode = 4;
+  bool connected = 5;
+  string hub_url = 6;
 }
 
 // --- Events (Go → Rust) ---

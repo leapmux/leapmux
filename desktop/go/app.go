@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/solo"
@@ -18,23 +19,28 @@ import (
 type App struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
+	shutdownOnce   sync.Once
 	config         *DesktopConfig
 	solo           *solo.Instance
 	tunnels        *TunnelManager
 	proxy          *HubProxy
 	relay          *ChannelRelay
 	hubURL         string
-	emitEvent      func(*desktoppb.Event)
+	binaryHash     string
+	eventSinkMu    sync.RWMutex
+	eventSink      func(*desktoppb.Event)
 	prevLogHandler slog.Handler
 }
 
-func NewApp(emitEvent func(*desktoppb.Event)) *App {
+const protocolVersion = "1"
+
+func NewApp(binaryHash string) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
-		ctx:       ctx,
-		cancel:    cancel,
-		tunnels:   NewTunnelManager(),
-		emitEvent: emitEvent,
+		ctx:        ctx,
+		cancel:     cancel,
+		tunnels:    NewTunnelManager(),
+		binaryHash: binaryHash,
 	}
 	app.startup()
 	return app
@@ -48,11 +54,50 @@ func (a *App) startup() {
 	a.config = cfg
 }
 
-func (a *App) shutdown() {
-	a.closeChannelRelay()
-	a.tunnels.CloseAll()
-	a.stopSolo()
-	a.cancel()
+func (a *App) Shutdown() {
+	a.shutdownOnce.Do(func() {
+		a.closeChannelRelay()
+		a.tunnels.CloseAll()
+		a.stopSolo()
+		a.cancel()
+	})
+}
+
+func (a *App) SetEventSink(sink func(*desktoppb.Event)) {
+	a.eventSinkMu.Lock()
+	defer a.eventSinkMu.Unlock()
+	a.eventSink = sink
+}
+
+func (a *App) EmitEvent(event *desktoppb.Event) {
+	a.eventSinkMu.RLock()
+	sink := a.eventSink
+	a.eventSinkMu.RUnlock()
+	if sink != nil {
+		sink(event)
+	}
+}
+
+func (a *App) SidecarInfo() *desktoppb.SidecarInfo {
+	mode := desktoppb.SidecarShellMode_SIDECAR_SHELL_MODE_LAUNCHER
+	connected := a.proxy != nil
+	if connected {
+		switch a.config.Mode {
+		case "distributed":
+			mode = desktoppb.SidecarShellMode_SIDECAR_SHELL_MODE_DISTRIBUTED
+		default:
+			mode = desktoppb.SidecarShellMode_SIDECAR_SHELL_MODE_SOLO
+		}
+	}
+
+	return &desktoppb.SidecarInfo{
+		ProtocolVersion: protocolVersion,
+		BinaryHash:      a.binaryHash,
+		Pid:             int64(os.Getpid()),
+		ShellMode:       mode,
+		Connected:       connected,
+		HubUrl:          a.hubURL,
+	}
 }
 
 func (a *App) GetConfig() *DesktopConfig {

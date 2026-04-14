@@ -5,7 +5,13 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   { key: '$mod+n', command: 'app.newAgent', when: '!dialogOpen' },
   { key: '$mod+t', command: 'app.newTerminal', when: '!dialogOpen' },
   { key: '$mod+w', command: 'app.closeActiveTab', when: '!dialogOpen' },
-  { key: '$mod+Shift+n', command: 'app.newWorkspace', when: '!dialogOpen' },
+  { key: '$mod+Shift+n', command: 'app.newAgentDialog', when: '!dialogOpen' },
+  { key: '$mod+Shift+t', command: 'app.newTerminalDialog', when: '!dialogOpen' },
+  { key: '$mod+Alt+n', command: 'app.newWorkspaceDialog', when: '!dialogOpen' },
+  { key: '$mod+Shift+o', command: 'app.toggleFloatingTab', when: '!dialogOpen' },
+  { key: '$mod+r', command: 'app.refreshDirectoryTree' },
+  { key: 'F5', command: 'app.refreshDirectoryTree' },
+  { key: '$mod+Shift+h', command: 'app.toggleHiddenFiles' },
 
   // Tab switching by index
   { key: '$mod+1', command: 'app.switchToTab1' },
@@ -21,6 +27,12 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   // Tab navigation
   { key: '$mod+BracketLeft', command: 'app.previousTab' },
   { key: '$mod+BracketRight', command: 'app.nextTab' },
+  { key: '$mod+PageUp', command: 'app.previousTab' },
+  { key: '$mod+PageDown', command: 'app.nextTab' },
+
+  // Page scrolling
+  { key: 'Alt+PageUp', command: 'app.scrollActiveTabPageUp', when: '!dialogOpen' },
+  { key: 'Alt+PageDown', command: 'app.scrollActiveTabPageDown', when: '!dialogOpen' },
 
   // Layout
   { key: '$mod+Backslash', command: 'app.splitTileHorizontal' },
@@ -30,6 +42,13 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
 
   // Preferences
   { key: '$mod+Comma', command: 'app.openPreferences' },
+  { key: '$mod+Alt+i', command: 'app.openWebInspector', when: 'isDesktop' },
+  { key: '$mod+-', command: 'app.zoomOutWebview', when: 'isDesktop' },
+  { key: '$mod+NumpadSubtract', command: 'app.zoomOutWebview', when: 'isDesktop' },
+  { key: '$mod+=', command: 'app.zoomInWebview', when: 'isDesktop' },
+  { key: '$mod+NumpadAdd', command: 'app.zoomInWebview', when: 'isDesktop' },
+  { key: '$mod+0', command: 'app.resetWebviewZoom', when: 'isDesktop' },
+  { key: '$mod+Numpad0', command: 'app.resetWebviewZoom', when: 'isDesktop' },
 
   // Dialog close
   { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },

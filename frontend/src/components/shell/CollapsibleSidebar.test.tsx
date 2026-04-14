@@ -236,7 +236,5 @@ describe('collapsibleSidebar', () => {
 
     // Sidebar inner container should be hidden (content stays mounted)
     expect(screen.getByTestId('sidebar-left')).toHaveStyle({ display: 'none' })
-    // Expand button should be visible
-    expect(screen.getByRole('button', { name: 'Expand left sidebar' })).toBeInTheDocument()
   })
 })

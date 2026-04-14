@@ -5,9 +5,10 @@ import PictureInPicture2 from 'lucide-solid/icons/picture-in-picture-2'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import X from 'lucide-solid/icons/x'
 import { Show } from 'solid-js'
-import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { DropdownMenu, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { useTileSize } from '~/hooks/useTileSize'
+import { getShortcutHint, shortcutHint } from '~/lib/shortcuts/display'
 import * as styles from './Tile.css'
 
 interface TileProps {
@@ -22,6 +23,7 @@ interface TileProps {
   onSplitVertical: () => void
   onClose: () => void
   onPopOut?: () => void
+  onPopIn?: () => void
 }
 
 export const Tile: Component<TileProps> = (props) => {
@@ -45,17 +47,25 @@ export const Tile: Component<TileProps> = (props) => {
           {props.tabBar}
         </div>
         <div class={styles.splitActions}>
-          <Show when={props.onPopOut}>
-            <IconButton
-              icon={PictureInPicture2}
-              size="md"
-              onClick={(e) => {
-                e.stopPropagation()
-                props.onPopOut!()
-              }}
-              data-testid="pop-out-button"
-              title="Pop out to floating window"
-            />
+          <Show when={props.onPopOut ?? props.onPopIn}>
+            {(handler) => {
+              const isPopOut = () => !!props.onPopOut
+              return (
+                <IconButton
+                  icon={PictureInPicture2}
+                  size="md"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handler()()
+                  }}
+                  data-testid={isPopOut() ? 'pop-out-button' : 'pop-in-button'}
+                  title={shortcutHint(
+                    isPopOut() ? 'Pop out to floating window' : 'Pop in to main window',
+                    'app.toggleFloatingTab',
+                  )}
+                />
+              )
+            }}
           </Show>
           <Show when={props.canSplit}>
             <IconButton
@@ -66,7 +76,7 @@ export const Tile: Component<TileProps> = (props) => {
                 props.onSplitHorizontal()
               }}
               data-testid="split-horizontal"
-              title="Split vertical"
+              title={shortcutHint('Split vertical', 'app.splitTileHorizontal')}
             />
             <IconButton
               icon={Rows2}
@@ -76,7 +86,7 @@ export const Tile: Component<TileProps> = (props) => {
                 props.onSplitVertical()
               }}
               data-testid="split-vertical"
-              title="Split horizontal"
+              title={shortcutHint('Split horizontal', 'app.splitTileVertical')}
             />
           </Show>
           <Show when={props.canClose}>
@@ -110,26 +120,37 @@ export const Tile: Component<TileProps> = (props) => {
             />
           )}
         >
-          <Show when={props.onPopOut}>
-            <button
-              role="menuitem"
-              onClick={() => props.onPopOut!()}
-            >
-              Pop out to floating window
-            </button>
+          <Show when={props.onPopOut ?? props.onPopIn}>
+            {handler => (
+              <button
+                role="menuitem"
+                onClick={() => handler()()}
+              >
+                <DropdownMenuItemContent
+                  label={props.onPopOut ? 'Pop out to floating window' : 'Pop in to main window'}
+                  shortcut={getShortcutHint('app.toggleFloatingTab')}
+                />
+              </button>
+            )}
           </Show>
           <Show when={props.canSplit}>
             <button
               role="menuitem"
               onClick={() => props.onSplitHorizontal()}
             >
-              Split vertical
+              <DropdownMenuItemContent
+                label="Split vertical"
+                shortcut={getShortcutHint('app.splitTileHorizontal')}
+              />
             </button>
             <button
               role="menuitem"
               onClick={() => props.onSplitVertical()}
             >
-              Split horizontal
+              <DropdownMenuItemContent
+                label="Split horizontal"
+                shortcut={getShortcutHint('app.splitTileVertical')}
+              />
             </button>
           </Show>
           <Show when={props.canClose}>

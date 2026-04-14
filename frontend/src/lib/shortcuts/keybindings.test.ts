@@ -181,4 +181,28 @@ describe('resolve', () => {
     ]
     expect(resolve(bindings, '$mod+b')).toBe('app.toggleLeftSidebar')
   })
+
+  it('suppresses plain non-modifier keys when input is focused', () => {
+    const bindings: Keybinding[] = [
+      { key: 'x', command: 'app.example' },
+    ]
+    setContext('inputFocused', true)
+    expect(resolve(bindings, 'x')).toBeNull()
+  })
+
+  it('allows plain function keys when input is focused', () => {
+    const bindings: Keybinding[] = [
+      { key: 'F5', command: 'app.refreshDirectoryTree' },
+    ]
+    setContext('inputFocused', true)
+    expect(resolve(bindings, 'F5')).toBe('app.refreshDirectoryTree')
+  })
+
+  it('still suppresses other plain special keys when input is focused', () => {
+    const bindings: Keybinding[] = [
+      { key: 'Escape', command: 'app.example' },
+    ]
+    setContext('inputFocused', true)
+    expect(resolve(bindings, 'Escape')).toBeNull()
+  })
 })

@@ -94,11 +94,19 @@ export function groupBindings(bindings: readonly Keybinding[]): BindingGroup[] {
 }
 
 const MODIFIER_RE = /\$mod|Control|Alt|Meta|Shift/
+const FUNCTION_KEY_RE = /^F(?:[1-9]|1[0-2])$/
 
 /** Check if a key string contains modifier keys. */
 function hasModifier(key: string): boolean {
   const first = key.split(' ')[0]
   return MODIFIER_RE.test(first)
+}
+
+/** Check if a key string is a plain function key like F5 or F12. */
+function isPlainFunctionKey(key: string): boolean {
+  const firstChord = key.split(' ')[0]
+  const parts = firstChord.split('+')
+  return parts.length === 1 && FUNCTION_KEY_RE.test(parts[0])
 }
 
 /**
@@ -108,11 +116,12 @@ function hasModifier(key: string): boolean {
 export function resolve(bindings: readonly Keybinding[], key: string): string | null {
   const inputFocused = !!getContext('inputFocused')
   const modifier = hasModifier(key)
+  const dedicated = isPlainFunctionKey(key)
 
   for (const binding of bindings) {
     // Non-modifier shortcuts are suppressed when input is focused,
     // unless the when-clause explicitly references inputFocused.
-    if (!modifier && inputFocused && !whenReferencesKey(binding.when, 'inputFocused'))
+    if (!modifier && !dedicated && inputFocused && !whenReferencesKey(binding.when, 'inputFocused'))
       continue
 
     if (evaluateWhen(binding.when))

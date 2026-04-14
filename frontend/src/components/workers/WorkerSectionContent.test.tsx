@@ -35,6 +35,8 @@ const defaultWorkerInfo: WorkerInfo = {
   arch: 'amd64',
   homeDir: '/home/test',
   version: '1.0.0',
+  commitHash: '',
+  buildTime: '',
   updatedAt: Date.now(),
 }
 
@@ -114,7 +116,7 @@ describe('workerSectionContent', () => {
 
   it('renders worker name from workerInfo', () => {
     renderSection()
-    expect(screen.getByText('test-worker')).toBeInTheDocument()
+    expect(screen.getAllByText('test-worker').length).toBeGreaterThanOrEqual(1)
   })
 
   it('shows dash when workerInfo is null', () => {

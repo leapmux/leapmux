@@ -50,6 +50,8 @@ export function createWorkerInfoStore() {
           arch: resp.arch,
           homeDir: resp.homeDir,
           version: resp.version,
+          commitHash: resp.commitHash,
+          buildTime: resp.buildTime,
           updatedAt: Date.now(),
         }
         setWorkerInfo(workerId, info)

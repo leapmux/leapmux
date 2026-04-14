@@ -1,13 +1,15 @@
 import type { Accessor } from 'solid-js'
+import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
+import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore } from '~/stores/tab.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
-import { isTauriApp, quitApp } from '~/api/platformBridge'
+import { isTauriApp, openWebInspector, quitApp, resetWebviewZoom, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenu'
-import { writeToActiveTerminal } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/shortcuts/context'
 import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
@@ -19,13 +21,20 @@ interface UseShortcutsProps {
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   tabOps: ReturnType<typeof useTabOperations>
+  agentOps: ReturnType<typeof useAgentOperations>
+  termOps: ReturnType<typeof useTerminalOperations>
 
   setShowNewAgentDialog: (v: boolean) => void
   setShowNewTerminalDialog: (v: boolean) => void
   setShowNewWorkspace: (v: boolean) => void
+  toggleFloatingTab: () => void
   toggleLeftSidebar: () => void
   toggleRightSidebar: () => void
   activeTabType: Accessor<TabType | null>
+  resolveFocusedTab: () => Tab | null
+  splitFocusedTile: (direction: 'horizontal' | 'vertical') => void
+  scrollFocusedTabPage: (direction: -1 | 1) => void
+  writeToFocusedTerminal: (data: string) => void
   customKeybindings: Accessor<UserKeybindingOverride[]>
 }
 
@@ -45,12 +54,19 @@ export function useShortcuts(props: UseShortcutsProps): void {
     tabStore,
     layoutStore,
     tabOps,
+    agentOps,
+    termOps,
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
     setShowNewWorkspace,
+    toggleFloatingTab,
     toggleLeftSidebar,
     toggleRightSidebar,
     activeTabType,
+    resolveFocusedTab,
+    splitFocusedTile,
+    scrollFocusedTabPage,
+    writeToFocusedTerminal,
     customKeybindings,
   } = props
 
@@ -60,11 +76,16 @@ export function useShortcuts(props: UseShortcutsProps): void {
     cleanups.push(registerCommand({ id, title, handler, category }))
   }
 
-  cmd('app.newAgent', 'New Agent', () => setShowNewAgentDialog(true), 'App')
-  cmd('app.newTerminal', 'New Terminal', () => setShowNewTerminalDialog(true), 'App')
-  cmd('app.newWorkspace', 'New Workspace', () => setShowNewWorkspace(true), 'App')
+  cmd('app.newAgent', 'New Agent', () => agentOps.handleOpenAgent(), 'App')
+  cmd('app.newTerminal', 'New Terminal', () => termOps.handleOpenTerminal(), 'App')
+  cmd('app.newAgentDialog', 'New Agent Dialog', () => setShowNewAgentDialog(true), 'App')
+  cmd('app.newTerminalDialog', 'New Terminal Dialog', () => setShowNewTerminalDialog(true), 'App')
+  cmd('app.newWorkspaceDialog', 'New Workspace Dialog', () => setShowNewWorkspace(true), 'App')
+  cmd('app.refreshDirectoryTree', 'Refresh Directory Tree', () => refreshFileTree(), 'Files')
+  cmd('app.toggleHiddenFiles', 'Toggle Hidden Files', () => toggleHiddenFiles(), 'Files')
+  cmd('app.toggleFloatingTab', 'Toggle Floating Tab', toggleFloatingTab, 'Tab')
   cmd('app.closeActiveTab', 'Close Active Tab', () => {
-    const tab = tabStore.activeTab()
+    const tab = resolveFocusedTab()
     if (tab)
       tabOps.handleTabClose(tab)
   }, 'Tab')
@@ -76,11 +97,15 @@ export function useShortcuts(props: UseShortcutsProps): void {
       fn(id)
   }
 
-  cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => withFocusedTile(id => layoutStore.splitTileHorizontal(id)), 'Layout')
-  cmd('app.splitTileVertical', 'Split Tile Vertically', () => withFocusedTile(id => layoutStore.splitTileVertical(id)), 'Layout')
+  cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => withFocusedTile(() => splitFocusedTile('horizontal')), 'Layout')
+  cmd('app.splitTileVertical', 'Split Tile Vertically', () => withFocusedTile(() => splitFocusedTile('vertical')), 'Layout')
   cmd('app.openPreferences', 'Open Preferences', () => {
     setShowPreferencesDialog(true)
   }, 'App')
+  cmd('app.openWebInspector', 'Open Web Inspector', () => openWebInspector(), 'App')
+  cmd('app.zoomOutWebview', 'Zoom Out', () => zoomOutWebview(), 'View')
+  cmd('app.zoomInWebview', 'Zoom In', () => zoomInWebview(), 'View')
+  cmd('app.resetWebviewZoom', 'Actual Size', () => resetWebviewZoom(), 'View')
   cmd('dialog.close', 'Close Dialog', () => {
     // Close the topmost open dialog
     const dialogs = [...document.querySelectorAll('dialog[open]')]
@@ -121,12 +146,19 @@ export function useShortcuts(props: UseShortcutsProps): void {
 
   cmd('app.previousTab', 'Previous Tab', () => navigateTab(-1), 'Tab')
   cmd('app.nextTab', 'Next Tab', () => navigateTab(1), 'Tab')
+  const scrollActiveTabPage = (direction: -1 | 1) => {
+    const tabType = activeTabType()
+    if (tabType === TabType.AGENT || tabType === TabType.TERMINAL)
+      scrollFocusedTabPage(direction)
+  }
+  cmd('app.scrollActiveTabPageUp', 'Scroll Active Tab Up One Page', () => scrollActiveTabPage(-1), 'View')
+  cmd('app.scrollActiveTabPageDown', 'Scroll Active Tab Down One Page', () => scrollActiveTabPage(1), 'View')
 
   // Terminal cursor navigation
-  cmd('terminal.lineStart', 'Go to Line Start', () => writeToActiveTerminal('\x01'), 'Terminal')
-  cmd('terminal.lineEnd', 'Go to Line End', () => writeToActiveTerminal('\x05'), 'Terminal')
-  cmd('terminal.wordLeft', 'Go to Previous Word', () => writeToActiveTerminal('\x1Bb'), 'Terminal')
-  cmd('terminal.wordRight', 'Go to Next Word', () => writeToActiveTerminal('\x1Bf'), 'Terminal')
+  cmd('terminal.lineStart', 'Go to Line Start', () => writeToFocusedTerminal('\x01'), 'Terminal')
+  cmd('terminal.lineEnd', 'Go to Line End', () => writeToFocusedTerminal('\x05'), 'Terminal')
+  cmd('terminal.wordLeft', 'Go to Previous Word', () => writeToFocusedTerminal('\x1Bb'), 'Terminal')
+  cmd('terminal.wordRight', 'Go to Next Word', () => writeToFocusedTerminal('\x1Bf'), 'Terminal')
 
   setContext('platform', getPlatform())
   setContext('isDesktop', isTauriApp())

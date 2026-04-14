@@ -17,53 +17,33 @@ interface TerminalViewProps {
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
   onBell: (id: string) => void
+  pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
+  writeRef?: (fn: (data: string) => void) => void
 }
 
 const instances = new Map<string, TerminalInstance>()
+let lastActiveTerminalId: string | null = null
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
 }
 
-/** Send raw input to the currently active (visible) terminal's PTY. */
-export function writeToActiveTerminal(data: string): void {
-  const encoded = new TextEncoder().encode(data)
-  for (const [id, instance] of instances) {
-    const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
-    if (container && container.style.display !== 'none' && instance.sendInput) {
-      instance.sendInput(encoded)
-      return
-    }
-  }
-}
-
-// Expose terminal text reader for E2E tests (WebGL renderer makes DOM rows empty)
 if (typeof window !== 'undefined') {
   (window as any).__getActiveTerminalText = () => {
-    for (const [id, instance] of instances) {
-      const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
-      if (container && container.style.display !== 'none') {
-        const buffer = instance.terminal.buffer.active
-        let text = ''
-        for (let i = 0; i < buffer.length; i++) {
-          const line = buffer.getLine(i)
-          if (line) {
-            text += line.translateToString(true)
-          }
-        }
-        return text
-      }
+    const instance = lastActiveTerminalId ? instances.get(lastActiveTerminalId) : undefined
+    if (!instance)
+      return ''
+    const buffer = instance.terminal.buffer.active
+    let text = ''
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (line)
+        text += line.translateToString(true)
     }
-    return ''
+    return text
   }
   ;(window as any).__getActiveTerminalRows = () => {
-    for (const [id, instance] of instances) {
-      const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
-      if (container && container.style.display !== 'none') {
-        return instance.terminal.rows
-      }
-    }
-    return 0
+    return (lastActiveTerminalId ? instances.get(lastActiveTerminalId)?.terminal.rows : 0) ?? 0
   }
 }
 
@@ -197,6 +177,20 @@ const TerminalContainer: Component<{
 export const TerminalView: Component<TerminalViewProps> = (props) => {
   const preferences = usePreferences()
 
+  const pageScroll = (direction: -1 | 1) => {
+    if (!props.activeTerminalId)
+      return
+    instances.get(props.activeTerminalId)?.terminal.scrollPages(direction)
+  }
+
+  const write = (data: string) => {
+    if (!props.activeTerminalId)
+      return
+    const instance = instances.get(props.activeTerminalId)
+    if (instance?.sendInput)
+      instance.sendInput(new TextEncoder().encode(data))
+  }
+
   // React to font preference changes and update existing terminal instances
   createEffect(() => {
     const family = preferences.monoFontFamily()
@@ -212,6 +206,12 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     for (const [, instance] of instances) {
       instance.terminal.options.theme = theme
     }
+  })
+
+  createEffect(() => {
+    lastActiveTerminalId = props.activeTerminalId
+    props.pageScrollRef?.(pageScroll)
+    props.writeRef?.(write)
   })
 
   // Clean up instances when component unmounts

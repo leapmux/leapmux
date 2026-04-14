@@ -21,7 +21,6 @@ export const RightSidebar: Component<RightSidebarProps> = (props) => {
         side="right"
         isCollapsed={props.isCollapsed}
         onExpand={props.onExpand}
-        onCollapse={props.onCollapse}
         initialOpenSections={props.initialOpenSections}
         initialSectionSizes={props.initialSectionSizes}
         onStateChange={props.onSectionStateChange}

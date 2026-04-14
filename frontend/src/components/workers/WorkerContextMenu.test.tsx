@@ -4,9 +4,13 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { WorkerContextMenu } from './WorkerContextMenu'
 
 // Mock the modules that affect visibility.
-vi.mock('~/lib/systemInfo', () => ({
-  isSoloMode: vi.fn(() => true),
-}))
+vi.mock('~/lib/systemInfo', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/lib/systemInfo')>()
+  return {
+    ...actual,
+    isSoloMode: vi.fn(() => true),
+  }
+})
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
@@ -30,7 +34,7 @@ function renderMenu(opts?: { isOwner?: boolean, hasTunnels?: boolean }) {
 
   render(() => (
     <WorkerContextMenu
-      workerInfo={{ name: 'test', os: 'linux', arch: 'amd64', homeDir: '/home', version: '1.0', updatedAt: Date.now() }}
+      workerInfo={{ name: 'test', os: 'linux', arch: 'amd64', homeDir: '/home', version: '1.0', commitHash: '', buildTime: '', updatedAt: Date.now() }}
       isOwner={opts?.isOwner ?? true}
       hasTunnels={opts?.hasTunnels ?? false}
       onAddTunnel={onAddTunnel}

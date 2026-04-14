@@ -3,10 +3,11 @@ import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createSectionStore } from '~/stores/section.store'
 import Plus from 'lucide-solid/icons/plus'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
+import { shortcutHint } from '~/lib/shortcuts/display'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
 import { TabDragProvider } from './TabDragContext'
@@ -19,7 +20,6 @@ const COLLAPSED_SIZE_PX = 45
 interface SidebarFactoryOpts {
   isCollapsed: Accessor<boolean>
   onExpand: () => void
-  onCollapse: () => void
   initialOpenSections?: Record<string, boolean>
   initialSectionSizes?: Record<string, number>
   onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
@@ -66,6 +66,8 @@ interface DesktopLayoutProps {
   fileDropDisabled?: boolean
   setToggleLeftSidebar?: (fn: () => void) => void
   setToggleRightSidebar?: (fn: () => void) => void
+  setLeftSidebarVisible?: (visible: boolean) => void
+  setRightSidebarVisible?: (visible: boolean) => void
 }
 
 function useSidebarDrag(opts: {
@@ -187,6 +189,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   onMount(() => {
     props.setToggleLeftSidebar?.(toggleLeft)
   })
+  createEffect(() => props.setLeftSidebarVisible?.(!leftCollapsed()))
 
   const collapseRight = () => {
     rightWidthBeforeCollapse = rightWidth()
@@ -209,6 +212,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   onMount(() => {
     props.setToggleRightSidebar?.(toggleRight)
   })
+  createEffect(() => props.setRightSidebarVisible?.(!rightCollapsed()))
 
   // --- Drag handles ---
   const leftDrag = useSidebarDrag({
@@ -330,7 +334,6 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             {props.createLeftSidebar({
               isCollapsed: leftCollapsed,
               onExpand: expandLeft,
-              onCollapse: collapseLeft,
               initialOpenSections: savedSidebar?.leftOpenSections,
               initialSectionSizes: savedSidebar?.leftSectionSizes,
               onStateChange: (open, sizes) => {
@@ -369,6 +372,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                     <button
                       class="outline"
                       data-testid="create-workspace-button"
+                      title={shortcutHint('Create a new workspace...', 'app.newWorkspaceDialog')}
                       onClick={props.onNewWorkspace}
                     >
                       <Icon icon={Plus} size="sm" />
@@ -405,7 +409,6 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             {props.createRightSidebar({
               isCollapsed: rightCollapsed,
               onExpand: expandRight,
-              onCollapse: collapseRight,
               initialOpenSections: savedSidebar?.rightOpenSections,
               initialSectionSizes: savedSidebar?.rightSectionSizes,
               onStateChange: (open, sizes) => {

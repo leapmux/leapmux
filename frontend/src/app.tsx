@@ -1,7 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
-import { createEffect, createResource, createSignal, ErrorBoundary, Match, onCleanup, onMount, Show, Suspense, Switch } from 'solid-js'
+import { createEffect, createResource, createSignal, ErrorBoundary, getOwner, Match, onCleanup, onMount, runWithOwner, Show, Suspense, Switch } from 'solid-js'
 import { getRuntimeState, installMenuBarToggle, isTauriApp, platformBridge, refreshRuntimeState } from '~/api/platformBridge'
 import { channelManager } from '~/api/workerRpc'
 import { showInfoToast } from '~/components/common/Toast'
@@ -190,16 +190,14 @@ export default function App() {
 
     if (isTauriApp()) {
       installMenuBarToggle()
+      const owner = getOwner()
       platformBridge.onEvent('menu:show-about', () => setShowAboutDialog(true))
-        .then(unlisten => onCleanup(unlisten))
+        .then(unlisten => runWithOwner(owner, () => onCleanup(unlisten)))
 
-      // Always go through the launcher on startup / refresh.
-      // The LauncherView's auto-connect logic will silently re-establish
-      // the sidecar connection and transition to the workspace.  Going
-      // directly to 'connected' would break after a WebView refresh
-      // because the channel relays and RPC streams are lost.
       getRuntimeState()
-        .then(() => setDesktopState('launcher'))
+        .then((state) => {
+          setDesktopState(state.connected ? 'connected' : 'launcher')
+        })
         .catch(() => setDesktopState('launcher'))
     }
   })

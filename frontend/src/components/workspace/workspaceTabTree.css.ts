@@ -6,6 +6,7 @@ export const treeWrapper = style({
 })
 
 export const leafNode = style({
+  paddingRight: 'var(--space-1)',
   selectors: {
     [`${node}&:hover`]: {
       backgroundColor: 'var(--card)',
@@ -40,6 +41,10 @@ export const tabLabel = style({
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   flex: 1,
+  minWidth: 0,
+})
+
+export const leafActions = style({
   minWidth: 0,
 })
 

@@ -191,11 +191,23 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 	// the receive cipher state tracks a nonce counter.
 	decrypted, err := sess.Session.Decrypt(msg.GetCiphertext())
 	if err != nil {
-		slog.Error("failed to decrypt channel message",
-			"channel_id", msg.GetChannelId(),
+		channelID := msg.GetChannelId()
+		slog.Error("failed to decrypt channel message, closing channel",
+			"channel_id", channelID,
 			"ciphertext_len", len(msg.GetCiphertext()),
 			"error", err,
 		)
+		// Nonce desync is unrecoverable — notify the frontend and tear down.
+		_ = m.sendFn(&leapmuxv1.ConnectRequest{
+			Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
+				ChannelMessageResp: &leapmuxv1.ChannelMessage{
+					ProtocolVersion: 1,
+					ChannelId:       channelID,
+					Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
+				},
+			},
+		})
+		m.HandleClose(channelID)
 		return
 	}
 

@@ -1,23 +1,5 @@
 /** Shared utility functions for message renderers. */
 
-import { Formatter, FracturedJsonOptions } from 'fracturedjsonjs'
-
-const formatter = new Formatter()
-const fmtOpts = new FracturedJsonOptions()
-fmtOpts.MaxTotalLineLength = 80
-fmtOpts.MaxInlineComplexity = 1
-formatter.Options = fmtOpts
-
-/** Pretty-print a JSON string using FracturedJson for readable formatting. */
-export function prettifyJson(raw: string): string {
-  try {
-    return formatter.Reformat(raw)
-  }
-  catch {
-    return raw
-  }
-}
-
 /** Format task status for display. */
 export function formatTaskStatus(status?: string): string {
   if (!status)

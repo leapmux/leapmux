@@ -46,6 +46,8 @@ import { createWorkspaceStore } from '~/stores/workspace.store'
 import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
 import * as styles from './AppShell.css'
 import { AppShellDialogs } from './AppShellDialogs'
+import { CustomTitlebar } from './CustomTitlebar'
+import * as titlebarStyles from './CustomTitlebar.css'
 import { DesktopLayout } from './DesktopLayout'
 import { FloatingWindowLayer } from './FloatingWindowLayer'
 import { MobileLayout } from './MobileLayout'
@@ -214,8 +216,8 @@ export const AppShell: ParentComponent = (props) => {
     settingsLoading,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     getWorkerId: () => {
-      // Derive workerId from active tab's agent/terminal store data.
-      const tab = tabStore.activeTab()
+      const tileId = layoutStore.focusedTileId()
+      const tab = tileId ? tabStore.getActiveTabForTile(tileId) : null
       if (!tab)
         return ''
       if (tab.type === TabType.AGENT) {
@@ -323,7 +325,10 @@ export const AppShell: ParentComponent = (props) => {
   )
 
   // Active tab derived state
-  const activeTab = createMemo(() => tabStore.activeTab())
+  const activeTab = createMemo(() => {
+    const tileId = layoutStore.focusedTileId()
+    return tileId ? tabStore.getActiveTabForTile(tileId) : null
+  })
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
   // Get worker, working directory, and home directory from the currently active tab
@@ -424,6 +429,9 @@ export const AppShell: ParentComponent = (props) => {
     return { workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
   }
 
+  const [leftSidebarVisible, setLeftSidebarVisible] = createSignal(true)
+  const [rightSidebarVisible, setRightSidebarVisible] = createSignal(true)
+
   // Mutable refs for editor/scroll callbacks
   const toggleLeftSidebarRef: { current: (() => void) | undefined } = { current: undefined }
   const toggleRightSidebarRef: { current: (() => void) | undefined } = { current: undefined }
@@ -517,6 +525,13 @@ export const AppShell: ParentComponent = (props) => {
   // Tile drag-and-drop
   const tileDrag = useTileDragDrop({ tabStore, layoutStore, floatingWindowStore, persistLayout })
 
+  const focusTile = (tileId: string) => {
+    const windowId = floatingWindowStore.getWindowForTile(tileId)
+    if (windowId)
+      floatingWindowStore.setFocusedTile(windowId, tileId)
+    layoutStore.setFocusedTile(tileId)
+  }
+
   // --- Floating window tab movement operations ---
   const handleDetachTab = (tab: import('~/stores/tab.store').Tab) => {
     const sourceTileId = tab.tileId
@@ -530,7 +545,45 @@ export const AppShell: ParentComponent = (props) => {
         layoutStore.closeTile(sourceTileId)
       }
     }
+    focusTile(tileId)
     persistLayout()
+  }
+
+  const handleAttachTab = (tab: import('~/stores/tab.store').Tab) => {
+    const sourceTileId = tab.tileId
+    if (!sourceTileId)
+      return
+
+    const sourceWindowId = floatingWindowStore.getWindowForTile(sourceTileId)
+    if (!sourceWindowId)
+      return
+
+    const targetTileId = layoutStore.getAllTileIds()[0]
+    if (!targetTileId)
+      return
+
+    tabStore.moveTabToTile(tabKey(tab), targetTileId)
+    tabStore.setActiveTabForTile(targetTileId, tab.type, tab.id)
+    layoutStore.setFocusedTile(targetTileId)
+    floatingWindowStore.removeIfEmpty(
+      sourceWindowId,
+      tId => tabStore.getTabsForTile(tId),
+      layoutStore.focusedTileId(),
+      tId => layoutStore.setFocusedTile(tId),
+      layoutStore.getAllTileIds(),
+    )
+    persistLayout()
+  }
+
+  const handleToggleFloatingTab = () => {
+    const tileId = layoutStore.focusedTileId()
+    const tab = tileId ? tabStore.getActiveTabForTile(tileId) : null
+    if (!tab)
+      return
+    if (floatingWindowStore.getWindowForTile(tileId))
+      handleAttachTab(tab)
+    else
+      handleDetachTab(tab)
   }
 
   const handleCloseFloatingWindow = (windowId: string) => {
@@ -552,6 +605,12 @@ export const AppShell: ParentComponent = (props) => {
       }
     }
     persistLayout()
+  }
+
+  const handleActivateFloatingWindow = (windowId: string) => {
+    const tileId = floatingWindowStore.getWindow(windowId)?.focusedTileId
+    if (tileId)
+      focusTile(tileId)
   }
 
   // Cross-workspace tab move handler (drag a tab to another workspace in the sidebar)
@@ -640,6 +699,8 @@ export const AppShell: ParentComponent = (props) => {
       const activeTileId = targetTileId
         ?? (!isSourceActive ? (layoutStore.focusedTileId() ?? tab.tileId) : tab.tileId)
       tabStore.addTab({ ...tab, tileId: activeTileId })
+      if (activeTileId)
+        focusTile(activeTileId)
     }
     else {
       // Get or create a snapshot for the target workspace.
@@ -986,8 +1047,10 @@ export const AppShell: ParentComponent = (props) => {
     getScrollStateRef,
     forceScrollToBottomRef,
     gitFileStatusStore,
+    floatingWindowStore,
     isFloatingWindowTile: (tileId: string) => !!floatingWindowStore.getWindowForTile(tileId),
     onDetachTab: handleDetachTab,
+    onAttachTab: handleAttachTab,
   })
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
@@ -996,9 +1059,12 @@ export const AppShell: ParentComponent = (props) => {
     tabStore,
     layoutStore,
     tabOps,
+    agentOps,
+    termOps,
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
     setShowNewWorkspace,
+    toggleFloatingTab: handleToggleFloatingTab,
     toggleLeftSidebar: () => {
       if (isMobile()) {
         toggleLeftSidebar()
@@ -1009,6 +1075,10 @@ export const AppShell: ParentComponent = (props) => {
     },
     toggleRightSidebar: () => toggleRightSidebarRef.current?.(),
     activeTabType,
+    resolveFocusedTab: tileRenderer.resolveFocusedTab,
+    splitFocusedTile: tileRenderer.splitFocusedTile,
+    scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
+    writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
     customKeybindings: preferences.customKeybindings,
   })
 
@@ -1071,14 +1141,18 @@ export const AppShell: ParentComponent = (props) => {
         terminalStore.setActiveTerminal(id)
       }
     },
-    onTabRename: (tab, title) => {
-      tabStore.updateTabTitle(tab.type, tab.id, title)
-      if (tab.type === TabType.AGENT) {
-        const workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
-        renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
-          showWarnToast('Failed to rename agent', err)
-        })
-      }
+    tabItemOps: {
+      onClose: tabOps.handleTabClose,
+      onRename: (tab, title) => {
+        tabStore.updateTabTitle(tab.type, tab.id, title)
+        if (tab.type === TabType.AGENT) {
+          const workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+          renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
+            showWarnToast('Failed to rename agent', err)
+          })
+        }
+      },
+      get closingKeys() { return tabOps.closingTabKeys() },
     },
     onExpandWorkspace: handleExpandWorkspace,
   })
@@ -1136,56 +1210,69 @@ export const AppShell: ParentComponent = (props) => {
               />
             )}
           >
-            <DesktopLayout
-              setToggleLeftSidebar={fn => toggleLeftSidebarRef.current = fn}
-              setToggleRightSidebar={fn => toggleRightSidebarRef.current = fn}
-              sectionStore={sectionStore}
-              layoutStore={layoutStore}
-              onMoveSection={handleMoveSection}
-              onMoveSectionServer={handleMoveSectionServer}
-              activeWorkspaceId={workspace.activeWorkspaceId()}
-              activeWorkspace={activeWorkspace}
-              workspaceLoading={workspaceLoading()}
-              getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
-              onNewWorkspace={() => {
-                setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
-                setShowNewWorkspace(true)
-              }}
-              setCenterPanelHeight={setCenterPanelHeight}
-              onIntraTileReorder={tileDrag.handleIntraTileReorder}
-              onCrossTileMove={tileDrag.handleCrossTileMove}
-              onCrossWorkspaceMove={handleCrossWorkspaceMove}
-              lookupTileIdForTab={tileDrag.lookupTileIdForTab}
-              renderDragOverlay={tileDrag.renderDragOverlay}
-              renderTile={tileRenderer.renderTile}
-              onRatioChange={(splitId, ratios) => {
-                layoutStore.updateRatios(splitId, ratios)
-                persistLayout()
-              }}
-              createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
-              createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
-              onFileDrop={tileRenderer.handleFileDrop}
-              fileDropDisabled={tileRenderer.fileDropDisabled()}
-              editorPanel={(
-                tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
-                && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
-              )}
-              floatingWindowLayer={(
-                <FloatingWindowLayer
-                  floatingWindowStore={floatingWindowStore}
-                  tabStore={tabStore}
+            <div class={titlebarStyles.titlebarLayout}>
+              <CustomTitlebar
+                onToggleLeftSidebar={() => toggleLeftSidebarRef.current?.()}
+                onToggleRightSidebar={() => toggleRightSidebarRef.current?.()}
+                leftSidebarVisible={leftSidebarVisible()}
+                rightSidebarVisible={rightSidebarVisible()}
+              />
+              <div class={titlebarStyles.titlebarContent}>
+                <DesktopLayout
+                  setToggleLeftSidebar={fn => toggleLeftSidebarRef.current = fn}
+                  setToggleRightSidebar={fn => toggleRightSidebarRef.current = fn}
+                  setLeftSidebarVisible={setLeftSidebarVisible}
+                  setRightSidebarVisible={setRightSidebarVisible}
+                  sectionStore={sectionStore}
+                  layoutStore={layoutStore}
+                  onMoveSection={handleMoveSection}
+                  onMoveSectionServer={handleMoveSectionServer}
+                  activeWorkspaceId={workspace.activeWorkspaceId()}
+                  activeWorkspace={activeWorkspace}
+                  workspaceLoading={workspaceLoading()}
+                  getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
+                  onNewWorkspace={() => {
+                    setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
+                    setShowNewWorkspace(true)
+                  }}
+                  setCenterPanelHeight={setCenterPanelHeight}
+                  onIntraTileReorder={tileDrag.handleIntraTileReorder}
+                  onCrossTileMove={tileDrag.handleCrossTileMove}
+                  onCrossWorkspaceMove={handleCrossWorkspaceMove}
+                  lookupTileIdForTab={tileDrag.lookupTileIdForTab}
+                  renderDragOverlay={tileDrag.renderDragOverlay}
                   renderTile={tileRenderer.renderTile}
-                  onRatioChange={(windowId, splitId, ratios) => {
-                    floatingWindowStore.updateRatios(windowId, splitId, ratios)
+                  onRatioChange={(splitId, ratios) => {
+                    layoutStore.updateRatios(splitId, ratios)
                     persistLayout()
                   }}
-                  onCloseWindow={handleCloseFloatingWindow}
-                  onGeometryChange={persistLayout}
+                  createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
+                  createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
                   onFileDrop={tileRenderer.handleFileDrop}
                   fileDropDisabled={tileRenderer.fileDropDisabled()}
+                  editorPanel={(
+                    tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
+                    && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
+                  )}
+                  floatingWindowLayer={(
+                    <FloatingWindowLayer
+                      floatingWindowStore={floatingWindowStore}
+                      tabStore={tabStore}
+                      renderTile={tileRenderer.renderTile}
+                      onRatioChange={(windowId, splitId, ratios) => {
+                        floatingWindowStore.updateRatios(windowId, splitId, ratios)
+                        persistLayout()
+                      }}
+                      onCloseWindow={handleCloseFloatingWindow}
+                      onActivateWindow={handleActivateFloatingWindow}
+                      onGeometryChange={persistLayout}
+                      onFileDrop={tileRenderer.handleFileDrop}
+                      fileDropDisabled={tileRenderer.fileDropDisabled()}
+                    />
+                  )}
                 />
-              )}
-            />
+              </div>
+            </div>
           </Show>
         </div>
       </Show>

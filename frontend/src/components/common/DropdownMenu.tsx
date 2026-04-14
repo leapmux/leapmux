@@ -2,6 +2,7 @@ import type { Accessor, JSX } from 'solid-js'
 import type { PopoverPositionOptions } from '~/lib/popoverPosition'
 import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
+import { menuItemContent, menuItemLabel, menuItemShortcut } from '~/styles/shared.css'
 
 export interface DropdownTriggerProps {
   /** Whether the dropdown is currently open. */
@@ -64,6 +65,22 @@ export interface DropdownMenuProps {
 
   /** Callback when the popover opens or closes. */
   'onToggle'?: (open: boolean) => void
+}
+
+export interface DropdownMenuItemContentProps {
+  label: JSX.Element
+  shortcut?: string
+}
+
+export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
+  return (
+    <span class={menuItemContent}>
+      <span class={menuItemLabel}>{props.label}</span>
+      <Show when={props.shortcut}>
+        {shortcut => <span class={menuItemShortcut}>{shortcut()}</span>}
+      </Show>
+    </span>
+  )
 }
 
 export function DropdownMenu(props: DropdownMenuProps) {

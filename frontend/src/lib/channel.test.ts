@@ -597,6 +597,49 @@ describe('channelManager', () => {
     })
   })
 
+  describe('decrypt failure', () => {
+    it('should close the channel on decrypt failure', async () => {
+      const channelId = await openTestChannel('w1')
+      const callPromise = mgr.call(channelId, 'Test', new Uint8Array())
+
+      // Send a message with corrupted ciphertext (not encrypted with the correct key/nonce).
+      const corruptCiphertext = new Uint8Array(32)
+      corruptCiphertext.fill(0xFF)
+      mockWs.simulateMessage(encodeWireMessage(channelId, corruptCiphertext, { id: 1 }))
+
+      // The channel should be closed and the pending request rejected.
+      await expect(callPromise).rejects.toThrow('channel closed')
+      expect(mgr.isOpen(channelId)).toBe(false)
+    })
+
+    it('should close only the affected channel on decrypt failure', async () => {
+      const ch1 = await openTestChannel('w1')
+      const ch2 = await openTestChannel('w2')
+
+      // Corrupt ciphertext on ch1.
+      const corruptCiphertext = new Uint8Array(32)
+      corruptCiphertext.fill(0xFF)
+      mockWs.simulateMessage(encodeWireMessage(ch1, corruptCiphertext, { id: 1 }))
+
+      expect(mgr.isOpen(ch1)).toBe(false)
+      expect(mgr.isOpen(ch2)).toBe(true)
+    })
+
+    it('should error active streams on decrypt failure', async () => {
+      const channelId = await openTestChannel('w1')
+      const endFn = vi.fn()
+      const handle = mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+      handle.onEnd(endFn)
+
+      const corruptCiphertext = new Uint8Array(32)
+      corruptCiphertext.fill(0xFF)
+      mockWs.simulateMessage(encodeWireMessage(channelId, corruptCiphertext, { id: 1 }))
+
+      expect(endFn).toHaveBeenCalledOnce()
+      expect(mgr.isOpen(channelId)).toBe(false)
+    })
+  })
+
   describe('webSocket close', () => {
     it('should reject all pending requests when WebSocket closes', async () => {
       const channelId = await openTestChannel('w1')

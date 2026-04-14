@@ -5,9 +5,9 @@ import Check from 'lucide-solid/icons/check'
 import { createSignal, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
+import { prettifyJson } from '~/lib/jsonFormat'
 import * as styles from './ControlRequestBanner.css'
 import { getProviderPlugin } from './providers/registry'
-import { prettifyJson } from './rendererUtils'
 
 /** Renders control request content only (title + details), for the banner slot. */
 export const ControlRequestContent: Component<ContentProps> = (props) => {
@@ -15,7 +15,7 @@ export const ControlRequestContent: Component<ContentProps> = (props) => {
   const [copied, setCopied] = createSignal(false)
 
   const handleCopyJson = () => {
-    navigator.clipboard.writeText(prettifyJson(JSON.stringify(props.request?.payload)))
+    navigator.clipboard.writeText(prettifyJson(props.request?.payload))
     setCopied(true)
     setTimeout(setCopied, 2000, false)
   }

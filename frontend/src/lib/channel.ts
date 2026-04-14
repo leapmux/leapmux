@@ -775,7 +775,8 @@ export class ChannelManager {
       decrypted = ch.session.receive.decrypt(msg.ciphertext)
     }
     catch (err) {
-      log.error('Failed to decrypt channel message', err)
+      log.error('Failed to decrypt channel message, closing channel', { channel_id: channelId, error: err })
+      void this.closeChannel(channelId)
       return
     }
 
