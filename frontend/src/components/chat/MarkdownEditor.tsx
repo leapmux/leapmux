@@ -6,7 +6,7 @@ import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { createCodeBlockCommand, toggleInlineCodeCommand } from '@milkdown/preset-commonmark'
 import { TextSelection } from '@milkdown/prose/state'
 import { callCommand, replaceAll } from '@milkdown/utils'
-import { createEffect, createSignal, on, onCleanup, onMount } from 'solid-js'
+import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
@@ -218,6 +218,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     if (!editorRef)
       return
 
+    const owner = getOwner()
     const initialDraftKey = getDraftKey()
     const initialDraft = initialDraftKey ? loadDraft(initialDraftKey) : { content: '', cursor: -1 }
 
@@ -286,10 +287,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         })
       })
       resizeObserver.observe(proseMirrorEl)
-      onCleanup(() => {
+      runWithOwner(owner, () => onCleanup(() => {
         cancelAnimationFrame(rafId)
         resizeObserver.disconnect()
-      })
+      }))
     }
     // Notify parent if we loaded a draft with content, and restore cursor position
     if (initialDraftKey && initialDraft.content) {
@@ -338,10 +339,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
     editorRef?.addEventListener('paste', handlePaste, true)
     editorRef?.addEventListener('drop', handleDrop, true)
-    onCleanup(() => {
+    runWithOwner(owner, () => onCleanup(() => {
       editorRef?.removeEventListener('paste', handlePaste, true)
       editorRef?.removeEventListener('drop', handleDrop, true)
-    })
+    }))
   })
 
   onCleanup(() => {
