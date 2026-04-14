@@ -10,24 +10,26 @@ import (
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 )
 
-type RPCServer struct {
-	app    *App
-	reader *bufio.Reader
-	writer io.Writer
-	mu     sync.Mutex
+type RPCSession struct {
+	app        *App
+	reader     *bufio.Reader
+	writer     io.Writer
+	mu         sync.Mutex
+	onShutdown func()
 }
 
-func NewRPCServer(reader io.Reader, writer io.Writer) *RPCServer {
-	s := &RPCServer{
-		reader: bufio.NewReader(reader),
-		writer: writer,
+func NewRPCSession(app *App, reader io.Reader, writer io.Writer, onShutdown func()) *RPCSession {
+	return &RPCSession{
+		app:        app,
+		reader:     bufio.NewReader(reader),
+		writer:     writer,
+		onShutdown: onShutdown,
 	}
-	s.app = NewApp(s.emitEvent)
-	return s
 }
 
-func (s *RPCServer) Run() error {
-	defer s.app.shutdown()
+func (s *RPCSession) Run() error {
+	s.app.SetEventSink(s.emitEvent)
+	defer s.app.SetEventSink(nil)
 
 	for {
 		frame, err := ReadFrame(s.reader)
@@ -42,20 +44,17 @@ func (s *RPCServer) Run() error {
 		if req == nil {
 			continue
 		}
-		// Dispatch in a goroutine so long-running handlers (ConnectSolo,
-		// ProxyHTTP, etc.) don't block the read loop. writeResponse is
-		// already mutex-protected.
 		go s.handleRequest(req)
 	}
 }
 
-func (s *RPCServer) emitEvent(event *desktoppb.Event) {
+func (s *RPCSession) emitEvent(event *desktoppb.Event) {
 	s.writeFrame(&desktoppb.Frame{
 		Message: &desktoppb.Frame_Event{Event: event},
 	})
 }
 
-func (s *RPCServer) writeFrame(frame *desktoppb.Frame) {
+func (s *RPCSession) writeFrame(frame *desktoppb.Frame) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := WriteFrame(s.writer, frame); err != nil {
@@ -63,27 +62,27 @@ func (s *RPCServer) writeFrame(frame *desktoppb.Frame) {
 	}
 }
 
-func (s *RPCServer) writeResponse(resp *desktoppb.Response) {
+func (s *RPCSession) writeResponse(resp *desktoppb.Response) {
 	s.writeFrame(&desktoppb.Frame{
 		Message: &desktoppb.Frame_Response{Response: resp},
 	})
 }
 
-func (s *RPCServer) writeError(id uint64, err error) {
+func (s *RPCSession) writeError(id uint64, err error) {
 	s.writeResponse(&desktoppb.Response{
 		Id:    id,
 		Error: err.Error(),
 	})
 }
 
-func (s *RPCServer) writeOK(id uint64) {
+func (s *RPCSession) writeOK(id uint64) {
 	s.writeResponse(&desktoppb.Response{
 		Id:     id,
 		Result: &desktoppb.Response_BoolValue{BoolValue: &desktoppb.BoolValue{Value: true}},
 	})
 }
 
-func (s *RPCServer) handleRequest(req *desktoppb.Request) {
+func (s *RPCSession) handleRequest(req *desktoppb.Request) {
 	id := req.Id
 
 	switch m := req.Method.(type) {
@@ -111,6 +110,14 @@ func (s *RPCServer) handleRequest(req *desktoppb.Request) {
 			Id: id,
 			Result: &desktoppb.Response_BuildInfo{
 				BuildInfo: buildInfoToProto(s.app.GetBuildInfo()),
+			},
+		})
+
+	case *desktoppb.Request_GetSidecarInfo:
+		s.writeResponse(&desktoppb.Response{
+			Id: id,
+			Result: &desktoppb.Response_SidecarInfo{
+				SidecarInfo: s.app.SidecarInfo(),
 			},
 		})
 
@@ -247,6 +254,12 @@ func (s *RPCServer) handleRequest(req *desktoppb.Request) {
 				},
 			},
 		})
+
+	case *desktoppb.Request_Shutdown:
+		s.writeOK(id)
+		if s.onShutdown != nil {
+			go s.onShutdown()
+		}
 
 	default:
 		s.writeError(id, fmt.Errorf("unknown method: %T", req.Method))

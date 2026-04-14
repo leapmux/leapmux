@@ -193,13 +193,10 @@ export default function App() {
       platformBridge.onEvent('menu:show-about', () => setShowAboutDialog(true))
         .then(unlisten => onCleanup(unlisten))
 
-      // Always go through the launcher on startup / refresh.
-      // The LauncherView's auto-connect logic will silently re-establish
-      // the sidecar connection and transition to the workspace.  Going
-      // directly to 'connected' would break after a WebView refresh
-      // because the channel relays and RPC streams are lost.
       getRuntimeState()
-        .then(() => setDesktopState('launcher'))
+        .then((state) => {
+          setDesktopState(state.connected ? 'connected' : 'launcher')
+        })
         .catch(() => setDesktopState('launcher'))
     }
   })

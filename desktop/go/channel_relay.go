@@ -32,7 +32,7 @@ func (a *App) OpenChannelRelay() error {
 	relay := &ChannelRelay{
 		ctx:    ctx,
 		cancel: cancel,
-		emit:   a.emitEvent,
+		emit:   a.EmitEvent,
 	}
 
 	wsURL := channelwire.HTTPToWS(a.proxy.baseURL) + "/ws/channel"

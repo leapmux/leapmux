@@ -20,7 +20,7 @@ func TestApp_OpenChannelRelay_Solo(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("HOME", filepath.Clean(home))
 
-	app := NewApp(nil)
+	app := NewApp("")
 	defer app.shutdown()
 
 	if err := app.ConnectSolo(); err != nil {
@@ -52,7 +52,8 @@ func TestApp_SidecarLogEvents_EmittedAfterSoloStart(t *testing.T) {
 		}
 	}
 
-	app := NewApp(emitFunc)
+	app := NewApp("")
+	app.SetEventSink(emitFunc)
 	defer app.shutdown()
 
 	require.NoError(t, app.ConnectSolo())

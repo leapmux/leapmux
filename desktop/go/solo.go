@@ -25,7 +25,7 @@ func (a *App) startSolo() error {
 	// Must happen after solo.Start(), which calls logging.Setup()
 	// and replaces the default slog handler.
 	prevHandler := slog.Default().Handler()
-	logHandler := newWebviewHandler(prevHandler, a.emitEvent)
+	logHandler := newWebviewHandler(prevHandler, a.EmitEvent)
 	slog.SetDefault(slog.New(logHandler))
 	a.prevLogHandler = prevHandler
 
