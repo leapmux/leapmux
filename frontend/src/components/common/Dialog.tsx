@@ -19,9 +19,43 @@ export const Dialog: Component<DialogProps> = (props) => {
   let dialogRef!: HTMLDialogElement
   let unmounting = false
 
-  onMount(() => dialogRef.showModal())
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      if (!props.busy)
+        dialogRef.close()
+      return
+    }
+    if (
+      e.key === 'Enter'
+      && !e.defaultPrevented
+      && !e.isComposing
+      && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey
+      && !props.busy
+    ) {
+      const active = document.activeElement
+      if (active instanceof HTMLTextAreaElement || active instanceof HTMLButtonElement || active instanceof HTMLAnchorElement)
+        return
+      const submitBtn = dialogRef.querySelector('button[type="submit"]') as HTMLButtonElement | null
+      if (submitBtn && !submitBtn.disabled) {
+        e.preventDefault()
+        submitBtn.click()
+      }
+    }
+  }
+
+  onMount(() => {
+    dialogRef.showModal()
+    const focusTarget = dialogRef.querySelector(
+      `.${styles.body} select, .${styles.body} input:not([type="hidden"]), .${styles.body} textarea, .${styles.body} button[type="submit"]`,
+    ) as HTMLElement | null
+    if (focusTarget)
+      focusTarget.focus()
+    dialogRef.addEventListener('keydown', handleKeyDown)
+  })
   onCleanup(() => {
     unmounting = true
+    dialogRef.removeEventListener('keydown', handleKeyDown)
     if (dialogRef.open) {
       dialogRef.close()
     }
@@ -33,13 +67,6 @@ export const Dialog: Component<DialogProps> = (props) => {
       class={`${styles.standard}${props.tall ? ` ${styles.tall}` : ''}${props.wide ? ` ${styles.wide}` : ''}${props.class ? ` ${props.class}` : ''}`}
       data-testid={props['data-testid']}
       aria-label={props.title}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault()
-          if (!props.busy)
-            dialogRef.close()
-        }
-      }}
       onClick={(e) => {
         // Close on backdrop click: check if the click landed outside
         // the dialog's bounding rect (i.e. on the ::backdrop).

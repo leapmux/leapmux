@@ -6,19 +6,32 @@ import { Dialog } from './Dialog'
 
 // jsdom does not implement the native <dialog> API.
 // Stub showModal so the component can mount without errors.
+let originalShowModal: typeof HTMLDialogElement.prototype.showModal | undefined
+let originalClose: typeof HTMLDialogElement.prototype.close
+
 beforeAll(() => {
   if (!HTMLDialogElement.prototype.showModal) {
+    originalShowModal = undefined
     HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
       this.setAttribute('open', '')
     })
   }
+  else {
+    originalShowModal = HTMLDialogElement.prototype.showModal
+  }
 
-  // Ensure close() fires the 'close' event like real browsers do.
-  const _originalClose = HTMLDialogElement.prototype.close
-  HTMLDialogElement.prototype.close = function (..._args: Parameters<typeof _originalClose>) {
+  originalClose = HTMLDialogElement.prototype.close
+  HTMLDialogElement.prototype.close = function () {
     this.removeAttribute('open')
     this.dispatchEvent(new Event('close'))
   }
+})
+
+afterAll(() => {
+  if (originalShowModal) {
+    HTMLDialogElement.prototype.showModal = originalShowModal
+  }
+  HTMLDialogElement.prototype.close = originalClose
 })
 
 describe('dialog', () => {
@@ -54,6 +67,19 @@ describe('dialog', () => {
     expect(closeButton).toBeDisabled()
     closeButton.click()
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('closes on Escape when not busy', () => {
+    const onClose = vi.fn()
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(onClose).toHaveBeenCalled()
   })
 
   it('closes on backdrop click when not busy', () => {
@@ -97,6 +123,138 @@ describe('dialog', () => {
     const dialog = container.querySelector('dialog')!
     dialog.dispatchEvent(new Event('close'))
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('focuses the first form control instead of the close button', () => {
+    const onClose = vi.fn()
+
+    render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <form>
+          <select data-testid="worker-select">
+            <option>Worker 1</option>
+          </select>
+          <button type="submit">Create</button>
+        </form>
+      </Dialog>
+    ))
+
+    expect(document.activeElement?.tagName).toBe('SELECT')
+  })
+
+  it('triggers submit button on Enter key', () => {
+    const onClose = vi.fn()
+    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <form onSubmit={onSubmit}>
+          <input type="text" data-testid="text-input" />
+          <button type="submit">Create</button>
+        </form>
+      </Dialog>
+    ))
+
+    const input = container.querySelector('input')!
+    input.focus()
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSubmit).toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('does not trigger submit on Enter when submit button is disabled', () => {
+    const onClose = vi.fn()
+    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <form onSubmit={onSubmit}>
+          <input type="text" />
+          <button type="submit" disabled>Create</button>
+        </form>
+      </Dialog>
+    ))
+
+    const input = container.querySelector('input')!
+    input.focus()
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not trigger submit on Enter when focused on a button', () => {
+    const onClose = vi.fn()
+    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <form onSubmit={onSubmit}>
+          <button type="button">Cancel</button>
+          <button type="submit">Create</button>
+        </form>
+      </Dialog>
+    ))
+
+    const cancelBtn = container.querySelector('button[type="button"]') as HTMLButtonElement
+    cancelBtn.focus()
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not close on Escape when busy', () => {
+    const onClose = vi.fn()
+    const { container } = render(() => (
+      <Dialog title="Test" busy onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(dialog.hasAttribute('open')).toBe(true)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('does not trigger submit on Enter when focused on a textarea', () => {
+    const onClose = vi.fn()
+    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <form onSubmit={onSubmit}>
+          <textarea />
+          <button type="submit">Create</button>
+        </form>
+      </Dialog>
+    ))
+
+    const textarea = container.querySelector('textarea')!
+    textarea.focus()
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not trigger submit on Enter when busy', () => {
+    const onClose = vi.fn()
+    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+
+    const { container } = render(() => (
+      <Dialog title="Test" busy onClose={onClose}>
+        <form onSubmit={onSubmit}>
+          <input type="text" />
+          <button type="submit">Create</button>
+        </form>
+      </Dialog>
+    ))
+
+    const input = container.querySelector('input')!
+    input.focus()
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   it('does not access stale keyed Show accessor on cleanup', () => {

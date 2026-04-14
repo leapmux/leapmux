@@ -796,7 +796,8 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
               type="text"
               value={inputValue()}
               onInput={e => setInputValue(e.currentTarget.value)}
-              onKeyDown={handlePathKeyDown}
+              // Direct listener so preventDefault() fires before Dialog's keydown handler.
+              on:keydown={handlePathKeyDown}
               onBlur={handlePathBlur}
               placeholder="Enter path..."
             />
