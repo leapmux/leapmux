@@ -87,6 +87,7 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 		Terminals: terminal.NewManager(),
 	}
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc.Output.DataDir = svc.DataDir
 
 	d := channel.NewDispatcher()
 	RegisterAll(d, svc)

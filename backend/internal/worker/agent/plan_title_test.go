@@ -53,6 +53,41 @@ func TestExtractPlanTitle(t *testing.T) {
 			want:    "Fix login bug",
 		},
 		{
+			name:    "Design prefix",
+			content: "# Design: Renderer fixes",
+			want:    "Renderer fixes",
+		},
+		{
+			name:    "Design Doc prefix",
+			content: "# Design Doc: Renderer fixes",
+			want:    "Renderer fixes",
+		},
+		{
+			name:    "Design Doc stripped before Design",
+			content: "# Design Doc: API changes",
+			want:    "API changes",
+		},
+		{
+			name:    "design doc mixed case",
+			content: "# dEsIgN dOc - API changes",
+			want:    "API changes",
+		},
+		{
+			name:    "wrapped Design Doc prefix",
+			content: "# [Design Doc] API changes",
+			want:    "API changes",
+		},
+		{
+			name:    "wrapped Design prefix",
+			content: "# (Design) Renderer fixes",
+			want:    "Renderer fixes",
+		},
+		{
+			name:    "Design with em dash",
+			content: "# Design — Migrate renderer",
+			want:    "Migrate renderer",
+		},
+		{
 			name:    "Plan with em dash",
 			content: "# Plan — Migrate to new API",
 			want:    "Migrate to new API",
@@ -112,6 +147,46 @@ func TestExtractPlanTitle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, extractPlanTitle(tt.content))
+		})
+	}
+}
+
+func TestSanitizePlanFilenameTitle(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{
+			name:  "removes invalid characters",
+			title: `A/B\C:D*E?F"G<H>I|J`,
+			want:  "ABCDEFGHIJ",
+		},
+		{
+			name:  "trims trailing dots and spaces",
+			title: "Plan Name.  ",
+			want:  "Plan Name",
+		},
+		{
+			name:  "falls back when empty",
+			title: " \t\r\n ",
+			want:  "Untitled Plan",
+		},
+		{
+			name:  "retains unicode",
+			title: "설계 문서 渲染修复",
+			want:  "설계 문서 渲染修复",
+		},
+		{
+			name:  "collapses whitespace and strips controls",
+			title: "Plan\t\x00  Name\n\r",
+			want:  "Plan Name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, SanitizePlanFilenameTitle(tt.title))
 		})
 	}
 }
