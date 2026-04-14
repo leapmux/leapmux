@@ -22,20 +22,28 @@ interface WorkerContextMenuProps {
   onDeregister: () => void
 }
 
+interface InfoRow {
+  label: string
+  value: string
+  kind: 'text' | 'relative_time'
+}
+
 export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
-  const infoRows = () => {
+  const infoRows = (): InfoRow[] | null => {
     const info = props.workerInfo
     if (!info)
       return null
     let versionText = info.version
     if (info.commitHash)
       versionText += ` (${info.commitHash})`
-    return [
-      { label: 'Name:', value: info.name, kind: 'text' as const },
-      { label: 'Version:', value: versionText, kind: 'text' as const },
-      ...(info.buildTime ? [{ label: 'Built at:', value: info.buildTime, kind: 'relative' as const }] : []),
-      { label: 'OS:', value: `${info.os} (${info.arch})`, kind: 'text' as const },
+    const rows: InfoRow[] = [
+      { label: 'Name:', value: info.name, kind: 'text' },
+      { label: 'Version:', value: versionText, kind: 'text' },
     ]
+    if (info.buildTime)
+      rows.push({ label: 'Built at:', value: info.buildTime, kind: 'relative_time' })
+    rows.push({ label: 'OS:', value: `${info.os} (${info.arch})`, kind: 'text' })
+    return rows
   }
 
   const infoJson = () => {
@@ -91,7 +99,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
                   <>
                     <span>{row.label}</span>
                     <span>
-                      {row.kind === 'relative'
+                      {row.kind === 'relative_time'
                         ? (
                             <>
                               <RelativeTime timestamp={row.value} />
