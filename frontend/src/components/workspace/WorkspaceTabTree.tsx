@@ -5,12 +5,15 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import Terminal from 'lucide-solid/icons/terminal'
+import X from 'lucide-solid/icons/x'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
+import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
+import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
 import * as css from './workspaceTabTree.css'
 
 // --- Tab leaf node ---
@@ -24,6 +27,9 @@ const TabLeaf: Component<{
   editingValue: string
   onClick: () => void
   onDblClick: () => void
+  onClose?: () => void
+  isClosing?: boolean
+  canClose: boolean
   onEditInput: (value: string) => void
   onEditCommit: () => void
   onEditCancel: () => void
@@ -48,6 +54,13 @@ const TabLeaf: Component<{
         e.preventDefault()
         e.stopPropagation()
         props.onDblClick()
+      }}
+      onAuxClick={(e) => {
+        if (e.button !== 1 || !props.canClose || props.isClosing)
+          return
+        e.preventDefault()
+        e.stopPropagation()
+        props.onClose?.()
       }}
       data-testid="tab-tree-leaf"
       data-tab-id={props.tab.id}
@@ -89,6 +102,25 @@ const TabLeaf: Component<{
           {props.tab.title || props.tab.id}
         </span>
       </Show>
+      <Show when={props.canClose}>
+        <div class={`${sidebarActions} ${css.leafActions}`}>
+          <IconButton
+            icon={X}
+            iconSize="xs"
+            size="sm"
+            class={menuTrigger}
+            state={props.isClosing ? IconButtonState.Loading : IconButtonState.Enabled}
+            data-testid="workspace-tab-close"
+            onPointerDown={e => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (props.isClosing)
+                return
+              props.onClose?.()
+            }}
+          />
+        </div>
+      </Show>
     </div>
   )
 }
@@ -99,7 +131,9 @@ export interface WorkspaceTabTreeProps {
   tabs: Tab[]
   activeTabKey: string | null
   onTabClick: (type: TabType, id: string) => void
+  onTabClose?: (tab: Tab) => void
   onTabRename?: (tab: Tab, title: string) => void
+  closingTabKeys?: Set<string>
   readOnly?: boolean
   workspaceId: string
 }
@@ -112,6 +146,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
   const [editingValue, setEditingValue] = createSignal('')
   let editCancelled = false
+  const canClose = (tab: Tab) => !props.readOnly || tab.type === TabType.FILE
 
   const tabLabel = (tab: Tab): string => tab.title || tab.id
 
@@ -223,6 +258,9 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                                   editingValue={editingValue()}
                                   onClick={() => props.onTabClick(tab.type, tab.id)}
                                   onDblClick={() => startEditing(tab)}
+                                  onClose={() => props.onTabClose?.(tab)}
+                                  isClosing={props.closingTabKeys?.has(tabKey(tab))}
+                                  canClose={canClose(tab)}
                                   onEditInput={v => setEditingValue(v)}
                                   onEditCommit={() => commitEdit(tab)}
                                   onEditCancel={cancelEdit}
@@ -253,6 +291,9 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
             editingValue={editingValue()}
             onClick={() => props.onTabClick(tab.type, tab.id)}
             onDblClick={() => startEditing(tab)}
+            onClose={() => props.onTabClose?.(tab)}
+            isClosing={props.closingTabKeys?.has(tabKey(tab))}
+            canClose={canClose(tab)}
             onEditInput={v => setEditingValue(v)}
             onEditCommit={() => commitEdit(tab)}
             onEditCancel={cancelEdit}

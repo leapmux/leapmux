@@ -51,7 +51,9 @@ export interface SidebarElementsOpts {
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
   onTabClick: (type: number, id: string) => void
+  onTabClose?: (tab: Tab) => void
   onTabRename?: (tab: Tab, title: string) => void
+  closingTabKeys?: Set<string>
   onExpandWorkspace: (workspaceId: string) => void
 }
 
@@ -115,7 +117,9 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       tabStore={opts.tabStore}
       registry={opts.registry}
       onTabClick={opts.onTabClick}
+      onTabClose={opts.onTabClose}
       onTabRename={opts.onTabRename}
+      closingTabKeys={opts.closingTabKeys}
       onExpandWorkspace={opts.onExpandWorkspace}
     />
   )
@@ -165,7 +169,9 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       tabStore={opts.tabStore}
       registry={opts.registry}
       onTabClick={opts.onTabClick}
+      onTabClose={opts.onTabClose}
       onTabRename={opts.onTabRename}
+      closingTabKeys={opts.closingTabKeys}
       onExpandWorkspace={opts.onExpandWorkspace}
       workers={opts.workers}
       workerInfoFn={opts.workerInfoFn}

@@ -71,7 +71,9 @@ export interface SidebarCommonProps {
   tabStore?: ReturnType<typeof createTabStore>
   registry?: WorkspaceStoreRegistryType
   onTabClick?: (type: number, id: string) => void
+  onTabClose?: (tab: Tab) => void
   onTabRename?: (tab: Tab, title: string) => void
+  closingTabKeys?: Set<string>
   onExpandWorkspace?: (workspaceId: string) => void
 
   // Workers
@@ -146,7 +148,9 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get tabStore() { return props.tabStore },
     get registry() { return props.registry },
     get onTabClick() { return props.onTabClick },
+    get onTabClose() { return props.onTabClose },
     get onTabRename() { return props.onTabRename },
+    get closingTabKeys() { return props.closingTabKeys },
     get onExpandWorkspace() { return props.onExpandWorkspace },
     get workerId() { return props.workerId },
     get workingDir() { return props.workingDir },

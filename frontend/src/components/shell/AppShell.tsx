@@ -1131,6 +1131,8 @@ export const AppShell: ParentComponent = (props) => {
         })
       }
     },
+    onTabClose: tabOps.handleTabClose,
+    get closingTabKeys() { return tabOps.closingTabKeys() },
     onExpandWorkspace: handleExpandWorkspace,
   })
 

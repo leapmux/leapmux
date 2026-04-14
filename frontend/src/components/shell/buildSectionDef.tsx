@@ -44,7 +44,9 @@ export interface SectionDefContext {
   tabStore?: ReturnType<typeof createTabStore>
   registry?: WorkspaceStoreRegistryType
   onTabClick?: (type: number, id: string) => void
+  onTabClose?: (tab: Tab) => void
   onTabRename?: (tab: Tab, title: string) => void
+  closingTabKeys?: Set<string>
   onExpandWorkspace?: (workspaceId: string) => void
 
   // Files section
@@ -151,7 +153,9 @@ export function buildSectionDef(
             return snap?.tabs.activeTabKey ?? null
           }}
           onTabClick={ctx.onTabClick ?? (() => {})}
+          onTabClose={ctx.onTabClose}
           onTabRename={ctx.onTabRename}
+          closingTabKeys={ctx.closingTabKeys}
           onExpandWorkspace={ctx.onExpandWorkspace}
         />
       ),

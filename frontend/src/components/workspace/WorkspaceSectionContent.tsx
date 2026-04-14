@@ -49,7 +49,9 @@ export interface WorkspaceSectionContentProps {
   getTabsForWorkspace: (workspaceId: string) => Tab[]
   getActiveTabKeyForWorkspace: (workspaceId: string) => string | null
   onTabClick: (type: TabType, id: string) => void
+  onTabClose?: (tab: Tab) => void
   onTabRename?: (tab: Tab, title: string) => void
+  closingTabKeys?: Set<string>
   readOnly?: boolean
   onExpandWorkspace?: (workspaceId: string) => void
 }
@@ -321,7 +323,9 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                             props.onTabClick(type, tabId)
                           }
                         }}
+                        onTabClose={props.onTabClose}
                         onTabRename={props.onTabRename}
+                        closingTabKeys={props.closingTabKeys}
                         readOnly={props.readOnly}
                         workspaceId={id}
                       />
