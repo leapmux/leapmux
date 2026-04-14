@@ -41,6 +41,7 @@ func (h *OutputHandler) materializePlanFile(title string, content []byte, now ti
 		}
 		if _, err := f.Write(content); err != nil {
 			_ = f.Close()
+			_ = os.Remove(path)
 			return "", fmt.Errorf("write plan file: %w", err)
 		}
 		if err := f.Close(); err != nil {
