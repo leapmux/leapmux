@@ -377,20 +377,16 @@ fn bootstrap_dev_socket_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap,
 }
 
 #[cfg(unix)]
+type DevSidecarConnection = (
+    Box<dyn Read + Send>,
+    Box<dyn Write + Send>,
+    proto::SidecarInfo,
+);
+
+#[cfg(unix)]
 fn try_connect_dev_sidecar(
     socket_path: &Path,
-) -> Result<
-    Option<(
-        Box<dyn Read + Send>,
-        Box<dyn Write + Send>,
-        proto::SidecarInfo,
-    )>,
-    String,
-> {
-    if !socket_path.exists() {
-        return Ok(None);
-    }
-
+) -> Result<Option<DevSidecarConnection>, String> {
     let stream = match UnixStream::connect(socket_path) {
         Ok(stream) => stream,
         Err(err)
@@ -407,17 +403,11 @@ fn try_connect_dev_sidecar(
     stream
         .set_write_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
         .map_err(|err| format!("set sidecar socket write timeout: {err}"))?;
-    let reader = stream
+    let mut reader = stream
         .try_clone()
         .map_err(|err| format!("clone sidecar socket: {err}"))?;
-    let writer = stream;
-    let mut info_reader = reader
-        .try_clone()
-        .map_err(|err| format!("clone sidecar socket: {err}"))?;
-    let mut info_writer = writer
-        .try_clone()
-        .map_err(|err| format!("clone sidecar socket: {err}"))?;
-    let info = fetch_sidecar_info(&mut info_reader, &mut info_writer)?;
+    let mut writer = stream;
+    let info = fetch_sidecar_info(&mut reader, &mut writer)?;
     Ok(Some((
         Box::new(reader),
         Box::new(BufWriter::new(writer)),
@@ -528,14 +518,12 @@ fn write_sidecar_metadata(
     };
     if let Some(parent) = metadata_path.parent() {
         fs::create_dir_all(parent).map_err(|err| format!("create sidecar metadata dir: {err}"))?;
-        #[cfg(unix)]
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
             .map_err(|err| format!("set sidecar metadata dir permissions: {err}"))?;
     }
     let data = serde_json::to_vec_pretty(&metadata)
         .map_err(|err| format!("serialize sidecar metadata: {err}"))?;
     fs::write(metadata_path, data).map_err(|err| format!("write sidecar metadata: {err}"))?;
-    #[cfg(unix)]
     fs::set_permissions(metadata_path, fs::Permissions::from_mode(0o600))
         .map_err(|err| format!("set sidecar metadata permissions: {err}"))?;
     Ok(())
@@ -567,10 +555,21 @@ fn sidecar_identity() -> String {
 }
 
 fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
-    let data =
-        fs::read(sidecar_path).map_err(|err| format!("read desktop sidecar binary: {err}"))?;
-    let digest = Sha256::digest(&data);
-    Ok(format!("{:x}", digest))
+    let file =
+        fs::File::open(sidecar_path).map_err(|err| format!("read desktop sidecar binary: {err}"))?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|err| format!("read desktop sidecar binary: {err}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 impl DesktopShell {
@@ -646,9 +645,9 @@ impl DesktopShell {
             Some(proto::response::Result::SidecarInfo(info)) => info,
             _ => return Err("unexpected response for get_sidecar_info".to_string()),
         };
-        let shell_mode = match info.shell_mode.as_str() {
-            "solo" => ShellMode::Solo,
-            "distributed" => ShellMode::Distributed,
+        let shell_mode = match info.shell_mode() {
+            proto::SidecarShellMode::Solo => ShellMode::Solo,
+            proto::SidecarShellMode::Distributed => ShellMode::Distributed,
             _ => ShellMode::Launcher,
         };
         let mut state = self.state.lock().unwrap();

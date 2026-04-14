@@ -129,11 +129,18 @@ message StartupInfo {
   BuildInfo build_info = 2;
 }
 
+enum SidecarShellMode {
+  SIDECAR_SHELL_MODE_UNSPECIFIED = 0;
+  SIDECAR_SHELL_MODE_LAUNCHER = 1;
+  SIDECAR_SHELL_MODE_SOLO = 2;
+  SIDECAR_SHELL_MODE_DISTRIBUTED = 3;
+}
+
 message SidecarInfo {
   string protocol_version = 1;
   string binary_hash = 2;
   int64 pid = 3;
-  string shell_mode = 4;
+  SidecarShellMode shell_mode = 4;
   bool connected = 5;
   string hub_url = 6;
 }

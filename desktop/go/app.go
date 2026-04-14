@@ -83,14 +83,14 @@ func (a *App) EmitEvent(event *desktoppb.Event) {
 }
 
 func (a *App) SidecarInfo() *desktoppb.SidecarInfo {
-	mode := "launcher"
+	mode := desktoppb.SidecarShellMode_SIDECAR_SHELL_MODE_LAUNCHER
 	connected := a.proxy != nil
 	if connected {
 		switch a.config.Mode {
 		case "distributed":
-			mode = "distributed"
+			mode = desktoppb.SidecarShellMode_SIDECAR_SHELL_MODE_DISTRIBUTED
 		default:
-			mode = "solo"
+			mode = desktoppb.SidecarShellMode_SIDECAR_SHELL_MODE_SOLO
 		}
 	}
 
