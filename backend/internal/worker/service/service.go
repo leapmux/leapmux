@@ -75,6 +75,7 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 	queries := db.New(sqlDB)
 	watchers := NewWatcherManager()
 	output := NewOutputHandler(queries, watchers, agents, wl)
+	output.DataDir = dataDir
 	svc := &Context{
 		DB:        sqlDB,
 		Queries:   queries,

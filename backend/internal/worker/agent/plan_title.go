@@ -19,9 +19,10 @@ var (
 	reLink          = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
 	reWikiLink      = regexp.MustCompile(`\[\[(.+?)\]\]`)
 
-	// rePlanPrefix matches common "plan" prefixes in titles, e.g.
-	// "Plan:", "Plan -", "[Plan]", "(Plan)", "*Plan*", etc.
-	rePlanPrefix = regexp.MustCompile(`(?i)^[\[({<*]*plan[\])}>*]*[\s:\-–—]+`)
+	// rePlanPrefix matches common plan/design prefixes in titles, e.g.
+	// "Plan:", "Design:", "Design Doc -", "[Plan]", "(Design Doc)", etc.
+	// The longer "Design Doc" prefix appears first so it wins over "Design".
+	rePlanPrefix = regexp.MustCompile(`(?i)^[\[({<*]*(design\s+doc|design|plan)[\])}>*]*[\s:\-–—]+`)
 
 	htmlPolicy = bluemonday.StrictPolicy()
 )
@@ -87,4 +88,31 @@ func extractPlanTitle(content string) string {
 	}
 
 	return line
+}
+
+// SanitizePlanFilenameTitle converts a plan title into a safe, readable
+// filename stem while preserving Unicode text where possible.
+func SanitizePlanFilenameTitle(title string) string {
+	title = strings.Map(func(r rune) rune {
+		switch {
+		case r == '/' || r == '\\':
+			return -1
+		case strings.ContainsRune(`<>:"|?*`, r):
+			return -1
+		case unicode.IsControl(r):
+			return -1
+		case unicode.IsSpace(r):
+			return ' '
+		default:
+			return r
+		}
+	}, title)
+
+	title = strings.TrimSpace(title)
+	title = strings.Join(strings.Fields(title), " ")
+	title = strings.TrimRight(title, ". ")
+	if title == "" {
+		return "Untitled Plan"
+	}
+	return title
 }

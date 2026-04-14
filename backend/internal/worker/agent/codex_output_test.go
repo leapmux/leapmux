@@ -7,12 +7,20 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
 
 // controlRequestRecord captures a single PersistControlRequest / BroadcastControlRequest call.
 type controlRequestRecord struct {
 	RequestID string
 	Payload   []byte
+}
+
+type planUpdateRecord struct {
+	FilePath    string
+	Content     []byte
+	Compression leapmuxv1.ContentCompression
+	Title       string
 }
 
 // controlTestSink extends testSink to also record control request calls.
@@ -22,6 +30,7 @@ type controlTestSink struct {
 	crMu              sync.Mutex
 	persistedControls []controlRequestRecord
 	broadcastControls []controlRequestRecord
+	planUpdates       []planUpdateRecord
 }
 
 type startupStatusGuardSink struct {
@@ -74,6 +83,29 @@ func (s *controlTestSink) LastBroadcastControl() controlRequestRecord {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
 	return s.broadcastControls[len(s.broadcastControls)-1]
+}
+
+func (s *controlTestSink) UpdatePlan(filePath string, content []byte, compression leapmuxv1.ContentCompression, title string) {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	s.planUpdates = append(s.planUpdates, planUpdateRecord{
+		FilePath:    filePath,
+		Content:     append([]byte(nil), content...),
+		Compression: compression,
+		Title:       title,
+	})
+}
+
+func (s *controlTestSink) PlanUpdateCount() int {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	return len(s.planUpdates)
+}
+
+func (s *controlTestSink) LastPlanUpdate() planUpdateRecord {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	return s.planUpdates[len(s.planUpdates)-1]
 }
 
 func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
@@ -848,5 +880,95 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 	}
 	if sink.SessionInfoCount() != 0 {
 		t.Fatalf("expected 0 session info broadcasts, got %d", sink.SessionInfoCount())
+	}
+}
+
+func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {
+	sink := &controlTestSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	agent.collaborationMode = CodexCollaborationPlan
+
+	planStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"plan","id":"plan-1"}}}`
+	planCompleted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"plan","id":"plan-1","text":"# Design Doc: Rendering fixes\n\n- first\n"}}}`
+	turnCompleted := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(planStarted)))
+	handleCodexOutput(agent, parseLine([]byte(planCompleted)))
+	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
+
+	if sink.PlanUpdateCount() != 1 {
+		t.Fatalf("expected 1 plan update, got %d", sink.PlanUpdateCount())
+	}
+	plan := sink.LastPlanUpdate()
+	decoded, err := msgcodec.Decompress(plan.Content, plan.Compression)
+	if err != nil {
+		t.Fatalf("failed to decompress persisted plan content: %v", err)
+	}
+	if got := string(decoded); got != "# Design Doc: Rendering fixes\n\n- first\n" {
+		t.Fatalf("unexpected persisted plan content: %q", got)
+	}
+	if plan.Title != "Rendering fixes" {
+		t.Fatalf("expected normalized title, got %q", plan.Title)
+	}
+	if sink.PersistedControlCount() != 1 || sink.BroadcastControlCount() != 1 {
+		t.Fatalf("expected one control request, got persisted=%d broadcast=%d", sink.PersistedControlCount(), sink.BroadcastControlCount())
+	}
+}
+
+func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanItem(t *testing.T) {
+	sink := &controlTestSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	agent.collaborationMode = CodexCollaborationPlan
+
+	assistantCompleted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"agentMessage","id":"msg-1","text":"Revised plan:\n- not a real plan item"}}}`
+	turnCompleted := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(assistantCompleted)))
+	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
+
+	if sink.PlanUpdateCount() != 0 {
+		t.Fatalf("expected no plan update, got %d", sink.PlanUpdateCount())
+	}
+	if sink.PersistedControlCount() != 0 || sink.BroadcastControlCount() != 0 {
+		t.Fatalf("expected no control request, got persisted=%d broadcast=%d", sink.PersistedControlCount(), sink.BroadcastControlCount())
+	}
+}
+
+func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *testing.T) {
+	sink := &controlTestSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	agent.collaborationMode = CodexCollaborationPlan
+
+	turnCompleted := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
+	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
+
+	if sink.PlanUpdateCount() != 0 {
+		t.Fatalf("expected no plan update, got %d", sink.PlanUpdateCount())
+	}
+	if sink.PersistedControlCount() != 0 || sink.BroadcastControlCount() != 0 {
+		t.Fatalf("expected no control request, got persisted=%d broadcast=%d", sink.PersistedControlCount(), sink.BroadcastControlCount())
+	}
+}
+
+func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(t *testing.T) {
+	sink := &controlTestSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+	agent.collaborationMode = CodexCollaborationPlan
+
+	planCompleted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"plan","id":"plan-1"}}}`
+	turnCompleted := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(planCompleted)))
+	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
+
+	if sink.PlanUpdateCount() != 0 {
+		t.Fatalf("expected no plan update, got %d", sink.PlanUpdateCount())
+	}
+	if sink.PersistedControlCount() != 0 || sink.BroadcastControlCount() != 0 {
+		t.Fatalf("expected no control request, got persisted=%d broadcast=%d", sink.PersistedControlCount(), sink.BroadcastControlCount())
 	}
 }

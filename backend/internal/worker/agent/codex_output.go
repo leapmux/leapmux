@@ -106,7 +106,6 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		a.turnToolUses = 0
 		a.turnSawPlan = false
 		a.turnPlanText = ""
-		a.turnAssistantText = ""
 		a.streamingPlan = false
 		threadID := a.threadID
 		a.mu.Unlock()
@@ -277,35 +276,30 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 
 	switch itemType {
 	case "agentMessage":
-		var messageItem struct {
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(item, &messageItem) == nil && messageItem.Text != "" {
-			a.mu.Lock()
-			a.turnAssistantText = messageItem.Text
-			a.mu.Unlock()
-		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
 		}
 	case "plan":
+		a.mu.Lock()
+		a.turnSawPlan = true
+		wasStreamingPlan := a.streamingPlan
+		a.streamingPlan = false
+		a.mu.Unlock()
+		if wasStreamingPlan {
+			a.sink.BroadcastSessionInfo(map[string]interface{}{
+				"streamingType": "",
+			})
+		}
+
 		var planItem struct {
 			Text string `json:"text"`
 		}
 		if json.Unmarshal(item, &planItem) == nil && planItem.Text != "" {
 			a.mu.Lock()
-			a.turnSawPlan = true
 			a.turnPlanText = planItem.Text
-			wasStreamingPlan := a.streamingPlan
-			a.streamingPlan = false
 			a.mu.Unlock()
-			if wasStreamingPlan {
-				a.sink.BroadcastSessionInfo(map[string]interface{}{
-					"streamingType": "",
-				})
-			}
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
@@ -391,7 +385,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	numToolUses := a.turnToolUses
 	sawPlan := a.turnSawPlan
 	planText := a.turnPlanText
-	assistantText := a.turnAssistantText
 	collaborationMode := a.collaborationMode
 	a.mu.Unlock()
 
@@ -434,16 +427,10 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				"error": "Codex turn failed",
 			})
 		}
-		promptText := planText
-		if promptText == "" {
-			promptText = assistantText
-		}
-		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && (sawPlan || promptText != "") {
+		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && sawPlan && planText != "" {
 			// Persist plan content so initiatePlanExecution can use it.
-			if promptText != "" {
-				compressed, compression := msgcodec.Compress([]byte(promptText))
-				a.sink.UpdatePlan("", compressed, compression, extractPlanTitle(promptText))
-			}
+			compressed, compression := msgcodec.Compress([]byte(planText))
+			a.sink.UpdatePlan("", compressed, compression, extractPlanTitle(planText))
 			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",
@@ -464,7 +451,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.turnID = ""
 	a.turnSawPlan = false
 	a.turnPlanText = ""
-	a.turnAssistantText = ""
 	a.mu.Unlock()
 
 	// Clear the turn ID in session info.
