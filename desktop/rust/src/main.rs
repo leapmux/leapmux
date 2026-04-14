@@ -414,11 +414,11 @@ fn connect_sidecar_socket(
     let reader = stream
         .try_clone()
         .map_err(|err| format!("clone sidecar socket: {err}"))?;
-    let mut writer = stream;
+    let writer = stream;
     writer
         .set_write_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
         .map_err(|err| format!("set sidecar socket write timeout: {err}"))?;
-    let mut reader = reader;
+    let reader = reader;
     reader
         .set_read_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
         .map_err(|err| format!("set sidecar socket read timeout: {err}"))?;
