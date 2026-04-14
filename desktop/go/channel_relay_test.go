@@ -80,3 +80,59 @@ func TestApp_SidecarLogEvents_EmittedAfterSoloStart(t *testing.T) {
 	}
 	assert.Contains(t, messages, "channel relay connected")
 }
+
+// TestApp_OpenChannelRelay_ReusesAliveRelay reproduces the dev-refresh bug:
+// when the persistent sidecar is asked to open the channel relay again, it
+// must reuse the existing live relay rather than churning the connection.
+// Churning would tear down the hub's relay binding and (combined with the
+// race in UnregisterUnboundByUser) wipe channels the new page just opened.
+func TestApp_OpenChannelRelay_ReusesAliveRelay(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "leapmux-home-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", filepath.Clean(home))
+
+	var mu sync.Mutex
+	var connectCount, disconnectCount int
+	emitFunc := func(event *desktoppb.Event) {
+		log := event.GetSidecarLog()
+		if log == nil {
+			return
+		}
+		mu.Lock()
+		switch log.Message {
+		case "channel relay connected":
+			connectCount++
+		case "channel relay disconnected":
+			disconnectCount++
+		}
+		mu.Unlock()
+	}
+
+	app := NewApp("")
+	app.SetEventSink(emitFunc)
+	defer app.shutdown()
+
+	require.NoError(t, app.ConnectSolo())
+	require.NoError(t, app.OpenChannelRelay())
+	time.Sleep(100 * time.Millisecond)
+
+	firstRelay := app.relay
+	require.NotNil(t, firstRelay)
+
+	// Second OpenChannelRelay simulates the page-refresh path. It must
+	// reuse the existing relay rather than opening a new one.
+	require.NoError(t, app.OpenChannelRelay())
+	time.Sleep(100 * time.Millisecond)
+
+	assert.Same(t, firstRelay, app.relay, "relay must be reused across OpenChannelRelay calls")
+
+	mu.Lock()
+	gotConnects := connectCount
+	gotDisconnects := disconnectCount
+	mu.Unlock()
+	assert.Equal(t, 1, gotConnects, "hub should see exactly one relay connect")
+	assert.Equal(t, 0, gotDisconnects, "hub should not see a disconnect")
+
+	require.NoError(t, app.CloseChannelRelay())
+}

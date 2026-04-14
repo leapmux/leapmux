@@ -45,7 +45,7 @@ const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024; // 16 MB
 const SIDECAR_PROTOCOL_VERSION: &str = "1";
 const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
-const DEV_SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const DEV_SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Serialize, Deserialize)]
 struct SidecarMetadata {
@@ -387,6 +387,20 @@ type DevSidecarConnection = (
 fn try_connect_dev_sidecar(
     socket_path: &Path,
 ) -> Result<Option<DevSidecarConnection>, String> {
+    match connect_and_handshake_dev_sidecar(socket_path)? {
+        Some((reader, writer, info)) => Ok(Some((
+            Box::new(reader),
+            Box::new(BufWriter::new(writer)),
+            info,
+        ))),
+        None => Ok(None),
+    }
+}
+
+#[cfg(unix)]
+fn connect_and_handshake_dev_sidecar(
+    socket_path: &Path,
+) -> Result<Option<(UnixStream, UnixStream, proto::SidecarInfo)>, String> {
     let stream = match UnixStream::connect(socket_path) {
         Ok(stream) => stream,
         Err(err)
@@ -408,11 +422,18 @@ fn try_connect_dev_sidecar(
         .map_err(|err| format!("clone sidecar socket: {err}"))?;
     let mut writer = stream;
     let info = fetch_sidecar_info(&mut reader, &mut writer)?;
-    Ok(Some((
-        Box::new(reader),
-        Box::new(BufWriter::new(writer)),
-        info,
-    )))
+    // The handshake timeouts guarded against a wedged sidecar replying
+    // to GetSidecarInfo. The reader/writer are about to be handed to a
+    // long-lived thread that must block indefinitely on idle — leaving
+    // the timeout in place causes reads to surface EAGAIN (os error 35)
+    // after ~2s of inactivity and tears the connection down.
+    reader
+        .set_read_timeout(None)
+        .map_err(|err| format!("clear sidecar socket read timeout: {err}"))?;
+    writer
+        .set_write_timeout(None)
+        .map_err(|err| format!("clear sidecar socket write timeout: {err}"))?;
+    Ok(Some((reader, writer, info)))
 }
 
 #[cfg(unix)]
@@ -1521,4 +1542,74 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::AtomicU64;
+    use std::time::SystemTime;
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_socket_path() -> PathBuf {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("leapmux-test-{pid}-{nanos}-{counter}.sock"))
+    }
+
+    fn spawn_fake_sidecar(socket_path: PathBuf) -> thread::JoinHandle<()> {
+        let listener = UnixListener::bind(&socket_path).expect("bind fake sidecar");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept fake sidecar");
+            // Consume the GetSidecarInfo request so the handshake completes.
+            let _ = read_frame(&mut stream).expect("read handshake request");
+            let response = proto::Frame {
+                message: Some(proto::frame::Message::Response(proto::Response {
+                    id: 1,
+                    error: String::new(),
+                    result: Some(proto::response::Result::SidecarInfo(proto::SidecarInfo {
+                        protocol_version: SIDECAR_PROTOCOL_VERSION.to_string(),
+                        binary_hash: "test-hash".to_string(),
+                        pid: std::process::id() as i64,
+                        shell_mode: 0,
+                        connected: false,
+                        hub_url: String::new(),
+                    })),
+                })),
+            };
+            write_frame(&mut stream, &response).expect("write handshake response");
+            // Hold the connection open so the client can inspect its stream.
+            // The test drops its reader to signal completion.
+            let _ = stream.read(&mut [0u8; 1]);
+        })
+    }
+
+    #[test]
+    fn connect_and_handshake_clears_stream_timeouts() {
+        let socket_path = unique_test_socket_path();
+        let server = spawn_fake_sidecar(socket_path.clone());
+
+        let (reader, writer, info) = connect_and_handshake_dev_sidecar(&socket_path)
+            .expect("handshake ok")
+            .expect("server present");
+
+        assert_eq!(info.protocol_version, SIDECAR_PROTOCOL_VERSION);
+        // Without the fix these return `Some(DEV_SIDECAR_CONNECT_TIMEOUT)`,
+        // which causes the long-lived reader thread to see EAGAIN
+        // ("Resource temporarily unavailable (os error 35)") after ~2s of
+        // idle and tear the sidecar connection down.
+        assert_eq!(reader.read_timeout().expect("read_timeout"), None);
+        assert_eq!(writer.write_timeout().expect("write_timeout"), None);
+
+        drop(reader);
+        drop(writer);
+        server.join().expect("fake sidecar thread");
+        let _ = fs::remove_file(&socket_path);
+    }
 }

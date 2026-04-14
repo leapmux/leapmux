@@ -99,16 +99,12 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	slog.Info("channel relay connected", "user_id", user.ID, "conn_id", connID)
 	defer func() {
 		slog.Info("channel relay disconnected", "user_id", user.ID, "conn_id", connID)
-		noConns := h.channelMgr.UnbindUser(user.ID, connID)
 
-		// Clean up channels bound to this relay connection and notify workers.
-		closed := h.channelMgr.UnregisterByConn(connID)
-
-		// If this was the user's last relay connection, also clean up channels
-		// that were opened via RPC but never bound to any relay connection.
-		if noConns {
-			closed = append(closed, h.channelMgr.UnregisterUnboundByUser(user.ID)...)
-		}
+		// Atomically unbind and clean up channels affected by this disconnect.
+		// Doing it under a single lock prevents a race where a concurrent
+		// BindUser+Register from a freshly-loaded page (e.g. a dev refresh)
+		// would be wiped by a stale unbound-channel sweep.
+		closed := h.channelMgr.UnbindUserAndCleanup(user.ID, connID)
 
 		for _, cc := range closed {
 			slog.Info("channel closed (relay disconnected)",

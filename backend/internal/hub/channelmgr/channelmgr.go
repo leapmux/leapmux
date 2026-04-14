@@ -117,25 +117,30 @@ func (m *Manager) BindUser(userID, connID string, sendFn SendFunc, cancel contex
 // Returns true if the user has no remaining connections.
 func (m *Manager) UnbindUser(userID, connID string) bool {
 	m.mu.Lock()
-	conns := m.userSenders[userID]
-	var uc *userConn
-	noConns := false
-	if conns != nil {
-		uc = conns[connID]
-		delete(conns, connID)
-		if len(conns) == 0 {
-			delete(m.userSenders, userID)
-			noConns = true
-		}
-	} else {
-		noConns = true
-	}
+	uc, noConns := m.unbindLocked(userID, connID)
 	m.mu.Unlock()
 
 	if uc != nil && uc.cancel != nil {
 		uc.cancel()
 	}
 	return noConns
+}
+
+// unbindLocked removes a user's connection while m.mu is held. Returns the
+// removed userConn (so the caller can invoke its cancel outside the lock)
+// and whether the user has any remaining connections.
+func (m *Manager) unbindLocked(userID, connID string) (*userConn, bool) {
+	conns := m.userSenders[userID]
+	if conns == nil {
+		return nil, true
+	}
+	uc := conns[connID]
+	delete(conns, connID)
+	if len(conns) == 0 {
+		delete(m.userSenders, userID)
+		return uc, true
+	}
+	return uc, false
 }
 
 // SetChannelConn associates a channel with a specific multiplexed connection.
@@ -245,13 +250,44 @@ func (m *Manager) UnregisterByConn(connID string) []ClosedChannel {
 	})
 }
 
-// UnregisterUnboundByUser removes all channels for a user that have no
-// associated relay connection (empty ConnID). This cleans up channels that were
-// opened via RPC but never used through a WebSocket relay.
-func (m *Manager) UnregisterUnboundByUser(userID string) []ClosedChannel {
-	return m.unregisterMatching(func(ch *channel) bool {
-		return ch.UserID == userID && ch.ConnID == ""
-	})
+// UnbindUserAndCleanup atomically unbinds a relay connection and removes the
+// channels affected by that disconnect: channels bound to the connection
+// being unbound, plus — only if no other relay connections remain for the
+// user — channels for that user that were never bound to any relay.
+//
+// All three operations run under a single lock so a concurrent BindUser /
+// Register from a new relay session cannot be wiped by the unbound-channel
+// sweep. Returns the closed channels so the caller can notify workers.
+func (m *Manager) UnbindUserAndCleanup(userID, connID string) []ClosedChannel {
+	m.mu.Lock()
+	uc, noConns := m.unbindLocked(userID, connID)
+
+	var removed []ClosedChannel
+	var cancels []context.CancelFunc
+	for id, ch := range m.channels {
+		if ch.UserID != userID {
+			continue
+		}
+		if ch.ConnID == connID || (noConns && ch.ConnID == "") {
+			removed = append(removed, ClosedChannel{ChannelID: id, WorkerID: ch.WorkerID})
+			if ch.cancel != nil {
+				cancels = append(cancels, ch.cancel)
+			}
+			delete(m.channels, id)
+		}
+	}
+	m.mu.Unlock()
+
+	if uc != nil && uc.cancel != nil {
+		uc.cancel()
+	}
+	for _, cc := range removed {
+		m.ChunkTracker.RemoveChannel(cc.ChannelID)
+	}
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return removed
 }
 
 // unregisterMatching removes all channels matching the predicate.

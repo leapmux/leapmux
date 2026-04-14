@@ -317,28 +317,124 @@ func TestUnregisterByConn(t *testing.T) {
 	assert.False(t, m.Exists("ch2"))
 }
 
-func TestUnregisterUnboundByUser(t *testing.T) {
+func TestUnbindUserAndCleanup_RemovesBoundAndUnboundChannels(t *testing.T) {
 	m := New()
-	cancelled := false
+	noopSender := func(*leapmuxv1.ChannelMessage) error { return nil }
 
-	// Unbound channel (no ConnID set).
-	m.Register("ch1", "w1", "u1", func() { cancelled = true })
-	// Bound channel (has ConnID).
-	m.Register("ch2", "w1", "u1", nil)
-	m.SetChannelConn("ch2", "conn1")
-	// Unbound channel for different user.
-	m.Register("ch3", "w1", "u2", nil)
+	m.BindUser("u1", "conn1", noopSender, nil)
 
-	removed := m.UnregisterUnboundByUser("u1")
+	var boundCancelled, unboundCancelled bool
+	m.Register("ch_bound", "w1", "u1", func() { boundCancelled = true })
+	m.SetChannelConn("ch_bound", "conn1")
+	m.Register("ch_unbound", "w1", "u1", func() { unboundCancelled = true })
+	m.Register("ch_other_user", "w1", "u2", nil)
+
+	removed := m.UnbindUserAndCleanup("u1", "conn1")
+
+	assert.Len(t, removed, 2)
+	closedIDs := map[string]bool{}
+	for _, cc := range removed {
+		closedIDs[cc.ChannelID] = true
+		assert.Equal(t, "w1", cc.WorkerID)
+	}
+	assert.True(t, closedIDs["ch_bound"])
+	assert.True(t, closedIDs["ch_unbound"])
+	assert.True(t, boundCancelled)
+	assert.True(t, unboundCancelled)
+	assert.False(t, m.Exists("ch_bound"))
+	assert.False(t, m.Exists("ch_unbound"))
+	assert.True(t, m.Exists("ch_other_user"))
+}
+
+// TestUnbindUserAndCleanup_PreservesUnboundChannelsWhenAnotherConnExists
+// guards the race that surfaces during a desktop dev refresh: the OLD
+// relay's defer must not sweep unbound channels if a NEW relay session has
+// already bound for the same user. Without atomic unbind+cleanup the OLD
+// session would observe `noConns=true` between separate calls and wipe
+// channels that the NEW session is about to use.
+func TestUnbindUserAndCleanup_PreservesUnboundChannelsWhenAnotherConnExists(t *testing.T) {
+	m := New()
+	noopSender := func(*leapmuxv1.ChannelMessage) error { return nil }
+
+	m.BindUser("u1", "old", noopSender, nil)
+	m.BindUser("u1", "new", noopSender, nil)
+
+	m.Register("ch_old_bound", "w1", "u1", nil)
+	m.SetChannelConn("ch_old_bound", "old")
+	m.Register("ch_new_unbound", "w1", "u1", nil)
+
+	removed := m.UnbindUserAndCleanup("u1", "old")
+
+	assert.Len(t, removed, 1)
+	assert.Equal(t, "ch_old_bound", removed[0].ChannelID)
+	assert.False(t, m.Exists("ch_old_bound"))
+	assert.True(t, m.Exists("ch_new_unbound"), "unbound channel must survive while another conn exists")
+}
+
+func TestUnbindUserAndCleanup_UnknownConn(t *testing.T) {
+	m := New()
+	m.Register("ch1", "w1", "u1", nil)
+
+	removed := m.UnbindUserAndCleanup("u1", "never-bound")
+
+	// No conn for user → unbound channel is swept.
 	assert.Len(t, removed, 1)
 	assert.Equal(t, "ch1", removed[0].ChannelID)
-	assert.Equal(t, "w1", removed[0].WorkerID)
-	assert.True(t, cancelled)
+}
 
-	// ch2 (bound) and ch3 (different user) should remain.
-	assert.False(t, m.Exists("ch1"))
-	assert.True(t, m.Exists("ch2"))
-	assert.True(t, m.Exists("ch3"))
+func TestUnbindUserAndCleanup_CallsConnCancel(t *testing.T) {
+	m := New()
+	noopSender := func(*leapmuxv1.ChannelMessage) error { return nil }
+
+	cancelled := false
+	m.BindUser("u1", "conn1", noopSender, func() { cancelled = true })
+
+	m.UnbindUserAndCleanup("u1", "conn1")
+	assert.True(t, cancelled)
+}
+
+// TestUnbindUserAndCleanup_RaceWithConcurrentBind exercises the race window
+// that motivated the atomic implementation. The "new" relay's BindUser+
+// Register sequence races with the "old" relay's cleanup. Whichever
+// finishes first must produce a consistent post-state:
+//   - If "new" wins: noConns observed as false, the new channel survives.
+//   - If "old" wins: noConns observed as true, no new channel exists yet.
+//
+// A non-atomic implementation can interleave a BindUser+Register between
+// its own UnbindUser and unbound sweep, observing noConns=true while the
+// new channel is already present — and wipe it. With the atomic version,
+// either the new conn is present at sweep time or the new channel hasn't
+// been registered yet, so the new channel always survives.
+func TestUnbindUserAndCleanup_RaceWithConcurrentBind(t *testing.T) {
+	const iterations = 5000
+	noopSender := func(*leapmuxv1.ChannelMessage) error { return nil }
+
+	for i := 0; i < iterations; i++ {
+		m := New()
+		m.BindUser("u1", "old", noopSender, nil)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			m.UnbindUserAndCleanup("u1", "old")
+		}()
+
+		newChannelID := "ch_new"
+		go func() {
+			defer wg.Done()
+			m.BindUser("u1", "new", noopSender, nil)
+			m.Register(newChannelID, "w1", "u1", nil)
+		}()
+
+		wg.Wait()
+
+		// "new" always finishes binding+registering, so the new channel
+		// must always exist after both goroutines complete.
+		assert.True(t, m.Exists(newChannelID),
+			"iteration %d: ch_new must survive concurrent cleanup", i)
+	}
 }
 
 func TestUnbindUser_ReturnsNoConns(t *testing.T) {

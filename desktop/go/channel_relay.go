@@ -26,6 +26,14 @@ func (a *App) OpenChannelRelay() error {
 		return fmt.Errorf("not connected")
 	}
 
+	// Reuse an existing healthy relay. The sidecar persists across dev
+	// refreshes, so the frontend's reconnect attempt would otherwise tear
+	// down the hub-side binding and trigger a cleanup race that wipes
+	// channels the freshly-loaded page is about to use.
+	if a.relay != nil && a.relay.ctx.Err() == nil {
+		return nil
+	}
+
 	a.closeChannelRelay()
 
 	ctx, cancel := context.WithCancel(a.ctx)
