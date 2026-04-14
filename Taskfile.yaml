@@ -514,7 +514,7 @@ tasks:
     cmds:
       - task: generate
       - task: prepare-frontend
-      - task: prepare-backend
+      - task: prepare-desktop
       - task: build-desktop-sidecar
       - mprocs --config mprocs-desktop.yaml
 
