@@ -772,6 +772,11 @@ fn toggle_menu_bar(app: AppHandle) {
 }
 
 #[tauri::command]
+fn open_web_inspector(app: AppHandle) {
+  open_main_web_inspector(&app);
+}
+
+#[tauri::command]
 fn zoom_in_webview(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
   shell.set_zoom(shell.current_zoom() + 0.1)
 }
@@ -846,7 +851,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     OPEN_WEB_INSPECTOR_MENU_ID,
     "Open Web Inspector",
     true,
-    Some("CmdOrCtrl+Alt+I"),
+    None::<&str>,
   )?;
 
   #[cfg(target_os = "macos")]
@@ -1056,6 +1061,7 @@ fn main() {
       quit_app,
       hide_menu_bar,
       toggle_menu_bar,
+      open_web_inspector,
       zoom_in_webview,
       zoom_out_webview,
       reset_webview_zoom,

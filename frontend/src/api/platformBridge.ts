@@ -339,6 +339,12 @@ export function resetWebviewZoom(): void {
   tauriInvoke('reset_webview_zoom').catch(() => {})
 }
 
+export function openWebInspector(): void {
+  if (!isTauriApp())
+    return
+  tauriInvoke('open_web_inspector').catch(() => {})
+}
+
 export async function windowMinimize(): Promise<void> {
   const { getCurrentWindow } = await loadTauriWindow()
   await getCurrentWindow().minimize()
