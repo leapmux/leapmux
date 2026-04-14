@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
+
+const codexRetryableDisconnectPrefix = "stream disconnected before completion:"
 
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
 // Codex messages are stored in their native JSON-RPC format.
@@ -390,7 +393,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 	// Parse once: enrich with num_tool_uses and extract turn data
 	// from the same map to avoid a second json.Unmarshal.
-	var turnStatus, turnID string
+	var turnStatus, turnID, turnErrorMessage string
 	parsed := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(params, &parsed); err == nil {
 		if b, err := json.Marshal(numToolUses); err == nil {
@@ -400,10 +403,14 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			var turn struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
+				Error  struct {
+					Message string `json:"message"`
+				} `json:"error"`
 			}
 			if json.Unmarshal(turnRaw, &turn) == nil {
 				turnStatus = turn.Status
 				turnID = turn.ID
+				turnErrorMessage = turn.Error.Message
 			}
 		}
 		if b, err := json.Marshal(parsed); err == nil {
@@ -422,10 +429,17 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 	if turnStatus != "" {
 		if turnStatus == "failed" {
-			a.sink.BroadcastNotification(map[string]interface{}{
-				"type":  "agent_error",
-				"error": "Codex turn failed",
-			})
+			if isRetryableCodexTurnFailure(turnErrorMessage) {
+				a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+					Reason:        AutoContinueReasonAPIError,
+					DueAt:         time.Now().UTC(),
+					SourcePayload: append([]byte(nil), params...),
+				})
+			} else {
+				a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
+			}
+		} else {
+			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
 		}
 		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && sawPlan && planText != "" {
 			// Persist plan content so initiatePlanExecution can use it.
@@ -457,6 +471,10 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		"codexTurnId": "",
 	})
+}
+
+func isRetryableCodexTurnFailure(message string) bool {
+	return strings.HasPrefix(message, codexRetryableDisconnectPrefix)
 }
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.

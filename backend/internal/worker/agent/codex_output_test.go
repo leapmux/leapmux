@@ -327,6 +327,70 @@ func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
 	}
 }
 
+func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"stream disconnected before completion: An error occurred while processing your request.","codexErrorInfo":"other","additionalDetails":null}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	if sink.MessageCount() != 1 {
+		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
+	}
+	if sink.AutoScheduleCount() != 1 {
+		t.Fatalf("expected 1 auto-continue schedule, got %d", sink.AutoScheduleCount())
+	}
+	schedule := sink.LastAutoSchedule()
+	if schedule.Reason != AutoContinueReasonAPIError {
+		t.Fatalf("expected api_error reason, got %q", schedule.Reason)
+	}
+	if string(schedule.SourcePayload) != string(sink.Messages()[0].Content) {
+		t.Fatalf("expected source payload to match persisted turn/completed payload")
+	}
+	if sink.AutoCancelCount() != 0 {
+		t.Fatalf("expected 0 auto-continue cancels, got %d", sink.AutoCancelCount())
+	}
+}
+
+func TestHandleCodexOutput_TurnCompletedFailedNonRetryableCancelsAPIError(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"Request was aborted by the user.","codexErrorInfo":"other","additionalDetails":null}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	if sink.AutoScheduleCount() != 0 {
+		t.Fatalf("expected 0 auto-continue schedules, got %d", sink.AutoScheduleCount())
+	}
+	if sink.AutoCancelCount() != 1 {
+		t.Fatalf("expected 1 auto-continue cancel, got %d", sink.AutoCancelCount())
+	}
+	if sink.LastAutoCancel() != AutoContinueReasonAPIError {
+		t.Fatalf("expected api_error cancel, got %q", sink.LastAutoCancel())
+	}
+}
+
+func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	if sink.AutoScheduleCount() != 0 {
+		t.Fatalf("expected 0 auto-continue schedules, got %d", sink.AutoScheduleCount())
+	}
+	if sink.AutoCancelCount() != 1 {
+		t.Fatalf("expected 1 auto-continue cancel, got %d", sink.AutoCancelCount())
+	}
+	if sink.LastAutoCancel() != AutoContinueReasonAPIError {
+		t.Fatalf("expected api_error cancel, got %q", sink.LastAutoCancel())
+	}
+}
+
 func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)

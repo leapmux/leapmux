@@ -265,6 +265,24 @@ describe('codex result divider', () => {
     expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
+  it('hides synthetic Codex turn failed notifications', () => {
+    const parent = {
+      type: 'agent_error',
+      error: 'Codex turn failed',
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides notification threads containing only synthetic Codex turn failed notifications', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        { type: 'agent_error', error: 'Codex turn failed' },
+      ],
+    }
+    expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
   it('renders result_divider via renderMessage', () => {
     const parsed = {
       turn: { id: 'turn-1', status: 'completed' },
