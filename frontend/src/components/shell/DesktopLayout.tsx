@@ -3,7 +3,7 @@ import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createSectionStore } from '~/stores/section.store'
 import Plus from 'lucide-solid/icons/plus'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
@@ -66,6 +66,8 @@ interface DesktopLayoutProps {
   fileDropDisabled?: boolean
   setToggleLeftSidebar?: (fn: () => void) => void
   setToggleRightSidebar?: (fn: () => void) => void
+  setLeftSidebarVisible?: (visible: boolean) => void
+  setRightSidebarVisible?: (visible: boolean) => void
 }
 
 function useSidebarDrag(opts: {
@@ -187,6 +189,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   onMount(() => {
     props.setToggleLeftSidebar?.(toggleLeft)
   })
+  createEffect(() => props.setLeftSidebarVisible?.(!leftCollapsed()))
 
   const collapseRight = () => {
     rightWidthBeforeCollapse = rightWidth()
@@ -209,6 +212,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   onMount(() => {
     props.setToggleRightSidebar?.(toggleRight)
   })
+  createEffect(() => props.setRightSidebarVisible?.(!rightCollapsed()))
 
   // --- Drag handles ---
   const leftDrag = useSidebarDrag({

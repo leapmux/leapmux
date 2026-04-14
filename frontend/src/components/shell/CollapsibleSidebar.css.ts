@@ -72,7 +72,6 @@ export const sidebarHeaderActions = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  marginRight: '-4px',
 })
 
 export const collapsibleTrigger = style({
@@ -113,10 +112,7 @@ export const collapsibleTriggerStatic = style({
   },
 })
 
-/** Right-sidebar triggers keep the original --space-4 right padding. */
-export const collapsibleTriggerRight = style({
-  paddingRight: 'var(--space-4)',
-})
+export const collapsibleTriggerRight = style({})
 
 /** Make the title expand so action buttons stay grouped on the right. */
 globalStyle(`${collapsibleTrigger} > ${sidebarTitle}`, {

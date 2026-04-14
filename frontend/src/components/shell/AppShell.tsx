@@ -426,6 +426,10 @@ export const AppShell: ParentComponent = (props) => {
     return { workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
   }
 
+  // Sidebar visibility state (synced from DesktopLayout via createEffect)
+  const [leftSidebarVisible, setLeftSidebarVisible] = createSignal(true)
+  const [rightSidebarVisible, setRightSidebarVisible] = createSignal(true)
+
   // Mutable refs for editor/scroll callbacks
   const toggleLeftSidebarRef: { current: (() => void) | undefined } = { current: undefined }
   const toggleRightSidebarRef: { current: (() => void) | undefined } = { current: undefined }
@@ -1142,11 +1146,15 @@ export const AppShell: ParentComponent = (props) => {
               <CustomTitlebar
                 onToggleLeftSidebar={() => toggleLeftSidebarRef.current?.()}
                 onToggleRightSidebar={() => toggleRightSidebarRef.current?.()}
+                leftSidebarVisible={leftSidebarVisible()}
+                rightSidebarVisible={rightSidebarVisible()}
               />
               <div class={titlebarStyles.titlebarContent}>
                 <DesktopLayout
                   setToggleLeftSidebar={fn => toggleLeftSidebarRef.current = fn}
                   setToggleRightSidebar={fn => toggleRightSidebarRef.current = fn}
+                  setLeftSidebarVisible={setLeftSidebarVisible}
+                  setRightSidebarVisible={setRightSidebarVisible}
                   sectionStore={sectionStore}
                   layoutStore={layoutStore}
                   onMoveSection={handleMoveSection}

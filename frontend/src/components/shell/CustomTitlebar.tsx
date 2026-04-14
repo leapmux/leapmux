@@ -11,6 +11,7 @@ import { shortcutHint } from '~/lib/shortcuts/display'
 import { getPlatform } from '~/lib/shortcuts/platform'
 import { isDesktopApp } from '~/lib/systemInfo'
 import * as styles from './CustomTitlebar.css'
+import { PanelLeftFilled, PanelRightFilled } from './SidebarIcons'
 
 const platform = getPlatform()
 const desktop = isDesktopApp()
@@ -21,6 +22,8 @@ const windowsPadding = desktop && platform === 'windows' ? '138px' : undefined
 interface CustomTitlebarProps {
   onToggleLeftSidebar: () => void
   onToggleRightSidebar: () => void
+  leftSidebarVisible: boolean
+  rightSidebarVisible: boolean
 }
 
 export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
@@ -32,22 +35,22 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
         'padding-right': windowsPadding,
       }}
     >
+      <div class={styles.dragRegion} data-tauri-drag-region />
+
       <IconButton
-        icon={PanelLeft}
+        icon={props.leftSidebarVisible ? PanelLeftFilled : PanelLeft}
         iconSize="lg"
         size="md"
         title={shortcutHint('Toggle left sidebar', 'app.toggleLeftSidebar')}
         onClick={() => props.onToggleLeftSidebar()}
       />
       <IconButton
-        icon={PanelRight}
+        icon={props.rightSidebarVisible ? PanelRightFilled : PanelRight}
         iconSize="lg"
         size="md"
         title={shortcutHint('Toggle right sidebar', 'app.toggleRightSidebar')}
         onClick={() => props.onToggleRightSidebar()}
       />
-
-      <div class={styles.dragRegion} data-tauri-drag-region />
 
       <Show when={isLinuxDesktop}>
         <div class={styles.windowControls}>
