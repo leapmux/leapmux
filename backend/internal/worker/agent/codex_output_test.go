@@ -295,6 +295,43 @@ func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
 	}
 }
 
+func TestHandleCodexOutput_TurnFailedServerOverloadedSchedulesResume(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"019d8b39-6599-7081-8901-53f80c6c56b7","items":[],"status":"failed","error":{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded","additionalDetails":null}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	if sink.AutoScheduleCount() != 1 {
+		t.Fatalf("expected 1 auto-continue schedule, got %d", sink.AutoScheduleCount())
+	}
+	schedule := sink.LastAutoSchedule()
+	if schedule.Reason != AutoContinueReasonAPIError {
+		t.Fatalf("expected api_error reason, got %q", schedule.Reason)
+	}
+	if schedule.DueAt.IsZero() {
+		t.Fatal("expected immediate dueAt for api_error schedule")
+	}
+	if len(schedule.SourcePayload) == 0 {
+		t.Fatal("expected source payload to be recorded")
+	}
+}
+
+func TestHandleCodexOutput_TurnFailedNonOverloadedCancelsAPIErrorResume(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","items":[],"status":"failed","error":{"message":"Something else failed","codexErrorInfo":"invalidRequest","additionalDetails":null}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	if sink.AutoCancelCount() != 1 {
+		t.Fatalf("expected 1 auto-continue cancel, got %d", sink.AutoCancelCount())
+	}
+	if sink.LastAutoCancel() != AutoContinueReasonAPIError {
+		t.Fatalf("expected api_error cancel, got %q", sink.LastAutoCancel())
+	}
+}
+
 func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)

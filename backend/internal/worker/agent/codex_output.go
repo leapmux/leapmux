@@ -398,6 +398,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	// Parse once: enrich with num_tool_uses and extract turn data
 	// from the same map to avoid a second json.Unmarshal.
 	var turnStatus, turnID string
+	autoContinueAPIError := false
 	parsed := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(params, &parsed); err == nil {
 		if b, err := json.Marshal(numToolUses); err == nil {
@@ -407,10 +408,14 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			var turn struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
+				Error  *struct {
+					CodexErrorInfo string `json:"codexErrorInfo"`
+				} `json:"error"`
 			}
 			if json.Unmarshal(turnRaw, &turn) == nil {
 				turnStatus = turn.Status
 				turnID = turn.ID
+				autoContinueAPIError = turnStatus == "failed" && turn.Error != nil && turn.Error.CodexErrorInfo == "serverOverloaded"
 			}
 		}
 		if b, err := json.Marshal(parsed); err == nil {
@@ -426,6 +431,16 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	// Reset all span tracking at turn-end so the next turn starts clean.
 	a.sink.ResetSpans()
 	a.resetCollabReceivers()
+
+	if autoContinueAPIError {
+		a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+			Reason:        AutoContinueReasonAPIError,
+			DueAt:         time.Now().UTC(),
+			SourcePayload: append([]byte(nil), params...),
+		})
+	} else {
+		a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
+	}
 
 	if turnStatus != "" {
 		if turnStatus == "failed" {
