@@ -48,6 +48,12 @@ export function renderWriteDetail(path?: string, content?: string, cwd?: string,
   )
 }
 
+export function renderDeleteDetail(path?: string, cwd?: string, homeDir?: string): JSX.Element | null {
+  if (!path)
+    return null
+  return <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
+}
+
 export function renderEditDetail(path?: string, oldStr?: string, newStr?: string, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null

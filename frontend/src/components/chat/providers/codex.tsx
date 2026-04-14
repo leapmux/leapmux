@@ -40,6 +40,7 @@ export const CODEX_EXTRA_COLLABORATION_MODE = 'collaboration_mode'
 export const CODEX_EXTRA_SANDBOX_POLICY = 'sandbox_policy'
 export const CODEX_EXTRA_NETWORK_ACCESS = 'network_access'
 export const CODEX_EXTRA_SERVICE_TIER = 'service_tier'
+const CODEX_TURN_FAILED_NOTIFICATION = 'Codex turn failed'
 
 let codexReqIdCounter = 1000
 
@@ -142,6 +143,8 @@ function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
     return false
   const msg = m as Record<string, unknown>
   if (msg.method === 'thread/tokenUsage/updated')
+    return true
+  if (msg.type === 'agent_error' && msg.error === CODEX_TURN_FAILED_NOTIFICATION)
     return true
   return isCodexRateLimitAllAllowed(msg)
 }
@@ -361,6 +364,9 @@ const codexPlugin: ProviderPlugin = {
         return { kind: 'hidden' }
       return { kind: 'notification' }
     }
+
+    if (type === 'agent_error' && parent.error === CODEX_TURN_FAILED_NOTIFICATION)
+      return { kind: 'hidden' }
 
     if (parent.method === 'turn/plan/updated' && isObject(parent.params))
       return { kind: 'tool_use', toolName: 'turnPlan', toolUse: parent, content: [] }

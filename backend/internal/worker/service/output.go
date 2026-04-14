@@ -360,6 +360,7 @@ type OutputHandler struct {
 	queries *db.Queries
 	watcher *WatcherManager
 	agents  *agent.Manager
+	DataDir string
 
 	// Per-agent notification threading state (concurrent access).
 	notifMu         sync.Map // agentID -> *sync.Mutex
@@ -380,6 +381,8 @@ type OutputHandler struct {
 
 	// wakeLock prevents system sleep while there is agent/terminal activity.
 	wakeLock *wakelock.ActivityTracker
+
+	now func() time.Time
 }
 
 // NewOutputHandler creates a new OutputHandler.
@@ -389,6 +392,7 @@ func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agen
 		watcher:  watcher,
 		agents:   agents,
 		wakeLock: wl,
+		now:      time.Now,
 	}
 }
 
@@ -937,6 +941,25 @@ func (h *OutputHandler) updatePlan(agentID, filePath string, compressed []byte, 
 		title = agentRow.PlanTitle
 	}
 
+	canonicalPath := agentRow.PlanFilePath
+	if len(compressed) > 0 {
+		content, err := msgcodec.Decompress(compressed, compression)
+		if err != nil {
+			slog.Warn("failed to decompress plan content", "agent_id", agentID, "error", err)
+		} else if len(content) > 0 {
+			materializedPath, err := h.materializePlanFile(title, content, h.now())
+			if err != nil {
+				slog.Warn("failed to materialize plan file", "agent_id", agentID, "error", err)
+			} else {
+				canonicalPath = materializedPath
+			}
+		}
+	}
+
+	if filePath != "" && canonicalPath == "" {
+		slog.Debug("ignoring provider-native plan path in favor of worker materialization", "agent_id", agentID, "provider_path", filePath)
+	}
+
 	shouldAutoRename := title != "" &&
 		title != agentRow.Title &&
 		(agentRow.Title == agentRow.PlanTitle ||
@@ -944,7 +967,7 @@ func (h *OutputHandler) updatePlan(agentID, filePath string, compressed []byte, 
 
 	if shouldAutoRename {
 		if err := h.queries.UpdateAgentPlanAndTitle(bgCtx(), db.UpdateAgentPlanAndTitleParams{
-			PlanFilePath:           filePath,
+			PlanFilePath:           canonicalPath,
 			PlanContent:            compressed,
 			PlanContentCompression: compression,
 			PlanTitle:              title,
@@ -960,7 +983,7 @@ func (h *OutputHandler) updatePlan(agentID, filePath string, compressed []byte, 
 		}
 	} else {
 		if err := h.queries.UpdateAgentPlan(bgCtx(), db.UpdateAgentPlanParams{
-			PlanFilePath:           filePath,
+			PlanFilePath:           canonicalPath,
 			PlanContent:            compressed,
 			PlanContentCompression: compression,
 			PlanTitle:              title,

@@ -1023,6 +1023,49 @@ describe('chatView', () => {
     expect(screen.getByTestId('message-toolbar')).toBeInTheDocument()
   })
 
+  it('renders a simple codex delete fileChange start message as file deletion', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-start',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'in_progress',
+        changes: [{ path: '/repo/src/old-file.ts', kind: { type: 'delete' }, diff: 'export const old = true\n' }],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container).toHaveTextContent('old-file.ts')
+    expect(view.container).not.toHaveTextContent('export const old = true')
+  })
+
+  it('renders a simple codex delete fileChange completion as file deletion', () => {
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'completed',
+        changes: [{ path: '/repo/src/old-file.ts', kind: { type: 'delete' }, diff: 'export const old = true\n' }],
+      }),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(view.container).toHaveTextContent('Deleted /repo/src/old-file.ts')
+    expect(view.container).not.toHaveTextContent('1 file changed')
+    expect(screen.getByTestId('message-toolbar')).toBeInTheDocument()
+  })
+
   it('renders multi-file codex fileChange entries with per-file labels including adds', () => {
     const messages = [
       makeCodexFileChangeMessage({

@@ -1,15 +1,17 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
+
+const codexRetryableDisconnectPrefix = "stream disconnected before completion:"
 
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
 // Codex messages are stored in their native JSON-RPC format.
@@ -107,7 +109,6 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		a.turnToolUses = 0
 		a.turnSawPlan = false
 		a.turnPlanText = ""
-		a.turnAssistantText = ""
 		a.streamingPlan = false
 		threadID := a.threadID
 		a.mu.Unlock()
@@ -278,35 +279,30 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 
 	switch itemType {
 	case "agentMessage":
-		var messageItem struct {
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(item, &messageItem) == nil && messageItem.Text != "" {
-			a.mu.Lock()
-			a.turnAssistantText = messageItem.Text
-			a.mu.Unlock()
-		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
 		}
 	case "plan":
+		a.mu.Lock()
+		a.turnSawPlan = true
+		wasStreamingPlan := a.streamingPlan
+		a.streamingPlan = false
+		a.mu.Unlock()
+		if wasStreamingPlan {
+			a.sink.BroadcastSessionInfo(map[string]interface{}{
+				"streamingType": "",
+			})
+		}
+
 		var planItem struct {
 			Text string `json:"text"`
 		}
 		if json.Unmarshal(item, &planItem) == nil && planItem.Text != "" {
 			a.mu.Lock()
-			a.turnSawPlan = true
 			a.turnPlanText = planItem.Text
-			wasStreamingPlan := a.streamingPlan
-			a.streamingPlan = false
 			a.mu.Unlock()
-			if wasStreamingPlan {
-				a.sink.BroadcastSessionInfo(map[string]interface{}{
-					"streamingType": "",
-				})
-			}
 		}
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
@@ -392,14 +388,12 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	numToolUses := a.turnToolUses
 	sawPlan := a.turnSawPlan
 	planText := a.turnPlanText
-	assistantText := a.turnAssistantText
 	collaborationMode := a.collaborationMode
 	a.mu.Unlock()
 
 	// Parse once: enrich with num_tool_uses and extract turn data
 	// from the same map to avoid a second json.Unmarshal.
-	var turnStatus, turnID string
-	autoContinueAPIError := false
+	var turnStatus, turnID, turnErrorMessage, turnErrorInfo string
 	parsed := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(params, &parsed); err == nil {
 		if b, err := json.Marshal(numToolUses); err == nil {
@@ -409,14 +403,16 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			var turn struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
-				Error  *struct {
+				Error  struct {
+					Message        string `json:"message"`
 					CodexErrorInfo string `json:"codexErrorInfo"`
 				} `json:"error"`
 			}
 			if json.Unmarshal(turnRaw, &turn) == nil {
 				turnStatus = turn.Status
 				turnID = turn.ID
-				autoContinueAPIError = turnStatus == "failed" && turn.Error != nil && turn.Error.CodexErrorInfo == "serverOverloaded"
+				turnErrorMessage = turn.Error.Message
+				turnErrorInfo = turn.Error.CodexErrorInfo
 			}
 		}
 		if b, err := json.Marshal(parsed); err == nil {
@@ -433,33 +429,20 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.sink.ResetSpans()
 	a.resetCollabReceivers()
 
-	if autoContinueAPIError {
-		a.sink.ScheduleAutoContinue(AutoContinueSchedule{
-			Reason:        AutoContinueReasonAPIError,
-			DueAt:         time.Now().UTC(),
-			SourcePayload: bytes.Clone(params),
-		})
-	} else {
-		a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
-	}
-
 	if turnStatus != "" {
-		if turnStatus == "failed" {
-			a.sink.BroadcastNotification(map[string]interface{}{
-				"type":  "agent_error",
-				"error": "Codex turn failed",
+		if turnStatus == "failed" && (turnErrorInfo == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage)) {
+			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
+				Reason:        AutoContinueReasonAPIError,
+				DueAt:         time.Now().UTC(),
+				SourcePayload: append([]byte(nil), params...),
 			})
+		} else {
+			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
 		}
-		promptText := planText
-		if promptText == "" {
-			promptText = assistantText
-		}
-		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && (sawPlan || promptText != "") {
+		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && sawPlan && planText != "" {
 			// Persist plan content so initiatePlanExecution can use it.
-			if promptText != "" {
-				compressed, compression := msgcodec.Compress([]byte(promptText))
-				a.sink.UpdatePlan("", compressed, compression, extractPlanTitle(promptText))
-			}
+			compressed, compression := msgcodec.Compress([]byte(planText))
+			a.sink.UpdatePlan("", compressed, compression, extractPlanTitle(planText))
 			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",
@@ -480,13 +463,16 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.turnID = ""
 	a.turnSawPlan = false
 	a.turnPlanText = ""
-	a.turnAssistantText = ""
 	a.mu.Unlock()
 
 	// Clear the turn ID in session info.
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		"codexTurnId": "",
 	})
+}
+
+func isRetryableCodexTurnFailure(message string) bool {
+	return strings.HasPrefix(message, codexRetryableDisconnectPrefix)
 }
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.
