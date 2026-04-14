@@ -25,55 +25,41 @@ export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
 }
 
-/** Send raw input to the currently active (visible) terminal's PTY. */
-export function writeToActiveTerminal(data: string): void {
-  const encoded = new TextEncoder().encode(data)
+function findActiveTerminal(): TerminalInstance | undefined {
   for (const [id, instance] of instances) {
     const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
-    if (container && container.style.display !== 'none' && instance.sendInput) {
-      instance.sendInput(encoded)
-      return
-    }
+    if (container && container.style.display !== 'none')
+      return instance
   }
+  return undefined
+}
+
+export function writeToActiveTerminal(data: string): void {
+  const instance = findActiveTerminal()
+  if (instance?.sendInput)
+    instance.sendInput(new TextEncoder().encode(data))
 }
 
 export function scrollActiveTerminalPage(direction: -1 | 1): void {
-  for (const [id, instance] of instances) {
-    const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
-    if (container && container.style.display !== 'none') {
-      instance.terminal.scrollPages(direction)
-      return
-    }
-  }
+  findActiveTerminal()?.terminal.scrollPages(direction)
 }
 
-// Expose terminal text reader for E2E tests (WebGL renderer makes DOM rows empty)
 if (typeof window !== 'undefined') {
   (window as any).__getActiveTerminalText = () => {
-    for (const [id, instance] of instances) {
-      const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
-      if (container && container.style.display !== 'none') {
-        const buffer = instance.terminal.buffer.active
-        let text = ''
-        for (let i = 0; i < buffer.length; i++) {
-          const line = buffer.getLine(i)
-          if (line) {
-            text += line.translateToString(true)
-          }
-        }
-        return text
-      }
+    const instance = findActiveTerminal()
+    if (!instance)
+      return ''
+    const buffer = instance.terminal.buffer.active
+    let text = ''
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (line)
+        text += line.translateToString(true)
     }
-    return ''
+    return text
   }
   ;(window as any).__getActiveTerminalRows = () => {
-    for (const [id, instance] of instances) {
-      const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
-      if (container && container.style.display !== 'none') {
-        return instance.terminal.rows
-      }
-    }
-    return 0
+    return findActiveTerminal()?.terminal.rows ?? 0
   }
 }
 

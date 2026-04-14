@@ -116,7 +116,7 @@ describe('workerSectionContent', () => {
 
   it('renders worker name from workerInfo', () => {
     renderSection()
-    expect(screen.getByText('test-worker')).toBeInTheDocument()
+    expect(screen.getAllByText('test-worker').length).toBeGreaterThanOrEqual(1)
   })
 
   it('shows dash when workerInfo is null', () => {

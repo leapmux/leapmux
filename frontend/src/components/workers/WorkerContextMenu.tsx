@@ -1,14 +1,14 @@
 import type { Component } from 'solid-js'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
-import { Show } from 'solid-js'
+import { For, Show } from 'solid-js'
 import { isTunnelAvailable } from '~/api/platformBridge'
 import { RelativeTime } from '~/components/chat/RelativeTime'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { showInfoToast } from '~/components/common/Toast'
-import { prettifyJson } from '~/lib/jsonFormat'
 import { menuTrigger } from '~/components/tree/sidebarActions.css'
+import { prettifyJson } from '~/lib/jsonFormat'
 import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 
@@ -84,22 +84,24 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
               showInfoToast('Worker info copied to clipboard')
             }}
           >
-            <span style={{ display: 'grid', 'grid-template-columns': 'max-content 1fr', gap: '0 var(--space-2)', 'align-items': 'start' }}>
-              {rows().map(row => (
-                <>
-                  <span>{row.label}</span>
-                  <span>
-                    {row.kind === 'relative'
-                      ? (
-                          <>
-                            <RelativeTime timestamp={row.value} />
-                            {' ago'}
-                          </>
-                        )
-                      : row.value}
-                  </span>
-                </>
-              ))}
+            <span style={{ 'display': 'grid', 'grid-template-columns': 'max-content 1fr', 'gap': '0 var(--space-2)', 'align-items': 'start' }}>
+              <For each={rows()}>
+                {row => (
+                  <>
+                    <span>{row.label}</span>
+                    <span>
+                      {row.kind === 'relative'
+                        ? (
+                            <>
+                              <RelativeTime timestamp={row.value} />
+                              {' ago'}
+                            </>
+                          )
+                        : row.value}
+                    </span>
+                  </>
+                )}
+              </For>
             </span>
           </button>
         )}
