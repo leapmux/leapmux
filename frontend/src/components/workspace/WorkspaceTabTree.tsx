@@ -10,7 +10,7 @@ import { createMemo, createSignal, For, Show } from 'solid-js'
 import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
-import { tabKey, TabType } from '~/stores/tab.store'
+import { canCloseTab, tabKey, TabType } from '~/stores/tab.store'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
@@ -144,7 +144,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
   const [editingValue, setEditingValue] = createSignal('')
   let editCancelled = false
-  const canClose = (tab: Tab) => !props.readOnly || tab.type === TabType.FILE
+  const canClose = (tab: Tab) => canCloseTab(props.readOnly, tab)
 
   const tabLabel = (tab: Tab): string => tab.title || tab.id
 

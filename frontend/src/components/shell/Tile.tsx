@@ -47,29 +47,25 @@ export const Tile: Component<TileProps> = (props) => {
           {props.tabBar}
         </div>
         <div class={styles.splitActions}>
-          <Show when={props.onPopOut}>
-            <IconButton
-              icon={PictureInPicture2}
-              size="md"
-              onClick={(e) => {
-                e.stopPropagation()
-                props.onPopOut!()
-              }}
-              data-testid="pop-out-button"
-              title={shortcutHint('Pop out to floating window', 'app.toggleFloatingTab')}
-            />
-          </Show>
-          <Show when={props.onPopIn}>
-            <IconButton
-              icon={PictureInPicture2}
-              size="md"
-              onClick={(e) => {
-                e.stopPropagation()
-                props.onPopIn!()
-              }}
-              data-testid="pop-in-button"
-              title={shortcutHint('Pop in to main window', 'app.toggleFloatingTab')}
-            />
+          <Show when={props.onPopOut ?? props.onPopIn}>
+            {(handler) => {
+              const isPopOut = () => !!props.onPopOut
+              return (
+                <IconButton
+                  icon={PictureInPicture2}
+                  size="md"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handler()()
+                  }}
+                  data-testid={isPopOut() ? 'pop-out-button' : 'pop-in-button'}
+                  title={shortcutHint(
+                    isPopOut() ? 'Pop out to floating window' : 'Pop in to main window',
+                    'app.toggleFloatingTab',
+                  )}
+                />
+              )
+            }}
           </Show>
           <Show when={props.canSplit}>
             <IconButton
@@ -124,27 +120,18 @@ export const Tile: Component<TileProps> = (props) => {
             />
           )}
         >
-          <Show when={props.onPopOut}>
-            <button
-              role="menuitem"
-              onClick={() => props.onPopOut!()}
-            >
-              <DropdownMenuItemContent
-                label="Pop out to floating window"
-                shortcut={getShortcutHint('app.toggleFloatingTab')}
-              />
-            </button>
-          </Show>
-          <Show when={props.onPopIn}>
-            <button
-              role="menuitem"
-              onClick={() => props.onPopIn!()}
-            >
-              <DropdownMenuItemContent
-                label="Pop in to main window"
-                shortcut={getShortcutHint('app.toggleFloatingTab')}
-              />
-            </button>
+          <Show when={props.onPopOut ?? props.onPopIn}>
+            {handler => (
+              <button
+                role="menuitem"
+                onClick={() => handler()()}
+              >
+                <DropdownMenuItemContent
+                  label={props.onPopOut ? 'Pop out to floating window' : 'Pop in to main window'}
+                  shortcut={getShortcutHint('app.toggleFloatingTab')}
+                />
+              </button>
+            )}
           </Show>
           <Show when={props.canSplit}>
             <button

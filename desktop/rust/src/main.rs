@@ -47,7 +47,7 @@ const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const DEV_SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 struct SidecarMetadata {
     socket_path: String,
     pid: u32,
@@ -467,14 +467,13 @@ fn fetch_sidecar_info(
 #[cfg(unix)]
 fn request_sidecar_shutdown(socket_path: &Path, pid: u32) -> Result<(), String> {
     if let Ok(stream) = UnixStream::connect(socket_path) {
-        let reader = stream
+        let mut reader = stream
             .try_clone()
             .map_err(|err| format!("clone sidecar socket: {err}"))?;
         let mut writer = stream;
         writer
             .set_write_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
             .map_err(|err| format!("set sidecar socket write timeout: {err}"))?;
-        let mut reader = reader;
         reader
             .set_read_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
             .map_err(|err| format!("set sidecar socket read timeout: {err}"))?;

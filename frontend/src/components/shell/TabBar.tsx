@@ -21,7 +21,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { getShortcutHint, shortcutHint } from '~/lib/shortcuts/display'
-import { tabKey, TabType } from '~/stores/tab.store'
+import { canCloseTab, tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
@@ -261,7 +261,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <Show when={tab.hasNotification}>
         <span class={styles.tabNotification} data-testid="tab-notification" />
       </Show>
-      <Show when={!props.readOnly || tab.type === TabType.FILE}>
+      <Show when={canCloseTab(props.readOnly, tab)}>
         <IconButton
           icon={X}
           class={styles.tabClose}

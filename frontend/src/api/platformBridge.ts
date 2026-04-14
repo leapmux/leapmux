@@ -343,26 +343,16 @@ export function openWebInspector(): void {
   tauriFireAndForget('open_web_inspector')
 }
 
-export async function windowMinimize(): Promise<void> {
+async function tauriWindowOp(fn: (win: import('@tauri-apps/api/window').Window) => Promise<void>): Promise<void> {
   if (!isTauriApp())
     return
   const { getCurrentWindow } = await loadTauriWindow()
-  await getCurrentWindow().minimize()
+  await fn(getCurrentWindow())
 }
 
-export async function windowClose(): Promise<void> {
-  if (!isTauriApp())
-    return
-  const { getCurrentWindow } = await loadTauriWindow()
-  await getCurrentWindow().close()
-}
-
-export async function windowToggleMaximize(): Promise<void> {
-  if (!isTauriApp())
-    return
-  const { getCurrentWindow } = await loadTauriWindow()
-  await getCurrentWindow().toggleMaximize()
-}
+export const windowMinimize = () => tauriWindowOp(w => w.minimize())
+export const windowClose = () => tauriWindowOp(w => w.close())
+export const windowToggleMaximize = () => tauriWindowOp(w => w.toggleMaximize())
 
 export const platformBridge = {
   getCapabilities,

@@ -41,6 +41,10 @@ export function tabKey(tab: Tab): string {
   return `${tab.type}:${tab.id}`
 }
 
+export function canCloseTab(readOnly: boolean | undefined, tab: Tab): boolean {
+  return !readOnly || tab.type === TabType.FILE
+}
+
 export interface TabStoreState {
   tabs: Tab[]
   activeTabKey: string | null
