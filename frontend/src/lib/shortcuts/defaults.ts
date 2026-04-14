@@ -33,6 +33,12 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
 
   // Preferences
   { key: '$mod+Comma', command: 'app.openPreferences' },
+  { key: '$mod+-', command: 'app.zoomOutWebview', when: 'isDesktop' },
+  { key: '$mod+NumpadSubtract', command: 'app.zoomOutWebview', when: 'isDesktop' },
+  { key: '$mod+=', command: 'app.zoomInWebview', when: 'isDesktop' },
+  { key: '$mod+NumpadAdd', command: 'app.zoomInWebview', when: 'isDesktop' },
+  { key: '$mod+0', command: 'app.resetWebviewZoom', when: 'isDesktop' },
+  { key: '$mod+Numpad0', command: 'app.resetWebviewZoom', when: 'isDesktop' },
 
   // Dialog close
   { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },

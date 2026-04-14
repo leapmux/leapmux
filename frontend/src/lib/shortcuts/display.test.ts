@@ -39,6 +39,12 @@ describe('formatShortcut', () => {
       expect(formatShortcut('$mod+BracketRight', 'mac')).toBe('\u2318]')
     })
 
+    it('formats keypad keys', () => {
+      expect(formatShortcut('$mod+NumpadAdd', 'mac')).toBe('\u2318Num+')
+      expect(formatShortcut('$mod+NumpadSubtract', 'mac')).toBe('\u2318Num-')
+      expect(formatShortcut('$mod+Numpad0', 'mac')).toBe('\u2318Num0')
+    })
+
     it('formats number keys', () => {
       expect(formatShortcut('$mod+1', 'mac')).toBe('\u23181')
     })
@@ -73,6 +79,12 @@ describe('formatShortcut', () => {
 
     it('formats Control+q', () => {
       expect(formatShortcut('Control+q', 'linux')).toBe('Ctrl+Q')
+    })
+
+    it('formats keypad keys', () => {
+      expect(formatShortcut('$mod+NumpadAdd', 'linux')).toBe('Ctrl+Num+')
+      expect(formatShortcut('$mod+NumpadSubtract', 'linux')).toBe('Ctrl+Num-')
+      expect(formatShortcut('$mod+Numpad0', 'linux')).toBe('Ctrl+Num0')
     })
   })
 

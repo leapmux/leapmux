@@ -219,6 +219,7 @@ struct DesktopShell {
   sidecar: SidecarProcess,
   close_in_progress: AtomicBool,
   exit_in_progress: AtomicBool,
+  webview_zoom: AtomicU64,
   state: Mutex<ShellState>,
 }
 
@@ -276,6 +277,7 @@ impl DesktopShell {
       },
       close_in_progress: AtomicBool::new(false),
       exit_in_progress: AtomicBool::new(false),
+      webview_zoom: AtomicU64::new(1.0f64.to_bits()),
       state: Mutex::new(ShellState {
         shell_mode: ShellMode::Launcher,
         connected: false,
@@ -327,6 +329,21 @@ impl DesktopShell {
         },
       ))
       .await?;
+    Ok(())
+  }
+
+  fn current_zoom(&self) -> f64 {
+    f64::from_bits(self.webview_zoom.load(Ordering::Relaxed))
+  }
+
+  fn set_zoom(&self, zoom: f64) -> Result<(), String> {
+    let clamped = zoom.clamp(0.5, 3.0);
+    if let Some(window) = self.app_handle.get_webview_window("main") {
+      window
+        .set_zoom(clamped)
+        .map_err(|err| format!("set webview zoom: {err}"))?;
+      self.webview_zoom.store(clamped.to_bits(), Ordering::Relaxed);
+    }
     Ok(())
   }
 
@@ -754,6 +771,21 @@ fn toggle_menu_bar(app: AppHandle) {
   let _ = app;
 }
 
+#[tauri::command]
+fn zoom_in_webview(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+  shell.set_zoom(shell.current_zoom() + 0.1)
+}
+
+#[tauri::command]
+fn zoom_out_webview(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+  shell.set_zoom(shell.current_zoom() - 0.1)
+}
+
+#[tauri::command]
+fn reset_webview_zoom(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+  shell.set_zoom(1.0)
+}
+
 // --- Window/app helpers ---
 
 fn focus_main_window(app: &AppHandle) {
@@ -1024,6 +1056,9 @@ fn main() {
       quit_app,
       hide_menu_bar,
       toggle_menu_bar,
+      zoom_in_webview,
+      zoom_out_webview,
+      reset_webview_zoom,
     ])
     .build(tauri::generate_context!())
     .expect("error while building LeapMux desktop")

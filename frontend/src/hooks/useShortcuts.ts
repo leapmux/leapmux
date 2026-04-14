@@ -6,7 +6,7 @@ import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
-import { isTauriApp, quitApp } from '~/api/platformBridge'
+import { isTauriApp, quitApp, resetWebviewZoom, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenu'
 import { writeToActiveTerminal } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -92,6 +92,9 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.openPreferences', 'Open Preferences', () => {
     setShowPreferencesDialog(true)
   }, 'App')
+  cmd('app.zoomOutWebview', 'Zoom Out', () => zoomOutWebview(), 'View')
+  cmd('app.zoomInWebview', 'Zoom In', () => zoomInWebview(), 'View')
+  cmd('app.resetWebviewZoom', 'Actual Size', () => resetWebviewZoom(), 'View')
   cmd('dialog.close', 'Close Dialog', () => {
     // Close the topmost open dialog
     const dialogs = [...document.querySelectorAll('dialog[open]')]

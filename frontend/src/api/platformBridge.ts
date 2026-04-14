@@ -321,6 +321,24 @@ export function quitApp(): void {
   tauriInvoke('quit_app').catch(() => {})
 }
 
+export function zoomInWebview(): void {
+  if (!isTauriApp())
+    return
+  tauriInvoke('zoom_in_webview').catch(() => {})
+}
+
+export function zoomOutWebview(): void {
+  if (!isTauriApp())
+    return
+  tauriInvoke('zoom_out_webview').catch(() => {})
+}
+
+export function resetWebviewZoom(): void {
+  if (!isTauriApp())
+    return
+  tauriInvoke('reset_webview_zoom').catch(() => {})
+}
+
 export async function windowMinimize(): Promise<void> {
   const { getCurrentWindow } = await loadTauriWindow()
   await getCurrentWindow().minimize()

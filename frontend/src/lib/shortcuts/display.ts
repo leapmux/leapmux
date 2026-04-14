@@ -39,6 +39,9 @@ const KEY_DISPLAY_NAMES: Record<string, string> = {
   'Backslash': '\\',
   'BracketLeft': '[',
   'BracketRight': ']',
+  'NumpadAdd': 'Num+',
+  'NumpadSubtract': 'Num-',
+  'Numpad0': 'Num0',
 }
 
 /** Mac modifier display order: ⌃ ⌥ ⇧ ⌘ (Apple HIG standard). */
