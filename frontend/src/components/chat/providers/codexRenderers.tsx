@@ -7,6 +7,7 @@ import type { CommandStreamSegment } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
+import File from 'lucide-solid/icons/file'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import Globe from 'lucide-solid/icons/globe'
@@ -36,7 +37,7 @@ import {
 } from '../messageStyles.css'
 import { isObject, relativizePath } from '../messageUtils'
 import { formatDuration } from '../rendererUtils'
-import { renderAgentDetail, renderBashDetail, renderEditDetail, renderQueryDetail, renderUrlDetail, renderWriteDetail } from '../toolDetailRenderers'
+import { renderAgentDetail, renderBashDetail, renderDeleteDetail, renderEditDetail, renderQueryDetail, renderUrlDetail, renderWriteDetail } from '../toolDetailRenderers'
 import { EmptyTodoLayout, renderBashHighlight, ToolResultMessage, ToolUseLayout } from '../toolRenderers'
 import {
   commandStreamContainer,
@@ -160,6 +161,10 @@ function isSimpleEditChange(change: Record<string, unknown>): boolean {
 
 function isSimpleAddChange(change: Record<string, unknown>): boolean {
   return codexChangeKind(change) === 'add' && typeof change.diff === 'string' && (change.diff as string).length > 0
+}
+
+function isSimpleDeleteChange(change: Record<string, unknown>): boolean {
+  return codexChangeKind(change) === 'delete'
 }
 
 function completedFileChangeEntries(changes: Array<Record<string, unknown>>): Array<
@@ -549,8 +554,10 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
   const hasLiveStream = () => liveStream().length > 0
   const completedEntries = completedFileChangeEntries(changes)
   const simpleAdd = changes.length === 1 && isSimpleAddChange(changes[0]) ? changes[0] : null
+  const simpleDelete = changes.length === 1 && isSimpleDeleteChange(changes[0]) ? changes[0] : null
   const simpleAddPath = simpleAdd ? ((simpleAdd.path as string) || '') : ''
   const simpleAddContent = simpleAdd ? ((simpleAdd.diff as string) || '') : ''
+  const simpleDeletePath = simpleDelete ? ((simpleDelete.path as string) || '') : ''
 
   if (status === 'completed' && simpleAdd) {
     return (
@@ -562,6 +569,21 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
         oldStr=""
         newStr={simpleAddContent}
         filePath={simpleAddPath}
+        context={context}
+      />
+    )
+  }
+
+  if (status === 'completed' && simpleDelete) {
+    return (
+      <ToolResultMessage
+        toolName="Delete"
+        resultContent={`Deleted \`${relativizePath(simpleDeletePath, context?.workingDir, context?.homeDir)}\``}
+        isPreText={false}
+        structuredPatch={null}
+        oldStr=""
+        newStr=""
+        filePath={simpleDeletePath}
         context={context}
       />
     )
@@ -614,9 +636,11 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
   const homeDir = context?.homeDir
   const inProgressDetail = simpleAdd
     ? { icon: FilePlus, title: renderWriteDetail(simpleAddPath, simpleAddContent, cwd, homeDir), path: simpleAddPath }
-    : simpleEdit && parsedDiff
-      ? { icon: FileEdit, title: renderEditDetail((simpleEdit.path as string) || '', parsedDiff.oldText, parsedDiff.newText, cwd, homeDir), path: (simpleEdit.path as string) || '' }
-      : null
+    : simpleDelete
+      ? { icon: File, title: renderDeleteDetail(simpleDeletePath, cwd, homeDir), path: simpleDeletePath }
+      : simpleEdit && parsedDiff
+        ? { icon: FileEdit, title: renderEditDetail((simpleEdit.path as string) || '', parsedDiff.oldText, parsedDiff.newText, cwd, homeDir), path: (simpleEdit.path as string) || '' }
+        : null
 
   if (inProgressDetail) {
     const title = inProgressDetail.title || (
