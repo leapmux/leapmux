@@ -25,7 +25,8 @@ func (h *OutputHandler) materializePlanFile(title string, content []byte, now ti
 	}
 
 	base := agent.SanitizePlanFilenameTitle(title)
-	for counter := 0; ; counter++ {
+	const maxCollisions = 1000
+	for counter := 0; counter <= maxCollisions; counter++ {
 		filename := base
 		if counter > 0 {
 			filename = fmt.Sprintf("%s (%d)", base, counter)
@@ -47,4 +48,5 @@ func (h *OutputHandler) materializePlanFile(title string, content []byte, now ti
 		}
 		return path, nil
 	}
+	return "", fmt.Errorf("too many plan file collisions for %q", base)
 }
