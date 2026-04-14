@@ -1,6 +1,7 @@
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 import { authClient } from '~/api/clients'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
+import { formatLocalDateTime } from './dateFormat'
 
 export interface BuildInfo {
   version: string
@@ -99,15 +100,7 @@ export function formatBuildTime(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime()))
     return iso
-  return d.toLocaleString(undefined, {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+  return formatLocalDateTime(d)
 }
 
 export function formatVersionLine(info: BuildInfo): string {

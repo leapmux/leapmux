@@ -1,6 +1,9 @@
 package logging
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAddrToURL(t *testing.T) {
 	tests := []struct {
@@ -20,4 +23,36 @@ func TestAddrToURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFormatLocalTimestamp(t *testing.T) {
+	t.Run("invalid input falls back to raw string", func(t *testing.T) {
+		if got := formatLocalTimestamp("not-a-time"); got != "not-a-time" {
+			t.Fatalf("formatLocalTimestamp() = %q, want raw input", got)
+		}
+	})
+
+	t.Run("includes timezone suffix", func(t *testing.T) {
+		got := formatLocalTimestamp("2026-04-14T10:20:30Z")
+		if got == "" {
+			t.Fatal("formatLocalTimestamp() returned empty string")
+		}
+		if !strings.Contains(got, "20:30") {
+			t.Fatalf("formatLocalTimestamp() = %q, expected formatted time component", got)
+		}
+		fields := strings.Fields(got)
+		if len(fields) < 5 {
+			t.Fatalf("formatLocalTimestamp() = %q, expected timezone suffix", got)
+		}
+		last := fields[len(fields)-1]
+		if last == "PM" || last == "AM" {
+			t.Fatalf("formatLocalTimestamp() = %q, expected timezone after time", got)
+		}
+	})
+
+	t.Run("empty input stays empty", func(t *testing.T) {
+		if got := formatLocalTimestamp(""); got != "" {
+			t.Fatalf("formatLocalTimestamp(\"\") = %q, want empty string", got)
+		}
+	})
 }
