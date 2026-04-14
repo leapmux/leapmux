@@ -40,6 +40,14 @@ vi.mock('~/components/common/DropdownMenu', () => ({
       </>
     )
   },
+  DropdownMenuItemContent(props: any) {
+    return (
+      <span>
+        <span>{props.label}</span>
+        {props.shortcut ? <span>{props.shortcut}</span> : null}
+      </span>
+    )
+  },
 }))
 
 // Mock TabBar.css to provide minimal class names
@@ -91,8 +99,8 @@ describe('tabBar readOnly prop', () => {
       </PreferencesProvider>
     ))
 
-    expect(screen.getAllByRole('menuitem', { name: 'New agent... (Ctrl+Shift+N)' }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('menuitem', { name: 'New terminal... (Ctrl+Shift+T)' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('menuitem', { name: /New agent\.\.\.Ctrl\+Shift\+N/ }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('menuitem', { name: /New terminal\.\.\.Ctrl\+Shift\+T/ }).length).toBeGreaterThan(0)
     unbindAll()
   })
 

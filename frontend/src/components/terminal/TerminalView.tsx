@@ -37,6 +37,16 @@ export function writeToActiveTerminal(data: string): void {
   }
 }
 
+export function scrollActiveTerminalPage(direction: -1 | 1): void {
+  for (const [id, instance] of instances) {
+    const container = document.querySelector(`[data-terminal-id="${id}"]`) as HTMLElement | null
+    if (container && container.style.display !== 'none') {
+      instance.terminal.scrollPages(direction)
+      return
+    }
+  }
+}
+
 // Expose terminal text reader for E2E tests (WebGL renderer makes DOM rows empty)
 if (typeof window !== 'undefined') {
   (window as any).__getActiveTerminalText = () => {

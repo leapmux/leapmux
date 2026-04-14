@@ -37,6 +37,8 @@ describe('formatShortcut', () => {
       expect(formatShortcut('$mod+Backslash', 'mac')).toBe('\u2318\\')
       expect(formatShortcut('$mod+BracketLeft', 'mac')).toBe('\u2318[')
       expect(formatShortcut('$mod+BracketRight', 'mac')).toBe('\u2318]')
+      expect(formatShortcut('$mod+PageUp', 'mac')).toBe('\u2318PageUp')
+      expect(formatShortcut('Alt+PageDown', 'mac')).toBe('\u2325PageDown')
     })
 
     it('formats keypad keys', () => {
@@ -79,6 +81,11 @@ describe('formatShortcut', () => {
 
     it('formats Control+q', () => {
       expect(formatShortcut('Control+q', 'linux')).toBe('Ctrl+Q')
+    })
+
+    it('formats page navigation keys', () => {
+      expect(formatShortcut('$mod+PageUp', 'linux')).toBe('Ctrl+PageUp')
+      expect(formatShortcut('Alt+PageDown', 'linux')).toBe('Alt+PageDown')
     })
 
     it('formats keypad keys', () => {

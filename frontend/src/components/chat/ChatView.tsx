@@ -522,6 +522,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         <div
           ref={messageListRef}
           class={styles.messageList}
+          data-chat-scroll-container="true"
           tabIndex={0}
           onScroll={handleScroll}
           onWheel={handleWheel}
@@ -646,4 +647,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       </div>
     </div>
   )
+}
+
+export function scrollActiveChatPage(direction: -1 | 1): void {
+  const activeChat = [...document.querySelectorAll('[data-chat-scroll-container="true"]')]
+    .find((el) => {
+      const node = el as HTMLElement
+      return node.offsetParent !== null
+    }) as HTMLDivElement | undefined
+  if (!activeChat)
+    return
+  activeChat.scrollBy({
+    top: direction * activeChat.clientHeight,
+    behavior: 'auto',
+  })
+  activeChat.dispatchEvent(new Event('scroll'))
 }

@@ -39,6 +39,30 @@ export const menuSectionHeader = style({
   padding: 'var(--space-1) var(--space-3)',
 })
 
+export const menuItemContent = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  width: '100%',
+  minWidth: 0,
+})
+
+export const menuItemLabel = style({
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
+
+export const menuItemShortcut = style({
+  marginLeft: 'auto',
+  flexShrink: 0,
+  color: 'var(--muted-foreground)',
+  opacity: 0.75,
+  fontSize: 'var(--text-8)',
+  whiteSpace: 'nowrap',
+})
+
 // Layout utilities
 
 export const inlineFlex = style({

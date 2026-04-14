@@ -9,6 +9,9 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   { key: '$mod+Shift+t', command: 'app.newTerminalDialog', when: '!dialogOpen' },
   { key: '$mod+Alt+n', command: 'app.newWorkspaceDialog', when: '!dialogOpen' },
   { key: '$mod+Shift+o', command: 'app.toggleFloatingTab', when: '!dialogOpen' },
+  { key: '$mod+r', command: 'app.refreshDirectoryTree' },
+  { key: 'F5', command: 'app.refreshDirectoryTree' },
+  { key: '$mod+Shift+h', command: 'app.toggleHiddenFiles' },
 
   // Tab switching by index
   { key: '$mod+1', command: 'app.switchToTab1' },
@@ -24,6 +27,12 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   // Tab navigation
   { key: '$mod+BracketLeft', command: 'app.previousTab' },
   { key: '$mod+BracketRight', command: 'app.nextTab' },
+  { key: '$mod+PageUp', command: 'app.previousTab' },
+  { key: '$mod+PageDown', command: 'app.nextTab' },
+
+  // Page scrolling
+  { key: 'Alt+PageUp', command: 'app.scrollActiveTabPageUp', when: '!dialogOpen' },
+  { key: 'Alt+PageDown', command: 'app.scrollActiveTabPageDown', when: '!dialogOpen' },
 
   // Layout
   { key: '$mod+Backslash', command: 'app.splitTileHorizontal' },

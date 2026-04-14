@@ -8,6 +8,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { shortcutHint } from '~/lib/shortcuts/display'
 import { emptyState } from '~/styles/shared.css'
 
 interface DirectorySelectorProps {
@@ -29,12 +30,16 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
           icon={showHiddenFiles() ? Eye : EyeOff}
           iconSize="xs"
           size="sm"
-          title={showHiddenFiles() ? 'Hide hidden files' : 'Show hidden files'}
+          title={shortcutHint(showHiddenFiles() ? 'Hide hidden files' : 'Show hidden files', 'app.toggleHiddenFiles')}
           state={showHiddenFiles() ? IconButtonState.Enabled : IconButtonState.Active}
           onClick={() => setShowHiddenFiles(prev => !prev)}
           data-testid="directory-selector-show-hidden-toggle"
         />
-        <RefreshButton onClick={() => props.state.refreshTree()} title="Refresh directory tree" />
+        <RefreshButton
+          onClick={() => props.state.refreshTree()}
+          title={shortcutHint('Refresh directory tree', 'app.refreshDirectoryTree')}
+          data-testid="directory-selector-refresh"
+        />
       </div>
       <Show
         when={props.state.workerId()}

@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { DropdownMenu } from './DropdownMenu'
+import { DropdownMenu, DropdownMenuItemContent } from './DropdownMenu'
 
 // jsdom does not implement the native Popover API.
 // Stub the methods so the component can render without errors.
@@ -18,6 +18,17 @@ beforeAll(() => {
 })
 
 describe('dropdownMenu', () => {
+  it('renders trailing shortcut text in menu item content', () => {
+    render(() => (
+      <button role="menuitem">
+        <DropdownMenuItemContent label="New agent..." shortcut="Ctrl+Shift+N" />
+      </button>
+    ))
+
+    expect(screen.getByRole('menuitem', { name: /New agent\.\.\.Ctrl\+Shift\+N/ })).toBeInTheDocument()
+    expect(screen.getByText('Ctrl+Shift+N')).toBeInTheDocument()
+  })
+
   it('renders trigger and popover elements', () => {
     render(() => (
       <DropdownMenu

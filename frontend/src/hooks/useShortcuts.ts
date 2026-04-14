@@ -8,7 +8,8 @@ import type { createTabStore } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { isTauriApp, openWebInspector, quitApp, resetWebviewZoom, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenu'
-import { writeToActiveTerminal } from '~/components/terminal/TerminalView'
+import { scrollActiveChatPage } from '~/components/chat/ChatView'
+import { scrollActiveTerminalPage, writeToActiveTerminal } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/shortcuts/context'
@@ -64,6 +65,28 @@ export function useShortcuts(props: UseShortcutsProps): void {
 
   const cleanups: (() => void)[] = []
 
+  function isVisibleElement(el: Element): el is HTMLElement {
+    return el instanceof HTMLElement && el.offsetParent !== null
+  }
+
+  function clickShortcutButton(testId: string): boolean {
+    const dialogs = [...document.querySelectorAll('dialog[open]')]
+    const topmostDialog = dialogs.at(-1) as HTMLDialogElement | undefined
+    const dialogButton = topmostDialog?.querySelector(`[data-testid="${testId}"]`)
+    if (dialogButton && isVisibleElement(dialogButton)) {
+      dialogButton.click()
+      return true
+    }
+
+    const button = [...document.querySelectorAll(`[data-testid="${testId}"]`)]
+      .find(isVisibleElement)
+    if (button) {
+      button.click()
+      return true
+    }
+    return false
+  }
+
   function cmd(id: string, title: string, handler: () => void | Promise<void>, category?: string) {
     cleanups.push(registerCommand({ id, title, handler, category }))
   }
@@ -73,6 +96,14 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.newAgentDialog', 'New Agent Dialog', () => setShowNewAgentDialog(true), 'App')
   cmd('app.newTerminalDialog', 'New Terminal Dialog', () => setShowNewTerminalDialog(true), 'App')
   cmd('app.newWorkspaceDialog', 'New Workspace Dialog', () => setShowNewWorkspace(true), 'App')
+  cmd('app.refreshDirectoryTree', 'Refresh Directory Tree', () => {
+    clickShortcutButton('directory-selector-refresh')
+      || clickShortcutButton('files-refresh')
+  }, 'Files')
+  cmd('app.toggleHiddenFiles', 'Toggle Hidden Files', () => {
+    clickShortcutButton('directory-selector-show-hidden-toggle')
+      || clickShortcutButton('files-show-hidden-toggle')
+  }, 'Files')
   cmd('app.toggleFloatingTab', 'Toggle Floating Tab', toggleFloatingTab, 'Tab')
   cmd('app.closeActiveTab', 'Close Active Tab', () => {
     const tab = tabStore.activeTab()
@@ -136,6 +167,20 @@ export function useShortcuts(props: UseShortcutsProps): void {
 
   cmd('app.previousTab', 'Previous Tab', () => navigateTab(-1), 'Tab')
   cmd('app.nextTab', 'Next Tab', () => navigateTab(1), 'Tab')
+  cmd('app.scrollActiveTabPageUp', 'Scroll Active Tab Up One Page', () => {
+    const tabType = activeTabType()
+    if (tabType === TabType.AGENT)
+      scrollActiveChatPage(-1)
+    else if (tabType === TabType.TERMINAL)
+      scrollActiveTerminalPage(-1)
+  }, 'View')
+  cmd('app.scrollActiveTabPageDown', 'Scroll Active Tab Down One Page', () => {
+    const tabType = activeTabType()
+    if (tabType === TabType.AGENT)
+      scrollActiveChatPage(1)
+    else if (tabType === TabType.TERMINAL)
+      scrollActiveTerminalPage(1)
+  }, 'View')
 
   // Terminal cursor navigation
   cmd('terminal.lineStart', 'Go to Line Start', () => writeToActiveTerminal('\x01'), 'Terminal')

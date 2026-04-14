@@ -14,13 +14,13 @@ import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
-import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { DropdownMenu, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useMruProviders } from '~/hooks/useMruProviders'
-import { shortcutHint } from '~/lib/shortcuts/display'
+import { getShortcutHint, shortcutHint } from '~/lib/shortcuts/display'
 import { tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -301,12 +301,18 @@ export const TabBar: Component<TabBarProps> = (props) => {
         </li>
       </Show>
       <button role="menuitem" onClick={() => props.onNewAgentAdvanced?.()}>
-        {shortcutHint('New agent...', 'app.newAgentDialog')}
+        <DropdownMenuItemContent
+          label="New agent..."
+          shortcut={getShortcutHint('app.newAgentDialog')}
+        />
       </button>
       <hr />
       <li class={menuSectionHeader}>Terminals</li>
       <button role="menuitem" onClick={() => props.onNewTerminalAdvanced?.()}>
-        {shortcutHint('New terminal...', 'app.newTerminalDialog')}
+        <DropdownMenuItemContent
+          label="New terminal..."
+          shortcut={getShortcutHint('app.newTerminalDialog')}
+        />
       </button>
       <For each={props.availableShells ?? []}>
         {shell => (
@@ -495,16 +501,20 @@ export const TabBar: Component<TabBarProps> = (props) => {
                       onClick={() => actions().onSplitHorizontal()}
                     >
                       <Icon icon={Columns2} size="sm" />
-                      {' '}
-                      {shortcutHint('Split vertical', 'app.splitTileHorizontal')}
+                      <DropdownMenuItemContent
+                        label="Split vertical"
+                        shortcut={getShortcutHint('app.splitTileHorizontal')}
+                      />
                     </button>
                     <button
                       role="menuitem"
                       onClick={() => actions().onSplitVertical()}
                     >
                       <Icon icon={Rows2} size="sm" />
-                      {' '}
-                      {shortcutHint('Split horizontal', 'app.splitTileVertical')}
+                      <DropdownMenuItemContent
+                        label="Split horizontal"
+                        shortcut={getShortcutHint('app.splitTileVertical')}
+                      />
                     </button>
                   </Show>
                   <Show when={actions().canClose}>

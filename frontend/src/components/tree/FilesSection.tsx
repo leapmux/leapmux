@@ -15,6 +15,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { PREFIX_FILES_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { shortcutHint } from '~/lib/shortcuts/display'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
@@ -124,7 +125,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
         icon={showingHidden() ? Eye : EyeOff}
         iconSize="xs"
         size="sm"
-        title={showingHidden() ? 'Hide hidden files' : 'Show hidden files'}
+        title={shortcutHint(showingHidden() ? 'Hide hidden files' : 'Show hidden files', 'app.toggleHiddenFiles')}
         state={showingHidden() ? IconButtonState.Enabled : IconButtonState.Active}
         onClick={() => props.onToggleShowHidden?.()}
         data-testid="files-show-hidden-toggle"
@@ -132,7 +133,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
       <RefreshButton
         iconSize="xs"
         size="sm"
-        title="Refresh"
+        title={shortcutHint('Refresh', 'app.refreshDirectoryTree')}
         onClick={() => props.onRefresh()}
         data-testid="files-refresh"
       />
