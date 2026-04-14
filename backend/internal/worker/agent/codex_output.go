@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -436,7 +437,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		a.sink.ScheduleAutoContinue(AutoContinueSchedule{
 			Reason:        AutoContinueReasonAPIError,
 			DueAt:         time.Now().UTC(),
-			SourcePayload: append([]byte(nil), params...),
+			SourcePayload: bytes.Clone(params),
 		})
 	} else {
 		a.sink.CancelAutoContinue(AutoContinueReasonAPIError)

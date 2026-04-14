@@ -426,7 +426,6 @@ export const AppShell: ParentComponent = (props) => {
     return { workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
   }
 
-  // Sidebar visibility state (synced from DesktopLayout via createEffect)
   const [leftSidebarVisible, setLeftSidebarVisible] = createSignal(true)
   const [rightSidebarVisible, setRightSidebarVisible] = createSignal(true)
 

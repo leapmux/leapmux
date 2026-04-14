@@ -63,10 +63,6 @@ func (a *App) Shutdown() {
 	})
 }
 
-func (a *App) shutdown() {
-	a.Shutdown()
-}
-
 func (a *App) SetEventSink(sink func(*desktoppb.Event)) {
 	a.eventSinkMu.Lock()
 	defer a.eventSinkMu.Unlock()

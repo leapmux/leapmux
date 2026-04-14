@@ -6,9 +6,8 @@ import { isTunnelAvailable } from '~/api/platformBridge'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { showInfoToast } from '~/components/common/Toast'
-import { formatBuildTime } from '~/lib/systemInfo'
 import { menuTrigger } from '~/components/tree/sidebarActions.css'
-import { isSoloMode } from '~/lib/systemInfo'
+import { formatBuildTime, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface WorkerContextMenuProps {

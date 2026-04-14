@@ -21,7 +21,7 @@ func TestApp_OpenChannelRelay_Solo(t *testing.T) {
 	t.Setenv("HOME", filepath.Clean(home))
 
 	app := NewApp("")
-	defer app.shutdown()
+	defer app.Shutdown()
 
 	if err := app.ConnectSolo(); err != nil {
 		t.Fatalf("ConnectSolo() failed: %v", err)
@@ -54,7 +54,7 @@ func TestApp_SidecarLogEvents_EmittedAfterSoloStart(t *testing.T) {
 
 	app := NewApp("")
 	app.SetEventSink(emitFunc)
-	defer app.shutdown()
+	defer app.Shutdown()
 
 	require.NoError(t, app.ConnectSolo())
 	require.NoError(t, app.OpenChannelRelay())
@@ -111,7 +111,7 @@ func TestApp_OpenChannelRelay_ReusesAliveRelay(t *testing.T) {
 
 	app := NewApp("")
 	app.SetEventSink(emitFunc)
-	defer app.shutdown()
+	defer app.Shutdown()
 
 	require.NoError(t, app.ConnectSolo())
 	require.NoError(t, app.OpenChannelRelay())

@@ -331,7 +331,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                 >
                   <div
                     role="button"
-                    class={`${styles.collapsibleTrigger} ${props.side === 'right' ? styles.collapsibleTriggerRight : ''} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''}`}
+                    class={`${styles.collapsibleTrigger} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''}`}
                     data-testid={section().testId ? `${section().testId}-summary` : undefined}
                     onClick={() => {
                       if (sectionOpen() && !canCollapse())

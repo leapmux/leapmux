@@ -317,32 +317,30 @@ export function installMenuBarToggle(): void {
   })
 }
 
+function tauriFireAndForget(cmd: string): void {
+  if (!isTauriApp())
+    return
+  tauriInvoke(cmd).catch(() => {})
+}
+
 export function quitApp(): void {
-  tauriInvoke('quit_app').catch(() => {})
+  tauriFireAndForget('quit_app')
 }
 
 export function zoomInWebview(): void {
-  if (!isTauriApp())
-    return
-  tauriInvoke('zoom_in_webview').catch(() => {})
+  tauriFireAndForget('zoom_in_webview')
 }
 
 export function zoomOutWebview(): void {
-  if (!isTauriApp())
-    return
-  tauriInvoke('zoom_out_webview').catch(() => {})
+  tauriFireAndForget('zoom_out_webview')
 }
 
 export function resetWebviewZoom(): void {
-  if (!isTauriApp())
-    return
-  tauriInvoke('reset_webview_zoom').catch(() => {})
+  tauriFireAndForget('reset_webview_zoom')
 }
 
 export function openWebInspector(): void {
-  if (!isTauriApp())
-    return
-  tauriInvoke('open_web_inspector').catch(() => {})
+  tauriFireAndForget('open_web_inspector')
 }
 
 export async function windowMinimize(): Promise<void> {

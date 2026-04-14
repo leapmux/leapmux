@@ -4,9 +4,13 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { WorkerContextMenu } from './WorkerContextMenu'
 
 // Mock the modules that affect visibility.
-vi.mock('~/lib/systemInfo', () => ({
-  isSoloMode: vi.fn(() => true),
-}))
+vi.mock('~/lib/systemInfo', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/lib/systemInfo')>()
+  return {
+    ...actual,
+    isSoloMode: vi.fn(() => true),
+  }
+})
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()

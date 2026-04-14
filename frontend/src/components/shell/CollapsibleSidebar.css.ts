@@ -112,8 +112,6 @@ export const collapsibleTriggerStatic = style({
   },
 })
 
-export const collapsibleTriggerRight = style({})
-
 /** Make the title expand so action buttons stay grouped on the right. */
 globalStyle(`${collapsibleTrigger} > ${sidebarTitle}`, {
   flex: 1,
