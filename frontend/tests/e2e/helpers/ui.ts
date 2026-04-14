@@ -10,6 +10,14 @@ export async function isMaybeVisible(locator: Locator, timeout?: number): Promis
   return locator.isVisible(timeout != null ? { timeout } : undefined).catch(() => false)
 }
 
+/** Wait until at least one locator in the list is visible. */
+export async function expectAnyVisible(...locators: Locator[]) {
+  await expect.poll(async () => {
+    const visibility = await Promise.all(locators.map(locator => isMaybeVisible(locator)))
+    return visibility.some(Boolean)
+  }).toBe(true)
+}
+
 const NEW_WORKSPACE_RE = /New workspace/
 const WORKSPACE_URL_RE = /\/workspace\//
 
@@ -384,9 +392,9 @@ export async function waitForSettingsIdle(page: Page) {
  * Waits for either a tab or the empty tile actions/hint.
  */
 export async function waitForWorkspaceReady(page: Page) {
-  await page.locator('[data-testid="tab"]')
-    .or(page.locator('[data-testid="empty-tile-actions"]'))
-    .or(page.locator('[data-testid="empty-tile-hint"]'))
-    .first()
-    .waitFor()
+  await expectAnyVisible(
+    page.locator('[data-testid="tab"]'),
+    page.locator('[data-testid="empty-tile-actions"]'),
+    page.locator('[data-testid="empty-tile-hint"]'),
+  )
 }

@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { expectAnyVisible, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 test.describe('Workspace Lifecycle', () => {
   test('should create multiple workspaces and show all in sidebar', async ({ page, leapmuxServer }) => {
@@ -53,11 +53,10 @@ test.describe('Workspace Lifecycle', () => {
     // or a section header (In progress / Archived) from the workspace list.
     // Use data-testid selectors to avoid strict mode violations from
     // text matches in context menus or other UI elements.
-    await expect(
-      page.locator('[data-testid="create-workspace-button"]')
-        .or(page.locator('[data-testid="section-header-workspaces_in_progress"]'))
-        .or(page.locator('[data-testid="section-header-workspaces_archived"]'))
-        .first(),
-    ).toBeVisible()
+    await expectAnyVisible(
+      page.locator('[data-testid="create-workspace-button"]'),
+      page.locator('[data-testid="section-header-workspaces_in_progress"]'),
+      page.locator('[data-testid="section-header-workspaces_archived"]'),
+    )
   })
 })

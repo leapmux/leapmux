@@ -6,7 +6,7 @@ import {
   openAgentViaAPI,
   shareWorkspaceViaAPI,
 } from './helpers/api'
-import { loginViaToken, loginViaUI } from './helpers/ui'
+import { expectAnyVisible, loginViaToken, loginViaUI } from './helpers/ui'
 
 const ORG_ADMIN_URL_RE = /\/o\/admin/
 const WORKSPACE_URL_RE = /\/workspace\//
@@ -104,7 +104,10 @@ test.describe('Permissions', () => {
 
     // Verify workspace loaded (page content is visible)
     await expect(page).toHaveURL(WORKSPACE_URL_RE)
-    await expect(page.locator('[data-testid="tab"]').or(page.getByText('no open tabs'))).toBeVisible()
+    await expectAnyVisible(
+      page.locator('[data-testid="tab"]'),
+      page.getByText('no open tabs'),
+    )
 
     // New agent/terminal buttons should NOT be visible for non-owner
     await expect(page.locator('[data-testid^="new-agent-button"]')).not.toBeVisible()

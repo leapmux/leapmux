@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Worker Restart Thinking Indicator', () => {
@@ -26,7 +26,7 @@ test.describe('Worker Restart Thinking Indicator', () => {
       // Wait for thinking indicator or streaming to appear (agent is processing)
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
       const streamingText = assistantBubbles(page)
-      await expect(thinkingIndicator.or(streamingText)).toBeVisible({ timeout: 30_000 })
+      await expectAnyVisible(thinkingIndicator, streamingText)
 
       // Stop the worker while agent is working
       await stopWorker()

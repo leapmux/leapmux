@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
+import { isMaybeVisible, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
 
 codexTest.describe('Codex requestUserInput', () => {
   codexTest('approval flow works with on-request policy', async ({ authenticatedCodexWorkspace, page }) => {
@@ -24,10 +24,11 @@ codexTest.describe('Codex requestUserInput', () => {
     await expect(banner).toBeVisible({ timeout: 120_000 })
 
     // Click the Allow button (Codex uses decision-based buttons).
-    const allowBtn = page.locator('[data-testid="control-decision-accept"]')
-      .or(page.locator('[data-testid="control-allow-btn"]'))
-    await expect(allowBtn.first()).toBeVisible()
-    await allowBtn.first().click()
+    const decisionAllowBtn = page.locator('[data-testid="control-decision-accept"]')
+    const legacyAllowBtn = page.locator('[data-testid="control-allow-btn"]')
+    const allowBtn = await isMaybeVisible(decisionAllowBtn) ? decisionAllowBtn : legacyAllowBtn
+    await expect(allowBtn).toBeVisible()
+    await allowBtn.click()
 
     // Wait for the agent to finish and verify the command ran.
     await waitForAgentIdle(page, 120_000)

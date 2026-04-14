@@ -82,6 +82,21 @@ export const emptyTileActions = style({
   flex: 1,
 })
 
+export const emptyTileActionContent = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  minWidth: 0,
+})
+
+export const emptyTileActionShortcut = style({
+  flexShrink: 0,
+  color: 'var(--muted-foreground)',
+  opacity: 0.75,
+  fontSize: 'var(--text-8)',
+  whiteSpace: 'nowrap',
+})
+
 export const emptyTileHint = style({
   display: 'flex',
   alignItems: 'center',

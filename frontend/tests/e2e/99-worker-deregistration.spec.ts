@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { approveRegistrationViaAPI, deregisterWorkerViaAPI } from './helpers/api'
-import { loginViaUI } from './helpers/ui'
+import { expectAnyVisible, loginViaUI } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 // This file spawns its own temporary worker so that deregistering it
@@ -194,10 +194,10 @@ test.describe('Worker Deregistration', () => {
     // Worker names are fetched via E2EE and may not be available on the
     // org page (no active workspace), so check for the worker name OR
     // the em-dash fallback that appears when the name is unavailable.
-    await expect(
-      workersSection.getByText('test-worker', { exact: true })
-        .or(workersSection.getByText('\u2014')),
-    ).toBeVisible()
+    await expectAnyVisible(
+      workersSection.getByText('test-worker', { exact: true }),
+      workersSection.getByText('\u2014'),
+    )
   })
 })
 

@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -248,7 +248,7 @@ test.describe('Full Hub+Worker Restart', () => {
       // Wait for the thinking indicator or streaming to appear (agent is processing)
       const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
       const streamingText = assistantBubbles(page)
-      await expect(thinkingIndicator.or(streamingText)).toBeVisible({ timeout: 30_000 })
+      await expectAnyVisible(thinkingIndicator, streamingText)
 
       // Remember the workspace URL so we can navigate back after restart
       const workspaceUrl = page.url()

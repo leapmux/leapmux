@@ -26,6 +26,7 @@ import {
 } from '../../../src/generated/leapmux/v1/terminal_pb'
 import { expect } from '../fixtures'
 import { authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
+import { expectAnyVisible, isMaybeVisible } from './ui'
 
 export const WORKSPACE_URL_RE = /\/workspace\//
 
@@ -80,9 +81,8 @@ export async function waitForOrgPageReady(page: Page) {
 export async function openNewWorkspaceDialog(page: Page) {
   const sidebarBtn = page.locator('[data-testid="sidebar-new-workspace"]')
   const createBtn = page.locator('[data-testid="create-workspace-button"]')
-  // Use .first() to avoid strict mode violation when both buttons are visible
-  await expect(sidebarBtn.or(createBtn).first()).toBeVisible()
-  if (await sidebarBtn.isVisible())
+  await expectAnyVisible(sidebarBtn, createBtn)
+  if (await isMaybeVisible(sidebarBtn))
     await sidebarBtn.click()
   else
     await createBtn.click()

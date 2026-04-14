@@ -312,11 +312,12 @@ export async function createWorkspaceViaAPI(
   if (!res.ok) {
     throw new Error(`createWorkspaceViaAPI failed: ${res.status}`)
   }
-  const data = await res.json() as { workspace: { id: string } }
-  if (!data.workspace) {
-    throw new Error('createWorkspaceViaAPI: no workspace in response')
+  const data = await res.json() as { workspaceId?: string, workspace?: { id?: string } }
+  const workspaceId = data.workspaceId ?? data.workspace?.id
+  if (!workspaceId) {
+    throw new Error('createWorkspaceViaAPI: no workspace ID in response')
   }
-  return data.workspace.id
+  return workspaceId
 }
 
 /**

@@ -50,7 +50,7 @@ export default async function globalSetup() {
   console.log('[e2e] Building leapmux...')
   execSync(`${resolveTaskBin()} build-backend`, { cwd: ROOT, stdio: 'inherit' })
 
-  const binaryPath = join(ROOT, 'backend', 'build', 'bin', 'leapmux')
+  const binaryPath = join(ROOT, 'leapmux')
 
   // Save minimal state for fixtures and teardown
   const state: E2EGlobalState = {

@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { deleteAllWorkspacesViaAPI } from './helpers/api'
-import { loginViaToken } from './helpers/ui'
+import { expectAnyVisible, loginViaToken } from './helpers/ui'
 
 const OPEN_AGENT_TAB_RE = /agent tab/i
 const OPEN_TERMINAL_TAB_RE = /terminal tab/i
@@ -22,11 +22,16 @@ test.describe('Empty State Buttons', () => {
     const tile = await createEmptyTile(page)
 
     const actions = tile.locator('[data-testid="empty-tile-actions"]')
+    const agentButton = tile.locator('[data-testid="empty-tile-open-agent"]')
+    const terminalButton = tile.locator('[data-testid="empty-tile-open-terminal"]')
+
     await expect(actions).toBeVisible()
-    await expect(tile.locator('[data-testid="empty-tile-open-agent"]')).toBeVisible()
-    await expect(tile.locator('[data-testid="empty-tile-open-terminal"]')).toBeVisible()
-    await expect(tile.locator('[data-testid="empty-tile-open-agent"]')).toHaveText(OPEN_AGENT_TAB_RE)
-    await expect(tile.locator('[data-testid="empty-tile-open-terminal"]')).toHaveText(OPEN_TERMINAL_TAB_RE)
+    await expect(agentButton).toBeVisible()
+    await expect(terminalButton).toBeVisible()
+    await expect(agentButton).toHaveText(OPEN_AGENT_TAB_RE)
+    await expect(terminalButton).toHaveText(OPEN_TERMINAL_TAB_RE)
+    await expect(agentButton).not.toHaveAttribute('title', /./)
+    await expect(terminalButton).not.toHaveAttribute('title', /./)
   })
 
   test('clicking agent button opens agent or dialog', async ({ page, authenticatedWorkspace }) => {
@@ -36,10 +41,10 @@ test.describe('Empty State Buttons', () => {
     await tile.locator('[data-testid="empty-tile-open-agent"]').click()
 
     // Should open either a new agent tab or the new agent dialog
-    await expect(
-      page.locator('[data-testid="tab"][data-tab-type="agent"]')
-        .or(page.getByRole('heading', { name: 'New Agent' })),
-    ).toBeVisible()
+    await expectAnyVisible(
+      page.locator('[data-testid="tab"][data-tab-type="agent"]'),
+      page.getByRole('heading', { name: 'New Agent' }),
+    )
   })
 
   test('clicking terminal button opens terminal or dialog', async ({ page, authenticatedWorkspace }) => {
@@ -49,10 +54,10 @@ test.describe('Empty State Buttons', () => {
     await tile.locator('[data-testid="empty-tile-open-terminal"]').click()
 
     // Should open either a new terminal tab or the new terminal dialog
-    await expect(
-      page.locator('[data-testid="tab"][data-tab-type="terminal"]')
-        .or(page.getByRole('heading', { name: 'New Terminal' })),
-    ).toBeVisible()
+    await expectAnyVisible(
+      page.locator('[data-testid="tab"][data-tab-type="terminal"]'),
+      page.getByRole('heading', { name: 'New Terminal' }),
+    )
   })
 
   test('multi-tile: unfocused empty tile shows hint, focused shows buttons', async ({ page, authenticatedWorkspace }) => {
