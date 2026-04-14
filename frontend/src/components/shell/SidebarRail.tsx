@@ -1,7 +1,5 @@
 import type { Component } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
-import PanelLeftOpen from 'lucide-solid/icons/panel-left-open'
-import PanelRightOpen from 'lucide-solid/icons/panel-right-open'
 import { For, Show } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import * as styles from './CollapsibleSidebar.css'
@@ -26,7 +24,6 @@ export interface SidebarRailProps {
 // ---------------------------------------------------------------------------
 
 export const SidebarRail: Component<SidebarRailProps> = (props) => {
-  const ExpandIcon = () => props.side === 'left' ? PanelLeftOpen : PanelRightOpen
   const railVariant = () => props.side === 'left' ? styles.sidebarRailLeft : styles.sidebarRailRight
 
   const topSections = () => props.sections.filter(
@@ -41,9 +38,6 @@ export const SidebarRail: Component<SidebarRailProps> = (props) => {
 
   return (
     <div class={`${styles.sidebarRail} ${railVariant()}`}>
-      {/* Expand button */}
-      <IconButton icon={ExpandIcon()} iconSize="lg" size="lg" title={`Expand ${props.side} sidebar`} onClick={() => props.onExpand()} />
-
       {/* Top-positioned section icons + badges */}
       <For each={topSections()}>
         {section => (

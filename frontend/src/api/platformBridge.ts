@@ -321,6 +321,21 @@ export function quitApp(): void {
   tauriInvoke('quit_app').catch(() => {})
 }
 
+export async function windowMinimize(): Promise<void> {
+  const { getCurrentWindow } = await loadTauriWindow()
+  await getCurrentWindow().minimize()
+}
+
+export async function windowClose(): Promise<void> {
+  const { getCurrentWindow } = await loadTauriWindow()
+  await getCurrentWindow().close()
+}
+
+export async function windowToggleMaximize(): Promise<void> {
+  const { getCurrentWindow } = await loadTauriWindow()
+  await getCurrentWindow().toggleMaximize()
+}
+
 export const platformBridge = {
   getCapabilities,
   getRuntimeState,

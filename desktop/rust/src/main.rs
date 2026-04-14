@@ -982,6 +982,14 @@ fn main() {
       }
     })
     .setup(|app| {
+      // On Linux, titleBarStyle "Overlay" is ignored, so remove
+      // native decorations entirely — the frontend renders its own
+      // titlebar with custom window controls.
+      #[cfg(target_os = "linux")]
+      if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_decorations(false);
+      }
+
       // Safety net: if the frontend doesn't show the window within 5s
       // (e.g. JS error), show it anyway to avoid an invisible app.
       let handle = app.handle().clone();

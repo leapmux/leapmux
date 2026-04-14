@@ -12,6 +12,10 @@
     "core:window:allow-show",
     "core:window:allow-center",
     "core:window:allow-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
+    "core:window:allow-unmaximize",
+    "core:window:allow-is-maximized",
     "core:webview:allow-create-webview-window"
   ]
 }

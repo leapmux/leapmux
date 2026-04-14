@@ -2,11 +2,8 @@ import type { LucideIcon } from 'lucide-solid'
 import type { Component, JSX } from 'solid-js'
 import { createDraggable, createDroppable, useDragDropContext } from '@thisbeyond/solid-dnd'
 import GripVertical from 'lucide-solid/icons/grip-vertical'
-import PanelLeftClose from 'lucide-solid/icons/panel-left-close'
-import PanelRightClose from 'lucide-solid/icons/panel-right-close'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
-import { IconButton } from '~/components/common/IconButton'
 import * as styles from './CollapsibleSidebar.css'
 import { useOptionalSectionDrag } from './SectionDragContext'
 import { SECTION_DRAG_PREFIX, SIDEBAR_ZONE_PREFIX } from './sectionDragUtils'
@@ -181,13 +178,6 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   })
 
   // ---------------------------------------------------------------------------
-  // Collapse icon (stable -- side doesn't change during component lifetime)
-  // ---------------------------------------------------------------------------
-
-  // eslint-disable-next-line solid/reactivity -- side is stable for the component lifetime
-  const CollapseIcon = props.side === 'left' ? PanelLeftClose : PanelRightClose
-
-  // ---------------------------------------------------------------------------
   // Rail expand-section helper
   // ---------------------------------------------------------------------------
 
@@ -341,7 +331,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                 >
                   <div
                     role="button"
-                    class={`${styles.collapsibleTrigger} ${props.side === 'right' ? styles.collapsibleTriggerRight : ''} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''} ${index() === 0 && props.side === 'right' ? styles.collapsibleTriggerNoChevron : ''}`}
+                    class={`${styles.collapsibleTrigger} ${props.side === 'right' ? styles.collapsibleTriggerRight : ''} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''}`}
                     data-testid={section().testId ? `${section().testId}-summary` : undefined}
                     onClick={() => {
                       if (sectionOpen() && !canCollapse())
@@ -364,20 +354,6 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                         <Icon icon={GripVertical} size="xs" />
                       </div>
                     </Show>
-                    <Show when={index() === 0 && props.onCollapse && props.side === 'left'}>
-                      <IconButton
-                        icon={CollapseIcon}
-                        iconSize="lg"
-                        size="md"
-                        style={{ 'margin-left': '-6px' }}
-                        title="Collapse sidebar"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          e.preventDefault()
-                          props.onCollapse?.()
-                        }}
-                      />
-                    </Show>
                     <span class={styles.sidebarTitle}>{section().title}</span>
                     <Show when={sectionOpen() && section().headerActions}>
                       <div
@@ -389,20 +365,6 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       >
                         {section().headerActions}
                       </div>
-                    </Show>
-                    <Show when={index() === 0 && props.onCollapse && props.side === 'right'}>
-                      <IconButton
-                        icon={CollapseIcon}
-                        iconSize="lg"
-                        size="md"
-                        style={{ 'margin-right': '-6px' }}
-                        title="Collapse sidebar"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          e.preventDefault()
-                          props.onCollapse?.()
-                        }}
-                      />
                     </Show>
                   </div>
                   <div class={`${styles.collapsibleContent}${sectionOpen() ? ` ${styles.collapsibleContentExpanded}` : ''}`}>

@@ -118,13 +118,6 @@ export const collapsibleTriggerRight = style({
   paddingRight: 'var(--space-4)',
 })
 
-/** Hide the OAT accordion chevron on a section header (e.g. first right-sidebar section). */
-export const collapsibleTriggerNoChevron = style({
-  '::after': {
-    display: 'none',
-  },
-})
-
 /** Make the title expand so action buttons stay grouped on the right. */
 globalStyle(`${collapsibleTrigger} > ${sidebarTitle}`, {
   flex: 1,

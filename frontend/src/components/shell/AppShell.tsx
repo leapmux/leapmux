@@ -46,6 +46,8 @@ import { createWorkspaceStore } from '~/stores/workspace.store'
 import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
 import * as styles from './AppShell.css'
 import { AppShellDialogs } from './AppShellDialogs'
+import { CustomTitlebar } from './CustomTitlebar'
+import * as titlebarStyles from './CustomTitlebar.css'
 import { DesktopLayout } from './DesktopLayout'
 import { FloatingWindowLayer } from './FloatingWindowLayer'
 import { MobileLayout } from './MobileLayout'
@@ -1136,56 +1138,64 @@ export const AppShell: ParentComponent = (props) => {
               />
             )}
           >
-            <DesktopLayout
-              setToggleLeftSidebar={fn => toggleLeftSidebarRef.current = fn}
-              setToggleRightSidebar={fn => toggleRightSidebarRef.current = fn}
-              sectionStore={sectionStore}
-              layoutStore={layoutStore}
-              onMoveSection={handleMoveSection}
-              onMoveSectionServer={handleMoveSectionServer}
-              activeWorkspaceId={workspace.activeWorkspaceId()}
-              activeWorkspace={activeWorkspace}
-              workspaceLoading={workspaceLoading()}
-              getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
-              onNewWorkspace={() => {
-                setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
-                setShowNewWorkspace(true)
-              }}
-              setCenterPanelHeight={setCenterPanelHeight}
-              onIntraTileReorder={tileDrag.handleIntraTileReorder}
-              onCrossTileMove={tileDrag.handleCrossTileMove}
-              onCrossWorkspaceMove={handleCrossWorkspaceMove}
-              lookupTileIdForTab={tileDrag.lookupTileIdForTab}
-              renderDragOverlay={tileDrag.renderDragOverlay}
-              renderTile={tileRenderer.renderTile}
-              onRatioChange={(splitId, ratios) => {
-                layoutStore.updateRatios(splitId, ratios)
-                persistLayout()
-              }}
-              createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
-              createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
-              onFileDrop={tileRenderer.handleFileDrop}
-              fileDropDisabled={tileRenderer.fileDropDisabled()}
-              editorPanel={(
-                tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
-                && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
-              )}
-              floatingWindowLayer={(
-                <FloatingWindowLayer
-                  floatingWindowStore={floatingWindowStore}
-                  tabStore={tabStore}
+            <div class={titlebarStyles.titlebarLayout}>
+              <CustomTitlebar
+                onToggleLeftSidebar={() => toggleLeftSidebarRef.current?.()}
+                onToggleRightSidebar={() => toggleRightSidebarRef.current?.()}
+              />
+              <div class={titlebarStyles.titlebarContent}>
+                <DesktopLayout
+                  setToggleLeftSidebar={fn => toggleLeftSidebarRef.current = fn}
+                  setToggleRightSidebar={fn => toggleRightSidebarRef.current = fn}
+                  sectionStore={sectionStore}
+                  layoutStore={layoutStore}
+                  onMoveSection={handleMoveSection}
+                  onMoveSectionServer={handleMoveSectionServer}
+                  activeWorkspaceId={workspace.activeWorkspaceId()}
+                  activeWorkspace={activeWorkspace}
+                  workspaceLoading={workspaceLoading()}
+                  getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
+                  onNewWorkspace={() => {
+                    setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
+                    setShowNewWorkspace(true)
+                  }}
+                  setCenterPanelHeight={setCenterPanelHeight}
+                  onIntraTileReorder={tileDrag.handleIntraTileReorder}
+                  onCrossTileMove={tileDrag.handleCrossTileMove}
+                  onCrossWorkspaceMove={handleCrossWorkspaceMove}
+                  lookupTileIdForTab={tileDrag.lookupTileIdForTab}
+                  renderDragOverlay={tileDrag.renderDragOverlay}
                   renderTile={tileRenderer.renderTile}
-                  onRatioChange={(windowId, splitId, ratios) => {
-                    floatingWindowStore.updateRatios(windowId, splitId, ratios)
+                  onRatioChange={(splitId, ratios) => {
+                    layoutStore.updateRatios(splitId, ratios)
                     persistLayout()
                   }}
-                  onCloseWindow={handleCloseFloatingWindow}
-                  onGeometryChange={persistLayout}
+                  createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
+                  createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
                   onFileDrop={tileRenderer.handleFileDrop}
                   fileDropDisabled={tileRenderer.fileDropDisabled()}
+                  editorPanel={(
+                    tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
+                    && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
+                  )}
+                  floatingWindowLayer={(
+                    <FloatingWindowLayer
+                      floatingWindowStore={floatingWindowStore}
+                      tabStore={tabStore}
+                      renderTile={tileRenderer.renderTile}
+                      onRatioChange={(windowId, splitId, ratios) => {
+                        floatingWindowStore.updateRatios(windowId, splitId, ratios)
+                        persistLayout()
+                      }}
+                      onCloseWindow={handleCloseFloatingWindow}
+                      onGeometryChange={persistLayout}
+                      onFileDrop={tileRenderer.handleFileDrop}
+                      fileDropDisabled={tileRenderer.fileDropDisabled()}
+                    />
+                  )}
                 />
-              )}
-            />
+              </div>
+            </div>
           </Show>
         </div>
       </Show>
