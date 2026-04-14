@@ -35,6 +35,8 @@ const defaultWorkerInfo: WorkerInfo = {
   arch: 'amd64',
   homeDir: '/home/test',
   version: '1.0.0',
+  commitHash: '',
+  buildTime: '',
   updatedAt: Date.now(),
 }
 

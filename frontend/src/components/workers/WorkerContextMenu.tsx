@@ -6,6 +6,7 @@ import { isTunnelAvailable } from '~/api/platformBridge'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { showInfoToast } from '~/components/common/Toast'
+import { formatBuildTime } from '~/lib/systemInfo'
 import { menuTrigger } from '~/components/tree/sidebarActions.css'
 import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
@@ -24,7 +25,13 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
     const info = props.workerInfo
     if (!info)
       return null
-    return `${info.version}, ${info.os} (${info.arch})`
+    let versionText = info.version
+    if (info.commitHash)
+      versionText += ` (${info.commitHash})`
+    const buildTime = formatBuildTime(info.buildTime)
+    if (buildTime)
+      versionText += `, built ${buildTime}`
+    return `${versionText}, ${info.os} (${info.arch})`
   }
 
   return (

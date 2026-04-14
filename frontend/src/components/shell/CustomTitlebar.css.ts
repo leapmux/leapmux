@@ -2,6 +2,7 @@ import { style } from '@vanilla-extract/css'
 import { headerHeight } from '~/styles/tokens'
 
 export const titlebar = style({
+  position: 'relative',
   display: 'flex',
   alignItems: 'center',
   height: headerHeight,
@@ -17,6 +18,23 @@ export const dragRegion = style({
   flex: 1,
   height: '100%',
   WebkitAppRegion: 'drag',
+} as any)
+
+export const titleText = style({
+  position: 'absolute',
+  left: '50%',
+  transform: 'translateX(-50%)',
+  maxWidth: '50%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  pointerEvents: 'none',
+  userSelect: 'none',
+  WebkitAppRegion: 'drag',
+  fontSize: 'var(--text-8)',
+  fontWeight: 'bold',
+  letterSpacing: '0.02em',
+  color: 'var(--text-secondary)',
 } as any)
 
 export const windowControls = style({

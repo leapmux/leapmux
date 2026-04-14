@@ -30,7 +30,7 @@ function renderMenu(opts?: { isOwner?: boolean, hasTunnels?: boolean }) {
 
   render(() => (
     <WorkerContextMenu
-      workerInfo={{ name: 'test', os: 'linux', arch: 'amd64', homeDir: '/home', version: '1.0', updatedAt: Date.now() }}
+      workerInfo={{ name: 'test', os: 'linux', arch: 'amd64', homeDir: '/home', version: '1.0', commitHash: '', buildTime: '', updatedAt: Date.now() }}
       isOwner={opts?.isOwner ?? true}
       hasTunnels={opts?.hasTunnels ?? false}
       onAddTunnel={onAddTunnel}

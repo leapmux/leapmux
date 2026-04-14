@@ -36,6 +36,7 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
       }}
     >
       <div class={styles.dragRegion} data-tauri-drag-region />
+      <div class={styles.titleText}>LeapMux Desktop</div>
 
       <IconButton
         icon={props.leftSidebarVisible ? PanelLeftFilled : PanelLeft}
