@@ -2,6 +2,8 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
+import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { TabType } from '~/stores/tab.store'
 
 // Mock solid-dnd to avoid DragDropProvider context requirement
@@ -78,6 +80,22 @@ function makeTab(type: TabType, id: string, title?: string) {
 }
 
 describe('tabBar readOnly prop', () => {
+  it('shows shortcut hints on dialog menu items', () => {
+    activateBindings(DEFAULT_KEYBINDINGS)
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          availableProviders={[]}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByRole('menuitem', { name: 'New agent... (Ctrl+Shift+N)' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('menuitem', { name: 'New terminal... (Ctrl+Shift+T)' }).length).toBeGreaterThan(0)
+    unbindAll()
+  })
+
   it('shows close button for all tab types when readOnly is false', () => {
     const tabs = [
       makeTab(TabType.AGENT, 'a1', 'Agent 1'),

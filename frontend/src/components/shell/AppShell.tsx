@@ -529,6 +529,7 @@ export const AppShell: ParentComponent = (props) => {
     const { tileId } = floatingWindowStore.addWindow()
     tabStore.moveTabToTile(tabKey(tab), tileId)
     tabStore.setActiveTabForTile(tileId, tab.type, tab.id)
+    layoutStore.setFocusedTile(tileId)
     // Close the source tile if it's now empty and the main layout has multiple tiles
     if (sourceTileId && tabStore.getTabsForTile(sourceTileId).length === 0) {
       const mainTileIds = layoutStore.getAllTileIds()
@@ -537,6 +538,46 @@ export const AppShell: ParentComponent = (props) => {
       }
     }
     persistLayout()
+  }
+
+  const handleAttachTab = (tab: import('~/stores/tab.store').Tab) => {
+    const sourceTileId = tab.tileId
+    if (!sourceTileId)
+      return
+
+    const sourceWindowId = floatingWindowStore.getWindowForTile(sourceTileId)
+    if (!sourceWindowId)
+      return
+
+    const targetTileId = layoutStore.getAllTileIds()[0]
+    if (!targetTileId)
+      return
+
+    tabStore.moveTabToTile(tabKey(tab), targetTileId)
+    tabStore.setActiveTabForTile(targetTileId, tab.type, tab.id)
+    layoutStore.setFocusedTile(targetTileId)
+    floatingWindowStore.removeIfEmpty(
+      sourceWindowId,
+      tId => tabStore.getTabsForTile(tId),
+      layoutStore.focusedTileId(),
+      tId => layoutStore.setFocusedTile(tId),
+      layoutStore.getAllTileIds(),
+    )
+    persistLayout()
+  }
+
+  const handleToggleFloatingTab = () => {
+    const tileId = layoutStore.focusedTileId()
+    const activeKey = tabStore.getActiveTabKeyForTile(tileId)
+    const tab = activeKey
+      ? tabStore.getTabsForTile(tileId).find(t => tabKey(t) === activeKey)
+      : undefined
+    if (!tab)
+      return
+    if (floatingWindowStore.getWindowForTile(tileId))
+      handleAttachTab(tab)
+    else
+      handleDetachTab(tab)
   }
 
   const handleCloseFloatingWindow = (windowId: string) => {
@@ -994,6 +1035,7 @@ export const AppShell: ParentComponent = (props) => {
     gitFileStatusStore,
     isFloatingWindowTile: (tileId: string) => !!floatingWindowStore.getWindowForTile(tileId),
     onDetachTab: handleDetachTab,
+    onAttachTab: handleAttachTab,
   })
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
@@ -1002,9 +1044,12 @@ export const AppShell: ParentComponent = (props) => {
     tabStore,
     layoutStore,
     tabOps,
+    agentOps,
+    termOps,
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
     setShowNewWorkspace,
+    toggleFloatingTab: handleToggleFloatingTab,
     toggleLeftSidebar: () => {
       if (isMobile()) {
         toggleLeftSidebar()

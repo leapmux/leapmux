@@ -22,6 +22,7 @@ import { WorkerSectionContent } from '~/components/workers/WorkerSectionContent'
 import { emptySection as emptySectionStyle } from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
+import { shortcutHint } from '~/lib/shortcuts/display'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
 
@@ -106,7 +107,7 @@ export function buildSectionDef(
               icon={Plus}
               iconSize="sm"
               size="md"
-              title={`New workspace in ${section.name}`}
+              title={shortcutHint(`New workspace in ${section.name}`, 'app.newWorkspaceDialog')}
               data-testid={sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
               onClick={(e) => {
                 e.stopPropagation()

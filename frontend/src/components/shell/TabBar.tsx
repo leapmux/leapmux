@@ -301,12 +301,12 @@ export const TabBar: Component<TabBarProps> = (props) => {
         </li>
       </Show>
       <button role="menuitem" onClick={() => props.onNewAgentAdvanced?.()}>
-        New agent...
+        {shortcutHint('New agent...', 'app.newAgentDialog')}
       </button>
       <hr />
       <li class={menuSectionHeader}>Terminals</li>
       <button role="menuitem" onClick={() => props.onNewTerminalAdvanced?.()}>
-        New terminal...
+        {shortcutHint('New terminal...', 'app.newTerminalDialog')}
       </button>
       <For each={props.availableShells ?? []}>
         {shell => (
@@ -495,14 +495,16 @@ export const TabBar: Component<TabBarProps> = (props) => {
                       onClick={() => actions().onSplitHorizontal()}
                     >
                       <Icon icon={Columns2} size="sm" />
-                      {' Split vertical'}
+                      {' '}
+                      {shortcutHint('Split vertical', 'app.splitTileHorizontal')}
                     </button>
                     <button
                       role="menuitem"
                       onClick={() => actions().onSplitVertical()}
                     >
                       <Icon icon={Rows2} size="sm" />
-                      {' Split horizontal'}
+                      {' '}
+                      {shortcutHint('Split horizontal', 'app.splitTileVertical')}
                     </button>
                   </Show>
                   <Show when={actions().canClose}>

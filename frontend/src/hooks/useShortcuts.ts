@@ -1,5 +1,7 @@
 import type { Accessor } from 'solid-js'
+import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
+import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
@@ -19,10 +21,13 @@ interface UseShortcutsProps {
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   tabOps: ReturnType<typeof useTabOperations>
+  agentOps: ReturnType<typeof useAgentOperations>
+  termOps: ReturnType<typeof useTerminalOperations>
 
   setShowNewAgentDialog: (v: boolean) => void
   setShowNewTerminalDialog: (v: boolean) => void
   setShowNewWorkspace: (v: boolean) => void
+  toggleFloatingTab: () => void
   toggleLeftSidebar: () => void
   toggleRightSidebar: () => void
   activeTabType: Accessor<TabType | null>
@@ -45,9 +50,12 @@ export function useShortcuts(props: UseShortcutsProps): void {
     tabStore,
     layoutStore,
     tabOps,
+    agentOps,
+    termOps,
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
     setShowNewWorkspace,
+    toggleFloatingTab,
     toggleLeftSidebar,
     toggleRightSidebar,
     activeTabType,
@@ -60,9 +68,12 @@ export function useShortcuts(props: UseShortcutsProps): void {
     cleanups.push(registerCommand({ id, title, handler, category }))
   }
 
-  cmd('app.newAgent', 'New Agent', () => setShowNewAgentDialog(true), 'App')
-  cmd('app.newTerminal', 'New Terminal', () => setShowNewTerminalDialog(true), 'App')
-  cmd('app.newWorkspace', 'New Workspace', () => setShowNewWorkspace(true), 'App')
+  cmd('app.newAgent', 'New Agent', () => agentOps.handleOpenAgent(), 'App')
+  cmd('app.newTerminal', 'New Terminal', () => termOps.handleOpenTerminal(), 'App')
+  cmd('app.newAgentDialog', 'New Agent Dialog', () => setShowNewAgentDialog(true), 'App')
+  cmd('app.newTerminalDialog', 'New Terminal Dialog', () => setShowNewTerminalDialog(true), 'App')
+  cmd('app.newWorkspaceDialog', 'New Workspace Dialog', () => setShowNewWorkspace(true), 'App')
+  cmd('app.toggleFloatingTab', 'Toggle Floating Tab', toggleFloatingTab, 'Tab')
   cmd('app.closeActiveTab', 'Close Active Tab', () => {
     const tab = tabStore.activeTab()
     if (tab)

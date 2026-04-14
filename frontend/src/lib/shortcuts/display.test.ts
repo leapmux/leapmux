@@ -20,6 +20,10 @@ describe('formatShortcut', () => {
       expect(formatShortcut('Alt+n', 'mac')).toBe('\u2325N')
     })
 
+    it('orders Alt before Cmd in combined shortcuts', () => {
+      expect(formatShortcut('$mod+Alt+n', 'mac')).toBe('\u2325\u2318N')
+    })
+
     it('formats Escape', () => {
       expect(formatShortcut('Escape', 'mac')).toBe('Esc')
     })

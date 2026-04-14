@@ -3,7 +3,7 @@ import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentInfoSchema, AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -14,21 +14,23 @@ import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string }) => Promise<CloseAgentResponse>>()
+const mockOpenAgent = vi.fn()
 const mockSendAgentRawMessage = vi.fn()
 const mockSendAgentMessage = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
+const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string }]),
-  openAgent: vi.fn(),
+  openAgent: (...args: unknown[]) => mockOpenAgent(...args),
   sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
   sendAgentRawMessage: (...args: unknown[]) => mockSendAgentRawMessage(...args),
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   retryAgentMessage: vi.fn(),
   deleteAgentMessage: vi.fn(),
-  listAvailableProviders: vi.fn().mockResolvedValue({ providers: [] }),
+  listAvailableProviders: (...args: unknown[]) => mockListAvailableProviders(...args),
 }))
 
 vi.mock('~/api/clients', () => ({
@@ -74,7 +76,137 @@ function setup() {
   return { agentStore, agentSessionStore, controlStore, tabStore, layoutStore, chatStore, ops }
 }
 
+async function flushMicrotasks() {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
 describe('useAgentOperations', () => {
+  beforeEach(() => {
+    mockOpenAgent.mockReset()
+    mockListAvailableProviders.mockReset()
+    mockListAvailableProviders.mockResolvedValue({ providers: [] })
+    localStorage.clear()
+  })
+
+  describe('handleOpenAgent', () => {
+    it('uses the active agent tab provider for quick create', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX] })
+          mockOpenAgent.mockResolvedValue({
+            agent: create(AgentInfoSchema, {
+              id: 'new-agent',
+              workerId: 'w-1',
+              workingDir: '/tmp',
+              agentProvider: AgentProvider.CODEX,
+            }),
+          })
+          localStorage.setItem('leapmux:mru-agent-providers', JSON.stringify([AgentProvider.CLAUDE_CODE]))
+
+          const { tabStore, ops } = setup()
+          tabStore.addTab({
+            type: TabType.AGENT,
+            id: 'active-agent',
+            tileId: 'tile-1',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+            agentProvider: AgentProvider.CODEX,
+          })
+
+          await flushMicrotasks()
+          await ops.handleOpenAgent()
+
+          expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({
+            agentProvider: AgentProvider.CODEX,
+            workingDir: '/tmp',
+          }))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('falls back to the MRU provider when the active tab is not an agent tab', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX] })
+          mockOpenAgent.mockResolvedValue({
+            agent: create(AgentInfoSchema, {
+              id: 'new-agent',
+              workerId: 'w-1',
+              workingDir: '/tmp',
+              agentProvider: AgentProvider.CODEX,
+            }),
+          })
+          localStorage.setItem('leapmux:mru-agent-providers', JSON.stringify([AgentProvider.CODEX, AgentProvider.CLAUDE_CODE]))
+
+          const { tabStore, ops } = setup()
+          tabStore.addTab({
+            type: TabType.TERMINAL,
+            id: 'terminal-1',
+            tileId: 'tile-1',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
+
+          await flushMicrotasks()
+          await ops.handleOpenAgent()
+
+          expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({
+            agentProvider: AgentProvider.CODEX,
+          }))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('opens the dialog when the working directory is unknown', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const setShowNewAgentDialog = vi.fn()
+          const agentStore = createAgentStore()
+          const agentSessionStore = createAgentSessionStore()
+          const controlStore = createControlStore()
+          const tabStore = createTabStore()
+          const layoutStore = createLayoutStore()
+          const chatStore = {
+            getMessages: vi.fn().mockReturnValue([]),
+            clearMessageError: vi.fn(),
+            setMessageError: vi.fn(),
+            removeMessage: vi.fn(),
+          } as any
+
+          const ops = useAgentOperations({
+            agentStore,
+            agentSessionStore,
+            chatStore,
+            controlStore,
+            tabStore,
+            layoutStore,
+            settingsLoading: { start: vi.fn(), stop: vi.fn() },
+            isActiveWorkspaceMutatable: () => true,
+            activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
+            getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '' }),
+            setShowNewAgentDialog,
+            setNewAgentLoadingProvider: vi.fn(),
+          })
+
+          await ops.handleOpenAgent()
+
+          expect(setShowNewAgentDialog).toHaveBeenCalledWith(true)
+          expect(mockOpenAgent).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
   describe('handleInterrupt', () => {
     it('sends provider interrupt payload via raw agent input', async () => {
       await createRoot(async (dispose) => {

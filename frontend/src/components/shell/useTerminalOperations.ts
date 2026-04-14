@@ -71,7 +71,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     if (!ws)
       return
     const ctx = props.getCurrentTabContext()
-    if (!ctx.workerId) {
+    if (!ctx.workerId || !ctx.workingDir) {
       props.setShowNewTerminalDialog(true)
       return
     }
@@ -123,7 +123,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     if (!ws)
       return
     const ctx = props.getCurrentTabContext()
-    if (!ctx.workerId) {
+    if (!ctx.workerId || !ctx.workingDir) {
       props.setShowNewTerminalDialog(true)
       return
     }

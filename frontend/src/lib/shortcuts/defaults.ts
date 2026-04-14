@@ -5,7 +5,10 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   { key: '$mod+n', command: 'app.newAgent', when: '!dialogOpen' },
   { key: '$mod+t', command: 'app.newTerminal', when: '!dialogOpen' },
   { key: '$mod+w', command: 'app.closeActiveTab', when: '!dialogOpen' },
-  { key: '$mod+Shift+n', command: 'app.newWorkspace', when: '!dialogOpen' },
+  { key: '$mod+Shift+n', command: 'app.newAgentDialog', when: '!dialogOpen' },
+  { key: '$mod+Shift+t', command: 'app.newTerminalDialog', when: '!dialogOpen' },
+  { key: '$mod+Alt+n', command: 'app.newWorkspaceDialog', when: '!dialogOpen' },
+  { key: '$mod+Shift+o', command: 'app.toggleFloatingTab', when: '!dialogOpen' },
 
   // Tab switching by index
   { key: '$mod+1', command: 'app.switchToTab1' },

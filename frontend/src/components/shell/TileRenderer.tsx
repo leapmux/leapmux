@@ -29,6 +29,7 @@ import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
+import { shortcutHint } from '~/lib/shortcuts/display'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { tabKey } from '~/stores/tab.store'
@@ -74,6 +75,7 @@ interface TileRendererOpts {
   // Floating window support
   isFloatingWindowTile?: (tileId: string) => boolean
   onDetachTab?: (tab: Tab) => void
+  onAttachTab?: (tab: Tab) => void
 }
 
 export function createTileRenderer(opts: TileRendererOpts) {
@@ -370,6 +372,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 <button
                   class="outline"
                   data-testid="empty-tile-open-agent"
+                  title={shortcutHint('Open a new agent tab...', 'app.newAgent')}
                   onClick={() => {
                     layoutStore.setFocusedTile(tileId)
                     agentOps.handleOpenAgent()
@@ -382,6 +385,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 <button
                   class="outline"
                   data-testid="empty-tile-open-terminal"
+                  title={shortcutHint('Open a new terminal tab...', 'app.newTerminal')}
                   onClick={() => {
                     layoutStore.setFocusedTile(tileId)
                     termOps.handleOpenTerminal()
@@ -560,6 +564,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const tab = getActiveTabForTile(tileId)
             if (tab)
               opts.onDetachTab!(tab)
+          }
+        : undefined}
+      onPopIn={opts.isFloatingWindowTile?.(tileId) && opts.onAttachTab && getActiveTabForTile(tileId)
+        ? () => {
+            const tab = getActiveTabForTile(tileId)
+            if (tab)
+              opts.onAttachTab!(tab)
           }
         : undefined}
     >

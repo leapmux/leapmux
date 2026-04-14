@@ -8,6 +8,7 @@ import { Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { useTileSize } from '~/hooks/useTileSize'
+import { shortcutHint } from '~/lib/shortcuts/display'
 import * as styles from './Tile.css'
 
 interface TileProps {
@@ -22,6 +23,7 @@ interface TileProps {
   onSplitVertical: () => void
   onClose: () => void
   onPopOut?: () => void
+  onPopIn?: () => void
 }
 
 export const Tile: Component<TileProps> = (props) => {
@@ -54,7 +56,19 @@ export const Tile: Component<TileProps> = (props) => {
                 props.onPopOut!()
               }}
               data-testid="pop-out-button"
-              title="Pop out to floating window"
+              title={shortcutHint('Pop out to floating window', 'app.toggleFloatingTab')}
+            />
+          </Show>
+          <Show when={props.onPopIn}>
+            <IconButton
+              icon={PictureInPicture2}
+              size="md"
+              onClick={(e) => {
+                e.stopPropagation()
+                props.onPopIn!()
+              }}
+              data-testid="pop-in-button"
+              title={shortcutHint('Pop in to main window', 'app.toggleFloatingTab')}
             />
           </Show>
           <Show when={props.canSplit}>
@@ -66,7 +80,7 @@ export const Tile: Component<TileProps> = (props) => {
                 props.onSplitHorizontal()
               }}
               data-testid="split-horizontal"
-              title="Split vertical"
+              title={shortcutHint('Split vertical', 'app.splitTileHorizontal')}
             />
             <IconButton
               icon={Rows2}
@@ -76,7 +90,7 @@ export const Tile: Component<TileProps> = (props) => {
                 props.onSplitVertical()
               }}
               data-testid="split-vertical"
-              title="Split horizontal"
+              title={shortcutHint('Split horizontal', 'app.splitTileVertical')}
             />
           </Show>
           <Show when={props.canClose}>
@@ -115,7 +129,15 @@ export const Tile: Component<TileProps> = (props) => {
               role="menuitem"
               onClick={() => props.onPopOut!()}
             >
-              Pop out to floating window
+              {shortcutHint('Pop out to floating window', 'app.toggleFloatingTab')}
+            </button>
+          </Show>
+          <Show when={props.onPopIn}>
+            <button
+              role="menuitem"
+              onClick={() => props.onPopIn!()}
+            >
+              {shortcutHint('Pop in to main window', 'app.toggleFloatingTab')}
             </button>
           </Show>
           <Show when={props.canSplit}>
@@ -123,13 +145,13 @@ export const Tile: Component<TileProps> = (props) => {
               role="menuitem"
               onClick={() => props.onSplitHorizontal()}
             >
-              Split vertical
+              {shortcutHint('Split vertical', 'app.splitTileHorizontal')}
             </button>
             <button
               role="menuitem"
               onClick={() => props.onSplitVertical()}
             >
-              Split horizontal
+              {shortcutHint('Split horizontal', 'app.splitTileVertical')}
             </button>
           </Show>
           <Show when={props.canClose}>

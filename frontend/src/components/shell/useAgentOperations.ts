@@ -20,6 +20,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
+import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
 import '~/components/chat/providers'
 
@@ -88,6 +89,23 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     return props.agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
   }
 
+  const resolvePreferredProvider = (): AgentProvider | null => {
+    const available = availableProviders() ?? []
+    if (available.length === 0)
+      return null
+
+    const activeTab = props.tabStore.activeTab()
+    if (activeTab?.type === TabType.AGENT && activeTab.agentProvider && available.includes(activeTab.agentProvider))
+      return activeTab.agentProvider
+
+    for (const provider of getMruProviders()) {
+      if (available.includes(provider))
+        return provider
+    }
+
+    return available[0] ?? null
+  }
+
   const defaultPermissionModeForAgent = (provider: AgentProvider): PermissionMode => {
     return getProviderPlugin(provider)?.defaultPermissionMode ?? 'default'
   }
@@ -139,8 +157,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   // Open a new agent in the active workspace (for click handlers).
   // When providerOverride is given (from per-provider TabBar buttons),
-  // the agent is created directly. When omitted (from dialog or empty
-  // tab actions), falls back to Claude Code.
+  // the agent is created directly. Otherwise prefer the active agent
+  // tab's provider, then the MRU provider, then the first available one.
   const handleOpenAgent = async (providerOverride?: AgentProvider) => {
     if (!props.isActiveWorkspaceMutatable())
       return
@@ -148,14 +166,19 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     if (!ws)
       return
     const ctx = props.getCurrentTabContext()
-    if (!ctx.workerId) {
+    if (!ctx.workerId || !ctx.workingDir) {
       props.setShowNewAgentDialog(true)
       return
     }
-    const provider = providerOverride ?? AgentProvider.CLAUDE_CODE
+    const provider = providerOverride ?? resolvePreferredProvider()
+    if (provider === null) {
+      props.setShowNewAgentDialog(true)
+      return
+    }
     props.setNewAgentLoadingProvider(provider)
     try {
       await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir, undefined, provider)
+      touchMruProvider(provider)
     }
     finally {
       props.setNewAgentLoadingProvider(null)
