@@ -9,7 +9,7 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore, TabItemOps } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
@@ -44,9 +44,7 @@ export interface SectionDefContext {
   tabStore?: ReturnType<typeof createTabStore>
   registry?: WorkspaceStoreRegistryType
   onTabClick?: (type: number, id: string) => void
-  onTabClose?: (tab: Tab) => void
-  onTabRename?: (tab: Tab, title: string) => void
-  closingTabKeys?: Set<string>
+  tabItemOps?: TabItemOps
   onExpandWorkspace?: (workspaceId: string) => void
 
   // Files section
@@ -153,9 +151,7 @@ export function buildSectionDef(
             return snap?.tabs.activeTabKey ?? null
           }}
           onTabClick={ctx.onTabClick ?? (() => {})}
-          onTabClose={ctx.onTabClose}
-          onTabRename={ctx.onTabRename}
-          closingTabKeys={ctx.closingTabKeys}
+          tabItemOps={ctx.tabItemOps}
           onExpandWorkspace={ctx.onExpandWorkspace}
         />
       ),

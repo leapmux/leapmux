@@ -6,7 +6,7 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore, TabItemOps } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { relativizePath } from '~/components/chat/messageUtils'
@@ -51,9 +51,7 @@ export interface SidebarElementsOpts {
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
   onTabClick: (type: number, id: string) => void
-  onTabClose?: (tab: Tab) => void
-  onTabRename?: (tab: Tab, title: string) => void
-  closingTabKeys?: Set<string>
+  tabItemOps?: TabItemOps
   onExpandWorkspace: (workspaceId: string) => void
 }
 
@@ -117,9 +115,7 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       tabStore={opts.tabStore}
       registry={opts.registry}
       onTabClick={opts.onTabClick}
-      onTabClose={opts.onTabClose}
-      onTabRename={opts.onTabRename}
-      closingTabKeys={opts.closingTabKeys}
+      tabItemOps={opts.tabItemOps}
       onExpandWorkspace={opts.onExpandWorkspace}
     />
   )
@@ -169,9 +165,7 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       tabStore={opts.tabStore}
       registry={opts.registry}
       onTabClick={opts.onTabClick}
-      onTabClose={opts.onTabClose}
-      onTabRename={opts.onTabRename}
-      closingTabKeys={opts.closingTabKeys}
+      tabItemOps={opts.tabItemOps}
       onExpandWorkspace={opts.onExpandWorkspace}
       workers={opts.workers}
       workerInfoFn={opts.workerInfoFn}

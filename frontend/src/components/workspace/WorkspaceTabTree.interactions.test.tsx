@@ -34,7 +34,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
         activeTabKey={null}
         onTabClick={onTabClick}
-        onTabClose={onTabClose}
+        tabItemOps={{ onClose: onTabClose }}
         workspaceId="ws-1"
       />
     ))
@@ -53,7 +53,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[makeTab(TabType.TERMINAL, 't1', 'Terminal 1')]}
         activeTabKey={null}
         onTabClick={() => {}}
-        onTabClose={onTabClose}
+        tabItemOps={{ onClose: onTabClose }}
         workspaceId="ws-1"
       />
     ))
@@ -102,12 +102,63 @@ describe('workspaceTabTree interactions', () => {
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
         activeTabKey={null}
         onTabClick={() => {}}
-        onTabClose={() => {}}
-        closingTabKeys={new Set([`${TabType.AGENT}:a1`])}
+        tabItemOps={{ onClose: () => {}, closingKeys: new Set([`${TabType.AGENT}:a1`]) }}
         workspaceId="ws-1"
       />
     ))
 
     expect(screen.getByTestId('workspace-tab-close')).toBeDisabled()
+  })
+
+  it('renames non-file tabs when tabItemOps.onRename is provided', async () => {
+    const onRename = vi.fn()
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        tabItemOps={{ onRename }}
+        workspaceId="ws-1"
+      />
+    ))
+
+    await fireEvent.dblClick(screen.getByTestId('tab-tree-leaf'))
+    const input = screen.getByDisplayValue('Agent 1')
+    await fireEvent.input(input, { target: { value: 'Renamed Agent' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onRename).toHaveBeenCalledTimes(1)
+    expect(onRename).toHaveBeenCalledWith(expect.objectContaining({ type: TabType.AGENT, id: 'a1' }), 'Renamed Agent')
+  })
+
+  it('does not enter rename mode without tabItemOps.onRename', async () => {
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+      />
+    ))
+
+    await fireEvent.dblClick(screen.getByTestId('tab-tree-leaf'))
+
+    expect(screen.queryByDisplayValue('Agent 1')).not.toBeInTheDocument()
+  })
+
+  it('keeps file tabs non-renamable even when onRename is provided', async () => {
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[makeTab(TabType.FILE, 'f1', 'readme.md')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        tabItemOps={{ onRename: vi.fn() }}
+        workspaceId="ws-1"
+      />
+    ))
+
+    await fireEvent.dblClick(screen.getByTestId('tab-tree-leaf'))
+
+    expect(screen.queryByDisplayValue('readme.md')).not.toBeInTheDocument()
   })
 })

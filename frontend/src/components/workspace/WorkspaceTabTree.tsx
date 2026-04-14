@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { Tab } from '~/stores/tab.store'
+import type { Tab, TabItemOps } from '~/stores/tab.store'
 import { createDraggable } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
@@ -131,9 +131,7 @@ export interface WorkspaceTabTreeProps {
   tabs: Tab[]
   activeTabKey: string | null
   onTabClick: (type: TabType, id: string) => void
-  onTabClose?: (tab: Tab) => void
-  onTabRename?: (tab: Tab, title: string) => void
-  closingTabKeys?: Set<string>
+  tabItemOps?: TabItemOps
   readOnly?: boolean
   workspaceId: string
 }
@@ -151,7 +149,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const tabLabel = (tab: Tab): string => tab.title || tab.id
 
   const startEditing = (tab: Tab) => {
-    if (props.readOnly || tab.type === TabType.FILE || !props.onTabRename)
+    if (props.readOnly || tab.type === TabType.FILE || !props.tabItemOps?.onRename)
       return
     setEditingTabKey(tabKey(tab))
     setEditingValue(tabLabel(tab))
@@ -164,7 +162,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     }
     const value = editingValue().trim()
     if (value && value !== tabLabel(tab)) {
-      props.onTabRename?.(tab, value)
+      props.tabItemOps?.onRename?.(tab, value)
     }
     setEditingTabKey(null)
   }
@@ -258,8 +256,8 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                                   editingValue={editingValue()}
                                   onClick={() => props.onTabClick(tab.type, tab.id)}
                                   onDblClick={() => startEditing(tab)}
-                                  onClose={() => props.onTabClose?.(tab)}
-                                  isClosing={props.closingTabKeys?.has(tabKey(tab))}
+                                  onClose={() => props.tabItemOps?.onClose?.(tab)}
+                                  isClosing={props.tabItemOps?.closingKeys?.has(tabKey(tab))}
                                   canClose={canClose(tab)}
                                   onEditInput={v => setEditingValue(v)}
                                   onEditCommit={() => commitEdit(tab)}
@@ -291,8 +289,8 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
             editingValue={editingValue()}
             onClick={() => props.onTabClick(tab.type, tab.id)}
             onDblClick={() => startEditing(tab)}
-            onClose={() => props.onTabClose?.(tab)}
-            isClosing={props.closingTabKeys?.has(tabKey(tab))}
+            onClose={() => props.tabItemOps?.onClose?.(tab)}
+            isClosing={props.tabItemOps?.closingKeys?.has(tabKey(tab))}
             canClose={canClose(tab)}
             onEditInput={v => setEditingValue(v)}
             onEditCommit={() => commitEdit(tab)}

@@ -31,6 +31,12 @@ export interface Tab {
   gitDiffUntracked?: number
 }
 
+export interface TabItemOps {
+  onClose?: (tab: Tab) => void
+  onRename?: (tab: Tab, title: string) => void
+  closingKeys?: Set<string>
+}
+
 export function tabKey(tab: Tab): string {
   return `${tab.type}:${tab.id}`
 }

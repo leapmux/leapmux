@@ -9,12 +9,13 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore, TabItemOps } from '~/stores/tab.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 
-import { createMemo, createSignal, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { WorkspaceSharingDialog } from '~/components/workspace/WorkspaceSharingDialog'
+import { registerSidebarFileTreeOps } from '~/lib/fileTreeOps'
 import { buildSectionDef } from './buildSectionDef'
 import { useWorkspaceOperations } from './useWorkspaceOperations'
 
@@ -71,9 +72,7 @@ export interface SidebarCommonProps {
   tabStore?: ReturnType<typeof createTabStore>
   registry?: WorkspaceStoreRegistryType
   onTabClick?: (type: number, id: string) => void
-  onTabClose?: (tab: Tab) => void
-  onTabRename?: (tab: Tab, title: string) => void
-  closingTabKeys?: Set<string>
+  tabItemOps?: TabItemOps
   onExpandWorkspace?: (workspaceId: string) => void
 
   // Workers
@@ -103,6 +102,23 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
   // Declared as a signal so reactive reads (e.g., isFiltered in header
   // actions) re-evaluate when the handle is assigned after FilesSection mounts.
   const [filesSectionHandle, setFilesSectionHandle] = createSignal<FilesSectionHandle | undefined>()
+
+  createEffect(() => {
+    const handle = filesSectionHandle()
+    if (!handle)
+      return
+
+    const unregister = registerSidebarFileTreeOps({
+      refresh: () => {
+        if (props.workerId && props.workingDir)
+          props.gitStatusStore?.refresh(props.workerId, props.workingDir)
+        handle.refresh()
+      },
+      toggleHiddenFiles: () => handle.toggleShowHiddenFiles(),
+    })
+
+    onCleanup(unregister)
+  })
 
   const wsOps = useWorkspaceOperations({
     workspaces: () => props.workspaces,
@@ -148,9 +164,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get tabStore() { return props.tabStore },
     get registry() { return props.registry },
     get onTabClick() { return props.onTabClick },
-    get onTabClose() { return props.onTabClose },
-    get onTabRename() { return props.onTabRename },
-    get closingTabKeys() { return props.closingTabKeys },
+    get tabItemOps() { return props.tabItemOps },
     get onExpandWorkspace() { return props.onExpandWorkspace },
     get workerId() { return props.workerId },
     get workingDir() { return props.workingDir },

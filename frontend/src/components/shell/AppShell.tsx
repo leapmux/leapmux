@@ -1121,17 +1121,19 @@ export const AppShell: ParentComponent = (props) => {
         terminalStore.setActiveTerminal(id)
       }
     },
-    onTabRename: (tab, title) => {
-      tabStore.updateTabTitle(tab.type, tab.id, title)
-      if (tab.type === TabType.AGENT) {
-        const workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
-        renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
-          showWarnToast('Failed to rename agent', err)
-        })
-      }
+    tabItemOps: {
+      onClose: tabOps.handleTabClose,
+      onRename: (tab, title) => {
+        tabStore.updateTabTitle(tab.type, tab.id, title)
+        if (tab.type === TabType.AGENT) {
+          const workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+          renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
+            showWarnToast('Failed to rename agent', err)
+          })
+        }
+      },
+      get closingKeys() { return tabOps.closingTabKeys() },
     },
-    onTabClose: tabOps.handleTabClose,
-    get closingTabKeys() { return tabOps.closingTabKeys() },
     onExpandWorkspace: handleExpandWorkspace,
   })
 
