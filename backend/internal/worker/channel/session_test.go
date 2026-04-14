@@ -1103,3 +1103,68 @@ func TestHandleClose_MidChunk(t *testing.T) {
 	mgr.mu.RUnlock()
 	assert.False(t, exists)
 }
+
+func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	sender := newCollectSender()
+
+	var closedMu sync.Mutex
+	var closedChannels []string
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0, 0,
+		func(channelID string) {
+			closedMu.Lock()
+			closedChannels = append(closedChannels, channelID)
+			closedMu.Unlock()
+		},
+	)
+
+	session := performHandshake(t, mgr, ck, "ch-decrypt-fail", "user-1")
+	sendUserIdClaim(t, mgr, session, "ch-decrypt-fail", "user-1")
+
+	// Drain the claim response so it doesn't interfere with our assertions.
+	sender.waitForMessages(1)
+
+	countBefore := len(sender.messages())
+
+	// Send a message with corrupted ciphertext.
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-decrypt-fail",
+		Ciphertext:      []byte("this-is-not-valid-ciphertext"),
+		CorrelationId:   42,
+	})
+
+	// Verify a CLOSE notification was sent to the frontend.
+	msgs := sender.waitForMessages(countBefore + 1)
+	closeMsg := msgs[len(msgs)-1].GetChannelMessageResp()
+	require.NotNil(t, closeMsg, "expected a ChannelMessage to be sent")
+	assert.Equal(t, "ch-decrypt-fail", closeMsg.GetChannelId())
+	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, closeMsg.GetFlags())
+	assert.Empty(t, closeMsg.GetCiphertext())
+
+	// Verify the session was removed.
+	mgr.mu.RLock()
+	_, exists := mgr.sessions["ch-decrypt-fail"]
+	mgr.mu.RUnlock()
+	assert.False(t, exists, "session should be removed after decrypt failure")
+
+	// Verify the close callback was invoked.
+	closedMu.Lock()
+	assert.Equal(t, []string{"ch-decrypt-fail"}, closedChannels)
+	closedMu.Unlock()
+
+	// Verify subsequent messages for this channel are ignored.
+	ct, encErr := session.Encrypt([]byte("should be ignored"))
+	require.NoError(t, encErr)
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-decrypt-fail",
+		Ciphertext:      ct,
+		CorrelationId:   43,
+	})
+
+	// No additional messages should have been sent.
+	assert.Len(t, sender.messages(), countBefore+1)
+}
