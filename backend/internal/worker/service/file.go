@@ -299,6 +299,38 @@ func listDirectory(dirPath, basePath string, maxDepth int32, currentDepth int32,
 	return entries, truncated, nil
 }
 
+// mergeReadTimeout bounds how long a single readDirN call may block.
+// macOS TCC-protected directories (e.g. ~/Library/Messages) can hang
+// os.Open or ReadDir indefinitely; this prevents the ListDirectory
+// handler from stalling.
+const mergeReadTimeout = 500 * time.Millisecond
+
+// readDirN reads at most n entries from a directory within mergeReadTimeout.
+// Returns an error if the directory cannot be opened or read in time.
+func readDirN(dirPath string, n int) ([]os.DirEntry, error) {
+	type result struct {
+		entries []os.DirEntry
+		err     error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		f, err := os.Open(dirPath)
+		if err != nil {
+			ch <- result{nil, err}
+			return
+		}
+		entries, err := f.ReadDir(n)
+		_ = f.Close()
+		ch <- result{entries, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.entries, r.err
+	case <-time.After(mergeReadTimeout):
+		return nil, fmt.Errorf("readDirN timed out for %s", dirPath)
+	}
+}
+
 // mergeSingleChildDirs recursively merges directories that contain exactly one
 // child directory into a single entry (e.g. "src/main/java").
 func mergeSingleChildDirs(fi *leapmuxv1.FileInfo, dirPath string, maxDepth int32, currentDepth int32) *leapmuxv1.FileInfo {
@@ -306,7 +338,7 @@ func mergeSingleChildDirs(fi *leapmuxv1.FileInfo, dirPath string, maxDepth int32
 		return fi
 	}
 
-	children, err := os.ReadDir(dirPath)
+	children, err := readDirN(dirPath, 2)
 	if err != nil || len(children) != 1 {
 		return fi
 	}

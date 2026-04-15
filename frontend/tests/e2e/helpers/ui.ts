@@ -80,13 +80,6 @@ export async function openPreferencesDialog(page: Page) {
   await expect(page.getByRole('dialog', { name: 'Preferences' })).toBeVisible()
 }
 
-/** Open the Administration dialog from the user menu. */
-export async function openAdminDialog(page: Page) {
-  await page.getByTestId('user-menu-trigger').first().click()
-  await page.getByRole('menuitem', { name: 'Administration' }).click()
-  await expect(page.getByRole('dialog', { name: 'Administration' })).toBeVisible()
-}
-
 /**
  * Login via the UI form. Navigates to /login, fills credentials,
  * and waits for redirect to the personal org page.
@@ -103,6 +96,7 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       await expect(page).toHaveURL(new RegExp(`/o/${username}`))
+      await page.waitForLoadState('networkidle')
       return // success
     }
     catch {

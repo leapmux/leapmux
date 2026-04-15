@@ -12,9 +12,6 @@ test.describe('Worker Registration', () => {
     // in the new workspace dialog. The initial onMount fetch should find it.
     await loginViaUI(page)
 
-    // Wait for the page to fully settle
-    await page.waitForLoadState('networkidle')
-
     // Open the new workspace dialog
     await page.getByLabel(NEW_WORKSPACE_RE).first().click()
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
