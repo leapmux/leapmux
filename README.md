@@ -31,8 +31,8 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
   - Native macOS, Linux, and Windows desktop application (optional)
 - **Git-Aware File Browser**
   - Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
-- **Git Worktree Management**
-  - Agents and terminals auto-create isolated git worktrees per task, with dirty-worktree protection
+- **Git Worktree & Branch Management**
+  - Create new worktrees, use existing ones, switch branches, or create new branches when opening agents and terminals, with dirty-worktree protection on close
 - **End-to-End Encryption**
   - All Frontend-Worker traffic is encrypted via hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 + SLH-DSA) over multiplexed WebSocket channels
 - **Multi-Organization Support**
@@ -103,8 +103,8 @@ The Hub supports multiple database backends — **SQLite** (default), **PostgreS
                                 │   (SQLite,       │              └──────────────────┘
                                 │    PostgreSQL,   │                        ⋮
                                 │    MySQL, ...)   │              ┌──────────────────┐
-                                └──────────────────┘              │  Worker N        │
-                                                                  │  ┌────────────┐  │
+                                │                  │              │  Worker N        │
+                                └──────────────────┘              │  ┌────────────┐  │
                                                                   │  │   Agents   │  │
                                                                   │  │ (multiple) │  │
                                                                   │  └────────────┘  │
@@ -179,17 +179,10 @@ Before you begin, ensure you have the following installed:
 
 Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 
-Install the [Rust toolchain](https://rustup.rs/) for desktop app builds:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup default stable
-```
-
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install buf go go-task golangci-lint mprocs sqlc yq
+brew install buf go go-task golangci-lint mprocs protobuf rust sqlc yq
 ```
 
 ### Arch Linux
@@ -197,7 +190,7 @@ brew install buf go go-task golangci-lint mprocs sqlc yq
 Install the official repository packages with [pacman](https://wiki.archlinux.org/title/Pacman):
 
 ```bash
-sudo pacman -S buf bun go go-task go-yq golangci-lint sqlc
+sudo pacman -S buf bun go go-task go-yq golangci-lint protobuf rust sqlc
 ```
 
 The Arch `go-task` package installs the binary as `go-task`. Add a shell alias so that `task` works:
@@ -211,7 +204,6 @@ Install the remaining dependencies from the [AUR](https://wiki.archlinux.org/tit
 
 ```bash
 yay -S mprocs-bin
-rustup default stable
 ```
 
 For desktop app builds, install the [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux):
@@ -245,19 +237,13 @@ Once all services are running, open your browser to:
 http://localhost:4327
 ```
 
-The `task dev` command uses `mprocs` to run two processes concurrently:
-- **Backend** — Runs Hub + Worker together in dev mode (with `-dev-frontend` flag to proxy to the frontend dev server)
-- **Frontend** — Bun dev server for the SolidJS web application
+Each `dev` target generates code and builds prerequisites, then launches `mprocs` to run the processes concurrently:
 
-To run in solo mode (localhost-only, no login) instead of dev mode during development:
-```bash
-task dev-solo
-```
-
-To develop the desktop app (Tauri + Go sidecar):
-```bash
-task dev-desktop
-```
+| Command | Processes | Description |
+|---------|-----------|-------------|
+| `task dev` | Go backend (`leapmux dev`) + Bun frontend dev server | Full-featured dev mode on all interfaces, login required |
+| `task dev-solo` | Go backend (`leapmux` solo) + Bun frontend dev server | Localhost-only, no login, single-user |
+| `task dev-desktop` | Bun frontend dev server + Tauri desktop app | Desktop app development (builds sidecar first) |
 
 ## Development
 
@@ -528,6 +514,7 @@ leapmux/
 │   │   │   │   ├── sqlutil/     # Shared SQL helpers (migrations, bulk ops, converters)
 │   │   │   │   └── storetest/   # Backend-agnostic test suite
 │   │   │   ├── storeopen/   # Store factory (opens backend from config)
+│   │   │   ├── testutil/    # Shared test helpers for hub tests
 │   │   │   └── workermgr/   # Worker connection registry and pending approvals
 │   │   │
 │   │   ├── logging/         # Structured logging and middleware
@@ -563,6 +550,8 @@ leapmux/
 ├── docker/                  # Dockerfile and s6-overlay service definitions
 │
 ├── frontend/                # SolidJS web application
+│   ├── patches/             # Bun patch overrides for dependencies
+│   ├── public/              # Static assets (fonts, icons, sounds, PWA manifest)
 │   ├── scripts/             # Build and development scripts
 │   ├── src/
 │   │   ├── api/             # ConnectRPC client setup
