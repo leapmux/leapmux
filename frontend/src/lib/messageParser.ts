@@ -228,8 +228,53 @@ export function extractCodexTokenUsage(parsed: ParsedMessageContent): {
   return { contextUsage }
 }
 
+function modelContextWindow(modelData: unknown): number {
+  if (!modelData || typeof modelData !== 'object')
+    return 0
+  const cw = (modelData as Record<string, unknown>).contextWindow
+  return typeof cw === 'number' && cw > 0 ? cw : 0
+}
+
+function maxContextWindow(modelUsage: Record<string, unknown>): number {
+  let max = 0
+  for (const modelData of Object.values(modelUsage))
+    max = Math.max(max, modelContextWindow(modelData))
+  return max
+}
+
+function findPrimaryContextWindow(modelUsage: Record<string, unknown>, primaryModelId?: string): number {
+  if (!primaryModelId)
+    return maxContextWindow(modelUsage)
+
+  let family = primaryModelId
+  let suffix = ''
+  const bracketIdx = primaryModelId.indexOf('[')
+  if (bracketIdx >= 0) {
+    family = primaryModelId.slice(0, bracketIdx)
+    suffix = primaryModelId.slice(bracketIdx)
+  }
+
+  for (const [key, modelData] of Object.entries(modelUsage)) {
+    if (!key.includes(family))
+      continue
+    if (suffix) {
+      if (!key.includes(suffix))
+        continue
+    }
+    else if (key.includes('[')) {
+      continue
+    }
+
+    const cw = modelContextWindow(modelData)
+    if (cw > 0)
+      return cw
+  }
+
+  return maxContextWindow(modelUsage)
+}
+
 /** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numToolUses. */
-export function extractResultMetadata(parsed: ParsedMessageContent): {
+export function extractResultMetadata(parsed: ParsedMessageContent, primaryModelId?: string): {
   subtype?: string
   contextWindow?: number
   totalCostUsd?: number
@@ -257,13 +302,9 @@ export function extractResultMetadata(parsed: ParsedMessageContent): {
     result.numToolUses = inner.num_tool_uses as number
 
   if (inner.modelUsage && typeof inner.modelUsage === 'object') {
-    for (const modelData of Object.values(inner.modelUsage as Record<string, unknown>)) {
-      const md = modelData as Record<string, unknown> | undefined
-      if (md && typeof md.contextWindow === 'number') {
-        result.contextWindow = md.contextWindow as number
-        break
-      }
-    }
+    const cw = findPrimaryContextWindow(inner.modelUsage as Record<string, unknown>, primaryModelId)
+    if (cw > 0)
+      result.contextWindow = cw
   }
 
   if (typeof inner.total_cost_usd === 'number')

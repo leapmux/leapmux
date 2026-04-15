@@ -227,7 +227,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // Also extract contextWindow and total_cost_usd (rehydrates on reconnect).
         if (msg.role === MessageRole.RESULT) {
           try {
-            const meta = extractResultMetadata(parseMessageContent(msg))
+            const modelId = agentStore.state.agents.find(a => a.id === agentId)?.model
+            const meta = extractResultMetadata(parseMessageContent(msg), modelId)
             if (meta) {
               if (msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed') {
                 // Codex also clears the active turn ID via ephemeral session info,

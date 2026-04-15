@@ -439,6 +439,60 @@ describe('extractResultMetadata', () => {
     })
   })
 
+  it('selects primary model contextWindow when modelUsage includes multiple models', () => {
+    const content = {
+      type: 'result',
+      subtype: 'turn_end',
+      modelUsage: {
+        'claude-haiku-4-5-20251001': { contextWindow: 200000 },
+        'claude-opus-4-6[1m]': { contextWindow: 1000000 },
+      },
+    }
+    const msg = makeMsg(MessageRole.RESULT, content)
+    const result = extractResultMetadata(parseMessageContent(msg), 'opus[1m]')
+
+    expect(result).toEqual({
+      subtype: 'turn_end',
+      contextWindow: 1000000,
+    })
+  })
+
+  it('matches bracket variants exactly when primary model has no suffix', () => {
+    const content = {
+      type: 'result',
+      subtype: 'turn_end',
+      modelUsage: {
+        'claude-opus-4-6[1m]': { contextWindow: 1000000 },
+        'claude-opus-4-6-20251001': { contextWindow: 200000 },
+      },
+    }
+    const msg = makeMsg(MessageRole.RESULT, content)
+    const result = extractResultMetadata(parseMessageContent(msg), 'opus')
+
+    expect(result).toEqual({
+      subtype: 'turn_end',
+      contextWindow: 200000,
+    })
+  })
+
+  it('falls back to max contextWindow when primary model is missing from modelUsage', () => {
+    const content = {
+      type: 'result',
+      subtype: 'turn_end',
+      modelUsage: {
+        'claude-haiku-4-5-20251001': { contextWindow: 200000 },
+        'claude-opus-4-6[1m]': { contextWindow: 1000000 },
+      },
+    }
+    const msg = makeMsg(MessageRole.RESULT, content)
+    const result = extractResultMetadata(parseMessageContent(msg), 'sonnet')
+
+    expect(result).toEqual({
+      subtype: 'turn_end',
+      contextWindow: 1000000,
+    })
+  })
+
   it('returns null for empty inner message', () => {
     const msg = makeMsg(MessageRole.RESULT, {})
     expect(extractResultMetadata(parseMessageContent(msg))).toBeNull()
