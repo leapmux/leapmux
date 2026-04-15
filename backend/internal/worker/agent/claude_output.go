@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -360,11 +361,12 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	if msgType == "result" {
-		// Auto-continue on synthetic API 5xx errors; reset on normal results.
-		if env.IsError && hasSyntheticAPI5xxPrefix(env.Result) {
+		// Auto-continue on retryable Claude result errors; reset on normal results.
+		if env.IsError && isRetryableClaudeResultError(env.Result) {
 			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
-				Reason: AutoContinueReasonAPIError,
-				DueAt:  time.Now().UTC(),
+				Reason:        AutoContinueReasonAPIError,
+				DueAt:         time.Now().UTC(),
+				SourcePayload: append([]byte(nil), content...),
 			})
 		} else {
 			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
@@ -741,22 +743,13 @@ func extractStatusValue(content []byte) (status string, ok bool) {
 	return "", true
 }
 
-// syntheticAPIErrorPrefix is the prefix Claude Code uses for synthetic API error results.
-const syntheticAPIErrorPrefix = "API Error: "
+var claudeSyntheticAPI5xxPattern = regexp.MustCompile(`^API Error[^[:alnum:]]+5[0-9]{2}(?:$|[^[:alnum:]].*)`)
+var claudeRetryableIdleTimeoutPattern = regexp.MustCompile(`^API Error[^[:alnum:]]+Stream idle timeout(?:$|[^[:alnum:]].*)`)
 
-// hasSyntheticAPI5xxPrefix reports whether s starts with "API Error: 5XX"
-// where XX are two digits (i.e. exactly a 3-digit 5xx HTTP status code).
-func hasSyntheticAPI5xxPrefix(s string) bool {
-	// "API Error: 5XX ..." — prefix is 11 chars, then 5, then two digits.
-	if !strings.HasPrefix(s, syntheticAPIErrorPrefix) {
-		return false
-	}
-	rest := s[len(syntheticAPIErrorPrefix):]
-	return len(rest) >= 3 &&
-		rest[0] == '5' &&
-		rest[1] >= '0' && rest[1] <= '9' &&
-		rest[2] >= '0' && rest[2] <= '9' &&
-		(len(rest) == 3 || rest[3] < '0' || rest[3] > '9')
+// isRetryableClaudeResultError reports whether a Claude result error should
+// trigger auto-continue.
+func isRetryableClaudeResultError(s string) bool {
+	return claudeSyntheticAPI5xxPattern.MatchString(s) || claudeRetryableIdleTimeoutPattern.MatchString(s)
 }
 
 // isSimpleUserTextEcho returns true if the NDJSON line is a user message echo

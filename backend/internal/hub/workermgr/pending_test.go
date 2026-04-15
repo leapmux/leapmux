@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -28,15 +29,11 @@ func TestPendingRequests_Complete(t *testing.T) {
 		},
 	}
 
-	if !p.Complete("req-1", resp) {
-		t.Fatal("expected Complete to return true")
-	}
+	require.True(t, p.Complete("req-1", resp))
 
 	select {
 	case got := <-ch:
-		if got.GetChannelOpenResp().GetChannelId() != "ch-1" {
-			t.Errorf("channel_id = %q, want %q", got.GetChannelOpenResp().GetChannelId(), "ch-1")
-		}
+		assert.Equal(t, "ch-1", got.GetChannelOpenResp().GetChannelId())
 	default:
 		t.Fatal("expected message on channel")
 	}
@@ -44,9 +41,7 @@ func TestPendingRequests_Complete(t *testing.T) {
 
 func TestPendingRequests_CompleteUnknown(t *testing.T) {
 	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
-	if p.Complete("unknown", &leapmuxv1.ConnectRequest{}) {
-		t.Fatal("expected Complete to return false for unknown request")
-	}
+	require.False(t, p.Complete("unknown", &leapmuxv1.ConnectRequest{}))
 }
 
 func TestPendingRequests_SendAndWait_NilConn(t *testing.T) {
@@ -127,50 +122,37 @@ func TestPendingRequests_OutOfOrder(t *testing.T) {
 		}
 	}
 
-	if reqID1 == "" || reqID2 == "" {
-		t.Fatalf("missing request IDs: ch1=%q, ch2=%q", reqID1, reqID2)
-	}
+	require.NotEmpty(t, reqID1, "missing request ID for ch-1")
+	require.NotEmpty(t, reqID2, "missing request ID for ch-2")
 
 	// Complete ch-2 first, then ch-1 (out of order).
-	if !p.Complete(reqID2, &leapmuxv1.ConnectRequest{
+	require.True(t, p.Complete(reqID2, &leapmuxv1.ConnectRequest{
 		RequestId: reqID2,
 		Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
 			ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{ChannelId: "ch-2"},
 		},
-	}) {
-		t.Fatal("Complete(ch-2) returned false")
-	}
+	}))
 
-	if !p.Complete(reqID1, &leapmuxv1.ConnectRequest{
+	require.True(t, p.Complete(reqID1, &leapmuxv1.ConnectRequest{
 		RequestId: reqID1,
 		Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
 			ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{ChannelId: "ch-1"},
 		},
-	}) {
-		t.Fatal("Complete(ch-1) returned false")
-	}
+	}))
 
 	// Verify each goroutine received its correct response.
 	select {
 	case r := <-ch1Result:
-		if r.err != nil {
-			t.Fatalf("ch-1 error: %v", r.err)
-		}
-		if r.resp.GetChannelOpenResp().GetChannelId() != "ch-1" {
-			t.Errorf("ch-1 channel_id = %q, want %q", r.resp.GetChannelOpenResp().GetChannelId(), "ch-1")
-		}
+		require.NoError(t, r.err, "ch-1 error")
+		assert.Equal(t, "ch-1", r.resp.GetChannelOpenResp().GetChannelId())
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for ch-1 result")
 	}
 
 	select {
 	case r := <-ch2Result:
-		if r.err != nil {
-			t.Fatalf("ch-2 error: %v", r.err)
-		}
-		if r.resp.GetChannelOpenResp().GetChannelId() != "ch-2" {
-			t.Errorf("ch-2 channel_id = %q, want %q", r.resp.GetChannelOpenResp().GetChannelId(), "ch-2")
-		}
+		require.NoError(t, r.err, "ch-2 error")
+		assert.Equal(t, "ch-2", r.resp.GetChannelOpenResp().GetChannelId())
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for ch-2 result")
 	}

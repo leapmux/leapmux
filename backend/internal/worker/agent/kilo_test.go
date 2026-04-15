@@ -109,16 +109,10 @@ func TestKiloConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 		{ID: openCodeHiddenCompaction, Name: openCodeHiddenCompaction},
 	}, OpenCodePrimaryAgentPlan, "")
-	if err != nil {
-		t.Fatalf("configurePrimaryAgents: %v", err)
-	}
+	require.NoError(t, err)
 
-	if agent.currentPrimaryAgent != OpenCodePrimaryAgentPlan {
-		t.Fatalf("expected current primary agent %q, got %q", OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
-	}
-	if len(agent.availablePrimaryAgents) != 2 {
-		t.Fatalf("expected 2 visible primary agents, got %d", len(agent.availablePrimaryAgents))
-	}
+	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
+	require.Len(t, agent.availablePrimaryAgents, 2)
 }
 
 func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
@@ -127,23 +121,13 @@ func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 	}, KiloPrimaryAgentCode, OpenCodePrimaryAgentPlan)
-	if err != nil {
-		t.Fatalf("configurePrimaryAgents: %v", err)
-	}
+	require.NoError(t, err)
 
-	if agent.currentPrimaryAgent != OpenCodePrimaryAgentPlan {
-		t.Fatalf("expected restored primary agent %q, got %q", OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
-	}
+	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	recorded := requests()
-	if len(recorded) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(recorded))
-	}
-	if recorded[0].Method != acpMethodSessionSetMode {
-		t.Fatalf("expected %s, got %q", acpMethodSessionSetMode, recorded[0].Method)
-	}
-	if got := recorded[0].Params["modeId"]; got != OpenCodePrimaryAgentPlan {
-		t.Fatalf("expected modeId %q, got %#v", OpenCodePrimaryAgentPlan, got)
-	}
+	require.Len(t, recorded, 1)
+	require.Equal(t, acpMethodSessionSetMode, recorded[0].Method)
+	require.Equal(t, OpenCodePrimaryAgentPlan, recorded[0].Params["modeId"])
 }
 
 func TestKiloConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T) {
@@ -152,16 +136,10 @@ func TestKiloConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T)
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 	}, KiloPrimaryAgentCode, "unknown")
-	if err != nil {
-		t.Fatalf("configurePrimaryAgents: %v", err)
-	}
+	require.NoError(t, err)
 
-	if agent.currentPrimaryAgent != KiloPrimaryAgentCode {
-		t.Fatalf("expected current primary agent %q, got %q", KiloPrimaryAgentCode, agent.currentPrimaryAgent)
-	}
-	if len(requests()) != 0 {
-		t.Fatalf("expected no session/set_mode request for unknown saved agent")
-	}
+	require.Equal(t, KiloPrimaryAgentCode, agent.currentPrimaryAgent)
+	require.Empty(t, requests())
 }
 
 func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
@@ -175,42 +153,26 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
 		ExtraSettings: map[string]string{OptionGroupKeyPrimaryAgent: OpenCodePrimaryAgentPlan},
 	})
-	if !updated {
-		t.Fatalf("expected update to succeed")
-	}
-	if agent.currentPrimaryAgent != OpenCodePrimaryAgentPlan {
-		t.Fatalf("expected current primary agent %q, got %q", OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
-	}
+	require.True(t, updated)
+	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	recorded := requests()
-	if len(recorded) != 1 || recorded[0].Method != acpMethodSessionSetMode {
-		t.Fatalf("expected one %s request, got %#v", acpMethodSessionSetMode, recorded)
-	}
+	require.Len(t, recorded, 1)
+	require.Equal(t, acpMethodSessionSetMode, recorded[0].Method)
 }
 
 func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
 	agent := &KiloAgent{acpBase: acpBase{model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
 	settings := agent.CurrentSettings()
-	if settings.GetModel() != "openai/gpt-5" {
-		t.Fatalf("expected model to round-trip")
-	}
-	if got := settings.GetExtraSettings()[OptionGroupKeyPrimaryAgent]; got != OpenCodePrimaryAgentPlan {
-		t.Fatalf("expected primaryAgent %q, got %q", OpenCodePrimaryAgentPlan, got)
-	}
+	require.Equal(t, "openai/gpt-5", settings.GetModel())
+	require.Equal(t, OpenCodePrimaryAgentPlan, settings.GetExtraSettings()[OptionGroupKeyPrimaryAgent])
 }
 
 func TestKiloAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
 	agent := &KiloAgent{}
 	groups := agent.AvailableOptionGroups()
-	if len(groups) != 1 {
-		t.Fatalf("expected 1 option group, got %d", len(groups))
-	}
-	if groups[0].Key != OptionGroupKeyPrimaryAgent {
-		t.Fatalf("expected key %q, got %q", OptionGroupKeyPrimaryAgent, groups[0].Key)
-	}
-	if len(groups[0].Options) != 2 {
-		t.Fatalf("expected 2 fallback options, got %d", len(groups[0].Options))
-	}
-	if groups[0].Options[0].Id != KiloPrimaryAgentCode || !groups[0].Options[0].IsDefault {
-		t.Fatalf("expected code to be the default fallback option")
-	}
+	require.Len(t, groups, 1)
+	require.Equal(t, OptionGroupKeyPrimaryAgent, groups[0].Key)
+	require.Len(t, groups[0].Options, 2)
+	require.Equal(t, KiloPrimaryAgentCode, groups[0].Options[0].Id)
+	require.True(t, groups[0].Options[0].IsDefault)
 }

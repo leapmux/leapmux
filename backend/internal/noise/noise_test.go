@@ -400,16 +400,8 @@ func TestHandshakeStateZeroedAfterHybrid(t *testing.T) {
 	// After handshake2 completes, HandshakeState should be zeroed.
 	assert.Nil(t, hs.ss, "symmetric state should be nil after handshake2")
 	assert.Nil(t, hs.ePriv, "ephemeral private key should be nil after handshake2")
-	for _, b := range hs.mlkemSS {
-		if b != 0 {
-			t.Fatal("mlkemSS should be zeroed after handshake2")
-		}
-	}
-	for _, b := range hs.mlkemCT {
-		if b != 0 {
-			t.Fatal("mlkemCT should be zeroed after handshake2")
-		}
-	}
+	assert.Equal(t, make([]byte, len(hs.mlkemSS)), hs.mlkemSS, "mlkemSS should be zeroed after handshake2")
+	assert.Equal(t, make([]byte, len(hs.mlkemCT)), hs.mlkemCT, "mlkemCT should be zeroed after handshake2")
 }
 
 func TestHandshakeStateZeroedAfterClassical(t *testing.T) {

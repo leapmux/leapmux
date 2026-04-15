@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/stretchr/testify/require"
 )
 
 func newGeminiAgentWithSink(sink OutputSink) *GeminiCLIAgent {
@@ -29,16 +30,10 @@ func TestHandleGeminiOutput_AgentMessageChunk(t *testing.T) {
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello Gemini"}}}}`
 	agent.HandleOutput([]byte(input))
 
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
+	require.Equal(t, 1, sink.StreamChunkCount())
 	got := sink.LastStreamChunk()
-	if got.Method != "agent_message_chunk" {
-		t.Fatalf("expected method agent_message_chunk, got %q", got.Method)
-	}
-	if string(got.Content) != "Hello Gemini" {
-		t.Fatalf("expected content 'Hello Gemini', got %q", string(got.Content))
-	}
+	require.Equal(t, "agent_message_chunk", got.Method)
+	require.Equal(t, "Hello Gemini", string(got.Content))
 }
 
 func TestHandleGeminiOutput_ToolCallOpensSpan(t *testing.T) {
@@ -48,19 +43,11 @@ func TestHandleGeminiOutput_ToolCallOpensSpan(t *testing.T) {
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"shell","kind":"execute","status":"pending"}}}`
 	agent.HandleOutput([]byte(input))
 
-	if sink.MessageCount() != 1 {
-		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
-	}
+	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	if msg.SpanID != "tc-1" {
-		t.Fatalf("expected spanID tc-1, got %q", msg.SpanID)
-	}
-	if msg.SpanType != "execute" {
-		t.Fatalf("expected spanType execute, got %q", msg.SpanType)
-	}
-	if len(sink.OpenSpans()) != 1 {
-		t.Fatalf("expected span to be opened")
-	}
+	require.Equal(t, "tc-1", msg.SpanID)
+	require.Equal(t, "execute", msg.SpanType)
+	require.Len(t, sink.OpenSpans(), 1)
 }
 
 func TestHandleGeminiOutput_RequestPermission(t *testing.T) {
@@ -70,12 +57,8 @@ func TestHandleGeminiOutput_RequestPermission(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s1","options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"}],"toolCall":{"toolCallId":"tc-1","title":"shell","kind":"execute"}}}`
 	agent.HandleOutput([]byte(input))
 
-	if sink.PersistedControlCount() != 1 {
-		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
-	}
-	if got := sink.LastPersistedControl().RequestID; got != "7" {
-		t.Fatalf("expected control request id 7, got %q", got)
-	}
+	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, "7", sink.LastPersistedControl().RequestID)
 }
 
 func TestHandleGeminiOutput_UsageUpdateBroadcastsSessionInfo(t *testing.T) {
@@ -85,23 +68,13 @@ func TestHandleGeminiOutput_UsageUpdateBroadcastsSessionInfo(t *testing.T) {
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"usage_update","used":321,"size":12345,"cost":{"amount":0.25,"currency":"USD"}}}}`
 	agent.HandleOutput([]byte(input))
 
-	if sink.SessionInfoCount() != 1 {
-		t.Fatalf("expected 1 session info update, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 1, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
 	usage, ok := info["contextUsage"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected contextUsage map, got %#v", info["contextUsage"])
-	}
-	if usage["inputTokens"] != int64(321) {
-		t.Fatalf("expected inputTokens 321, got %#v", usage["inputTokens"])
-	}
-	if usage["contextWindow"] != int64(12345) {
-		t.Fatalf("expected contextWindow 12345, got %#v", usage["contextWindow"])
-	}
-	if info["totalCostUsd"] != 0.25 {
-		t.Fatalf("expected totalCostUsd 0.25, got %#v", info["totalCostUsd"])
-	}
+	require.True(t, ok)
+	require.Equal(t, int64(321), usage["inputTokens"])
+	require.Equal(t, int64(12345), usage["contextWindow"])
+	require.Equal(t, 0.25, info["totalCostUsd"])
 }
 
 func TestHandleGeminiOutput_CurrentModeUpdateBroadcastsPermissionMode(t *testing.T) {
@@ -111,12 +84,8 @@ func TestHandleGeminiOutput_CurrentModeUpdateBroadcastsPermissionMode(t *testing
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}`
 	agent.HandleOutput([]byte(input))
 
-	if agent.permissionMode != "plan" {
-		t.Fatalf("expected permission mode plan, got %q", agent.permissionMode)
-	}
-	if got := sink.PermissionMode(); got != "plan" {
-		t.Fatalf("expected sink permission mode plan, got %q", got)
-	}
+	require.Equal(t, "plan", agent.permissionMode)
+	require.Equal(t, "plan", sink.PermissionMode())
 }
 
 func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
@@ -131,15 +100,9 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 		broadcastGeminiQuotaSessionInfo(agent.sink, r)
 	})
 
-	if sink.MessageCount() != 3 {
-		t.Fatalf("expected 3 persisted messages, got %d", sink.MessageCount())
-	}
-	if sink.Messages()[2].Role != leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT {
-		t.Fatalf("expected final message to be a result")
-	}
-	if sink.SessionInfoCount() != 1 {
-		t.Fatalf("expected 1 session info broadcast, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 3, sink.MessageCount())
+	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, sink.Messages()[2].Role)
+	require.Equal(t, 1, sink.SessionInfoCount())
 }
 
 func TestBuildGeminiCLIModels_withAuto(t *testing.T) {
@@ -148,12 +111,9 @@ func TestBuildGeminiCLIModels_withAuto(t *testing.T) {
 		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Detailed"},
 	}
 	result := buildGeminiCLIModels(models, "auto")
-	if len(result) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(result))
-	}
-	if result[0].Id != "auto" || !result[0].IsDefault {
-		t.Fatalf("expected auto to be default, got id=%q default=%v", result[0].Id, result[0].IsDefault)
-	}
+	require.Len(t, result, 2)
+	require.Equal(t, "auto", result[0].Id)
+	require.True(t, result[0].IsDefault)
 }
 
 func TestBuildGeminiCLIModels_withoutAuto(t *testing.T) {
@@ -162,15 +122,11 @@ func TestBuildGeminiCLIModels_withoutAuto(t *testing.T) {
 		{ModelID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", Description: "Fast"},
 	}
 	result := buildGeminiCLIModels(models, "gemini-2.5-pro")
-	if len(result) != 3 {
-		t.Fatalf("expected 3 models (synthetic auto + 2), got %d", len(result))
-	}
-	if result[0].Id != "auto" || result[0].IsDefault {
-		t.Fatalf("expected synthetic auto first and not default, got id=%q default=%v", result[0].Id, result[0].IsDefault)
-	}
-	if result[1].Id != "gemini-2.5-pro" || !result[1].IsDefault {
-		t.Fatalf("expected gemini-2.5-pro to be default, got id=%q default=%v", result[1].Id, result[1].IsDefault)
-	}
+	require.Len(t, result, 3)
+	require.Equal(t, "auto", result[0].Id)
+	require.False(t, result[0].IsDefault)
+	require.Equal(t, "gemini-2.5-pro", result[1].Id)
+	require.True(t, result[1].IsDefault)
 }
 
 func TestBuildGeminiCLIModels_withoutAutoEmptyCurrentModel(t *testing.T) {
@@ -178,12 +134,9 @@ func TestBuildGeminiCLIModels_withoutAutoEmptyCurrentModel(t *testing.T) {
 		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro"},
 	}
 	result := buildGeminiCLIModels(models, "")
-	if len(result) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(result))
-	}
-	if result[0].Id != "auto" || !result[0].IsDefault {
-		t.Fatalf("expected synthetic auto to be default when currentModelID is empty, got id=%q default=%v", result[0].Id, result[0].IsDefault)
-	}
+	require.Len(t, result, 2)
+	require.Equal(t, "auto", result[0].Id)
+	require.True(t, result[0].IsDefault)
 }
 
 func TestGeminiCurrentSettingsIncludesPermissionMode(t *testing.T) {
@@ -192,10 +145,6 @@ func TestGeminiCurrentSettingsIncludesPermissionMode(t *testing.T) {
 	}
 
 	settings := agent.CurrentSettings()
-	if settings.GetModel() != "auto" {
-		t.Fatalf("expected model auto, got %q", settings.GetModel())
-	}
-	if settings.GetPermissionMode() != GeminiCLIModePlan {
-		t.Fatalf("expected permission mode %q, got %q", GeminiCLIModePlan, settings.GetPermissionMode())
-	}
+	require.Equal(t, "auto", settings.GetModel())
+	require.Equal(t, GeminiCLIModePlan, settings.GetPermissionMode())
 }

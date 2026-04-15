@@ -8,6 +8,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // controlRequestRecord captures a single PersistControlRequest / BroadcastControlRequest call.
@@ -126,37 +128,23 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.PersistedControlCount() != 1 {
-		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
-	}
-	if sink.BroadcastControlCount() != 1 {
-		t.Fatalf("expected 1 broadcast control request, got %d", sink.BroadcastControlCount())
-	}
+	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.BroadcastControlCount())
 
 	rec := sink.LastPersistedControl()
-	if rec.RequestID != "42" {
-		t.Errorf("expected requestID '42', got %q", rec.RequestID)
-	}
+	assert.Equal(t, "42", rec.RequestID)
 
 	// Verify payload is the original content.
 	var parsed struct {
 		Method string `json:"method"`
 		ID     int    `json:"id"`
 	}
-	if err := json.Unmarshal(rec.Payload, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	if parsed.Method != "item/tool/requestUserInput" {
-		t.Errorf("expected method 'item/tool/requestUserInput', got %q", parsed.Method)
-	}
-	if parsed.ID != 42 {
-		t.Errorf("expected id 42, got %d", parsed.ID)
-	}
+	require.NoError(t, json.Unmarshal(rec.Payload, &parsed))
+	assert.Equal(t, "item/tool/requestUserInput", parsed.Method)
+	assert.Equal(t, 42, parsed.ID)
 
 	// Should NOT be persisted as a regular message.
-	if sink.MessageCount() != 0 {
-		t.Errorf("expected 0 messages, got %d", sink.MessageCount())
-	}
+	assert.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
@@ -167,14 +155,10 @@ func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.PersistedControlCount() != 1 {
-		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
-	}
+	require.Equal(t, 1, sink.PersistedControlCount())
 
 	rec := sink.LastPersistedControl()
-	if rec.RequestID != "7" {
-		t.Errorf("expected requestID '7', got %q", rec.RequestID)
-	}
+	assert.Equal(t, "7", rec.RequestID)
 }
 
 func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
@@ -185,14 +169,10 @@ func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.PersistedControlCount() != 1 {
-		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
-	}
+	require.Equal(t, 1, sink.PersistedControlCount())
 
 	rec := sink.LastPersistedControl()
-	if rec.RequestID != "8" {
-		t.Errorf("expected requestID '8', got %q", rec.RequestID)
-	}
+	assert.Equal(t, "8", rec.RequestID)
 }
 
 func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
@@ -203,14 +183,10 @@ func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.PersistedControlCount() != 1 {
-		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
-	}
+	require.Equal(t, 1, sink.PersistedControlCount())
 
 	rec := sink.LastPersistedControl()
-	if rec.RequestID != "9" {
-		t.Errorf("expected requestID '9', got %q", rec.RequestID)
-	}
+	assert.Equal(t, "9", rec.RequestID)
 }
 
 func TestHandleCodexOutput_PlanDelta(t *testing.T) {
@@ -220,37 +196,26 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	input := `{"method":"item/plan/delta","params":{"delta":"# Plan\n"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
-	if got := sink.LastStreamChunk(); got.Method != "item/plan/delta" || got.SpanID != "" || string(got.Content) != "# Plan\n" {
-		t.Fatalf("unexpected stream chunk: %+v", got)
-	}
+	require.Equal(t, 1, sink.StreamChunkCount())
+	got := sink.LastStreamChunk()
+	require.Equal(t, "item/plan/delta", got.Method)
+	require.Equal(t, "", got.SpanID)
+	require.Equal(t, "# Plan\n", string(got.Content))
 
 	// Verify the session info was broadcast with streamingType "plan".
-	if sink.SessionInfoCount() != 1 {
-		t.Fatalf("expected 1 session info broadcast, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 1, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
-	if info["streamingType"] != "plan" {
-		t.Errorf("expected streamingType 'plan', got %v", info["streamingType"])
-	}
+	assert.Equal(t, "plan", info["streamingType"])
 
 	// Second delta should NOT broadcast session info again.
 	input2 := `{"method":"item/plan/delta","params":{"delta":"Step 1\n"}}`
 	handleCodexOutput(agent, parseLine([]byte(input2)))
 
-	if sink.StreamChunkCount() != 2 {
-		t.Fatalf("expected 2 stream chunks, got %d", sink.StreamChunkCount())
-	}
-	if sink.SessionInfoCount() != 1 {
-		t.Errorf("expected still 1 session info broadcast, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 2, sink.StreamChunkCount())
+	assert.Equal(t, 1, sink.SessionInfoCount())
 
 	// Should NOT be persisted as a regular message.
-	if sink.MessageCount() != 0 {
-		t.Errorf("expected 0 messages, got %d", sink.MessageCount())
-	}
+	assert.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(t *testing.T) {
@@ -260,19 +225,11 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(
 	input := `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.NotificationCount() != 1 {
-		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
-	}
+	require.Equal(t, 1, sink.NotificationCount())
 	var parsed map[string]interface{}
-	if err := json.Unmarshal(sink.LastNotification().Content, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal notification: %v", err)
-	}
-	if parsed["type"] != "compacting" {
-		t.Fatalf("expected compacting notification, got %+v", parsed)
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected 0 assistant messages, got %d", sink.MessageCount())
-	}
+	require.NoError(t, json.Unmarshal(sink.LastNotification().Content, &parsed))
+	require.Equal(t, "compacting", parsed["type"])
+	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_McpStartupStatusPersistsNotification(t *testing.T) {
@@ -282,15 +239,9 @@ func TestHandleCodexOutput_McpStartupStatusPersistsNotification(t *testing.T) {
 	input := `{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":"ready"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.NotificationCount() != 1 {
-		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected 0 persisted messages, got %d", sink.MessageCount())
-	}
-	if string(sink.LastNotification().Content) != input {
-		t.Fatalf("expected raw startup status notification to be preserved, got %s", string(sink.LastNotification().Content))
-	}
+	require.Equal(t, 1, sink.NotificationCount())
+	require.Equal(t, 0, sink.MessageCount())
+	require.Equal(t, input, string(sink.LastNotification().Content))
 }
 
 func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
@@ -300,16 +251,10 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.AutoScheduleCount() != 1 {
-		t.Fatalf("expected 1 auto-continue schedule, got %d", sink.AutoScheduleCount())
-	}
+	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	if schedule.Reason != AutoContinueReasonRateLimit {
-		t.Fatalf("expected rate_limit reason, got %q", schedule.Reason)
-	}
-	if !schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()) {
-		t.Fatalf("expected reset time dueAt, got %v", schedule.DueAt)
-	}
+	require.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
+	require.True(t, schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()))
 }
 
 func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
@@ -319,12 +264,8 @@ func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":75,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.AutoCancelCount() != 1 {
-		t.Fatalf("expected 1 auto-continue cancel, got %d", sink.AutoCancelCount())
-	}
-	if sink.LastAutoCancel() != AutoContinueReasonRateLimit {
-		t.Fatalf("expected rate_limit cancel, got %q", sink.LastAutoCancel())
-	}
+	require.Equal(t, 1, sink.AutoCancelCount())
+	require.Equal(t, AutoContinueReasonRateLimit, sink.LastAutoCancel())
 }
 
 func TestHandleCodexOutput_TurnFailedServerOverloadedSchedulesResume(t *testing.T) {
@@ -334,19 +275,11 @@ func TestHandleCodexOutput_TurnFailedServerOverloadedSchedulesResume(t *testing.
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"019d8b39-6599-7081-8901-53f80c6c56b7","items":[],"status":"failed","error":{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded","additionalDetails":null}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.AutoScheduleCount() != 1 {
-		t.Fatalf("expected 1 auto-continue schedule, got %d", sink.AutoScheduleCount())
-	}
+	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	if schedule.Reason != AutoContinueReasonAPIError {
-		t.Fatalf("expected api_error reason, got %q", schedule.Reason)
-	}
-	if schedule.DueAt.IsZero() {
-		t.Fatal("expected immediate dueAt for api_error schedule")
-	}
-	if len(schedule.SourcePayload) == 0 {
-		t.Fatal("expected source payload to be recorded")
-	}
+	require.Equal(t, AutoContinueReasonAPIError, schedule.Reason)
+	require.False(t, schedule.DueAt.IsZero())
+	require.NotEmpty(t, schedule.SourcePayload)
 }
 
 func TestHandleCodexOutput_TurnFailedNonOverloadedCancelsAPIErrorResume(t *testing.T) {
@@ -356,12 +289,8 @@ func TestHandleCodexOutput_TurnFailedNonOverloadedCancelsAPIErrorResume(t *testi
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","items":[],"status":"failed","error":{"message":"Something else failed","codexErrorInfo":"invalidRequest","additionalDetails":null}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.AutoCancelCount() != 1 {
-		t.Fatalf("expected 1 auto-continue cancel, got %d", sink.AutoCancelCount())
-	}
-	if sink.LastAutoCancel() != AutoContinueReasonAPIError {
-		t.Fatalf("expected api_error cancel, got %q", sink.LastAutoCancel())
-	}
+	require.Equal(t, 1, sink.AutoCancelCount())
+	require.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
 func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *testing.T) {
@@ -372,21 +301,33 @@ func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *test
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"stream disconnected before completion: An error occurred while processing your request.","codexErrorInfo":"other","additionalDetails":null}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.MessageCount() != 1 {
-		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
-	}
-	if sink.AutoScheduleCount() != 1 {
-		t.Fatalf("expected 1 auto-continue schedule, got %d", sink.AutoScheduleCount())
-	}
+	require.Equal(t, 1, sink.MessageCount())
+	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	if schedule.Reason != AutoContinueReasonAPIError {
-		t.Fatalf("expected api_error reason, got %q", schedule.Reason)
+	require.Equal(t, AutoContinueReasonAPIError, schedule.Reason)
+	require.Equal(t, string(sink.Messages()[0].Content), string(schedule.SourcePayload))
+	require.Equal(t, 0, sink.AutoCancelCount())
+}
+
+func TestIsRetryableCodexTurnFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{"exact phrase", "stream disconnected before completion", true},
+		{"colon suffix", "stream disconnected before completion: An error occurred while processing your request.", true},
+		{"dash suffix", "stream disconnected before completion - upstream connection closed", true},
+		{"double punctuation", "stream disconnected before completion:: retry later", true},
+		{"alphanumeric suffix not matched", "stream disconnected before completionX", false},
+		{"different message", "Request was aborted by the user.", false},
 	}
-	if string(schedule.SourcePayload) != string(sink.Messages()[0].Content) {
-		t.Fatalf("expected source payload to match persisted turn/completed payload")
-	}
-	if sink.AutoCancelCount() != 0 {
-		t.Fatalf("expected 0 auto-continue cancels, got %d", sink.AutoCancelCount())
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRetryableCodexTurnFailure(tt.message)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 
@@ -398,15 +339,9 @@ func TestHandleCodexOutput_TurnCompletedFailedNonRetryableCancelsAPIError(t *tes
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"Request was aborted by the user.","codexErrorInfo":"other","additionalDetails":null}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.AutoScheduleCount() != 0 {
-		t.Fatalf("expected 0 auto-continue schedules, got %d", sink.AutoScheduleCount())
-	}
-	if sink.AutoCancelCount() != 1 {
-		t.Fatalf("expected 1 auto-continue cancel, got %d", sink.AutoCancelCount())
-	}
-	if sink.LastAutoCancel() != AutoContinueReasonAPIError {
-		t.Fatalf("expected api_error cancel, got %q", sink.LastAutoCancel())
-	}
+	require.Equal(t, 0, sink.AutoScheduleCount())
+	require.Equal(t, 1, sink.AutoCancelCount())
+	require.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
 func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
@@ -417,15 +352,9 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.AutoScheduleCount() != 0 {
-		t.Fatalf("expected 0 auto-continue schedules, got %d", sink.AutoScheduleCount())
-	}
-	if sink.AutoCancelCount() != 1 {
-		t.Fatalf("expected 1 auto-continue cancel, got %d", sink.AutoCancelCount())
-	}
-	if sink.LastAutoCancel() != AutoContinueReasonAPIError {
-		t.Fatalf("expected api_error cancel, got %q", sink.LastAutoCancel())
-	}
+	require.Equal(t, 0, sink.AutoScheduleCount())
+	require.Equal(t, 1, sink.AutoCancelCount())
+	require.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
 func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
@@ -435,12 +364,11 @@ func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
 	input := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if got := sink.OpenSpans(); len(got) != 1 || got[0].SpanID != "call-1" || got[0].ParentSpanID != "" {
-		t.Fatalf("expected only spawnAgent span to open, got %v", got)
-	}
-	if sink.ClosedSpanCount() != 0 {
-		t.Fatalf("expected no spans to close, got %v", sink.ClosedSpans())
-	}
+	got := sink.OpenSpans()
+	require.Len(t, got, 1)
+	require.Equal(t, "call-1", got[0].SpanID)
+	require.Equal(t, "", got[0].ParentSpanID)
+	require.Equal(t, 0, sink.ClosedSpanCount())
 }
 
 func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
@@ -456,24 +384,17 @@ func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
 	handleCodexOutput(agent, parseLine([]byte(waitCompleted)))
 
 	messages := sink.Messages()
-	if len(messages) != 3 {
-		t.Fatalf("expected 3 persisted messages, got %d", len(messages))
-	}
-	if messages[1].ParentSpanID != "call-1" {
-		t.Fatalf("expected wait started to be nested under spawnAgent span, got parent %q", messages[1].ParentSpanID)
-	}
-	if messages[2].ParentSpanID != "call-1" {
-		t.Fatalf("expected wait completed to be nested under spawnAgent span, got parent %q", messages[2].ParentSpanID)
-	}
-	if !messages[2].Closing || messages[2].ConnectorSpanID != "call-1" {
-		t.Fatalf("expected wait completed to render the parent spawnAgent as closing, got closing=%v connector=%q", messages[2].Closing, messages[2].ConnectorSpanID)
-	}
-	if got := sink.OpenSpans(); len(got) != 1 || got[0].SpanID != "call-1" {
-		t.Fatalf("expected only spawnAgent span to open, got %v", got)
-	}
-	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-1" {
-		t.Fatalf("expected wait completion to close only spawnAgent spans when receivers are done, got %v", got)
-	}
+	require.Len(t, messages, 3)
+	require.Equal(t, "call-1", messages[1].ParentSpanID)
+	require.Equal(t, "call-1", messages[2].ParentSpanID)
+	require.True(t, messages[2].Closing)
+	require.Equal(t, "call-1", messages[2].ConnectorSpanID)
+	openSpans := sink.OpenSpans()
+	require.Len(t, openSpans, 1)
+	require.Equal(t, "call-1", openSpans[0].SpanID)
+	closedSpans := sink.ClosedSpans()
+	require.Len(t, closedSpans, 1)
+	require.Equal(t, "call-1", closedSpans[0])
 }
 
 func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T) {
@@ -489,15 +410,9 @@ func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T
 	handleCodexOutput(agent, parseLine([]byte(cmdCompleted)))
 
 	messages := sink.Messages()
-	if len(messages) != 3 {
-		t.Fatalf("expected 3 persisted messages, got %d", len(messages))
-	}
-	if messages[1].ParentSpanID != "call-1" {
-		t.Fatalf("expected command started to use visible collab parent, got %q", messages[1].ParentSpanID)
-	}
-	if messages[2].ParentSpanID != "call-1" {
-		t.Fatalf("expected command completed to use visible collab parent, got %q", messages[2].ParentSpanID)
-	}
+	require.Len(t, messages, 3)
+	require.Equal(t, "call-1", messages[1].ParentSpanID)
+	require.Equal(t, "call-1", messages[2].ParentSpanID)
 }
 
 func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testing.T) {
@@ -507,9 +422,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testin
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.ClosedSpanCount() != 0 {
-		t.Fatalf("expected spawn completion to keep span open, got %v", sink.ClosedSpans())
-	}
+	require.Equal(t, 0, sink.ClosedSpanCount())
 }
 
 func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *testing.T) {
@@ -524,16 +437,14 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 	handleCodexOutput(agent, parseLine([]byte(cmdStarted)))
 
-	if got := sink.OpenSpans(); len(got) != 2 || got[0].SpanID != "call-1" || got[1].SpanID != "cmd-1" || got[1].ParentSpanID != "call-1" {
-		t.Fatalf("expected child command span to open under spawnAgent span after late registration, got %v", got)
-	}
+	openSpans := sink.OpenSpans()
+	require.Len(t, openSpans, 2)
+	require.Equal(t, "call-1", openSpans[0].SpanID)
+	require.Equal(t, "cmd-1", openSpans[1].SpanID)
+	require.Equal(t, "call-1", openSpans[1].ParentSpanID)
 	messages := sink.Messages()
-	if len(messages) != 3 {
-		t.Fatalf("expected 3 persisted messages, got %d", len(messages))
-	}
-	if messages[2].ParentSpanID != "call-1" {
-		t.Fatalf("expected child command to inherit spawnAgent parent after late registration, got %q", messages[2].ParentSpanID)
-	}
+	require.Len(t, messages, 3)
+	require.Equal(t, "call-1", messages[2].ParentSpanID)
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T) {
@@ -543,9 +454,7 @@ func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T)
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if got := sink.ClosedSpans(); len(got) != 0 {
-		t.Fatalf("expected wait completion without visible parent span to close no synthetic child spans, got %v", got)
-	}
+	require.Empty(t, sink.ClosedSpans())
 }
 
 func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses(t *testing.T) {
@@ -555,9 +464,7 @@ func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if got := sink.ClosedSpans(); len(got) != 0 {
-		t.Fatalf("expected non-terminal wait completion to close no spans, got %v", got)
-	}
+	require.Empty(t, sink.ClosedSpans())
 }
 
 func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
@@ -567,9 +474,7 @@ func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"shutdown","message":null}}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if got := sink.ClosedSpans(); len(got) != 0 {
-		t.Fatalf("expected closeAgent completion to close no synthetic child spans, got %v", got)
-	}
+	require.Empty(t, sink.ClosedSpans())
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T) {
@@ -579,9 +484,7 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if got := sink.ClosedSpans(); len(got) != 0 {
-		t.Fatalf("expected only receiver bookkeeping changes, not synthetic child span closes, got %v", got)
-	}
+	require.Empty(t, sink.ClosedSpans())
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFinishes(t *testing.T) {
@@ -595,15 +498,13 @@ func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFi
 	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
 	handleCodexOutput(agent, parseLine([]byte(waitCompletedFirst)))
 
-	if got := sink.ClosedSpans(); len(got) != 0 {
-		t.Fatalf("expected parent spawnAgent span to remain open until all receivers finish, got %v", got)
-	}
+	require.Empty(t, sink.ClosedSpans())
 
 	handleCodexOutput(agent, parseLine([]byte(waitCompletedSecond)))
 
-	if got := sink.ClosedSpans(); len(got) != 1 || got[0] != "call-1" {
-		t.Fatalf("expected parent spawnAgent span to close after the last receiver finishes, got %v", got)
-	}
+	closedSpans := sink.ClosedSpans()
+	require.Len(t, closedSpans, 1)
+	require.Equal(t, "call-1", closedSpans[0])
 }
 
 func TestHandleCodexOutput_ThreadCompactedPersistsBoundaryNotification(t *testing.T) {
@@ -613,22 +514,14 @@ func TestHandleCodexOutput_ThreadCompactedPersistsBoundaryNotification(t *testin
 	input := `{"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.NotificationCount() != 1 {
-		t.Fatalf("expected 1 notification, got %d", sink.NotificationCount())
-	}
+	require.Equal(t, 1, sink.NotificationCount())
 	var parsed map[string]interface{}
-	if err := json.Unmarshal(sink.LastNotification().Content, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal notification: %v", err)
-	}
-	if parsed["type"] != "system" || parsed["subtype"] != "compact_boundary" {
-		t.Fatalf("expected compact boundary notification, got %+v", parsed)
-	}
-	if parsed["threadId"] != "t1" || parsed["turnId"] != "turn1" {
-		t.Fatalf("expected thread/turn ids to be preserved, got %+v", parsed)
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected 0 assistant messages, got %d", sink.MessageCount())
-	}
+	require.NoError(t, json.Unmarshal(sink.LastNotification().Content, &parsed))
+	require.Equal(t, "system", parsed["type"])
+	require.Equal(t, "compact_boundary", parsed["subtype"])
+	require.Equal(t, "t1", parsed["threadId"])
+	require.Equal(t, "turn1", parsed["turnId"])
+	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
@@ -638,22 +531,12 @@ func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
 	input := `{"method":"item/commandExecution/outputDelta","params":{"itemId":"cmd-1","delta":"hello\n","threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
+	require.Equal(t, 1, sink.StreamChunkCount())
 	got := sink.LastStreamChunk()
-	if got.SpanID != "cmd-1" {
-		t.Fatalf("expected spanID cmd-1, got %q", got.SpanID)
-	}
-	if got.Method != "item/commandExecution/outputDelta" {
-		t.Fatalf("expected command output method, got %q", got.Method)
-	}
-	if string(got.Content) != "hello\n" {
-		t.Fatalf("unexpected content %q", string(got.Content))
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
-	}
+	require.Equal(t, "cmd-1", got.SpanID)
+	require.Equal(t, "item/commandExecution/outputDelta", got.Method)
+	require.Equal(t, "hello\n", string(got.Content))
+	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_ReasoningSummaryTextDelta(t *testing.T) {
@@ -663,22 +546,12 @@ func TestHandleCodexOutput_ReasoningSummaryTextDelta(t *testing.T) {
 	input := `{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"reason-1","delta":"thinking...","summaryIndex":0,"threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
+	require.Equal(t, 1, sink.StreamChunkCount())
 	got := sink.LastStreamChunk()
-	if got.SpanID != "reason-1" {
-		t.Fatalf("expected spanID reason-1, got %q", got.SpanID)
-	}
-	if got.Method != "item/reasoning/summaryTextDelta" {
-		t.Fatalf("expected reasoning summary method, got %q", got.Method)
-	}
-	if string(got.Content) != "thinking..." {
-		t.Fatalf("unexpected content %q", string(got.Content))
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
-	}
+	require.Equal(t, "reason-1", got.SpanID)
+	require.Equal(t, "item/reasoning/summaryTextDelta", got.Method)
+	require.Equal(t, "thinking...", string(got.Content))
+	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_ReasoningSummaryPartAdded(t *testing.T) {
@@ -688,22 +561,12 @@ func TestHandleCodexOutput_ReasoningSummaryPartAdded(t *testing.T) {
 	input := `{"method":"item/reasoning/summaryPartAdded","params":{"itemId":"reason-1","summaryIndex":1,"threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
+	require.Equal(t, 1, sink.StreamChunkCount())
 	got := sink.LastStreamChunk()
-	if got.SpanID != "reason-1" {
-		t.Fatalf("expected spanID reason-1, got %q", got.SpanID)
-	}
-	if got.Method != "item/reasoning/summaryPartAdded" {
-		t.Fatalf("expected reasoning summary part method, got %q", got.Method)
-	}
-	if len(got.Content) != 0 {
-		t.Fatalf("expected empty content, got %q", string(got.Content))
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
-	}
+	require.Equal(t, "reason-1", got.SpanID)
+	require.Equal(t, "item/reasoning/summaryPartAdded", got.Method)
+	require.Empty(t, got.Content)
+	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_ReasoningTextDelta(t *testing.T) {
@@ -713,22 +576,12 @@ func TestHandleCodexOutput_ReasoningTextDelta(t *testing.T) {
 	input := `{"method":"item/reasoning/textDelta","params":{"itemId":"reason-1","delta":"raw chain","contentIndex":0,"threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
+	require.Equal(t, 1, sink.StreamChunkCount())
 	got := sink.LastStreamChunk()
-	if got.SpanID != "reason-1" {
-		t.Fatalf("expected spanID reason-1, got %q", got.SpanID)
-	}
-	if got.Method != "item/reasoning/textDelta" {
-		t.Fatalf("expected reasoning text method, got %q", got.Method)
-	}
-	if string(got.Content) != "raw chain" {
-		t.Fatalf("unexpected content %q", string(got.Content))
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
-	}
+	require.Equal(t, "reason-1", got.SpanID)
+	require.Equal(t, "item/reasoning/textDelta", got.Method)
+	require.Equal(t, "raw chain", string(got.Content))
+	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_CommandExecutionTerminalInteraction(t *testing.T) {
@@ -738,22 +591,12 @@ func TestHandleCodexOutput_CommandExecutionTerminalInteraction(t *testing.T) {
 	input := `{"method":"item/commandExecution/terminalInteraction","params":{"itemId":"cmd-1","processId":"123","stdin":"y\n","threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
+	require.Equal(t, 1, sink.StreamChunkCount())
 	got := sink.LastStreamChunk()
-	if got.SpanID != "cmd-1" {
-		t.Fatalf("expected spanID cmd-1, got %q", got.SpanID)
-	}
-	if got.Method != "item/commandExecution/terminalInteraction" {
-		t.Fatalf("expected command interaction method, got %q", got.Method)
-	}
-	if string(got.Content) != "y\n" {
-		t.Fatalf("unexpected content %q", string(got.Content))
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
-	}
+	require.Equal(t, "cmd-1", got.SpanID)
+	require.Equal(t, "item/commandExecution/terminalInteraction", got.Method)
+	require.Equal(t, "y\n", string(got.Content))
+	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
@@ -763,22 +606,12 @@ func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
 	input := `{"method":"item/fileChange/outputDelta","params":{"itemId":"fc-1","delta":"diff --git a.txt b.txt\n","threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.StreamChunkCount() != 1 {
-		t.Fatalf("expected 1 stream chunk, got %d", sink.StreamChunkCount())
-	}
+	require.Equal(t, 1, sink.StreamChunkCount())
 	got := sink.LastStreamChunk()
-	if got.SpanID != "fc-1" {
-		t.Fatalf("expected spanID fc-1, got %q", got.SpanID)
-	}
-	if got.Method != "item/fileChange/outputDelta" {
-		t.Fatalf("expected file change output method, got %q", got.Method)
-	}
-	if string(got.Content) != "diff --git a.txt b.txt\n" {
-		t.Fatalf("unexpected content %q", string(got.Content))
-	}
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected no persisted messages, got %d", sink.MessageCount())
-	}
+	require.Equal(t, "fc-1", got.SpanID)
+	require.Equal(t, "item/fileChange/outputDelta", got.Method)
+	require.Equal(t, "diff --git a.txt b.txt\n", string(got.Content))
+	require.Equal(t, 0, sink.MessageCount())
 }
 
 func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
@@ -789,39 +622,27 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 	delta := `{"method":"item/plan/delta","params":{"delta":"# Plan\n"}}`
 	handleCodexOutput(agent, parseLine([]byte(delta)))
 
-	if sink.SessionInfoCount() != 1 {
-		t.Fatalf("expected 1 session info after delta, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 1, sink.SessionInfoCount())
 
 	// Send item/completed with plan type.
 	completed := `{"method":"item/completed","params":{"item":{"type":"plan","id":"plan1","text":"# Plan\nStep 1"}}}`
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 
 	// Session info should now have streamingType "" to clear the plan streaming.
-	if sink.SessionInfoCount() != 2 {
-		t.Fatalf("expected 2 session info broadcasts, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 2, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
-	if info["streamingType"] != "" {
-		t.Errorf("expected streamingType '', got %v", info["streamingType"])
-	}
+	assert.Equal(t, "", info["streamingType"])
 
 	// Plan message should be persisted.
-	if sink.MessageCount() != 1 {
-		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
-	}
+	require.Equal(t, 1, sink.MessageCount())
 
 	// Verify streamingPlan flag was cleared (next delta should re-broadcast).
 	delta2 := `{"method":"item/plan/delta","params":{"delta":"New plan\n"}}`
 	handleCodexOutput(agent, parseLine([]byte(delta2)))
 
-	if sink.SessionInfoCount() != 3 {
-		t.Fatalf("expected 3 session info broadcasts, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 3, sink.SessionInfoCount())
 	info2 := sink.LastSessionInfo()
-	if info2["streamingType"] != "plan" {
-		t.Errorf("expected streamingType 'plan', got %v", info2["streamingType"])
-	}
+	assert.Equal(t, "plan", info2["streamingType"])
 }
 
 func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testing.T) {
@@ -831,15 +652,9 @@ func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testi
 	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"commandExecution","id":"cmd-1","status":"completed","aggregatedOutput":"done"}}}`
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 
-	if sink.MessageCount() != 1 {
-		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
-	}
-	if sink.StreamEndCount() != 1 {
-		t.Fatalf("expected 1 stream end, got %d", sink.StreamEndCount())
-	}
-	if got := sink.LastStreamEnd(); got != "cmd-1" {
-		t.Fatalf("expected stream end for cmd-1, got %q", got)
-	}
+	require.Equal(t, 1, sink.MessageCount())
+	require.Equal(t, 1, sink.StreamEndCount())
+	require.Equal(t, "cmd-1", sink.LastStreamEnd())
 }
 
 func TestHandleCodexOutput_FileChangeCompletedBroadcastsStreamEnd(t *testing.T) {
@@ -849,15 +664,9 @@ func TestHandleCodexOutput_FileChangeCompletedBroadcastsStreamEnd(t *testing.T) 
 	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"fileChange","id":"fc-1","status":"completed","changes":[{"path":"a.txt","kind":"update","diff":"@@ -1 +1 @@\n-old\n+new"}]}}}`
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 
-	if sink.MessageCount() != 1 {
-		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
-	}
-	if sink.StreamEndCount() != 1 {
-		t.Fatalf("expected 1 stream end, got %d", sink.StreamEndCount())
-	}
-	if got := sink.LastStreamEnd(); got != "fc-1" {
-		t.Fatalf("expected stream end for fc-1, got %q", got)
-	}
+	require.Equal(t, 1, sink.MessageCount())
+	require.Equal(t, 1, sink.StreamEndCount())
+	require.Equal(t, "fc-1", sink.LastStreamEnd())
 }
 
 func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
@@ -867,15 +676,9 @@ func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
 	completed := `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"reasoning","id":"reason-1","summary":["done"]}}}`
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 
-	if sink.MessageCount() != 1 {
-		t.Fatalf("expected 1 persisted message, got %d", sink.MessageCount())
-	}
-	if sink.StreamEndCount() != 1 {
-		t.Fatalf("expected 1 stream end, got %d", sink.StreamEndCount())
-	}
-	if got := sink.LastStreamEnd(); got != "reason-1" {
-		t.Fatalf("expected stream end for reason-1, got %q", got)
-	}
+	require.Equal(t, 1, sink.MessageCount())
+	require.Equal(t, 1, sink.StreamEndCount())
+	require.Equal(t, "reason-1", sink.LastStreamEnd())
 }
 
 func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
@@ -887,12 +690,8 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.PersistedControlCount() != 0 {
-		t.Errorf("expected 0 persisted control requests (no id), got %d", sink.PersistedControlCount())
-	}
-	if sink.BroadcastControlCount() != 0 {
-		t.Errorf("expected 0 broadcast control requests (no id), got %d", sink.BroadcastControlCount())
-	}
+	assert.Equal(t, 0, sink.PersistedControlCount())
+	assert.Equal(t, 0, sink.BroadcastControlCount())
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T) {
@@ -903,30 +702,16 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 	agent.threadID = "thread-1"
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.NotificationCount() != 1 {
-		t.Fatalf("expected 1 persisted notification, got %d", sink.NotificationCount())
-	}
-	if sink.SessionInfoCount() != 1 {
-		t.Fatalf("expected 1 session info broadcast, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 1, sink.NotificationCount())
+	require.Equal(t, 1, sink.SessionInfoCount())
 
 	info := sink.LastSessionInfo()
 	usage, ok := info["contextUsage"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected contextUsage map, got %#v", info["contextUsage"])
-	}
-	if usage["inputTokens"] != int64(5) {
-		t.Fatalf("expected inputTokens 5, got %#v", usage["inputTokens"])
-	}
-	if usage["cacheCreationInputTokens"] != int64(0) {
-		t.Fatalf("expected cacheCreationInputTokens 0, got %#v", usage["cacheCreationInputTokens"])
-	}
-	if usage["cacheReadInputTokens"] != int64(5) {
-		t.Fatalf("expected cacheReadInputTokens 5, got %#v", usage["cacheReadInputTokens"])
-	}
-	if usage["contextWindow"] != int64(4096) {
-		t.Fatalf("expected contextWindow 4096, got %#v", usage["contextWindow"])
-	}
+	require.True(t, ok, "expected contextUsage map, got %#v", info["contextUsage"])
+	require.Equal(t, int64(5), usage["inputTokens"])
+	require.Equal(t, int64(0), usage["cacheCreationInputTokens"])
+	require.Equal(t, int64(5), usage["cacheReadInputTokens"])
+	require.Equal(t, int64(4096), usage["contextWindow"])
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *testing.T) {
@@ -941,12 +726,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *tes
 
 	info := sink.LastSessionInfo()
 	usage, ok := info["contextUsage"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected contextUsage map, got %#v", info["contextUsage"])
-	}
-	if usage["contextWindow"] != int64(1_050_000) {
-		t.Fatalf("expected fallback contextWindow 1050000, got %#v", usage["contextWindow"])
-	}
+	require.True(t, ok, "expected contextUsage map, got %#v", info["contextUsage"])
+	require.Equal(t, int64(1_050_000), usage["contextWindow"])
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedIgnoresSubagentThreads(t *testing.T) {
@@ -957,12 +738,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedIgnoresSubagentThreads(t *testing.T)
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"child-thread","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":4096}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.NotificationCount() != 0 {
-		t.Fatalf("expected 0 persisted notifications, got %d", sink.NotificationCount())
-	}
-	if sink.SessionInfoCount() != 0 {
-		t.Fatalf("expected 0 session info broadcasts, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 0, sink.NotificationCount())
+	require.Equal(t, 0, sink.SessionInfoCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
@@ -973,15 +750,9 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 	input := `{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	if sink.MessageCount() != 0 {
-		t.Fatalf("expected 0 persisted messages, got %d", sink.MessageCount())
-	}
-	if sink.ResetSpanCount() != 0 {
-		t.Fatalf("expected span tracker not to reset, got %d", sink.ResetSpanCount())
-	}
-	if sink.SessionInfoCount() != 0 {
-		t.Fatalf("expected 0 session info broadcasts, got %d", sink.SessionInfoCount())
-	}
+	require.Equal(t, 0, sink.MessageCount())
+	require.Equal(t, 0, sink.ResetSpanCount())
+	require.Equal(t, 0, sink.SessionInfoCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {
@@ -998,23 +769,14 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 	handleCodexOutput(agent, parseLine([]byte(planCompleted)))
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
-	if sink.PlanUpdateCount() != 1 {
-		t.Fatalf("expected 1 plan update, got %d", sink.PlanUpdateCount())
-	}
+	require.Equal(t, 1, sink.PlanUpdateCount())
 	plan := sink.LastPlanUpdate()
 	decoded, err := msgcodec.Decompress(plan.Content, plan.Compression)
-	if err != nil {
-		t.Fatalf("failed to decompress persisted plan content: %v", err)
-	}
-	if got := string(decoded); got != "# Design Doc: Rendering fixes\n\n- first\n" {
-		t.Fatalf("unexpected persisted plan content: %q", got)
-	}
-	if plan.Title != "Rendering fixes" {
-		t.Fatalf("expected normalized title, got %q", plan.Title)
-	}
-	if sink.PersistedControlCount() != 1 || sink.BroadcastControlCount() != 1 {
-		t.Fatalf("expected one control request, got persisted=%d broadcast=%d", sink.PersistedControlCount(), sink.BroadcastControlCount())
-	}
+	require.NoError(t, err)
+	require.Equal(t, "# Design Doc: Rendering fixes\n\n- first\n", string(decoded))
+	require.Equal(t, "Rendering fixes", plan.Title)
+	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, 1, sink.BroadcastControlCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanItem(t *testing.T) {
@@ -1029,12 +791,9 @@ func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanI
 	handleCodexOutput(agent, parseLine([]byte(assistantCompleted)))
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
-	if sink.PlanUpdateCount() != 0 {
-		t.Fatalf("expected no plan update, got %d", sink.PlanUpdateCount())
-	}
-	if sink.PersistedControlCount() != 0 || sink.BroadcastControlCount() != 0 {
-		t.Fatalf("expected no control request, got persisted=%d broadcast=%d", sink.PersistedControlCount(), sink.BroadcastControlCount())
-	}
+	require.Equal(t, 0, sink.PlanUpdateCount())
+	require.Equal(t, 0, sink.PersistedControlCount())
+	require.Equal(t, 0, sink.BroadcastControlCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *testing.T) {
@@ -1046,12 +805,9 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *
 	turnCompleted := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
-	if sink.PlanUpdateCount() != 0 {
-		t.Fatalf("expected no plan update, got %d", sink.PlanUpdateCount())
-	}
-	if sink.PersistedControlCount() != 0 || sink.BroadcastControlCount() != 0 {
-		t.Fatalf("expected no control request, got persisted=%d broadcast=%d", sink.PersistedControlCount(), sink.BroadcastControlCount())
-	}
+	require.Equal(t, 0, sink.PlanUpdateCount())
+	require.Equal(t, 0, sink.PersistedControlCount())
+	require.Equal(t, 0, sink.BroadcastControlCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(t *testing.T) {
@@ -1066,10 +822,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(
 	handleCodexOutput(agent, parseLine([]byte(planCompleted)))
 	handleCodexOutput(agent, parseLine([]byte(turnCompleted)))
 
-	if sink.PlanUpdateCount() != 0 {
-		t.Fatalf("expected no plan update, got %d", sink.PlanUpdateCount())
-	}
-	if sink.PersistedControlCount() != 0 || sink.BroadcastControlCount() != 0 {
-		t.Fatalf("expected no control request, got persisted=%d broadcast=%d", sink.PersistedControlCount(), sink.BroadcastControlCount())
-	}
+	require.Equal(t, 0, sink.PlanUpdateCount())
+	require.Equal(t, 0, sink.PersistedControlCount())
+	require.Equal(t, 0, sink.BroadcastControlCount())
 }

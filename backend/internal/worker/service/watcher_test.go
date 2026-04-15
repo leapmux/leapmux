@@ -4,6 +4,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
@@ -42,9 +44,7 @@ func TestBroadcastTerminalEvent_DeduplicatesWithinPerTerminal(t *testing.T) {
 		Event:      &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("a")}},
 	})
 
-	if got := mock.streamCount.Load(); got != 1 {
-		t.Errorf("expected 1 broadcast, got %d", got)
-	}
+	assert.Equal(t, int64(1), mock.streamCount.Load())
 }
 
 func TestBroadcastAgentEvent_DeduplicatesWithinWatchers(t *testing.T) {
@@ -64,9 +64,7 @@ func TestBroadcastAgentEvent_DeduplicatesWithinWatchers(t *testing.T) {
 		}},
 	})
 
-	if got := mock.streamCount.Load(); got != 1 {
-		t.Errorf("expected 1 broadcast, got %d", got)
-	}
+	assert.Equal(t, int64(1), mock.streamCount.Load())
 }
 
 func TestBroadcastTerminalEvent_DistinctWatchersAllReceive(t *testing.T) {
@@ -82,12 +80,8 @@ func TestBroadcastTerminalEvent_DistinctWatchersAllReceive(t *testing.T) {
 		Event:      &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("a")}},
 	})
 
-	if got := mock1.streamCount.Load(); got != 1 {
-		t.Errorf("watcher 1: expected 1 broadcast, got %d", got)
-	}
-	if got := mock2.streamCount.Load(); got != 1 {
-		t.Errorf("watcher 2: expected 1 broadcast, got %d", got)
-	}
+	assert.Equal(t, int64(1), mock1.streamCount.Load(), "watcher 1")
+	assert.Equal(t, int64(1), mock2.streamCount.Load(), "watcher 2")
 }
 
 func TestWatchTerminal_IdempotentRegistration(t *testing.T) {
@@ -102,9 +96,7 @@ func TestWatchTerminal_IdempotentRegistration(t *testing.T) {
 	got := len(m.terminals["term-1"])
 	m.mu.RUnlock()
 
-	if got != 1 {
-		t.Errorf("expected 1 registered watcher, got %d", got)
-	}
+	assert.Equal(t, 1, got)
 }
 
 func TestWatchAgent_IdempotentRegistration(t *testing.T) {
@@ -119,9 +111,7 @@ func TestWatchAgent_IdempotentRegistration(t *testing.T) {
 	got := len(m.agents["agent-1"])
 	m.mu.RUnlock()
 
-	if got != 1 {
-		t.Errorf("expected 1 registered watcher, got %d", got)
-	}
+	assert.Equal(t, 1, got)
 }
 
 func TestAgentEvent_DoesNotReachTerminalWatchers(t *testing.T) {
@@ -140,9 +130,7 @@ func TestAgentEvent_DoesNotReachTerminalWatchers(t *testing.T) {
 		}},
 	})
 
-	if got := mock.streamCount.Load(); got != 0 {
-		t.Errorf("expected 0 broadcasts to terminal watcher, got %d", got)
-	}
+	assert.Equal(t, int64(0), mock.streamCount.Load(), "expected 0 broadcasts to terminal watcher")
 }
 
 func TestTerminalEvent_DoesNotReachAgentWatchers(t *testing.T) {
@@ -158,9 +146,7 @@ func TestTerminalEvent_DoesNotReachAgentWatchers(t *testing.T) {
 		Event:      &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("a")}},
 	})
 
-	if got := mock.streamCount.Load(); got != 0 {
-		t.Errorf("expected 0 broadcasts to agent watcher, got %d", got)
-	}
+	assert.Equal(t, int64(0), mock.streamCount.Load(), "expected 0 broadcasts to agent watcher")
 }
 
 func TestUnwatchAll_RemovesFromAllLists(t *testing.T) {
@@ -181,12 +167,8 @@ func TestUnwatchAll_RemovesFromAllLists(t *testing.T) {
 	termCount := len(m.terminals["term-1"]) + len(m.terminals["term-2"])
 	m.mu.RUnlock()
 
-	if agentCount != 0 {
-		t.Errorf("expected 0 agent watchers after UnwatchAll, got %d", agentCount)
-	}
-	if termCount != 0 {
-		t.Errorf("expected 0 terminal watchers after UnwatchAll, got %d", termCount)
-	}
+	assert.Equal(t, 0, agentCount, "expected 0 agent watchers after UnwatchAll")
+	assert.Equal(t, 0, termCount, "expected 0 terminal watchers after UnwatchAll")
 
 	// Verify no broadcasts reach the removed watcher.
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
@@ -200,9 +182,7 @@ func TestUnwatchAll_RemovesFromAllLists(t *testing.T) {
 		Event:      &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("a")}},
 	})
 
-	if got := mock.streamCount.Load(); got != 0 {
-		t.Errorf("expected 0 broadcasts after UnwatchAll, got %d", got)
-	}
+	assert.Equal(t, int64(0), mock.streamCount.Load(), "expected 0 broadcasts after UnwatchAll")
 }
 
 func TestUnwatchAll_PreservesOtherChannels(t *testing.T) {
@@ -229,10 +209,6 @@ func TestUnwatchAll_PreservesOtherChannels(t *testing.T) {
 		Event:      &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("a")}},
 	})
 
-	if got := mock1.streamCount.Load(); got != 0 {
-		t.Errorf("ch-1: expected 0 broadcasts, got %d", got)
-	}
-	if got := mock2.streamCount.Load(); got != 2 {
-		t.Errorf("ch-2: expected 2 broadcasts (agent+terminal), got %d", got)
-	}
+	assert.Equal(t, int64(0), mock1.streamCount.Load(), "ch-1: expected 0 broadcasts")
+	assert.Equal(t, int64(2), mock2.streamCount.Load(), "ch-2: expected 2 broadcasts (agent+terminal)")
 }

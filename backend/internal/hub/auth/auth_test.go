@@ -24,15 +24,13 @@ func createTestUser(t *testing.T, st store.Store) (orgID, userID string) {
 	ctx := context.Background()
 
 	orgID = id.Generate()
-	if err := st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "test-org"}); err != nil {
-		t.Fatalf("CreateOrg: %v", err)
-	}
+	require.NoError(t, st.Orgs().Create(ctx, store.CreateOrgParams{ID: orgID, Name: "test-org"}))
 
 	hash, err := password.Hash("password123")
 	require.NoError(t, err)
 
 	userID = id.Generate()
-	if err := st.Users().Create(ctx, store.CreateUserParams{
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID:           userID,
 		OrgID:        orgID,
 		Username:     "testuser",
@@ -40,9 +38,7 @@ func createTestUser(t *testing.T, st store.Store) (orgID, userID string) {
 		DisplayName:  "Test User",
 		PasswordSet:  true,
 		IsAdmin:      true,
-	}); err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
+	}))
 
 	return orgID, userID
 }

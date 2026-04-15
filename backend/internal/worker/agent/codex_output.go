@@ -4,14 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
+	"regexp"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
 
-const codexRetryableDisconnectPrefix = "stream disconnected before completion:"
+var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected before completion(?:$|[^[:alnum:]].*)`)
 
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
 // Codex messages are stored in their native JSON-RPC format.
@@ -472,7 +472,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 }
 
 func isRetryableCodexTurnFailure(message string) bool {
-	return strings.HasPrefix(message, codexRetryableDisconnectPrefix)
+	return codexRetryableDisconnectPattern.MatchString(message)
 }
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.

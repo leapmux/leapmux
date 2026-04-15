@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
@@ -31,21 +33,11 @@ func TestHandleCursorOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testin
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"default[]","options":[{"value":"default[]","name":"Auto"},{"value":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
-	if agent.permissionMode != CursorCLIModePlan {
-		t.Fatalf("expected mode plan, got %q", agent.permissionMode)
-	}
-	if agent.model != "auto" {
-		t.Fatalf("expected model auto, got %q", agent.model)
-	}
-	if got := sink.PermissionMode(); got != CursorCLIModePlan {
-		t.Fatalf("expected sink permission mode plan, got %q", got)
-	}
-	if len(agent.availableModels) != 2 {
-		t.Fatalf("expected 2 available models, got %d", len(agent.availableModels))
-	}
-	if agent.availableModels[0].GetId() != "auto" {
-		t.Fatalf("expected normalized auto model, got %q", agent.availableModels[0].GetId())
-	}
+	require.Equal(t, CursorCLIModePlan, agent.permissionMode)
+	require.Equal(t, "auto", agent.model)
+	require.Equal(t, CursorCLIModePlan, sink.PermissionMode())
+	require.Len(t, agent.availableModels, 2)
+	require.Equal(t, "auto", agent.availableModels[0].GetId())
 }
 
 func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
@@ -55,12 +47,8 @@ func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":7,"method":"cursor/ask_question","params":{"toolCallId":"tc-1","title":"Need input","questions":[{"id":"q1","prompt":"Pick one","allowMultiple":false,"options":[{"id":"a","label":"Alpha"},{"id":"b","label":"Beta"}]}]}}`
 	agent.HandleOutput([]byte(input))
 
-	if sink.PersistedControlCount() != 1 {
-		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
-	}
-	if got := sink.LastPersistedControl().RequestID; got != "7" {
-		t.Fatalf("expected control request id 7, got %q", got)
-	}
+	require.Equal(t, 1, sink.PersistedControlCount())
+	require.Equal(t, "7", sink.LastPersistedControl().RequestID)
 
 	var payload struct {
 		Method  string `json:"method"`
@@ -76,18 +64,11 @@ func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
 			} `json:"input"`
 		} `json:"request"`
 	}
-	if err := json.Unmarshal(sink.LastPersistedControl().Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal control payload: %v", err)
-	}
-	if payload.Method != CursorMethodAskQuestion {
-		t.Fatalf("expected cursor ask method, got %q", payload.Method)
-	}
-	if payload.Request.ToolName != "AskUserQuestion" {
-		t.Fatalf("expected AskUserQuestion wrapper, got %q", payload.Request.ToolName)
-	}
-	if len(payload.Request.Input.Questions) != 1 || payload.Request.Input.Questions[0].ID != "q1" {
-		t.Fatalf("expected wrapped cursor question, got %#v", payload.Request.Input.Questions)
-	}
+	require.NoError(t, json.Unmarshal(sink.LastPersistedControl().Payload, &payload))
+	require.Equal(t, CursorMethodAskQuestion, payload.Method)
+	require.Equal(t, "AskUserQuestion", payload.Request.ToolName)
+	require.Len(t, payload.Request.Input.Questions, 1)
+	require.Equal(t, "q1", payload.Request.Input.Questions[0].ID)
 }
 
 func TestHandleCursorOutput_CreatePlanPersistsControlRequest(t *testing.T) {
@@ -97,20 +78,15 @@ func TestHandleCursorOutput_CreatePlanPersistsControlRequest(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":8,"method":"cursor/create_plan","params":{"toolCallId":"plan-1","name":"Migration","overview":"Review the generated plan"}}`
 	agent.HandleOutput([]byte(input))
 
-	if sink.PersistedControlCount() != 1 {
-		t.Fatalf("expected 1 persisted control request, got %d", sink.PersistedControlCount())
-	}
+	require.Equal(t, 1, sink.PersistedControlCount())
 
 	var payload struct {
 		Type   string `json:"type"`
 		Method string `json:"method"`
 	}
-	if err := json.Unmarshal(sink.LastPersistedControl().Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal create-plan payload: %v", err)
-	}
-	if payload.Type != "cursor.create_plan" || payload.Method != CursorMethodCreatePlan {
-		t.Fatalf("expected cursor create-plan payload, got %#v", payload)
-	}
+	require.NoError(t, json.Unmarshal(sink.LastPersistedControl().Payload, &payload))
+	require.Equal(t, "cursor.create_plan", payload.Type)
+	require.Equal(t, CursorMethodCreatePlan, payload.Method)
 }
 
 func TestHandleCursorOutput_UpdateTodosAcknowledgesRequest(t *testing.T) {
@@ -155,10 +131,7 @@ func TestHandleCursorOutput_UpdateTodosAcknowledgesRequest(t *testing.T) {
 	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","id":9,"method":"cursor/update_todos","params":{"toolCallId":"todo-1","todos":[]}}`))
 
 	resp := <-done
-	if got := int(resp["id"].(float64)); got != 9 {
-		t.Fatalf("expected id 9, got %d", got)
-	}
-	if _, ok := resp["result"]; !ok {
-		t.Fatalf("expected result response, got %#v", resp)
-	}
+	require.Equal(t, 9, int(resp["id"].(float64)))
+	_, ok := resp["result"]
+	require.True(t, ok)
 }

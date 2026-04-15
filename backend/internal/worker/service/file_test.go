@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestListDirectory_Truncation(t *testing.T) {
@@ -17,15 +20,9 @@ func TestListDirectory_Truncation(t *testing.T) {
 		}
 
 		entries, truncated, err := listDirectory(dir, dir, 0, 0, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if truncated {
-			t.Error("expected truncated=false for 10 entries")
-		}
-		if len(entries) != 10 {
-			t.Errorf("expected 10 entries, got %d", len(entries))
-		}
+		require.NoError(t, err)
+		assert.False(t, truncated, "expected truncated=false for 10 entries")
+		assert.Len(t, entries, 10)
 	})
 
 	t.Run("exactly at limit is not truncated", func(t *testing.T) {
@@ -37,15 +34,9 @@ func TestListDirectory_Truncation(t *testing.T) {
 		}
 
 		entries, truncated, err := listDirectory(dir, dir, 0, 0, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if truncated {
-			t.Errorf("expected truncated=false for exactly %d entries", maxDirEntries)
-		}
-		if len(entries) != maxDirEntries {
-			t.Errorf("expected %d entries, got %d", maxDirEntries, len(entries))
-		}
+		require.NoError(t, err)
+		assert.False(t, truncated, "expected truncated=false for exactly %d entries", maxDirEntries)
+		assert.Len(t, entries, maxDirEntries)
 	})
 
 	t.Run("above limit is truncated", func(t *testing.T) {
@@ -58,15 +49,9 @@ func TestListDirectory_Truncation(t *testing.T) {
 		}
 
 		entries, truncated, err := listDirectory(dir, dir, 0, 0, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !truncated {
-			t.Errorf("expected truncated=true for %d entries", total)
-		}
-		if len(entries) != maxDirEntries {
-			t.Errorf("expected %d entries, got %d", maxDirEntries, len(entries))
-		}
+		require.NoError(t, err)
+		assert.True(t, truncated, "expected truncated=true for %d entries", total)
+		assert.Len(t, entries, maxDirEntries)
 	})
 }
 
@@ -88,12 +73,8 @@ func TestListDirectory_SortOrder(t *testing.T) {
 	}
 
 	entries, truncated, err := listDirectory(dir, dir, 0, 0, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if truncated {
-		t.Error("unexpected truncation")
-	}
+	require.NoError(t, err)
+	assert.False(t, truncated, "unexpected truncation")
 
 	// Expected order: directories first (case-insensitive), then files (case-insensitive).
 	expected := []struct {
@@ -107,16 +88,10 @@ func TestListDirectory_SortOrder(t *testing.T) {
 		{"Cherry.txt", false},
 	}
 
-	if len(entries) != len(expected) {
-		t.Fatalf("expected %d entries, got %d", len(expected), len(entries))
-	}
+	require.Len(t, entries, len(expected))
 	for i, want := range expected {
-		if entries[i].Name != want.name {
-			t.Errorf("entry[%d].Name = %q, want %q", i, entries[i].Name, want.name)
-		}
-		if entries[i].IsDir != want.isDir {
-			t.Errorf("entry[%d].IsDir = %v, want %v", i, entries[i].IsDir, want.isDir)
-		}
+		assert.Equal(t, want.name, entries[i].Name, "entry[%d].Name", i)
+		assert.Equal(t, want.isDir, entries[i].IsDir, "entry[%d].IsDir", i)
 	}
 }
 
@@ -140,15 +115,9 @@ func TestListDirectory_TruncationKeepsDirsFirst(t *testing.T) {
 	}
 
 	entries, truncated, err := listDirectory(dir, dir, 0, 0, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !truncated {
-		t.Error("expected truncated=true")
-	}
-	if len(entries) != maxDirEntries {
-		t.Fatalf("expected %d entries, got %d", maxDirEntries, len(entries))
-	}
+	require.NoError(t, err)
+	assert.True(t, truncated, "expected truncated=true")
+	require.Len(t, entries, maxDirEntries)
 
 	// All 100 directories should appear before any files.
 	dirCount := 0
@@ -156,20 +125,16 @@ func TestListDirectory_TruncationKeepsDirsFirst(t *testing.T) {
 		if e.IsDir {
 			dirCount++
 		} else if dirCount < numDirs {
-			t.Errorf("file %q appeared at index %d before all directories", e.Name, i)
+			assert.Fail(t, "file appeared before all directories", "file %q at index %d", e.Name, i)
 			break
 		}
 	}
-	if dirCount != numDirs {
-		t.Errorf("expected %d directories, got %d", numDirs, dirCount)
-	}
+	assert.Equal(t, numDirs, dirCount)
 
 	// The remaining entries should be files in alphabetical order.
 	fileEntries := entries[numDirs:]
 	for i := 1; i < len(fileEntries); i++ {
-		if fileEntries[i].Name < fileEntries[i-1].Name {
-			t.Errorf("files not sorted: %q < %q at index %d", fileEntries[i].Name, fileEntries[i-1].Name, numDirs+i)
-		}
+		assert.GreaterOrEqual(t, fileEntries[i].Name, fileEntries[i-1].Name, "files not sorted at index %d", numDirs+i)
 	}
 }
 
@@ -187,23 +152,15 @@ func TestFileInfoToProto_Hidden(t *testing.T) {
 	}
 
 	hiddenInfo, err := os.Stat(hiddenPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	regularInfo, err := os.Stat(regularPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	hiddenProto := fileInfoToProto(hiddenInfo, hiddenPath)
-	if !hiddenProto.Hidden {
-		t.Errorf("expected Hidden=true for %q", hiddenPath)
-	}
+	assert.True(t, hiddenProto.Hidden, "expected Hidden=true for %q", hiddenPath)
 
 	regularProto := fileInfoToProto(regularInfo, regularPath)
-	if regularProto.Hidden {
-		t.Errorf("expected Hidden=false for %q", regularPath)
-	}
+	assert.False(t, regularProto.Hidden, "expected Hidden=false for %q", regularPath)
 }
 
 func TestListDirectory_HiddenField(t *testing.T) {
@@ -221,15 +178,11 @@ func TestListDirectory_HiddenField(t *testing.T) {
 	}
 
 	entries, _, err := listDirectory(dir, dir, 0, 0, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	for _, e := range entries {
 		expectHidden := e.Name[0] == '.'
-		if e.Hidden != expectHidden {
-			t.Errorf("entry %q: Hidden=%v, want %v", e.Name, e.Hidden, expectHidden)
-		}
+		assert.Equal(t, expectHidden, e.Hidden, "entry %q: Hidden", e.Name)
 	}
 }
 
@@ -242,19 +195,11 @@ func TestListDirectory_MergeHiddenDirs(t *testing.T) {
 		}
 
 		entries, _, err := listDirectory(dir, dir, 5, 0, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 1 {
-			t.Fatalf("expected 1 entry, got %d", len(entries))
-		}
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
 		expected := filepath.Join(".github", "workflows")
-		if entries[0].Name != expected {
-			t.Errorf("expected name %q, got %q", expected, entries[0].Name)
-		}
-		if !entries[0].Hidden {
-			t.Error("expected Hidden=true for merged .github/workflows")
-		}
+		assert.Equal(t, expected, entries[0].Name)
+		assert.True(t, entries[0].Hidden, "expected Hidden=true for merged .github/workflows")
 	})
 
 	t.Run("hidden child propagates hidden flag through merge", func(t *testing.T) {
@@ -265,19 +210,11 @@ func TestListDirectory_MergeHiddenDirs(t *testing.T) {
 		}
 
 		entries, _, err := listDirectory(dir, dir, 5, 0, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 1 {
-			t.Fatalf("expected 1 entry, got %d", len(entries))
-		}
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
 		expected := filepath.Join("src", ".internal", "utils")
-		if entries[0].Name != expected {
-			t.Errorf("expected name %q, got %q", expected, entries[0].Name)
-		}
-		if !entries[0].Hidden {
-			t.Error("expected Hidden=true when a hidden dir is in the merged path")
-		}
+		assert.Equal(t, expected, entries[0].Name)
+		assert.True(t, entries[0].Hidden, "expected Hidden=true when a hidden dir is in the merged path")
 	})
 
 	t.Run("non-hidden single-child dirs merge without hidden flag", func(t *testing.T) {
@@ -288,19 +225,11 @@ func TestListDirectory_MergeHiddenDirs(t *testing.T) {
 		}
 
 		entries, _, err := listDirectory(dir, dir, 5, 0, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 1 {
-			t.Fatalf("expected 1 entry, got %d", len(entries))
-		}
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
 		expected := filepath.Join("src", "main", "java")
-		if entries[0].Name != expected {
-			t.Errorf("expected name %q, got %q", expected, entries[0].Name)
-		}
-		if entries[0].Hidden {
-			t.Error("expected Hidden=false for non-hidden merged path")
-		}
+		assert.Equal(t, expected, entries[0].Name)
+		assert.False(t, entries[0].Hidden, "expected Hidden=false for non-hidden merged path")
 	})
 }
 
@@ -321,19 +250,11 @@ func TestListDirectory_DirsOnly(t *testing.T) {
 		}
 
 		entries, truncated, err := listDirectory(dir, dir, 0, 0, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if truncated {
-			t.Error("expected truncated=false")
-		}
-		if len(entries) != numDirs {
-			t.Errorf("expected %d entries, got %d", numDirs, len(entries))
-		}
+		require.NoError(t, err)
+		assert.False(t, truncated, "expected truncated=false")
+		assert.Len(t, entries, numDirs)
 		for _, e := range entries {
-			if !e.IsDir {
-				t.Errorf("expected only directories, got file %q", e.Name)
-			}
+			assert.True(t, e.IsDir, "expected only directories, got file %q", e.Name)
 		}
 	})
 
@@ -354,19 +275,11 @@ func TestListDirectory_DirsOnly(t *testing.T) {
 		}
 
 		entries, truncated, err := listDirectory(dir, dir, 0, 0, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !truncated {
-			t.Error("expected truncated=true")
-		}
-		if len(entries) != maxDirEntries {
-			t.Errorf("expected %d entries, got %d", maxDirEntries, len(entries))
-		}
+		require.NoError(t, err)
+		assert.True(t, truncated, "expected truncated=true")
+		assert.Len(t, entries, maxDirEntries)
 		for _, e := range entries {
-			if !e.IsDir {
-				t.Errorf("expected only directories, got file %q", e.Name)
-			}
+			assert.True(t, e.IsDir, "expected only directories, got file %q", e.Name)
 		}
 	})
 
@@ -390,16 +303,10 @@ func TestListDirectory_DirsOnly(t *testing.T) {
 		}
 
 		entries, _, err := listDirectory(dir, dir, 0, 0, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 2 {
-			t.Fatalf("expected 2 entries (realdir + linkdir), got %d", len(entries))
-		}
+		require.NoError(t, err)
+		require.Len(t, entries, 2, "expected 2 entries (realdir + linkdir)")
 		for _, e := range entries {
-			if !e.IsDir {
-				t.Errorf("expected only directories, got non-dir %q", e.Name)
-			}
+			assert.True(t, e.IsDir, "expected only directories, got non-dir %q", e.Name)
 		}
 	})
 
@@ -421,24 +328,16 @@ func TestListDirectory_DirsOnly(t *testing.T) {
 		}
 
 		entries, _, err := listDirectory(dir, dir, 0, 0, false)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		// Directories (real + symlinked) should come first.
-		if len(entries) < 2 {
-			t.Fatalf("expected at least 2 entries, got %d", len(entries))
-		}
+		require.GreaterOrEqual(t, len(entries), 2, "expected at least 2 entries")
 		// First two entries should be directories (bbb_dir and ccc_link, both dirs).
 		for _, e := range entries[:2] {
-			if !e.IsDir {
-				t.Errorf("expected directory in first two entries, got file %q", e.Name)
-			}
+			assert.True(t, e.IsDir, "expected directory in first two entries, got file %q", e.Name)
 		}
 		// Last two entries should be files.
 		for _, e := range entries[2:] {
-			if e.IsDir {
-				t.Errorf("expected file in last two entries, got dir %q", e.Name)
-			}
+			assert.False(t, e.IsDir, "expected file in last two entries, got dir %q", e.Name)
 		}
 	})
 }

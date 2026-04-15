@@ -260,6 +260,34 @@ func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {
 	assert.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
+func TestClaudeResult_IdleTimeoutPrefixSchedulesAPIErrorAutoContinue(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	payload := []byte(`{
+		"type":"result",
+		"is_error":true,
+		"result":"API Error: Stream idle timeout - partial response received"
+	}`)
+
+	agent.HandleOutput(payload)
+
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	schedule := sink.LastAutoSchedule()
+	assert.Equal(t, AutoContinueReasonAPIError, schedule.Reason)
+	var source struct {
+		Type        string `json:"type"`
+		IsError     bool   `json:"is_error"`
+		Result      string `json:"result"`
+		NumToolUses int    `json:"num_tool_uses"`
+	}
+	require.NoError(t, json.Unmarshal(schedule.SourcePayload, &source))
+	assert.Equal(t, "result", source.Type)
+	assert.True(t, source.IsError)
+	assert.Equal(t, "API Error: Stream idle timeout - partial response received", source.Result)
+	assert.Equal(t, 0, source.NumToolUses)
+}
+
 func TestHandleOutput_MalformedJSON(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
@@ -422,27 +450,37 @@ func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
 	assert.Equal(t, int64(30), usage["cacheReadInputTokens"])
 }
 
-func TestHasSyntheticAPI5xxPrefix(t *testing.T) {
+func TestIsRetryableClaudeResultError(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  bool
 	}{
-		{"500 error", "API Error: 500 Internal Server Error", true},
-		{"502 error", "API Error: 502 Bad Gateway", true},
-		{"529 overloaded", "API Error: 529 Overloaded", true},
-		{"599 bare", "API Error: 599", true},
-		{"400 not matched", "API Error: 400 Bad Request", false},
-		{"single digit 5", "API Error: 5", false},
-		{"two digit 50", "API Error: 50", false},
-		{"four digit 5000", "API Error: 5000", false},
+		{"5xx 500", "API Error: 500 Internal Server Error", true},
+		{"5xx 502", "API Error: 502 Bad Gateway", true},
+		{"5xx 529", "API Error: 529 Overloaded", true},
+		{"5xx 599 bare", "API Error: 599", true},
+		{"5xx alternate punctuation", "API Error - 502 Bad Gateway", true},
+		{"5xx repeated punctuation", "API Error:: 529 Overloaded", true},
+		{"idle timeout exact", "API Error: Stream idle timeout", true},
+		{"idle timeout partial response", "API Error: Stream idle timeout - partial response received", true},
+		{"idle timeout alternate punctuation", "API Error - Stream idle timeout - partial response received", true},
+		{"idle timeout repeated punctuation", "API Error:: Stream idle timeout", true},
+		{"non-retryable 4xx", "API Error: 400 Bad Request", false},
+		{"5xx single digit", "API Error: 5", false},
+		{"5xx two digits", "API Error: 50", false},
+		{"5xx four digits", "API Error: 5000", false},
+		{"5xx alphanumeric separator", "API ErrorX 500 Internal Server Error", false},
+		{"5xx alphanumeric suffix", "API Error: 500X", false},
+		{"idle timeout alphanumeric separator", "API ErrorX Stream idle timeout", false},
+		{"idle timeout alphanumeric suffix", "API Error: Stream idle timeoutX", false},
 		{"empty string", "", false},
-		{"no prefix", "done", false},
+		{"plain text", "done", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := hasSyntheticAPI5xxPrefix(tt.input)
+			got := isRetryableClaudeResultError(tt.input)
 			assert.Equal(t, tt.want, got)
 		})
 	}
