@@ -811,39 +811,44 @@ fn capabilities_for(state: &ShellState) -> PlatformCapabilities {
 fn resolve_sidecar_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let sidecar_name = sidecar_binary_name();
 
-    // Dev-mode path next to the Cargo project.
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("_up_")
-        .join("go")
-        .join("bin")
-        .join(&sidecar_name);
-    if dev_path.exists() {
-        return Ok(dev_path);
-    }
-
-    // Production: on macOS the sidecar lives in Contents/MacOS/.
-    #[cfg(target_os = "macos")]
-    {
-        let exe = std::env::current_exe()
-            .map_err(|err| format!("resolve current exe: {err}"))?;
-        if let Some(dir) = exe.parent() {
-            let path = dir.join(&sidecar_name);
-            if path.exists() {
-                return Ok(path);
-            }
+    // Dev mode: sidecar built into the Go source tree at desktop/go/bin/.
+    if let Some(parent) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
+        let dev_path = parent.join("go").join("bin").join(&sidecar_name);
+        if dev_path.exists() {
+            return Ok(dev_path);
         }
     }
 
-    // Fallback: resource directory (Linux, Windows).
+    // Next to the main executable. Covers macOS bundled apps (where the
+    // sidecar is placed in Contents/MacOS/) and Linux unbundled runs where
+    // the sidecar has been copied beside leapmux-desktop.
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("resolve current exe: {err}"))?;
+    if let Some(dir) = exe.parent() {
+        let path = dir.join(&sidecar_name);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // Bundled resource directory.
     let resource_dir = app_handle
         .path()
         .resource_dir()
         .map_err(|err| format!("resolve resource dir: {err}"))?;
-    Ok(resource_dir
-        .join("_up_")
-        .join("go")
-        .join("bin")
-        .join(&sidecar_name))
+
+    #[cfg(target_os = "windows")]
+    {
+        Ok(resource_dir
+            .join("_up_")
+            .join("go")
+            .join("bin")
+            .join(&sidecar_name))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(resource_dir.join(&sidecar_name))
+    }
 }
 
 fn sidecar_binary_name() -> String {

@@ -4,6 +4,9 @@
   "mainBinaryName": "leapmux-desktop",
   "bundle": {
     "targets": ["deb", "appimage"],
+    "resources": {
+      "../go/bin/leapmux-desktop-service-*-unknown-linux-gnu": ""
+    },
     "linux": {
       "deb": {
         "desktopTemplate": "desktop-template.desktop"

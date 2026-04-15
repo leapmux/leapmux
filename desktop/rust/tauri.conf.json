@@ -33,7 +33,7 @@
       "../go/bin/*"
     ],
     "icon": [
-      "./icons/icon.png",
+      "icons/icon.png",
       "./icons/icon.ico"
     ]
   }
