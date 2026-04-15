@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
 import { diffLines } from 'diff'
+import { Show } from 'solid-js'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { relativizePath } from './messageUtils'
 import {
@@ -54,7 +55,7 @@ export function renderDeleteDetail(path?: string, cwd?: string, homeDir?: string
   return <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
 }
 
-export function renderEditDetail(path?: string, oldStr?: string, newStr?: string, cwd?: string, homeDir?: string): JSX.Element | null {
+export function renderEditDetail(path?: string, oldStr?: string, newStr?: string, replaceAll?: boolean, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
   let added = 0
@@ -73,6 +74,9 @@ export function renderEditDetail(path?: string, oldStr?: string, newStr?: string
     <>
       <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
       <DiffStatsBadge added={added} deleted={removed} class={toolInputText} />
+      <Show when={replaceAll}>
+        <span class={toolInputText}>{' (replace all)'}</span>
+      </Show>
     </>
   )
 }

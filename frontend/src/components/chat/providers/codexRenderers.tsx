@@ -630,7 +630,7 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
     : simpleDelete
       ? { icon: File, title: renderDeleteDetail(simpleDeletePath, cwd, homeDir), path: simpleDeletePath }
       : simpleEdit && parsedDiff
-        ? { icon: FileEdit, title: renderEditDetail((simpleEdit.path as string) || '', parsedDiff.oldText, parsedDiff.newText, cwd, homeDir), path: (simpleEdit.path as string) || '' }
+        ? { icon: FileEdit, title: renderEditDetail((simpleEdit.path as string) || '', parsedDiff.oldText, parsedDiff.newText, false, cwd, homeDir), path: (simpleEdit.path as string) || '' }
         : null
 
   if (inProgressDetail) {

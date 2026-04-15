@@ -167,7 +167,7 @@ function renderClaudeToolDetail(toolName: string, input: Record<string, unknown>
     case 'Bash': return renderBashDetail((input as BashInput).description, (input as BashInput).command)
     case 'Read': return renderReadDetail((input as ReadInput).file_path, (input as ReadInput).offset, (input as ReadInput).limit, cwd, homeDir)
     case 'Write': return renderWriteDetail((input as WriteInput).file_path, (input as WriteInput).content, cwd, homeDir)
-    case 'Edit': return renderEditDetail((input as EditInput).file_path, (input as EditInput).old_string, (input as EditInput).new_string, cwd, homeDir)
+    case 'Edit': return renderEditDetail((input as EditInput).file_path, (input as EditInput).old_string, (input as EditInput).new_string, (input as EditInput).replace_all, cwd, homeDir)
     case 'Grep': return renderSearchDetail((input as GrepInput).pattern, (input as GrepInput).path, cwd, homeDir)
     case 'Glob': return renderGlobDetail((input as GlobInput).pattern, (input as GlobInput).path, cwd, homeDir)
     case 'WebFetch': return renderUrlDetail((input as WebFetchInput).url)
@@ -248,10 +248,14 @@ function ToolUseMessage(props: {
   originalFile?: string
   /** If true, body is always visible (not gated by expand). */
   alwaysVisible?: boolean
+  /** If true, starts expanded before user interaction. */
+  defaultExpanded?: boolean
+  /** Whether to show line numbers in diff rows. */
+  showDiffLineNumbers?: boolean
   context?: RenderContext
 }): JSX.Element {
   const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'tool-use-layout')
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'tool-use-layout', props.defaultExpanded ?? false)
   const [commandCopied, setCommandCopied] = createSignal(false)
 
   const title = () => props.detail ?? `${props.toolName}${props.fallbackDisplay || ''}`
@@ -293,6 +297,7 @@ function ToolUseMessage(props: {
           view={diffView()}
           filePath={props.filePath}
           originalFile={props.originalFile}
+          showLineNumbers={props.showDiffLineNumbers}
         />
       </Show>
       <Show when={isMultiLineCommand() && expanded()}>
@@ -1137,6 +1142,8 @@ function renderClaudeToolUse(
       filePath={filePath}
       originalFile={undefined}
       alwaysVisible={isWrite}
+      defaultExpanded={isEdit && hasDiff}
+      showDiffLineNumbers={!isEdit}
       context={context}
     />
   )

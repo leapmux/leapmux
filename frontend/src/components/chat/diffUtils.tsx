@@ -393,27 +393,27 @@ export function groupByHunk<T extends { hunkIndex: number }>(entries: T[]): T[][
 const GAP_EXPAND_STEP = 10
 
 /** Render a single context line from a gap with optional syntax highlighting. */
-function GapContextLine(props: { lineNum: number, text: string, tokens?: CachedToken[] | null, splitView?: boolean }): JSX.Element {
+function GapContextLine(props: { lineNum: number, text: string, tokens?: CachedToken[] | null, splitView?: boolean, showLineNumbers?: boolean }): JSX.Element {
   const content = () => renderTokenizedLine(props.text, props.tokens ?? null)
   return (
     <Show
       when={props.splitView}
       fallback={(
         <div class={diffLine}>
-          <span class={diffLineNumber}>{props.lineNum}</span>
-          <span class={diffLineNumberNew}>{props.lineNum}</span>
+          <span class={diffLineNumber}>{props.showLineNumbers === false ? '' : props.lineNum}</span>
+          <span class={diffLineNumberNew}>{props.showLineNumbers === false ? '' : props.lineNum}</span>
           <span class={diffPrefix}>{' '}</span>
           <span class={diffContent}>{content()}</span>
         </div>
       )}
     >
       <div class={diffLine}>
-        <span class={diffLineNumber}>{props.lineNum}</span>
+        <span class={diffLineNumber}>{props.showLineNumbers === false ? '' : props.lineNum}</span>
         <span class={diffPrefix}>{' '}</span>
         <span class={diffContent}>{content()}</span>
       </div>
       <div class={diffLine}>
-        <span class={diffLineNumber}>{props.lineNum}</span>
+        <span class={diffLineNumber}>{props.showLineNumbers === false ? '' : props.lineNum}</span>
         <span class={diffPrefix}>{' '}</span>
         <span class={diffContent}>{content()}</span>
       </div>
@@ -437,6 +437,8 @@ function DiffGapSeparator(props: {
   isFirst?: boolean
   /** True when this gap is the last element in the diff container. */
   isLast?: boolean
+  /** Whether to show line numbers in gap context rows. */
+  showLineNumbers?: boolean
 }): JSX.Element {
   const total = () => props.gap.lines.length
   const hiddenCount = () => total() - props.revealedTop - props.revealedBottom
@@ -532,6 +534,7 @@ function DiffGapSeparator(props: {
             text={line}
             tokens={tokensForGapLine(idx())}
             splitView={props.splitView}
+            showLineNumbers={props.showLineNumbers}
           />
         )}
       </For>
@@ -570,6 +573,7 @@ function DiffGapSeparator(props: {
             text={line}
             tokens={tokensForGapLine(total() - props.revealedBottom + idx())}
             splitView={props.splitView}
+            showLineNumbers={props.showLineNumbers}
           />
         )}
       </For>
@@ -807,11 +811,11 @@ function useDiffTokens(
 }
 
 /** Render a unified diff line. */
-function UnifiedDiffLine(props: { line: DiffLineEntry }): JSX.Element {
+function UnifiedDiffLine(props: { line: DiffLineEntry, showLineNumbers?: boolean }): JSX.Element {
   return (
     <div class={`${diffLine} ${props.line.type === 'added' ? diffAdded : props.line.type === 'removed' ? diffRemoved : ''}`}>
-      <span class={diffLineNumber}>{props.line.oldNum ?? ''}</span>
-      <span class={diffLineNumberNew}>{props.line.newNum ?? ''}</span>
+      <span class={diffLineNumber}>{props.showLineNumbers === false ? '' : (props.line.oldNum ?? '')}</span>
+      <span class={diffLineNumberNew}>{props.showLineNumbers === false ? '' : (props.line.newNum ?? '')}</span>
       <span class={diffPrefix}>{props.line.prefix}</span>
       <span class={diffContent}>{props.line.content}</span>
     </div>
@@ -819,7 +823,7 @@ function UnifiedDiffLine(props: { line: DiffLineEntry }): JSX.Element {
 }
 
 /** Render a unified diff view from hunks. */
-function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string }): JSX.Element {
+function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
   const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
   const lines = createMemo(() => buildUnifiedLines(props.hunks, oldTokens(), newTokens()))
 
@@ -887,7 +891,7 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
                     )}
                   </Show>
                   <For each={group}>
-                    {line => <UnifiedDiffLine line={line} />}
+                    {line => <UnifiedDiffLine line={line} showLineNumbers={props.showLineNumbers} />}
                   </For>
                 </>
               )
@@ -916,11 +920,12 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
                           onExpandUp={() => expandUp(`before-${hi()}`, gap().lines.length)}
                           onExpandAll={() => expandAll(`before-${hi()}`, gap().lines.length)}
                           isFirst={groupIdx() === 0}
+                          showLineNumbers={props.showLineNumbers}
                         />
                       )}
                     </Show>
                     <For each={group}>
-                      {line => <UnifiedDiffLine line={line} />}
+                      {line => <UnifiedDiffLine line={line} showLineNumbers={props.showLineNumbers} />}
                     </For>
                     <Show when={isTrailing()}>
                       {trailing => (
@@ -933,6 +938,7 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
                           onExpandUp={() => expandUp('trailing', trailing().lines.length)}
                           onExpandAll={() => expandAll('trailing', trailing().lines.length)}
                           isLast
+                          showLineNumbers={props.showLineNumbers}
                         />
                       )}
                     </Show>
@@ -948,16 +954,16 @@ function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: strin
 }
 
 /** Render a single split diff row (left + right lines rendered in the grid). */
-function SplitDiffRow(props: { left: SplitLineEntry, right: SplitLineEntry }): JSX.Element {
+function SplitDiffRow(props: { left: SplitLineEntry, right: SplitLineEntry, showLineNumbers?: boolean }): JSX.Element {
   return (
     <>
       <div class={`${diffLine} ${props.left.type === 'removed' ? diffRemoved : ''}`}>
-        <span class={diffLineNumber}>{props.left.num ?? ''}</span>
+        <span class={diffLineNumber}>{props.showLineNumbers === false ? '' : (props.left.num ?? '')}</span>
         <span class={diffPrefix}>{props.left.type === 'removed' ? '-' : ' '}</span>
         <span class={diffContent}>{props.left.content}</span>
       </div>
       <div class={`${diffLine} ${props.right.type === 'added' ? diffAdded : ''}`}>
-        <span class={diffLineNumber}>{props.right.num ?? ''}</span>
+        <span class={diffLineNumber}>{props.showLineNumbers === false ? '' : (props.right.num ?? '')}</span>
         <span class={diffPrefix}>{props.right.type === 'added' ? '+' : ' '}</span>
         <span class={diffContent}>{props.right.content}</span>
       </div>
@@ -966,7 +972,7 @@ function SplitDiffRow(props: { left: SplitLineEntry, right: SplitLineEntry }): J
 }
 
 /** Render a split diff view from hunks (removed on left, added on right). */
-function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string }): JSX.Element {
+function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
   const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
   const splitLines = createMemo(() => buildSplitLines(props.hunks, oldTokens(), newTokens()))
 
@@ -1038,7 +1044,7 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
                   <For each={leftGroup}>
                     {(leftLine, i) => {
                       const rightLine = () => rightGroup()[i()] ?? { content: '', type: 'empty' as const, num: null, hunkIndex: hi() }
-                      return <SplitDiffRow left={leftLine} right={rightLine()} />
+                      return <SplitDiffRow left={leftLine} right={rightLine()} showLineNumbers={props.showLineNumbers} />
                     }}
                   </For>
                 </>
@@ -1071,13 +1077,14 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
                           onExpandAll={() => expandAll(`before-${hi()}`, gap().lines.length)}
                           splitView
                           isFirst={groupIdx() === 0}
+                          showLineNumbers={props.showLineNumbers}
                         />
                       )}
                     </Show>
                     <For each={leftGroup}>
                       {(leftLine, i) => {
                         const rightLine = () => rightGroup()[i()] ?? { content: '', type: 'empty' as const, num: null, hunkIndex: hi() }
-                        return <SplitDiffRow left={leftLine} right={rightLine()} />
+                        return <SplitDiffRow left={leftLine} right={rightLine()} showLineNumbers={props.showLineNumbers} />
                       }}
                     </For>
                     <Show when={isTrailing()}>
@@ -1092,6 +1099,7 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
                           onExpandAll={() => expandAll('trailing', trailing().lines.length)}
                           splitView
                           isLast
+                          showLineNumbers={props.showLineNumbers}
                         />
                       )}
                     </Show>
@@ -1107,10 +1115,10 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
 }
 
 /** Renders a diff view (unified or split) from hunks with optional syntax highlighting. */
-export function DiffView(props: { hunks: StructuredPatchHunk[], view: DiffViewPreference, filePath?: string, originalFile?: string }): JSX.Element {
+export function DiffView(props: { hunks: StructuredPatchHunk[], view: DiffViewPreference, filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
   return (
-    <Show when={props.view === 'unified'} fallback={<SplitDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} />}>
-      <UnifiedDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} />
+    <Show when={props.view === 'unified'} fallback={<SplitDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} showLineNumbers={props.showLineNumbers} />}>
+      <UnifiedDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} showLineNumbers={props.showLineNumbers} />
     </Show>
   )
 }
