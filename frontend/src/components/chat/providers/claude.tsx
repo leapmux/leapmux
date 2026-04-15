@@ -15,7 +15,7 @@ import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../ChatView.css'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
-import { effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
+import { ALWAYS_THINKING_KEY, effortItems, FAST_MODE_KEY, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupDefaultValue, optionGroupItems, optionLabel, OUTPUT_STYLE_KEY, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../settingsShared'
 import { renderClaudeMessage } from './claudeRenderers'
 import { registerProvider } from './registry'
 
@@ -186,18 +186,24 @@ function classifyClaudeCodeMessage(
 const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'opus[1m]'
 const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_EFFORT || 'high'
 
-/** Claude Code settings panel (model, effort, permission mode). */
+/** Claude Code settings panel (model, effort, permission mode, output style, fast mode, thinking). */
 function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
   const menuId = createUniqueId()
   const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
   const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
   const currentMode = () => props.permissionMode || 'default'
+  const currentOutputStyle = () => props.extraSettings?.[OUTPUT_STYLE_KEY] || optionGroupDefaultValue(props.availableOptionGroups, OUTPUT_STYLE_KEY) || 'default'
+  const currentFastMode = () => props.extraSettings?.[FAST_MODE_KEY] || optionGroupDefaultValue(props.availableOptionGroups, FAST_MODE_KEY) || 'off'
+  const currentThinking = () => props.extraSettings?.[ALWAYS_THINKING_KEY] || optionGroupDefaultValue(props.availableOptionGroups, ALWAYS_THINKING_KEY) || 'on'
 
   const models = () => modelItems(props.availableModels)
   const efforts = () => effortItems(props.availableModels, currentModel())
   const hasEffort = () => efforts().length > 0
   const modeGroup = () => permissionModeGroup(props.availableOptionGroups)
   const modeItems = () => permissionModeItems(props.availableOptionGroups)
+  const outputStyleItems = () => optionGroupItems(props.availableOptionGroups, OUTPUT_STYLE_KEY)
+  const fastModeItems = () => optionGroupItems(props.availableOptionGroups, FAST_MODE_KEY)
+  const thinkingItems = () => optionGroupItems(props.availableOptionGroups, ALWAYS_THINKING_KEY)
 
   return (
     <>
@@ -236,15 +242,48 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
         current={currentMode()}
         onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
       />
+      <Show when={outputStyleItems().length > 0}>
+        <RadioGroup
+          label={optionGroup(props.availableOptionGroups, OUTPUT_STYLE_KEY)?.label || 'Output Style'}
+          items={outputStyleItems()}
+          testIdPrefix="output-style"
+          name={`${menuId}-output-style`}
+          current={currentOutputStyle()}
+          onChange={v => props.onOptionGroupChange?.(OUTPUT_STYLE_KEY, v)}
+        />
+      </Show>
+      <Show when={fastModeItems().length > 0}>
+        <RadioGroup
+          label={optionGroup(props.availableOptionGroups, FAST_MODE_KEY)?.label || 'Fast Mode'}
+          items={fastModeItems()}
+          testIdPrefix="fast-mode"
+          name={`${menuId}-fast-mode`}
+          current={currentFastMode()}
+          onChange={v => props.onOptionGroupChange?.(FAST_MODE_KEY, v)}
+        />
+      </Show>
+      <Show when={thinkingItems().length > 0}>
+        <RadioGroup
+          label={optionGroup(props.availableOptionGroups, ALWAYS_THINKING_KEY)?.label || 'Extended Thinking'}
+          items={thinkingItems()}
+          testIdPrefix="thinking"
+          name={`${menuId}-thinking`}
+          current={currentThinking()}
+          onChange={v => props.onOptionGroupChange?.(ALWAYS_THINKING_KEY, v)}
+        />
+      </Show>
     </>
   )
 }
 
-/** Claude Code trigger label (model, effort icon, permission mode). */
+/** Claude Code trigger label (model, effort icon, permission mode, output style, fast mode, thinking). */
 function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentModel = () => props.model || DEFAULT_CLAUDE_MODEL
   const currentEffort = () => props.effort || DEFAULT_CLAUDE_EFFORT
   const currentMode = () => props.permissionMode || 'default'
+  const currentOutputStyle = () => props.extraSettings?.[OUTPUT_STYLE_KEY] || optionGroupDefaultValue(props.availableOptionGroups, OUTPUT_STYLE_KEY) || 'default'
+  const currentFastMode = () => props.extraSettings?.[FAST_MODE_KEY] || optionGroupDefaultValue(props.availableOptionGroups, FAST_MODE_KEY) || 'off'
+  const currentThinking = () => props.extraSettings?.[ALWAYS_THINKING_KEY] || optionGroupDefaultValue(props.availableOptionGroups, ALWAYS_THINKING_KEY) || 'on'
 
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
@@ -260,6 +299,7 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
 
   const hasEffort = () => hasEfforts(props.availableModels, currentModel())
   const mode = () => optionLabel(props.availableOptionGroups, PERMISSION_MODE_KEY, currentMode())
+  const outputStyleLabel = () => optionLabel(props.availableOptionGroups, OUTPUT_STYLE_KEY, currentOutputStyle())
 
   return (
     <>
@@ -268,6 +308,9 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
         <Show when={hasEffort()}>{effortIcon()}</Show>
       </Show>
       {mode()}
+      <Show when={currentOutputStyle() !== 'default'}>{outputStyleLabel()}</Show>
+      <Show when={currentFastMode() === 'on'}>Fast</Show>
+      <Show when={currentThinking() === 'off'}>No Thinking</Show>
     </>
   )
 }
