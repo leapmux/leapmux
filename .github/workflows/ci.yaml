@@ -16,11 +16,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Derive cache epoch
+        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+
       - name: Read tool versions
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
           echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
+
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: .apt-cache
+          key: apt-${{ runner.os }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/workflows/ci.yaml') }}
+
+      - name: Configure APT cache directories
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.apt-cache/archives/partial"
+          mkdir -p "$GITHUB_WORKSPACE/.apt-cache/lists/partial"
+          sudo rm -f /etc/apt/apt.conf.d/docker-clean
+          cat <<EOF | sudo tee /etc/apt/apt.conf.d/99github-cache
+          Binary::apt::APT::Keep-Downloaded-Packages "true";
+          Dir::Cache::archives "$GITHUB_WORKSPACE/.apt-cache/archives";
+          Dir::State::lists "$GITHUB_WORKSPACE/.apt-cache/lists";
+          EOF
 
       - name: Install Tauri system dependencies
         run: |
@@ -71,6 +91,12 @@ jobs:
             desktop/rust/target
           key: cargo-${{ runner.os }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cache Tauri downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tauri
+          key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
 
       - name: Setup buf
         uses: bufbuild/buf-setup-action@v1

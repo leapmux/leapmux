@@ -69,7 +69,9 @@ ARG TARGETARCH
 # x86_64/aarch64, so we map the architecture name before downloading).
 # Alpine needs ca-certificates for HTTPS; Ubuntu needs ca-certificates, wget,
 # and xz-utils (Alpine's BusyBox provides wget and xz-capable tar natively).
-RUN case "${TARGETARCH}" in \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    case "${TARGETARCH}" in \
       amd64) S6_ARCH=x86_64 ;; \
       arm64) S6_ARCH=aarch64 ;; \
       *)     S6_ARCH="${TARGETARCH}" ;; \
@@ -94,7 +96,9 @@ RUN case "${TARGETARCH}" in \
 #   git              worktree management, status, branch operations
 #   bash, zsh        user-facing terminal shells
 #   ncurses          terminfo database for xterm-256color
-RUN if [ -f /etc/alpine-release ]; then \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    if [ -f /etc/alpine-release ]; then \
       apk add --no-cache \
         ca-certificates tzdata \
         git bash zsh ncurses; \
