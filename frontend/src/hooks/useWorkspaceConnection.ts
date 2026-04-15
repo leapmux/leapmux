@@ -487,10 +487,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           afterSeq: untrack(() => chatStore.getLastSeq(entry.agentId)),
         }))
 
-        // Reset catch-up phases on reconnect and clear stale control requests.
+        // Reset catch-up phases on reconnect.
         for (const entry of agentEntries) {
           catchUpPhases.set(entry.agentId, 'catchingUp')
-          controlStore.clearAgent(entry.agentId)
         }
 
         const workerId = untrack(() => params.getWorkerId())
@@ -666,7 +665,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         for (const spanId of Object.keys(streams))
           chatStore.clearCommandStream(a.id, spanId)
       }
-      controlStore.clearAgent(a.id)
       if (a.status === AgentStatus.ACTIVE) {
         agentStore.updateAgent(a.id, { status: AgentStatus.INACTIVE })
       }

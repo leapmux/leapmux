@@ -19,6 +19,10 @@ describe('controlRequest guard for inactive agents', () => {
     return { id, status } as Parameters<ReturnType<typeof createAgentStore>['addAgent']>[0]
   }
 
+  function makeRequest(requestId: string, agentId: string) {
+    return { requestId, agentId, payload: { method: 'item/commandExecution/requestApproval' } }
+  }
+
   it('should not add control request when agent is INACTIVE', () => {
     createRoot((dispose) => {
       const agentStore = createAgentStore()
@@ -31,11 +35,7 @@ describe('controlRequest guard for inactive agents', () => {
       // if (agentEntry?.status === AgentStatus.INACTIVE) break
       const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
       if (agentEntry?.status !== AgentStatus.INACTIVE) {
-        controlStore.addRequest('agent-1', {
-          requestId: 'r1',
-          agentId: 'agent-1',
-          payload: { method: 'item/commandExecution/requestApproval' },
-        })
+        controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(0)
@@ -52,11 +52,7 @@ describe('controlRequest guard for inactive agents', () => {
 
       const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
       if (agentEntry?.status !== AgentStatus.INACTIVE) {
-        controlStore.addRequest('agent-1', {
-          requestId: 'r1',
-          agentId: 'agent-1',
-          payload: { method: 'item/commandExecution/requestApproval' },
-        })
+        controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
@@ -70,11 +66,7 @@ describe('controlRequest guard for inactive agents', () => {
       const controlStore = createControlStore()
 
       agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
-      controlStore.addRequest('agent-1', {
-        requestId: 'r1',
-        agentId: 'agent-1',
-        payload: { method: 'item/commandExecution/requestApproval' },
-      })
+      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
 
@@ -83,6 +75,76 @@ describe('controlRequest guard for inactive agents', () => {
       controlStore.clearAgent('agent-1')
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  it('should preserve pending control requests across short connection blips', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      const controlStore = createControlStore()
+
+      agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
+      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+
+      // Simulate worker-offline transition: agent goes INACTIVE but pending
+      // control requests must survive transient transport blips.
+      agentStore.updateAgent('agent-1', { status: AgentStatus.INACTIVE })
+
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+      dispose()
+    })
+  })
+
+  it('should clear control requests on worker restart because agent processes stop', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      const controlStore = createControlStore()
+
+      agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
+      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+
+      // Simulate the statusChange handler during catch-up replay after a
+      // worker restart: the replayed INACTIVE statusChange triggers clearAgent
+      // because the agent process no longer exists.
+      agentStore.updateAgent('agent-1', { status: AgentStatus.INACTIVE })
+      controlStore.clearAgent('agent-1')
+
+      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
+
+      // A replayed controlRequest for the now-INACTIVE agent must be skipped
+      // (guard at useWorkspaceConnection line 351).
+      const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
+      if (agentEntry?.status !== AgentStatus.INACTIVE) {
+        controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+      }
+
+      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  it('should preserve pending control requests across WatchEvents stream restarts', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      const controlStore = createControlStore()
+
+      agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
+      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+
+      // Simulate WatchEvents stream reconnect: the agent is still ACTIVE
+      // (worker didn't restart), so the replayed statusChange does NOT
+      // trigger clearAgent. The same controlRequest is replayed but
+      // addRequest deduplicates by requestId.
+      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
       dispose()
     })
   })
