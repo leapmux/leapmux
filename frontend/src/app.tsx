@@ -2,7 +2,7 @@ import type { ParentComponent } from 'solid-js'
 import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
 import { createEffect, createResource, createSignal, ErrorBoundary, getOwner, Match, onCleanup, onMount, runWithOwner, Show, Suspense, Switch } from 'solid-js'
-import { getRuntimeState, installMenuBarToggle, isTauriApp, platformBridge, refreshRuntimeState } from '~/api/platformBridge'
+import { getRuntimeState, isTauriApp, platformBridge, refreshRuntimeState } from '~/api/platformBridge'
 import { channelManager } from '~/api/workerRpc'
 import { showInfoToast } from '~/components/common/Toast'
 import { LauncherView } from '~/components/desktop/LauncherView'
@@ -189,7 +189,6 @@ export default function App() {
     onCleanup(() => document.removeEventListener('focusin', handleFocusIn, true))
 
     if (isTauriApp()) {
-      installMenuBarToggle()
       const owner = getOwner()
       platformBridge.onEvent('menu:show-about', () => setShowAboutDialog(true))
         .then(unlisten => runWithOwner(owner, () => onCleanup(unlisten)))

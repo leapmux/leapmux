@@ -1,27 +1,15 @@
 import type { LucideProps } from 'lucide-solid'
 import { splitProps } from 'solid-js'
+import { SvgIconFrame } from '~/components/common/SvgIconFrame'
 
 function SidebarIcon(props: LucideProps & { divider: string, fill: string }) {
-  const [local, rest] = splitProps(props, ['size', 'color', 'strokeWidth', 'class', 'divider', 'fill'])
-  const size = () => local.size ?? 24
+  const [local, rest] = splitProps(props, ['divider', 'fill'])
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={size()}
-      height={size()}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={local.color ?? 'currentColor'}
-      stroke-width={local.strokeWidth ?? 2}
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      class={local.class}
-      {...rest}
-    >
+    <SvgIconFrame {...rest}>
       <path d={local.fill} fill="currentColor" fill-opacity="0.35" stroke="none" />
       <rect width="18" height="18" x="3" y="3" rx="2" />
       <path d={local.divider} />
-    </svg>
+    </SvgIconFrame>
   )
 }
 

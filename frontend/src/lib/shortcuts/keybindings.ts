@@ -1,4 +1,5 @@
 import type { Keybinding, UserKeybindingOverride } from './types'
+import { createSignal } from 'solid-js'
 import { tinykeys } from 'tinykeys'
 import { createLogger } from '~/lib/logger'
 import { executeCommand } from './commands'
@@ -132,7 +133,9 @@ export function resolve(bindings: readonly Keybinding[], key: string): string | 
 }
 
 let currentUnsubscribe: (() => void) | null = null
-let activeBindings: readonly Keybinding[] = []
+// Reactive so JSX expressions that read bindings (menu shortcut hints,
+// tooltips) update once `activateBindings` runs.
+const [activeBindings, setActiveBindings] = createSignal<readonly Keybinding[]>([])
 
 /**
  * Activate keybindings: store them for tooltip lookup and bind via tinykeys.
@@ -140,7 +143,7 @@ let activeBindings: readonly Keybinding[] = []
  */
 export function activateBindings(bindings: readonly Keybinding[]): void {
   unbindAll()
-  activeBindings = bindings
+  setActiveBindings(bindings)
 
   const groups = groupBindings(bindings)
   const keyMap: Record<string, (e: KeyboardEvent) => void> = {}
@@ -169,7 +172,7 @@ export function unbindAll(): void {
 /** Get the key string for a command ID (for displaying in tooltips). */
 export function getBindingForCommand(commandId: string): string | undefined {
   let firstKey: string | undefined
-  for (const b of activeBindings) {
+  for (const b of activeBindings()) {
     if (b.command === commandId) {
       if (evaluateWhen(b.when))
         return b.key

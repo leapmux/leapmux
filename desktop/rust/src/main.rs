@@ -27,20 +27,17 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(target_os = "macos")]
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID};
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID},
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, Window, WindowEvent,
 };
 use tokio::sync::oneshot;
 
+#[cfg(target_os = "macos")]
 const SHOW_ABOUT_MENU_ID: &str = "show-about";
+#[cfg(target_os = "macos")]
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-const QUIT_MENU_ID: &str = "quit";
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-const MINIMIZE_MENU_ID: &str = "minimize";
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-const MAXIMIZE_MENU_ID: &str = "maximize";
 const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024; // 16 MB
 const SIDECAR_PROTOCOL_VERSION: &str = "1";
 const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1221,28 +1218,6 @@ fn quit_app(app: AppHandle) {
 }
 
 #[tauri::command]
-fn hide_menu_bar(app: AppHandle) {
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.hide_menu();
-    }
-    let _ = app;
-}
-
-#[tauri::command]
-fn toggle_menu_bar(app: AppHandle) {
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    if let Some(w) = app.get_webview_window("main") {
-        if w.is_menu_visible().unwrap_or(false) {
-            let _ = w.hide_menu();
-        } else {
-            let _ = w.show_menu();
-        }
-    }
-    let _ = app;
-}
-
-#[tauri::command]
 fn open_web_inspector(app: AppHandle) {
     open_main_web_inspector(&app);
 }
@@ -1306,6 +1281,7 @@ fn handle_app_exit(shell: Arc<DesktopShell>) {
     });
 }
 
+#[cfg(target_os = "macos")]
 fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let show_about = MenuItem::with_id(
         app,
@@ -1323,7 +1299,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
 
-    #[cfg(target_os = "macos")]
     let app_menu = Submenu::with_items(
         app,
         "LeapMux Desktop",
@@ -1344,12 +1319,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         app,
         "File",
         true,
-        &[
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            &PredefinedMenuItem::close_window(app, None)?,
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            &MenuItem::with_id(app, QUIT_MENU_ID, "Quit", true, Some("Ctrl+Q"))?,
-        ],
+        &[&PredefinedMenuItem::close_window(app, None)?],
     )?;
 
     let edit_menu = Submenu::with_items(
@@ -1367,7 +1337,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         ],
     )?;
 
-    #[cfg(target_os = "macos")]
     let view_menu = Submenu::with_items(
         app,
         "View",
@@ -1375,7 +1344,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[&PredefinedMenuItem::fullscreen(app, None)?],
     )?;
 
-    #[cfg(target_os = "macos")]
     let window_menu = Submenu::with_id_and_items(
         app,
         tauri::menu::WINDOW_SUBMENU_ID,
@@ -1389,37 +1357,20 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         ],
     )?;
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    let window_menu = Submenu::with_items(
-        app,
-        "Window",
-        true,
-        &[
-            &MenuItem::with_id(app, MINIMIZE_MENU_ID, "Minimize", true, None::<&str>)?,
-            &MenuItem::with_id(app, MAXIMIZE_MENU_ID, "Maximize", true, None::<&str>)?,
-        ],
-    )?;
-
     let help_menu = Submenu::with_id_and_items(
         app,
         HELP_SUBMENU_ID,
         "Help",
         true,
-        &[
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            &show_about,
-            &open_web_inspector,
-        ],
+        &[&open_web_inspector],
     )?;
 
     Menu::with_items(
         app,
         &[
-            #[cfg(target_os = "macos")]
             &app_menu,
             &file_menu,
             &edit_menu,
-            #[cfg(target_os = "macos")]
             &view_menu,
             &window_menu,
             &help_menu,
@@ -1440,42 +1391,27 @@ fn main() {
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
     }
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main_window(app);
-        }))
-        .menu(build_app_menu)
+        }));
+
+    // Linux and Windows render the app menu as a hamburger dropdown inside
+    // the custom titlebar (`CustomTitlebar.tsx`). Only macOS uses a native
+    // Tauri menu (the system-wide Apple menu bar).
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(build_app_menu);
+
+    builder
         .on_menu_event(|app, event| {
+            #[cfg(target_os = "macos")]
             if event.id() == SHOW_ABOUT_MENU_ID {
                 let _ = app.emit("menu:show-about", ());
             } else if event.id() == OPEN_WEB_INSPECTOR_MENU_ID {
                 open_main_web_inspector(app);
             }
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            {
-                if event.id() == QUIT_MENU_ID {
-                    app.exit(0);
-                } else if event.id() == MINIMIZE_MENU_ID {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.minimize();
-                    }
-                } else if event.id() == MAXIMIZE_MENU_ID {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let is_max = w.is_maximized().unwrap_or(false);
-                        if is_max {
-                            let _ = w.unmaximize();
-                        } else {
-                            let _ = w.maximize();
-                        }
-                    }
-                }
-            }
-            // Re-hide the menu bar after a menu item is selected (Linux/Windows).
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.hide_menu();
-            }
+            let _ = (app, event);
         })
         .on_window_event(|window, event| {
             if window.label() != "main" {
@@ -1542,8 +1478,6 @@ fn main() {
             restart_app,
             save_window_geometry,
             quit_app,
-            hide_menu_bar,
-            toggle_menu_bar,
             open_web_inspector,
             zoom_in_webview,
             zoom_out_webview,

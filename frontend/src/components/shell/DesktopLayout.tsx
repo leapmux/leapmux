@@ -7,7 +7,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
-import { shortcutHint } from '~/lib/shortcuts/display'
+import { getShortcutHint } from '~/lib/shortcuts/display'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
 import { TabDragProvider } from './TabDragContext'
@@ -372,12 +372,15 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                     <button
                       class="outline"
                       data-testid="create-workspace-button"
-                      title={shortcutHint('Create a new workspace...', 'app.newWorkspaceDialog')}
                       onClick={props.onNewWorkspace}
                     >
                       <Icon icon={Plus} size="sm" />
-                      {' '}
-                      Create a new workspace...
+                      <span class={styles.emptyTileActionContent}>
+                        <span>Create a new workspace...</span>
+                        <Show when={getShortcutHint('app.newWorkspaceDialog')}>
+                          {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
+                        </Show>
+                      </span>
                     </button>
                   </div>
                 </Show>

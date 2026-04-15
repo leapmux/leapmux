@@ -263,10 +263,6 @@ export async function restoreWindowGeometry(width: number, height: number, maxim
     // the Wayland compositor sees the final size at first map.
     await appWindow.show()
 
-    // Hide the menu bar on Linux/Windows — toggled with ALT.
-    // Must be done after show() due to a GTK bug (tao#1201).
-    await tauriInvoke('hide_menu_bar').catch(() => {})
-
     // Save window geometry on resize / maximize / unmaximize, debounced.
     let saveTimer: ReturnType<typeof setTimeout> | null = null
     const saveGeometry = () => {
@@ -289,32 +285,6 @@ export async function restoreWindowGeometry(width: number, height: number, maxim
   catch (err) {
     log.warn('restoreWindowGeometry failed', err)
   }
-}
-
-/**
- * Install a global ALT key listener that toggles the menu bar on
- * Linux/Windows.  Fires on ALT release only if no other key was
- * pressed between ALT-down and ALT-up (standard desktop behavior).
- */
-export function installMenuBarToggle(): void {
-  if (!isTauriApp())
-    return
-
-  let altDown = false
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Alt') {
-      altDown = true
-    }
-    else {
-      altDown = false
-    }
-  })
-  window.addEventListener('keyup', (e) => {
-    if (e.key === 'Alt' && altDown) {
-      altDown = false
-      tauriInvoke('toggle_menu_bar').catch(() => {})
-    }
-  })
 }
 
 function tauriFireAndForget(cmd: string): void {
@@ -353,6 +323,57 @@ async function tauriWindowOp(fn: (win: import('@tauri-apps/api/window').Window) 
 export const windowMinimize = () => tauriWindowOp(w => w.minimize())
 export const windowClose = () => tauriWindowOp(w => w.close())
 export const windowToggleMaximize = () => tauriWindowOp(w => w.toggleMaximize())
+
+/**
+ * Subscribe to window maximize-state changes. Invokes `onChange` with the
+ * current state on attach and whenever Tauri reports a resize — but only
+ * when the state actually flips, so drag-resize doesn't fire an IPC storm.
+ * Returns an unlisten function.
+ */
+export function observeWindowMaximized(onChange: (maximized: boolean) => void): () => void {
+  if (!isTauriApp())
+    return () => {}
+
+  let disposed = false
+  let unlisten: (() => void) | undefined
+  let last: boolean | undefined
+
+  const push = (next: boolean) => {
+    if (next === last)
+      return
+    last = next
+    onChange(next)
+  }
+
+  ;(async () => {
+    const { getCurrentWindow } = await loadTauriWindow()
+    if (disposed)
+      return
+    const win = getCurrentWindow()
+    try {
+      push(await win.isMaximized())
+    }
+    catch { /* best-effort */ }
+    if (disposed)
+      return
+    try {
+      unlisten = await win.onResized(async () => {
+        try {
+          push(await win.isMaximized())
+        }
+        catch { /* best-effort */ }
+      })
+    }
+    catch { /* best-effort */ }
+    if (disposed)
+      unlisten?.()
+  })()
+
+  return () => {
+    disposed = true
+    unlisten?.()
+  }
+}
 
 export const platformBridge = {
   getCapabilities,
