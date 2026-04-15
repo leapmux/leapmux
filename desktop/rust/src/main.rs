@@ -811,8 +811,7 @@ fn capabilities_for(state: &ShellState) -> PlatformCapabilities {
 fn resolve_sidecar_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let sidecar_name = sidecar_binary_name();
 
-    // Prefer the dev-mode path next to the Cargo project; fall back to the
-    // bundled resource directory used in release builds.
+    // Dev-mode path next to the Cargo project.
     let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("_up_")
         .join("go")
@@ -822,6 +821,20 @@ fn resolve_sidecar_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
         return Ok(dev_path);
     }
 
+    // Production: on macOS the sidecar lives in Contents/MacOS/.
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe()
+            .map_err(|err| format!("resolve current exe: {err}"))?;
+        if let Some(dir) = exe.parent() {
+            let path = dir.join(&sidecar_name);
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+    }
+
+    // Fallback: resource directory (Linux, Windows).
     let resource_dir = app_handle
         .path()
         .resource_dir()

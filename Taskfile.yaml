@@ -292,6 +292,9 @@ tasks:
       - task: prepare-desktop
       - task: build-desktop-sidecar
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --bundles app --config '{"version":"{{.VERSION}}"}'
+      # Move sidecar from Resources/_up_/go/bin/ to MacOS/ for a cleaner bundle layout.
+      - mv "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_/go/bin/"* "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/"
+      - rm -rf "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_"
       - rsync -a --delete "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/" "LeapMux Desktop.app/"
       - cd frontend/node_modules/macos-alias && npx node-gyp rebuild 2>/dev/null || true
       - mkdir -p desktop/rust/target/release/bundle/dmg
