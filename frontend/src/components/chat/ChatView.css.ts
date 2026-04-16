@@ -134,7 +134,7 @@ export const settingsMenu = style({
   backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
-  padding: 'var(--space-1) var(--space-4) 0 var(--space-4)',
+  padding: 'var(--space-4)',
   zIndex: 300,
   minWidth: '180px',
   maxHeight: 'calc(100vh - var(--space-6) * 2)',
@@ -154,7 +154,7 @@ export const settingsMenuWide = style({
 export const settingsPanelColumns = style({
   'display': 'flex',
   'alignItems': 'flex-start',
-  'gap': 'var(--space-6)',
+  'gap': 'var(--space-4)',
   '@media': {
     '(max-width: 639px)': {
       flexDirection: 'column',
@@ -166,7 +166,7 @@ export const settingsPanelColumns = style({
 export const settingsPanelColumn = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: 'var(--space-1)',
+  gap: 'var(--space-4)',
   flex: 1,
   minWidth: 0,
 })
@@ -175,20 +175,24 @@ export const settingsPanelColumnPrimary = style({
   flex: 1.2,
 })
 
-export const settingsPanelColumnSlightlyWider = style({
-  flex: 1.05,
-})
-
 export const settingsFieldset = style({
-  paddingTop: 'var(--space-3)',
+  position: 'relative',
+  border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-medium)',
+  padding: 'var(--space-3) var(--space-2) var(--space-2)',
   minWidth: 0,
 })
 
 export const settingsFieldsetFirst = style({
-  marginBlockStart: 'var(--space-2)',
+  marginBlockStart: 0,
 })
 
 export const settingsGroupLabel = style({
+  position: 'absolute',
+  top: 0,
+  left: 'var(--space-3)',
+  transform: 'translateY(-50%)',
+  display: 'inline-block',
   padding: '0 var(--space-2)',
   fontSize: 'var(--text-8)',
   fontWeight: 600,
@@ -196,6 +200,7 @@ export const settingsGroupLabel = style({
   textTransform: 'uppercase',
   letterSpacing: '0.05em',
   whiteSpace: 'nowrap',
+  backgroundColor: 'var(--background)',
 })
 
 export const settingsRadioItem = style({
@@ -227,8 +232,8 @@ export const searchableSelectListbox = style({
   // Each item is 1lh tall + 6px vertical padding → calc(1lh + 6px) per item.
   // Font-size must match items so 1lh resolves to the correct item line-height.
   fontSize: 'var(--text-8)',
-  minHeight: 'calc((1lh + 6px) * 7)',
-  maxHeight: 'calc((1lh + 6px) * 7)',
+  minHeight: 'calc((1lh + 6px) * 5)',
+  maxHeight: 'calc((1lh + 6px) * 5)',
   overflowY: 'auto',
 })
 

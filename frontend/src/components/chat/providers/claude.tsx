@@ -214,7 +214,7 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
 
   return (
     <div class={styles.settingsPanelColumns}>
-      <div class={[styles.settingsPanelColumn, styles.settingsPanelColumnSlightlyWider].join(' ')}>
+      <div class={[styles.settingsPanelColumn, styles.settingsPanelColumnPrimary].join(' ')}>
         <Show when={thinkingItems().length > 0}>
           <RadioGroup
             label={optionGroup(props.availableOptionGroups, ALWAYS_THINKING_KEY)?.label || 'Extended Thinking'}
@@ -365,6 +365,7 @@ const claudeCodePlugin: ProviderPlugin = {
   ControlActions: ClaudeCodeControlActions,
 
   SettingsPanel: ClaudeCodeSettingsPanel,
+  settingsMenuClass: styles.settingsMenuWide,
 
   settingsTriggerLabel: ClaudeCodeTriggerLabel,
 }
