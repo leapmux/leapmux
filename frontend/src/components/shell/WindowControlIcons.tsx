@@ -2,7 +2,6 @@ import type { LucideProps } from 'lucide-solid'
 import { SvgIconFrame } from '~/components/common/SvgIconFrame'
 
 export function WindowMinimizeIcon(props: LucideProps) {
-  // Underbar resting near the baseline.
   return (
     <SvgIconFrame {...props}>
       <line x1="5" y1="18" x2="19" y2="18" />
@@ -11,7 +10,6 @@ export function WindowMinimizeIcon(props: LucideProps) {
 }
 
 export function WindowMaximizeIcon(props: LucideProps) {
-  // Big outline square, vertically centred-ish within the glyph area.
   return (
     <SvgIconFrame {...props}>
       <rect x="5" y="5" width="14" height="14" />
@@ -20,7 +18,6 @@ export function WindowMaximizeIcon(props: LucideProps) {
 }
 
 export function WindowRestoreIcon(props: LucideProps) {
-  // Small outline square centred in the glyph area.
   return (
     <SvgIconFrame {...props}>
       <rect x="7" y="8" width="10" height="10" />
@@ -29,7 +26,6 @@ export function WindowRestoreIcon(props: LucideProps) {
 }
 
 export function WindowCloseIcon(props: LucideProps) {
-  // Diagonal cross.
   return (
     <SvgIconFrame {...props}>
       <line x1="5" y1="5" x2="19" y2="19" />

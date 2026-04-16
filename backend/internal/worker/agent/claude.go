@@ -224,13 +224,13 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 func (a *ClaudeCodeAgent) buildStartupFlagSettings(extra map[string]string) map[string]interface{} {
 	fs := map[string]interface{}{}
 	if v := extra[ExtraKeyOutputStyle]; v != "" && v != a.outputStyle {
-		fs["outputStyle"] = v
+		fs[ExtraKeyOutputStyle] = v
 	}
 	if v := extra[ExtraKeyFastMode]; v != "" && v != a.fastMode {
-		fs["fastMode"] = flagSettingOnOff(v)
+		fs[ExtraKeyFastMode] = flagSettingOnOff(v)
 	}
 	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != a.alwaysThinking {
-		fs["alwaysThinkingEnabled"] = flagSettingOffOn(v)
+		fs[ExtraKeyAlwaysThinking] = flagSettingOffOn(v)
 	}
 	return fs
 }
@@ -425,13 +425,13 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		if !slices.Contains(availStyles, v) {
 			return false
 		}
-		flagSettings["outputStyle"] = v
+		flagSettings[ExtraKeyOutputStyle] = v
 	}
 	if v := extra[ExtraKeyFastMode]; v != "" && v != curFastMode {
-		flagSettings["fastMode"] = flagSettingOnOff(v)
+		flagSettings[ExtraKeyFastMode] = flagSettingOnOff(v)
 	}
 	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != curThinking {
-		flagSettings["alwaysThinkingEnabled"] = flagSettingOffOn(v)
+		flagSettings[ExtraKeyAlwaysThinking] = flagSettingOffOn(v)
 	}
 
 	if len(flagSettings) == 0 {
