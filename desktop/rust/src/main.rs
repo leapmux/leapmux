@@ -35,7 +35,11 @@ use tauri::{
 use tokio::sync::oneshot;
 
 #[cfg(target_os = "macos")]
+const APP_SUBMENU_ID: &str = "leapmux-app-menu";
+#[cfg(target_os = "macos")]
 const SHOW_ABOUT_MENU_ID: &str = "show-about";
+#[cfg(target_os = "macos")]
+const SHOW_PREFERENCES_MENU_ID: &str = "show-preferences";
 #[cfg(target_os = "macos")]
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
 const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024; // 16 MB
@@ -1242,6 +1246,40 @@ fn open_web_inspector(app: AppHandle) {
 }
 
 #[tauri::command]
+fn set_menu_item_accelerator(
+    app: AppHandle,
+    item_id: String,
+    accelerator: Option<String>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let menu = app.menu().ok_or_else(|| "app menu is not available".to_string())?;
+        let app_menu = menu
+            .get(APP_SUBMENU_ID)
+            .and_then(|item| item.as_submenu().cloned());
+        let help_menu = menu
+            .get(HELP_SUBMENU_ID)
+            .and_then(|item| item.as_submenu().cloned());
+        let item = app_menu
+            .as_ref()
+            .and_then(|submenu| submenu.get(&item_id))
+            .or_else(|| help_menu.as_ref().and_then(|submenu| submenu.get(&item_id)))
+            .ok_or_else(|| format!("menu item not found: {item_id}"))?;
+        let menu_item = item
+            .as_menuitem()
+            .ok_or_else(|| format!("menu item is not a standard menu item: {item_id}"))?;
+        menu_item
+            .set_accelerator(accelerator.as_deref())
+            .map_err(|err| format!("set accelerator for {item_id}: {err}"))?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, item_id, accelerator);
+
+    Ok(())
+}
+
+#[tauri::command]
 fn zoom_in_webview(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
     shell.set_zoom(shell.current_zoom() + 0.1)
 }
@@ -1311,6 +1349,14 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
 
+    let show_preferences = MenuItem::with_id(
+        app,
+        SHOW_PREFERENCES_MENU_ID,
+        "Preferences...",
+        true,
+        None::<&str>,
+    )?;
+
     let open_web_inspector = MenuItem::with_id(
         app,
         OPEN_WEB_INSPECTOR_MENU_ID,
@@ -1319,12 +1365,14 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
 
-    let app_menu = Submenu::with_items(
+    let app_menu = Submenu::with_id_and_items(
         app,
+        APP_SUBMENU_ID,
         "LeapMux Desktop",
         true,
         &[
             &show_about,
+            &show_preferences,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
@@ -1333,13 +1381,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::quit(app, None)?,
         ],
-    )?;
-
-    let file_menu = Submenu::with_items(
-        app,
-        "File",
-        true,
-        &[&PredefinedMenuItem::close_window(app, None)?],
     )?;
 
     let edit_menu = Submenu::with_items(
@@ -1389,7 +1430,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         app,
         &[
             &app_menu,
-            &file_menu,
             &edit_menu,
             &view_menu,
             &window_menu,
@@ -1428,6 +1468,8 @@ fn main() {
             #[cfg(target_os = "macos")]
             if event.id() == SHOW_ABOUT_MENU_ID {
                 let _ = app.emit("menu:show-about", ());
+            } else if event.id() == SHOW_PREFERENCES_MENU_ID {
+                let _ = app.emit("menu:show-preferences", ());
             } else if event.id() == OPEN_WEB_INSPECTOR_MENU_ID {
                 open_main_web_inspector(app);
             }
@@ -1499,6 +1541,7 @@ fn main() {
             save_window_geometry,
             quit_app,
             open_web_inspector,
+            set_menu_item_accelerator,
             zoom_in_webview,
             zoom_out_webview,
             reset_webview_zoom,

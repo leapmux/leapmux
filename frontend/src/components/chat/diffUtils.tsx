@@ -8,6 +8,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { guessLanguage } from '~/lib/languageMap'
+import { pluralize } from '~/lib/plural'
 import { tokenizeAsync } from '~/lib/shikiWorkerClient'
 import { getCachedTokens } from '~/lib/tokenCache'
 import { spinner } from '~/styles/animations.css'
@@ -22,6 +23,7 @@ import {
   diffGapSeparatorFirst,
   diffGapSeparatorLast,
   diffGapSeparatorSplit,
+  diffHideLineNumbers,
   diffLine,
   diffLineNumber,
   diffLineNumberNew,
@@ -521,7 +523,7 @@ function DiffGapSeparator(props: {
       cls += ` ${diffGapSeparatorLast}`
     return cls
   }
-  const hiddenLabel = () => `${hiddenCount()} line${hiddenCount() === 1 ? '' : 's'} hidden`
+  const hiddenLabel = () => `${pluralize(hiddenCount(), 'line')} hidden`
 
   return (
     <>
@@ -594,7 +596,7 @@ function DiffGapSummarySeparator(props: {
       cls += ` ${diffGapSeparatorLast}`
     return cls
   }
-  const hiddenLabel = () => `${props.gap.lineCount} line${props.gap.lineCount === 1 ? '' : 's'} hidden`
+  const hiddenLabel = () => `${pluralize(props.gap.lineCount, 'line')} hidden`
 
   return (
     <div class={separatorClass()}>
@@ -818,57 +820,71 @@ function UnifiedDiffLine(props: { line: DiffLineEntry }): JSX.Element {
   )
 }
 
-/** Render a unified diff view from hunks. */
-function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string }): JSX.Element {
-  const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
-  const lines = createMemo(() => buildUnifiedLines(props.hunks, oldTokens(), newTokens()))
+interface GapState {
+  getReveal: (key: string) => { top: number, bottom: number }
+  expandDown: (key: string, total: number) => void
+  expandUp: (key: string, total: number) => void
+  expandAll: (key: string, total: number) => void
+}
 
-  const originalFileLines = () => {
-    if (!props.originalFile)
+function useGapReveals(): GapState {
+  const [gapReveals, setGapReveals] = createSignal<Map<string, { top: number, bottom: number }>>(new Map())
+  const getReveal = (key: string) => gapReveals().get(key) ?? { top: 0, bottom: 0 }
+  const mutate = (key: string, fn: (cur: { top: number, bottom: number }) => { top: number, bottom: number }) => {
+    setGapReveals((prev) => {
+      const next = new Map(prev)
+      next.set(key, fn(next.get(key) ?? { top: 0, bottom: 0 }))
+      return next
+    })
+  }
+  return {
+    getReveal,
+    expandDown: (key, total) => mutate(key, (cur) => {
+      const maxMore = total - cur.top - cur.bottom
+      return { ...cur, top: cur.top + Math.min(GAP_EXPAND_STEP, maxMore) }
+    }),
+    expandUp: (key, total) => mutate(key, (cur) => {
+      const maxMore = total - cur.top - cur.bottom
+      return { ...cur, bottom: cur.bottom + Math.min(GAP_EXPAND_STEP, maxMore) }
+    }),
+    expandAll: (key, total) => mutate(key, () => ({ top: total, bottom: 0 })),
+  }
+}
+
+function useGapData(getHunks: () => StructuredPatchHunk[], getOriginalFile: () => string | undefined) {
+  const originalFileLines = createMemo(() => {
+    const source = getOriginalFile()
+    if (!source)
       return undefined
-    const lines = props.originalFile.split('\n')
+    const lines = source.split('\n')
     if (lines.length > 0 && lines.at(-1) === '')
       lines.pop()
     return lines
-  }
-  const gapData = () => {
+  })
+  const gapData = createMemo(() => {
     const ofl = originalFileLines()
     if (!ofl)
       return null
-    return computeGapMap(props.hunks, ofl)
-  }
-  const syntheticGaps = createMemo(() => computeSyntheticGapMap(props.hunks))
+    return computeGapMap(getHunks(), ofl)
+  })
+  const syntheticGaps = createMemo(() => computeSyntheticGapMap(getHunks()))
+  return { gapData, syntheticGaps }
+}
 
-  const [gapReveals, setGapReveals] = createSignal<Map<string, { top: number, bottom: number }>>(new Map())
-  const getReveal = (key: string) => gapReveals().get(key) ?? { top: 0, bottom: 0 }
-  const expandDown = (key: string, total: number) => {
-    setGapReveals((prev) => {
-      const next = new Map(prev)
-      const cur = next.get(key) ?? { top: 0, bottom: 0 }
-      const maxMore = total - cur.top - cur.bottom
-      next.set(key, { ...cur, top: cur.top + Math.min(GAP_EXPAND_STEP, maxMore) })
-      return next
-    })
-  }
-  const expandUp = (key: string, total: number) => {
-    setGapReveals((prev) => {
-      const next = new Map(prev)
-      const cur = next.get(key) ?? { top: 0, bottom: 0 }
-      const maxMore = total - cur.top - cur.bottom
-      next.set(key, { ...cur, bottom: cur.bottom + Math.min(GAP_EXPAND_STEP, maxMore) })
-      return next
-    })
-  }
-  const expandAll = (key: string, total: number) => {
-    setGapReveals((prev) => {
-      const next = new Map(prev)
-      next.set(key, { top: total, bottom: 0 })
-      return next
-    })
-  }
+function diffContainerClass(base: string, showLineNumbers?: boolean): string {
+  return showLineNumbers === false ? `${base} ${diffHideLineNumbers}` : base
+}
+
+/** Render a unified diff view from hunks. */
+function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
+  const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
+  const lines = createMemo(() => buildUnifiedLines(props.hunks, oldTokens(), newTokens()))
+
+  const { gapData, syntheticGaps } = useGapData(() => props.hunks, () => props.originalFile)
+  const { getReveal, expandDown, expandUp, expandAll } = useGapReveals()
 
   return (
-    <div class={diffContainer}>
+    <div class={diffContainerClass(diffContainer, props.showLineNumbers)}>
       <Show
         when={gapData()}
         fallback={(
@@ -966,56 +982,15 @@ function SplitDiffRow(props: { left: SplitLineEntry, right: SplitLineEntry }): J
 }
 
 /** Render a split diff view from hunks (removed on left, added on right). */
-function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string }): JSX.Element {
+function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
   const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath)
   const splitLines = createMemo(() => buildSplitLines(props.hunks, oldTokens(), newTokens()))
 
-  const originalFileLines = () => {
-    if (!props.originalFile)
-      return undefined
-    const lines = props.originalFile.split('\n')
-    if (lines.length > 0 && lines.at(-1) === '')
-      lines.pop()
-    return lines
-  }
-  const gapData = () => {
-    const ofl = originalFileLines()
-    if (!ofl)
-      return null
-    return computeGapMap(props.hunks, ofl)
-  }
-  const syntheticGaps = createMemo(() => computeSyntheticGapMap(props.hunks))
-
-  const [gapReveals, setGapReveals] = createSignal<Map<string, { top: number, bottom: number }>>(new Map())
-  const getReveal = (key: string) => gapReveals().get(key) ?? { top: 0, bottom: 0 }
-  const expandDown = (key: string, total: number) => {
-    setGapReveals((prev) => {
-      const next = new Map(prev)
-      const cur = next.get(key) ?? { top: 0, bottom: 0 }
-      const maxMore = total - cur.top - cur.bottom
-      next.set(key, { ...cur, top: cur.top + Math.min(GAP_EXPAND_STEP, maxMore) })
-      return next
-    })
-  }
-  const expandUp = (key: string, total: number) => {
-    setGapReveals((prev) => {
-      const next = new Map(prev)
-      const cur = next.get(key) ?? { top: 0, bottom: 0 }
-      const maxMore = total - cur.top - cur.bottom
-      next.set(key, { ...cur, bottom: cur.bottom + Math.min(GAP_EXPAND_STEP, maxMore) })
-      return next
-    })
-  }
-  const expandAll = (key: string, total: number) => {
-    setGapReveals((prev) => {
-      const next = new Map(prev)
-      next.set(key, { top: total, bottom: 0 })
-      return next
-    })
-  }
+  const { gapData, syntheticGaps } = useGapData(() => props.hunks, () => props.originalFile)
+  const { getReveal, expandDown, expandUp, expandAll } = useGapReveals()
 
   return (
-    <div class={diffSplitContainer}>
+    <div class={diffContainerClass(diffSplitContainer, props.showLineNumbers)}>
       <Show
         when={gapData()}
         fallback={(
@@ -1107,10 +1082,10 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
 }
 
 /** Renders a diff view (unified or split) from hunks with optional syntax highlighting. */
-export function DiffView(props: { hunks: StructuredPatchHunk[], view: DiffViewPreference, filePath?: string, originalFile?: string }): JSX.Element {
+export function DiffView(props: { hunks: StructuredPatchHunk[], view: DiffViewPreference, filePath?: string, originalFile?: string, showLineNumbers?: boolean }): JSX.Element {
   return (
-    <Show when={props.view === 'unified'} fallback={<SplitDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} />}>
-      <UnifiedDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} />
+    <Show when={props.view === 'unified'} fallback={<SplitDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} showLineNumbers={props.showLineNumbers} />}>
+      <UnifiedDiffView hunks={props.hunks} filePath={props.filePath} originalFile={props.originalFile} showLineNumbers={props.showLineNumbers} />
     </Show>
   )
 }

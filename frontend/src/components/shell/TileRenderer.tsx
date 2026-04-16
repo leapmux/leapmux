@@ -29,7 +29,7 @@ import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
-import { getShortcutHint } from '~/lib/shortcuts/display'
+import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
@@ -465,7 +465,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   <Icon icon={Bot} size="sm" />
                   <span class={styles.emptyTileActionContent}>
                     <span>Open a new agent tab...</span>
-                    <Show when={getShortcutHint('app.newAgent')}>
+                    <Show when={getShortcutHintsText('app.newAgent')}>
                       {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
                     </Show>
                   </span>
@@ -481,7 +481,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   <Icon icon={Terminal} size="sm" />
                   <span class={styles.emptyTileActionContent}>
                     <span>Open a new terminal tab...</span>
-                    <Show when={getShortcutHint('app.newTerminal')}>
+                    <Show when={getShortcutHintsText('app.newTerminal')}>
                       {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
                     </Show>
                   </span>

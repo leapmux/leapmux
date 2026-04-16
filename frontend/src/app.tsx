@@ -7,10 +7,12 @@ import { channelManager } from '~/api/workerRpc'
 import { showInfoToast } from '~/components/common/Toast'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { AboutDialog } from '~/components/shell/AboutDialog'
-import { setShowAboutDialog, showAboutDialog, UserMenuDialogs } from '~/components/shell/UserMenu'
+import { UserMenuDialogs } from '~/components/shell/UserMenu'
+import { setShowAboutDialog, setShowPreferencesDialog, showAboutDialog } from '~/components/shell/UserMenuState'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
+import { createLogger } from '~/lib/logger'
 import { resolveStack } from '~/lib/resolveStack'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 import { heightFull } from '~/styles/shared.css'
@@ -19,6 +21,8 @@ import '@knadh/oat/oat.min.css'
 import '@knadh/oat/oat.min.js'
 import './styles/dropdown-flip.css'
 import './styles/global.css'
+
+const log = createLogger('app')
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 
@@ -49,7 +53,7 @@ const PreferencesApplier: ParentComponent = (props) => {
 
   // When the resolved theme changes (e.g. account data loaded), push to app signal.
   createEffect(() => {
-    const setter = (window as any).__leapmux_setTheme
+    const setter = window.__leapmux_setTheme
     if (setter)
       setter(preferences.theme())
   })
@@ -114,8 +118,8 @@ export default function App() {
 
   type DesktopState = 'loading' | 'launcher' | 'connected'
   const [desktopState, setDesktopState] = createSignal<DesktopState>(isTauriApp() ? 'loading' : 'connected')
-  // Expose so UserMenu's "Switch mode..." can reset without page reload.
-  ;(window as any).__leapmux_disconnectDesktop = () => {
+  // Expose so "Switch mode..." in the menu can reset without page reload.
+  window.__leapmux_disconnectDesktop = () => {
     channelManager.closeAll()
     refreshRuntimeState()
     setDesktopState('launcher')
@@ -172,7 +176,7 @@ export default function App() {
 
   // Expose setter for PreferencesContext/PreferencesApplier to update app theme.
   // Does NOT write to localStorage — callers handle storage themselves.
-  ;(window as any).__leapmux_setTheme = (pref: ThemePreference) => {
+  window.__leapmux_setTheme = (pref: ThemePreference) => {
     setThemePreference(pref)
   }
 
@@ -189,9 +193,26 @@ export default function App() {
     onCleanup(() => document.removeEventListener('focusin', handleFocusIn, true))
 
     if (isTauriApp()) {
+      // Track disposal so listener subscriptions that resolve *after* unmount
+      // run `unlisten` eagerly — otherwise the owner is already disposed,
+      // `onCleanup` becomes a silent no-op, and the native listener leaks.
+      let disposed = false
+      onCleanup(() => {
+        disposed = true
+      })
       const owner = getOwner()
-      platformBridge.onEvent('menu:show-about', () => setShowAboutDialog(true))
-        .then(unlisten => runWithOwner(owner, () => onCleanup(unlisten)))
+      const registerListener = (event: string, handler: () => void) => {
+        platformBridge.onEvent(event, handler)
+          .then((unlisten) => {
+            if (disposed)
+              unlisten()
+            else
+              runWithOwner(owner, () => onCleanup(unlisten))
+          })
+          .catch(err => log.warn(`onEvent(${event}) failed`, err))
+      }
+      registerListener('menu:show-about', () => setShowAboutDialog(true))
+      registerListener('menu:show-preferences', () => setShowPreferencesDialog(true))
 
       getRuntimeState()
         .then((state) => {

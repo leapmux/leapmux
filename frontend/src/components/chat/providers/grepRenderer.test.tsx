@@ -1,21 +1,8 @@
 import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
-
-// eslint-disable-next-line no-control-regex -- ANSI escape detection requires matching control characters
-const ANSI_ESCAPE_RE = /\x1B\[[\d;]*m/
-
-// Mock renderAnsi to avoid shiki initialization in tests.
-vi.mock('~/lib/renderAnsi', () => ({
-  containsAnsi: (text: string) => ANSI_ESCAPE_RE.test(text),
-  renderAnsi: (text: string) => `<pre class="shiki"><code>${text}</code></pre>`,
-}))
-
-// Mock renderMarkdown to avoid shiki initialization in tests.
-vi.mock('~/lib/renderMarkdown', () => ({
-  renderMarkdown: (text: string) => text,
-}))
+import './testMocks'
 
 const { formatGrepSummary } = await import('../rendererUtils')
 const { renderMessageContent } = await import('../messageRenderers')

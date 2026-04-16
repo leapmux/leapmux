@@ -8,7 +8,7 @@ import { Show } from 'solid-js'
 import { DropdownMenu, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
 import { useTileSize } from '~/hooks/useTileSize'
-import { getShortcutHint, shortcutHint } from '~/lib/shortcuts/display'
+import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import * as styles from './Tile.css'
 
 interface TileProps {
@@ -128,7 +128,7 @@ export const Tile: Component<TileProps> = (props) => {
               >
                 <DropdownMenuItemContent
                   label={props.onPopOut ? 'Pop out to floating window' : 'Pop in to main window'}
-                  shortcut={getShortcutHint('app.toggleFloatingTab')}
+                  shortcut={getShortcutHintsText('app.toggleFloatingTab')}
                 />
               </button>
             )}
@@ -140,7 +140,7 @@ export const Tile: Component<TileProps> = (props) => {
             >
               <DropdownMenuItemContent
                 label="Split vertical"
-                shortcut={getShortcutHint('app.splitTileHorizontal')}
+                shortcut={getShortcutHintsText('app.splitTileHorizontal')}
               />
             </button>
             <button
@@ -149,7 +149,7 @@ export const Tile: Component<TileProps> = (props) => {
             >
               <DropdownMenuItemContent
                 label="Split horizontal"
-                shortcut={getShortcutHint('app.splitTileVertical')}
+                shortcut={getShortcutHintsText('app.splitTileVertical')}
               />
             </button>
           </Show>

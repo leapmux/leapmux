@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import { createSignal, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
+import { pluralize } from '~/lib/plural'
 import * as styles from '../ControlRequestBanner.css'
 
 interface CollapsibleTextProps {
@@ -33,7 +34,7 @@ export function CollapsibleText(props: CollapsibleTextProps): JSX.Element {
         >
           {expanded()
             ? 'Show less'
-            : `Show ${hiddenCount()} more line${hiddenCount() === 1 ? '' : 's'}\u2026`}
+            : `Show ${pluralize(hiddenCount(), 'more line')}\u2026`}
         </button>
       </Show>
     </>

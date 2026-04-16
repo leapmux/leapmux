@@ -20,7 +20,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useMruProviders } from '~/hooks/useMruProviders'
-import { getShortcutHint, shortcutHint } from '~/lib/shortcuts/display'
+import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import { canCloseTab, tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -318,7 +318,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <button role="menuitem" onClick={() => props.onNewAgentAdvanced?.()}>
         <DropdownMenuItemContent
           label="New agent..."
-          shortcut={getShortcutHint('app.newAgentDialog')}
+          shortcut={getShortcutHintsText('app.newAgentDialog')}
         />
       </button>
       <hr />
@@ -326,7 +326,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
       <button role="menuitem" onClick={() => props.onNewTerminalAdvanced?.()}>
         <DropdownMenuItemContent
           label="New terminal..."
-          shortcut={getShortcutHint('app.newTerminalDialog')}
+          shortcut={getShortcutHintsText('app.newTerminalDialog')}
         />
       </button>
       <For each={props.availableShells ?? []}>
@@ -526,7 +526,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                       <Icon icon={Columns2} size="sm" />
                       <DropdownMenuItemContent
                         label="Split vertical"
-                        shortcut={getShortcutHint('app.splitTileHorizontal')}
+                        shortcut={getShortcutHintsText('app.splitTileHorizontal')}
                       />
                     </button>
                     <button
@@ -536,7 +536,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                       <Icon icon={Rows2} size="sm" />
                       <DropdownMenuItemContent
                         label="Split horizontal"
-                        shortcut={getShortcutHint('app.splitTileVertical')}
+                        shortcut={getShortcutHintsText('app.splitTileVertical')}
                       />
                     </button>
                   </Show>

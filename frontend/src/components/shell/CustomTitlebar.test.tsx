@@ -33,12 +33,20 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
 })
 
 const setShowAboutDialog = vi.fn()
-vi.mock('~/components/shell/UserMenu', () => ({
+const mockedUserMenuItems = vi.fn(() => (
+  <>
+    <button role="menuitem">Profile...</button>
+    <button role="menuitem" onClick={() => setShowAboutDialog(true)}>About LeapMux Desktop...</button>
+    <button role="menuitem">Preferences...</button>
+    <button role="menuitem">Switch mode...</button>
+    <button role="menuitem">Log out</button>
+  </>
+))
+vi.mock('~/components/shell/UserMenuItems', () => ({
+  UserMenuItems: mockedUserMenuItems,
+}))
+vi.mock('~/components/shell/UserMenuState', () => ({
   setShowAboutDialog,
-  setShowPreferencesDialog: vi.fn(),
-  showAboutDialog: () => false,
-  UserMenu: () => null,
-  UserMenuDialogs: () => null,
 }))
 
 // Stub native Popover API (jsdom doesn't implement it).
@@ -76,22 +84,22 @@ describe('customTitlebar hamburger menu', () => {
     expect(screen.getByTestId('app-menu-trigger')).toBeInTheDocument()
   })
 
-  it('dropdown exposes File/Window/Help sections with expected items', async () => {
+  it('dropdown exposes merged account and app items', async () => {
     const { container } = await renderTitlebar()
     const popover = container.querySelector('[data-testid="app-menu"]')
     expect(popover).not.toBeNull()
-    expect(popover).toHaveTextContent('File')
-    expect(popover).toHaveTextContent('Window')
-    expect(popover).toHaveTextContent('Help')
-
     const items = popover!.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')
     const labels = Array.from(items, el => el.textContent?.trim() ?? '')
     expect(labels).toEqual([
-      expect.stringMatching(/^Quit/),
+      'Profile...',
+      'About LeapMux Desktop...',
+      'Preferences...',
+      'Switch mode...',
+      'Log out',
       'Minimize',
       'Maximize',
-      'About LeapMux Desktop...',
       'Open Web Inspector',
+      expect.stringMatching(/^Quit/),
     ])
   })
 

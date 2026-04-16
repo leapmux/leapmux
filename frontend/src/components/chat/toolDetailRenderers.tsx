@@ -1,6 +1,8 @@
 import type { JSX } from 'solid-js'
 import { diffLines } from 'diff'
+import { Show } from 'solid-js'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
+import { pluralize } from '~/lib/plural'
 import { relativizePath } from './messageUtils'
 import {
   toolInputCode,
@@ -39,7 +41,7 @@ export function renderWriteDetail(path?: string, content?: string, cwd?: string,
   if (!path)
     return null
   const lineCount = content ? content.split('\n').length : 0
-  const lineStr = lineCount > 0 ? ` (${lineCount} ${lineCount === 1 ? 'line' : 'lines'})` : ''
+  const lineStr = lineCount > 0 ? ` (${pluralize(lineCount, 'line')})` : ''
   return (
     <>
       <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
@@ -54,7 +56,7 @@ export function renderDeleteDetail(path?: string, cwd?: string, homeDir?: string
   return <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
 }
 
-export function renderEditDetail(path?: string, oldStr?: string, newStr?: string, cwd?: string, homeDir?: string): JSX.Element | null {
+export function renderEditDetail(path?: string, oldStr?: string, newStr?: string, replaceAll?: boolean, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
   let added = 0
@@ -73,6 +75,9 @@ export function renderEditDetail(path?: string, oldStr?: string, newStr?: string
     <>
       <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
       <DiffStatsBadge added={added} deleted={removed} class={toolInputText} />
+      <Show when={replaceAll}>
+        <span class={toolInputText}>{' (replace all)'}</span>
+      </Show>
     </>
   )
 }

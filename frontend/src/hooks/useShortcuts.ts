@@ -2,12 +2,12 @@ import type { Accessor } from 'solid-js'
 import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
-import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
+import type { Keybinding, UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
-import { isTauriApp, openWebInspector, quitApp, resetWebviewZoom, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
-import { setShowPreferencesDialog } from '~/components/shell/UserMenu'
+import { isTauriApp, openWebInspector, quitApp, resetWebviewZoom, setMenuItemAccelerator, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
+import { setShowPreferencesDialog } from '~/components/shell/UserMenuState'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
@@ -15,6 +15,7 @@ import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/sh
 import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { getPlatform } from '~/lib/shortcuts/platform'
+import { getPrimaryBindingForCommand, tinykeysToTauriAccelerator } from '~/lib/shortcuts/tauriAccelerator'
 import { tabKey } from '~/stores/tab.store'
 
 interface UseShortcutsProps {
@@ -43,6 +44,11 @@ const TAB_TYPE_LABELS: Partial<Record<TabType, string>> = {
   [TabType.TERMINAL]: 'terminal',
   [TabType.FILE]: 'file',
 }
+
+// FFI contract: these strings must match the `*_MENU_ID` constants in
+// `desktop/rust/src/main.rs`. Keep in sync when adding/renaming menu items.
+const SHOW_PREFERENCES_MENU_ID = 'show-preferences'
+const OPEN_WEB_INSPECTOR_MENU_ID = 'open-web-inspector'
 
 /**
  * Root keyboard shortcut hook. Call once in AppShell.
@@ -107,13 +113,10 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.zoomInWebview', 'Zoom In', () => zoomInWebview(), 'View')
   cmd('app.resetWebviewZoom', 'Actual Size', () => resetWebviewZoom(), 'View')
   cmd('dialog.close', 'Close Dialog', () => {
-    // Close the topmost open dialog
     const dialogs = [...document.querySelectorAll('dialog[open]')]
     const last = dialogs.at(-1) as HTMLDialogElement | undefined
-    if (last) {
-      // Dispatch Escape to let the dialog's own handler run
-      last.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    }
+    if (last && !last.hasAttribute('data-busy'))
+      last.close()
   }, 'App')
   cmd('app.quit', 'Quit Application', () => quitApp(), 'App')
 
@@ -203,10 +206,25 @@ export function useShortcuts(props: UseShortcutsProps): void {
     setContext('activeTabType', type !== null ? (TAB_TYPE_LABELS[type] ?? '') : undefined)
   })
 
+  const lastSentAccelerator = new Map<string, string | undefined>()
+  const syncMenuAccelerator = (menuItemId: string, commandId: string, merged: readonly Keybinding[]) => {
+    const binding = getPrimaryBindingForCommand(merged, commandId)
+    const accelerator = binding ? tinykeysToTauriAccelerator(binding) : undefined
+    if (lastSentAccelerator.has(menuItemId) && lastSentAccelerator.get(menuItemId) === accelerator)
+      return
+    lastSentAccelerator.set(menuItemId, accelerator)
+    setMenuItemAccelerator(menuItemId, accelerator)
+  }
+
   createEffect(() => {
     const overrides = customKeybindings()
     const merged = mergeKeybindings(DEFAULT_KEYBINDINGS, overrides)
     activateBindings(merged)
+
+    if (isTauriApp() && getPlatform() === 'mac') {
+      syncMenuAccelerator(SHOW_PREFERENCES_MENU_ID, 'app.openPreferences', merged)
+      syncMenuAccelerator(OPEN_WEB_INSPECTOR_MENU_ID, 'app.openWebInspector', merged)
+    }
   })
 
   onCleanup(() => {

@@ -1,5 +1,6 @@
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Dialog } from '~/components/common/Dialog'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { useShortcuts } from './useShortcuts'
@@ -16,7 +17,7 @@ vi.mock('~/api/platformBridge', () => ({
   zoomOutWebview: vi.fn(),
 }))
 
-vi.mock('~/components/shell/UserMenu', () => ({
+vi.mock('~/components/shell/UserMenuState', () => ({
   setShowPreferencesDialog: vi.fn(),
 }))
 
@@ -25,11 +26,39 @@ vi.mock('~/lib/fileTreeOps', () => ({
   toggleHiddenFiles: () => toggleHiddenFiles(),
 }))
 
+let originalShowModal: typeof HTMLDialogElement.prototype.showModal | undefined
+let originalClose: typeof HTMLDialogElement.prototype.close
+
+beforeAll(() => {
+  if (!HTMLDialogElement.prototype.showModal) {
+    originalShowModal = undefined
+    HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
+      this.setAttribute('open', '')
+    })
+  }
+  else {
+    originalShowModal = HTMLDialogElement.prototype.showModal
+  }
+
+  originalClose = HTMLDialogElement.prototype.close
+  HTMLDialogElement.prototype.close = function () {
+    this.removeAttribute('open')
+    this.dispatchEvent(new Event('close'))
+  }
+})
+
 afterEach(() => {
   cleanup()
   resetCommands()
   refreshFileTree.mockReset()
   toggleHiddenFiles.mockReset()
+})
+
+afterAll(() => {
+  if (originalShowModal) {
+    HTMLDialogElement.prototype.showModal = originalShowModal
+  }
+  HTMLDialogElement.prototype.close = originalClose
 })
 
 function makeProps() {
@@ -139,5 +168,41 @@ describe('useShortcuts', () => {
     executeCommand('app.closeActiveTab')
 
     expect(props.tabOps.handleTabClose).toHaveBeenCalledWith(tab)
+  })
+
+  it('closes the topmost open dialog without redispatching Escape', () => {
+    const props = makeProps()
+    const onClose = vi.fn()
+
+    render(() => {
+      useShortcuts(props as any)
+      return <Dialog title="Test" onClose={onClose}><p>Content</p></Dialog>
+    })
+
+    const dialog = document.querySelector('dialog') as HTMLDialogElement
+    const dispatchSpy = vi.spyOn(dialog, 'dispatchEvent')
+
+    executeCommand('dialog.close')
+
+    expect(dialog.hasAttribute('open')).toBe(false)
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(dispatchSpy).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'keydown' }))
+  })
+
+  it('does not close a busy dialog from the global dialog.close command', () => {
+    const props = makeProps()
+    const onClose = vi.fn()
+
+    render(() => {
+      useShortcuts(props as any)
+      return <Dialog title="Test" busy onClose={onClose}><p>Content</p></Dialog>
+    })
+
+    const dialog = document.querySelector('dialog') as HTMLDialogElement
+
+    executeCommand('dialog.close')
+
+    expect(dialog.hasAttribute('open')).toBe(true)
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

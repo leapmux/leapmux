@@ -1,5 +1,7 @@
 /** Shared utility functions for message renderers. */
 
+import { pluralize } from '~/lib/plural'
+
 /** Format task status for display. */
 export function formatTaskStatus(status?: string): string {
   if (!status)
@@ -81,9 +83,9 @@ export function formatGrepSummary(numFiles?: number, numLines?: number, fallback
     return fallback || 'No matches found'
   const parts: string[] = []
   if (nf > 0)
-    parts.push(`${nf} file${nf === 1 ? '' : 's'}`)
+    parts.push(pluralize(nf, 'file'))
   if (nl > 0)
-    parts.push(`${nl} line${nl === 1 ? '' : 's'}`)
+    parts.push(pluralize(nl, 'line'))
   return `Found ${parts.join(' and ')}`
 }
 
@@ -95,7 +97,7 @@ export function formatGlobSummary(numFiles?: number, durationMs?: number, trunca
   if (numFiles <= 0)
     parts.push(fallback || 'No files found')
   else
-    parts.push(`Found ${numFiles} file${numFiles === 1 ? '' : 's'}`)
+    parts.push(`Found ${pluralize(numFiles, 'file')}`)
   if (durationMs !== undefined)
     parts.push(`Took ${formatDuration(durationMs)}`)
   if (truncated)

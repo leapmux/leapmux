@@ -3,6 +3,7 @@ import { headerHeight } from '~/styles/tokens'
 
 export const titlebar = style({
   position: 'relative',
+  boxSizing: 'border-box',
   display: 'flex',
   alignItems: 'center',
   height: headerHeight,
@@ -53,4 +54,11 @@ export const titlebarLayout = style({
 export const titlebarContent = style({
   flex: 1,
   overflow: 'hidden',
+})
+
+// Optical-balance nudge: Lucide's Menu glyph (three horizontal lines) renders
+// above the visual center that PanelLeft/PanelRight resolve to, so the
+// hamburger looks misaligned next to the sidebar toggles without this shift.
+export const menuTrigger = style({
+  transform: 'translateY(1.5px)',
 })

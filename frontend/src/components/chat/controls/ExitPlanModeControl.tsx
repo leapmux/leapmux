@@ -3,6 +3,7 @@ import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
 import { Show } from 'solid-js'
+import { pluralize } from '~/lib/plural'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleList } from './CollapsibleList'
@@ -50,7 +51,7 @@ export const ExitPlanModeContent: Component<{ request: ControlRequest }> = (prop
             <CollapsibleList
               items={grouped()}
               maxVisible={3}
-              moreLabel={n => `Show ${n} more group${n === 1 ? '' : 's'}\u2026`}
+              moreLabel={n => `Show ${pluralize(n, 'more group')}\u2026`}
               renderItem={group => (
                 <li>
                   {group.tool}

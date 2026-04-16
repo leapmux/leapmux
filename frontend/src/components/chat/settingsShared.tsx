@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { AvailableModel, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import Check from 'lucide-solid/icons/check'
-import { createMemo, createSignal, For, Show } from 'solid-js'
+import { createMemo, createSignal, createUniqueId, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from './ChatView.css'
@@ -163,9 +163,14 @@ export function RadioGroup(props: {
   onChange: (value: string) => void
   fieldsetClass?: string
 }): JSX.Element {
+  const labelId = createUniqueId()
   return (
-    <fieldset class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}>
-      <legend class={styles.settingsGroupLabel}>{props.label}</legend>
+    <div
+      role="group"
+      aria-labelledby={labelId}
+      class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}
+    >
+      <div id={labelId} class={styles.settingsGroupLabel}>{props.label}</div>
       <For each={props.items}>
         {item => (
           <Tooltip text={item.tooltip}>
@@ -186,7 +191,7 @@ export function RadioGroup(props: {
           </Tooltip>
         )}
       </For>
-    </fieldset>
+    </div>
   )
 }
 
@@ -349,14 +354,19 @@ export function SearchableSelect(props: {
   onChange: (value: string) => void
   fieldsetClass?: string
 }): JSX.Element {
+  const labelId = createUniqueId()
   const currentLabel = () => {
     const item = props.items.find(i => i.value === props.current)
     return item?.label || props.current
   }
 
   return (
-    <fieldset class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}>
-      <legend class={styles.settingsGroupLabel}>{props.label}</legend>
+    <div
+      role="group"
+      aria-labelledby={labelId}
+      class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}
+    >
+      <div id={labelId} class={styles.settingsGroupLabel}>{props.label}</div>
       <div class={styles.searchableSelectCurrent} data-testid={`${props.testIdPrefix}-current`}>
         {currentLabel()}
       </div>
@@ -366,6 +376,6 @@ export function SearchableSelect(props: {
         testIdPrefix={props.testIdPrefix}
         onSelect={props.onChange}
       />
-    </fieldset>
+    </div>
   )
 }

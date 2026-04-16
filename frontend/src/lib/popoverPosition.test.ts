@@ -77,9 +77,10 @@ describe('calcPopoverPosition', () => {
 
     const result = calcPopoverPosition(trigger, popover)
 
-    // Space above = 80, space below = 200 - 110 = 90
-    // Below has more room, so place below
-    expect(result.top).toBe(110)
+    // Space above = 80, space below = 200 - 110 = 90; below wins.
+    // Base top would be 110, but the popover (150) overflows the 200 viewport,
+    // so it clamps to viewportHeight - popoverHeight = 50.
+    expect(result.top).toBe(50)
     expect(result.flipped).toBe(false)
   })
 
@@ -93,9 +94,10 @@ describe('calcPopoverPosition', () => {
 
     const result = calcPopoverPosition(trigger, popover)
 
-    // Space above = 150, space below = 200 - 180 = 20
-    // Above has more room
-    expect(result.top).toBe(150 - 200) // -50
+    // Space above = 150, space below = 200 - 180 = 20; above wins.
+    // Base top would be -50 (150 - 200), but that's above the viewport, so it
+    // clamps to 0.
+    expect(result.top).toBe(0)
     expect(result.flipped).toBe(true)
   })
 

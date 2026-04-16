@@ -20,6 +20,7 @@ import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { pluralize } from '~/lib/plural'
 import { spinner } from '~/styles/animations.css'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
@@ -263,10 +264,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
                 </Show>
                 <Show when={confirm().unpushedCommitCount > 0}>
                   <p>
-                    {confirm().unpushedCommitCount}
-                    {' '}
-                    commit
-                    {confirm().unpushedCommitCount === 1 ? '' : 's'}
+                    {pluralize(confirm().unpushedCommitCount, 'commit')}
                     {' '}
                     not pushed.
                   </p>

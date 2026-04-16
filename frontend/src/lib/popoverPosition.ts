@@ -3,6 +3,10 @@ export interface PopoverPositionOptions {
   placement?: 'auto' | 'above'
   /** Pixel gap between trigger and popover (default: 0) */
   offset?: number
+  /** Additional horizontal shift in pixels after base positioning. */
+  xOffset?: number
+  /** Additional vertical shift in pixels after base positioning. */
+  yOffset?: number
 }
 
 /**
@@ -14,7 +18,7 @@ export function calcPopoverPosition(
   popover: HTMLElement,
   options: PopoverPositionOptions = {},
 ): { top: number, left: number, flipped: boolean } {
-  const { placement = 'auto', offset = 0 } = options
+  const { placement = 'auto', offset = 0, xOffset = 0, yOffset = 0 } = options
   const triggerRect = trigger.getBoundingClientRect()
   const popoverRect = popover.getBoundingClientRect()
   const viewportHeight = window.innerHeight
@@ -65,6 +69,22 @@ export function calcPopoverPosition(
   }
   if (left < 0) {
     left = 0
+  }
+
+  top += yOffset
+  left += xOffset
+
+  if (left + popoverRect.width > viewportWidth) {
+    left = Math.max(0, viewportWidth - popoverRect.width)
+  }
+  if (left < 0) {
+    left = 0
+  }
+  if (top + popoverRect.height > viewportHeight) {
+    top = Math.max(0, viewportHeight - popoverRect.height)
+  }
+  if (top < 0) {
+    top = 0
   }
 
   return { top, left, flipped }

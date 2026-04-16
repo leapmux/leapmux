@@ -173,3 +173,11 @@ export const diffSplitColumn = style({
     },
   },
 })
+
+// Collapses the line-number columns where they duplicate information already
+// shown in the surrounding tool header.
+export const diffHideLineNumbers = style({})
+
+globalStyle(`${diffHideLineNumbers} ${diffLineNumber}, ${diffHideLineNumbers} ${diffLineNumberNew}`, {
+  display: 'none',
+})

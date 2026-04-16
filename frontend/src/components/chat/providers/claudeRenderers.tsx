@@ -35,6 +35,7 @@ import { Icon } from '~/components/common/Icon'
 import { TodoList } from '~/components/todo/TodoList'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { parseMessageContent, todosToMarkdown } from '~/lib/messageParser'
+import { pluralize } from '~/lib/plural'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
@@ -167,7 +168,7 @@ function renderClaudeToolDetail(toolName: string, input: Record<string, unknown>
     case 'Bash': return renderBashDetail((input as BashInput).description, (input as BashInput).command)
     case 'Read': return renderReadDetail((input as ReadInput).file_path, (input as ReadInput).offset, (input as ReadInput).limit, cwd, homeDir)
     case 'Write': return renderWriteDetail((input as WriteInput).file_path, (input as WriteInput).content, cwd, homeDir)
-    case 'Edit': return renderEditDetail((input as EditInput).file_path, (input as EditInput).old_string, (input as EditInput).new_string, cwd, homeDir)
+    case 'Edit': return renderEditDetail((input as EditInput).file_path, (input as EditInput).old_string, (input as EditInput).new_string, (input as EditInput).replace_all, cwd, homeDir)
     case 'Grep': return renderSearchDetail((input as GrepInput).pattern, (input as GrepInput).path, cwd, homeDir)
     case 'Glob': return renderGlobDetail((input as GlobInput).pattern, (input as GlobInput).path, cwd, homeDir)
     case 'WebFetch': return renderUrlDetail((input as WebFetchInput).url)
@@ -248,10 +249,14 @@ function ToolUseMessage(props: {
   originalFile?: string
   /** If true, body is always visible (not gated by expand). */
   alwaysVisible?: boolean
+  /** If true, starts expanded before user interaction. */
+  defaultExpanded?: boolean
+  /** Whether to show line numbers in diff rows. */
+  showDiffLineNumbers?: boolean
   context?: RenderContext
 }): JSX.Element {
   const { diffView, toggleDiffView } = useDiffViewToggle(() => props.context?.diffView)
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'tool-use-layout')
+  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, 'tool-use-layout', props.defaultExpanded ?? false)
   const [commandCopied, setCommandCopied] = createSignal(false)
 
   const title = () => props.detail ?? `${props.toolName}${props.fallbackDisplay || ''}`
@@ -293,6 +298,7 @@ function ToolUseMessage(props: {
           view={diffView()}
           filePath={props.filePath}
           originalFile={props.originalFile}
+          showLineNumbers={props.showDiffLineNumbers}
         />
       </Show>
       <Show when={isMultiLineCommand() && expanded()}>
@@ -511,9 +517,9 @@ function GrepResultView(props: {
 
   const summary = () => {
     if (props.numLines > 0 && props.numFiles > 0)
-      return `${props.numLines} match${props.numLines === 1 ? '' : 'es'} in ${props.numFiles} file${props.numFiles === 1 ? '' : 's'}`
+      return `${pluralize(props.numLines, 'match', 'matches')} in ${pluralize(props.numFiles, 'file')}`
     if (props.numFiles > 0)
-      return `Found ${props.numFiles} file${props.numFiles === 1 ? '' : 's'}`
+      return `Found ${pluralize(props.numFiles, 'file')}`
     return ''
   }
 
@@ -687,7 +693,7 @@ function WebSearchResultView(props: {
     <div class={toolMessage}>
       <Show when={props.links.length > 0}>
         <div class={toolResultPrompt}>
-          {`${props.links.length} result${props.links.length === 1 ? '' : 's'}`}
+          {pluralize(props.links.length, 'result')}
         </div>
         <div class={`${webSearchLinkList}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
           <For each={displayLinks()}>
@@ -940,7 +946,7 @@ function renderTodoWrite(toolUse: Record<string, unknown>, context?: RenderConte
   if (count === 0)
     return <EmptyTodoLayout toolName="TodoWrite" context={context} />
 
-  const label = `${count} task${count === 1 ? '' : 's'}`
+  const label = pluralize(count, 'task')
   const md = todosToMarkdown(todos)
   const { copied, copy } = useCopyButton(() => md)
   const reply = context?.onReply ? () => context.onReply!(md) : undefined
@@ -1137,6 +1143,8 @@ function renderClaudeToolUse(
       filePath={filePath}
       originalFile={undefined}
       alwaysVisible={isWrite}
+      defaultExpanded={isEdit && hasDiff}
+      showDiffLineNumbers={!isEdit}
       context={context}
     />
   )

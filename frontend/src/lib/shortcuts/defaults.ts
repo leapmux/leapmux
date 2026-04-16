@@ -37,12 +37,13 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   // Layout
   { key: '$mod+Backslash', command: 'app.splitTileHorizontal' },
   { key: '$mod+Shift+Backslash', command: 'app.splitTileVertical' },
-  { key: '$mod+b', command: 'app.toggleLeftSidebar' },
-  { key: '$mod+Shift+b', command: 'app.toggleRightSidebar' },
+  { key: '$mod+Shift+BracketLeft', command: 'app.toggleLeftSidebar' },
+  { key: '$mod+Shift+BracketRight', command: 'app.toggleRightSidebar' },
 
   // Preferences
   { key: '$mod+Comma', command: 'app.openPreferences' },
   { key: '$mod+Alt+i', command: 'app.openWebInspector', when: 'isDesktop' },
+  { key: 'F12', command: 'app.openWebInspector', when: 'isDesktop' },
   { key: '$mod+-', command: 'app.zoomOutWebview', when: 'isDesktop' },
   { key: '$mod+NumpadSubtract', command: 'app.zoomOutWebview', when: 'isDesktop' },
   { key: '$mod+=', command: 'app.zoomInWebview', when: 'isDesktop' },

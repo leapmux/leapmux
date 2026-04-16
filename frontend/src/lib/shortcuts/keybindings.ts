@@ -95,7 +95,7 @@ export function groupBindings(bindings: readonly Keybinding[]): BindingGroup[] {
 }
 
 const MODIFIER_RE = /\$mod|Control|Alt|Meta|Shift/
-const FUNCTION_KEY_RE = /^F(?:[1-9]|1[0-2])$/
+export const FUNCTION_KEY_RE = /^F(?:[1-9]|1[0-2])$/
 
 /** Check if a key string contains modifier keys. */
 function hasModifier(key: string): boolean {
@@ -169,15 +169,23 @@ export function unbindAll(): void {
   currentUnsubscribe = null
 }
 
-/** Get the key string for a command ID (for displaying in tooltips). */
-export function getBindingForCommand(commandId: string): string | undefined {
-  let firstKey: string | undefined
+/** Get all active key strings for a command ID, preferring currently-enabled bindings. */
+export function getBindingsForCommand(commandId: string): string[] {
+  const active: string[] = []
+  const fallback: string[] = []
+
+  const addUnique = (keys: string[], key: string) => {
+    if (!keys.includes(key))
+      keys.push(key)
+  }
+
   for (const b of activeBindings()) {
     if (b.command === commandId) {
       if (evaluateWhen(b.when))
-        return b.key
-      firstKey ??= b.key
+        addUnique(active, b.key)
+      else
+        addUnique(fallback, b.key)
     }
   }
-  return firstKey
+  return active.length > 0 ? active : fallback
 }

@@ -156,7 +156,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     setBrowserThemeSignal(value)
     updateBrowserPref('theme', value ?? undefined)
     // Notify app.tsx for instant reactivity
-    const setter = (window as any).__leapmux_setTheme
+    const setter = window.__leapmux_setTheme
     if (setter) {
       setter(value ?? accountTheme())
     }
