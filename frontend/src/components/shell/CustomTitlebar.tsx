@@ -19,7 +19,6 @@ import { WindowCloseIcon, WindowMaximizeIcon, WindowMinimizeIcon, WindowRestoreI
 const platform = getPlatform()
 const desktop = isDesktopApp()
 const isLinuxDesktop = desktop && platform === 'linux'
-const isWindowsDesktop = desktop && platform === 'windows'
 const MAC_TRAFFIC_LIGHT_INSET = '78px'
 const WINDOWS_CAPTION_BUTTON_INSET = '138px'
 const macPadding = desktop && platform === 'mac' ? MAC_TRAFFIC_LIGHT_INSET : undefined
@@ -73,14 +72,12 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
           <button role="menuitem" onClick={() => void windowToggleMaximize()}>
             <DropdownMenuItemContent label={maximizeLabel()} />
           </button>
-          <Show when={desktop}>
-            <button role="menuitem" onClick={() => openWebInspector()}>
-              <DropdownMenuItemContent label="Open Web Inspector" shortcut={getShortcutHintsText('app.openWebInspector')} />
-            </button>
-            <button role="menuitem" onClick={() => quitApp()}>
-              <DropdownMenuItemContent label="Quit" shortcut={getShortcutHint('app.quit')} />
-            </button>
-          </Show>
+          <button role="menuitem" onClick={() => openWebInspector()}>
+            <DropdownMenuItemContent label="Open Web Inspector" shortcut={getShortcutHintsText('app.openWebInspector')} />
+          </button>
+          <button role="menuitem" onClick={() => quitApp()}>
+            <DropdownMenuItemContent label="Quit" shortcut={getShortcutHint('app.quit')} />
+          </button>
         </Show>
       </DropdownMenu>
       <div class={styles.dragRegion} data-tauri-drag-region />

@@ -1,30 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-export const container = style({
-  position: 'relative',
-  borderTop: '1px solid var(--border)',
-  padding: 'var(--space-2)',
-  flexShrink: 0,
-})
-
-export const trigger = style({
-  'all': 'unset',
-  'display': 'flex',
-  'alignItems': 'center',
-  'width': '100%',
-  'padding': 'var(--space-2) var(--space-3)',
-  'borderRadius': 'var(--radius-medium)',
-  'color': 'var(--foreground)',
-  'fontSize': 'var(--text-7)',
-  'fontWeight': 400,
-  'cursor': 'pointer',
-  'textAlign': 'left',
-  'boxSizing': 'border-box',
-  ':hover': {
-    backgroundColor: 'var(--card)',
-  },
-})
-
 export const orgList = style({
   maxHeight: '160px',
   overflowY: 'auto',

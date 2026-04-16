@@ -115,7 +115,7 @@ export default function App() {
 
   type DesktopState = 'loading' | 'launcher' | 'connected'
   const [desktopState, setDesktopState] = createSignal<DesktopState>(isTauriApp() ? 'loading' : 'connected')
-  // Expose so UserMenu's "Switch mode..." can reset without page reload.
+  // Expose so "Switch mode..." in the menu can reset without page reload.
   ;(window as any).__leapmux_disconnectDesktop = () => {
     channelManager.closeAll()
     refreshRuntimeState()

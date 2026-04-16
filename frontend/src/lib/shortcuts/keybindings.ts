@@ -184,17 +184,13 @@ export function getBindingsForCommand(commandId: string): string[] {
       keys.push(key)
   }
 
-  let firstKey: string | undefined
   for (const b of activeBindings()) {
     if (b.command === commandId) {
       if (evaluateWhen(b.when))
         addUnique(active, b.key)
       else
         addUnique(fallback, b.key)
-      firstKey ??= b.key
     }
   }
-  if (active.length > 0)
-    return active
-  return fallback.length > 0 ? fallback : (firstKey ? [firstKey] : [])
+  return active.length > 0 ? active : fallback
 }

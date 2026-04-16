@@ -4,16 +4,16 @@ import { For, Show } from 'solid-js'
 import { platformBridge } from '~/api/platformBridge'
 import { DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { useAuth } from '~/context/AuthContext'
-import { getShortcutHint } from '~/lib/shortcuts/display'
 import { useOrg } from '~/context/OrgContext'
+import { getShortcutHint } from '~/lib/shortcuts/display'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
+import * as styles from './UserMenu.css'
 import {
   setShowAboutDialog,
   setShowPreferencesDialog,
   setShowProfileDialog,
 } from './UserMenuState'
-import * as styles from './UserMenu.css'
 
 interface UserMenuItemsProps {
   aboutLabel?: string

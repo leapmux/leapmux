@@ -5,10 +5,10 @@ const [showPreferencesDialog, setShowPreferencesDialog] = createSignal(false)
 const [showAboutDialog, setShowAboutDialog] = createSignal(false)
 
 export {
-  showAboutDialog,
   setShowAboutDialog,
-  showPreferencesDialog,
   setShowPreferencesDialog,
-  showProfileDialog,
   setShowProfileDialog,
+  showAboutDialog,
+  showPreferencesDialog,
+  showProfileDialog,
 }

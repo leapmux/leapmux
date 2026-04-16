@@ -11,33 +11,37 @@ const MODIFIER_MAP: Record<string, string> = {
 }
 
 const SPECIAL_KEY_MAP: Record<string, string> = {
-  Escape: 'Escape',
-  Enter: 'Enter',
-  Backspace: 'Backspace',
-  Delete: 'Delete',
-  ArrowUp: 'ArrowUp',
-  ArrowDown: 'ArrowDown',
-  ArrowLeft: 'ArrowLeft',
-  ArrowRight: 'ArrowRight',
-  Tab: 'Tab',
-  PageUp: 'PageUp',
-  PageDown: 'PageDown',
+  'Escape': 'Escape',
+  'Enter': 'Enter',
+  'Backspace': 'Backspace',
+  'Delete': 'Delete',
+  'ArrowUp': 'ArrowUp',
+  'ArrowDown': 'ArrowDown',
+  'ArrowLeft': 'ArrowLeft',
+  'ArrowRight': 'ArrowRight',
+  'Tab': 'Tab',
+  'PageUp': 'PageUp',
+  'PageDown': 'PageDown',
   ' ': 'Space',
-  Space: 'Space',
-  Comma: 'Comma',
-  Period: 'Period',
-  Slash: 'Slash',
-  Backslash: 'Backslash',
-  BracketLeft: 'BracketLeft',
-  BracketRight: 'BracketRight',
+  'Space': 'Space',
+  'Comma': 'Comma',
+  'Period': 'Period',
+  'Slash': 'Slash',
+  'Backslash': 'Backslash',
+  'BracketLeft': 'BracketLeft',
+  'BracketRight': 'BracketRight',
 }
 
+const FUNCTION_KEY_RE = /^F(?:[1-9]|1[0-2])$/
+const LETTER_KEY_RE = /^[a-z]$/i
+const DIGIT_KEY_RE = /^\d$/
+
 function keyCodeForTauri(key: string): string | undefined {
-  if (/^F(?:[1-9]|1[0-2])$/.test(key))
+  if (FUNCTION_KEY_RE.test(key))
     return key
-  if (/^[a-z]$/i.test(key))
+  if (LETTER_KEY_RE.test(key))
     return `Key${key.toUpperCase()}`
-  if (/^[0-9]$/.test(key))
+  if (DIGIT_KEY_RE.test(key))
     return `Digit${key}`
   return SPECIAL_KEY_MAP[key]
 }

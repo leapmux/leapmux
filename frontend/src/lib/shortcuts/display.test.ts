@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { formatShortcut, getShortcutHint, getShortcutHintsText } from './display'
+
 const { getBindingForCommand, getBindingsForCommand } = vi.hoisted(() => ({
   getBindingForCommand: vi.fn(),
   getBindingsForCommand: vi.fn((): string[] => []),
@@ -9,8 +11,6 @@ vi.mock('./keybindings', () => ({
   getBindingForCommand,
   getBindingsForCommand,
 }))
-
-import { formatShortcut, getShortcutHint, getShortcutHintsText } from './display'
 
 beforeEach(() => {
   getBindingForCommand.mockReset()
