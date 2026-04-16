@@ -114,8 +114,6 @@ func (c *Client) Stop() {
 		if c.channelMgr != nil {
 			c.channelMgr.CloseAll()
 		}
-		c.terminals.StopAll()
-		c.agents.StopAll()
 	})
 }
 

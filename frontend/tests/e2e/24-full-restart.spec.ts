@@ -178,6 +178,78 @@ test.describe('Full Hub+Worker Restart', () => {
     await expect(restoredTab).toContainText('My Custom Title')
   })
 
+  test('should recover exited terminal title and screen after reloading before worker reconnects', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
+    const saved = waitForLayoutSave(page)
+
+    await page.locator('[data-testid="new-terminal-button"]').click()
+
+    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    await expect(terminalTab).toBeVisible()
+    await expect(page.locator('.xterm')).toBeVisible()
+    await saved
+
+    const terminalId = await terminalTab.getAttribute('data-tab-id')
+    expect(terminalId).toBeTruthy()
+
+    await page.evaluate(() => {
+      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
+      for (const container of containers) {
+        if (container.style.display !== 'none') {
+          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
+          if (textarea) {
+            textarea.focus()
+            return
+          }
+        }
+      }
+    })
+    await page.keyboard.type('printf "\\e]0;Recovered Title\\a"\n', { delay: 30 })
+    await expect(terminalTab).toContainText('Recovered Title')
+
+    await page.evaluate(() => {
+      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
+      for (const container of containers) {
+        if (container.style.display !== 'none') {
+          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
+          if (textarea) {
+            textarea.focus()
+            return
+          }
+        }
+      }
+    })
+    await page.keyboard.type('echo EXITEDRESTORE\n', { delay: 30 })
+    await page.waitForFunction(() => {
+      return typeof (window as any).__getActiveTerminalText === 'function'
+        && ((window as any).__getActiveTerminalText() as string).includes('EXITEDRESTORE')
+    })
+
+    await page.keyboard.press('Control+D')
+    await page.waitForTimeout(2000)
+
+    const workspaceUrl = page.url()
+
+    await stopWorker()
+    await stopHub()
+
+    await restartHub(separateHubWorker)
+
+    await page.goto(workspaceUrl)
+    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
+
+    await restartWorker(separateHubWorker)
+
+    const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    await expect(restoredTab).toContainText('Recovered Title')
+    await page.waitForFunction(() => {
+      return typeof (window as any).__getActiveTerminalText === 'function'
+        && ((window as any).__getActiveTerminalText() as string).includes('EXITEDRESTORE')
+    })
+
+    const restoredLeaf = page.locator(`[data-testid="tab-tree-leaf"][data-tab-id="${terminalId}"]`)
+    await expect(restoredLeaf).toContainText('Recovered Title')
+  })
+
   test('should preserve agent tab after clicking it post-restart', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
     const { hubUrl, adminToken, adminOrgId, workerId } = separateHubWorker

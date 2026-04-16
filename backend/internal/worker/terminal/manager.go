@@ -201,6 +201,20 @@ func (m *Manager) ScreenSnapshot(terminalID string) []byte {
 	return t.ScreenSnapshot()
 }
 
+// AppendOutput injects synthetic output into the tracked terminal's screen
+// buffer and output stream.
+func (m *Manager) AppendOutput(terminalID string, data []byte) bool {
+	m.mu.RLock()
+	t, ok := m.terminals[terminalID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+	t.AppendOutput(data)
+	return true
+}
+
 // SnapshotTerminal returns a point-in-time copy of a single terminal's
 // metadata and screen buffer, or ok=false if the terminal doesn't exist
 // or has no screen data.

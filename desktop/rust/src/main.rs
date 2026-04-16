@@ -631,26 +631,15 @@ impl DesktopShell {
         &self,
         method: proto::request::Method,
     ) -> Result<proto::Response, String> {
-        let id = self.sidecar.next_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.sidecar.pending.lock().unwrap().insert(id, tx);
+        send_sidecar_request(&self.sidecar, method).await
+    }
 
-        let frame = proto::Frame {
-            message: Some(proto::frame::Message::Request(proto::Request {
-                id,
-                method: Some(method),
-            })),
-        };
-        {
-            let mut writer = self.sidecar.writer.lock().unwrap();
-            if let Err(err) = write_frame(&mut *writer, &frame) {
-                self.sidecar.pending.lock().unwrap().remove(&id);
-                return Err(format!("write request: {err}"));
-            }
-        }
-
-        rx.await
-            .map_err(|_| "desktop sidecar disconnected".to_string())?
+    async fn request_shutdown_async(&self) {
+        let shutdown = self.send_request_async(proto::request::Method::Shutdown(
+            proto::ShutdownRequest {},
+        ));
+        let _ = tokio::time::timeout(Duration::from_secs(5), shutdown).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
     async fn refresh_state_from_sidecar(&self) -> Result<(), String> {
@@ -719,6 +708,32 @@ impl DesktopShell {
         }
         Ok(())
     }
+}
+
+async fn send_sidecar_request(
+    sidecar: &SidecarProcess,
+    method: proto::request::Method,
+) -> Result<proto::Response, String> {
+    let id = sidecar.next_id.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = oneshot::channel();
+    sidecar.pending.lock().unwrap().insert(id, tx);
+
+    let frame = proto::Frame {
+        message: Some(proto::frame::Message::Request(proto::Request {
+            id,
+            method: Some(method),
+        })),
+    };
+    {
+        let mut writer = sidecar.writer.lock().unwrap();
+        if let Err(err) = write_frame(&mut *writer, &frame) {
+            sidecar.pending.lock().unwrap().remove(&id);
+            return Err(format!("write request: {err}"));
+        }
+    }
+
+    rx.await
+        .map_err(|_| "desktop sidecar disconnected".to_string())?
 }
 
 // --- Response helpers ---
@@ -1214,7 +1229,11 @@ async fn save_window_geometry(
 
 #[tauri::command]
 fn quit_app(app: AppHandle) {
-    app.exit(0);
+    if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
+        handle_app_exit(shell.inner().clone());
+    } else {
+        app.exit(0);
+    }
 }
 
 #[tauri::command]
@@ -1277,6 +1296,7 @@ fn handle_app_exit(shell: Arc<DesktopShell>) {
     }
 
     tauri::async_runtime::spawn(async move {
+        shell.request_shutdown_async().await;
         shell.app_handle.exit(0);
     });
 }
@@ -1500,6 +1520,7 @@ fn main() {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::io;
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicU64;
     use std::time::SystemTime;
@@ -1564,5 +1585,75 @@ mod tests {
         drop(writer);
         server.join().expect("fake sidecar thread");
         let _ = fs::remove_file(&socket_path);
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedBuffer {
+        fn snapshot(&self) -> Vec<u8> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn send_sidecar_request_writes_shutdown_frame() {
+        let writer = SharedBuffer::default();
+        let buffer = writer.clone();
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let sidecar = SidecarProcess {
+            _child: None,
+            writer: Mutex::new(Box::new(writer)),
+            pending: pending.clone(),
+            next_id: AtomicU64::new(1),
+        };
+
+        let responder = thread::spawn(move || {
+            loop {
+                if let Some(tx) = pending.lock().unwrap().remove(&1) {
+                    let _ = tx.send(Ok(proto::Response {
+                        id: 1,
+                        error: String::new(),
+                        result: Some(proto::response::Result::BoolValue(proto::BoolValue {
+                            value: true,
+                        })),
+                    }));
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let resp = tauri::async_runtime::block_on(send_sidecar_request(
+            &sidecar,
+            proto::request::Method::Shutdown(proto::ShutdownRequest {}),
+        ))
+        .expect("send shutdown request");
+        responder.join().expect("responder join");
+
+        assert_eq!(resp.id, 1);
+
+        let mut cursor = io::Cursor::new(buffer.snapshot());
+        let frame = read_frame(&mut cursor).expect("read request frame");
+        let request = match frame.message {
+            Some(proto::frame::Message::Request(req)) => req,
+            other => panic!("unexpected frame: {other:?}"),
+        };
+        assert_eq!(request.id, 1);
+        assert!(matches!(
+            request.method,
+            Some(proto::request::Method::Shutdown(_))
+        ));
     }
 }

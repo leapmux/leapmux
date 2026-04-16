@@ -30,4 +30,19 @@ describe('createTerminalStore', () => {
       dispose()
     })
   })
+
+  it('should upsert terminal metadata without changing the active terminal', () => {
+    createRoot((dispose) => {
+      const store = createTerminalStore()
+      store.addTerminal({ id: 't1', workspaceId: 'ws1' })
+      store.upsertTerminal({ id: 't2', workspaceId: 'ws1', title: 'restored' })
+      store.upsertTerminal({ id: 't2', workspaceId: 'ws1', screen: new Uint8Array([1, 2, 3]) })
+
+      expect(store.state.activeTerminalId).toBe('t1')
+      expect(store.state.terminals).toHaveLength(2)
+      expect(store.state.terminals[1].title).toBe('restored')
+      expect(store.state.terminals[1].screen).toEqual(new Uint8Array([1, 2, 3]))
+      dispose()
+    })
+  })
 })

@@ -76,6 +76,8 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			})
 		}
 		exitFn := func(tid string, exitCode int) {
+			svc.appendTerminalDisconnectNotice(tid)
+
 			// Persist the screen buffer and mark as inactive before
 			// broadcasting the close event, so it can be restored if the
 			// frontend reconnects later. Do not set closed_at here —
@@ -90,7 +92,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					Title:         snap.Title,
 					Cols:          int64(snap.Cols),
 					Rows:          int64(snap.Rows),
-					Screen:        snap.Screen,
+					Screen:        appendTerminalDisconnectNotice(snap.Screen),
 					ExitCode:      int64(exitCode),
 				}); err != nil {
 					slog.Error("failed to save terminal on exit", "terminal_id", tid, "error", err)
@@ -106,7 +108,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					Title:         meta.Title,
 					Cols:          int64(meta.Cols),
 					Rows:          int64(meta.Rows),
-					Screen:        []byte{},
+					Screen:        appendTerminalDisconnectNotice(nil),
 					ExitCode:      int64(exitCode),
 				}); err != nil {
 					slog.Error("failed to save terminal metadata on exit", "terminal_id", tid, "error", err)

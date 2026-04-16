@@ -430,12 +430,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
       case 'closed':
         terminalStore.markExited(terminalId)
-        {
-          const instance = getTerminalInstance(terminalId)
-          if (instance) {
-            instance.terminal.write('\r\n\r\n[Connection to the terminal was lost.]\r\n')
-          }
-        }
         break
     }
   }
@@ -652,10 +646,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     for (const t of terminalStore.state.terminals) {
       if (!terminalStore.isExited(t.id)) {
         terminalStore.markExited(t.id)
-        const instance = getTerminalInstance(t.id)
-        if (instance) {
-          instance.terminal.write('\r\n\r\n[Connection to the terminal was lost.]\r\n')
-        }
       }
     }
     for (const a of agentStore.state.agents) {

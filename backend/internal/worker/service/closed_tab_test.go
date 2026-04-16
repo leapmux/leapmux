@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -293,23 +294,26 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, "ws-1")
+	workingDir := t.TempDir()
 
 	// Start a real terminal.
 	require.NoError(t, svc.Terminals.StartTerminal(terminal.Options{
 		ID:            "term-1",
 		WorkspaceID:   "ws-1",
 		Shell:         "/bin/sh",
-		WorkingDir:    t.TempDir(),
+		WorkingDir:    workingDir,
 		ShellStartDir: "",
 		Cols:          80,
 		Rows:          24,
 	}, func([]byte) {}, nil))
 
+	require.True(t, svc.Terminals.UpdateTitle("term-1", "user@host: ~/dir"))
+
 	// Persist the initial record (like OpenTerminal does).
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:          "term-1",
 		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
+		WorkingDir:  workingDir,
 		HomeDir:     svc.HomeDir,
 		Cols:        80,
 		Rows:        24,
@@ -332,8 +336,50 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	dbTerm, err := svc.Queries.GetTerminal(ctx, "term-1")
 	require.NoError(t, err)
 	assert.True(t, len(dbTerm.Screen) > 0, "screen should be persisted after Shutdown")
+	assert.Contains(t, string(dbTerm.Screen), "shutdown_test")
+	assert.Contains(t, string(dbTerm.Screen), "[Connection to the terminal was lost.]")
+	assert.Equal(t, "user@host: ~/dir", dbTerm.Title, "title should be persisted after Shutdown")
 	assert.False(t, dbTerm.ClosedAt.Valid, "Shutdown should not set closed_at")
 
 	// Clean up.
 	svc.Terminals.StopAll()
+}
+
+func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	workingDir := t.TempDir()
+
+	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+		WorkspaceId: "ws-1",
+		Shell:       "/bin/sh",
+		WorkingDir:  workingDir,
+		Cols:        80,
+		Rows:        24,
+	}, w)
+	require.Len(t, w.responses, 1)
+
+	var openResp leapmuxv1.OpenTerminalResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	terminalID := openResp.GetTerminalId()
+	require.NotEmpty(t, terminalID)
+
+	w2 := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "SendInput", &leapmuxv1.SendInputRequest{
+		TerminalId: terminalID,
+		Data:       []byte("echo exit_notice_test\nexit\n"),
+	}, w2)
+	require.Empty(t, w2.errors)
+
+	testutil.AssertEventually(t, func() bool {
+		return svc.Terminals.IsExited(terminalID)
+	}, "expected terminal to exit")
+
+	testutil.AssertEventually(t, func() bool {
+		dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
+		return err == nil &&
+			dbTerm.ExitCode == 0 &&
+			strings.Contains(string(dbTerm.Screen), "exit_notice_test") &&
+			strings.Contains(string(dbTerm.Screen), "[Connection to the terminal was lost.]")
+	}, "expected exit snapshot with disconnect notice to be persisted")
 }

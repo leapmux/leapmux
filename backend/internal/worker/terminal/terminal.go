@@ -214,6 +214,16 @@ func (t *Terminal) ScreenSnapshot() []byte {
 	return t.screenBuf.Snapshot()
 }
 
+// AppendOutput injects synthetic output into the terminal stream and screen
+// buffer without writing to the PTY. This is used for system notices that
+// should be restorable like normal terminal output.
+func (t *Terminal) AppendOutput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	t.outputFn(data)
+}
+
 func (t *Terminal) readOutput() {
 	buf := make([]byte, 32*1024)
 	for {

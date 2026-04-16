@@ -7,7 +7,7 @@ import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { createTerminalStore } from '~/stores/terminal.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
-import { createEffect, on } from 'solid-js'
+import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -45,6 +45,61 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
 
   let loadGeneration = 0
   let previousWorkspaceId: string | null = null
+  const [terminalHydrationTick, setTerminalHydrationTick] = createSignal(0)
+  const terminalHydrationInflight = new Set<string>()
+  const terminalHydrationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const terminalHydrationRetryDelayMs = new Map<string, number>()
+
+  const clearTerminalHydrationRetry = (workerId: string) => {
+    const timer = terminalHydrationRetryTimers.get(workerId)
+    if (timer) {
+      clearTimeout(timer)
+      terminalHydrationRetryTimers.delete(workerId)
+    }
+  }
+
+  const scheduleTerminalHydrationRetry = (workerId: string) => {
+    if (terminalHydrationRetryTimers.has(workerId))
+      return
+    const nextDelay = Math.min((terminalHydrationRetryDelayMs.get(workerId) ?? 500) * 2, 10_000)
+    terminalHydrationRetryDelayMs.set(workerId, nextDelay)
+    const timer = setTimeout(() => {
+      terminalHydrationRetryTimers.delete(workerId)
+      setTerminalHydrationTick(v => v + 1)
+    }, nextDelay)
+    terminalHydrationRetryTimers.set(workerId, timer)
+  }
+
+  const hydrateTerminalRecord = (workspaceId: string, workerId: string, term: Awaited<ReturnType<typeof workerRpc.listTerminals>>['terminals'][number]) => {
+    terminalStore.upsertTerminal({
+      id: term.terminalId,
+      workspaceId,
+      workerId,
+      workingDir: term.workingDir || undefined,
+      shellStartDir: term.shellStartDir || undefined,
+      screen: term.screen.length > 0 ? term.screen : undefined,
+      cols: term.cols || undefined,
+      rows: term.rows || undefined,
+      title: term.title || undefined,
+      exited: term.exited || undefined,
+    })
+    tabStore.updateTab(TabType.TERMINAL, term.terminalId, {
+      title: term.title || undefined,
+      workerId,
+      workingDir: term.workingDir || undefined,
+      gitBranch: term.gitBranch || undefined,
+      gitOriginUrl: term.gitOriginUrl || undefined,
+    })
+    if (term.exited) {
+      terminalStore.markExited(term.terminalId)
+    }
+  }
+
+  onCleanup(() => {
+    for (const workerId of terminalHydrationRetryTimers.keys()) {
+      clearTerminalHydrationRetry(workerId)
+    }
+  })
 
   createEffect(on([getActiveWorkspaceId, getOrgId], ([activeId, currentOrgId]) => {
     if (!activeId || !currentOrgId)
@@ -208,6 +263,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             screen: t.screen.length > 0 ? t.screen : undefined,
             cols: t.cols || undefined,
             rows: t.rows || undefined,
+            title: t.title || undefined,
           })
           if (t.exited) {
             terminalStore.markExited(t.terminalId)
@@ -284,15 +340,26 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           const key = `${t.tabType}:${t.tabId}`
           if (addedTabKeys.has(key))
             continue
+          const cachedTab = cached?.tabs.tabs.find(tab => tabKey(tab) === key)
+          const cachedTerminal = t.tabType === TabType.TERMINAL
+            ? cached?.terminals.find(term => term.id === t.tabId)
+            : undefined
           let tileId = tabTileMap.get(key) ?? defaultTileId
           if (!validTileIds.has(tileId))
             tileId = defaultTileId
           tabStore.addTab({
             type: t.tabType as TabType,
             id: t.tabId,
+            title: cachedTab?.title,
             tileId,
             workerId: t.workerId,
+            workingDir: cachedTab?.workingDir ?? cachedTerminal?.workingDir,
+            gitBranch: cachedTab?.gitBranch,
+            gitOriginUrl: cachedTab?.gitOriginUrl,
           }, { activate: false })
+          if (cachedTerminal) {
+            terminalStore.upsertTerminal(cachedTerminal)
+          }
           addedTabKeys.add(key)
         }
       }
@@ -438,4 +505,54 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       setWorkspaceLoading(false)
     })
   }))
+
+  createEffect(() => {
+    terminalHydrationTick()
+    const activeId = getActiveWorkspaceId()
+    if (!activeId)
+      return
+
+    const missingByWorker = new Map<string, string[]>()
+    for (const tab of tabStore.state.tabs) {
+      if (tab.type !== TabType.TERMINAL || !tab.workerId)
+        continue
+      const term = terminalStore.state.terminals.find(candidate => candidate.id === tab.id)
+      if (!tab.title && term?.title) {
+        tabStore.updateTabTitle(TabType.TERMINAL, tab.id, term.title)
+      }
+      if (term)
+        continue
+      const ids = missingByWorker.get(tab.workerId) ?? []
+      ids.push(tab.id)
+      missingByWorker.set(tab.workerId, ids)
+    }
+
+    for (const [workerId, tabIds] of missingByWorker.entries()) {
+      if (terminalHydrationInflight.has(workerId))
+        continue
+
+      terminalHydrationInflight.add(workerId)
+      const targetWorkspaceId = activeId
+      void workerRpc.listTerminals(workerId, { tabIds }).then((resp) => {
+        if (getActiveWorkspaceId() !== targetWorkspaceId)
+          return
+        const resolvedIDs = new Set(resp.terminals.map(term => term.terminalId))
+        for (const term of resp.terminals) {
+          hydrateTerminalRecord(targetWorkspaceId, workerId, term)
+        }
+        if (tabIds.some(id => !resolvedIDs.has(id))) {
+          scheduleTerminalHydrationRetry(workerId)
+        }
+        else {
+          clearTerminalHydrationRetry(workerId)
+          terminalHydrationRetryDelayMs.delete(workerId)
+        }
+      }).catch((err) => {
+        log.warn('failed to hydrate terminal metadata after restore', { workerId, tabIds, err })
+        scheduleTerminalHydrationRetry(workerId)
+      }).finally(() => {
+        terminalHydrationInflight.delete(workerId)
+      })
+    }
+  })
 }

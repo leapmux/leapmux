@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"strings"
 	"sync"
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
@@ -34,7 +37,7 @@ func (s *RPCSession) Run() error {
 	for {
 		frame, err := ReadFrame(s.reader)
 		if err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
+			if isBenignSessionReadError(err) {
 				return nil
 			}
 			return fmt.Errorf("read frame: %w", err)
@@ -46,6 +49,19 @@ func (s *RPCSession) Run() error {
 		}
 		go s.handleRequest(req)
 	}
+}
+
+func isBenignSessionReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return true
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	return strings.Contains(err.Error(), "use of closed network connection")
 }
 
 func (s *RPCSession) emitEvent(event *desktoppb.Event) {

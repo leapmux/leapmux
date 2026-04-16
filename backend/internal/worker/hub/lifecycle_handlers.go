@@ -9,10 +9,6 @@ import (
 func (c *Client) handleDeregister(requestID string, _ *leapmuxv1.DeregisterNotification) {
 	slog.Info("received deregistration notification from hub")
 
-	// Stop all agents and terminals.
-	c.agents.StopAll()
-	c.terminals.StopAll()
-
 	// Send ack.
 	_ = c.Send(&leapmuxv1.ConnectRequest{
 		RequestId: requestID,

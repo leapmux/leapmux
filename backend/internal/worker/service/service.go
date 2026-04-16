@@ -5,6 +5,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"log/slog"
@@ -150,6 +151,8 @@ func (svc *Context) Init() {
 // manager (which clears in-memory state).
 func (svc *Context) Shutdown() {
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
+		svc.appendTerminalDisconnectNotice(tid)
+
 		// Try to get a full snapshot (metadata + screen). If the screen
 		// is empty (e.g. terminal was killed before rendering), fall back
 		// to metadata-only so the title and other fields are still saved.
@@ -163,7 +166,7 @@ func (svc *Context) Shutdown() {
 				Title:         snap.Title,
 				Cols:          int64(snap.Cols),
 				Rows:          int64(snap.Rows),
-				Screen:        snap.Screen,
+				Screen:        appendTerminalDisconnectNotice(snap.Screen),
 			}); err != nil {
 				slog.Error("failed to save terminal on shutdown", "terminal_id", tid, "error", err)
 			}
@@ -184,11 +187,34 @@ func (svc *Context) Shutdown() {
 			Title:         meta.Title,
 			Cols:          int64(meta.Cols),
 			Rows:          int64(meta.Rows),
-			Screen:        []byte{},
+			Screen:        appendTerminalDisconnectNotice(nil),
 		}); err != nil {
 			slog.Error("failed to save terminal metadata on shutdown", "terminal_id", tid, "error", err)
 		}
 	}
+}
+
+var terminalDisconnectNotice = []byte("\r\n\r\n[Connection to the terminal was lost.]\r\n")
+
+func appendTerminalDisconnectNotice(screen []byte) []byte {
+	if bytes.HasSuffix(screen, terminalDisconnectNotice) {
+		out := make([]byte, len(screen))
+		copy(out, screen)
+		return out
+	}
+
+	out := make([]byte, 0, len(screen)+len(terminalDisconnectNotice))
+	out = append(out, screen...)
+	out = append(out, terminalDisconnectNotice...)
+	return out
+}
+
+func (svc *Context) appendTerminalDisconnectNotice(terminalID string) {
+	screen := svc.Terminals.ScreenSnapshot(terminalID)
+	if bytes.HasSuffix(screen, terminalDisconnectNotice) {
+		return
+	}
+	_ = svc.Terminals.AppendOutput(terminalID, terminalDisconnectNotice)
 }
 
 // RegisterAll registers all service handlers with the dispatcher.

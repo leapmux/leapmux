@@ -36,6 +36,15 @@ export function createTerminalStore() {
       setState('activeTerminalId', terminal.id)
     },
 
+    upsertTerminal(terminal: TerminalInfo) {
+      const idx = state.terminals.findIndex(t => t.id === terminal.id)
+      if (idx === -1) {
+        setState('terminals', prev => [...prev, terminal])
+        return
+      }
+      setState('terminals', idx, prev => ({ ...prev, ...terminal }))
+    },
+
     removeTerminal(id: string) {
       setState('terminals', prev => prev.filter(t => t.id !== id))
       if (state.activeTerminalId === id) {
