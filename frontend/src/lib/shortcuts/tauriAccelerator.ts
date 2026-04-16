@@ -1,4 +1,5 @@
 import type { Keybinding } from './types'
+import { FUNCTION_KEY_RE } from './keybindings'
 
 const MODIFIER_MAP: Record<string, string> = {
   $mod: 'CmdOrCtrl',
@@ -32,7 +33,6 @@ const SPECIAL_KEY_MAP: Record<string, string> = {
   'BracketRight': 'BracketRight',
 }
 
-const FUNCTION_KEY_RE = /^F(?:[1-9]|1[0-2])$/
 const LETTER_KEY_RE = /^[a-z]$/i
 const DIGIT_KEY_RE = /^\d$/
 

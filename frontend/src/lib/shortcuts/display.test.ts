@@ -1,19 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { formatShortcut, getShortcutHint, getShortcutHintsText } from './display'
+import { formatShortcut, getShortcutHintsText, shortcutHint } from './display'
 
-const { getBindingForCommand, getBindingsForCommand } = vi.hoisted(() => ({
-  getBindingForCommand: vi.fn(),
+const { getBindingsForCommand } = vi.hoisted(() => ({
   getBindingsForCommand: vi.fn((): string[] => []),
 }))
 
 vi.mock('./keybindings', () => ({
-  getBindingForCommand,
   getBindingsForCommand,
 }))
 
 beforeEach(() => {
-  getBindingForCommand.mockReset()
   getBindingsForCommand.mockReset()
   getBindingsForCommand.mockReturnValue([])
 })
@@ -122,14 +119,27 @@ describe('formatShortcut', () => {
   })
 
   describe('command hint helpers', () => {
-    it('returns the primary shortcut hint for a command', () => {
-      getBindingForCommand.mockReturnValue('$mod+Comma')
-      expect(getShortcutHint('app.openPreferences')).toBe('Ctrl+,')
+    it('returns a single shortcut for a command with one binding', () => {
+      getBindingsForCommand.mockReturnValue(['$mod+Comma'])
+      expect(getShortcutHintsText('app.openPreferences')).toBe('Ctrl+,')
     })
 
     it('joins multiple shortcut hints for a command', () => {
       getBindingsForCommand.mockReturnValue(['$mod+Alt+i', 'F12'])
       expect(getShortcutHintsText('app.openWebInspector')).toBe('Ctrl+Alt+I / F12')
+    })
+
+    it('returns undefined when a command has no bindings', () => {
+      expect(getShortcutHintsText('app.nope')).toBeUndefined()
+    })
+
+    it('shortcutHint embeds the shortcut after the label', () => {
+      getBindingsForCommand.mockReturnValue(['$mod+n'])
+      expect(shortcutHint('New Agent', 'app.newAgent')).toBe('New Agent (Ctrl+N)')
+    })
+
+    it('shortcutHint returns plain text when no binding exists', () => {
+      expect(shortcutHint('New Agent', 'app.nope')).toBe('New Agent')
     })
   })
 })

@@ -8,7 +8,7 @@ import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
 import { trailingDebounce } from '~/lib/debounce'
-import { getShortcutHint } from '~/lib/shortcuts/display'
+import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
 import { TabDragProvider } from './TabDragContext'
@@ -372,7 +372,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                       <Icon icon={Plus} size="sm" />
                       <span class={styles.emptyTileActionContent}>
                         <span>Create a new workspace...</span>
-                        <Show when={getShortcutHint('app.newWorkspaceDialog')}>
+                        <Show when={getShortcutHintsText('app.newWorkspaceDialog')}>
                           {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
                         </Show>
                       </span>

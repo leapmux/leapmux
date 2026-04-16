@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import { diffLines } from 'diff'
 import { Show } from 'solid-js'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
+import { pluralize } from '~/lib/plural'
 import { relativizePath } from './messageUtils'
 import {
   toolInputCode,
@@ -40,7 +41,7 @@ export function renderWriteDetail(path?: string, content?: string, cwd?: string,
   if (!path)
     return null
   const lineCount = content ? content.split('\n').length : 0
-  const lineStr = lineCount > 0 ? ` (${lineCount} ${lineCount === 1 ? 'line' : 'lines'})` : ''
+  const lineStr = lineCount > 0 ? ` (${pluralize(lineCount, 'line')})` : ''
   return (
     <>
       <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>

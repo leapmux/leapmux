@@ -6,7 +6,7 @@ import { createSignal, onCleanup, Show } from 'solid-js'
 import { observeWindowMaximized, openWebInspector, quitApp, windowClose, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
 import { DropdownMenu, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { IconButton } from '~/components/common/IconButton'
-import { getShortcutHint, getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
+import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import { getPlatform } from '~/lib/shortcuts/platform'
 import { isDesktopApp } from '~/lib/systemInfo'
 import { menuSectionHeader } from '~/styles/shared.css'
@@ -82,7 +82,7 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
             <DropdownMenuItemContent label="Open Web Inspector" shortcut={getShortcutHintsText('app.openWebInspector')} />
           </button>
           <button role="menuitem" onClick={() => quitApp()}>
-            <DropdownMenuItemContent label="Quit" shortcut={getShortcutHint('app.quit')} />
+            <DropdownMenuItemContent label="Quit" shortcut={getShortcutHintsText('app.quit')} />
           </button>
         </Show>
       </DropdownMenu>

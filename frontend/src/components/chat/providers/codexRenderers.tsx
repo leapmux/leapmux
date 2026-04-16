@@ -19,6 +19,7 @@ import { TodoList } from '~/components/todo/TodoList'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { codexPlanToTodos, todosToMarkdown } from '~/lib/messageParser'
+import { pluralize } from '~/lib/plural'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { DiffView, rawDiffToHunks } from '../diffUtils'
@@ -359,7 +360,7 @@ export function codexTurnPlanRenderer(parsed: unknown, _role: MessageRole, conte
     return <EmptyTodoLayout toolName="Plan Update" context={context} />
 
   const explanation = typeof params.explanation === 'string' ? params.explanation.trim() : ''
-  const label = `${todos.length} task${todos.length === 1 ? '' : 's'}${explanation ? ` - ${explanation}` : ''}`
+  const label = `${pluralize(todos.length, 'task')}${explanation ? ` - ${explanation}` : ''}`
 
   const md = todosToMarkdown(todos)
   const { copied, copy } = useCopyButton(() => md)
@@ -614,7 +615,7 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
       <div class={toolMessage}>
         <Show when={changes.length > 0 && completedEntries.length === 0}>
           <div class={toolResultPrompt}>
-            {changes.length === 1 ? '1 file changed' : `${changes.length} files changed`}
+            {`${pluralize(changes.length, 'file')} changed`}
           </div>
         </Show>
       </div>

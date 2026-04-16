@@ -5,7 +5,7 @@ import { platformBridge } from '~/api/platformBridge'
 import { DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
-import { getShortcutHint } from '~/lib/shortcuts/display'
+import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './UserMenuItems.css'
@@ -42,10 +42,13 @@ export const UserMenuItems: Component<UserMenuItemsProps> = (props) => {
       setTimeout(resolve, 400)
     })
 
-    await platformBridge.switchMode()
-
-    overlay.remove()
-    ;(window as any).__leapmux_disconnectDesktop?.()
+    try {
+      await platformBridge.switchMode()
+    }
+    finally {
+      overlay.remove()
+    }
+    window.__leapmux_disconnectDesktop?.()
   }
 
   return (
@@ -60,7 +63,7 @@ export const UserMenuItems: Component<UserMenuItemsProps> = (props) => {
         {props.aboutLabel ?? 'About...'}
       </button>
       <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
-        <DropdownMenuItemContent label="Preferences..." shortcut={getShortcutHint('app.openPreferences')} />
+        <DropdownMenuItemContent label="Preferences..." shortcut={getShortcutHintsText('app.openPreferences')} />
       </button>
 
       <Show when={!isSoloMode()}>

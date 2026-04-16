@@ -1,5 +1,5 @@
 import type { Platform } from './types'
-import { getBindingForCommand, getBindingsForCommand } from './keybindings'
+import { getBindingsForCommand } from './keybindings'
 import { getPlatform } from './platform'
 
 const MAC_MODIFIER_SYMBOLS: Record<string, string> = {
@@ -92,20 +92,18 @@ export function formatShortcut(key: string, platform: Platform = getPlatform()):
   return chords.map(c => formatChord(c, platform)).join(' ')
 }
 
-/** Append a keyboard shortcut hint to text, e.g. "New Agent (⌘N)". */
-export function shortcutHint(text: string, commandId: string): string {
-  const key = getBindingForCommand(commandId)
-  if (!key)
-    return text
-  return `${text} (${formatShortcut(key)})`
-}
-
-export function getShortcutHint(commandId: string): string | undefined {
-  const key = getBindingForCommand(commandId)
-  return key ? formatShortcut(key) : undefined
-}
-
+/**
+ * Formatted shortcut(s) for a command, joined by `separator` when multiple
+ * bindings exist (e.g. "F12 / ⌃⌥I"). Returns undefined when the command has
+ * no bindings.
+ */
 export function getShortcutHintsText(commandId: string, separator = ' / '): string | undefined {
   const hints = getBindingsForCommand(commandId).map(key => formatShortcut(key))
   return hints.length > 0 ? hints.join(separator) : undefined
+}
+
+/** Append a keyboard shortcut hint to text, e.g. "New Agent (⌘N)". */
+export function shortcutHint(text: string, commandId: string): string {
+  const hints = getShortcutHintsText(commandId)
+  return hints ? `${text} (${hints})` : text
 }

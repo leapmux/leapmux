@@ -12,6 +12,7 @@ import { setShowAboutDialog, setShowPreferencesDialog, showAboutDialog } from '~
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
+import { createLogger } from '~/lib/logger'
 import { resolveStack } from '~/lib/resolveStack'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 import { heightFull } from '~/styles/shared.css'
@@ -20,6 +21,8 @@ import '@knadh/oat/oat.min.css'
 import '@knadh/oat/oat.min.js'
 import './styles/dropdown-flip.css'
 import './styles/global.css'
+
+const log = createLogger('app')
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 
@@ -50,7 +53,7 @@ const PreferencesApplier: ParentComponent = (props) => {
 
   // When the resolved theme changes (e.g. account data loaded), push to app signal.
   createEffect(() => {
-    const setter = (window as any).__leapmux_setTheme
+    const setter = window.__leapmux_setTheme
     if (setter)
       setter(preferences.theme())
   })
@@ -116,7 +119,7 @@ export default function App() {
   type DesktopState = 'loading' | 'launcher' | 'connected'
   const [desktopState, setDesktopState] = createSignal<DesktopState>(isTauriApp() ? 'loading' : 'connected')
   // Expose so "Switch mode..." in the menu can reset without page reload.
-  ;(window as any).__leapmux_disconnectDesktop = () => {
+  window.__leapmux_disconnectDesktop = () => {
     channelManager.closeAll()
     refreshRuntimeState()
     setDesktopState('launcher')
@@ -173,7 +176,7 @@ export default function App() {
 
   // Expose setter for PreferencesContext/PreferencesApplier to update app theme.
   // Does NOT write to localStorage — callers handle storage themselves.
-  ;(window as any).__leapmux_setTheme = (pref: ThemePreference) => {
+  window.__leapmux_setTheme = (pref: ThemePreference) => {
     setThemePreference(pref)
   }
 
@@ -199,12 +202,14 @@ export default function App() {
       })
       const owner = getOwner()
       const registerListener = (event: string, handler: () => void) => {
-        platformBridge.onEvent(event, handler).then((unlisten) => {
-          if (disposed)
-            unlisten()
-          else
-            runWithOwner(owner, () => onCleanup(unlisten))
-        })
+        platformBridge.onEvent(event, handler)
+          .then((unlisten) => {
+            if (disposed)
+              unlisten()
+            else
+              runWithOwner(owner, () => onCleanup(unlisten))
+          })
+          .catch(err => log.warn(`onEvent(${event}) failed`, err))
       }
       registerListener('menu:show-about', () => setShowAboutDialog(true))
       registerListener('menu:show-preferences', () => setShowPreferencesDialog(true))

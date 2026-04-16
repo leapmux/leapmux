@@ -95,7 +95,7 @@ export function groupBindings(bindings: readonly Keybinding[]): BindingGroup[] {
 }
 
 const MODIFIER_RE = /\$mod|Control|Alt|Meta|Shift/
-const FUNCTION_KEY_RE = /^F(?:[1-9]|1[0-2])$/
+export const FUNCTION_KEY_RE = /^F(?:[1-9]|1[0-2])$/
 
 /** Check if a key string contains modifier keys. */
 function hasModifier(key: string): boolean {

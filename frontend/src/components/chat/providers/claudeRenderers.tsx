@@ -35,6 +35,7 @@ import { Icon } from '~/components/common/Icon'
 import { TodoList } from '~/components/todo/TodoList'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { parseMessageContent, todosToMarkdown } from '~/lib/messageParser'
+import { pluralize } from '~/lib/plural'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
@@ -692,7 +693,7 @@ function WebSearchResultView(props: {
     <div class={toolMessage}>
       <Show when={props.links.length > 0}>
         <div class={toolResultPrompt}>
-          {`${props.links.length} result${props.links.length === 1 ? '' : 's'}`}
+          {pluralize(props.links.length, 'result')}
         </div>
         <div class={`${webSearchLinkList}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
           <For each={displayLinks()}>
@@ -945,7 +946,7 @@ function renderTodoWrite(toolUse: Record<string, unknown>, context?: RenderConte
   if (count === 0)
     return <EmptyTodoLayout toolName="TodoWrite" context={context} />
 
-  const label = `${count} task${count === 1 ? '' : 's'}`
+  const label = pluralize(count, 'task')
   const md = todosToMarkdown(todos)
   const { copied, copy } = useCopyButton(() => md)
   const reply = context?.onReply ? () => context.onReply!(md) : undefined
