@@ -147,6 +147,7 @@ export default defineConfig({
         'fracturedjsonjs',
         'fzstd',
         'random-word-slugs',
+        'tinykeys',
       ],
     },
     server: {

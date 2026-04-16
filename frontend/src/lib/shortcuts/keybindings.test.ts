@@ -13,7 +13,7 @@ const DEFAULTS: Keybinding[] = [
   { key: '$mod+t', command: 'app.newTerminal', when: '!dialogOpen' },
   { key: '$mod+w', command: 'app.closeActiveTab' },
   { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
-  { key: '$mod+b', command: 'app.toggleLeftSidebar' },
+  { key: '$mod+Shift+BracketLeft', command: 'app.toggleLeftSidebar' },
 ]
 
 describe('mergeKeybindings', () => {
@@ -177,9 +177,9 @@ describe('resolve', () => {
 
   it('returns command when no when clause is set', () => {
     const bindings: Keybinding[] = [
-      { key: '$mod+b', command: 'app.toggleLeftSidebar' },
+      { key: '$mod+Shift+BracketLeft', command: 'app.toggleLeftSidebar' },
     ]
-    expect(resolve(bindings, '$mod+b')).toBe('app.toggleLeftSidebar')
+    expect(resolve(bindings, '$mod+Shift+BracketLeft')).toBe('app.toggleLeftSidebar')
   })
 
   it('suppresses plain non-modifier keys when input is focused', () => {

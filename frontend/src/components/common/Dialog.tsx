@@ -66,6 +66,7 @@ export const Dialog: Component<DialogProps> = (props) => {
       ref={dialogRef}
       class={`${styles.standard}${props.tall ? ` ${styles.tall}` : ''}${props.wide ? ` ${styles.wide}` : ''}${props.class ? ` ${props.class}` : ''}`}
       data-testid={props['data-testid']}
+      data-busy={props.busy ? '' : undefined}
       aria-label={props.title}
       onClick={(e) => {
         // Close on backdrop click: check if the click landed outside

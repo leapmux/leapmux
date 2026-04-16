@@ -110,10 +110,8 @@ export function useShortcuts(props: UseShortcutsProps): void {
     // Close the topmost open dialog
     const dialogs = [...document.querySelectorAll('dialog[open]')]
     const last = dialogs.at(-1) as HTMLDialogElement | undefined
-    if (last) {
-      // Dispatch Escape to let the dialog's own handler run
-      last.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    }
+    if (last && !last.hasAttribute('data-busy'))
+      last.close()
   }, 'App')
   cmd('app.quit', 'Quit Application', () => quitApp(), 'App')
 
