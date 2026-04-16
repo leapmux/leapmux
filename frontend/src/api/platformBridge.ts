@@ -310,6 +310,15 @@ export function openWebInspector(): void {
   tauriFireAndForget('open_web_inspector')
 }
 
+export function setMenuItemAccelerator(itemId: string, accelerator?: string): void {
+  if (!isTauriApp())
+    return
+  tauriInvoke('set_menu_item_accelerator', {
+    itemId,
+    accelerator: accelerator ?? null,
+  }).catch(() => {})
+}
+
 async function tauriWindowOp(fn: (win: import('@tauri-apps/api/window').Window) => Promise<void>): Promise<void> {
   if (!isTauriApp())
     return

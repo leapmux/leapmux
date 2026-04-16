@@ -1,5 +1,5 @@
 import type { Platform } from './types'
-import { getBindingForCommand } from './keybindings'
+import { getBindingForCommand, getBindingsForCommand } from './keybindings'
 import { getPlatform } from './platform'
 
 const MAC_MODIFIER_SYMBOLS: Record<string, string> = {
@@ -103,4 +103,13 @@ export function shortcutHint(text: string, commandId: string): string {
 export function getShortcutHint(commandId: string): string | undefined {
   const key = getBindingForCommand(commandId)
   return key ? formatShortcut(key) : undefined
+}
+
+export function getShortcutHints(commandId: string): string[] {
+  return getBindingsForCommand(commandId).map(key => formatShortcut(key))
+}
+
+export function getShortcutHintsText(commandId: string, separator = ' / '): string | undefined {
+  const hints = getShortcutHints(commandId)
+  return hints.length > 0 ? hints.join(separator) : undefined
 }

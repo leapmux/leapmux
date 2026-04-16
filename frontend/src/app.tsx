@@ -7,7 +7,8 @@ import { channelManager } from '~/api/workerRpc'
 import { showInfoToast } from '~/components/common/Toast'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { AboutDialog } from '~/components/shell/AboutDialog'
-import { setShowAboutDialog, showAboutDialog, UserMenuDialogs } from '~/components/shell/UserMenu'
+import { UserMenuDialogs } from '~/components/shell/UserMenu'
+import { setShowAboutDialog, setShowPreferencesDialog, showAboutDialog } from '~/components/shell/UserMenuState'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
@@ -191,6 +192,8 @@ export default function App() {
     if (isTauriApp()) {
       const owner = getOwner()
       platformBridge.onEvent('menu:show-about', () => setShowAboutDialog(true))
+        .then(unlisten => runWithOwner(owner, () => onCleanup(unlisten)))
+      platformBridge.onEvent('menu:show-preferences', () => setShowPreferencesDialog(true))
         .then(unlisten => runWithOwner(owner, () => onCleanup(unlisten)))
 
       getRuntimeState()

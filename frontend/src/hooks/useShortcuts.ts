@@ -6,8 +6,7 @@ import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
-import { isTauriApp, openWebInspector, quitApp, resetWebviewZoom, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
-import { setShowPreferencesDialog } from '~/components/shell/UserMenu'
+import { isTauriApp, openWebInspector, quitApp, resetWebviewZoom, setMenuItemAccelerator, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
@@ -15,6 +14,8 @@ import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/sh
 import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { getPlatform } from '~/lib/shortcuts/platform'
+import { getPrimaryBindingForCommand, tinykeysToTauriAccelerator } from '~/lib/shortcuts/tauriAccelerator'
+import { setShowPreferencesDialog } from '~/components/shell/UserMenuState'
 import { tabKey } from '~/stores/tab.store'
 
 interface UseShortcutsProps {
@@ -205,6 +206,16 @@ export function useShortcuts(props: UseShortcutsProps): void {
     const overrides = customKeybindings()
     const merged = mergeKeybindings(DEFAULT_KEYBINDINGS, overrides)
     activateBindings(merged)
+
+    if (isTauriApp() && getPlatform() === 'mac') {
+      const preferencesBinding = getPrimaryBindingForCommand(merged, 'app.openPreferences')
+      const preferencesAccelerator = preferencesBinding ? tinykeysToTauriAccelerator(preferencesBinding, 'mac') : undefined
+      setMenuItemAccelerator('show-preferences', preferencesAccelerator)
+
+      const inspectorBinding = getPrimaryBindingForCommand(merged, 'app.openWebInspector')
+      const inspectorAccelerator = inspectorBinding ? tinykeysToTauriAccelerator(inspectorBinding, 'mac') : undefined
+      setMenuItemAccelerator('open-web-inspector', inspectorAccelerator)
+    }
   })
 
   onCleanup(() => {

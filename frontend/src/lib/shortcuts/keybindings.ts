@@ -171,13 +171,30 @@ export function unbindAll(): void {
 
 /** Get the key string for a command ID (for displaying in tooltips). */
 export function getBindingForCommand(commandId: string): string | undefined {
+  return getBindingsForCommand(commandId)[0]
+}
+
+/** Get all active key strings for a command ID, preferring currently-enabled bindings. */
+export function getBindingsForCommand(commandId: string): string[] {
+  const active: string[] = []
+  const fallback: string[] = []
+
+  const addUnique = (keys: string[], key: string) => {
+    if (!keys.includes(key))
+      keys.push(key)
+  }
+
   let firstKey: string | undefined
   for (const b of activeBindings()) {
     if (b.command === commandId) {
       if (evaluateWhen(b.when))
-        return b.key
+        addUnique(active, b.key)
+      else
+        addUnique(fallback, b.key)
       firstKey ??= b.key
     }
   }
-  return firstKey
+  if (active.length > 0)
+    return active
+  return fallback.length > 0 ? fallback : (firstKey ? [firstKey] : [])
 }

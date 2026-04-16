@@ -1,6 +1,22 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { formatShortcut } from './display'
+const { getBindingForCommand, getBindingsForCommand } = vi.hoisted(() => ({
+  getBindingForCommand: vi.fn(),
+  getBindingsForCommand: vi.fn((): string[] => []),
+}))
+
+vi.mock('./keybindings', () => ({
+  getBindingForCommand,
+  getBindingsForCommand,
+}))
+
+import { formatShortcut, getShortcutHint, getShortcutHintsText } from './display'
+
+beforeEach(() => {
+  getBindingForCommand.mockReset()
+  getBindingsForCommand.mockReset()
+  getBindingsForCommand.mockReturnValue([])
+})
 
 describe('formatShortcut', () => {
   describe('mac platform', () => {
@@ -102,6 +118,18 @@ describe('formatShortcut', () => {
 
     it('formats Escape', () => {
       expect(formatShortcut('Escape', 'linux')).toBe('Esc')
+    })
+  })
+
+  describe('command hint helpers', () => {
+    it('returns the primary shortcut hint for a command', () => {
+      getBindingForCommand.mockReturnValue('$mod+Comma')
+      expect(getShortcutHint('app.openPreferences')).toBe('Ctrl+,')
+    })
+
+    it('joins multiple shortcut hints for a command', () => {
+      getBindingsForCommand.mockReturnValue(['$mod+Alt+i', 'F12'])
+      expect(getShortcutHintsText('app.openWebInspector')).toBe('Ctrl+Alt+I / F12')
     })
   })
 })

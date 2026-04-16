@@ -3,6 +3,7 @@ import { headerHeight } from '~/styles/tokens'
 
 export const titlebar = style({
   position: 'relative',
+  boxSizing: 'border-box',
   display: 'flex',
   alignItems: 'center',
   height: headerHeight,
@@ -53,4 +54,8 @@ export const titlebarLayout = style({
 export const titlebarContent = style({
   flex: 1,
   overflow: 'hidden',
+})
+
+export const menuTrigger = style({
+  transform: 'translateY(2px)',
 })

@@ -17,7 +17,7 @@ vi.mock('~/api/platformBridge', () => ({
   zoomOutWebview: vi.fn(),
 }))
 
-vi.mock('~/components/shell/UserMenu', () => ({
+vi.mock('~/components/shell/UserMenuState', () => ({
   setShowPreferencesDialog: vi.fn(),
 }))
 
