@@ -1,5 +1,7 @@
+import type { TrailingDebounced } from '~/lib/debounce'
 import type { BuildInfo } from '~/lib/systemInfo'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
+import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
 
 export type PlatformMode = 'web' | 'tauri-desktop-solo' | 'tauri-desktop-distributed' | 'tauri-mobile-distributed'
@@ -332,7 +334,7 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
   let disposed = false
   let unlisten: (() => void) | undefined
   let last: boolean | undefined
-  let refresh: ReturnType<typeof trailingDebounce> | undefined
+  let refresh: TrailingDebounced | undefined
 
   const push = (next: boolean) => {
     if (disposed || next === last)
@@ -373,30 +375,6 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
     refresh?.cancel()
     unlisten?.()
   }
-}
-
-/**
- * Trailing-edge debounce with a `cancel()` method for dispose hooks.
- * Collapses rapid-fire events into a single trailing call after `ms`
- * quiet. Calling `.cancel()` drops any pending invocation.
- */
-function trailingDebounce(fn: () => void, ms: number): (() => void) & { cancel: () => void } {
-  let timer: ReturnType<typeof setTimeout> | null = null
-  const debounced = () => {
-    if (timer !== null)
-      clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = null
-      fn()
-    }, ms)
-  }
-  debounced.cancel = () => {
-    if (timer !== null) {
-      clearTimeout(timer)
-      timer = null
-    }
-  }
-  return debounced
 }
 
 export const platformBridge = {
