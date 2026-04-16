@@ -24,6 +24,11 @@ type gooseRecordedRequest struct {
 
 func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []gooseRecordedRequest) {
 	t.Helper()
+	return newGooseAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+}
+
+func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GooseCLIAgent, func() []gooseRecordedRequest) {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -64,7 +69,11 @@ func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []gooseRecordedRe
 			mu.Unlock()
 			if req.ID != 0 {
 				if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-					ch.(chan json.RawMessage) <- json.RawMessage(`{}`)
+					body := json.RawMessage(`{}`)
+					if respond != nil {
+						body = respond(req.Method)
+					}
+					ch.(chan json.RawMessage) <- body
 				}
 			}
 		}

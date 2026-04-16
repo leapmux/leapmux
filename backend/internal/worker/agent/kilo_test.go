@@ -21,12 +21,15 @@ type kiloRecordedRequest struct {
 
 func newKiloAgentForRPC(t *testing.T) (*KiloAgent, func() []kiloRecordedRequest) {
 	t.Helper()
+	return newKiloAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+}
+
+func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*KiloAgent, func() []kiloRecordedRequest) {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
+	require.NoError(t, err)
 
 	agent := &KiloAgent{
 		acpBase: acpBase{
@@ -62,7 +65,11 @@ func newKiloAgentForRPC(t *testing.T) (*KiloAgent, func() []kiloRecordedRequest)
 			requests = append(requests, kiloRecordedRequest{Method: req.Method, Params: req.Params})
 			mu.Unlock()
 			if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-				ch.(chan json.RawMessage) <- json.RawMessage(`{}`)
+				body := json.RawMessage(`{}`)
+				if respond != nil {
+					body = respond(req.Method)
+				}
+				ch.(chan json.RawMessage) <- body
 			}
 		}
 	}()

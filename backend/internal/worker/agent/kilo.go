@@ -57,6 +57,7 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 	}
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndPrimaryAgent
+	a.refreshFromSession = a.refreshModelAndPrimaryAgentFromSession
 
 	if err := cmd.Start(); err != nil {
 		cancel()

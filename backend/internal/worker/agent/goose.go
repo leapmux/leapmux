@@ -59,6 +59,7 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Provider
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndPermissionMode
+	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
 
 	if err := cmd.Start(); err != nil {
 		cancel()

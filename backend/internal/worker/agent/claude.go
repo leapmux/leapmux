@@ -510,6 +510,12 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 		"fastMode", a.fastMode,
 		"alwaysThinking", a.alwaysThinking,
 	)
+
+	a.sink.BroadcastSettingsRefreshed(a.model, a.effort, a.confirmedPermissionMode, map[string]string{
+		ExtraKeyOutputStyle:    a.outputStyle,
+		ExtraKeyFastMode:       a.fastMode,
+		ExtraKeyAlwaysThinking: a.alwaysThinking,
+	})
 }
 
 func sliceContains(s []string, v string) bool {

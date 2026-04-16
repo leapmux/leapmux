@@ -76,6 +76,7 @@ type acpBase struct {
 	extraSessionUpdate     acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod            acpMethodHandler        // optional provider-specific request/notification handler
 	reapplySettings        func()                  // called by ClearContext after session/new to re-apply model, mode, etc.
+	refreshFromSession     func(json.RawMessage)   // called by ClearContext after reapplySettings to sync state from the session response
 	sessionID              string
 	workingDir             string
 	model                  string
@@ -218,6 +219,9 @@ func (b *acpBase) ClearContext() (string, bool) {
 	if b.reapplySettings != nil {
 		b.reapplySettings()
 	}
+	if b.refreshFromSession != nil {
+		b.refreshFromSession(resp)
+	}
 	return session.SessionID, true
 }
 
@@ -289,6 +293,73 @@ func (b *acpBase) reapplyModelAndPrimaryAgent() {
 	b.mu.Unlock()
 	acpApplySetting(b.providerName, b.agentID, "model", model, b.setModel)
 	acpApplySetting(b.providerName, b.agentID, "primary agent", primaryAgent, b.setPrimaryAgent)
+}
+
+// refreshModelAndPermissionModeFromSession parses the session response and
+// updates the model and permission mode fields. Used by agents that track
+// permissionMode (Gemini, Copilot, Goose).
+func (b *acpBase) refreshModelAndPermissionModeFromSession(resp json.RawMessage) {
+	model, mode := parseSessionModelAndMode(resp)
+	b.mu.Lock()
+	if model != "" {
+		b.model = model
+	}
+	if mode != "" {
+		b.permissionMode = mode
+	}
+	b.mu.Unlock()
+	slog.Info("acp agent settings refreshed from session",
+		"provider", b.providerName,
+		"agent_id", b.agentID,
+		"model", b.model,
+		"mode", b.permissionMode,
+	)
+	b.sink.BroadcastSettingsRefreshed(b.model, "", b.permissionMode, nil)
+}
+
+// refreshModelAndPrimaryAgentFromSession parses the session response and
+// updates the model and primary agent fields. Used by agents that track
+// currentPrimaryAgent (OpenCode, Kilo).
+func (b *acpBase) refreshModelAndPrimaryAgentFromSession(resp json.RawMessage) {
+	model, mode := parseSessionModelAndMode(resp)
+	b.mu.Lock()
+	if model != "" {
+		b.model = model
+	}
+	if mode != "" {
+		b.currentPrimaryAgent = mode
+	}
+	b.mu.Unlock()
+	slog.Info("acp agent settings refreshed from session",
+		"provider", b.providerName,
+		"agent_id", b.agentID,
+		"model", b.model,
+		"primaryAgent", b.currentPrimaryAgent,
+	)
+	b.sink.BroadcastSettingsRefreshed(b.model, "", "", map[string]string{
+		OptionGroupKeyPrimaryAgent: b.currentPrimaryAgent,
+	})
+}
+
+// parseSessionModelAndMode extracts currentModelId and currentModeId from
+// an ACP session response.
+func parseSessionModelAndMode(resp json.RawMessage) (model, mode string) {
+	var session struct {
+		Models struct {
+			CurrentModelID string `json:"currentModelId"`
+		} `json:"models"`
+		Modes *struct {
+			CurrentModeID string `json:"currentModeId"`
+		} `json:"modes"`
+	}
+	if err := json.Unmarshal(resp, &session); err != nil {
+		return "", ""
+	}
+	mode = ""
+	if session.Modes != nil {
+		mode = session.Modes.CurrentModeID
+	}
+	return session.Models.CurrentModelID, mode
 }
 
 // permissionModeOptionGroups returns AvailableOptionGroups for agents that

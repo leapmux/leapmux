@@ -63,6 +63,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	a.extraSessionUpdate = a.handleExtraSessionUpdate
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndPermissionMode
+	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
 
 	if err := cmd.Start(); err != nil {
 		cancel()

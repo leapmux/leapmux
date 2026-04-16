@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/version"
@@ -62,6 +63,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	a.extraMethod = a.handleExtraMethod
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndMode
+	a.refreshFromSession = a.refreshCursorFromSession
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -169,6 +171,27 @@ func (a *CursorCLIAgent) reapplyModelAndMode() {
 	a.mu.Unlock()
 	acpApplySetting(a.providerName, a.agentID, "model", model, a.setCursorModel)
 	acpApplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
+}
+
+// refreshCursorFromSession parses the session response and updates model
+// (with Cursor-specific normalization) and permission mode.
+func (a *CursorCLIAgent) refreshCursorFromSession(resp json.RawMessage) {
+	model, mode := parseSessionModelAndMode(resp)
+	a.mu.Lock()
+	if model != "" {
+		a.model = normalizeCursorModelID(model)
+	}
+	if mode != "" {
+		a.permissionMode = mode
+	}
+	a.mu.Unlock()
+	slog.Info("acp agent settings refreshed from session",
+		"provider", a.providerName,
+		"agent_id", a.agentID,
+		"model", a.model,
+		"mode", a.permissionMode,
+	)
+	a.sink.BroadcastSettingsRefreshed(a.model, "", a.permissionMode, nil)
 }
 
 var cursorCLIAvailableModels = []*leapmuxv1.AvailableModel{

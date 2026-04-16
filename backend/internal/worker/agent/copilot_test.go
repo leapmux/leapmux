@@ -24,6 +24,11 @@ type copilotRecordedRequest struct {
 
 func newCopilotAgentForRPC(t *testing.T) (*CopilotCLIAgent, func() []copilotRecordedRequest) {
 	t.Helper()
+	return newCopilotAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+}
+
+func newCopilotAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CopilotCLIAgent, func() []copilotRecordedRequest) {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -64,7 +69,11 @@ func newCopilotAgentForRPC(t *testing.T) (*CopilotCLIAgent, func() []copilotReco
 			mu.Unlock()
 			if req.ID != 0 {
 				if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-					ch.(chan json.RawMessage) <- json.RawMessage(`{}`)
+					body := json.RawMessage(`{}`)
+					if respond != nil {
+						body = respond(req.Method)
+					}
+					ch.(chan json.RawMessage) <- body
 				}
 			}
 		}
