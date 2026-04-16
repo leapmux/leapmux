@@ -295,51 +295,55 @@ func (b *acpBase) reapplyModelAndPrimaryAgent() {
 	acpApplySetting(b.providerName, b.agentID, "primary agent", primaryAgent, b.setPrimaryAgent)
 }
 
-// refreshModelAndPermissionModeFromSession parses the session response and
-// updates the model and permission mode fields. Used by agents that track
-// permissionMode (Gemini, Copilot, Goose).
-func (b *acpBase) refreshModelAndPermissionModeFromSession(resp json.RawMessage) {
-	model, mode := parseSessionModelAndMode(resp)
+// applySessionRefresh parses the session response, updates b.model (optionally
+// normalized via `normalizeModel`) and the field pointed to by `secondary`,
+// then logs and broadcasts. `secondaryLogKey` is the slog attribute name for
+// the secondary field (e.g. "mode", "primaryAgent").
+func (b *acpBase) applySessionRefresh(
+	resp json.RawMessage,
+	normalizeModel func(string) string,
+	secondary *string,
+	secondaryLogKey string,
+	broadcast func(model, secondary string),
+) {
+	model, secondaryVal := parseSessionModelAndMode(resp)
 	b.mu.Lock()
 	if model != "" {
+		if normalizeModel != nil {
+			model = normalizeModel(model)
+		}
 		b.model = model
 	}
-	if mode != "" {
-		b.permissionMode = mode
+	if secondaryVal != "" {
+		*secondary = secondaryVal
 	}
-	snapshotModel, snapshotMode := b.model, b.permissionMode
+	snapshotModel := b.model
+	snapshotSecondary := *secondary
 	b.mu.Unlock()
 	slog.Info("acp agent settings refreshed from session",
 		"provider", b.providerName,
 		"agent_id", b.agentID,
 		"model", snapshotModel,
-		"mode", snapshotMode,
+		secondaryLogKey, snapshotSecondary,
 	)
-	b.sink.BroadcastSettingsRefreshed(snapshotModel, "", snapshotMode, nil)
+	broadcast(snapshotModel, snapshotSecondary)
 }
 
-// refreshModelAndPrimaryAgentFromSession parses the session response and
-// updates the model and primary agent fields. Used by agents that track
+// refreshModelAndPermissionModeFromSession is used by agents that track
+// permissionMode (Gemini, Copilot, Goose).
+func (b *acpBase) refreshModelAndPermissionModeFromSession(resp json.RawMessage) {
+	b.applySessionRefresh(resp, nil, &b.permissionMode, "mode", func(model, mode string) {
+		b.sink.BroadcastSettingsRefreshed(model, "", mode, nil)
+	})
+}
+
+// refreshModelAndPrimaryAgentFromSession is used by agents that track
 // currentPrimaryAgent (OpenCode, Kilo).
 func (b *acpBase) refreshModelAndPrimaryAgentFromSession(resp json.RawMessage) {
-	model, mode := parseSessionModelAndMode(resp)
-	b.mu.Lock()
-	if model != "" {
-		b.model = model
-	}
-	if mode != "" {
-		b.currentPrimaryAgent = mode
-	}
-	snapshotModel, snapshotAgent := b.model, b.currentPrimaryAgent
-	b.mu.Unlock()
-	slog.Info("acp agent settings refreshed from session",
-		"provider", b.providerName,
-		"agent_id", b.agentID,
-		"model", snapshotModel,
-		"primaryAgent", snapshotAgent,
-	)
-	b.sink.BroadcastSettingsRefreshed(snapshotModel, "", "", map[string]string{
-		OptionGroupKeyPrimaryAgent: snapshotAgent,
+	b.applySessionRefresh(resp, nil, &b.currentPrimaryAgent, "primaryAgent", func(model, agent string) {
+		b.sink.BroadcastSettingsRefreshed(model, "", "", map[string]string{
+			OptionGroupKeyPrimaryAgent: agent,
+		})
 	})
 }
 

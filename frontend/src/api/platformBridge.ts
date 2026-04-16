@@ -264,22 +264,17 @@ export async function restoreWindowGeometry(width: number, height: number, maxim
     await appWindow.show()
 
     // Save window geometry on resize / maximize / unmaximize, debounced.
-    let saveTimer: ReturnType<typeof setTimeout> | null = null
-    const saveGeometry = () => {
-      if (saveTimer)
-        clearTimeout(saveTimer)
-      saveTimer = setTimeout(async () => {
-        try {
-          const isMax = await appWindow.isMaximized()
-          tauriInvoke('save_window_geometry', {
-            width: window.innerWidth,
-            height: window.innerHeight,
-            maximized: isMax,
-          }).catch(() => {})
-        }
-        catch { /* best-effort */ }
-      }, 500)
-    }
+    const saveGeometry = trailingDebounce(async () => {
+      try {
+        const isMax = await appWindow.isMaximized()
+        tauriInvoke('save_window_geometry', {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          maximized: isMax,
+        }).catch(() => {})
+      }
+      catch { /* best-effort */ }
+    }, 500)
     window.addEventListener('resize', saveGeometry)
   }
   catch (err) {
@@ -337,9 +332,10 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
   let disposed = false
   let unlisten: (() => void) | undefined
   let last: boolean | undefined
+  let refresh: ReturnType<typeof trailingDebounce> | undefined
 
   const push = (next: boolean) => {
-    if (next === last)
+    if (disposed || next === last)
       return
     last = next
     onChange(next)
@@ -357,27 +353,50 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
     if (disposed)
       return
     try {
-      let debounce: ReturnType<typeof setTimeout> | null = null
-      unlisten = await win.onResized(() => {
-        if (debounce !== null)
-          clearTimeout(debounce)
-        debounce = setTimeout(async () => {
-          try {
-            push(await win.isMaximized())
-          }
-          catch { /* best-effort */ }
-        }, 150)
-      })
+      refresh = trailingDebounce(async () => {
+        try {
+          push(await win.isMaximized())
+        }
+        catch { /* best-effort */ }
+      }, 150)
+      unlisten = await win.onResized(refresh)
     }
     catch { /* best-effort */ }
-    if (disposed)
+    if (disposed) {
+      refresh?.cancel()
       unlisten?.()
+    }
   })()
 
   return () => {
     disposed = true
+    refresh?.cancel()
     unlisten?.()
   }
+}
+
+/**
+ * Trailing-edge debounce with a `cancel()` method for dispose hooks.
+ * Collapses rapid-fire events into a single trailing call after `ms`
+ * quiet. Calling `.cancel()` drops any pending invocation.
+ */
+function trailingDebounce(fn: () => void, ms: number): (() => void) & { cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const debounced = () => {
+    if (timer !== null)
+      clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      fn()
+    }, ms)
+  }
+  debounced.cancel = () => {
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+  }
+  return debounced
 }
 
 export const platformBridge = {
