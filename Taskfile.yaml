@@ -295,6 +295,16 @@ tasks:
       # Move sidecar from Resources/_up_/go/bin/ to MacOS/ for a cleaner bundle layout.
       - mv "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_/go/bin/"* "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/"
       - rm -rf "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_"
+      - |
+        APP_PATH="desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
+        if [ -n "${MACOS_CODESIGN_IDENTITY:-}" ]; then
+          echo "Signing macOS app with identity: ${MACOS_CODESIGN_IDENTITY}"
+          codesign --force --deep --sign "${MACOS_CODESIGN_IDENTITY}" --timestamp --options runtime "${APP_PATH}"
+        else
+          echo "MACOS_CODESIGN_IDENTITY is not set; using ad hoc signing for the macOS app" >&2
+          codesign --force --deep --sign - "${APP_PATH}"
+        fi
+        codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
       - rsync -a --delete "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/" "LeapMux Desktop.app/"
       - cd frontend/node_modules/macos-alias && npx node-gyp rebuild 2>/dev/null || true
       - mkdir -p desktop/rust/target/release/bundle/dmg

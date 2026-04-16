@@ -12,7 +12,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createSignal, For, Show } from 'solid-js'
+import { createSignal, For, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLogger } from '~/lib/logger'
@@ -162,10 +162,10 @@ export function ThinkingBubble(props: {
   context?: RenderContext
   defaultExpanded?: boolean
 }): JSX.Element {
-  // eslint-disable-next-line solid/reactivity -- stateKey is a static string, never changes
+  const stateKey = untrack(() => props.stateKey)
   const [expanded, setExpanded] = useSharedExpandedState(
     () => props.context,
-    props.stateKey,
+    stateKey,
     () => props.defaultExpanded ?? props.context?.expandAgentThoughts ?? true,
   )
 

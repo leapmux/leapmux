@@ -15,15 +15,12 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import Terminal from 'lucide-solid/icons/terminal'
 import Wrench from 'lucide-solid/icons/wrench'
 import { createEffect, For, Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
-import { Tooltip } from '~/components/common/Tooltip'
 import { TodoList } from '~/components/todo/TodoList'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { codexPlanToTodos, todosToMarkdown } from '~/lib/messageParser'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
-import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from '../diffUtils'
 import { markdownContent } from '../markdownContent.css'
 import { ThinkingBubble, useSharedExpandedState } from '../messageRenderers'
@@ -47,7 +44,6 @@ import {
   toolResultContentPre,
   toolResultError,
   toolResultPrompt,
-  toolUseIcon,
 } from '../toolStyles.css'
 
 /** Regex to strip shell wrappers like `/bin/zsh -lc '...'` from commands. */
