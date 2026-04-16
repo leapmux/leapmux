@@ -184,14 +184,15 @@ func (a *CursorCLIAgent) refreshCursorFromSession(resp json.RawMessage) {
 	if mode != "" {
 		a.permissionMode = mode
 	}
+	snapshotModel, snapshotMode := a.model, a.permissionMode
 	a.mu.Unlock()
 	slog.Info("acp agent settings refreshed from session",
 		"provider", a.providerName,
 		"agent_id", a.agentID,
-		"model", a.model,
-		"mode", a.permissionMode,
+		"model", snapshotModel,
+		"mode", snapshotMode,
 	)
-	a.sink.BroadcastSettingsRefreshed(a.model, "", a.permissionMode, nil)
+	a.sink.BroadcastSettingsRefreshed(snapshotModel, "", snapshotMode, nil)
 }
 
 var cursorCLIAvailableModels = []*leapmuxv1.AvailableModel{

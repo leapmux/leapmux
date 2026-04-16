@@ -357,11 +357,16 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
     if (disposed)
       return
     try {
-      unlisten = await win.onResized(async () => {
-        try {
-          push(await win.isMaximized())
-        }
-        catch { /* best-effort */ }
+      let debounce: ReturnType<typeof setTimeout> | null = null
+      unlisten = await win.onResized(() => {
+        if (debounce !== null)
+          clearTimeout(debounce)
+        debounce = setTimeout(async () => {
+          try {
+            push(await win.isMaximized())
+          }
+          catch { /* best-effort */ }
+        }, 150)
       })
     }
     catch { /* best-effort */ }

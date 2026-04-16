@@ -636,22 +636,24 @@ func (a *CodexAgent) refreshSettingsFromAgent() {
 	if s := jsonString(result.Config.ServiceTier); s != "" {
 		a.serviceTier = s
 	}
+	model, effort, approval := a.model, a.effort, a.approvalPolicy
+	sandbox, network, collab, tier := a.sandboxPolicy, a.networkAccess, a.collaborationMode, a.serviceTier
 	a.mu.Unlock()
 
 	slog.Info("codex agent settings refreshed",
 		"agent_id", a.agentID,
-		"model", a.model,
-		"effort", a.effort,
-		"approvalPolicy", a.approvalPolicy,
-		"sandboxPolicy", a.sandboxPolicy,
-		"serviceTier", a.serviceTier,
+		"model", model,
+		"effort", effort,
+		"approvalPolicy", approval,
+		"sandboxPolicy", sandbox,
+		"serviceTier", tier,
 	)
 
-	a.sink.BroadcastSettingsRefreshed(a.model, a.effort, a.approvalPolicy, map[string]string{
-		CodexExtraSandboxPolicy:     a.sandboxPolicy,
-		CodexExtraNetworkAccess:     a.networkAccess,
-		CodexExtraCollaborationMode: a.collaborationMode,
-		CodexExtraServiceTier:       a.serviceTier,
+	a.sink.BroadcastSettingsRefreshed(model, effort, approval, map[string]string{
+		CodexExtraSandboxPolicy:     sandbox,
+		CodexExtraNetworkAccess:     network,
+		CodexExtraCollaborationMode: collab,
+		CodexExtraServiceTier:       tier,
 	})
 }
 

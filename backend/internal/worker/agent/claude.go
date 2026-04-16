@@ -316,20 +316,25 @@ func buildClaudeContentBlocks(content string, classified []classifiedAttachment)
 
 // CurrentSettings returns the current settings for this agent.
 func (a *ClaudeCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
+	a.mu.Lock()
+	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
+	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
+	a.mu.Unlock()
+
 	extra := map[string]string{}
-	if a.outputStyle != "" {
-		extra[ExtraKeyOutputStyle] = a.outputStyle
+	if outputStyle != "" {
+		extra[ExtraKeyOutputStyle] = outputStyle
 	}
-	if a.fastMode != "" {
-		extra[ExtraKeyFastMode] = a.fastMode
+	if fastMode != "" {
+		extra[ExtraKeyFastMode] = fastMode
 	}
-	if a.alwaysThinking != "" {
-		extra[ExtraKeyAlwaysThinking] = a.alwaysThinking
+	if thinking != "" {
+		extra[ExtraKeyAlwaysThinking] = thinking
 	}
 	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		Effort:         a.effort,
-		PermissionMode: a.confirmedPermissionMode,
+		Model:          model,
+		Effort:         effort,
+		PermissionMode: mode,
 		ExtraSettings:  extra,
 	}
 }
@@ -350,17 +355,22 @@ func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 // fast mode (when available), and extended thinking, in addition to the
 // static permission mode group.
 func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	a.mu.Lock()
+	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
+	availStyles := a.availableOutputStyles
+	a.mu.Unlock()
+
 	groups := []*leapmuxv1.AvailableOptionGroup{
 		AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0], // permission mode
 	}
 
-	if len(a.availableOutputStyles) > 0 {
-		opts := make([]*leapmuxv1.AvailableOption, 0, len(a.availableOutputStyles))
-		for _, s := range a.availableOutputStyles {
+	if len(availStyles) > 0 {
+		opts := make([]*leapmuxv1.AvailableOption, 0, len(availStyles))
+		for _, s := range availStyles {
 			opts = append(opts, &leapmuxv1.AvailableOption{
 				Id:        s,
 				Name:      titleCaseID(s, ""),
-				IsDefault: s == a.outputStyle,
+				IsDefault: s == outputStyle,
 			})
 		}
 		groups = append(groups, &leapmuxv1.AvailableOptionGroup{
@@ -374,8 +384,8 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 		Key:   ExtraKeyFastMode,
 		Label: "Fast Mode",
 		Options: []*leapmuxv1.AvailableOption{
-			{Id: "on", Name: "On", IsDefault: a.fastMode == "on"},
-			{Id: "off", Name: "Off", IsDefault: a.fastMode != "on"},
+			{Id: "on", Name: "On", IsDefault: fastMode == "on"},
+			{Id: "off", Name: "Off", IsDefault: fastMode != "on"},
 		},
 	})
 
@@ -383,8 +393,8 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 		Key:   ExtraKeyAlwaysThinking,
 		Label: "Extended Thinking",
 		Options: []*leapmuxv1.AvailableOption{
-			{Id: "on", Name: "On", IsDefault: a.alwaysThinking != "off"},
-			{Id: "off", Name: "Off", IsDefault: a.alwaysThinking == "off"},
+			{Id: "on", Name: "On", IsDefault: thinking != "off"},
+			{Id: "off", Name: "Off", IsDefault: thinking == "off"},
 		},
 	})
 
@@ -395,26 +405,32 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 // request, avoiding a process restart. Returns true if the update was handled
 // (or nothing changed), false if a restart is needed.
 func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
+	a.mu.Lock()
+	curModel, curEffort := a.model, a.effort
+	curOutputStyle, curFastMode, curThinking := a.outputStyle, a.fastMode, a.alwaysThinking
+	availStyles := a.availableOutputStyles
+	a.mu.Unlock()
+
 	flagSettings := map[string]interface{}{}
 
-	if s.Model != "" && s.Model != a.model {
+	if s.Model != "" && s.Model != curModel {
 		flagSettings["model"] = s.Model
 	}
-	if s.Effort != "" && s.Effort != a.effort {
+	if s.Effort != "" && s.Effort != curEffort {
 		flagSettings["effortLevel"] = s.Effort
 	}
 
 	extra := s.ExtraSettings
-	if v := extra[ExtraKeyOutputStyle]; v != "" && v != a.outputStyle {
-		if !slices.Contains(a.availableOutputStyles, v) {
+	if v := extra[ExtraKeyOutputStyle]; v != "" && v != curOutputStyle {
+		if !slices.Contains(availStyles, v) {
 			return false
 		}
 		flagSettings["outputStyle"] = v
 	}
-	if v := extra[ExtraKeyFastMode]; v != "" && v != a.fastMode {
+	if v := extra[ExtraKeyFastMode]; v != "" && v != curFastMode {
 		flagSettings["fastMode"] = flagSettingOnOff(v)
 	}
-	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != a.alwaysThinking {
+	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != curThinking {
 		flagSettings["alwaysThinkingEnabled"] = flagSettingOffOn(v)
 	}
 
@@ -463,6 +479,7 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 		return
 	}
 
+	a.mu.Lock()
 	if settings.Applied.Model != "" {
 		a.model = settings.Applied.Model
 	}
@@ -486,20 +503,23 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 			a.alwaysThinking = "off"
 		}
 	}
+	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
+	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
+	a.mu.Unlock()
 
 	slog.Info("agent settings refreshed",
 		"agent_id", a.agentID,
-		"model", a.model,
-		"effort", a.effort,
-		"outputStyle", a.outputStyle,
-		"fastMode", a.fastMode,
-		"alwaysThinking", a.alwaysThinking,
+		"model", model,
+		"effort", effort,
+		"outputStyle", outputStyle,
+		"fastMode", fastMode,
+		"alwaysThinking", thinking,
 	)
 
-	a.sink.BroadcastSettingsRefreshed(a.model, a.effort, a.confirmedPermissionMode, map[string]string{
-		ExtraKeyOutputStyle:    a.outputStyle,
-		ExtraKeyFastMode:       a.fastMode,
-		ExtraKeyAlwaysThinking: a.alwaysThinking,
+	a.sink.BroadcastSettingsRefreshed(model, effort, mode, map[string]string{
+		ExtraKeyOutputStyle:    outputStyle,
+		ExtraKeyFastMode:       fastMode,
+		ExtraKeyAlwaysThinking: thinking,
 	})
 }
 

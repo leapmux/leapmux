@@ -307,14 +307,15 @@ func (b *acpBase) refreshModelAndPermissionModeFromSession(resp json.RawMessage)
 	if mode != "" {
 		b.permissionMode = mode
 	}
+	snapshotModel, snapshotMode := b.model, b.permissionMode
 	b.mu.Unlock()
 	slog.Info("acp agent settings refreshed from session",
 		"provider", b.providerName,
 		"agent_id", b.agentID,
-		"model", b.model,
-		"mode", b.permissionMode,
+		"model", snapshotModel,
+		"mode", snapshotMode,
 	)
-	b.sink.BroadcastSettingsRefreshed(b.model, "", b.permissionMode, nil)
+	b.sink.BroadcastSettingsRefreshed(snapshotModel, "", snapshotMode, nil)
 }
 
 // refreshModelAndPrimaryAgentFromSession parses the session response and
@@ -329,15 +330,16 @@ func (b *acpBase) refreshModelAndPrimaryAgentFromSession(resp json.RawMessage) {
 	if mode != "" {
 		b.currentPrimaryAgent = mode
 	}
+	snapshotModel, snapshotAgent := b.model, b.currentPrimaryAgent
 	b.mu.Unlock()
 	slog.Info("acp agent settings refreshed from session",
 		"provider", b.providerName,
 		"agent_id", b.agentID,
-		"model", b.model,
-		"primaryAgent", b.currentPrimaryAgent,
+		"model", snapshotModel,
+		"primaryAgent", snapshotAgent,
 	)
-	b.sink.BroadcastSettingsRefreshed(b.model, "", "", map[string]string{
-		OptionGroupKeyPrimaryAgent: b.currentPrimaryAgent,
+	b.sink.BroadcastSettingsRefreshed(snapshotModel, "", "", map[string]string{
+		OptionGroupKeyPrimaryAgent: snapshotAgent,
 	})
 }
 
@@ -355,7 +357,6 @@ func parseSessionModelAndMode(resp json.RawMessage) (model, mode string) {
 	if err := json.Unmarshal(resp, &session); err != nil {
 		return "", ""
 	}
-	mode = ""
 	if session.Modes != nil {
 		mode = session.Modes.CurrentModeID
 	}
