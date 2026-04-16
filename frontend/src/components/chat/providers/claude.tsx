@@ -276,17 +276,15 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
             fieldsetClass={firstRightClass('output')}
           />
         </Show>
-        <div>
-          <RadioGroup
-            label={modeGroup()?.label || 'Permission Mode'}
-            items={modeItems()}
-            testIdPrefix="permission-mode"
-            name={`${menuId}-mode`}
-            current={currentMode()}
-            onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
-            fieldsetClass={firstRightClass('mode')}
-          />
-        </div>
+        <RadioGroup
+          label={modeGroup()?.label || 'Permission Mode'}
+          items={modeItems()}
+          testIdPrefix="permission-mode"
+          name={`${menuId}-mode`}
+          current={currentMode()}
+          onChange={v => props.onPermissionModeChange?.(v as PermissionMode)}
+          fieldsetClass={firstRightClass('mode')}
+        />
       </div>
     </div>
   )

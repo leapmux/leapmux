@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -226,18 +227,10 @@ func (a *ClaudeCodeAgent) buildStartupFlagSettings(extra map[string]string) map[
 		fs["outputStyle"] = v
 	}
 	if v := extra[ExtraKeyFastMode]; v != "" && v != a.fastMode {
-		if v == "on" {
-			fs["fastMode"] = true
-		} else {
-			fs["fastMode"] = nil
-		}
+		fs["fastMode"] = flagSettingOnOff(v)
 	}
 	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != a.alwaysThinking {
-		if v == "off" {
-			fs["alwaysThinkingEnabled"] = false
-		} else {
-			fs["alwaysThinkingEnabled"] = nil
-		}
+		fs["alwaysThinkingEnabled"] = flagSettingOffOn(v)
 	}
 	return fs
 }
@@ -413,24 +406,16 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 
 	extra := s.ExtraSettings
 	if v := extra[ExtraKeyOutputStyle]; v != "" && v != a.outputStyle {
-		if !sliceContains(a.availableOutputStyles, v) {
+		if !slices.Contains(a.availableOutputStyles, v) {
 			return false
 		}
 		flagSettings["outputStyle"] = v
 	}
 	if v := extra[ExtraKeyFastMode]; v != "" && v != a.fastMode {
-		if v == "on" {
-			flagSettings["fastMode"] = true
-		} else {
-			flagSettings["fastMode"] = nil
-		}
+		flagSettings["fastMode"] = flagSettingOnOff(v)
 	}
 	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != a.alwaysThinking {
-		if v == "off" {
-			flagSettings["alwaysThinkingEnabled"] = false
-		} else {
-			flagSettings["alwaysThinkingEnabled"] = nil
-		}
+		flagSettings["alwaysThinkingEnabled"] = flagSettingOffOn(v)
 	}
 
 	if len(flagSettings) == 0 {
@@ -518,13 +503,24 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 	})
 }
 
-func sliceContains(s []string, v string) bool {
-	for _, item := range s {
-		if item == v {
-			return true
-		}
+// flagSettingOnOff maps an "on"/"off" string to a boolean flag setting value
+// for apply_flag_settings. "on" → true, anything else → nil (which resets
+// the flag to its default).
+func flagSettingOnOff(v string) interface{} {
+	if v == "on" {
+		return true
 	}
-	return false
+	return nil
+}
+
+// flagSettingOffOn maps an "off"/"on" string to a boolean flag setting value
+// for apply_flag_settings. "off" → false, anything else → nil (which resets
+// the flag to its default).
+func flagSettingOffOn(v string) interface{} {
+	if v == "off" {
+		return false
+	}
+	return nil
 }
 
 // claudeCodeEfforts shared across models (except haiku gets none, and only opus gets max).

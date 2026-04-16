@@ -267,7 +267,7 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
         </div>
         <button
           class="outline small"
-          style={{ "margin-bottom": "var(--space-2)" }}
+          style={{ 'margin-bottom': 'var(--space-2)' }}
           data-testid="codex-bypass-permissions"
           disabled={currentNetwork() === 'enabled' && currentSandbox() === 'danger-full-access' && currentMode() === 'never'}
           onClick={() => {
