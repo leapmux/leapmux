@@ -335,33 +335,6 @@ func TestUpdateSettings_MultipleChanges(t *testing.T) {
 	assert.Equal(t, "on", a.fastMode)
 }
 
-// --- Unit tests for ClearContext ---
-
-func TestClearContext_SendsClearCommand(t *testing.T) {
-	a := newTestAgentWithControlProtocol(t)
-	defer stopTestAgent(a)
-
-	sessionID, ok := a.ClearContext()
-	assert.True(t, ok, "ClearContext should return true for a running agent")
-	assert.Empty(t, sessionID, "session ID should be empty (updated asynchronously)")
-}
-
-func TestClearContext_FailsWhenStopped(t *testing.T) {
-	ctx := context.Background()
-	agent, err := mockStart(ctx, Options{
-		AgentID:    "clear-stop-test",
-		Model:      "test",
-		WorkingDir: t.TempDir(),
-	}, noopSink{})
-	require.NoError(t, err)
-
-	agent.Stop()
-	_ = agent.Wait()
-
-	_, ok := agent.ClearContext()
-	assert.False(t, ok, "ClearContext should return false when agent is stopped")
-}
-
 // --- Unit tests for handlePendingControlResponse parsing ---
 
 func TestHandlePendingControlResponse_ParsesInitializeFields(t *testing.T) {

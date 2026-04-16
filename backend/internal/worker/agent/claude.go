@@ -450,16 +450,6 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	return true
 }
 
-// ClearContext sends /clear to Claude Code, clearing the conversation context
-// without restarting the process. The new session ID arrives asynchronously
-// via the system init message on the next turn.
-func (a *ClaudeCodeAgent) ClearContext() (string, bool) {
-	if err := a.SendInput("/clear", nil); err != nil {
-		return "", false
-	}
-	return "", true
-}
-
 // refreshSettingsFromAgent sends get_settings and updates internal state with
 // the actual applied values from Claude Code.
 func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {

@@ -1064,17 +1064,9 @@ func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapm
 	})
 }
 
-// handleClearContext implements the /clear command. For providers that support
-// in-process context clearing (e.g. Claude Code), the running process is
-// reused. Otherwise, the agent is stopped and restarted with a fresh context.
+// handleClearContext implements the /clear command by restarting the agent
+// without resuming the previous session, giving it a fresh context window.
 func (svc *Context) handleClearContext(agentID string) {
-	// Try in-process clearing first (e.g. Claude Code sends /clear internally).
-	if _, ok := svc.Agents.ClearContext(agentID); ok {
-		svc.Output.ResetSpanTracker(agentID)
-		slog.Info("clear context: cleared in-process", "agent_id", agentID)
-		return
-	}
-
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("clear context: failed to fetch agent", "agent_id", agentID, "error", err)
