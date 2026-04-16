@@ -788,8 +788,8 @@ func init() {
 				Key:   CodexExtraServiceTier,
 				Label: "Fast Mode",
 				Options: []*leapmuxv1.AvailableOption{
-					{Id: CodexDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier", IsDefault: true},
 					{Id: CodexServiceTierFast, Name: "On", Description: "Use Codex fast mode for future turns"},
+					{Id: CodexDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier", IsDefault: true},
 				},
 			},
 			{

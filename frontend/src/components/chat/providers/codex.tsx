@@ -265,6 +265,19 @@ function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
             fieldsetClass={firstRightClass('mode')}
           />
         </div>
+        <button
+          class="outline small"
+          style={{ "margin-bottom": "var(--space-2)" }}
+          data-testid="codex-bypass-permissions"
+          disabled={currentNetwork() === 'enabled' && currentSandbox() === 'danger-full-access' && currentMode() === 'never'}
+          onClick={() => {
+            props.onOptionGroupChange?.(CODEX_EXTRA_NETWORK_ACCESS, 'enabled')
+            props.onOptionGroupChange?.(CODEX_EXTRA_SANDBOX_POLICY, 'danger-full-access')
+            props.onPermissionModeChange?.('never' as PermissionMode)
+          }}
+        >
+          Bypass permissions
+        </button>
       </div>
     </div>
   )
