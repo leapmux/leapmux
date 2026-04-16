@@ -79,6 +79,11 @@ describe('customTitlebar hamburger menu', () => {
     initialMaximized.value = false
   })
 
+  it('positions the hamburger menu below the titlebar on Linux', async () => {
+    const { getHamburgerPlacement } = await import('./CustomTitlebar')
+    expect(getHamburgerPlacement('linux')).toEqual({ placement: 'auto', yOffset: 34 })
+  })
+
   it('renders the hamburger trigger on Linux desktop', async () => {
     await renderTitlebar()
     expect(screen.getByTestId('app-menu-trigger')).toBeInTheDocument()
