@@ -780,8 +780,7 @@ export const AppShell: ParentComponent = (props) => {
     // Tell the worker to reassign the tab's workspace, then persist
     // both workspaces to the hub. The RPC must complete before persist
     // so that a subsequent listAgents returns the agent under the new
-    // workspace. Persist without debounce — cross-workspace moves are
-    // discrete actions that must survive an immediate page refresh.
+    // workspace.
     const rpcDone = (workerId && tab.type !== TabType.FILE)
       ? moveTabWorkspace(workerId, {
           tabType: tab.type,
@@ -821,7 +820,7 @@ export const AppShell: ParentComponent = (props) => {
         }
         catch { /* ignore — will be picked up on next restore */ }
       }
-      persistMultiLayout(true)
+      persistMultiLayout()
     }).catch((err: unknown) => {
       // Worker RPC failed — revert the optimistic UI update.
       // Move the tab back to the source workspace.

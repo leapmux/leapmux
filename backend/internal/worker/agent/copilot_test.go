@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -17,72 +16,19 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-type copilotRecordedRequest struct {
-	Method string
-	Params map[string]interface{}
+func newCopilotAgentForRPC(t *testing.T) (*CopilotCLIAgent, func() []recordedRequest) {
+	return newACPAgentForRPC(t,
+		func() *CopilotCLIAgent { return &CopilotCLIAgent{} },
+		func(a *CopilotCLIAgent) *acpBase { return &a.acpBase },
+	)
 }
 
-func newCopilotAgentForRPC(t *testing.T) (*CopilotCLIAgent, func() []copilotRecordedRequest) {
-	t.Helper()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	readPipe, writePipe, err := os.Pipe()
-	require.NoError(t, err)
-
-	agent := &CopilotCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:     "test-agent",
-				stdin:       writePipe,
-				ctx:         ctx,
-				cancel:      cancel,
-				processDone: make(chan struct{}),
-				stderrDone:  make(chan struct{}),
-			}},
-			sessionID: "session-1",
-		},
-	}
-	close(agent.stderrDone)
-
-	var (
-		mu       sync.Mutex
-		requests []copilotRecordedRequest
+func newCopilotAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CopilotCLIAgent, func() []recordedRequest) {
+	return newACPAgentForRPCWithResponder(t,
+		func() *CopilotCLIAgent { return &CopilotCLIAgent{} },
+		func(a *CopilotCLIAgent) *acpBase { return &a.acpBase },
+		respond,
 	)
-	go func() {
-		scanner := bufio.NewScanner(readPipe)
-		for scanner.Scan() {
-			var req struct {
-				ID     int64                  `json:"id"`
-				Method string                 `json:"method"`
-				Params map[string]interface{} `json:"params"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-				continue
-			}
-			mu.Lock()
-			requests = append(requests, copilotRecordedRequest{Method: req.Method, Params: req.Params})
-			mu.Unlock()
-			if req.ID != 0 {
-				if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-					ch.(chan json.RawMessage) <- json.RawMessage(`{}`)
-				}
-			}
-		}
-	}()
-
-	t.Cleanup(func() {
-		cancel()
-		_ = readPipe.Close()
-		_ = writePipe.Close()
-	})
-
-	return agent, func() []copilotRecordedRequest {
-		mu.Lock()
-		defer mu.Unlock()
-		out := make([]copilotRecordedRequest, len(requests))
-		copy(out, requests)
-		return out
-	}
 }
 
 func installFakeCopilotCLI(t *testing.T, scenario string) {

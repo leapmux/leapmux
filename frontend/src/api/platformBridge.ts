@@ -1,5 +1,7 @@
+import type { TrailingDebounced } from '~/lib/debounce'
 import type { BuildInfo } from '~/lib/systemInfo'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
+import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
 
 export type PlatformMode = 'web' | 'tauri-desktop-solo' | 'tauri-desktop-distributed' | 'tauri-mobile-distributed'
@@ -264,22 +266,17 @@ export async function restoreWindowGeometry(width: number, height: number, maxim
     await appWindow.show()
 
     // Save window geometry on resize / maximize / unmaximize, debounced.
-    let saveTimer: ReturnType<typeof setTimeout> | null = null
-    const saveGeometry = () => {
-      if (saveTimer)
-        clearTimeout(saveTimer)
-      saveTimer = setTimeout(async () => {
-        try {
-          const isMax = await appWindow.isMaximized()
-          tauriInvoke('save_window_geometry', {
-            width: window.innerWidth,
-            height: window.innerHeight,
-            maximized: isMax,
-          }).catch(() => {})
-        }
-        catch { /* best-effort */ }
-      }, 500)
-    }
+    const saveGeometry = trailingDebounce(async () => {
+      try {
+        const isMax = await appWindow.isMaximized()
+        tauriInvoke('save_window_geometry', {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          maximized: isMax,
+        }).catch(() => {})
+      }
+      catch { /* best-effort */ }
+    }, 500)
     window.addEventListener('resize', saveGeometry)
   }
   catch (err) {
@@ -337,9 +334,10 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
   let disposed = false
   let unlisten: (() => void) | undefined
   let last: boolean | undefined
+  let refresh: TrailingDebounced | undefined
 
   const push = (next: boolean) => {
-    if (next === last)
+    if (disposed || next === last)
       return
     last = next
     onChange(next)
@@ -357,20 +355,24 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
     if (disposed)
       return
     try {
-      unlisten = await win.onResized(async () => {
+      refresh = trailingDebounce(async () => {
         try {
           push(await win.isMaximized())
         }
         catch { /* best-effort */ }
-      })
+      }, 150)
+      unlisten = await win.onResized(refresh)
     }
     catch { /* best-effort */ }
-    if (disposed)
+    if (disposed) {
+      refresh?.cancel()
       unlisten?.()
+    }
   })()
 
   return () => {
     disposed = true
+    refresh?.cancel()
     unlisten?.()
   }
 }

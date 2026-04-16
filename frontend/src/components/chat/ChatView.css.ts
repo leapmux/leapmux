@@ -175,8 +175,13 @@ export const settingsPanelColumnPrimary = style({
   flex: 1.2,
 })
 
+export const settingsPanelColumnSlightlyWider = style({
+  flex: 1.05,
+})
+
 export const settingsFieldset = style({
   paddingTop: 'var(--space-3)',
+  minWidth: 0,
 })
 
 export const settingsFieldsetFirst = style({
@@ -204,7 +209,6 @@ export const settingsRadioItem = style({
   'color': 'var(--foreground)',
   'cursor': 'pointer',
   'userSelect': 'none',
-  'whiteSpace': 'nowrap',
   ':hover': {
     backgroundColor: 'var(--card)',
   },
@@ -223,8 +227,8 @@ export const searchableSelectListbox = style({
   // Each item is 1lh tall + 6px vertical padding → calc(1lh + 6px) per item.
   // Font-size must match items so 1lh resolves to the correct item line-height.
   fontSize: 'var(--text-8)',
-  minHeight: 'calc((1lh + 6px) * 5)',
-  maxHeight: 'calc((1lh + 6px) * 5)',
+  minHeight: 'calc((1lh + 6px) * 7)',
+  maxHeight: 'calc((1lh + 6px) * 7)',
   overflowY: 'auto',
 })
 

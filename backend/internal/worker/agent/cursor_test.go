@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,81 +15,19 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-type cursorRecordedRequest struct {
-	Method string
-	Params map[string]interface{}
-}
-
-func newCursorAgentForRPC(t *testing.T) (*CursorCLIAgent, func() []cursorRecordedRequest) {
-	t.Helper()
-	return newCursorAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-}
-
-func newCursorAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CursorCLIAgent, func() []cursorRecordedRequest) {
-	t.Helper()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	readPipe, writePipe, err := os.Pipe()
-	require.NoError(t, err)
-
-	agent := &CursorCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:     "test-agent",
-				stdin:       writePipe,
-				ctx:         ctx,
-				cancel:      cancel,
-				processDone: make(chan struct{}),
-				stderrDone:  make(chan struct{}),
-			}},
-			sessionID: "session-1",
-		},
-	}
-	close(agent.stderrDone)
-
-	var (
-		mu       sync.Mutex
-		requests []cursorRecordedRequest
+func newCursorAgentForRPC(t *testing.T) (*CursorCLIAgent, func() []recordedRequest) {
+	return newACPAgentForRPC(t,
+		func() *CursorCLIAgent { return &CursorCLIAgent{} },
+		func(a *CursorCLIAgent) *acpBase { return &a.acpBase },
 	)
-	go func() {
-		scanner := bufio.NewScanner(readPipe)
-		for scanner.Scan() {
-			var req struct {
-				ID     int64                  `json:"id"`
-				Method string                 `json:"method"`
-				Params map[string]interface{} `json:"params"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-				continue
-			}
-			mu.Lock()
-			requests = append(requests, cursorRecordedRequest{Method: req.Method, Params: req.Params})
-			mu.Unlock()
-			if req.ID != 0 {
-				if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-					body := json.RawMessage(`{}`)
-					if respond != nil {
-						body = respond(req.Method)
-					}
-					ch.(chan json.RawMessage) <- body
-				}
-			}
-		}
-	}()
+}
 
-	t.Cleanup(func() {
-		cancel()
-		_ = readPipe.Close()
-		_ = writePipe.Close()
-	})
-
-	return agent, func() []cursorRecordedRequest {
-		mu.Lock()
-		defer mu.Unlock()
-		out := make([]cursorRecordedRequest, len(requests))
-		copy(out, requests)
-		return out
-	}
+func newCursorAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CursorCLIAgent, func() []recordedRequest) {
+	return newACPAgentForRPCWithResponder(t,
+		func() *CursorCLIAgent { return &CursorCLIAgent{} },
+		func(a *CursorCLIAgent) *acpBase { return &a.acpBase },
+		respond,
+	)
 }
 
 func installFakeCursorCLI(t *testing.T, scenario string) {

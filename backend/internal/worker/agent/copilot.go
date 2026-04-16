@@ -58,6 +58,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndPermissionMode
+	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
 
 	if err := cmd.Start(); err != nil {
 		cancel()

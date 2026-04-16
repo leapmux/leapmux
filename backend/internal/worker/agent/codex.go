@@ -562,10 +562,10 @@ func (a *CodexAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 }
 
-// UpdateSettings stores new settings so the next turn/start picks them up.
+// UpdateSettings stores new settings so the next turn/start picks them up,
+// then refreshes from the Codex server to confirm the effective state.
 func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if s.GetModel() != "" {
 		a.model = s.GetModel()
 	}
@@ -588,7 +588,86 @@ func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	if v := extras[CodexExtraServiceTier]; v != "" {
 		a.serviceTier = v
 	}
+	a.mu.Unlock()
+
+	a.refreshSettingsFromAgent()
 	return true
+}
+
+// refreshSettingsFromAgent sends a config/read RPC to the Codex server and
+// updates internal state with the effective config values.
+func (a *CodexAgent) refreshSettingsFromAgent() {
+	resp, err := a.sendRequest("config/read", json.RawMessage(`{"includeLayers":false}`), a.APITimeout())
+	if err != nil {
+		slog.Warn("codex config/read failed", "agent_id", a.agentID, "error", err)
+		return
+	}
+
+	var result struct {
+		Config struct {
+			Model                json.RawMessage `json:"model"`
+			ModelReasoningEffort json.RawMessage `json:"model_reasoning_effort"`
+			ApprovalPolicy       json.RawMessage `json:"approval_policy"`
+			SandboxMode          json.RawMessage `json:"sandbox_mode"`
+			ServiceTier          json.RawMessage `json:"service_tier"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		slog.Warn("codex config/read unmarshal failed", "agent_id", a.agentID, "error", err)
+		return
+	}
+
+	a.mu.Lock()
+	// Each field may be null or a string; only update if it's a non-empty string.
+	if s := jsonString(result.Config.Model); s != "" {
+		a.model = s
+	}
+	if s := jsonString(result.Config.ModelReasoningEffort); s != "" {
+		a.effort = s
+	}
+	// approval_policy can be a string ("on-request") or an object ({"granular":...}).
+	// Only update for the simple string case that LeapMux models.
+	if s := jsonString(result.Config.ApprovalPolicy); s != "" {
+		a.approvalPolicy = s
+	}
+	if s := jsonString(result.Config.SandboxMode); s != "" {
+		a.sandboxPolicy = s
+	}
+	if s := jsonString(result.Config.ServiceTier); s != "" {
+		a.serviceTier = s
+	}
+	model, effort, approval := a.model, a.effort, a.approvalPolicy
+	sandbox, network, collab, tier := a.sandboxPolicy, a.networkAccess, a.collaborationMode, a.serviceTier
+	a.mu.Unlock()
+
+	slog.Info("codex agent settings refreshed",
+		"agent_id", a.agentID,
+		"model", model,
+		"effort", effort,
+		"approvalPolicy", approval,
+		"sandboxPolicy", sandbox,
+		"serviceTier", tier,
+	)
+
+	a.sink.BroadcastSettingsRefreshed(model, effort, approval, map[string]string{
+		CodexExtraSandboxPolicy:     sandbox,
+		CodexExtraNetworkAccess:     network,
+		CodexExtraCollaborationMode: collab,
+		CodexExtraServiceTier:       tier,
+	})
+}
+
+// jsonString attempts to unmarshal a JSON value as a plain string.
+// Returns "" if the value is null, not a string, or empty.
+func jsonString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // queryAvailableModels sends a model/list request and converts the response.
@@ -711,8 +790,8 @@ func init() {
 				Key:   CodexExtraServiceTier,
 				Label: "Fast Mode",
 				Options: []*leapmuxv1.AvailableOption{
-					{Id: CodexDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier", IsDefault: true},
 					{Id: CodexServiceTierFast, Name: "On", Description: "Use Codex fast mode for future turns"},
+					{Id: CodexDefaultServiceTier, Name: "Off", Description: "Use the normal/default service tier", IsDefault: true},
 				},
 			},
 			{

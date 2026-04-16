@@ -2,6 +2,7 @@ import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
 import type { Component, JSX } from 'solid-js'
 import type { EnterKeyMode } from '~/lib/browserStorage'
+import type { TrailingDebounced } from '~/lib/debounce'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { createCodeBlockCommand, toggleInlineCodeCommand } from '@milkdown/preset-commonmark'
 import { TextSelection } from '@milkdown/prose/state'
@@ -213,7 +214,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   }
 
-  const draftSaveTimer: { current: ReturnType<typeof setTimeout> | undefined } = { current: undefined }
+  const draftSaveDebounce: { current: TrailingDebounced | undefined } = { current: undefined }
   // Track the last valid draft key so onCleanup can save the draft even when
   // reactive getters (props.agentId) return null during unmount.
   let latestDraftKey: string | undefined
@@ -262,7 +263,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       setMarkdown,
       onContentChange: hasContent => props.onContentChange?.(hasContent),
       getDraftKey,
-      draftSaveTimer,
+      draftSaveDebounce,
       getEditorInstance: () => editorInstance,
     })
 
@@ -355,7 +356,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   })
 
   onCleanup(() => {
-    clearTimeout(draftSaveTimer.current)
+    draftSaveDebounce.current?.cancel()
     // Save draft for the current agent/control-request before cleanup.
     // Prefer the cached latestDraftKey over getDraftKey(): during disposal
     // reactive getters (props.agentId) may already reflect the NEW agent

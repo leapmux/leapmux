@@ -1,5 +1,6 @@
 import type { Ctx } from '@milkdown/ctx'
 import type { Setter } from 'solid-js'
+import type { TrailingDebounced } from '~/lib/debounce'
 import type { PluginRefs } from '~/lib/editor/keyboardPlugins'
 import type { ToolbarStateSetters } from '~/lib/editor/toolbarState'
 import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
@@ -18,6 +19,7 @@ import {
   strongInputRule as milkdownStrongInputRule,
 } from '@milkdown/preset-commonmark'
 import { gfm, strikethroughInputRule as milkdownStrikethroughInputRule } from '@milkdown/preset-gfm'
+import { trailingDebounce } from '~/lib/debounce'
 import { saveDraft } from '~/lib/editor/draftPersistence'
 import { createLinkBoundaryPlugin, createListItemEnterPlugin, createMarkdownPastePlugin, createSelectionWrapPlugin } from '~/lib/editor/inputPlugins'
 import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createEmphasisStarInputRule, createEmphasisUnderscoreInputRule, createHrInputRule, createInlineCodeInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule, createStrikethroughInputRule, createStrongInputRule } from '~/lib/editor/inputRules'
@@ -60,8 +62,8 @@ export interface EditorSetupOptions {
   onContentChange?: (hasContent: boolean) => void
   /** Returns the current draft key, or undefined if drafts are disabled. */
   getDraftKey: () => string | undefined
-  /** Mutable ref holding the current draft-save timeout ID. */
-  draftSaveTimer: { current: ReturnType<typeof setTimeout> | undefined }
+  /** Mutable ref holding the debounced draft-save handle (cancellable on cleanup). */
+  draftSaveDebounce: { current: TrailingDebounced | undefined }
   /** Getter for the current editor instance (used inside the listener for cursor saving). */
   getEditorInstance: () => Editor | undefined
 }
@@ -120,25 +122,33 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
           autocapitalize: 'off',
         },
       }))
+      let pendingMd = ''
+      let pendingDraftKey = ''
+      opts.draftSaveDebounce.current = trailingDebounce(() => {
+        let cursor = -1
+        try {
+          opts.getEditorInstance()?.action((c: Ctx) => {
+            cursor = c.get(editorViewCtx).state.selection.from
+          })
+        }
+        catch { /* ignore */ }
+        saveDraft(pendingDraftKey, pendingMd.trim(), cursor)
+      }, 500)
       ctx.get(listenerCtx).markdownUpdated((_ctx, md) => {
         if (typeof md !== 'string')
           return
         opts.setMarkdown(md)
         opts.onContentChange?.(md.trim().length > 0)
-        // Debounced draft save
         const draftKey = opts.getDraftKey()
         if (draftKey) {
-          clearTimeout(opts.draftSaveTimer.current)
-          opts.draftSaveTimer.current = setTimeout(() => {
-            let cursor = -1
-            try {
-              opts.getEditorInstance()?.action((c: Ctx) => {
-                cursor = c.get(editorViewCtx).state.selection.from
-              })
-            }
-            catch { /* ignore */ }
-            saveDraft(draftKey, md.trim(), cursor)
-          }, 500)
+          pendingMd = md
+          pendingDraftKey = draftKey
+          opts.draftSaveDebounce.current?.()
+        }
+        else {
+          // Drafts disabled (or key cleared): drop any pending save so it
+          // doesn't fire with a stale draft key.
+          opts.draftSaveDebounce.current?.cancel()
         }
       })
     })

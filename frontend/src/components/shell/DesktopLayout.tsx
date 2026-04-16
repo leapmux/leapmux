@@ -7,6 +7,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
+import { trailingDebounce } from '~/lib/debounce'
 import { getShortcutHint } from '~/lib/shortcuts/display'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
@@ -159,12 +160,9 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     }
     sessionStorage.setItem(`leapmux:sidebar:${id}`, JSON.stringify(state))
   }
-  let sidebarSaveTimer: ReturnType<typeof setTimeout> | null = null
-  const saveSidebarState = () => {
-    if (sidebarSaveTimer)
-      clearTimeout(sidebarSaveTimer)
-    sidebarSaveTimer = setTimeout(doSaveSidebarState, 300)
-  }
+  // trailingDebounce reads signals at fire time; the lint can't see through it.
+  // eslint-disable-next-line solid/reactivity
+  const saveSidebarState = trailingDebounce(doSaveSidebarState, 300)
 
   // --- Collapse / Expand ---
   const collapseLeft = () => {
@@ -302,10 +300,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     window.removeEventListener('resize', handleViewportResize)
     if (resizeRafId !== null)
       cancelAnimationFrame(resizeRafId)
-    if (sidebarSaveTimer) {
-      clearTimeout(sidebarSaveTimer)
-      doSaveSidebarState()
-    }
+    saveSidebarState.flush()
   })
 
   // Computed widths for CSS.

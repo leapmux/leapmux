@@ -62,6 +62,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	a.extraMethod = a.handleExtraMethod
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndMode
+	a.refreshFromSession = a.refreshCursorFromSession
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -169,6 +170,14 @@ func (a *CursorCLIAgent) reapplyModelAndMode() {
 	a.mu.Unlock()
 	acpApplySetting(a.providerName, a.agentID, "model", model, a.setCursorModel)
 	acpApplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
+}
+
+// refreshCursorFromSession refreshes model (with Cursor-specific
+// normalization) and permission mode.
+func (a *CursorCLIAgent) refreshCursorFromSession(resp json.RawMessage) {
+	a.applySessionRefresh(resp, normalizeCursorModelID, &a.permissionMode, "mode", func(model, mode string) {
+		a.sink.BroadcastSettingsRefreshed(model, "", mode, nil)
+	})
 }
 
 var cursorCLIAvailableModels = []*leapmuxv1.AvailableModel{

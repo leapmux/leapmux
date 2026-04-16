@@ -54,6 +54,7 @@ type OutputSink interface {
 	BroadcastControlCancel(requestID string)
 	UpdateSessionID(sessionID string)
 	UpdatePermissionMode(mode string)
+	BroadcastSettingsRefreshed(model, effort, permissionMode string, extraSettings map[string]string)
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})
 	BroadcastNotification(content map[string]interface{})

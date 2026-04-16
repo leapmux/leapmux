@@ -6,6 +6,7 @@ import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry
 import { createEffect, onCleanup } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { trailingDebounce } from '~/lib/debounce'
 import { floatingWindowsToProto } from '~/stores/floatingWindow.store'
 import { toProto } from '~/stores/layout.store'
 
@@ -31,11 +32,7 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
   } = opts
 
   // Debounced layout + tab persistence
-  let layoutSaveTimer: ReturnType<typeof setTimeout> | null = null
-  let layoutSaveDirty = false
-
   function doLayoutSave() {
-    layoutSaveDirty = false
     const ws = activeWorkspace()
     if (!ws || workspaceLoading())
       return
@@ -62,12 +59,7 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
     }).catch(() => {})
   }
 
-  const persistLayout = () => {
-    layoutSaveDirty = true
-    if (layoutSaveTimer)
-      clearTimeout(layoutSaveTimer)
-    layoutSaveTimer = setTimeout(doLayoutSave, 500)
-  }
+  const persistLayout = trailingDebounce(doLayoutSave, 500)
 
   // Persist active tab to sessionStorage
   createEffect(() => {
@@ -141,11 +133,7 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
   // Multi-workspace layout persistence: saves layout + tabs for all
   // workspaces that have cached snapshots in the registry, plus the
   // active workspace.
-  let multiSaveTimer: ReturnType<typeof setTimeout> | null = null
-  let multiSaveDirty = false
-
   function doMultiSave() {
-    multiSaveDirty = false
     const orgId = getOrgId()
     if (!orgId || workspaceLoading())
       return
@@ -217,40 +205,14 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
     }).catch(() => {})
   }
 
-  const persistMultiLayout = (immediate?: boolean) => {
-    if (immediate) {
-      if (multiSaveTimer) {
-        clearTimeout(multiSaveTimer)
-        multiSaveTimer = null
-      }
-      multiSaveDirty = false
-      doMultiSave()
-      return
-    }
-    multiSaveDirty = true
-    if (multiSaveTimer)
-      clearTimeout(multiSaveTimer)
-    multiSaveTimer = setTimeout(doMultiSave, 500)
-  }
+  // Cross-workspace moves are discrete actions that always persist
+  // synchronously — the debounce path is intentionally absent.
+  const persistMultiLayout = doMultiSave
 
-  // Flush any pending saves on page unload so cross-workspace moves
-  // aren't lost if the user refreshes before the debounce fires.
-  const flushOnUnload = () => {
-    if (multiSaveDirty) {
-      if (multiSaveTimer) {
-        clearTimeout(multiSaveTimer)
-        multiSaveTimer = null
-      }
-      doMultiSave()
-    }
-    if (layoutSaveDirty) {
-      if (layoutSaveTimer) {
-        clearTimeout(layoutSaveTimer)
-        layoutSaveTimer = null
-      }
-      doLayoutSave()
-    }
-  }
+  // Flush any pending layout save on page unload so the active workspace's
+  // in-flight changes aren't lost if the user refreshes before the debounce
+  // fires.
+  const flushOnUnload = () => persistLayout.flush()
   window.addEventListener('beforeunload', flushOnUnload)
   onCleanup(() => window.removeEventListener('beforeunload', flushOnUnload))
 

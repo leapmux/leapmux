@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,16 +26,28 @@ const (
 
 // claudeCodeControlResult holds the outcome of a pending control request.
 type claudeCodeControlResult struct {
-	Success bool
-	Mode    string
-	Error   string
+	Success               bool
+	Mode                  string
+	Error                 string
+	OutputStyle           string
+	AvailableOutputStyles []string
+	FastModeState         string // "off", "cooldown", "on", or "" (unavailable)
+	RawResponse           json.RawMessage
 }
+
+// Extra settings keys for Claude Code option groups.
+const (
+	ExtraKeyOutputStyle    = "outputStyle"
+	ExtraKeyFastMode       = "fastMode"
+	ExtraKeyAlwaysThinking = "alwaysThinkingEnabled"
+)
 
 // ClaudeCodeAgent manages a single Claude Code process.
 type ClaudeCodeAgent struct {
 	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
 
 	model      string
+	effort     string
 	workingDir string
 	homeDir    string
 	sink       OutputSink
@@ -46,6 +60,12 @@ type ClaudeCodeAgent struct {
 	pendingControlMu        sync.Mutex
 	pendingControl          map[string]chan<- claudeCodeControlResult
 	confirmedPermissionMode string
+
+	// Settings state from initialize response and runtime updates.
+	outputStyle           string
+	availableOutputStyles []string
+	fastMode              string // "on" / "off"
+	alwaysThinking        string // "on" / "off"
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -118,11 +138,13 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 			apiTimeout:         opts.apiTimeout(),
 		},
 		model:                  opts.Model,
+		effort:                 opts.Effort,
 		workingDir:             opts.WorkingDir,
 		homeDir:                opts.HomeDir,
 		sink:                   sink,
 		thirdPartyFromSettings: thirdPartyFromSettings,
 		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
+		alwaysThinking:         "on", // default
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -152,9 +174,21 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	// Send "initialize" as the first control request, matching the Agent SDK
 	// protocol. This triggers Claude Code to emit the init system message
 	// (which contains the session_id) and establishes the control protocol.
-	if _, err := a.sendControlAndWait(ctx, `{"subtype":"initialize"}`, timeout); err != nil {
+	initResp, err := a.sendControlAndWait(ctx, `{"subtype":"initialize"}`, timeout)
+	if err != nil {
 		cleanup()
 		return nil, a.formatStartupError("initialize", err)
+	}
+
+	// Extract settings from the initialize response.
+	if initResp.OutputStyle != "" {
+		a.outputStyle = initResp.OutputStyle
+	}
+	a.availableOutputStyles = initResp.AvailableOutputStyles
+	if initResp.FastModeState == "on" || initResp.FastModeState == "cooldown" {
+		a.fastMode = "on"
+	} else {
+		a.fastMode = "off"
 	}
 
 	// Send set_permission_mode to configure the agent's permission mode.
@@ -169,7 +203,36 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	}
 	a.confirmedPermissionMode = resp.Mode
 
+	// Apply persisted extra settings that differ from initialized defaults.
+	if flagSettings := a.buildStartupFlagSettings(opts.ExtraSettings); len(flagSettings) > 0 {
+		body, _ := json.Marshal(map[string]interface{}{
+			"subtype":  "apply_flag_settings",
+			"settings": flagSettings,
+		})
+		if _, err := a.sendControlAndWait(ctx, string(body), timeout); err != nil {
+			slog.Warn("apply_flag_settings at startup failed", "agent_id", a.agentID, "error", err)
+		} else {
+			a.refreshSettingsFromAgent(timeout)
+		}
+	}
+
 	return a, nil
+}
+
+// buildStartupFlagSettings builds an apply_flag_settings payload for extra
+// settings that differ from the initialized defaults.
+func (a *ClaudeCodeAgent) buildStartupFlagSettings(extra map[string]string) map[string]interface{} {
+	fs := map[string]interface{}{}
+	if v := extra[ExtraKeyOutputStyle]; v != "" && v != a.outputStyle {
+		fs[ExtraKeyOutputStyle] = v
+	}
+	if v := extra[ExtraKeyFastMode]; v != "" && v != a.fastMode {
+		fs[ExtraKeyFastMode] = flagSettingOnOff(v)
+	}
+	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != a.alwaysThinking {
+		fs[ExtraKeyAlwaysThinking] = flagSettingOffOn(v)
+	}
+	return fs
 }
 
 // SendInput writes a user message to the agent's stdin.
@@ -253,9 +316,26 @@ func buildClaudeContentBlocks(content string, classified []classifiedAttachment)
 
 // CurrentSettings returns the current settings for this agent.
 func (a *ClaudeCodeAgent) CurrentSettings() *leapmuxv1.AgentSettings {
+	a.mu.Lock()
+	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
+	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
+	a.mu.Unlock()
+
+	extra := map[string]string{}
+	if outputStyle != "" {
+		extra[ExtraKeyOutputStyle] = outputStyle
+	}
+	if fastMode != "" {
+		extra[ExtraKeyFastMode] = fastMode
+	}
+	if thinking != "" {
+		extra[ExtraKeyAlwaysThinking] = thinking
+	}
 	return &leapmuxv1.AgentSettings{
-		Model:          a.model,
-		PermissionMode: a.confirmedPermissionMode,
+		Model:          model,
+		Effort:         effort,
+		PermissionMode: mode,
+		ExtraSettings:  extra,
 	}
 }
 
@@ -271,14 +351,196 @@ func (a *ClaudeCodeAgent) AvailableModels() []*leapmuxv1.AvailableModel {
 	return claudeCodeAvailableModels
 }
 
-// AvailableOptionGroups returns the static Claude Code option groups.
+// AvailableOptionGroups returns dynamic option groups including output style,
+// fast mode (when available), and extended thinking, in addition to the
+// static permission mode group.
 func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	a.mu.Lock()
+	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
+	availStyles := a.availableOutputStyles
+	a.mu.Unlock()
+
+	groups := []*leapmuxv1.AvailableOptionGroup{
+		AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0], // permission mode
+	}
+
+	if len(availStyles) > 0 {
+		opts := make([]*leapmuxv1.AvailableOption, 0, len(availStyles))
+		for _, s := range availStyles {
+			opts = append(opts, &leapmuxv1.AvailableOption{
+				Id:        s,
+				Name:      titleCaseID(s, ""),
+				IsDefault: s == outputStyle,
+			})
+		}
+		groups = append(groups, &leapmuxv1.AvailableOptionGroup{
+			Key:     ExtraKeyOutputStyle,
+			Label:   "Output Style",
+			Options: opts,
+		})
+	}
+
+	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
+		Key:   ExtraKeyFastMode,
+		Label: "Fast Mode",
+		Options: []*leapmuxv1.AvailableOption{
+			{Id: "on", Name: "On", IsDefault: fastMode == "on"},
+			{Id: "off", Name: "Off", IsDefault: fastMode != "on"},
+		},
+	})
+
+	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
+		Key:   ExtraKeyAlwaysThinking,
+		Label: "Extended Thinking",
+		Options: []*leapmuxv1.AvailableOption{
+			{Id: "on", Name: "On", IsDefault: thinking != "off"},
+			{Id: "off", Name: "Off", IsDefault: thinking == "off"},
+		},
+	})
+
+	return groups
 }
 
-// UpdateSettings is a no-op for Claude Code — settings changes require a restart.
-func (a *ClaudeCodeAgent) UpdateSettings(_ *leapmuxv1.AgentSettings) bool {
-	return false
+// UpdateSettings applies settings changes via the apply_flag_settings control
+// request, avoiding a process restart. Returns true if the update was handled
+// (or nothing changed), false if a restart is needed.
+func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
+	a.mu.Lock()
+	curModel, curEffort := a.model, a.effort
+	curOutputStyle, curFastMode, curThinking := a.outputStyle, a.fastMode, a.alwaysThinking
+	availStyles := a.availableOutputStyles
+	a.mu.Unlock()
+
+	flagSettings := map[string]interface{}{}
+
+	if s.Model != "" && s.Model != curModel {
+		flagSettings["model"] = s.Model
+	}
+	if s.Effort != "" && s.Effort != curEffort {
+		flagSettings["effortLevel"] = s.Effort
+	}
+
+	extra := s.ExtraSettings
+	if v := extra[ExtraKeyOutputStyle]; v != "" && v != curOutputStyle {
+		if !slices.Contains(availStyles, v) {
+			return false
+		}
+		flagSettings[ExtraKeyOutputStyle] = v
+	}
+	if v := extra[ExtraKeyFastMode]; v != "" && v != curFastMode {
+		flagSettings[ExtraKeyFastMode] = flagSettingOnOff(v)
+	}
+	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != curThinking {
+		flagSettings[ExtraKeyAlwaysThinking] = flagSettingOffOn(v)
+	}
+
+	if len(flagSettings) == 0 {
+		return true
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"subtype":  "apply_flag_settings",
+		"settings": flagSettings,
+	})
+	if _, err := a.sendControlAndWait(a.ctx, string(body), a.APITimeout()); err != nil {
+		slog.Error("apply_flag_settings failed", "agent_id", a.agentID, "error", err)
+		return false
+	}
+
+	a.refreshSettingsFromAgent(a.APITimeout())
+	return true
+}
+
+// refreshSettingsFromAgent sends get_settings and updates internal state with
+// the actual applied values from Claude Code.
+func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
+	resp, err := a.sendControlAndWait(a.ctx, `{"subtype":"get_settings"}`, timeout)
+	if err != nil {
+		slog.Warn("get_settings failed", "agent_id", a.agentID, "error", err)
+		return
+	}
+	if len(resp.RawResponse) == 0 {
+		return
+	}
+
+	var settings struct {
+		Effective struct {
+			OutputStyle           string `json:"outputStyle"`
+			FastMode              *bool  `json:"fastMode"`
+			AlwaysThinkingEnabled *bool  `json:"alwaysThinkingEnabled"`
+		} `json:"effective"`
+		Applied struct {
+			Model  string  `json:"model"`
+			Effort *string `json:"effort"`
+		} `json:"applied"`
+	}
+	if err := json.Unmarshal(resp.RawResponse, &settings); err != nil {
+		slog.Warn("get_settings response parse failed", "agent_id", a.agentID, "error", err)
+		return
+	}
+
+	a.mu.Lock()
+	if settings.Applied.Model != "" {
+		a.model = settings.Applied.Model
+	}
+	if settings.Applied.Effort != nil {
+		a.effort = *settings.Applied.Effort
+	}
+	if settings.Effective.OutputStyle != "" {
+		a.outputStyle = settings.Effective.OutputStyle
+	}
+	if settings.Effective.FastMode != nil {
+		if *settings.Effective.FastMode {
+			a.fastMode = "on"
+		} else {
+			a.fastMode = "off"
+		}
+	}
+	if settings.Effective.AlwaysThinkingEnabled != nil {
+		if *settings.Effective.AlwaysThinkingEnabled {
+			a.alwaysThinking = "on"
+		} else {
+			a.alwaysThinking = "off"
+		}
+	}
+	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
+	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
+	a.mu.Unlock()
+
+	slog.Info("agent settings refreshed",
+		"agent_id", a.agentID,
+		"model", model,
+		"effort", effort,
+		"outputStyle", outputStyle,
+		"fastMode", fastMode,
+		"alwaysThinking", thinking,
+	)
+
+	a.sink.BroadcastSettingsRefreshed(model, effort, mode, map[string]string{
+		ExtraKeyOutputStyle:    outputStyle,
+		ExtraKeyFastMode:       fastMode,
+		ExtraKeyAlwaysThinking: thinking,
+	})
+}
+
+// flagSettingOnOff maps an "on"/"off" string to a boolean flag setting value
+// for apply_flag_settings. "on" → true, anything else → nil (which resets
+// the flag to its default).
+func flagSettingOnOff(v string) interface{} {
+	if v == "on" {
+		return true
+	}
+	return nil
+}
+
+// flagSettingOffOn maps an "off"/"on" string to a boolean flag setting value
+// for apply_flag_settings. "off" → false, anything else → nil (which resets
+// the flag to its default).
+func flagSettingOffOn(v string) interface{} {
+	if v == "off" {
+		return false
+	}
+	return nil
 }
 
 // claudeCodeEfforts shared across models (except haiku gets none, and only opus gets max).
@@ -362,12 +624,10 @@ func (a *ClaudeCodeAgent) handlePendingControlResponse(line *parsedLine) bool {
 
 	var envelope struct {
 		Response struct {
-			Subtype   string `json:"subtype"`
-			RequestID string `json:"request_id"`
-			Response  struct {
-				Mode string `json:"mode"`
-			} `json:"response"`
-			Error string `json:"error"`
+			Subtype   string          `json:"subtype"`
+			RequestID string          `json:"request_id"`
+			Response  json.RawMessage `json:"response"`
+			Error     string          `json:"error"`
 		} `json:"response"`
 	}
 	if err := json.Unmarshal(line.Raw, &envelope); err != nil {
@@ -383,10 +643,25 @@ func (a *ClaudeCodeAgent) handlePendingControlResponse(line *parsedLine) bool {
 		return false
 	}
 
+	// Parse known fields from the inner response object.
+	var innerResponse struct {
+		Mode                  string   `json:"mode"`
+		OutputStyle           string   `json:"output_style"`
+		AvailableOutputStyles []string `json:"available_output_styles"`
+		FastModeState         string   `json:"fast_mode_state"`
+	}
+	if len(envelope.Response.Response) > 0 {
+		_ = json.Unmarshal(envelope.Response.Response, &innerResponse)
+	}
+
 	result := claudeCodeControlResult{
-		Success: envelope.Response.Subtype == "success",
-		Mode:    envelope.Response.Response.Mode,
-		Error:   envelope.Response.Error,
+		Success:               envelope.Response.Subtype == "success",
+		Mode:                  innerResponse.Mode,
+		Error:                 envelope.Response.Error,
+		OutputStyle:           innerResponse.OutputStyle,
+		AvailableOutputStyles: innerResponse.AvailableOutputStyles,
+		FastModeState:         innerResponse.FastModeState,
+		RawResponse:           envelope.Response.Response,
 	}
 	ch <- result
 	return true

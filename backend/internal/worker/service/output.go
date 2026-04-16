@@ -634,6 +634,30 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 	}
 }
 
+func (s *agentOutputSink) BroadcastSettingsRefreshed(model, effort, permissionMode string, extraSettings map[string]string) {
+	// Persist the refreshed settings to the DB.
+	_ = s.h.queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
+		Model:          model,
+		Effort:         effort,
+		PermissionMode: permissionMode,
+		ExtraSettings:  marshalExtraSettings(extraSettings),
+		ID:             s.agentID,
+	})
+
+	// Broadcast a StatusChange so connected frontends see the new values.
+	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+	if err != nil {
+		slog.Error("failed to fetch agent for settings broadcast",
+			"agent_id", s.agentID, "error", err)
+		return
+	}
+	sc := s.buildStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, dbAgent.AgentSessionID, permissionMode)
+	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+		AgentId: s.agentID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
+	})
+}
+
 func (s *agentOutputSink) BroadcastStatusActive(sessionID string) {
 	existingAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
