@@ -4,10 +4,9 @@ import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
-import type { createTabStore } from '~/stores/tab.store'
-import type { createTerminalStore } from '~/stores/terminal.store'
+import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
-import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
+import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
@@ -25,7 +24,6 @@ const log = createLogger('workspace')
 export interface WorkspaceConnectionParams {
   agentStore: ReturnType<typeof createAgentStore>
   chatStore: ReturnType<typeof createChatStore>
-  terminalStore: ReturnType<typeof createTerminalStore>
   tabStore: ReturnType<typeof createTabStore>
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -39,7 +37,7 @@ export interface WorkspaceConnectionParams {
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
-  const { agentStore, chatStore, terminalStore, tabStore, controlStore, agentSessionStore, settingsLoading } = params
+  const { agentStore, chatStore, tabStore, controlStore, agentSessionStore, settingsLoading } = params
   const [workerOnline, setWorkerOnline] = createSignal(true)
 
   const isAgentTabVisible = (agentId: string): boolean => {
@@ -74,27 +72,33 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     if (nonActiveAgentIds.has(agentId)) {
       if (inner.case === 'statusChange') {
         const sc = inner.value
-        // Update the agent's status and git info in the registry snapshot.
-        for (const snap of params.registry.all()) {
-          const agentIdx = snap.agents.findIndex(a => a.id === agentId)
-          if (agentIdx >= 0) {
+        if (sc.status === AgentStatus.UNSPECIFIED && !sc.gitStatus)
+          return
+        const owningWsId = params.registry.findContaining(s => s.agents.some(a => a.id === agentId))?.workspaceId
+        if (owningWsId) {
+          params.registry.update(owningWsId, (snap) => {
+            let agents = snap.agents
             if (sc.status !== AgentStatus.UNSPECIFIED) {
-              snap.agents[agentIdx] = { ...snap.agents[agentIdx], status: sc.status }
-            }
-            if (sc.gitStatus) {
-              // Update git branch/url on the tab in the snapshot.
-              const tabIdx = snap.tabs.tabs.findIndex(t => t.type === TabType.AGENT && t.id === agentId)
-              if (tabIdx >= 0) {
-                snap.tabs.tabs[tabIdx] = {
-                  ...snap.tabs.tabs[tabIdx],
-                  gitBranch: sc.gitStatus.branch || undefined,
-                  gitOriginUrl: sc.gitStatus.originUrl || undefined,
-                }
+              const i = snap.agents.findIndex(a => a.id === agentId)
+              if (i >= 0 && snap.agents[i].status !== sc.status) {
+                agents = snap.agents.slice()
+                agents[i] = { ...agents[i], status: sc.status }
               }
             }
-            params.registry.set(snap.workspaceId, { ...snap })
-            break
-          }
+            let tabs = snap.tabs
+            if (sc.gitStatus) {
+              const branch = sc.gitStatus.branch || undefined
+              const originUrl = sc.gitStatus.originUrl || undefined
+              const i = snap.tabs.findIndex(t => t.type === TabType.AGENT && t.id === agentId)
+              if (i >= 0 && (snap.tabs[i].gitBranch !== branch || snap.tabs[i].gitOriginUrl !== originUrl)) {
+                tabs = snap.tabs.slice()
+                tabs[i] = { ...tabs[i], gitBranch: branch, gitOriginUrl: originUrl }
+              }
+            }
+            if (agents === snap.agents && tabs === snap.tabs)
+              return snap
+            return { ...snap, agents, tabs }
+          })
         }
       }
       return
@@ -394,13 +398,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     // exists), but handle closed events to update the snapshot.
     if (nonActiveTerminalIds.has(terminalId)) {
       if (termEvent.event.case === 'closed') {
-        for (const snap of params.registry.all()) {
-          const termIdx = snap.terminals.findIndex(t => t.id === terminalId)
-          if (termIdx >= 0) {
-            snap.terminals[termIdx] = { ...snap.terminals[termIdx], exited: true }
-            params.registry.set(snap.workspaceId, { ...snap })
-            break
-          }
+        const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
+        // Skip replayed events: only update when the tab exists and isn't already exited.
+        const owningWsId = params.registry.findContaining(
+          s => s.tabs.some(t => tabKey(t) === key && t.status !== 'exited'),
+        )?.workspaceId
+        if (owningWsId) {
+          params.registry.update(owningWsId, snap => ({
+            ...snap,
+            tabs: snap.tabs.map(t => tabKey(t) === key ? { ...t, status: 'exited' } : t),
+          }))
         }
       }
       return
@@ -429,7 +436,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'closed':
-        terminalStore.markExited(terminalId)
+        tabStore.markTerminalExited(terminalId)
         break
     }
   }
@@ -582,9 +589,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         }
       }
 
-      for (const terminal of terminalStore.state.terminals) {
-        if (terminal.workerId === workerId) {
-          terminalIds.push(terminal.id)
+      for (const tab of tabStore.state.tabs) {
+        if (tab.type === TabType.TERMINAL && tab.workerId === workerId) {
+          terminalIds.push(tab.id)
         }
       }
 
@@ -603,10 +610,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             nonActiveAgentIds.add(agent.id)
           }
         }
-        for (const terminal of snap.terminals) {
-          if (terminal.workerId === workerId && !activeTermIds.has(terminal.id)) {
-            terminalIds.push(terminal.id)
-            nonActiveTerminalIds.add(terminal.id)
+        for (const tab of snap.tabs) {
+          if (tab.type === TabType.TERMINAL && tab.workerId === workerId && !activeTermIds.has(tab.id)) {
+            terminalIds.push(tab.id)
+            nonActiveTerminalIds.add(tab.id)
           }
         }
       }
@@ -636,18 +643,27 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   })
 
-  // When the worker goes offline, mark all non-exited terminals as disconnected,
+  // When the worker goes offline, mark running terminals as disconnected,
   // clear stale streaming text, and set active agents to inactive so the
   // thinking indicator hides. The real status will arrive when the WatchEvents
   // stream reconnects.
   createEffect(() => {
     if (workerOnline())
       return
-    for (const t of terminalStore.state.terminals) {
-      if (!terminalStore.isExited(t.id)) {
-        terminalStore.markExited(t.id)
+    const workerId = params.getWorkerId()
+    const isAffected = (t: Tab) =>
+      t.type === TabType.TERMINAL && t.workerId === workerId && t.status === 'running'
+    batch(() => {
+      tabStore.markTerminalsDisconnected(workerId)
+      for (const snap of params.registry.all()) {
+        if (!snap.tabs.some(isAffected))
+          continue
+        params.registry.update(snap.workspaceId, s => ({
+          ...s,
+          tabs: s.tabs.map(t => isAffected(t) ? { ...t, status: 'disconnected' as const } : t),
+        }))
       }
-    }
+    })
     for (const a of agentStore.state.agents) {
       chatStore.clearStreamingText(a.id)
       const streams = chatStore.state.commandStreamsByAgent[a.id]

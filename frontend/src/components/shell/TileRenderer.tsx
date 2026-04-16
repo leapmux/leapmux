@@ -12,7 +12,6 @@ import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
-import type { createTerminalStore } from '~/stores/terminal.store'
 import { create } from '@bufbuild/protobuf'
 import Bot from 'lucide-solid/icons/bot'
 import Terminal from 'lucide-solid/icons/terminal'
@@ -42,7 +41,6 @@ interface TileRendererOpts {
   tabStore: ReturnType<typeof createTabStore>
   agentStore: ReturnType<typeof createAgentStore>
   chatStore: ReturnType<typeof createChatStore>
-  terminalStore: ReturnType<typeof createTerminalStore>
   controlStore: ReturnType<typeof createControlStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -84,7 +82,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
     tabStore,
     agentStore,
     chatStore,
-    terminalStore,
     controlStore,
     layoutStore,
     agentSessionStore,
@@ -273,16 +270,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
       getScrollStateRef.current = activeId ? agentScrollStates.get(activeId) : undefined
       forceScrollToBottomRef.current = activeId ? agentScrollToBottoms.get(activeId) : undefined
     })
-    const tileTerminalIds = () => new Set(
-      tabStore.getTabsForTile(tileId)
-        .filter(t => t.type === TabType.TERMINAL)
-        .map(t => t.id),
-    )
-    const hasTerminals = () => tileTerminalIds().size > 0
-    const tileTerminals = () => {
-      const ids = tileTerminalIds()
-      return terminalStore.state.terminals.filter(t => ids.has(t.id))
-    }
+    const tileTerminals = () => tabStore.getTabsForTile(tileId).filter(t => t.type === TabType.TERMINAL)
+    const hasTerminals = () => tileTerminals().length > 0
 
     return (
       <>
@@ -643,9 +632,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
           tabStore.setActiveTab(tab.type, tab.id)
           if (tab.type === TabType.AGENT) {
             agentStore.setActiveAgent(tab.id)
-          }
-          else if (tab.type === TabType.TERMINAL) {
-            terminalStore.setActiveTerminal(tab.id)
           }
         }
       }}

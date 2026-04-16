@@ -5,14 +5,13 @@ import type { createControlStore } from '~/stores/control.store'
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
-import type { createTerminalStore } from '~/stores/terminal.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
-import { createEffect, createSignal, on, onCleanup } from 'solid-js'
+import { batch, createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
-import { tabKey } from '~/stores/tab.store'
+import { protoToTerminalTab, protoToTerminalTabFields, tabKey } from '~/stores/tab.store'
 
 const log = createLogger('restore')
 
@@ -20,7 +19,6 @@ interface UseWorkspaceRestoreOpts {
   getActiveWorkspaceId: () => string | null | undefined
   getOrgId: () => string | undefined
   agentStore: ReturnType<typeof createAgentStore>
-  terminalStore: ReturnType<typeof createTerminalStore>
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore?: FloatingWindowStoreType
@@ -36,7 +34,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     getActiveWorkspaceId,
     getOrgId,
     agentStore,
-    terminalStore,
     tabStore,
     layoutStore,
     registry,
@@ -70,29 +67,10 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     terminalHydrationRetryTimers.set(workerId, timer)
   }
 
-  const hydrateTerminalRecord = (workspaceId: string, workerId: string, term: Awaited<ReturnType<typeof workerRpc.listTerminals>>['terminals'][number]) => {
-    terminalStore.upsertTerminal({
-      id: term.terminalId,
-      workspaceId,
-      workerId,
-      workingDir: term.workingDir || undefined,
-      shellStartDir: term.shellStartDir || undefined,
-      screen: term.screen.length > 0 ? term.screen : undefined,
-      cols: term.cols || undefined,
-      rows: term.rows || undefined,
-      title: term.title || undefined,
-      exited: term.exited || undefined,
-    })
-    tabStore.updateTab(TabType.TERMINAL, term.terminalId, {
-      title: term.title || undefined,
-      workerId,
-      workingDir: term.workingDir || undefined,
-      gitBranch: term.gitBranch || undefined,
-      gitOriginUrl: term.gitOriginUrl || undefined,
-    })
-    if (term.exited) {
-      terminalStore.markExited(term.terminalId)
-    }
+  const hydrateTerminalRecord = (workerId: string, term: Awaited<ReturnType<typeof workerRpc.listTerminals>>['terminals'][number]) => {
+    // Hydration only refreshes worker-provided fields; layout fields
+    // (tileId, position) on the existing tab are preserved.
+    tabStore.updateTab(TabType.TERMINAL, term.terminalId, protoToTerminalTabFields(workerId, term))
   }
 
   onCleanup(() => {
@@ -110,12 +88,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     // Save current workspace state to registry before switching.
     if (previousWorkspaceId && previousWorkspaceId !== activeId) {
       registry.set(previousWorkspaceId, {
+        ...tabStore.snapshot(),
         workspaceId: previousWorkspaceId,
-        tabs: tabStore.snapshot(),
         layout: layoutStore.snapshot(),
         floatingWindows: opts.floatingWindowStore?.snapshot(),
         agents: [...agentStore.state.agents],
-        terminals: [...terminalStore.state.terminals],
         restored: true,
         tabsLoaded: true,
       })
@@ -125,13 +102,12 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     // Check if we have a cached snapshot for this workspace.
     const cached = registry.get(activeId)
     if (cached?.restored) {
-      tabStore.restore(cached.tabs)
+      tabStore.restore(cached)
       layoutStore.restore(cached.layout)
       if (cached.floatingWindows && opts.floatingWindowStore) {
         opts.floatingWindowStore.restore(cached.floatingWindows)
       }
       agentStore.setAgents(cached.agents)
-      terminalStore.setTerminals(cached.terminals)
 
       // Ensure every tile with tabs has an active tab (in case snapshot was
       // taken before per-tile active tabs were properly tracked).
@@ -150,9 +126,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         }
         if (tabType === TabType.AGENT) {
           agentStore.setActiveAgent(tabId)
-        }
-        else if (tabType === TabType.TERMINAL) {
-          terminalStore.setActiveTerminal(tabId)
         }
       }
 
@@ -250,27 +223,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       }
       agentStore.setAgents(filteredAgents)
 
-      // Populate terminal store.
-      terminalStore.setTerminals([])
-      for (const { workerId, terminals } of terminalResults) {
-        for (const t of terminals) {
-          terminalStore.addTerminal({
-            id: t.terminalId,
-            workspaceId: activeId,
-            workerId,
-            workingDir: t.workingDir || undefined,
-            shellStartDir: t.shellStartDir || undefined,
-            screen: t.screen.length > 0 ? t.screen : undefined,
-            cols: t.cols || undefined,
-            rows: t.rows || undefined,
-            title: t.title || undefined,
-          })
-          if (t.exited) {
-            terminalStore.markExited(t.terminalId)
-          }
-        }
-      }
-
       tabStore.clear()
 
       if (layoutResp?.layout) {
@@ -313,22 +265,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
 
       for (const { workerId, terminals: terms } of terminalResults) {
         for (const term of terms) {
-          const termId = term.terminalId
-          const key = `${TabType.TERMINAL}:${termId}`
+          const key = `${TabType.TERMINAL}:${term.terminalId}`
           let tileId = tabTileMap.get(key) ?? defaultTileId
           if (!validTileIds.has(tileId))
             tileId = defaultTileId
-          const termData = terminalStore.state.terminals.find(t => t.id === termId)
-          tabStore.addTab({
-            type: TabType.TERMINAL,
-            id: termId,
-            title: term.title || undefined,
-            tileId,
-            workerId,
-            workingDir: termData?.workingDir,
-            gitBranch: term.gitBranch || undefined,
-            gitOriginUrl: term.gitOriginUrl || undefined,
-          }, { activate: false })
+          tabStore.addTab({ ...protoToTerminalTab(workerId, term), tileId }, { activate: false })
           addedTabKeys.add(key)
         }
       }
@@ -340,26 +281,19 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           const key = `${t.tabType}:${t.tabId}`
           if (addedTabKeys.has(key))
             continue
-          const cachedTab = cached?.tabs.tabs.find(tab => tabKey(tab) === key)
-          const cachedTerminal = t.tabType === TabType.TERMINAL
-            ? cached?.terminals.find(term => term.id === t.tabId)
-            : undefined
+          const cachedTab = cached?.tabs.find(tab => tabKey(tab) === key)
           let tileId = tabTileMap.get(key) ?? defaultTileId
           if (!validTileIds.has(tileId))
             tileId = defaultTileId
+          // Preserve any cached tab fields (screen/cols/git info, etc.) and
+          // overlay the hub's authoritative identity + worker.
           tabStore.addTab({
+            ...cachedTab,
             type: t.tabType as TabType,
             id: t.tabId,
-            title: cachedTab?.title,
             tileId,
             workerId: t.workerId,
-            workingDir: cachedTab?.workingDir ?? cachedTerminal?.workingDir,
-            gitBranch: cachedTab?.gitBranch,
-            gitOriginUrl: cachedTab?.gitOriginUrl,
           }, { activate: false })
-          if (cachedTerminal) {
-            terminalStore.upsertTerminal(cachedTerminal)
-          }
           addedTabKeys.add(key)
         }
       }
@@ -367,22 +301,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       // Merge any locally-moved tabs from the registry snapshot that the
       // server didn't return yet (cross-workspace moves may still be in
       // flight when we fetch from the server).
-      if (cached && cached.tabs.tabs.length > 0) {
+      if (cached && cached.tabs.length > 0) {
         const existingKeys = new Set(tabStore.state.tabs.map(t => tabKey(t)))
-        for (const snapTab of cached.tabs.tabs) {
-          const key = tabKey(snapTab)
-          if (!existingKeys.has(key)) {
-            const tileId = defaultTileId
-            tabStore.addTab({
-              type: snapTab.type,
-              id: snapTab.id,
-              title: snapTab.title,
-              tileId,
-              workerId: snapTab.workerId,
-              workingDir: snapTab.workingDir,
-              gitBranch: snapTab.gitBranch,
-              gitOriginUrl: snapTab.gitOriginUrl,
-            }, { activate: false })
+        for (const snapTab of cached.tabs) {
+          if (!existingKeys.has(tabKey(snapTab))) {
+            tabStore.addTab({ ...snapTab, tileId: defaultTileId }, { activate: false })
           }
         }
       }
@@ -466,9 +389,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         if (tabType === TabType.AGENT) {
           agentStore.setActiveAgent(tabId)
         }
-        else if (tabType === TabType.TERMINAL) {
-          terminalStore.setActiveTerminal(tabId)
-        }
       }
       else if (tabStore.state.tabs.length > 0) {
         const firstTab = tabStore.state.tabs[0]
@@ -489,12 +409,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
 
       // Cache the restored state in the registry.
       registry.set(activeId, {
+        ...tabStore.snapshot(),
         workspaceId: activeId,
-        tabs: tabStore.snapshot(),
         layout: layoutStore.snapshot(),
         floatingWindows: opts.floatingWindowStore?.snapshot(),
         agents: [...agentStore.state.agents],
-        terminals: [...terminalStore.state.terminals],
         restored: true,
         tabsLoaded: true,
       })
@@ -512,15 +431,14 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     if (!activeId)
       return
 
+    // A tab needs hydration when its worker-side data hasn't been fetched
+    // yet (status undefined) or when it was marked disconnected after a
+    // temporary worker outage.
     const missingByWorker = new Map<string, string[]>()
     for (const tab of tabStore.state.tabs) {
       if (tab.type !== TabType.TERMINAL || !tab.workerId)
         continue
-      const term = terminalStore.state.terminals.find(candidate => candidate.id === tab.id)
-      if (!tab.title && term?.title) {
-        tabStore.updateTabTitle(TabType.TERMINAL, tab.id, term.title)
-      }
-      if (term)
+      if (tab.status !== undefined && tab.status !== 'disconnected')
         continue
       const ids = missingByWorker.get(tab.workerId) ?? []
       ids.push(tab.id)
@@ -537,9 +455,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         if (getActiveWorkspaceId() !== targetWorkspaceId)
           return
         const resolvedIDs = new Set(resp.terminals.map(term => term.terminalId))
-        for (const term of resp.terminals) {
-          hydrateTerminalRecord(targetWorkspaceId, workerId, term)
-        }
+        batch(() => {
+          for (const term of resp.terminals) {
+            hydrateTerminalRecord(workerId, term)
+          }
+        })
         if (tabIds.some(id => !resolvedIDs.has(id))) {
           scheduleTerminalHydrationRetry(workerId)
         }

@@ -142,14 +142,8 @@ export function buildSectionDef(
           isWorkspaceLoading={ctx.wsOps.isWorkspaceLoading}
           tabs={ctx.tabStore?.state.tabs ?? []}
           activeTabKey={ctx.tabStore?.state.activeTabKey ?? null}
-          getTabsForWorkspace={(wsId: string) => {
-            const snap = ctx.registry?.get(wsId)
-            return snap?.tabs.tabs ?? []
-          }}
-          getActiveTabKeyForWorkspace={(wsId: string) => {
-            const snap = ctx.registry?.get(wsId)
-            return snap?.tabs.activeTabKey ?? null
-          }}
+          getTabsForWorkspace={(wsId: string) => ctx.registry?.get(wsId)?.tabs ?? []}
+          getActiveTabKeyForWorkspace={(wsId: string) => ctx.registry?.get(wsId)?.activeTabKey ?? null}
           onTabClick={ctx.onTabClick ?? (() => {})}
           tabItemOps={ctx.tabItemOps}
           onExpandWorkspace={ctx.onExpandWorkspace}

@@ -11,6 +11,7 @@ import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { canCloseTab, tabKey, TabType } from '~/stores/tab.store'
+import { terminalStatusClassList } from '../shell/terminalStatus'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
@@ -64,6 +65,7 @@ const TabLeaf: Component<{
       }}
       data-testid="tab-tree-leaf"
       data-tab-id={props.tab.id}
+      data-terminal-status={props.tab.status}
     >
       <div class={shared.chevronPlaceholder} />
       <Show when={props.tab.type === TabType.AGENT} fallback={<Terminal size={14} class={css.tabIcon} />}>
@@ -98,7 +100,10 @@ const TabLeaf: Component<{
           />
         )}
       >
-        <span class={css.tabLabel}>
+        <span
+          class={css.tabLabel}
+          classList={terminalStatusClassList(props.tab.status)}
+        >
           {props.tab.title || props.tab.id}
         </span>
       </Show>

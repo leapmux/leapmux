@@ -181,7 +181,7 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
       entries.push({
         workspaceId: snap.workspaceId,
         layout: toProto(snapLayout.root),
-        tabs: snap.tabs.tabs
+        tabs: snap.tabs
           .filter(t => t.type !== TabType.FILE)
           .map(t => ({
             tabType: t.type,

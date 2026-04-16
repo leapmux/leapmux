@@ -3,6 +3,7 @@ import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
+import type { Tab } from '~/stores/tab.store'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import { workerClient, workspaceClient } from '~/api/clients'
@@ -37,8 +38,7 @@ import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { createTabStore, tabKey } from '~/stores/tab.store'
-import { createTerminalStore } from '~/stores/terminal.store'
+import { createTabStore, protoToTerminalTab, tabKey } from '~/stores/tab.store'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
@@ -85,7 +85,6 @@ export const AppShell: ParentComponent = (props) => {
   // bundle in the registry and restores from the new bundle (or fetches).
   const agentStore = createAgentStore()
   const chatStore = createChatStore()
-  const terminalStore = createTerminalStore()
   const tabStore = createTabStore()
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
@@ -208,7 +207,6 @@ export const AppShell: ParentComponent = (props) => {
   useWorkspaceConnection({
     agentStore,
     chatStore,
-    terminalStore,
     tabStore,
     controlStore,
     agentSessionStore,
@@ -222,9 +220,6 @@ export const AppShell: ParentComponent = (props) => {
         return ''
       if (tab.type === TabType.AGENT) {
         return agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
-      }
-      if (tab.type === TabType.TERMINAL) {
-        return terminalStore.state.terminals.find(t => t.id === tab.id)?.workerId ?? ''
       }
       return tab.workerId ?? ''
     },
@@ -347,10 +342,9 @@ export const AppShell: ParentComponent = (props) => {
       return { workerId: tab.workerId ?? '', workingDir: dir, homeDir }
     }
     else {
-      const terminal = terminalStore.state.terminals.find(t => t.id === tab.id)
-      const workerId = terminal?.workerId ?? ''
+      const workerId = tab.workerId ?? ''
       const homeDir = agentStore.state.agents.find(a => a.workerId === workerId)?.homeDir ?? ''
-      return { workerId, workingDir: terminal?.workingDir ?? '', homeDir }
+      return { workerId, workingDir: tab.workingDir ?? '', homeDir }
     }
   }
 
@@ -475,7 +469,6 @@ export const AppShell: ParentComponent = (props) => {
   const termOps = useTerminalOperations({
     org,
     tabStore,
-    terminalStore,
     layoutStore,
     activeWorkspace,
     isActiveWorkspaceMutatable,
@@ -490,7 +483,6 @@ export const AppShell: ParentComponent = (props) => {
   const tabOps = useTabOperations({
     tabStore,
     agentStore,
-    terminalStore,
     chatStore,
     layoutStore,
     floatingWindowStore,
@@ -511,7 +503,6 @@ export const AppShell: ParentComponent = (props) => {
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     getOrgId: () => org.orgId(),
     agentStore,
-    terminalStore,
     tabStore,
     layoutStore,
     floatingWindowStore,
@@ -533,7 +524,7 @@ export const AppShell: ParentComponent = (props) => {
   }
 
   // --- Floating window tab movement operations ---
-  const handleDetachTab = (tab: import('~/stores/tab.store').Tab) => {
+  const handleDetachTab = (tab: Tab) => {
     const sourceTileId = tab.tileId
     const { tileId } = floatingWindowStore.addWindow()
     tabStore.moveTabToTile(tabKey(tab), tileId)
@@ -549,7 +540,7 @@ export const AppShell: ParentComponent = (props) => {
     persistLayout()
   }
 
-  const handleAttachTab = (tab: import('~/stores/tab.store').Tab) => {
+  const handleAttachTab = (tab: Tab) => {
     const sourceTileId = tab.tileId
     if (!sourceTileId)
       return
@@ -631,26 +622,21 @@ export const AppShell: ParentComponent = (props) => {
     const isSourceActive = resolvedSourceWsId === activeWsId
     const isTargetActive = resolvedTargetWsId === activeWsId
 
-    let tab: ReturnType<typeof tabStore.state.tabs.find>
+    let tab: Tab | undefined
     if (isSourceActive) {
       tab = tabStore.state.tabs.find(t => tabKey(t) === draggedKey)
     }
     else {
       const sourceSnap = registry.get(resolvedSourceWsId)
-      tab = sourceSnap?.tabs.tabs.find((t: any) => `${t.type}:${t.id}` === draggedKey)
+      tab = sourceSnap?.tabs.find(t => tabKey(t) === draggedKey)
     }
     if (!tab)
       return
 
     // Determine the worker for this tab
     let workerId = tab.workerId ?? ''
-    if (!workerId) {
-      if (tab.type === TabType.AGENT) {
-        workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
-      }
-      else if (tab.type === TabType.TERMINAL) {
-        workerId = terminalStore.state.terminals.find(t => t.id === tab.id)?.workerId ?? ''
-      }
+    if (!workerId && tab.type === TabType.AGENT) {
+      workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
     }
 
     // Remove the tab from the source (optimistic UI update).
@@ -658,25 +644,10 @@ export const AppShell: ParentComponent = (props) => {
       tabStore.removeTab(tab.type, tab.id)
     }
     else {
-      const sourceSnap = registry.get(resolvedSourceWsId)
-      if (sourceSnap) {
-        sourceSnap.tabs.tabs = sourceSnap.tabs.tabs.filter((t: any) => `${t.type}:${t.id}` !== draggedKey)
-        // Also remove the agent/terminal from the source snapshot.
-        if (tab.type === TabType.AGENT) {
-          sourceSnap.agents = sourceSnap.agents.filter(a => a.id !== tab.id)
-        }
-        else if (tab.type === TabType.TERMINAL) {
-          sourceSnap.terminals = sourceSnap.terminals.filter(t => t.id !== tab.id)
-        }
-        registry.set(resolvedSourceWsId, { ...sourceSnap })
-      }
+      registry.removeTab(resolvedSourceWsId, tab)
     }
 
-    // Add the tab to the target (optimistic UI update).
-    // Use spread to preserve all tab properties (including workingDir,
-    // git fields, etc.) and only override tileId as needed.
-    // After removing a tab from the active workspace, check if its source floating
-    // window is now empty and should be removed.
+    // If the source floating window is now empty, remove it.
     if (isSourceActive) {
       const srcTileId = tab.tileId
       if (srcTileId) {
@@ -709,19 +680,13 @@ export const AppShell: ParentComponent = (props) => {
       // hub's full tab list with our partial view).
       const targetSnap = registry.get(resolvedTargetWsId) ?? {
         workspaceId: resolvedTargetWsId,
-        tabs: {
-          tabs: [],
-          activeTabKey: null,
-          mruOrder: [],
-          tileActiveTabKeys: {},
-          tileMruOrder: {},
-        },
+        tabs: [],
+        activeTabKey: null,
         layout: {
           root: { type: 'leaf' as const, id: 'tile-1' },
           focusedTileId: 'tile-1',
         },
         agents: [],
-        terminals: [],
         restored: false,
         tabsLoaded: false,
       }
@@ -730,30 +695,23 @@ export const AppShell: ParentComponent = (props) => {
       const targetTileIds = getAllTileIds(targetSnap.layout.root)
       const targetTileId = targetSnap.layout.focusedTileId ?? targetTileIds[0] ?? ''
       const newTab = { ...tab, tileId: targetTileId }
-      const key = `${newTab.type}:${newTab.id}`
-      targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, newTab]
-      targetSnap.tabs.activeTabKey = key
-      targetSnap.tabs.mruOrder = [key, ...targetSnap.tabs.mruOrder]
-      if (targetTileId) {
-        targetSnap.tabs.tileActiveTabKeys = {
-          ...targetSnap.tabs.tileActiveTabKeys,
-          [targetTileId]: key,
-        }
-      }
-      // Move the agent/terminal data to the target snapshot.
-      if (tab.type === TabType.AGENT) {
-        const agent = agentStore.state.agents.find(a => a.id === tab.id)
-        if (agent && !targetSnap.agents.some(a => a.id === tab.id)) {
-          targetSnap.agents = [...targetSnap.agents, agent]
-        }
-      }
-      else if (tab.type === TabType.TERMINAL) {
-        const term = terminalStore.state.terminals.find(t => t.id === tab.id)
-        if (term && !targetSnap.terminals.some(t => t.id === tab.id)) {
-          targetSnap.terminals = [...targetSnap.terminals, term]
-        }
-      }
-      registry.set(resolvedTargetWsId, { ...targetSnap })
+      const key = tabKey(newTab)
+      const movedAgent = tab.type === TabType.AGENT
+        ? agentStore.state.agents.find(a => a.id === tab.id)
+        : undefined
+      const nextAgents = movedAgent && !targetSnap.agents.some(a => a.id === tab.id)
+        ? [...targetSnap.agents, movedAgent]
+        : targetSnap.agents
+      registry.set(resolvedTargetWsId, {
+        ...targetSnap,
+        tabs: [...targetSnap.tabs, newTab],
+        activeTabKey: key,
+        mruOrder: [key, ...(targetSnap.mruOrder ?? [])],
+        tileActiveTabKeys: targetTileId
+          ? { ...(targetSnap.tileActiveTabKeys ?? {}), [targetTileId]: key }
+          : targetSnap.tileActiveTabKeys,
+        agents: nextAgents,
+      })
     }
 
     // For FILE tabs, update sessionStorage entries.
@@ -802,21 +760,25 @@ export const AppShell: ParentComponent = (props) => {
             orgId: currentOrgId,
             workspaceId: resolvedTargetWsId,
           })
-          const existingKeys = new Set(targetSnap.tabs.tabs.map(t => `${t.type}:${t.id}`))
+          const existingKeys = new Set(targetSnap.tabs.map(t => tabKey(t)))
+          const extraTabs: Tab[] = []
           for (const t of resp.tabs) {
             const key = `${t.tabType}:${t.tabId}`
             if (!existingKeys.has(key)) {
-              targetSnap.tabs.tabs.push({
+              extraTabs.push({
                 type: t.tabType as TabType,
                 id: t.tabId,
                 position: t.position,
                 tileId: t.tileId || targetSnap.layout.focusedTileId || '',
                 workerId: t.workerId,
-              } as import('~/stores/tab.store').Tab)
+              })
             }
           }
-          targetSnap.tabsLoaded = true
-          registry.set(resolvedTargetWsId, { ...targetSnap })
+          registry.update(resolvedTargetWsId, snap => ({
+            ...snap,
+            tabs: [...snap.tabs, ...extraTabs],
+            tabsLoaded: true,
+          }))
         }
         catch { /* ignore — will be picked up on next restore */ }
       }
@@ -828,17 +790,7 @@ export const AppShell: ParentComponent = (props) => {
         tabStore.removeTab(tab!.type, tab!.id)
       }
       else {
-        const tSnap = registry.get(resolvedTargetWsId)
-        if (tSnap) {
-          tSnap.tabs.tabs = tSnap.tabs.tabs.filter((t: any) => `${t.type}:${t.id}` !== draggedKey)
-          if (tab!.type === TabType.AGENT) {
-            tSnap.agents = tSnap.agents.filter(a => a.id !== tab!.id)
-          }
-          else if (tab!.type === TabType.TERMINAL) {
-            tSnap.terminals = tSnap.terminals.filter(t => t.id !== tab!.id)
-          }
-          registry.set(resolvedTargetWsId, { ...tSnap })
-        }
+        registry.removeTab(resolvedTargetWsId, tab!)
       }
 
       // Add it back to the source workspace.
@@ -846,26 +798,18 @@ export const AppShell: ParentComponent = (props) => {
         tabStore.addTab(tab!)
       }
       else {
-        const sSnap = registry.get(resolvedSourceWsId)
-        if (sSnap) {
-          const tgtSnap = registry.get(resolvedTargetWsId)
-          sSnap.tabs.tabs = [...sSnap.tabs.tabs, tab!]
+        const targetSnap = registry.get(resolvedTargetWsId)
+        registry.update(resolvedSourceWsId, (sourceSnap) => {
+          let nextAgents = sourceSnap.agents
           if (tab!.type === TabType.AGENT) {
             const agent = agentStore.state.agents.find(a => a.id === tab!.id)
-              ?? tgtSnap?.agents.find(a => a.id === tab!.id)
-            if (agent && !sSnap.agents.some(a => a.id === tab!.id)) {
-              sSnap.agents = [...sSnap.agents, agent]
+              ?? targetSnap?.agents.find(a => a.id === tab!.id)
+            if (agent && !sourceSnap.agents.some(a => a.id === tab!.id)) {
+              nextAgents = [...sourceSnap.agents, agent]
             }
           }
-          else if (tab!.type === TabType.TERMINAL) {
-            const term = terminalStore.state.terminals.find(t => t.id === tab!.id)
-              ?? tgtSnap?.terminals.find(t => t.id === tab!.id)
-            if (term && !sSnap.terminals.some(t => t.id === tab!.id)) {
-              sSnap.terminals = [...sSnap.terminals, term]
-            }
-          }
-          registry.set(resolvedSourceWsId, { ...sSnap })
-        }
+          return { ...sourceSnap, tabs: [...sourceSnap.tabs, tab!], agents: nextAgents }
+        })
       }
 
       showWarnToast('Failed to move tab', err)
@@ -916,13 +860,14 @@ export const AppShell: ParentComponent = (props) => {
           }
           catch (err) {
             log.warn('failed to list terminals from worker', { workerId: wid, tabIds, err })
-            return { workerId: wid, terminals: [] as Awaited<ReturnType<typeof listTerminals>>['terminals'] }
+            return { workerId: wid, terminals: null }
           }
         })),
       ])
 
       const allAgents = agentResults.flat()
-      const tabs: import('~/stores/tab.store').Tab[] = []
+      const anyTerminalFetchFailed = terminalResults.some(r => r.terminals === null)
+      const tabs: Tab[] = []
 
       for (const a of allAgents) {
         tabs.push({
@@ -938,26 +883,30 @@ export const AppShell: ParentComponent = (props) => {
       }
 
       for (const { workerId, terminals } of terminalResults) {
+        if (terminals === null)
+          continue
         for (const t of terminals) {
-          tabs.push({
-            type: TabType.TERMINAL,
-            id: t.terminalId,
-            title: t.title || undefined,
-            workerId,
-            workingDir: t.workingDir || undefined,
-            gitBranch: t.gitBranch || undefined,
-            gitOriginUrl: t.gitOriginUrl || undefined,
-          })
+          tabs.push(protoToTerminalTab(workerId, t))
         }
       }
 
       const existing = registry.get(workspaceId)
+      // When a terminal fetch fails, preserve the previous terminal tabs (if any)
+      // so they don't disappear from the sidebar on a transient error. An empty
+      // successful result means the worker truly has no terminals.
+      if (anyTerminalFetchFailed && existing) {
+        const existingTerminalIds = new Set(tabs.filter(t => t.type === TabType.TERMINAL).map(t => t.id))
+        for (const t of existing.tabs) {
+          if (t.type === TabType.TERMINAL && !existingTerminalIds.has(t.id))
+            tabs.push(t)
+        }
+      }
       registry.set(workspaceId, {
         workspaceId,
-        tabs: { tabs, activeTabKey: existing?.tabs.activeTabKey ?? null, mruOrder: [], tileActiveTabKeys: {}, tileMruOrder: {} },
+        tabs,
+        activeTabKey: existing?.activeTabKey ?? null,
         layout: existing?.layout ?? { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
         agents: allAgents,
-        terminals: existing?.terminals ?? [],
         restored: false,
         tabsLoaded: true,
       })
@@ -1016,7 +965,6 @@ export const AppShell: ParentComponent = (props) => {
     tabStore,
     agentStore,
     chatStore,
-    terminalStore,
     controlStore,
     layoutStore,
     agentSessionStore,
@@ -1135,9 +1083,6 @@ export const AppShell: ParentComponent = (props) => {
       }
       if (tabType === TabType.AGENT) {
         agentStore.setActiveAgent(id)
-      }
-      else if (tabType === TabType.TERMINAL) {
-        terminalStore.setActiveTerminal(id)
       }
     },
     tabItemOps: {
@@ -1300,7 +1245,6 @@ export const AppShell: ParentComponent = (props) => {
         agentOps={agentOps}
         agentStore={agentStore}
         tabStore={tabStore}
-        terminalStore={terminalStore}
         layoutStore={layoutStore}
         workspaceStore={workspaceStore}
         persistLayout={persistLayout}

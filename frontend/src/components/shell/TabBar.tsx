@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import type { Tab } from '~/stores/tab.store'
+import type { Tab, TerminalStatus } from '~/stores/tab.store'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
 import Columns2 from 'lucide-solid/icons/columns-2'
@@ -25,6 +25,7 @@ import { canCloseTab, tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
+import { terminalStatusClassList } from './terminalStatus'
 
 const MENU_CHECK = '\u2713' // ✓
 
@@ -45,10 +46,13 @@ const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipPro
   </Tooltip>
 )
 
-const TabTextWithTooltip: Component<{ label: string }> = (props) => {
+const TabTextWithTooltip: Component<{ label: string, status?: TerminalStatus }> = (props) => {
   return (
     <Tooltip text={props.label}>
-      <span class={styles.tabText}>
+      <span
+        class={styles.tabText}
+        classList={terminalStatusClassList(props.status)}
+      >
         {props.label}
       </span>
     </Tooltip>
@@ -199,93 +203,96 @@ export const TabBar: Component<TabBarProps> = (props) => {
   }
   catch { /* DragDropProvider context not available */ }
 
-  const renderTab = (tab: Tab, sortable?: ReturnType<typeof createSortable>) => (
-    <div
-      role="tab"
-      ref={sortable}
-      tabIndex={0}
-      aria-selected={props.activeTabKey === tabKey(tab)}
-      class={styles.tab}
-      classList={{ [styles.tabDragging]: sortable?.isActiveDraggable }}
-      style={sortable?.transform ? transformStyle(sortable.transform) : undefined}
-      data-testid="tab"
-      data-tab-type={tabTypeLabel(tab.type)}
-      data-tab-id={tab.id}
-      onClick={() => handleTabChange(tabKey(tab))}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          handleTabChange(tabKey(tab))
-        }
-      }}
-      onAuxClick={(e: MouseEvent) => {
-        if (e.button === 1) {
-          e.preventDefault()
-          if ((props.readOnly && tab.type !== TabType.FILE) || props.closingTabKeys?.has(tabKey(tab)))
-            return
-          props.onClose(tab)
-        }
-      }}
-      onContextMenu={(e: MouseEvent) => e.preventDefault()}
-      onDblClick={(e: MouseEvent) => {
-        e.preventDefault()
-        e.stopPropagation()
-        if (tab.type !== TabType.FILE && !props.readOnly)
-          startEditing(tab)
-      }}
-    >
-      <span class={styles.tabIcon}>
-        {tab.type === TabType.AGENT ? <AgentProviderIcon provider={tab.agentProvider} size={14} /> : tab.type === TabType.FILE ? <Icon icon={FileText} size="sm" /> : <Icon icon={Terminal} size="sm" />}
-      </span>
-      <Show
-        when={editingTabKey() === tabKey(tab)}
-        fallback={<TabTextWithTooltip label={tabLabel(tab)} />}
-      >
-        <input
-          class={styles.tabEditInput}
-          type="text"
-          value={editingValue()}
-          onInput={e => setEditingValue(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            e.stopPropagation()
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              commitEdit(tab)
-            }
-            else if (e.key === 'Escape') {
-              cancelEdit()
-            }
-          }}
-          onBlur={() => commitEdit(tab)}
-          onClick={e => e.stopPropagation()}
-          ref={(el) => {
-            requestAnimationFrame(() => {
-              el.focus()
-              el.select()
-            })
-          }}
-        />
-      </Show>
-      <Show when={tab.hasNotification}>
-        <span class={styles.tabNotification} data-testid="tab-notification" />
-      </Show>
-      <Show when={canCloseTab(props.readOnly, tab)}>
-        <IconButton
-          icon={X}
-          class={styles.tabClose}
-          state={props.closingTabKeys?.has(tabKey(tab)) ? IconButtonState.Loading : IconButtonState.Enabled}
-          data-testid="tab-close"
-          onPointerDown={e => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            if (props.closingTabKeys?.has(tabKey(tab)))
+  const renderTab = (tab: Tab, sortable?: ReturnType<typeof createSortable>) => {
+    return (
+      <div
+        role="tab"
+        ref={sortable}
+        tabIndex={0}
+        aria-selected={props.activeTabKey === tabKey(tab)}
+        class={styles.tab}
+        classList={{ [styles.tabDragging]: sortable?.isActiveDraggable }}
+        style={sortable?.transform ? transformStyle(sortable.transform) : undefined}
+        data-testid="tab"
+        data-tab-type={tabTypeLabel(tab.type)}
+        data-tab-id={tab.id}
+        data-terminal-status={tab.status}
+        onClick={() => handleTabChange(tabKey(tab))}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            handleTabChange(tabKey(tab))
+          }
+        }}
+        onAuxClick={(e: MouseEvent) => {
+          if (e.button === 1) {
+            e.preventDefault()
+            if ((props.readOnly && tab.type !== TabType.FILE) || props.closingTabKeys?.has(tabKey(tab)))
               return
             props.onClose(tab)
-          }}
-        />
-      </Show>
-    </div>
-  )
+          }
+        }}
+        onContextMenu={(e: MouseEvent) => e.preventDefault()}
+        onDblClick={(e: MouseEvent) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (tab.type !== TabType.FILE && !props.readOnly)
+            startEditing(tab)
+        }}
+      >
+        <span class={styles.tabIcon}>
+          {tab.type === TabType.AGENT ? <AgentProviderIcon provider={tab.agentProvider} size={14} /> : tab.type === TabType.FILE ? <Icon icon={FileText} size="sm" /> : <Icon icon={Terminal} size="sm" />}
+        </span>
+        <Show
+          when={editingTabKey() === tabKey(tab)}
+          fallback={<TabTextWithTooltip label={tabLabel(tab)} status={tab.status} />}
+        >
+          <input
+            class={styles.tabEditInput}
+            type="text"
+            value={editingValue()}
+            onInput={e => setEditingValue(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                commitEdit(tab)
+              }
+              else if (e.key === 'Escape') {
+                cancelEdit()
+              }
+            }}
+            onBlur={() => commitEdit(tab)}
+            onClick={e => e.stopPropagation()}
+            ref={(el) => {
+              requestAnimationFrame(() => {
+                el.focus()
+                el.select()
+              })
+            }}
+          />
+        </Show>
+        <Show when={tab.hasNotification}>
+          <span class={styles.tabNotification} data-testid="tab-notification" />
+        </Show>
+        <Show when={canCloseTab(props.readOnly, tab)}>
+          <IconButton
+            icon={X}
+            class={styles.tabClose}
+            state={props.closingTabKeys?.has(tabKey(tab)) ? IconButtonState.Loading : IconButtonState.Enabled}
+            data-testid="tab-close"
+            onPointerDown={e => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (props.closingTabKeys?.has(tabKey(tab)))
+                return
+              props.onClose(tab)
+            }}
+          />
+        </Show>
+      </div>
+    )
+  }
 
   // Shared menu items for "More options" (used in full, collapsed-new-tab, and collapsed-overflow menus)
   const renderMoreMenuItems = () => (

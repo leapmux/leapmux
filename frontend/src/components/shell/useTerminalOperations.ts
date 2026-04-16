@@ -2,7 +2,6 @@ import type { Accessor } from 'solid-js'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
-import type { createTerminalStore } from '~/stores/terminal.store'
 
 import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
@@ -16,7 +15,6 @@ import { nextTabNumber } from './useAgentOperations'
 export interface UseTerminalOperationsProps {
   org: { orgId: () => string }
   tabStore: ReturnType<typeof createTabStore>
-  terminalStore: ReturnType<typeof createTerminalStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   activeWorkspace: Accessor<Workspace | null>
   isActiveWorkspaceMutatable: Accessor<boolean>
@@ -30,11 +28,6 @@ export interface UseTerminalOperationsProps {
 export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const [availableShells, setAvailableShells] = createSignal<string[]>([])
   const [defaultShell, setDefaultShell] = createSignal('')
-
-  /** Get workerId for a terminal from the terminal store. */
-  const getTerminalWorkerId = (terminalId: string): string => {
-    return props.terminalStore.state.terminals.find(t => t.id === terminalId)?.workerId ?? ''
-  }
 
   /** Load available shells on demand (e.g. when the new-terminal dialog opens). */
   const loadAvailableShells = () => {
@@ -91,8 +84,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.terminalStore.addTerminal({ id: resp.terminalId, workspaceId: ws.id, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir })
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined }, { afterKey })
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: 'running' }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
@@ -142,8 +134,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.terminalStore.addTerminal({ id: resp.terminalId, workspaceId: ws.id, workerId: ctx.workerId, workingDir: ctx.workingDir })
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined }, { afterKey })
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: 'running' }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
@@ -170,10 +161,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
     try {
       const ws = props.activeWorkspace()
-      if (!ws || !props.terminalStore.hasTerminal(terminalId) || props.terminalStore.isExited(terminalId))
+      const tab = props.tabStore.getTerminalTab(terminalId)
+      if (!ws || tab?.status !== 'running')
         return
-      const workerId = getTerminalWorkerId(terminalId)
-      await workerRpc.sendInput(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
+      await workerRpc.sendInput(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
     }
     catch {
       // ignore input errors
@@ -188,7 +179,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     const ws = props.activeWorkspace()
     if (!ws)
       return
-    const workerId = getTerminalWorkerId(terminalId)
+    const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
     workerRpc.updateTerminalTitle(workerId, {
       orgId: props.org.orgId(),
       workspaceId: ws.id,
@@ -199,7 +190,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   }
 
   const handleTerminalTitleChange = (terminalId: string, title: string) => {
-    props.terminalStore.updateTerminalTitle(terminalId, title)
     props.tabStore.updateTabTitle(TabType.TERMINAL, terminalId, title)
 
     // Debounced backend sync
@@ -233,10 +223,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const handleTerminalResize = async (terminalId: string, cols: number, rows: number) => {
     try {
       const ws = props.activeWorkspace()
-      if (!ws || !props.terminalStore.hasTerminal(terminalId) || props.terminalStore.isExited(terminalId))
+      const tab = props.tabStore.getTerminalTab(terminalId)
+      if (!ws || tab?.status !== 'running')
         return
-      const workerId = getTerminalWorkerId(terminalId)
-      await workerRpc.resizeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
+      await workerRpc.resizeTerminal(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
     }
     catch {
       // ignore resize errors
@@ -248,14 +238,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     try {
       if (!ws)
         return
-      const workerId = getTerminalWorkerId(terminalId)
+      const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
       await workerRpc.closeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId })
     }
     catch {
       // Ignore errors (e.g. terminal already exited or not tracked by worker)
     }
     finally {
-      props.terminalStore.removeTerminal(terminalId)
       props.tabStore.removeTab(TabType.TERMINAL, terminalId)
       // Unregister tab from hub.
       if (ws) {

@@ -6,7 +6,6 @@ import { useTerminalOperations } from '~/components/shell/useTerminalOperations'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
-import { createTerminalStore } from '~/stores/terminal.store'
 
 vi.mock('~/api/workerRpc', () => ({
   createTerminal: vi.fn(),
@@ -31,13 +30,11 @@ vi.mock('~/components/common/Toast', () => ({
 
 function setup() {
   const tabStore = createTabStore()
-  const terminalStore = createTerminalStore()
   const layoutStore = createLayoutStore()
 
   const ops = useTerminalOperations({
     org: { orgId: () => 'org-1' },
     tabStore,
-    terminalStore,
     layoutStore,
     activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
     isActiveWorkspaceMutatable: () => true,

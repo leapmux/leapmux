@@ -6,7 +6,6 @@ import type { KeyPinDecision } from '~/lib/channel'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
-import type { createTerminalStore } from '~/stores/terminal.store'
 import type { createWorkspaceStore } from '~/stores/workspace.store'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, Show } from 'solid-js'
@@ -64,7 +63,6 @@ interface AppShellDialogsProps {
   agentOps: ReturnType<typeof useAgentOperations>
   agentStore: ReturnType<typeof createAgentStore>
   tabStore: ReturnType<typeof createTabStore>
-  terminalStore: ReturnType<typeof createTerminalStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   workspaceStore: ReturnType<typeof createWorkspaceStore>
   persistLayout: () => void
@@ -122,8 +120,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             const title = `Terminal ${nextTabNumber(props.tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
             const tileId = props.layoutStore.focusedTileId()
             const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-            props.terminalStore.addTerminal({ id: terminalId, workspaceId: ws.id, workerId, workingDir })
-            props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir }, { afterKey })
+            props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir, status: 'running' }, { afterKey })
             props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, terminalId)
             props.persistLayout()
           }}

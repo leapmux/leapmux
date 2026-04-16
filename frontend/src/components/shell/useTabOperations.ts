@@ -6,7 +6,6 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, FileOpenSource, Tab } from '~/stores/tab.store'
-import type { createTerminalStore } from '~/stores/terminal.store'
 import { batch, createEffect, createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
@@ -18,7 +17,6 @@ import { tabKey } from '~/stores/tab.store'
 interface UseTabOperationsOpts {
   tabStore: ReturnType<typeof createTabStore>
   agentStore: ReturnType<typeof createAgentStore>
-  terminalStore: ReturnType<typeof createTerminalStore>
   chatStore: ReturnType<typeof createChatStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore?: ReturnType<typeof createFloatingWindowStore>
@@ -35,7 +33,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   const {
     tabStore,
     agentStore,
-    terminalStore,
     chatStore,
     layoutStore,
     floatingWindowStore,
@@ -89,9 +86,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       }
       if (tab.type === TabType.AGENT) {
         agentStore.setActiveAgent(tab.id)
-      }
-      else if (tab.type === TabType.TERMINAL) {
-        terminalStore.setActiveTerminal(tab.id)
       }
     })
 

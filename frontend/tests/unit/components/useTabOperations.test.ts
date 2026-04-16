@@ -6,7 +6,6 @@ import { createAgentStore } from '~/stores/agent.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
-import { createTerminalStore } from '~/stores/terminal.store'
 
 const mockInspectLastTabClose = vi.fn()
 const mockScheduleWorktreeDeletion = vi.fn()
@@ -38,7 +37,6 @@ function makeUserMessage(id: string, seq: bigint) {
 function setup() {
   const tabStore = createTabStore()
   const agentStore = createAgentStore()
-  const terminalStore = createTerminalStore()
   const chatStore = createChatStore()
   const layoutStore = createLayoutStore()
 
@@ -57,7 +55,6 @@ function setup() {
   const ops = useTabOperations({
     tabStore,
     agentStore,
-    terminalStore,
     chatStore,
     layoutStore,
     agentOps: {

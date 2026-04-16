@@ -1,7 +1,7 @@
 import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
-import type { TerminalInfo } from '~/stores/terminal.store'
+import type { Tab } from '~/stores/tab.store'
 import { createEffect, For, onCleanup, onMount } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
 import { isMac } from '~/lib/shortcuts/platform'
@@ -10,7 +10,7 @@ import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
 interface TerminalViewProps {
-  terminals: TerminalInfo[]
+  terminals: Tab[]
   activeTerminalId: string | null
   visible: boolean
   onInput: (id: string, data: Uint8Array) => void

@@ -1,3 +1,4 @@
+import type { listTerminals } from '~/api/workerRpc'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -8,6 +9,7 @@ export { TabType }
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
+export type TerminalStatus = 'running' | 'disconnected' | 'exited'
 
 export interface Tab {
   type: TabType
@@ -29,6 +31,47 @@ export interface Tab {
   gitDiffAdded?: number
   gitDiffDeleted?: number
   gitDiffUntracked?: number
+  // -------------------------------------------------------------------------
+  // Fields below are only meaningful for `TabType.TERMINAL`.
+  // -------------------------------------------------------------------------
+  status?: TerminalStatus
+  /** Working directory the shell was originally spawned in. */
+  shellStartDir?: string
+  /** Last-known screen snapshot for fast visual restore. */
+  screen?: Uint8Array
+  cols?: number
+  rows?: number
+}
+
+type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
+
+/**
+ * Worker-provided fields for a terminal tab, ready to spread into a `Tab`
+ * or pass to `updateTab`. Excludes layout-specific fields (`type`, `id`,
+ * `tileId`, `position`) which the caller controls.
+ */
+export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<Tab> {
+  return {
+    title: term.title || undefined,
+    workerId,
+    workingDir: term.workingDir || undefined,
+    shellStartDir: term.shellStartDir || undefined,
+    screen: term.screen.length > 0 ? term.screen : undefined,
+    cols: term.cols || undefined,
+    rows: term.rows || undefined,
+    gitBranch: term.gitBranch || undefined,
+    gitOriginUrl: term.gitOriginUrl || undefined,
+    status: term.exited ? 'exited' : 'running',
+  }
+}
+
+/** Build a terminal `Tab` from a `listTerminals` proto record. */
+export function protoToTerminalTab(workerId: string, term: ProtoTerminal): Tab {
+  return {
+    type: TabType.TERMINAL,
+    id: term.terminalId,
+    ...protoToTerminalTabFields(workerId, term),
+  }
 }
 
 export interface TabItemOps {
@@ -55,6 +98,16 @@ export interface TabStoreState {
   /** Per-tile MRU order. */
   tileMruOrder: Record<string, string[]>
 }
+
+/**
+ * Subset of `TabStoreState` required to restore the tab store. Snapshots
+ * captured from the live store include all fields; snapshots synthesized
+ * for non-active workspaces may omit MRU/tile state (which `restore`
+ * treats as empty).
+ */
+export type RestorableTabState
+  = Pick<TabStoreState, 'tabs' | 'activeTabKey'>
+    & Partial<Pick<TabStoreState, 'mruOrder' | 'tileActiveTabKeys' | 'tileMruOrder'>>
 
 export interface AddTabOptions {
   activate?: boolean
@@ -237,15 +290,17 @@ export function createTabStore() {
       }
     },
 
-    /** Restore from a previously snapshotted state. */
-    restore(snap: TabStoreState) {
-      setState('tabs', snap.tabs.map(t => ({ ...t })))
-      setState('activeTabKey', snap.activeTabKey)
-      setState('mruOrder', [...snap.mruOrder])
-      setState('tileActiveTabKeys', { ...snap.tileActiveTabKeys })
-      setState('tileMruOrder', Object.fromEntries(
-        Object.entries(snap.tileMruOrder).map(([k, v]) => [k, [...v]]),
-      ))
+    /** Restore from a previously snapshotted state. Missing MRU/tile fields initialize empty. */
+    restore(snap: RestorableTabState) {
+      setState({
+        tabs: snap.tabs.map(t => ({ ...t })),
+        activeTabKey: snap.activeTabKey,
+        mruOrder: snap.mruOrder ? [...snap.mruOrder] : [],
+        tileActiveTabKeys: snap.tileActiveTabKeys ? { ...snap.tileActiveTabKeys } : {},
+        tileMruOrder: snap.tileMruOrder
+          ? Object.fromEntries(Object.entries(snap.tileMruOrder).map(([k, v]) => [k, [...v]]))
+          : {},
+      })
     },
 
     /** Get tabs for a specific tile. */
@@ -301,6 +356,31 @@ export function createTabStore() {
     updateTab(type: TabType, id: string, fields: Partial<Tab>) {
       const key = tabKey({ type, id })
       setState('tabs', t => tabKey(t) === key, prev => ({ ...prev, ...fields }))
+    },
+
+    /** Find a terminal tab by its terminal id. */
+    getTerminalTab(id: string): Tab | undefined {
+      return state.tabs.find(t => t.type === TabType.TERMINAL && t.id === id)
+    },
+
+    /** Downgrade all running terminal tabs on a worker to disconnected in a single pass. */
+    markTerminalsDisconnected(workerId: string) {
+      setState(
+        'tabs',
+        t => t.type === TabType.TERMINAL && t.workerId === workerId && t.status === 'running',
+        'status',
+        'disconnected',
+      )
+    },
+
+    /** Mark a terminal tab as exited. No-op if the tab is missing or already exited. */
+    markTerminalExited(id: string) {
+      setState(
+        'tabs',
+        t => t.type === TabType.TERMINAL && t.id === id && t.status !== 'exited',
+        'status',
+        'exited',
+      )
     },
 
     /** For each tile that has tabs but no active tab, activate the first tab. */
