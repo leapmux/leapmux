@@ -95,10 +95,15 @@ export async function loadTimeouts(): Promise<void> {
 
 /** RPC timeout for agent operations (start/resume + message delivery). */
 export function agentCallTimeout(agentActive: boolean): CallOptions {
+  return { timeoutMs: Math.ceil(TIMEOUT_MULTIPLIER * agentRpcTimeoutMs(agentActive)) }
+}
+
+/** Raw worker RPC timeout for agent operations, without frontend multiplier. */
+export function agentRpcTimeoutMs(agentActive: boolean): number {
   const backendSec = agentActive
     ? timeoutConfig.apiTimeoutSeconds
     : timeoutConfig.agentStartupTimeoutSeconds + timeoutConfig.apiTimeoutSeconds
-  return { timeoutMs: Math.ceil(TIMEOUT_MULTIPLIER * backendSec * 1000) }
+  return backendSec * 1000
 }
 
 /** RPC timeout for worktree creation. */
@@ -117,10 +122,7 @@ export function apiCallTimeout(): CallOptions {
 
 /** Loading timeout for agent operations. */
 export function agentLoadingTimeoutMs(agentActive: boolean): number {
-  const backendSec = agentActive
-    ? timeoutConfig.apiTimeoutSeconds
-    : timeoutConfig.agentStartupTimeoutSeconds + timeoutConfig.apiTimeoutSeconds
-  return Math.ceil(TIMEOUT_MULTIPLIER * backendSec * 1000)
+  return Math.ceil(TIMEOUT_MULTIPLIER * agentRpcTimeoutMs(agentActive))
 }
 
 /** Loading timeout for worktree creation. */

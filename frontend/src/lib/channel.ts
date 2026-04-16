@@ -136,7 +136,7 @@ export interface ChannelManagerOpts {
   classicHandshake1?: typeof classicHandshake1
   classicHandshake2?: typeof classicHandshake2
   maxMessageSize?: number
-  /** Timeout for individual RPC calls in milliseconds. Defaults to 30s. */
+  /** Default timeout for individual RPC calls in milliseconds. */
   rpcTimeout?: number
 }
 
@@ -346,21 +346,22 @@ export class ChannelManager {
   }
 
   /** Send a unary RPC request through the encrypted channel. */
-  call(channelId: string, method: string, payload: Uint8Array): Promise<InnerRpcResponse> {
+  call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number): Promise<InnerRpcResponse> {
     const ch = this.channels.get(channelId)
     if (!ch || ch.closed) {
       return Promise.reject(new ChannelError('client', 'channel not open'))
     }
 
     const requestId = ch.nextRequestId++
+    const effectiveTimeoutMs = timeoutMs ?? this.rpcTimeout
 
     return new Promise<InnerRpcResponse>((resolve, reject) => {
-      const timeoutSec = Math.round(this.rpcTimeout / 1000)
+      const timeoutSec = Math.round(effectiveTimeoutMs / 1000)
       const timer = setTimeout(() => {
         ch.pendingRequests.delete(requestId)
         log.debug('inner RPC request timed out', { channel_id: ch.channelId, id: requestId, method })
         reject(new ChannelError('client', `RPC call '${method}' timed out after ${timeoutSec}s (channel=${channelId})`))
-      }, this.rpcTimeout)
+      }, effectiveTimeoutMs)
 
       log.debug('sending inner RPC request', { channel_id: ch.channelId, id: requestId, method, payload_len: payload.length })
 
@@ -497,6 +498,7 @@ export class ChannelManager {
     reqSchema: ReqSchema,
     respSchema: RespSchema,
     req: MessageInitShape<ReqSchema>,
+    opts?: { timeoutMs?: number },
   ): Promise<MessageShape<RespSchema>> {
     const channelId = await this.getOrOpenChannel(workerId)
     const msg = create(reqSchema, req)
@@ -504,7 +506,7 @@ export class ChannelManager {
     const payload = toBinary(reqSchema, msg)
     let resp
     try {
-      resp = await this.call(channelId, method, payload)
+      resp = await this.call(channelId, method, payload, opts?.timeoutMs)
     }
     catch (err) {
       log.debug('callWorker error', { method, error: err instanceof Error ? err.message : String(err) })

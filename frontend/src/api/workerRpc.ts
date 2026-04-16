@@ -61,7 +61,7 @@ import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/ch
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
 import { getCapabilities, isTauriApp, platformBridge } from '~/api/platformBridge'
-import { transport } from '~/api/transport'
+import { agentRpcTimeoutMs, transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
   CloseAgentResponseSchema,
@@ -349,8 +349,9 @@ function callWorker<
   reqSchema: ReqSchema,
   respSchema: RespSchema,
   req: MessageInitShape<ReqSchema>,
+  opts?: { timeoutMs?: number },
 ): Promise<MessageShape<RespSchema>> {
-  return channelManager.callWorker(workerId, method, reqSchema, respSchema, req)
+  return channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -378,7 +379,9 @@ export function moveTabWorkspace(workerId: string, req: MessageInitShape<typeof 
 // ---------------------------------------------------------------------------
 
 export function openAgent(workerId: string, req: MessageInitShape<typeof OpenAgentRequestSchema>): Promise<OpenAgentResponse> {
-  return callWorker(workerId, 'OpenAgent', OpenAgentRequestSchema, OpenAgentResponseSchema, req)
+  return callWorker(workerId, 'OpenAgent', OpenAgentRequestSchema, OpenAgentResponseSchema, req, {
+    timeoutMs: agentRpcTimeoutMs(false),
+  })
 }
 
 export function closeAgent(workerId: string, req: MessageInitShape<typeof CloseAgentRequestSchema>): Promise<CloseAgentResponse> {

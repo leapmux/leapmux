@@ -484,6 +484,23 @@ describe('channelManager', () => {
         vi.useRealTimers()
       }
     })
+
+    it('should honor a per-call timeout override', async () => {
+      vi.useFakeTimers()
+      try {
+        const channelId = await openTestChannel('w1')
+        const callPromise = mgr.call(channelId, 'SlowMethod', new Uint8Array(), 40_000)
+
+        vi.advanceTimersByTime(39_999)
+        await Promise.resolve()
+
+        vi.advanceTimersByTime(1)
+        await expect(callPromise).rejects.toThrow('timed out after 40s')
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   describe('stream', () => {
