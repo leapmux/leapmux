@@ -284,7 +284,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Check for leapmux-level slash commands (e.g. /clear) that
 		// Claude Code does not handle natively.
-		isSlashClear := trimmed == "/clear" || trimmed == "/reset"
+		isSlashClear := trimmed == "/clear" || trimmed == "/reset" || trimmed == "/new"
 
 		userMsg := &leapmuxv1.AgentChatMessage{
 			Id:                 messageID,
