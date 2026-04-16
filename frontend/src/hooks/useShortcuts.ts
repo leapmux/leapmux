@@ -108,7 +108,6 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.zoomInWebview', 'Zoom In', () => zoomInWebview(), 'View')
   cmd('app.resetWebviewZoom', 'Actual Size', () => resetWebviewZoom(), 'View')
   cmd('dialog.close', 'Close Dialog', () => {
-    // Close the topmost open dialog
     const dialogs = [...document.querySelectorAll('dialog[open]')]
     const last = dialogs.at(-1) as HTMLDialogElement | undefined
     if (last && !last.hasAttribute('data-busy'))

@@ -852,7 +852,7 @@ function useGapReveals(): GapState {
 }
 
 function useGapData(getHunks: () => StructuredPatchHunk[], getOriginalFile: () => string | undefined) {
-  const originalFileLines = () => {
+  const originalFileLines = createMemo(() => {
     const source = getOriginalFile()
     if (!source)
       return undefined
@@ -860,13 +860,13 @@ function useGapData(getHunks: () => StructuredPatchHunk[], getOriginalFile: () =
     if (lines.length > 0 && lines.at(-1) === '')
       lines.pop()
     return lines
-  }
-  const gapData = () => {
+  })
+  const gapData = createMemo(() => {
     const ofl = originalFileLines()
     if (!ofl)
       return null
     return computeGapMap(getHunks(), ofl)
-  }
+  })
   const syntheticGaps = createMemo(() => computeSyntheticGapMap(getHunks()))
   return { gapData, syntheticGaps }
 }

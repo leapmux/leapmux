@@ -169,11 +169,6 @@ export function unbindAll(): void {
   currentUnsubscribe = null
 }
 
-/** Get the key string for a command ID (for displaying in tooltips). */
-export function getBindingForCommand(commandId: string): string | undefined {
-  return getBindingsForCommand(commandId)[0]
-}
-
 /** Get all active key strings for a command ID, preferring currently-enabled bindings. */
 export function getBindingsForCommand(commandId: string): string[] {
   const active: string[] = []

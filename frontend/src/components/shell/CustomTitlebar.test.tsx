@@ -33,10 +33,10 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
 })
 
 const setShowAboutDialog = vi.fn()
-const mockedUserMenuItems = vi.fn((props?: { aboutLabel?: string }) => (
+const mockedUserMenuItems = vi.fn(() => (
   <>
     <button role="menuitem">Profile...</button>
-    <button role="menuitem" onClick={() => setShowAboutDialog(true)}>{props?.aboutLabel ?? 'About...'}</button>
+    <button role="menuitem" onClick={() => setShowAboutDialog(true)}>About LeapMux Desktop...</button>
     <button role="menuitem">Preferences...</button>
     <button role="menuitem">Switch mode...</button>
     <button role="menuitem">Log out</button>
@@ -77,11 +77,6 @@ async function renderTitlebar() {
 describe('customTitlebar hamburger menu', () => {
   beforeEach(() => {
     initialMaximized.value = false
-  })
-
-  it('positions the hamburger menu below the titlebar on Linux', async () => {
-    const { getHamburgerPlacement } = await import('./CustomTitlebar')
-    expect(getHamburgerPlacement('linux')).toEqual({ placement: 'auto', yOffset: 34 })
   })
 
   it('renders the hamburger trigger on Linux desktop', async () => {

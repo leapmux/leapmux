@@ -15,6 +15,7 @@ import { Icon } from '~/components/common/Icon'
 import { TodoList } from '~/components/todo/TodoList'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { todosToMarkdown } from '~/lib/messageParser'
+import { pluralize } from '~/lib/plural'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
@@ -120,7 +121,7 @@ function searchSummary(rawOutput: Record<string, unknown> | undefined): JSX.Elem
     return undefined
   if (matches === 0)
     return <div class={toolResultPrompt}>No matches found</div>
-  return <div class={toolResultPrompt}>{`Found ${matches} match${matches === 1 ? '' : 'es'}`}</div>
+  return <div class={toolResultPrompt}>{`Found ${pluralize(matches, 'match', 'matches')}`}</div>
 }
 
 // ---------------------------------------------------------------------------

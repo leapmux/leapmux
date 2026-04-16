@@ -97,7 +97,7 @@ export function formatGlobSummary(numFiles?: number, durationMs?: number, trunca
   if (numFiles <= 0)
     parts.push(fallback || 'No files found')
   else
-    parts.push(`Found ${numFiles} file${numFiles === 1 ? '' : 's'}`)
+    parts.push(`Found ${pluralize(numFiles, 'file')}`)
   if (durationMs !== undefined)
     parts.push(`Took ${formatDuration(durationMs)}`)
   if (truncated)

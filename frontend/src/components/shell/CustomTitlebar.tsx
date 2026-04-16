@@ -20,18 +20,13 @@ const platform = getPlatform()
 const desktop = isDesktopApp()
 const isLinuxDesktop = desktop && platform === 'linux'
 const MAC_TRAFFIC_LIGHT_INSET_PX = 78
-const MAC_TRAFFIC_LIGHT_INSET = `${MAC_TRAFFIC_LIGHT_INSET_PX}px`
-const WINDOWS_CAPTION_BUTTON_INSET = '138px'
-const macPadding = desktop && platform === 'mac' ? MAC_TRAFFIC_LIGHT_INSET : undefined
-const windowsPadding = desktop && platform === 'windows' ? WINDOWS_CAPTION_BUTTON_INSET : undefined
+const WINDOWS_CAPTION_BUTTON_INSET_PX = 138
+const macPadding = desktop && platform === 'mac' ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px` : undefined
+const windowsPadding = desktop && platform === 'windows' ? `${WINDOWS_CAPTION_BUTTON_INSET_PX}px` : undefined
 
-export function getHamburgerPlacement(platformName: string) {
-  return platformName === 'mac'
-    ? { placement: 'auto' as const, xOffset: MAC_TRAFFIC_LIGHT_INSET_PX, yOffset: headerHeightPx }
-    : { placement: 'auto' as const, yOffset: headerHeightPx }
-}
-
-const hamburgerPlacement = getHamburgerPlacement(platform)
+const hamburgerPlacement = platform === 'mac'
+  ? { placement: 'auto' as const, xOffset: MAC_TRAFFIC_LIGHT_INSET_PX, yOffset: headerHeightPx }
+  : { placement: 'auto' as const, yOffset: headerHeightPx }
 
 interface CustomTitlebarProps {
   onToggleLeftSidebar: () => void
@@ -68,7 +63,7 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
         placement={hamburgerPlacement}
         data-testid="app-menu"
       >
-        <UserMenuItems aboutLabel="About LeapMux Desktop..." />
+        <UserMenuItems />
         <Show when={desktop}>
           <hr />
           <li class={menuSectionHeader}>Window</li>

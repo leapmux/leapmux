@@ -57,8 +57,8 @@ export const titlebarContent = style({
 })
 
 // Optical-balance nudge: Lucide's Menu glyph (three horizontal lines) renders
-// ~2px above the visual center that PanelLeft/PanelRight resolve to, so the
+// above the visual center that PanelLeft/PanelRight resolve to, so the
 // hamburger looks misaligned next to the sidebar toggles without this shift.
 export const menuTrigger = style({
-  transform: 'translateY(2px)',
+  transform: 'translateY(1.5px)',
 })

@@ -35,6 +35,7 @@ const SPECIAL_KEY_MAP: Record<string, string> = {
 
 const LETTER_KEY_RE = /^[a-z]$/i
 const DIGIT_KEY_RE = /^\d$/
+const MODIFIER_ORDER = ['CmdOrCtrl', 'Super', 'Ctrl', 'Alt', 'Shift']
 
 function keyCodeForTauri(key: string): string | undefined {
   if (FUNCTION_KEY_RE.test(key))
@@ -73,8 +74,7 @@ export function tinykeysToTauriAccelerator(key: string): string | undefined {
   if (!mainKey)
     return undefined
 
-  const orderedModifiers = ['CmdOrCtrl', 'Super', 'Ctrl', 'Alt', 'Shift']
-    .filter(modifier => modifiers.includes(modifier))
+  const orderedModifiers = MODIFIER_ORDER.filter(modifier => modifiers.includes(modifier))
 
   return [...orderedModifiers, mainKey].join('+')
 }

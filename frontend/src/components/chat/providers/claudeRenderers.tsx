@@ -517,9 +517,9 @@ function GrepResultView(props: {
 
   const summary = () => {
     if (props.numLines > 0 && props.numFiles > 0)
-      return `${props.numLines} match${props.numLines === 1 ? '' : 'es'} in ${props.numFiles} file${props.numFiles === 1 ? '' : 's'}`
+      return `${pluralize(props.numLines, 'match', 'matches')} in ${pluralize(props.numFiles, 'file')}`
     if (props.numFiles > 0)
-      return `Found ${props.numFiles} file${props.numFiles === 1 ? '' : 's'}`
+      return `Found ${pluralize(props.numFiles, 'file')}`
     return ''
   }
 

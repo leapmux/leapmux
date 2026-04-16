@@ -15,11 +15,7 @@ import {
   setShowProfileDialog,
 } from './UserMenuState'
 
-interface UserMenuItemsProps {
-  aboutLabel?: string
-}
-
-export const UserMenuItems: Component<UserMenuItemsProps> = (props) => {
+export const UserMenuItems: Component = () => {
   const auth = useAuth()
   const org = useOrg()
   const navigate = useNavigate()
@@ -60,7 +56,7 @@ export const UserMenuItems: Component<UserMenuItemsProps> = (props) => {
         </button>
       </Show>
       <button role="menuitem" onClick={() => setShowAboutDialog(true)}>
-        {props.aboutLabel ?? 'About...'}
+        {isDesktopApp() ? 'About LeapMux Desktop...' : 'About...'}
       </button>
       <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
         <DropdownMenuItemContent label="Preferences..." shortcut={getShortcutHintsText('app.openPreferences')} />

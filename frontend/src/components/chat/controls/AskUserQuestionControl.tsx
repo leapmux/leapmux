@@ -7,6 +7,7 @@ import { agentLoadingTimeoutMs, apiLoadingTimeoutMs } from '~/api/transport'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { pluralize } from '~/lib/plural'
 import { spinner } from '~/styles/animations.css'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
@@ -178,7 +179,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                         <CollapsibleList
                           items={q().options}
                           maxVisible={4}
-                          moreLabel={n => `Show ${n} more option${n === 1 ? '' : 's'}\u2026`}
+                          moreLabel={n => `Show ${pluralize(n, 'more option')}\u2026`}
                           renderItem={opt => (
                             <label class={styles.optionItem} data-testid={`question-option-${opt.label}`}>
                               <input
@@ -207,7 +208,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                   <CollapsibleList
                     items={q().options}
                     maxVisible={4}
-                    moreLabel={n => `Show ${n} more option${n === 1 ? '' : 's'}\u2026`}
+                    moreLabel={n => `Show ${pluralize(n, 'more option')}\u2026`}
                     renderItem={opt => (
                       <label
                         class={styles.optionItem}
