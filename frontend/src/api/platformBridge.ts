@@ -286,10 +286,10 @@ export async function restoreWindowGeometry(width: number, height: number, maxim
   }
 }
 
-function tauriFireAndForget(cmd: string): void {
+function tauriFireAndForget(cmd: string, args?: Record<string, unknown>): void {
   if (!isTauriApp())
     return
-  tauriInvoke(cmd).catch(err => log.warn(`${cmd} failed`, err))
+  tauriInvoke(cmd, args).catch(err => log.warn(`${cmd} failed`, { args, err }))
 }
 
 export function quitApp(): void {
@@ -313,12 +313,10 @@ export function openWebInspector(): void {
 }
 
 export function setMenuItemAccelerator(itemId: string, accelerator?: string): void {
-  if (!isTauriApp())
-    return
-  tauriInvoke('set_menu_item_accelerator', {
+  tauriFireAndForget('set_menu_item_accelerator', {
     itemId,
     accelerator: accelerator ?? null,
-  }).catch(err => log.warn('set_menu_item_accelerator failed', { itemId, err }))
+  })
 }
 
 async function tauriWindowOp(fn: (win: import('@tauri-apps/api/window').Window) => Promise<void>): Promise<void> {

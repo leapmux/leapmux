@@ -34,8 +34,11 @@ export const UserMenuItems: Component = () => {
       requestAnimationFrame(() => {
         overlay.style.opacity = '1'
       })
-      overlay.addEventListener('transitionend', () => resolve(), { once: true })
-      setTimeout(resolve, 400)
+      const fallback = setTimeout(resolve, 400)
+      overlay.addEventListener('transitionend', () => {
+        clearTimeout(fallback)
+        resolve()
+      }, { once: true })
     })
 
     try {

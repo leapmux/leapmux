@@ -45,6 +45,11 @@ const TAB_TYPE_LABELS: Partial<Record<TabType, string>> = {
   [TabType.FILE]: 'file',
 }
 
+// FFI contract: these strings must match the `*_MENU_ID` constants in
+// `desktop/rust/src/main.rs`. Keep in sync when adding/renaming menu items.
+const SHOW_PREFERENCES_MENU_ID = 'show-preferences'
+const OPEN_WEB_INSPECTOR_MENU_ID = 'open-web-inspector'
+
 /**
  * Root keyboard shortcut hook. Call once in AppShell.
  *
@@ -217,8 +222,8 @@ export function useShortcuts(props: UseShortcutsProps): void {
     activateBindings(merged)
 
     if (isTauriApp() && getPlatform() === 'mac') {
-      syncMenuAccelerator('show-preferences', 'app.openPreferences', merged)
-      syncMenuAccelerator('open-web-inspector', 'app.openWebInspector', merged)
+      syncMenuAccelerator(SHOW_PREFERENCES_MENU_ID, 'app.openPreferences', merged)
+      syncMenuAccelerator(OPEN_WEB_INSPECTOR_MENU_ID, 'app.openWebInspector', merged)
     }
   })
 
