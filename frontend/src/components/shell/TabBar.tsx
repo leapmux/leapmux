@@ -26,8 +26,16 @@ import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
 
-const MENU_CHECK = '\u2713 ' // ✓ + space
-const MENU_NOCHECK = '\u2003 ' // em-space placeholder
+const MENU_CHECK = '\u2713' // ✓
+
+function renderToggleMenuLabel(label: string, checked: boolean): JSX.Element {
+  return (
+    <span class={styles.toggleMenuLabel}>
+      <span class={styles.toggleMenuIndicator} aria-hidden="true">{checked ? MENU_CHECK : ''}</span>
+      <span>{label}</span>
+    </span>
+  )
+}
 
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (
   <Tooltip text={tipProps.text}>
@@ -325,7 +333,16 @@ export const TabBar: Component<TabBarProps> = (props) => {
         )}
       </For>
       <hr />
-      <li class={menuSectionHeader}>Developer</li>
+      <li class={menuSectionHeader}>Advanced</li>
+      <button
+        role="menuitem"
+        onClick={(e) => {
+          e.preventDefault()
+          prefs.setExpandAgentThoughts(!prefs.expandAgentThoughts())
+        }}
+      >
+        <DropdownMenuItemContent label={renderToggleMenuLabel('Expand agent thoughts', prefs.expandAgentThoughts())} />
+      </button>
       <button
         role="menuitem"
         onClick={(e) => {
@@ -333,8 +350,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           prefs.setShowHiddenMessages(!prefs.showHiddenMessages())
         }}
       >
-        {prefs.showHiddenMessages() ? MENU_CHECK : MENU_NOCHECK}
-        Show hidden messages
+        <DropdownMenuItemContent label={renderToggleMenuLabel('Show hidden messages', prefs.showHiddenMessages())} />
       </button>
     </>
   )

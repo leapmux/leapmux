@@ -138,6 +138,20 @@ export const shellDefault = style({
   color: 'var(--muted-foreground)',
 })
 
+export const toggleMenuLabel = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+})
+
+export const toggleMenuIndicator = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: '1em',
+  flexShrink: 0,
+})
+
 export const tabEditInput = style({
   'width': '100px',
   'padding': '0 2px',

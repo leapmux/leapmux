@@ -25,6 +25,7 @@ export interface BrowserPreferences {
   turnEndSound?: string
   turnEndSoundVolume?: number
   debugLogging?: boolean
+  expandAgentThoughts?: boolean
   showHiddenMessages?: boolean
   enterKeyMode?: EnterKeyMode
 }

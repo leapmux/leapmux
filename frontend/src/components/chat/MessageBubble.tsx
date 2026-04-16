@@ -130,7 +130,7 @@ interface MessageBubbleProps {
   /** Set the per-message diff view override. */
   onSetLocalDiffView?: (view: 'unified' | 'split') => void
   /** Stable per-message UI state getter for remount-sensitive renderers. */
-  getMessageUiState?: (key: string) => boolean
+  getMessageUiState?: (key: string) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
   setMessageUiState?: (key: string, value: boolean) => void
 }
@@ -431,6 +431,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     onReply: props.onReply ? (text: string) => props.onReply!(formatChatQuote(text)) : undefined,
     onCopyJson: copyJson,
     jsonCopied: jsonCopied(),
+    expandAgentThoughts: prefs.expandAgentThoughts(),
     toolUseMessage: toolUseMessage(),
     toolResultMessage: toolResultMessage(),
     spanColor: props.message.spanColor,

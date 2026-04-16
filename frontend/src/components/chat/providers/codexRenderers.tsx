@@ -6,7 +6,6 @@ import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { CommandStreamSegment } from '~/stores/chat.store'
 import Bot from 'lucide-solid/icons/bot'
 import Brain from 'lucide-solid/icons/brain'
-import ChevronRight from 'lucide-solid/icons/chevron-right'
 import File from 'lucide-solid/icons/file'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
 import FilePlus from 'lucide-solid/icons/file-plus'
@@ -27,13 +26,9 @@ import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { inlineFlex } from '~/styles/shared.css'
 import { DiffView, rawDiffToHunks } from '../diffUtils'
 import { markdownContent } from '../markdownContent.css'
-import { useSharedExpandedState } from '../messageRenderers'
+import { ThinkingBubble, useSharedExpandedState } from '../messageRenderers'
 import {
   resultDivider,
-  thinkingChevron,
-  thinkingChevronExpanded,
-  thinkingContent,
-  thinkingHeader,
 } from '../messageStyles.css'
 import { isObject, relativizePath } from '../messageUtils'
 import { formatDuration } from '../rendererUtils'
@@ -744,28 +739,7 @@ export function codexReasoningRenderer(parsed: unknown, _role: MessageRole, _con
   if (!text())
     return null
 
-  const [expanded, setExpanded] = useSharedExpandedState(() => _context, 'codex-reasoning')
-
-  return (
-    <div>
-      <div class={thinkingHeader} onClick={() => setExpanded(v => !v)}>
-        <Tooltip text="Reasoning" ariaLabel>
-          <span class={`${inlineFlex} ${toolUseIcon}`}>
-            <Icon icon={Brain} size="md" />
-          </span>
-        </Tooltip>
-        <span class={toolInputSummary}>Thinking</span>
-        <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
-          <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
-        </span>
-      </div>
-      <Show when={expanded()}>
-        <div class={thinkingContent}>
-          <div class={markdownContent} innerHTML={renderMarkdown(text())} />
-        </div>
-      </Show>
-    </div>
-  )
+  return <ThinkingBubble text={text()} icon={Brain} label="Thinking" stateKey="codex-reasoning" context={_context} />
 }
 
 /** Build a title element with a display name and optional status badge. */

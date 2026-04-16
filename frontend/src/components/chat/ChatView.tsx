@@ -96,8 +96,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       return next
     })
   }
-  const getMessageUiBool = (messageId: string, key: string): boolean =>
-    messageUiState().get(messageId)?.get(key) ?? false
+  const getMessageUiBool = (messageId: string, key: string): boolean | undefined =>
+    messageUiState().get(messageId)?.get(key)
   const setMessageUiBool = (messageId: string, key: string, value: boolean) => {
     setMessageUiState((prev) => {
       const next = new Map(prev)

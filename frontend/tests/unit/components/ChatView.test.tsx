@@ -364,6 +364,8 @@ describe('chatView', () => {
   })
 
   it('preserves expanded codex reasoning state when the message updates and new messages are appended', async () => {
+    localStorage.setItem('leapmux:browser-prefs', JSON.stringify({ expandAgentThoughts: false }))
+
     const initialMessages = [
       makeCodexReasoningMessage({
         id: 'reasoning-1',
@@ -384,6 +386,7 @@ describe('chatView', () => {
       )
     })
 
+    expect(screen.queryByText('Initial reasoning summary')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('Thinking'))
     expect(screen.getByText('Initial reasoning summary')).toBeInTheDocument()
 
@@ -1158,6 +1161,26 @@ describe('chatView', () => {
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
     expect(screen.getByText('Thinking')).toBeInTheDocument()
+  })
+
+  it('starts codex reasoning collapsed when expandAgentThoughts is disabled', () => {
+    localStorage.setItem('leapmux:browser-prefs', JSON.stringify({ expandAgentThoughts: false }))
+
+    const messages = [
+      makeCodexReasoningMessage({ id: 'reason-done', seq: 1n, spanId: 'reason-1', summary: ['done'] }),
+    ]
+
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByText('Thinking')).toBeInTheDocument()
+    expect(screen.queryByText('done')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Thinking'))
+    expect(screen.getByText('done')).toBeInTheDocument()
   })
 
   it('keeps completed codex reasoning visible while empty start reasoning remains hidden', () => {

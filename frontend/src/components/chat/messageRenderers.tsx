@@ -73,6 +73,8 @@ export interface RenderContext {
   onCopyJson?: () => void
   /** Whether JSON was just copied (for feedback). */
   jsonCopied?: boolean
+  /** Whether thinking/reasoning bubbles should start expanded by default. */
+  expandAgentThoughts?: boolean
   /** Parent tool_use name (passed to tool_result renderers for context). */
   parentToolName?: string
   /** Parent tool_use input (passed to tool_result renderers for context). */
@@ -92,7 +94,7 @@ export interface RenderContext {
   /** Live streamed Codex span content for command, fileChange, and reasoning items. */
   commandStream?: CommandStreamSegment[]
   /** Stable per-message UI state getter for remount-sensitive renderers. */
-  getMessageUiState?: (key: string) => boolean
+  getMessageUiState?: (key: string) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
   setMessageUiState?: (key: string, value: boolean) => void
 }
@@ -105,10 +107,13 @@ export interface MessageContentRenderer {
 export function useSharedExpandedState(
   getContext: () => RenderContext | undefined,
   key: string,
-  initial = false,
+  initial: boolean | (() => boolean) = false,
 ): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
-  const [localExpanded, setLocalExpanded] = createSignal(initial)
-  const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded()
+  const [localExpanded, setLocalExpanded] = createSignal<boolean | undefined>(undefined)
+  const resolveInitial = () => typeof initial === 'function'
+    ? (initial as () => boolean)()
+    : initial
+  const expanded = () => getContext()?.getMessageUiState?.(key) ?? localExpanded() ?? resolveInitial()
   const setExpanded = (value: boolean | ((prev: boolean) => boolean)) => {
     const ctx = getContext()
     const next = typeof value === 'function'
@@ -148,10 +153,21 @@ const assistantTextRenderer: MessageContentRenderer = {
   },
 }
 
-/** Collapsible message with icon, label, and markdown body. */
-function CollapsibleMessage(props: { text: string, icon: LucideIcon, label: string, stateKey: string, context?: RenderContext }): JSX.Element {
+/** Shared assistant thinking/reasoning bubble with chevron-controlled body. */
+export function ThinkingBubble(props: {
+  text: string
+  icon: LucideIcon
+  label: string
+  stateKey: string
+  context?: RenderContext
+  defaultExpanded?: boolean
+}): JSX.Element {
   // eslint-disable-next-line solid/reactivity -- stateKey is a static string, never changes
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, props.stateKey)
+  const [expanded, setExpanded] = useSharedExpandedState(
+    () => props.context,
+    props.stateKey,
+    () => props.defaultExpanded ?? props.context?.expandAgentThoughts ?? true,
+  )
 
   return (
     <>
@@ -176,11 +192,11 @@ function CollapsibleMessage(props: { text: string, icon: LucideIcon, label: stri
 }
 
 export function ThinkingMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  return <CollapsibleMessage text={props.text} icon={Brain} label="Thinking" stateKey="thinking" context={props.context} />
+  return <ThinkingBubble text={props.text} icon={Brain} label="Thinking" stateKey="thinking" context={props.context} />
 }
 
 export function PlanExecutionMessage(props: { text: string, context?: RenderContext }): JSX.Element {
-  return <CollapsibleMessage text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey="planExecution" context={props.context} />
+  return <ThinkingBubble text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey="planExecution" context={props.context} defaultExpanded={false} />
 }
 
 /** Handles plan execution messages: {"content":"...","planExecution":true} */

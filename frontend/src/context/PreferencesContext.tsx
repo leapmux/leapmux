@@ -39,6 +39,9 @@ interface PreferencesState {
   turnEndSoundVolume: () => number
   /** Resolved debug logging preference. */
   debugLogging: () => boolean
+  /** Whether thinking/reasoning bubbles should start expanded. */
+  expandAgentThoughts: () => boolean
+  setExpandAgentThoughts: (value: boolean) => void
   /** Whether hidden messages are shown in the chat view (developer feature). */
   showHiddenMessages: () => boolean
   setShowHiddenMessages: (value: boolean) => void
@@ -201,6 +204,14 @@ export const PreferencesProvider: ParentComponent = (props) => {
   }
 
   // --- Browser-only preferences ---
+  const [expandAgentThoughts, setExpandAgentThoughtsSignal] = createSignal(
+    initialPrefs.expandAgentThoughts !== false,
+  )
+  const setExpandAgentThoughts = (value: boolean) => {
+    setExpandAgentThoughtsSignal(value)
+    updateBrowserPref('expandAgentThoughts', value ? undefined : false)
+  }
+
   const [showHiddenMessages, setShowHiddenMessagesSignal] = createSignal(
     initialPrefs.showHiddenMessages === true,
   )
@@ -331,6 +342,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       theme,
       terminalTheme,
       debugLogging,
+      expandAgentThoughts,
+      setExpandAgentThoughts,
       showHiddenMessages,
       setShowHiddenMessages,
       enterKeyMode,

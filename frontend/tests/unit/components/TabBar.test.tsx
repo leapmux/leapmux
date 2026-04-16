@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
@@ -67,6 +67,8 @@ vi.mock('~/components/shell/TabBar.css', () => ({
   collapsedNewTab: 'collapsedNewTab',
   collapsedOverflow: 'collapsedOverflow',
   shellDefault: 'shellDefault',
+  toggleMenuLabel: 'toggleMenuLabel',
+  toggleMenuIndicator: 'toggleMenuIndicator',
 }))
 
 function noop() {}
@@ -86,6 +88,14 @@ const defaultProps = {
 function makeTab(type: TabType, id: string, title?: string) {
   return { type, id, title, position: '0|' }
 }
+
+function getBrowserPrefs() {
+  return JSON.parse(localStorage.getItem('leapmux:browser-prefs') ?? '{}') as Record<string, unknown>
+}
+
+beforeEach(() => {
+  localStorage.clear()
+})
 
 describe('tabBar readOnly prop', () => {
   it('shows shortcut hints on dialog menu items', () => {
@@ -234,5 +244,51 @@ describe('tabBar readOnly prop', () => {
     fireEvent.wheel(tabList, { deltaY: 60, deltaX: 0 })
 
     expect(tabList.scrollLeft).toBe(60)
+  })
+
+  it('renders the Advanced section with Expand agent thoughts before Show hidden messages', () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          availableProviders={[]}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByText('Advanced').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Developer')).not.toBeInTheDocument()
+
+    const expandItems = screen.getAllByRole('menuitem', { name: /Expand agent thoughts/ })
+    const hiddenItems = screen.getAllByRole('menuitem', { name: /Show hidden messages/ })
+    expect(expandItems.length).toBeGreaterThan(0)
+    expect(hiddenItems.length).toBeGreaterThan(0)
+    expect(expandItems[0].compareDocumentPosition(hiddenItems[0]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+  })
+
+  it('toggles Expand agent thoughts and persists the browser preference', () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          availableProviders={[]}
+        />
+      </PreferencesProvider>
+    ))
+
+    const menuItem = screen.getAllByRole('menuitem', { name: /Expand agent thoughts/ })[0]
+    expect(menuItem).toHaveTextContent('Expand agent thoughts')
+    expect(menuItem).toHaveTextContent('✓')
+    expect(getBrowserPrefs().expandAgentThoughts).toBeUndefined()
+
+    fireEvent.click(menuItem)
+    expect(menuItem).toHaveTextContent('Expand agent thoughts')
+    expect(menuItem).not.toHaveTextContent('✓')
+    expect(getBrowserPrefs().expandAgentThoughts).toBe(false)
+
+    fireEvent.click(menuItem)
+    expect(menuItem).toHaveTextContent('Expand agent thoughts')
+    expect(menuItem).toHaveTextContent('✓')
+    expect(getBrowserPrefs().expandAgentThoughts).toBeUndefined()
   })
 })

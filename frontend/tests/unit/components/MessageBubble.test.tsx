@@ -3,7 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent } from '~/components/chat/toolStyles.css'
-import { PreferencesProvider } from '~/context/PreferencesContext'
+import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
@@ -30,6 +30,7 @@ let clipboardContent: string | null = null
 
 beforeEach(() => {
   clipboardContent = null
+  localStorage.clear()
   Object.assign(navigator, {
     clipboard: {
       writeText: vi.fn((text: string) => {
@@ -174,6 +175,84 @@ describe('thinking message toolbar buttons', () => {
     fireEvent.click(copyBtn)
     await waitFor(() => expect(clipboardContent).not.toBeNull())
     expect(clipboardContent).toBe(thinkingText)
+  })
+})
+
+describe('thinking message expansion preference', () => {
+  function renderThinkingBubble(thinkingText: string) {
+    const innerMsg = {
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: thinkingText }] },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: rawContent(innerMsg),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} onReply={() => {}} />
+      </PreferencesProvider>
+    ))
+  }
+
+  it('shows thinking content by default when expandAgentThoughts is enabled', () => {
+    renderThinkingBubble('Expanded thinking content')
+
+    expect(screen.getByText('Thinking')).toBeInTheDocument()
+    expect(screen.getByText('Expanded thinking content')).toBeInTheDocument()
+  })
+
+  it('starts collapsed when expandAgentThoughts is disabled and toggles on click', () => {
+    localStorage.setItem('leapmux:browser-prefs', JSON.stringify({ expandAgentThoughts: false }))
+
+    renderThinkingBubble('Collapsed by preference')
+
+    expect(screen.getByText('Thinking')).toBeInTheDocument()
+    expect(screen.queryByText('Collapsed by preference')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Thinking'))
+    expect(screen.getByText('Collapsed by preference')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Thinking'))
+    expect(screen.queryByText('Collapsed by preference')).not.toBeInTheDocument()
+  })
+
+  it('updates untouched thinking bubbles when the global preference changes', () => {
+    const thinkingText = 'Follows current preference'
+    const innerMsg = {
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: thinkingText }] },
+    }
+    const msg = makeMsg({
+      role: MessageRole.ASSISTANT,
+      content: rawContent(innerMsg),
+    })
+
+    function TestHarness() {
+      const prefs = usePreferences()
+      return (
+        <>
+          <button onClick={() => prefs.setExpandAgentThoughts(false)}>collapse-default</button>
+          <button onClick={() => prefs.setExpandAgentThoughts(true)}>expand-default</button>
+          <MessageBubble message={msg} onReply={() => {}} />
+        </>
+      )
+    }
+
+    render(() => (
+      <PreferencesProvider>
+        <TestHarness />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByText(thinkingText)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('collapse-default'))
+    expect(screen.queryByText(thinkingText)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('expand-default'))
+    expect(screen.getByText(thinkingText)).toBeInTheDocument()
   })
 })
 
