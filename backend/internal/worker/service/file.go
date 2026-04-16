@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -308,25 +309,46 @@ const mergeReadTimeout = 500 * time.Millisecond
 // readDirN reads at most n entries from a directory within mergeReadTimeout.
 // Returns an error if the directory cannot be opened or read in time.
 func readDirN(dirPath string, n int) ([]os.DirEntry, error) {
+	return readDirNWithTimeout(dirPath, n, mergeReadTimeout)
+}
+
+// readDirNWithTimeout is readDirN with a caller-supplied timeout, exposed
+// for tests.
+func readDirNWithTimeout(dirPath string, n int, timeout time.Duration) ([]os.DirEntry, error) {
 	type result struct {
 		entries []os.DirEntry
 		err     error
 	}
 	ch := make(chan result, 1)
+
+	// fd is populated once os.Open returns successfully. On timeout we close
+	// it to release the descriptor and, on platforms where a concurrent
+	// close unblocks a pending read, to let the goroutine exit promptly.
+	// If os.Open is still in flight when the timeout fires, the goroutine
+	// keeps running until the syscall returns — Go has no portable way to
+	// cancel an in-flight syscall — but it will close the fd itself before
+	// exiting, so nothing is permanently leaked.
+	var fd atomic.Pointer[os.File]
+
 	go func() {
 		f, err := os.Open(dirPath)
 		if err != nil {
 			ch <- result{nil, err}
 			return
 		}
+		fd.Store(f)
 		entries, err := f.ReadDir(n)
 		_ = f.Close()
 		ch <- result{entries, err}
 	}()
+
 	select {
 	case r := <-ch:
 		return r.entries, r.err
-	case <-time.After(mergeReadTimeout):
+	case <-time.After(timeout):
+		if f := fd.Load(); f != nil {
+			_ = f.Close()
+		}
 		return nil, fmt.Errorf("readDirN timed out for %s", dirPath)
 	}
 }
