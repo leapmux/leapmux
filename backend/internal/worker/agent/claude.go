@@ -63,7 +63,6 @@ type ClaudeCodeAgent struct {
 	// Settings state from initialize response and runtime updates.
 	outputStyle           string
 	availableOutputStyles []string
-	fastModeAvailable     bool
 	fastMode              string // "on" / "off"
 	alwaysThinking        string // "on" / "off"
 }
@@ -185,13 +184,10 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		a.outputStyle = initResp.OutputStyle
 	}
 	a.availableOutputStyles = initResp.AvailableOutputStyles
-	if initResp.FastModeState != "" {
-		a.fastModeAvailable = true
-		if initResp.FastModeState == "on" || initResp.FastModeState == "cooldown" {
-			a.fastMode = "on"
-		} else {
-			a.fastMode = "off"
-		}
+	if initResp.FastModeState == "on" || initResp.FastModeState == "cooldown" {
+		a.fastMode = "on"
+	} else {
+		a.fastMode = "off"
 	}
 
 	// Send set_permission_mode to configure the agent's permission mode.
@@ -370,7 +366,7 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 		for _, s := range a.availableOutputStyles {
 			opts = append(opts, &leapmuxv1.AvailableOption{
 				Id:        s,
-				Name:      s,
+				Name:      titleCaseID(s, ""),
 				IsDefault: s == a.outputStyle,
 			})
 		}
@@ -381,16 +377,14 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 		})
 	}
 
-	if a.fastModeAvailable {
-		groups = append(groups, &leapmuxv1.AvailableOptionGroup{
-			Key:   ExtraKeyFastMode,
-			Label: "Fast Mode",
-			Options: []*leapmuxv1.AvailableOption{
-				{Id: "off", Name: "Off", IsDefault: a.fastMode != "on"},
-				{Id: "on", Name: "On", IsDefault: a.fastMode == "on"},
-			},
-		})
-	}
+	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
+		Key:   ExtraKeyFastMode,
+		Label: "Fast Mode",
+		Options: []*leapmuxv1.AvailableOption{
+			{Id: "on", Name: "On", IsDefault: a.fastMode == "on"},
+			{Id: "off", Name: "Off", IsDefault: a.fastMode != "on"},
+		},
+	})
 
 	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
 		Key:   ExtraKeyAlwaysThinking,
@@ -517,6 +511,15 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 			a.alwaysThinking = "off"
 		}
 	}
+
+	slog.Info("agent settings refreshed",
+		"agent_id", a.agentID,
+		"model", a.model,
+		"effort", a.effort,
+		"outputStyle", a.outputStyle,
+		"fastMode", a.fastMode,
+		"alwaysThinking", a.alwaysThinking,
+	)
 }
 
 func sliceContains(s []string, v string) bool {

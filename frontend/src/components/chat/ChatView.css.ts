@@ -175,8 +175,13 @@ export const settingsPanelColumnPrimary = style({
   flex: 1.2,
 })
 
+export const settingsPanelColumnSlightlyWider = style({
+  flex: 1.05,
+})
+
 export const settingsFieldset = style({
   paddingTop: 'var(--space-3)',
+  minWidth: 0,
 })
 
 export const settingsFieldsetFirst = style({
@@ -204,7 +209,6 @@ export const settingsRadioItem = style({
   'color': 'var(--foreground)',
   'cursor': 'pointer',
   'userSelect': 'none',
-  'whiteSpace': 'nowrap',
   ':hover': {
     backgroundColor: 'var(--card)',
   },

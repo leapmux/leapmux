@@ -56,11 +56,10 @@ func TestAvailableOptionGroups_NoOutputStylesWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestAvailableOptionGroups_FastModeWhenAvailable(t *testing.T) {
+func TestAvailableOptionGroups_FastModeOn(t *testing.T) {
 	a := &ClaudeCodeAgent{
-		fastModeAvailable: true,
-		fastMode:          "on",
-		alwaysThinking:    "on",
+		fastMode:       "on",
+		alwaysThinking: "on",
 	}
 	groups := a.AvailableOptionGroups()
 
@@ -71,7 +70,7 @@ func TestAvailableOptionGroups_FastModeWhenAvailable(t *testing.T) {
 			break
 		}
 	}
-	require.NotNil(t, fastGroup, "fast mode group should be present when available")
+	require.NotNil(t, fastGroup, "fast mode group should always be present")
 	assert.Len(t, fastGroup.Options, 2)
 
 	for _, opt := range fastGroup.Options {
@@ -83,13 +82,26 @@ func TestAvailableOptionGroups_FastModeWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestAvailableOptionGroups_NoFastModeWhenUnavailable(t *testing.T) {
+func TestAvailableOptionGroups_FastModeDefaultsToOff(t *testing.T) {
 	a := &ClaudeCodeAgent{
 		alwaysThinking: "on",
 	}
 	groups := a.AvailableOptionGroups()
+
+	var fastGroup *leapmuxv1.AvailableOptionGroup
 	for _, g := range groups {
-		assert.NotEqual(t, ExtraKeyFastMode, g.Key, "should not have fast mode group when unavailable")
+		if g.Key == ExtraKeyFastMode {
+			fastGroup = g
+			break
+		}
+	}
+	require.NotNil(t, fastGroup, "fast mode group should always be present")
+	for _, opt := range fastGroup.Options {
+		if opt.Id == "off" {
+			assert.True(t, opt.IsDefault, "off should be default")
+		} else {
+			assert.False(t, opt.IsDefault, "on should not be default")
+		}
 	}
 }
 

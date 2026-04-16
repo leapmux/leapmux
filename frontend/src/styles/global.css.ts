@@ -222,3 +222,8 @@ globalStyle('*::-webkit-scrollbar-thumb:hover', {
 globalStyle('*::-webkit-scrollbar-corner', {
   background: 'transparent',
 })
+
+// Prevent radio/checkbox inputs from shrinking inside flex containers.
+globalStyle('input[type="radio"], input[type="checkbox"]', {
+  flexShrink: 0,
+})
