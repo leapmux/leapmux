@@ -1,11 +1,7 @@
 package agent
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
-	"os"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,79 +10,19 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-type kiloRecordedRequest struct {
-	Method string
-	Params map[string]interface{}
-}
-
-func newKiloAgentForRPC(t *testing.T) (*KiloAgent, func() []kiloRecordedRequest) {
-	t.Helper()
-	return newKiloAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-}
-
-func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*KiloAgent, func() []kiloRecordedRequest) {
-	t.Helper()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	readPipe, writePipe, err := os.Pipe()
-	require.NoError(t, err)
-
-	agent := &KiloAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:     "test-agent",
-				stdin:       writePipe,
-				ctx:         ctx,
-				cancel:      cancel,
-				processDone: make(chan struct{}),
-				stderrDone:  make(chan struct{}),
-			}},
-			sessionID: "session-1",
-		},
-	}
-	close(agent.stderrDone)
-
-	var (
-		mu       sync.Mutex
-		requests []kiloRecordedRequest
+func newKiloAgentForRPC(t *testing.T) (*KiloAgent, func() []recordedRequest) {
+	return newACPAgentForRPC(t,
+		func() *KiloAgent { return &KiloAgent{} },
+		func(a *KiloAgent) *acpBase { return &a.acpBase },
 	)
-	go func() {
-		scanner := bufio.NewScanner(readPipe)
-		for scanner.Scan() {
-			var req struct {
-				ID     int64                  `json:"id"`
-				Method string                 `json:"method"`
-				Params map[string]interface{} `json:"params"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-				continue
-			}
-			mu.Lock()
-			requests = append(requests, kiloRecordedRequest{Method: req.Method, Params: req.Params})
-			mu.Unlock()
-			if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-				body := json.RawMessage(`{}`)
-				if respond != nil {
-					body = respond(req.Method)
-				}
-				ch.(chan json.RawMessage) <- body
-			}
-		}
-	}()
+}
 
-	t.Cleanup(func() {
-		cancel()
-		_ = readPipe.Close()
-		_ = writePipe.Close()
-	})
-
-	return agent, func() []kiloRecordedRequest {
-		mu.Lock()
-		defer mu.Unlock()
-		out := make([]kiloRecordedRequest, len(requests))
-		copy(out, requests)
-		return out
-	}
+func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*KiloAgent, func() []recordedRequest) {
+	return newACPAgentForRPCWithResponder(t,
+		func() *KiloAgent { return &KiloAgent{} },
+		func(a *KiloAgent) *acpBase { return &a.acpBase },
+		respond,
+	)
 }
 
 func TestKiloBuildSessionRequest_NewSession(t *testing.T) {

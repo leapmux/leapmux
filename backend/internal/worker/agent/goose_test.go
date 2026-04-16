@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -17,81 +16,19 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-type gooseRecordedRequest struct {
-	Method string
-	Params map[string]interface{}
-}
-
-func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []gooseRecordedRequest) {
-	t.Helper()
-	return newGooseAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-}
-
-func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GooseCLIAgent, func() []gooseRecordedRequest) {
-	t.Helper()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	readPipe, writePipe, err := os.Pipe()
-	require.NoError(t, err)
-
-	agent := &GooseCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:     "test-agent",
-				stdin:       writePipe,
-				ctx:         ctx,
-				cancel:      cancel,
-				processDone: make(chan struct{}),
-				stderrDone:  make(chan struct{}),
-			}},
-			sessionID: "session-1",
-		},
-	}
-	close(agent.stderrDone)
-
-	var (
-		mu       sync.Mutex
-		requests []gooseRecordedRequest
+func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []recordedRequest) {
+	return newACPAgentForRPC(t,
+		func() *GooseCLIAgent { return &GooseCLIAgent{} },
+		func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
 	)
-	go func() {
-		scanner := bufio.NewScanner(readPipe)
-		for scanner.Scan() {
-			var req struct {
-				ID     int64                  `json:"id"`
-				Method string                 `json:"method"`
-				Params map[string]interface{} `json:"params"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-				continue
-			}
-			mu.Lock()
-			requests = append(requests, gooseRecordedRequest{Method: req.Method, Params: req.Params})
-			mu.Unlock()
-			if req.ID != 0 {
-				if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-					body := json.RawMessage(`{}`)
-					if respond != nil {
-						body = respond(req.Method)
-					}
-					ch.(chan json.RawMessage) <- body
-				}
-			}
-		}
-	}()
+}
 
-	t.Cleanup(func() {
-		cancel()
-		_ = readPipe.Close()
-		_ = writePipe.Close()
-	})
-
-	return agent, func() []gooseRecordedRequest {
-		mu.Lock()
-		defer mu.Unlock()
-		out := make([]gooseRecordedRequest, len(requests))
-		copy(out, requests)
-		return out
-	}
+func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GooseCLIAgent, func() []recordedRequest) {
+	return newACPAgentForRPCWithResponder(t,
+		func() *GooseCLIAgent { return &GooseCLIAgent{} },
+		func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
+		respond,
+	)
 }
 
 func installFakeGooseCLI(t *testing.T, scenario string) {

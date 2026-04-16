@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,80 +16,19 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-type geminiRecordedRequest struct {
-	Method string
-	Params map[string]interface{}
-}
-
-func newGeminiAgentForRPC(t *testing.T) (*GeminiCLIAgent, func() []geminiRecordedRequest) {
-	t.Helper()
-	return newGeminiAgentForRPCWithResponder(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
-}
-
-func newGeminiAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GeminiCLIAgent, func() []geminiRecordedRequest) {
-	t.Helper()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	readPipe, writePipe, err := os.Pipe()
-	require.NoError(t, err)
-
-	agent := &GeminiCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:     "test-agent",
-				stdin:       writePipe,
-				ctx:         ctx,
-				cancel:      cancel,
-				processDone: make(chan struct{}),
-				stderrDone:  make(chan struct{}),
-			}},
-			sessionID: "session-1",
-		},
-	}
-	close(agent.stderrDone)
-
-	var (
-		mu       sync.Mutex
-		requests []geminiRecordedRequest
+func newGeminiAgentForRPC(t *testing.T) (*GeminiCLIAgent, func() []recordedRequest) {
+	return newACPAgentForRPC(t,
+		func() *GeminiCLIAgent { return &GeminiCLIAgent{} },
+		func(a *GeminiCLIAgent) *acpBase { return &a.acpBase },
 	)
+}
 
-	go func() {
-		scanner := bufio.NewScanner(readPipe)
-		for scanner.Scan() {
-			var req struct {
-				ID     int64                  `json:"id"`
-				Method string                 `json:"method"`
-				Params map[string]interface{} `json:"params"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-				continue
-			}
-			mu.Lock()
-			requests = append(requests, geminiRecordedRequest{Method: req.Method, Params: req.Params})
-			mu.Unlock()
-			if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-				body := json.RawMessage(`{}`)
-				if respond != nil {
-					body = respond(req.Method)
-				}
-				ch.(chan json.RawMessage) <- body
-			}
-		}
-	}()
-
-	t.Cleanup(func() {
-		cancel()
-		_ = readPipe.Close()
-		_ = writePipe.Close()
-	})
-
-	return agent, func() []geminiRecordedRequest {
-		mu.Lock()
-		defer mu.Unlock()
-		out := make([]geminiRecordedRequest, len(requests))
-		copy(out, requests)
-		return out
-	}
+func newGeminiAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GeminiCLIAgent, func() []recordedRequest) {
+	return newACPAgentForRPCWithResponder(t,
+		func() *GeminiCLIAgent { return &GeminiCLIAgent{} },
+		func(a *GeminiCLIAgent) *acpBase { return &a.acpBase },
+		respond,
+	)
 }
 
 func installFakeGeminiCLI(t *testing.T, scenario string) {
@@ -323,7 +261,7 @@ func TestGeminiAvailableOptionGroupsFallsBack(t *testing.T) {
 // newGeminiAgentWithGate creates a Gemini agent where each prompt response is
 // held until the returned gate channel is sent to. This allows tests to
 // observe queueing behavior by controlling when turns complete.
-func newGeminiAgentWithGate(t *testing.T) (*GeminiCLIAgent, func() []geminiRecordedRequest, chan struct{}) {
+func newGeminiAgentWithGate(t *testing.T) (*GeminiCLIAgent, func() []recordedRequest, chan struct{}) {
 	t.Helper()
 
 	gate := make(chan struct{}, 8)
