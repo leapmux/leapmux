@@ -3,15 +3,15 @@ import { getPrimaryBindingForCommand, tinykeysToTauriAccelerator } from './tauri
 
 describe('tinykeysToTauriAccelerator', () => {
   it('converts a command-option letter shortcut for macOS', () => {
-    expect(tinykeysToTauriAccelerator('$mod+Alt+i', 'mac')).toBe('CmdOrCtrl+Alt+KeyI')
+    expect(tinykeysToTauriAccelerator('$mod+Alt+i')).toBe('CmdOrCtrl+Alt+KeyI')
   })
 
   it('passes through function keys', () => {
-    expect(tinykeysToTauriAccelerator('F12', 'mac')).toBe('F12')
+    expect(tinykeysToTauriAccelerator('F12')).toBe('F12')
   })
 
   it('returns undefined for multi-chord shortcuts', () => {
-    expect(tinykeysToTauriAccelerator('$mod+k $mod+s', 'mac')).toBeUndefined()
+    expect(tinykeysToTauriAccelerator('$mod+k $mod+s')).toBeUndefined()
   })
 })
 

@@ -8,7 +8,7 @@ import { useOrg } from '~/context/OrgContext'
 import { getShortcutHint } from '~/lib/shortcuts/display'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem, menuSectionHeader } from '~/styles/shared.css'
-import * as styles from './UserMenu.css'
+import * as styles from './UserMenuItems.css'
 import {
   setShowAboutDialog,
   setShowPreferencesDialog,
@@ -71,7 +71,8 @@ export const UserMenuItems: Component<UserMenuItemsProps> = (props) => {
             {o => (
               <button
                 role="menuitem"
-                class={o.name === org.slug() ? styles.orgItemActive : styles.orgItem}
+                class={styles.orgItem}
+                data-active={o.name === org.slug() ? '' : undefined}
                 onClick={() => navigate(`/o/${o.name}`)}
               >
                 {o.name}

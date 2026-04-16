@@ -21,25 +21,12 @@ export const orgItem = style({
     '&[data-highlighted]': {
       backgroundColor: 'var(--card)',
     },
-  },
-})
-
-export const orgItemActive = style({
-  all: 'unset',
-  display: 'flex',
-  alignItems: 'center',
-  width: '100%',
-  padding: 'var(--space-2) var(--space-3)',
-  borderRadius: 'var(--radius-small)',
-  color: 'var(--primary)',
-  fontSize: 'var(--text-7)',
-  fontWeight: 400,
-  textAlign: 'left',
-  cursor: 'pointer',
-  boxSizing: 'border-box',
-  backgroundColor: 'var(--secondary)',
-  selectors: {
-    '&[data-highlighted]': {
+    '&[data-active]': {
+      color: 'var(--primary)',
+      fontWeight: 400,
+      backgroundColor: 'var(--secondary)',
+    },
+    '&[data-active][data-highlighted]': {
       backgroundColor: 'var(--muted)',
     },
   },

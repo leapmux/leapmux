@@ -1,4 +1,4 @@
-import type { Keybinding, Platform } from './types'
+import type { Keybinding } from './types'
 
 const MODIFIER_MAP: Record<string, string> = {
   $mod: 'CmdOrCtrl',
@@ -46,7 +46,7 @@ function keyCodeForTauri(key: string): string | undefined {
   return SPECIAL_KEY_MAP[key]
 }
 
-export function tinykeysToTauriAccelerator(key: string, _platform: Platform): string | undefined {
+export function tinykeysToTauriAccelerator(key: string): string | undefined {
   if (key.includes(' '))
     return undefined
 

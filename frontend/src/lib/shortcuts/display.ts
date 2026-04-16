@@ -105,11 +105,7 @@ export function getShortcutHint(commandId: string): string | undefined {
   return key ? formatShortcut(key) : undefined
 }
 
-export function getShortcutHints(commandId: string): string[] {
-  return getBindingsForCommand(commandId).map(key => formatShortcut(key))
-}
-
 export function getShortcutHintsText(commandId: string, separator = ' / '): string | undefined {
-  const hints = getShortcutHints(commandId)
+  const hints = getBindingsForCommand(commandId).map(key => formatShortcut(key))
   return hints.length > 0 ? hints.join(separator) : undefined
 }

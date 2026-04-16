@@ -1,5 +1,4 @@
 import type { Component } from 'solid-js'
-import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { SidebarCommonProps } from './useSidebarCore'
 
 import { onCleanup } from 'solid-js'
@@ -47,22 +46,10 @@ export const LeftSidebar: Component<LeftSidebarProps> = (props) => {
     disposeWsOverlayRenderer()
   })
 
-  // ---------------------------------------------------------------------------
-  // Build sidebar section definitions
-  // ---------------------------------------------------------------------------
-
-  const sidebarSections = (): SidebarSectionDef[] => {
-    return buildSectionDefs()
-  }
-
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
-
   return (
     <>
       <CollapsibleSidebar
-        sections={sidebarSections()}
+        sections={buildSectionDefs()}
         side="left"
         isCollapsed={props.isCollapsed}
         onExpand={props.onExpand}

@@ -190,11 +190,24 @@ export default function App() {
     onCleanup(() => document.removeEventListener('focusin', handleFocusIn, true))
 
     if (isTauriApp()) {
+      // Track disposal so listener subscriptions that resolve *after* unmount
+      // run `unlisten` eagerly — otherwise the owner is already disposed,
+      // `onCleanup` becomes a silent no-op, and the native listener leaks.
+      let disposed = false
+      onCleanup(() => {
+        disposed = true
+      })
       const owner = getOwner()
-      platformBridge.onEvent('menu:show-about', () => setShowAboutDialog(true))
-        .then(unlisten => runWithOwner(owner, () => onCleanup(unlisten)))
-      platformBridge.onEvent('menu:show-preferences', () => setShowPreferencesDialog(true))
-        .then(unlisten => runWithOwner(owner, () => onCleanup(unlisten)))
+      const registerListener = (event: string, handler: () => void) => {
+        platformBridge.onEvent(event, handler).then((unlisten) => {
+          if (disposed)
+            unlisten()
+          else
+            runWithOwner(owner, () => onCleanup(unlisten))
+        })
+      }
+      registerListener('menu:show-about', () => setShowAboutDialog(true))
+      registerListener('menu:show-preferences', () => setShowPreferencesDialog(true))
 
       getRuntimeState()
         .then((state) => {
