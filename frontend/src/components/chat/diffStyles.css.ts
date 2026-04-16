@@ -173,3 +173,12 @@ export const diffSplitColumn = style({
     },
   },
 })
+
+// Modifier applied to a diff container to collapse the line-number columns.
+// Reclaims horizontal space for narrow diffs (e.g., Claude Edit previews) where
+// line numbers duplicate information already shown in the tool header.
+export const diffHideLineNumbers = style({})
+
+globalStyle(`${diffHideLineNumbers} ${diffLineNumber}, ${diffHideLineNumbers} ${diffLineNumberNew}`, {
+  display: 'none',
+})
