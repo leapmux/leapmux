@@ -592,7 +592,8 @@ fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    let digest = hasher.finalize();
+    Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
 impl DesktopShell {
