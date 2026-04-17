@@ -24,6 +24,11 @@ jobs:
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
           echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
+          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
+          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
+          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
+          echo "RUST_VERSION=$(yq '.rust-version' versions.yaml)" >> $GITHUB_ENV
+          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
 
       - name: Cache APT packages
         uses: actions/cache@v4
@@ -57,12 +62,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 25
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: backend/go.mod
+          go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: |
             backend/go.sum
             desktop/go/go.sum
@@ -70,10 +75,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           components: clippy
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache Bun dependencies
         uses: actions/cache@v4
@@ -106,7 +114,7 @@ jobs:
       - name: Setup Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: ${{ env.TASK_VERSION }}
 
       - name: Cache Go tool binaries
         uses: actions/cache@v4
@@ -147,6 +155,9 @@ jobs:
           echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
           echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
           echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
+          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
+          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
+          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
           echo "VERSION=$(yq '.version' versions.yaml)" >> $GITHUB_ENV
           echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
           echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> $GITHUB_ENV
@@ -167,6 +178,9 @@ jobs:
             SQLC_VERSION=${{ env.SQLC_VERSION }}
             TASK_VERSION=${{ env.TASK_VERSION }}
             S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
+            BUN_VERSION=${{ env.BUN_VERSION }}
+            NODE_VERSION=${{ env.NODE_VERSION }}
+            GOLANG_VERSION=${{ env.GOLANG_VERSION }}
             VERSION=${{ env.VERSION }}
             COMMIT_HASH=${{ env.COMMIT_HASH }}
             COMMIT_TIME=${{ env.COMMIT_TIME }}

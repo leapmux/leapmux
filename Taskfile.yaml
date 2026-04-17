@@ -28,6 +28,12 @@ vars:
     sh: yq '.s6-overlay-version' versions.yaml
   TASK_VERSION:
     sh: yq '.task-version' versions.yaml
+  BUN_VERSION:
+    sh: yq '.bun-version' versions.yaml
+  NODE_VERSION:
+    sh: yq '.node-version' versions.yaml
+  GOLANG_VERSION:
+    sh: yq '.golang-version' versions.yaml
 
 # --- Code Generation ---
 
@@ -574,6 +580,9 @@ tasks:
         --build-arg SQLC_VERSION={{.SQLC_VERSION}}
         --build-arg TASK_VERSION={{.TASK_VERSION}}
         --build-arg S6_OVERLAY_VERSION={{.S6_OVERLAY_VERSION}}
+        --build-arg BUN_VERSION={{.BUN_VERSION}}
+        --build-arg NODE_VERSION={{.NODE_VERSION}}
+        --build-arg GOLANG_VERSION={{.GOLANG_VERSION}}
         --build-arg VERSION={{.VERSION}}
         --build-arg COMMIT_HASH={{.COMMIT_HASH}}
         --build-arg COMMIT_TIME={{.COMMIT_TIME}}
@@ -595,6 +604,9 @@ tasks:
         --build-arg SQLC_VERSION={{.SQLC_VERSION}}
         --build-arg TASK_VERSION={{.TASK_VERSION}}
         --build-arg S6_OVERLAY_VERSION={{.S6_OVERLAY_VERSION}}
+        --build-arg BUN_VERSION={{.BUN_VERSION}}
+        --build-arg NODE_VERSION={{.NODE_VERSION}}
+        --build-arg GOLANG_VERSION={{.GOLANG_VERSION}}
         --build-arg VERSION={{.VERSION}}
         --build-arg COMMIT_HASH={{.COMMIT_HASH}}
         --build-arg COMMIT_TIME={{.COMMIT_TIME}}

@@ -2,11 +2,18 @@
 
 # Global ARGs — versions are defined in versions.yaml (no defaults here).
 ARG BASE_IMAGE
+ARG GOLANG_VERSION
+ARG NODE_VERSION
+
+# ------------------------------------------------------------------
+# Stage: Node.js (source for the pinned node runtime)
+# ------------------------------------------------------------------
+FROM node:${NODE_VERSION}-alpine AS node
 
 # ------------------------------------------------------------------
 # Stage 1: Build everything via `task build-backend-docker`
 # ------------------------------------------------------------------
-FROM golang:1.26-alpine AS builder
+FROM golang:${GOLANG_VERSION}-alpine AS builder
 
 ARG VERSION=dev
 ARG COMMIT_HASH
@@ -16,17 +23,21 @@ ARG TARGETARCH=amd64
 ARG BUF_VERSION
 ARG SQLC_VERSION
 ARG TASK_VERSION
+ARG BUN_VERSION
 
 WORKDIR /src
 
+# Copy the pinned Node.js runtime from the node stage
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+
 # Install build tools
-RUN apk add --no-cache bash curl libgcc libstdc++ nodejs rsync yq && \
+RUN apk add --no-cache bash curl libgcc libstdc++ rsync yq && \
     wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
     wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf && \
     go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${SQLC_VERSION}
 
-# Install Bun
-RUN wget -qO- https://bun.sh/install | BUN_INSTALL=/usr bash
+# Install Bun (pinned)
+RUN wget -qO- https://bun.sh/install | BUN_INSTALL=/usr bash -s "bun-v${BUN_VERSION}"
 
 # Download Go dependencies (cache layer)
 COPY go.work .
