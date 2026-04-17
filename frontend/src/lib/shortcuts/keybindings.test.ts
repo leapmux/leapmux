@@ -1,8 +1,9 @@
 import type { Keybinding, UserKeybindingOverride } from './types'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { registerCommand, resetCommands } from './commands'
 import { resetContext, setContext } from './context'
-import { groupBindings, mergeKeybindings, resolve } from './keybindings'
+import { activateBindings, groupBindings, mergeKeybindings, resolve, unbindAll } from './keybindings'
 
 afterEach(() => {
   resetContext()
@@ -204,5 +205,33 @@ describe('resolve', () => {
     ]
     setContext('inputFocused', true)
     expect(resolve(bindings, 'Escape')).toBeNull()
+  })
+})
+
+describe('activateBindings (Mac Option dead-key)', () => {
+  afterEach(() => {
+    unbindAll()
+    resetCommands()
+  })
+
+  // On macOS WebKit, Option+N produces event.key='\u02DC' (dead-key for tilde)
+  // even when Command is also pressed. tinykeys matches literal letters against
+  // event.key, so a raw 'n' binding misses. Matching via event.code='KeyN'
+  // keeps the shortcut working regardless of Option's text transformation or
+  // the active input method.
+  it('fires an Alt+letter binding when Option transforms event.key', () => {
+    const handler = vi.fn()
+    resetCommands()
+    registerCommand({ id: 'test.deadKey', title: 'Test', handler })
+
+    activateBindings([{ key: 'Alt+n', command: 'test.deadKey' }])
+
+    window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: '\u02DC',
+      code: 'KeyN',
+      altKey: true,
+    }))
+
+    expect(handler).toHaveBeenCalledTimes(1)
   })
 })

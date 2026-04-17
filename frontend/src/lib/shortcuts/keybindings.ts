@@ -96,11 +96,31 @@ export function groupBindings(bindings: readonly Keybinding[]): BindingGroup[] {
 
 const MODIFIER_RE = /\$mod|Control|Alt|Meta|Shift/
 export const FUNCTION_KEY_RE = /^F(?:[1-9]|1[0-2])$/
+const SINGLE_LETTER_RE = /^[a-z]$/i
 
 /** Check if a key string contains modifier keys. */
 function hasModifier(key: string): boolean {
   const first = key.split(' ')[0]
   return MODIFIER_RE.test(first)
+}
+
+/**
+ * Convert single-letter key parts to their `KeyX` event.code form so tinykeys
+ * matches by physical key position. tinykeys compares against `event.key` for
+ * literal letters, which fails on macOS WebKit when Option transforms the
+ * character (e.g. Cmd+Alt+N produces `event.key = '\u02dc'`). `event.code`
+ * stays `KeyN` regardless of the Option transformation or keyboard layout.
+ */
+function toTinykeysKey(key: string): string {
+  return key
+    .split(' ')
+    .map(chord =>
+      chord
+        .split('+')
+        .map(part => (SINGLE_LETTER_RE.test(part) ? `Key${part.toUpperCase()}` : part))
+        .join('+'),
+    )
+    .join(' ')
 }
 
 /** Check if a key string is a plain function key like F5 or F12. */
@@ -149,7 +169,7 @@ export function activateBindings(bindings: readonly Keybinding[]): void {
   const keyMap: Record<string, (e: KeyboardEvent) => void> = {}
 
   for (const group of groups) {
-    keyMap[group.key] = (e: KeyboardEvent) => {
+    keyMap[toTinykeysKey(group.key)] = (e: KeyboardEvent) => {
       const commandId = resolve(group.bindings, group.key)
       if (commandId) {
         e.preventDefault()
