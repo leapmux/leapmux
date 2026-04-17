@@ -312,7 +312,7 @@ tasks:
         fi
         codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
       - rsync -a --delete "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/" "LeapMux Desktop.app/"
-      - cd frontend/node_modules/macos-alias && npx node-gyp rebuild 2>/dev/null || true
+      - cd frontend/node_modules/macos-alias && npx --yes node-gyp rebuild 2>/dev/null || true
       - mkdir -p desktop/rust/target/release/bundle/dmg
       - >-
         desktop/rust/scripts/create-dmg.sh
