@@ -3,16 +3,84 @@ package hub
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/cenkalti/backoff/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestNew_DispatchesOnURLScheme verifies the scheme-dispatch branches in
+// New() construct a non-nil *Client for every supported URL shape.
+// Transport-level round-trip tests live alongside each scheme.
+func TestNew_DispatchesOnURLScheme(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"http", "http://localhost:4327"},
+		{"https", "https://hub.example:443"},
+		{"unix", "unix:/tmp/hub.sock"},
+		{"npipe short", "npipe:leapmux-hub-test"},
+		{"npipe full NT", `npipe:\\.\pipe\leapmux-hub-test`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := New(tc.url)
+			require.NotNil(t, client, "New(%q) returned nil", tc.url)
+			assert.Equal(t, tc.url, client.hubURL, "hubURL preserved verbatim")
+		})
+	}
+}
+
+// Regression guards: a scheme-dispatch bug silently routes local URLs to
+// the plain h2c dialer, which then resolves them as DNS host:port. Each
+// test asserts the resulting error is NOT from the TCP/DNS path.
+func TestHTTPClientForHubURL_NpipeDispatches(t *testing.T) {
+	assertDialNotRoutedToTCP(t, "npipe:leapmux-hub-nonexistent")
+}
+
+func TestHTTPClientForHubURL_UnixDispatches(t *testing.T) {
+	assertDialNotRoutedToTCP(t, "unix:/nonexistent/leapmux.sock")
+}
+
+func TestHTTPClientForHubURL_HTTPFallsBackToH2C(t *testing.T) {
+	httpClient, connectURL := clientForHubURL("http://127.0.0.1:1")
+	require.NotNil(t, httpClient)
+	assert.Equal(t, "http://127.0.0.1:1", connectURL, "remote URL should pass through verbatim")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:1/probe", nil)
+	require.NoError(t, err)
+
+	_, err = httpClient.Do(req)
+	require.Error(t, err)
+}
+
+func assertDialNotRoutedToTCP(t *testing.T, url string) {
+	t.Helper()
+	httpClient, connectURL := clientForHubURL(url)
+	require.NotNil(t, httpClient)
+	assert.Equal(t, "http://localhost", connectURL, "%s should route through localhost placeholder", url)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost/probe", nil)
+	require.NoError(t, err)
+
+	_, err = httpClient.Do(req)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.NotContains(t, msg, "no such host", "%s dispatched through DNS", url)
+	assert.NotContains(t, msg, "dial tcp", "%s dispatched to TCP dialer", url)
+}
 
 func TestResolveWorkingDir_HomeDir(t *testing.T) {
 	home, err := os.UserHomeDir()
@@ -232,4 +300,27 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 		gap := timestamps[i].Sub(timestamps[i-1])
 		assert.LessOrEqual(t, gap, bo.MaxInterval+tolerance, "gap[%d]=%v exceeds MaxInterval=%v", i, gap, bo.MaxInterval)
 	}
+}
+
+func TestIsCodeUnauthenticated(t *testing.T) {
+	t.Run("nil", func(t *testing.T) {
+		assert.False(t, isCodeUnauthenticated(nil))
+	})
+	t.Run("direct connect.Error unauthenticated", func(t *testing.T) {
+		err := connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("bad token"))
+		assert.True(t, isCodeUnauthenticated(err))
+	})
+	t.Run("wrapped connect.Error unauthenticated", func(t *testing.T) {
+		inner := connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("bad token"))
+		err := fmt.Errorf("connect to hub: %w", inner)
+		assert.True(t, isCodeUnauthenticated(err), "errors.As should unwrap")
+	})
+	t.Run("other connect code", func(t *testing.T) {
+		err := connect.NewError(connect.CodeUnavailable, fmt.Errorf("server down"))
+		assert.False(t, isCodeUnauthenticated(err))
+	})
+	t.Run("non-connect error containing the word unauthenticated", func(t *testing.T) {
+		err := fmt.Errorf("some other unauthenticated failure")
+		assert.False(t, isCodeUnauthenticated(err), "string match must not leak through")
+	})
 }

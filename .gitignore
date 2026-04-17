@@ -42,6 +42,7 @@ frontend/src/spinners/
 
 # Desktop
 /desktop/go/leapmux-desktop
+/desktop/go/leapmux-desktop.exe
 /desktop/go/bin/
 /desktop/rust/gen/
 /desktop/rust/icons/
@@ -51,6 +52,7 @@ frontend/src/spinners/
 # IDE
 .idea/
 .vscode/
+.claude/settings.local.json
 
 # OS
 .DS_Store

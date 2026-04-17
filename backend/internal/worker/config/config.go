@@ -153,7 +153,7 @@ func Load(args []string) (*Config, bool, error) {
 	// Define CLI flags.
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 	fs.String("config", defaultConfigFile, "path to config file")
-	fs.String("hub", defaultHubURL, "Hub server URL or unix:<socket-path>")
+	fs.String("hub", defaultHubURL, "Hub server URL (http[s]://..., unix:<socket-path>, or npipe:<pipe-name>)")
 	fs.String("name", "", "worker display name (default: hostname)")
 	fs.String("data-dir", ".", "data directory")
 	fs.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")

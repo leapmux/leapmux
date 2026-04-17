@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -292,6 +293,9 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 }
 
 func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("terminal tests require /bin/sh and creack/pty, which are not available on Windows")
+	}
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, "ws-1")
 	workingDir := t.TempDir()
@@ -346,6 +350,9 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 }
 
 func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("terminal tests require /bin/sh and creack/pty, which are not available on Windows")
+	}
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
 	workingDir := t.TempDir()

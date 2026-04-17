@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -21,13 +22,19 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 	"github.com/leapmux/leapmux/solo"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
+func uniqueTestListenURL(t *testing.T) string {
+	return locallistentest.UniqueListenURL(t, "leapmux-test")
+}
+
 // startTestSolo starts a solo Hub+Worker instance for integration testing.
-// Returns the hub URL, socket path, admin token, admin user ID, and worker ID.
-func startTestSolo(t *testing.T) (hubURL, socketPath, userID, workerID string) {
+// Returns the hub URL, local-listen URL, admin user ID, and worker ID.
+func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID string) {
 	t.Helper()
 
 	// Use a short path under /tmp to stay within the 104-byte macOS Unix
@@ -45,6 +52,8 @@ func startTestSolo(t *testing.T) (hubURL, socketPath, userID, workerID string) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
+	t.Setenv(locallisten.EnvLocalListen, uniqueTestListenURL(t))
+
 	inst, err := solo.Start(ctx, solo.Config{
 		Addr:       addr,
 		ConfigDir:  dataDir,
@@ -55,7 +64,7 @@ func startTestSolo(t *testing.T) (hubURL, socketPath, userID, workerID string) {
 	t.Cleanup(inst.Stop)
 
 	hubURL = "http://" + addr
-	socketPath = inst.Server().SocketPath()
+	localListenURL = inst.LocalListenURL()
 
 	// Wait for Hub to be ready.
 	require.NoError(t, waitForHTTP(hubURL, 30*time.Second))
@@ -109,7 +118,7 @@ func startTestSolo(t *testing.T) (hubURL, socketPath, userID, workerID string) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	return hubURL, socketPath, userID, wID
+	return hubURL, localListenURL, userID, wID
 }
 
 func waitForHTTP(url string, timeout time.Duration) error {
@@ -445,8 +454,11 @@ func TestRegistration_AutoApproveViaUnixSocket_E2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-socket-specific auto-approve path")
+	}
 
-	hubURL, socketPath, _, _ := startTestSolo(t)
+	hubURL, localListenURL, _, _ := startTestSolo(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -458,8 +470,16 @@ func TestRegistration_AutoApproveViaUnixSocket_E2E(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = ws.CloseNow() }()
 
+	scheme, _, err := locallisten.Parse(localListenURL)
+	require.NoError(t, err)
+	require.Equal(t, locallisten.SchemeUnix, scheme, "test gated to unix-only above")
+
 	// Register a new worker via Unix socket — should be auto-approved.
-	unixClient := newUnixHTTPClient(socketPath)
+	dial, err := locallisten.Dialer(localListenURL)
+	require.NoError(t, err)
+	unixClient := &http.Client{
+		Transport: &http.Transport{DialContext: locallisten.HTTPDialContext(dial)},
+	}
 	connClient := leapmuxv1connect.NewWorkerConnectorServiceClient(unixClient, "http://localhost")
 
 	regResp, err := connClient.RequestRegistration(ctx, connect.NewRequest(
@@ -494,16 +514,6 @@ func TestRegistration_AutoApproveViaUnixSocket_E2E(t *testing.T) {
 	}
 
 	assert.Contains(t, frame.GetEvents(), leapmuxv1.HubControlEvent_HUB_CONTROL_EVENT_WORKERS_CHANGED)
-}
-
-func newUnixHTTPClient(socketPath string) *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
-			},
-		},
-	}
 }
 
 func TestChannelMultipleRPCs(t *testing.T) {

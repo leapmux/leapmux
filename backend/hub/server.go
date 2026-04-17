@@ -5,11 +5,9 @@ package hub
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"connectrpc.com/connect"
@@ -29,6 +27,7 @@ import (
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -236,11 +235,6 @@ func (s *Server) Store() store.Store {
 	return s.store
 }
 
-// SocketPath returns the Unix domain socket path for this server.
-func (s *Server) SocketPath() string {
-	return s.cfg.SocketPath()
-}
-
 // WorkerCredentials holds the credentials for a registered worker.
 type WorkerCredentials struct {
 	WorkerID  string
@@ -287,32 +281,27 @@ func (s *Server) GetAdminUser(ctx context.Context) (userID, orgID string, err er
 	return user.ID, user.OrgID, nil
 }
 
-// Serve starts the Hub server on TCP and Unix socket listeners.
+// Serve starts the Hub server on TCP and local IPC listeners.
 // It blocks until ctx is cancelled, then performs graceful shutdown.
 func (s *Server) Serve(ctx context.Context) error {
-	sockPath := s.cfg.SocketPath()
-	if err := removeStaleSocket(sockPath); err != nil {
-		_ = s.store.Close()
-		return fmt.Errorf("remove stale socket: %w", err)
-	}
-
 	tcpLn := s.tcpLn
 
-	unixLn, err := net.Listen("unix", sockPath)
+	listenURL, err := s.cfg.LocalListenURL()
 	if err != nil {
 		if tcpLn != nil {
 			_ = tcpLn.Close()
 		}
 		_ = s.store.Close()
-		return fmt.Errorf("listen unix: %w", err)
+		return fmt.Errorf("resolve local-listen URL: %w", err)
 	}
-	if err := os.Chmod(sockPath, 0o600); err != nil {
+
+	localLn, err := locallisten.Listen(listenURL)
+	if err != nil {
 		if tcpLn != nil {
 			_ = tcpLn.Close()
 		}
-		_ = unixLn.Close()
 		_ = s.store.Close()
-		return fmt.Errorf("chmod socket: %w", err)
+		return fmt.Errorf("listen local: %w", err)
 	}
 
 	// Start background OAuth token refresh.
@@ -341,7 +330,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		close(shutdownDone)
 	}()
 
-	listenerCount := 1 // unix listener always present
+	listenerCount := 1 // local listener always present
 	if tcpLn != nil {
 		listenerCount = 2
 	}
@@ -350,12 +339,12 @@ func (s *Server) Serve(ctx context.Context) error {
 	if tcpLn != nil {
 		go func() { errCh <- s.server.Serve(tcpLn) }()
 	}
-	go func() { errCh <- s.server.Serve(unixLn) }()
+	go func() { errCh <- s.server.Serve(localLn) }()
 
 	if tcpLn != nil {
-		slog.Info("hub listening", "addr", s.cfg.Addr, "socket", sockPath)
+		slog.Info("hub listening", "addr", s.cfg.Addr, "local", listenURL)
 	} else {
-		slog.Info("hub listening", "socket", sockPath)
+		slog.Info("hub listening", "local", listenURL)
 	}
 
 	if err := <-errCh; err != http.ErrServerClosed {
@@ -370,25 +359,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	// 4. Wait for the shutdown goroutine to complete.
 	<-shutdownDone
 
-	// 5. Clean up socket.
-	_ = os.Remove(sockPath)
-
-	// 6. Close store.
+	// 5. Close store. The local listener cleans up its own endpoint (unix
+	// socket file unlinks itself on Close; named pipes auto-release).
 	_ = s.store.Close()
 	return nil
-}
-
-// removeStaleSocket removes a leftover socket file from a previous crash.
-func removeStaleSocket(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if info.Mode().Type() == fs.ModeSocket {
-		return os.Remove(path)
-	}
-	return fmt.Errorf("%s exists but is not a socket", path)
 }

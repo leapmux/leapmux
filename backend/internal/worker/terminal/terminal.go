@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,6 +10,8 @@ import (
 	"sync"
 
 	"github.com/creack/pty"
+
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 const screenBufferSize = 100 * 1024 // 100KB ring buffer for screen restore
@@ -99,6 +102,7 @@ func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 	)
+	procutil.HideConsoleWindow(cmd)
 
 	winSize := &pty.Winsize{
 		Cols: opts.Cols,
@@ -234,7 +238,7 @@ func (t *Terminal) readOutput() {
 			t.outputFn(data)
 		}
 		if err != nil {
-			if err != io.EOF {
+			if !errors.Is(err, io.EOF) {
 				slog.Debug("terminal read error",
 					"terminal_id", t.id,
 					"error", err,

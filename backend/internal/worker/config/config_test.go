@@ -91,8 +91,11 @@ log_level: "warn"
 		tmpDir := t.TempDir()
 		dataDir := filepath.Join(tmpDir, "mydata")
 		configPath := filepath.Join(tmpDir, "worker.yaml")
-		yamlContent := `data_dir: "` + dataDir + `"
-`
+		// Use YAML single quotes: they're literal and don't interpret
+		// backslash escapes, which matters on Windows where dataDir is
+		// something like `C:\Users\...` and `\U` triggers a YAML error in
+		// double-quoted strings.
+		yamlContent := "data_dir: '" + dataDir + "'\n"
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
 		cfg, _, err := Load([]string{"-config", configPath})
@@ -141,6 +144,6 @@ func TestValidate(t *testing.T) {
 
 func TestPaths(t *testing.T) {
 	cfg := &Config{DataDir: "/test/dir"}
-	assert.Equal(t, "/test/dir/worker.db", cfg.DBPath())
-	assert.Equal(t, "/test/dir/state.json", cfg.StatePath())
+	assert.Equal(t, filepath.Join("/test/dir", "worker.db"), cfg.DBPath())
+	assert.Equal(t, filepath.Join("/test/dir", "state.json"), cfg.StatePath())
 }

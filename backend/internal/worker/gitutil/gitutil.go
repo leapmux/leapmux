@@ -11,15 +11,18 @@ import (
 	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 var errNotGitRepo = errors.New("not a git repository")
 
-// NewGitCmd creates an exec.Cmd for git with terminal interaction disabled.
+// NewGitCmd creates an exec.Cmd for git with terminal interaction disabled
+// and no console window on Windows.
 func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	cmd.Stdin = nil
+	procutil.HideConsoleWindow(cmd)
 	return cmd
 }
 

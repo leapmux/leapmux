@@ -235,7 +235,7 @@ func TestBuildShellWrappedCommand_NoModelEffort_Pwsh(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
-	inner := buildPosixCommand("claude", []string{"CLAUDECODE"}, "__DELIM__", "__META__ ", []string{"--output-format", "stream-json"}, []string{"--model", "opus", "--effort", "high"}, true)
+	inner := buildPosixCommand("claude", []string{"CLAUDECODE"}, "__DELIM__", "__META__ ", []string{"--output-format", "stream-json"}, []string{"--model", "opus", "--effort", "high"})
 
 	// The else branch should contain model/effort args
 	parts := strings.SplitN(inner, "else", 2)

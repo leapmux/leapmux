@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,10 +23,10 @@ import (
 
 // RunConfig holds configuration for running the worker as a library.
 type RunConfig struct {
-	HubURL               string                      // Hub server URL (e.g. "http://localhost:4327") or "unix:<socket-path>"
+	HubURL               string                      // Hub server URL: http[s]://host:port, unix:<socket-path>, or npipe:<name>
+
 	DataDir              string                      // Directory for persistent state
 	AuthToken            string                      // Pre-provisioned auth token (skip registration)
-	HTTPClient           *http.Client                // Custom HTTP client (e.g. for Unix socket transport)
 	CompositeKey         *noiseutil.CompositeKeypair // Worker's composite keypair for E2EE channels
 	WorkerID             string                      // Worker ID (from registration)
 	Name                 string                      // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
@@ -45,7 +44,6 @@ type RunConfig struct {
 
 // Run starts the worker and blocks until ctx is cancelled.
 // If AuthToken is set, registration is skipped and the worker connects directly.
-// If HTTPClient is set, it is used for ConnectRPC communication instead of the default.
 func Run(ctx context.Context, cfg RunConfig) error {
 	// Open the Worker-local database for persistent state.
 	dbPath := filepath.Join(cfg.DataDir, "worker.db")
@@ -67,12 +65,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		return fmt.Errorf("migrate worker db: %w", err)
 	}
 
-	var client *hub.Client
-	if cfg.HTTPClient != nil {
-		client = hub.NewWithHTTPClient(cfg.HTTPClient, cfg.HubURL)
-	} else {
-		client = hub.New(cfg.HubURL)
-	}
+	client := hub.New(cfg.HubURL)
 	defer client.Stop()
 
 	// Set up E2EE channel manager if composite key is provided.

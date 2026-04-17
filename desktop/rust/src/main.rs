@@ -44,13 +44,21 @@ const SHOW_PREFERENCES_MENU_ID: &str = "show-preferences";
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
 const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024; // 16 MB
 const SIDECAR_PROTOCOL_VERSION: &str = "1";
-const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(unix)]
-const DEV_SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+// CONNECT_TIMEOUT is the outer loop budget for "endpoint reachable +
+// handshake succeeds"; HANDSHAKE_TIMEOUT bounds a single attempt. Keep
+// CONNECT meaningfully larger so the loop can retry after a wedged probe.
+const DEV_SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+const DEV_SIDECAR_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const SIDECAR_INITIAL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+// Cross-language env-var contract; see desktop/go/main.go for semantics.
+const ENV_DEV_ENDPOINT: &str = "LEAPMUX_DESKTOP_DEV_ENDPOINT";
+const ENV_BINARY_HASH: &str = "LEAPMUX_DESKTOP_BINARY_HASH";
 
 #[derive(Serialize)]
 struct SidecarMetadata {
-    socket_path: String,
+    endpoint: String,
     pid: u32,
     binary_hash: String,
     protocol_version: String,
@@ -264,11 +272,78 @@ fn start_sidecar_reader_thread(
 }
 
 fn bootstrap_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if cfg!(debug_assertions) {
-        return bootstrap_dev_socket_sidecar(sidecar_path);
+        return bootstrap_dev_sidecar(sidecar_path);
     }
     spawn_stdio_sidecar(sidecar_path)
+}
+
+// bootstrap_dev_sidecar tries to reuse a live dev sidecar at the well-known
+// endpoint (unix socket on Unix, named pipe on Windows) and falls back to
+// spawning a fresh one when the endpoint is stale, incompatible, or missing.
+#[cfg(any(unix, windows))]
+fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
+    #[cfg(unix)]
+    let endpoint = dev_sidecar_endpoint();
+    #[cfg(windows)]
+    let endpoint = dev_sidecar_endpoint()?;
+    let metadata_path = dev_sidecar_metadata_path();
+    let binary_hash = hash_sidecar_binary(sidecar_path)?;
+
+    if let Ok(Some((reader, writer, info))) = try_connect_dev_sidecar(&endpoint) {
+        if info.protocol_version == SIDECAR_PROTOCOL_VERSION && info.binary_hash == binary_hash {
+            write_sidecar_metadata(&metadata_path, &endpoint, info.pid as u32, &binary_hash)?;
+            return Ok(SidecarBootstrap {
+                child: None,
+                reader,
+                writer,
+            });
+        }
+        request_sidecar_shutdown(&endpoint, info.pid as u32)?;
+    }
+    cleanup_dev_sidecar_artifacts(&endpoint, &metadata_path);
+
+    let mut command = Command::new(sidecar_path);
+    command
+        .env(ENV_DEV_ENDPOINT, &endpoint)
+        .env(ENV_BINARY_HASH, &binary_hash)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    let child = command
+        .spawn()
+        .map_err(|err| format!("spawn desktop sidecar: {err}"))?;
+
+    let start = Instant::now();
+    loop {
+        match try_connect_dev_sidecar(&endpoint) {
+            Ok(Some((reader, writer, info))) => {
+                if info.protocol_version != SIDECAR_PROTOCOL_VERSION {
+                    return Err(format!(
+                        "unexpected sidecar protocol version: {}",
+                        info.protocol_version,
+                    ));
+                }
+                if info.binary_hash != binary_hash {
+                    return Err("spawned sidecar reported an unexpected binary hash".to_string());
+                }
+                write_sidecar_metadata(&metadata_path, &endpoint, info.pid as u32, &binary_hash)?;
+                return Ok(SidecarBootstrap {
+                    child: Some(child),
+                    reader,
+                    writer,
+                });
+            }
+            Ok(None) => {}
+            Err(err) => return Err(err),
+        }
+
+        if start.elapsed() > DEV_SIDECAR_CONNECT_TIMEOUT {
+            return Err("timed out waiting for desktop sidecar endpoint".to_string());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn spawn_stdio_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
@@ -310,74 +385,6 @@ fn start_sidecar_stderr_thread(stderr: impl Read + Send + 'static) {
     });
 }
 
-#[cfg(unix)]
-fn bootstrap_dev_socket_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
-    let socket_path = dev_sidecar_socket_path();
-    let metadata_path = dev_sidecar_metadata_path();
-    let binary_hash = hash_sidecar_binary(sidecar_path)?;
-
-    if let Ok(Some((reader, writer, info))) = try_connect_dev_sidecar(&socket_path) {
-        if info.protocol_version == SIDECAR_PROTOCOL_VERSION && info.binary_hash == binary_hash {
-            write_sidecar_metadata(&metadata_path, &socket_path, info.pid as u32, &binary_hash)?;
-            return Ok(SidecarBootstrap {
-                child: None,
-                reader,
-                writer,
-            });
-        }
-        request_sidecar_shutdown(&socket_path, info.pid as u32)?;
-        cleanup_dev_sidecar_artifacts(&socket_path, &metadata_path);
-    } else {
-        cleanup_dev_sidecar_artifacts(&socket_path, &metadata_path);
-    }
-
-    let mut command = Command::new(sidecar_path);
-    command
-        .env("LEAPMUX_DESKTOP_DEV_SOCKET", &socket_path)
-        .env("LEAPMUX_DESKTOP_BINARY_HASH", &binary_hash)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
-    let child = command
-        .spawn()
-        .map_err(|err| format!("spawn desktop sidecar: {err}"))?;
-    let start = Instant::now();
-    loop {
-        match try_connect_dev_sidecar(&socket_path) {
-            Ok(Some((reader, writer, info))) => {
-                if info.protocol_version != SIDECAR_PROTOCOL_VERSION {
-                    return Err(format!(
-                        "unexpected sidecar protocol version: {}",
-                        info.protocol_version,
-                    ));
-                }
-                if info.binary_hash != binary_hash {
-                    return Err("spawned sidecar reported an unexpected binary hash".to_string());
-                }
-                write_sidecar_metadata(
-                    &metadata_path,
-                    &socket_path,
-                    info.pid as u32,
-                    &binary_hash,
-                )?;
-                return Ok(SidecarBootstrap {
-                    child: Some(child),
-                    reader,
-                    writer,
-                });
-            }
-            Ok(None) => {}
-            Err(err) => return Err(err),
-        }
-
-        if start.elapsed() > DEV_SIDECAR_CONNECT_TIMEOUT {
-            return Err("timed out waiting for desktop sidecar socket".to_string());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-#[cfg(unix)]
 type DevSidecarConnection = (
     Box<dyn Read + Send>,
     Box<dyn Write + Send>,
@@ -385,10 +392,12 @@ type DevSidecarConnection = (
 );
 
 #[cfg(unix)]
-fn try_connect_dev_sidecar(
-    socket_path: &Path,
-) -> Result<Option<DevSidecarConnection>, String> {
-    match connect_and_handshake_dev_sidecar(socket_path)? {
+type SidecarStream = UnixStream;
+#[cfg(windows)]
+type SidecarStream = PipeHandle;
+
+fn try_connect_dev_sidecar(endpoint: &str) -> Result<Option<DevSidecarConnection>, String> {
+    match connect_and_handshake_dev_sidecar(endpoint)? {
         Some((reader, writer, info)) => Ok(Some((
             Box::new(reader),
             Box::new(BufWriter::new(writer)),
@@ -398,11 +407,51 @@ fn try_connect_dev_sidecar(
     }
 }
 
+fn connect_and_handshake_dev_sidecar(
+    endpoint: &str,
+) -> Result<Option<(SidecarStream, SidecarStream, proto::SidecarInfo)>, String> {
+    let (mut reader, mut writer) = match connect_sidecar_endpoint(endpoint)? {
+        Some(pair) => pair,
+        None => return Ok(None),
+    };
+    // Unix streams carry per-op timeouts from connect; Windows named pipes
+    // don't, so arm a watchdog that cancels the handshake's synchronous I/O.
+    #[cfg(windows)]
+    let _watchdog = HandshakeWatchdog::arm(DEV_SIDECAR_HANDSHAKE_TIMEOUT)?;
+    let info = fetch_sidecar_info(&mut reader, &mut writer)?;
+    finalize_sidecar_streams(&reader, &writer)?;
+    Ok(Some((reader, writer, info)))
+}
+
+fn request_sidecar_shutdown(endpoint: &str, pid: u32) -> Result<(), String> {
+    if let Ok(Some((mut reader, mut writer))) = connect_sidecar_endpoint(endpoint) {
+        let frame = proto::Frame {
+            message: Some(proto::frame::Message::Request(proto::Request {
+                id: 1,
+                method: Some(proto::request::Method::Shutdown(proto::ShutdownRequest {})),
+            })),
+        };
+        let _ = write_frame(&mut writer, &frame);
+        let _ = read_frame(&mut reader);
+    }
+
+    let deadline = Instant::now() + DEV_SIDECAR_SHUTDOWN_TIMEOUT;
+    while Instant::now() < deadline {
+        if is_sidecar_gone(endpoint) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    force_kill_sidecar(pid)?;
+    Ok(())
+}
+
 #[cfg(unix)]
-fn connect_sidecar_socket(
-    socket_path: &Path,
-) -> Result<Option<(UnixStream, UnixStream)>, String> {
-    let stream = match UnixStream::connect(socket_path) {
+fn connect_sidecar_endpoint(
+    endpoint: &str,
+) -> Result<Option<(SidecarStream, SidecarStream)>, String> {
+    let stream = match UnixStream::connect(endpoint) {
         Ok(stream) => stream,
         Err(err)
             if err.kind() == io::ErrorKind::NotFound
@@ -417,39 +466,33 @@ fn connect_sidecar_socket(
         .map_err(|err| format!("clone sidecar socket: {err}"))?;
     let writer = stream;
     writer
-        .set_write_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
+        .set_write_timeout(Some(DEV_SIDECAR_HANDSHAKE_TIMEOUT))
         .map_err(|err| format!("set sidecar socket write timeout: {err}"))?;
-    let reader = reader;
     reader
-        .set_read_timeout(Some(DEV_SIDECAR_CONNECT_TIMEOUT))
+        .set_read_timeout(Some(DEV_SIDECAR_HANDSHAKE_TIMEOUT))
         .map_err(|err| format!("set sidecar socket read timeout: {err}"))?;
     Ok(Some((reader, writer)))
 }
 
+// Handshake timeouts must be cleared before streams are handed to the
+// long-lived reader thread; otherwise reads fail with EAGAIN after a few
+// seconds of idle and tear the connection down.
 #[cfg(unix)]
-fn connect_and_handshake_dev_sidecar(
-    socket_path: &Path,
-) -> Result<Option<(UnixStream, UnixStream, proto::SidecarInfo)>, String> {
-    let (mut reader, mut writer) = match connect_sidecar_socket(socket_path)? {
-        Some(pair) => pair,
-        None => return Ok(None),
-    };
-    let info = fetch_sidecar_info(&mut reader, &mut writer)?;
-    // The handshake timeouts guarded against a wedged sidecar replying
-    // to GetSidecarInfo. The reader/writer are about to be handed to a
-    // long-lived thread that must block indefinitely on idle — leaving
-    // the timeout in place causes reads to surface EAGAIN (os error 35)
-    // after ~2s of inactivity and tears the connection down.
+fn finalize_sidecar_streams(reader: &SidecarStream, writer: &SidecarStream) -> Result<(), String> {
     reader
         .set_read_timeout(None)
         .map_err(|err| format!("clear sidecar socket read timeout: {err}"))?;
     writer
         .set_write_timeout(None)
         .map_err(|err| format!("clear sidecar socket write timeout: {err}"))?;
-    Ok(Some((reader, writer, info)))
+    Ok(())
 }
 
 #[cfg(unix)]
+fn is_sidecar_gone(endpoint: &str) -> bool {
+    !Path::new(endpoint).exists()
+}
+
 fn fetch_sidecar_info(
     reader: &mut impl Read,
     writer: &mut impl Write,
@@ -478,31 +521,6 @@ fn fetch_sidecar_info(
 }
 
 #[cfg(unix)]
-fn request_sidecar_shutdown(socket_path: &Path, pid: u32) -> Result<(), String> {
-    if let Ok(Some((mut reader, mut writer))) = connect_sidecar_socket(socket_path) {
-        let frame = proto::Frame {
-            message: Some(proto::frame::Message::Request(proto::Request {
-                id: 1,
-                method: Some(proto::request::Method::Shutdown(proto::ShutdownRequest {})),
-            })),
-        };
-        let _ = write_frame(&mut writer, &frame);
-        let _ = read_frame(&mut reader);
-    }
-
-    let deadline = Instant::now() + DEV_SIDECAR_SHUTDOWN_TIMEOUT;
-    while Instant::now() < deadline {
-        if !socket_path.exists() {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    force_kill_sidecar(pid)?;
-    Ok(())
-}
-
-#[cfg(unix)]
 fn force_kill_sidecar(pid: u32) -> Result<(), String> {
     let status = Command::new("kill")
         .args(["-TERM", &pid.to_string()])
@@ -521,40 +539,62 @@ fn force_kill_sidecar(pid: u32) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-fn cleanup_dev_sidecar_artifacts(socket_path: &Path, metadata_path: &Path) {
-    let _ = fs::remove_file(socket_path);
+fn cleanup_dev_sidecar_artifacts(endpoint: &str, metadata_path: &Path) {
+    let _ = fs::remove_file(endpoint);
     let _ = fs::remove_file(metadata_path);
 }
 
-#[cfg(unix)]
 fn write_sidecar_metadata(
     metadata_path: &Path,
-    socket_path: &Path,
+    endpoint: &str,
     pid: u32,
     binary_hash: &str,
 ) -> Result<(), String> {
     let metadata = SidecarMetadata {
-        socket_path: socket_path.display().to_string(),
+        endpoint: endpoint.to_string(),
         pid,
         binary_hash: binary_hash.to_string(),
         protocol_version: SIDECAR_PROTOCOL_VERSION.to_string(),
     };
     if let Some(parent) = metadata_path.parent() {
         fs::create_dir_all(parent).map_err(|err| format!("create sidecar metadata dir: {err}"))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|err| format!("set sidecar metadata dir permissions: {err}"))?;
+        restrict_dir_permissions(parent)?;
     }
     let data = serde_json::to_vec_pretty(&metadata)
         .map_err(|err| format!("serialize sidecar metadata: {err}"))?;
     fs::write(metadata_path, data).map_err(|err| format!("write sidecar metadata: {err}"))?;
-    fs::set_permissions(metadata_path, fs::Permissions::from_mode(0o600))
-        .map_err(|err| format!("set sidecar metadata permissions: {err}"))?;
+    restrict_file_permissions(metadata_path)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn dev_sidecar_socket_path() -> PathBuf {
-    dev_sidecar_runtime_dir().join(format!("{}-sidecar.sock", sidecar_identity()))
+fn restrict_dir_permissions(path: &Path) -> Result<(), String> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|err| format!("set sidecar metadata dir permissions: {err}"))
+}
+
+#[cfg(unix)]
+fn restrict_file_permissions(path: &Path) -> Result<(), String> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|err| format!("set sidecar metadata permissions: {err}"))
+}
+
+#[cfg(windows)]
+fn restrict_dir_permissions(_: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_file_permissions(_: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn dev_sidecar_endpoint() -> String {
+    dev_sidecar_runtime_dir()
+        .join(format!("{}-sidecar.sock", sidecar_identity()))
+        .display()
+        .to_string()
 }
 
 #[cfg(unix)]
@@ -569,12 +609,18 @@ fn dev_sidecar_runtime_dir() -> PathBuf {
 
 #[cfg(unix)]
 fn sidecar_identity() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "default".to_string())
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect()
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<String> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "default".to_string())
+                .chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                .collect()
+        })
+        .clone()
 }
 
 fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
@@ -594,6 +640,340 @@ fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
     }
     let digest = hasher.finalize();
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+// --- Windows named-pipe dev-mode sidecar reconnect ---
+
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{
+        CloseHandle, DuplicateHandle, GetLastError, LocalFree, DUPLICATE_SAME_ACCESS,
+        ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE, HLOCAL, INVALID_HANDLE_VALUE,
+    },
+    Security::{
+        Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
+        TOKEN_USER,
+    },
+    Storage::FileSystem::{
+        CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
+        FILE_GENERIC_WRITE, OPEN_EXISTING,
+    },
+    System::{
+        Pipes::WaitNamedPipeW,
+        Threading::{
+            GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken, TerminateProcess,
+            PROCESS_TERMINATE,
+        },
+        IO::CancelSynchronousIo,
+    },
+};
+
+#[cfg(windows)]
+fn finalize_sidecar_streams(_: &SidecarStream, _: &SidecarStream) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_sidecar_gone(pipe_name: &str) -> bool {
+    matches!(connect_sidecar_endpoint(pipe_name), Ok(None))
+}
+
+#[cfg(windows)]
+fn connect_sidecar_endpoint(
+    pipe_name: &str,
+) -> Result<Option<(SidecarStream, SidecarStream)>, String> {
+    const MAX_BUSY_RETRIES: u32 = 3;
+    let wide = wide_cstring(pipe_name);
+    for _ in 0..=MAX_BUSY_RETRIES {
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            let err = unsafe { GetLastError() };
+            if err == ERROR_FILE_NOT_FOUND {
+                return Ok(None);
+            }
+            if err == ERROR_PIPE_BUSY {
+                let waited = unsafe { WaitNamedPipeW(wide.as_ptr(), 5_000) };
+                if waited == 0 {
+                    // Still busy or pipe closed between retries; let the caller
+                    // decide whether to keep trying.
+                    return Ok(None);
+                }
+                continue;
+            }
+            return Err(format!("open named pipe {pipe_name}: error {err}"));
+        }
+
+        let dup = match duplicate_handle(handle) {
+            Ok(dup) => dup,
+            Err(err) => {
+                unsafe {
+                    CloseHandle(handle);
+                }
+                return Err(format!("duplicate pipe handle: error {err}"));
+            }
+        };
+        return Ok(Some((PipeHandle(handle), PipeHandle(dup))));
+    }
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn force_kill_sidecar(pid: u32) -> Result<(), String> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if handle.is_null() {
+            return Err(format!(
+                "open sidecar process {pid}: error {}",
+                GetLastError()
+            ));
+        }
+        let ok = TerminateProcess(handle, 1);
+        let err = if ok == 0 { GetLastError() } else { 0 };
+        CloseHandle(handle);
+        if ok == 0 {
+            return Err(format!("terminate sidecar process {pid}: error {err}"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn cleanup_dev_sidecar_artifacts(_endpoint: &str, metadata_path: &Path) {
+    // Named pipes release themselves when the server closes the listener;
+    // only the metadata file persists on disk.
+    let _ = fs::remove_file(metadata_path);
+}
+
+#[cfg(windows)]
+fn dev_sidecar_endpoint() -> Result<String, String> {
+    Ok(format!(
+        "\\\\.\\pipe\\leapmux-desktop-{}-sidecar",
+        sidecar_identity()?
+    ))
+}
+
+#[cfg(windows)]
+fn dev_sidecar_metadata_path() -> PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("leapmux-desktop").join("sidecar.json")
+}
+
+#[cfg(windows)]
+fn sidecar_identity() -> Result<String, String> {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<Result<String, String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            current_user_sid().map(|raw| {
+                raw.chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect()
+            })
+        })
+        .clone()
+}
+
+#[cfg(windows)]
+fn current_user_sid() -> Result<String, String> {
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(format!("open process token: error {}", GetLastError()));
+        }
+        let mut needed: u32 = 0;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+        let mut buffer = vec![0u8; needed as usize];
+        let ok = GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr() as *mut _,
+            needed,
+            &mut needed,
+        );
+        let token_err = if ok == 0 { GetLastError() } else { 0 };
+        CloseHandle(token);
+        if ok == 0 {
+            return Err(format!("get token user info: error {token_err}"));
+        }
+        let user_info = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut sid_string_ptr: *mut u16 = std::ptr::null_mut();
+        if ConvertSidToStringSidW(user_info.User.Sid, &mut sid_string_ptr) == 0 {
+            return Err(format!("convert sid to string: error {}", GetLastError()));
+        }
+        let mut len = 0;
+        while *sid_string_ptr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(sid_string_ptr, len);
+        let sid = String::from_utf16_lossy(slice);
+        LocalFree(sid_string_ptr as HLOCAL);
+        Ok(sid)
+    }
+}
+
+#[cfg(windows)]
+fn duplicate_handle(source: HANDLE) -> Result<HANDLE, u32> {
+    unsafe {
+        let mut dup: HANDLE = std::ptr::null_mut();
+        let proc = GetCurrentProcess();
+        if DuplicateHandle(proc, source, proc, &mut dup, 0, 0, DUPLICATE_SAME_ACCESS) == 0 {
+            return Err(GetLastError());
+        }
+        Ok(dup)
+    }
+}
+
+#[cfg(windows)]
+fn wide_cstring(s: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+// Invariant: .0 is an owned, non-aliased HANDLE — Drop closes it, so
+// constructors (only reachable within this module) must ensure exclusive
+// ownership. Aliased handles would cause double-close and break Send.
+#[cfg(windows)]
+struct PipeHandle(HANDLE);
+
+#[cfg(windows)]
+impl Drop for PipeHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+// Safe given the ownership invariant on PipeHandle.0 above.
+#[cfg(windows)]
+unsafe impl Send for PipeHandle {}
+
+#[cfg(windows)]
+impl Read for PipeHandle {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        const ERROR_BROKEN_PIPE: u32 = 109;
+        const ERROR_PIPE_NOT_CONNECTED: u32 = 233;
+        let mut read: u32 = 0;
+        let ok = unsafe {
+            ReadFile(
+                self.0,
+                buf.as_mut_ptr() as *mut _,
+                buf.len() as u32,
+                &mut read,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            let err = unsafe { GetLastError() };
+            if err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED {
+                return Ok(0);
+            }
+            return Err(io::Error::from_raw_os_error(err as i32));
+        }
+        Ok(read as usize)
+    }
+}
+
+#[cfg(windows)]
+impl Write for PipeHandle {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut written: u32 = 0;
+        let ok = unsafe {
+            WriteFile(
+                self.0,
+                buf.as_ptr() as *const _,
+                buf.len() as u32,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        }
+        Ok(written as usize)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+// ThreadHandle wraps a duplicated thread HANDLE and closes it on drop. The
+// raw HANDLE is !Send; this newtype asserts the invariant that callers hand
+// ownership to exactly one thread.
+#[cfg(windows)]
+struct ThreadHandle(HANDLE);
+
+#[cfg(windows)]
+impl Drop for ThreadHandle {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+// Safe: HANDLE is a kernel-object reference; ownership has been duplicated
+// explicitly via DuplicateHandle and is not shared elsewhere.
+#[cfg(windows)]
+unsafe impl Send for ThreadHandle {}
+
+// HandshakeWatchdog bounds a blocking I/O sequence on the arming thread with
+// a deadline. On drop (or deadline), the watchdog thread exits; if the
+// deadline elapses before drop, it calls CancelSynchronousIo on the arming
+// thread so the in-flight ReadFile/WriteFile returns with an error.
+#[cfg(windows)]
+struct HandshakeWatchdog {
+    done_tx: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(windows)]
+impl HandshakeWatchdog {
+    fn arm(timeout: Duration) -> Result<Self, String> {
+        let target = duplicate_current_thread_handle()?;
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        thread::spawn(move || {
+            if done_rx.recv_timeout(timeout).is_err() {
+                unsafe { CancelSynchronousIo(target.0) };
+            }
+            drop(target);
+        });
+        Ok(HandshakeWatchdog { done_tx })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for HandshakeWatchdog {
+    fn drop(&mut self) {
+        let _ = self.done_tx.send(());
+    }
+}
+
+#[cfg(windows)]
+fn duplicate_current_thread_handle() -> Result<ThreadHandle, String> {
+    duplicate_handle(unsafe { GetCurrentThread() })
+        .map(ThreadHandle)
+        .map_err(|err| format!("duplicate current thread handle: error {err}"))
 }
 
 impl DesktopShell {
@@ -628,7 +1008,21 @@ impl DesktopShell {
             }),
         };
 
-        tauri::async_runtime::block_on(shell.refresh_state_from_sidecar())?;
+        // Bound the initial sidecar handshake so a wedged child can't hang
+        // the Tauri setup thread indefinitely.
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(
+                SIDECAR_INITIAL_HANDSHAKE_TIMEOUT,
+                shell.refresh_state_from_sidecar(),
+            )
+            .await
+            .map_err(|_| {
+                format!(
+                    "initial sidecar handshake timed out after {:?}",
+                    SIDECAR_INITIAL_HANDSHAKE_TIMEOUT
+                )
+            })?
+        })?;
         Ok(shell)
     }
 
@@ -1474,6 +1868,7 @@ fn main() {
             } else if event.id() == OPEN_WEB_INSPECTOR_MENU_ID {
                 open_main_web_inspector(app);
             }
+            #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
         })
         .on_window_event(|window, event| {
@@ -1491,10 +1886,12 @@ fn main() {
             }
         })
         .setup(|app| {
-            // On Linux, titleBarStyle "Overlay" is ignored, so remove
-            // native decorations entirely — the frontend renders its own
-            // titlebar with custom window controls.
-            #[cfg(target_os = "linux")]
+            // titleBarStyle "Overlay" is a macOS-only option. On Linux and
+            // Windows the native decorations are left in place by default,
+            // which causes the OS title bar to render alongside our custom
+            // one. Drop the native decorations so the frontend can draw its
+            // own drag region and window controls end-to-end.
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_decorations(false);
             }
@@ -1561,16 +1958,28 @@ fn main() {
         });
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io;
-    use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicU64;
     use std::time::SystemTime;
 
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
+
+    #[cfg(windows)]
+    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    // ---- Unix-specific helpers and tests ----
+
+    #[cfg(unix)]
     fn unique_test_socket_path() -> PathBuf {
         let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let nanos = SystemTime::now()
@@ -1581,6 +1990,7 @@ mod tests {
         std::env::temp_dir().join(format!("leapmux-test-{pid}-{nanos}-{counter}.sock"))
     }
 
+    #[cfg(unix)]
     fn spawn_fake_sidecar(socket_path: PathBuf) -> thread::JoinHandle<()> {
         let listener = UnixListener::bind(&socket_path).expect("bind fake sidecar");
         thread::spawn(move || {
@@ -1608,6 +2018,7 @@ mod tests {
         })
     }
 
+    #[cfg(unix)]
     #[test]
     fn connect_and_handshake_clears_stream_timeouts() {
         let socket_path = unique_test_socket_path();
@@ -1618,10 +2029,10 @@ mod tests {
             .expect("server present");
 
         assert_eq!(info.protocol_version, SIDECAR_PROTOCOL_VERSION);
-        // Without the fix these return `Some(DEV_SIDECAR_CONNECT_TIMEOUT)`,
+        // Without the fix these return `Some(DEV_SIDECAR_HANDSHAKE_TIMEOUT)`,
         // which causes the long-lived reader thread to see EAGAIN
-        // ("Resource temporarily unavailable (os error 35)") after ~2s of
-        // idle and tear the sidecar connection down.
+        // ("Resource temporarily unavailable (os error 35)") after the
+        // handshake timeout of idle and tear the sidecar connection down.
         assert_eq!(reader.read_timeout().expect("read_timeout"), None);
         assert_eq!(writer.write_timeout().expect("write_timeout"), None);
 
@@ -1629,6 +2040,218 @@ mod tests {
         drop(writer);
         server.join().expect("fake sidecar thread");
         let _ = fs::remove_file(&socket_path);
+    }
+
+    // ---- Windows-specific helpers and tests ----
+
+    #[cfg(windows)]
+    fn unique_test_pipe_name() -> String {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pid = std::process::id();
+        format!("\\\\.\\pipe\\leapmux-test-{pid}-{nanos}-{counter}")
+    }
+
+    #[cfg(windows)]
+    fn spawn_fake_sidecar_pipe(pipe_name: String) -> thread::JoinHandle<()> {
+        // Create the pipe synchronously so the client can connect as soon as
+        // this function returns, regardless of when the accept thread runs.
+        let wide = wide_cstring(&pipe_name);
+        let handle = unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                65536,
+                65536,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert!(
+            handle != INVALID_HANDLE_VALUE,
+            "CreateNamedPipeW failed: error {}",
+            unsafe { GetLastError() },
+        );
+        let server = PipeHandle(handle);
+        thread::spawn(move || {
+            let mut stream = server;
+            let connected = unsafe { ConnectNamedPipe(stream.0, std::ptr::null_mut()) };
+            if connected == 0 {
+                let err = unsafe { GetLastError() };
+                const ERROR_PIPE_CONNECTED: u32 = 535;
+                assert_eq!(
+                    err, ERROR_PIPE_CONNECTED,
+                    "ConnectNamedPipe failed: error {err}"
+                );
+            }
+            let _ = read_frame(&mut stream).expect("read handshake request");
+            let response = proto::Frame {
+                message: Some(proto::frame::Message::Response(proto::Response {
+                    id: 1,
+                    error: String::new(),
+                    result: Some(proto::response::Result::SidecarInfo(proto::SidecarInfo {
+                        protocol_version: SIDECAR_PROTOCOL_VERSION.to_string(),
+                        binary_hash: "test-hash".to_string(),
+                        pid: std::process::id() as i64,
+                        shell_mode: 0,
+                        connected: false,
+                        hub_url: String::new(),
+                    })),
+                })),
+            };
+            write_frame(&mut stream, &response).expect("write handshake response");
+            let _ = stream.read(&mut [0u8; 1]);
+        })
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn connect_and_handshake_pipe_returns_sidecar_info() {
+        let pipe_name = unique_test_pipe_name();
+        let server = spawn_fake_sidecar_pipe(pipe_name.clone());
+
+        let (reader, writer, info) = connect_and_handshake_dev_sidecar(&pipe_name)
+            .expect("handshake ok")
+            .expect("server present");
+
+        assert_eq!(info.protocol_version, SIDECAR_PROTOCOL_VERSION);
+        assert_eq!(info.binary_hash, "test-hash");
+        assert_eq!(info.pid as u32, std::process::id());
+
+        drop(reader);
+        drop(writer);
+        server.join().expect("fake sidecar thread");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn connect_returns_none_when_pipe_absent() {
+        let pipe_name = unique_test_pipe_name();
+        let result = connect_sidecar_endpoint(&pipe_name).expect("no error");
+        assert!(
+            result.is_none(),
+            "expected None for nonexistent pipe, got Some"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn handshake_watchdog_cancels_wedged_read() {
+        // Spawn a server that accepts the connection but never writes back.
+        // With the watchdog armed, the ReadFile should return an error after
+        // the deadline instead of blocking indefinitely.
+        let pipe_name = unique_test_pipe_name();
+        let wide = wide_cstring(&pipe_name);
+        let server_handle = unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                65536,
+                65536,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert!(server_handle != INVALID_HANDLE_VALUE);
+        let server = PipeHandle(server_handle);
+        let server_thread = thread::spawn(move || {
+            let _stream = server;
+            unsafe { ConnectNamedPipe(_stream.0, std::ptr::null_mut()) };
+            thread::sleep(Duration::from_secs(3));
+        });
+
+        let (mut reader, _writer) = connect_sidecar_endpoint(&pipe_name)
+            .expect("connect ok")
+            .expect("server reachable");
+
+        let start = Instant::now();
+        let _watchdog = HandshakeWatchdog::arm(Duration::from_millis(200)).expect("arm");
+        let mut buf = [0u8; 16];
+        let err = reader.read(&mut buf).expect_err("read should fail");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "read should have been cancelled, elapsed {:?}",
+            elapsed
+        );
+        const ERROR_OPERATION_ABORTED: i32 = 995;
+        assert_eq!(
+            err.raw_os_error(),
+            Some(ERROR_OPERATION_ABORTED),
+            "unexpected error: {err}"
+        );
+
+        drop(_watchdog);
+        let _ = server_thread.join();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sidecar_identity_returns_valid_sid_form() {
+        let sid = sidecar_identity().expect("sidecar_identity");
+        assert!(
+            sid.starts_with("S-1-"),
+            "expected SID to start with S-1-, got: {sid}"
+        );
+        assert!(
+            sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "sanitized SID must contain only alphanumerics and hyphens, got: {sid}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dev_sidecar_endpoint_has_expected_shape() {
+        let name = dev_sidecar_endpoint().expect("endpoint");
+        assert!(
+            name.starts_with("\\\\.\\pipe\\leapmux-desktop-"),
+            "unexpected prefix in pipe name: {name}"
+        );
+        assert!(
+            name.ends_with("-sidecar"),
+            "unexpected suffix in pipe name: {name}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dev_sidecar_metadata_path_ends_with_sidecar_json() {
+        let path = dev_sidecar_metadata_path();
+        let suffix = PathBuf::from("leapmux-desktop").join("sidecar.json");
+        assert!(
+            path.ends_with(&suffix),
+            "expected path to end with {}, got: {}",
+            suffix.display(),
+            path.display()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_sidecar_metadata_roundtrips_json() {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("leapmux-test-metadata-{counter}.json"));
+        let _ = fs::remove_file(&path);
+
+        write_sidecar_metadata(&path, "\\\\.\\pipe\\test", 4242, "hash-abc")
+            .expect("write metadata");
+        let data = fs::read_to_string(&path).expect("read metadata");
+        assert!(data.contains("\\\\\\\\.\\\\pipe\\\\test"));
+        assert!(data.contains("\"pid\": 4242"));
+        assert!(data.contains("\"binary_hash\": \"hash-abc\""));
+        assert!(data.contains(&format!(
+            "\"protocol_version\": \"{SIDECAR_PROTOCOL_VERSION}\""
+        )));
+
+        let _ = fs::remove_file(&path);
     }
 
     #[derive(Clone, Default)]

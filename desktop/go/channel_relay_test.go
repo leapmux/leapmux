@@ -1,24 +1,29 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// setUniqueSoloLocalListen scopes the hub's local-listen URL per-test so
+// multiple tests running in the same process don't collide on the
+// per-platform default endpoint (the Windows default embeds the current
+// user's SID, which is identical across tests as the same user).
+func setUniqueSoloLocalListen(t *testing.T) {
+	t.Helper()
+	t.Setenv(locallisten.EnvLocalListen, locallistentest.UniqueListenURL(t, "leapmux-desktop-test"))
+}
+
 func TestApp_OpenChannelRelay_Solo(t *testing.T) {
-	home, err := os.MkdirTemp("/tmp", "leapmux-home-")
-	if err != nil {
-		t.Fatalf("MkdirTemp() failed: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	t.Setenv("HOME", filepath.Clean(home))
+	setUniqueSoloLocalListen(t)
+	locallistentest.SandboxHome(t)
 
 	app := NewApp("")
 	defer app.Shutdown()
@@ -37,10 +42,8 @@ func TestApp_OpenChannelRelay_Solo(t *testing.T) {
 }
 
 func TestApp_SidecarLogEvents_EmittedAfterSoloStart(t *testing.T) {
-	home, err := os.MkdirTemp("/tmp", "leapmux-home-")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	t.Setenv("HOME", filepath.Clean(home))
+	setUniqueSoloLocalListen(t)
+	locallistentest.SandboxHome(t)
 
 	var mu sync.Mutex
 	var events []*desktoppb.SidecarLogEvent
@@ -87,10 +90,8 @@ func TestApp_SidecarLogEvents_EmittedAfterSoloStart(t *testing.T) {
 // Churning would tear down the hub's relay binding and (combined with the
 // race in UnregisterUnboundByUser) wipe channels the new page just opened.
 func TestApp_OpenChannelRelay_ReusesAliveRelay(t *testing.T) {
-	home, err := os.MkdirTemp("/tmp", "leapmux-home-")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	t.Setenv("HOME", filepath.Clean(home))
+	setUniqueSoloLocalListen(t)
+	locallistentest.SandboxHome(t)
 
 	var mu sync.Mutex
 	var connectCount, disconnectCount int

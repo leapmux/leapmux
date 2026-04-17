@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// skipIfNoPTY skips tests that spawn a real PTY. creack/pty returns
+// "unsupported" on Windows — the production worker falls back to ConPTY
+// where available, but the test harness uses /bin/sh directly which isn't
+// reachable from Windows anyway.
+func skipIfNoPTY(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("PTY tests require /bin/sh and creack/pty, which are not available on Windows")
+	}
+}
+
 func TestTerminal_StartAndStop(t *testing.T) {
+	skipIfNoPTY(t)
 	var mu sync.Mutex
 	var output []byte
 
@@ -53,6 +66,7 @@ func TestTerminal_StartAndStop(t *testing.T) {
 }
 
 func TestTerminal_Resize(t *testing.T) {
+	skipIfNoPTY(t)
 	term, err := Start(Options{
 		ID:         "test-resize",
 		Shell:      "/bin/sh",
@@ -70,6 +84,7 @@ func TestTerminal_Resize(t *testing.T) {
 }
 
 func TestTerminal_SendInputAfterStop(t *testing.T) {
+	skipIfNoPTY(t)
 	term, err := Start(Options{
 		ID:         "test-stopped",
 		Shell:      "/bin/sh",
@@ -84,6 +99,7 @@ func TestTerminal_SendInputAfterStop(t *testing.T) {
 }
 
 func TestTerminal_IsExited(t *testing.T) {
+	skipIfNoPTY(t)
 	term, err := Start(Options{
 		ID:         "test-exited",
 		Shell:      "/bin/sh",
@@ -100,6 +116,7 @@ func TestTerminal_IsExited(t *testing.T) {
 }
 
 func TestManager_StartAndRemove(t *testing.T) {
+	skipIfNoPTY(t)
 	m := NewManager()
 
 	err := m.StartTerminal(Options{
@@ -134,6 +151,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 }
 
 func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
+	skipIfNoPTY(t)
 	m := NewManager()
 
 	err := m.StartTerminal(Options{
@@ -159,6 +177,7 @@ func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
 }
 
 func TestManager_ExitNotification(t *testing.T) {
+	skipIfNoPTY(t)
 	m := NewManager()
 	exitCh := make(chan struct{})
 	var gotID string
@@ -191,6 +210,7 @@ func TestManager_ExitNotification(t *testing.T) {
 }
 
 func TestManager_StopAll(t *testing.T) {
+	skipIfNoPTY(t)
 	m := NewManager()
 
 	for _, id := range []string{"a", "b"} {
@@ -234,6 +254,7 @@ func TestManager_Resize_UnknownTerminal(t *testing.T) {
 }
 
 func TestManager_Resize_SameDimensions(t *testing.T) {
+	skipIfNoPTY(t)
 	m := NewManager()
 	err := m.StartTerminal(Options{
 		ID:         "tm-resize-noop",
@@ -256,6 +277,7 @@ func TestManager_Resize_SameDimensions(t *testing.T) {
 }
 
 func TestManager_ScreenSnapshot(t *testing.T) {
+	skipIfNoPTY(t)
 	m := NewManager()
 	var mu sync.Mutex
 	var output []byte
@@ -322,6 +344,7 @@ func newTestDB(t *testing.T) *db.Queries {
 }
 
 func TestSnapshotTerminal(t *testing.T) {
+	skipIfNoPTY(t)
 	m := NewManager()
 	var mu sync.Mutex
 	var output []byte
@@ -402,6 +425,7 @@ func TestUpsertAndGetTerminal(t *testing.T) {
 }
 
 func TestUpdateTitle(t *testing.T) {
+	skipIfNoPTY(t)
 	m := NewManager()
 	wsID := "ws-title"
 
@@ -468,11 +492,10 @@ func TestUpsertTerminalTitle(t *testing.T) {
 	assert.Equal(t, "My Shell", row.Title)
 }
 
-// resetShellCache resets the sync.Once so ListAvailableShells recomputes.
+// resetShellCache swaps in a fresh sync.OnceValues so ListAvailableShells
+// recomputes after env-var mutations.
 func resetShellCache() {
-	shellCache.once = sync.Once{}
-	shellCache.shells = nil
-	shellCache.defaultShell = ""
+	resolveShells = newShellsResolver()
 }
 
 func TestListAvailableShells_ReturnsAtLeastOne(t *testing.T) {
@@ -529,10 +552,13 @@ func TestListAvailableShells_Cached(t *testing.T) {
 func TestDetectDefaultShell(t *testing.T) {
 	shell := detectDefaultShell()
 	assert.NotEmpty(t, shell, "detectDefaultShell should return a non-empty string")
-	assert.True(t, strings.HasPrefix(shell, "/"), "detectDefaultShell should return an absolute path")
+	assert.True(t, filepath.IsAbs(shell), "detectDefaultShell should return an absolute path, got %q", shell)
 }
 
 func TestResolveDefaultShell_PrefersLeapmuxEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-shell-path test: Windows shell resolution is covered separately")
+	}
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "/bin/test-leapmux-shell")
 	t.Setenv("SHELL", "/bin/other-shell")
 	resetShellCache()
@@ -541,6 +567,9 @@ func TestResolveDefaultShell_PrefersLeapmuxEnv(t *testing.T) {
 }
 
 func TestResolveDefaultShell_LeapmuxEnvBareName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-shell-path test: Windows shell resolution is covered separately")
+	}
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "sh")
 	t.Setenv("SHELL", "/bin/other-shell")
 	resetShellCache()
@@ -559,6 +588,9 @@ func TestResolveDefaultShell_LeapmuxEnvInvalidBareName(t *testing.T) {
 }
 
 func TestResolveDefaultShell_UsesEnvWhenSet(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-shell-path test: Windows shell resolution is covered separately")
+	}
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "")
 	t.Setenv("SHELL", "/bin/test-shell")
 	resetShellCache()
@@ -572,7 +604,7 @@ func TestResolveDefaultShell_FallsBackWhenEnvUnset(t *testing.T) {
 	resetShellCache()
 	shell := ResolveDefaultShell()
 	assert.NotEmpty(t, shell, "ResolveDefaultShell should return a shell even without $SHELL")
-	assert.True(t, strings.HasPrefix(shell, "/"), "ResolveDefaultShell should return an absolute path")
+	assert.True(t, filepath.IsAbs(shell), "ResolveDefaultShell should return an absolute path, got %q", shell)
 }
 
 func TestResolveShellEnv_Empty(t *testing.T) {
@@ -581,6 +613,9 @@ func TestResolveShellEnv_Empty(t *testing.T) {
 }
 
 func TestResolveShellEnv_AbsolutePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-shell-path test: /usr/bin/zsh is not an absolute path on Windows")
+	}
 	t.Setenv("TEST_SHELL_ENV", "/usr/bin/zsh")
 	assert.Equal(t, "/usr/bin/zsh", resolveShellEnv("TEST_SHELL_ENV"))
 }

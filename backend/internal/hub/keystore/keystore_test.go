@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,10 +180,15 @@ func TestAutoGenerateKeyFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint32(1), ks.ActiveVersion())
 
-	// Verify file permissions.
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	// Verify file permissions. Skipped on Windows: NTFS uses ACLs, not Unix
+	// mode bits, so os.FileInfo.Mode only reports a coarse approximation
+	// (typically 0o666). Per-user security on Windows is enforced via the
+	// inherited ACL of %LOCALAPPDATA%, not via chmod.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 }
 
 func TestLoadFromBase64File(t *testing.T) {

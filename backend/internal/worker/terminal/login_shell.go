@@ -5,10 +5,11 @@ import (
 	"regexp"
 )
 
-var pwshPattern = regexp.MustCompile(`^(?:pwsh|powershell)(?:-preview)?$`)
+var pwshPattern = regexp.MustCompile(`^(?:pwsh|powershell)(?:-preview)?(?:\.exe)?$`)
 
 // IsPwsh returns true if the shell name matches PowerShell variants
-// (pwsh, powershell, pwsh-preview, powershell-preview).
+// (pwsh, powershell, pwsh-preview, powershell-preview, plus the ".exe"
+// suffix forms surfaced by filepath.Base on Windows).
 func IsPwsh(name string) bool {
 	return pwshPattern.MatchString(name)
 }

@@ -1,3 +1,7 @@
+//go:build unix
+
+// Depends on helpers in claude_test.go / goose_test.go that spawn /bin/sh.
+
 package agent
 
 import (
