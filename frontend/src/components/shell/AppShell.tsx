@@ -1011,6 +1011,7 @@ export const AppShell: ParentComponent = (props) => {
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
     setShowNewWorkspace,
+    hasActiveWorkspace: () => activeWorkspace() !== null,
     toggleFloatingTab: handleToggleFloatingTab,
     toggleLeftSidebar: () => {
       if (isMobile()) {

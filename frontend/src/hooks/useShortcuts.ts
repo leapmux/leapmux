@@ -28,6 +28,7 @@ interface UseShortcutsProps {
   setShowNewAgentDialog: (v: boolean) => void
   setShowNewTerminalDialog: (v: boolean) => void
   setShowNewWorkspace: (v: boolean) => void
+  hasActiveWorkspace: Accessor<boolean>
   toggleFloatingTab: () => void
   toggleLeftSidebar: () => void
   toggleRightSidebar: () => void
@@ -65,6 +66,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
     setShowNewWorkspace,
+    hasActiveWorkspace,
     toggleFloatingTab,
     toggleLeftSidebar,
     toggleRightSidebar,
@@ -82,10 +84,34 @@ export function useShortcuts(props: UseShortcutsProps): void {
     cleanups.push(registerCommand({ id, title, handler, category }))
   }
 
-  cmd('app.newAgent', 'New Agent', () => agentOps.handleOpenAgent(), 'App')
-  cmd('app.newTerminal', 'New Terminal', () => termOps.handleOpenTerminal(), 'App')
-  cmd('app.newAgentDialog', 'New Agent Dialog', () => setShowNewAgentDialog(true), 'App')
-  cmd('app.newTerminalDialog', 'New Terminal Dialog', () => setShowNewTerminalDialog(true), 'App')
+  // Agent/terminal shortcuts require an active workspace. When none is active,
+  // agent shortcuts fall through to the new-workspace dialog (so the user can
+  // still make progress), while terminal shortcuts no-op (there is no natural
+  // redirect — terminals live inside a workspace).
+  cmd('app.newAgent', 'New Agent', () => {
+    if (!hasActiveWorkspace()) {
+      setShowNewWorkspace(true)
+      return
+    }
+    agentOps.handleOpenAgent()
+  }, 'App')
+  cmd('app.newTerminal', 'New Terminal', () => {
+    if (!hasActiveWorkspace())
+      return
+    termOps.handleOpenTerminal()
+  }, 'App')
+  cmd('app.newAgentDialog', 'New Agent Dialog', () => {
+    if (!hasActiveWorkspace()) {
+      setShowNewWorkspace(true)
+      return
+    }
+    setShowNewAgentDialog(true)
+  }, 'App')
+  cmd('app.newTerminalDialog', 'New Terminal Dialog', () => {
+    if (!hasActiveWorkspace())
+      return
+    setShowNewTerminalDialog(true)
+  }, 'App')
   cmd('app.newWorkspaceDialog', 'New Workspace Dialog', () => setShowNewWorkspace(true), 'App')
   cmd('app.refreshDirectoryTree', 'Refresh Directory Tree', () => refreshFileTree(), 'Files')
   cmd('app.toggleHiddenFiles', 'Toggle Hidden Files', () => toggleHiddenFiles(), 'Files')

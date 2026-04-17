@@ -7,6 +7,7 @@ import {
 
 const validBase = {
   submitting: false,
+  workspaceId: 'ws-1',
   workerId: 'worker-1',
   workingDir: '/home/user/project',
   noProviders: false,
@@ -77,6 +78,10 @@ describe('isAgentCreateDisabled', () => {
     expect(isAgentCreateDisabled(validBase)).toBe(false)
   })
 
+  it('returns true when workspaceId is empty', () => {
+    expect(isAgentCreateDisabled({ ...validBase, workspaceId: '' })).toBe(true)
+  })
+
   it('returns true when no providers are available', () => {
     expect(isAgentCreateDisabled({ ...validBase, noProviders: true })).toBe(true)
   })
@@ -112,6 +117,10 @@ describe('isTerminalCreateDisabled', () => {
 
   it('returns false when all fields are valid', () => {
     expect(isTerminalCreateDisabled(valid)).toBe(false)
+  })
+
+  it('returns true when workspaceId is empty', () => {
+    expect(isTerminalCreateDisabled({ ...valid, workspaceId: '' })).toBe(true)
   })
 
   it('returns true when submitting', () => {

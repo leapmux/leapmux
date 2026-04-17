@@ -87,6 +87,7 @@ function makeProps() {
     setShowNewAgentDialog: vi.fn(),
     setShowNewTerminalDialog: vi.fn(),
     setShowNewWorkspace: vi.fn(),
+    hasActiveWorkspace: () => true,
     toggleFloatingTab: vi.fn(),
     toggleLeftSidebar: vi.fn(),
     toggleRightSidebar: vi.fn(),
@@ -204,5 +205,47 @@ describe('useShortcuts', () => {
 
     expect(dialog.hasAttribute('open')).toBe(true)
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  describe('without an active workspace', () => {
+    function makeNoWorkspaceProps() {
+      const props = makeProps() as any
+      props.hasActiveWorkspace = () => false
+      props.setShowNewWorkspace = vi.fn()
+      return props
+    }
+
+    it('redirects newAgent and newAgentDialog to the new-workspace dialog', () => {
+      const props = makeNoWorkspaceProps()
+
+      render(() => {
+        useShortcuts(props)
+        return null
+      })
+
+      executeCommand('app.newAgent')
+      expect(props.setShowNewWorkspace).toHaveBeenCalledWith(true)
+      expect(props.agentOps.handleOpenAgent).not.toHaveBeenCalled()
+
+      executeCommand('app.newAgentDialog')
+      expect(props.setShowNewWorkspace).toHaveBeenCalledTimes(2)
+      expect(props.setShowNewAgentDialog).not.toHaveBeenCalled()
+    })
+
+    it('makes newTerminal and newTerminalDialog a no-op', () => {
+      const props = makeNoWorkspaceProps()
+
+      render(() => {
+        useShortcuts(props)
+        return null
+      })
+
+      executeCommand('app.newTerminal')
+      executeCommand('app.newTerminalDialog')
+
+      expect(props.termOps.handleOpenTerminal).not.toHaveBeenCalled()
+      expect(props.setShowNewTerminalDialog).not.toHaveBeenCalled()
+      expect(props.setShowNewWorkspace).not.toHaveBeenCalled()
+    })
   })
 })

@@ -13,16 +13,22 @@ interface BaseDialogState {
   useWorktreePath: string
 }
 
-interface AgentDialogState extends BaseDialogState {
+interface ScopedDialogState extends BaseDialogState {
+  workspaceId: string
+}
+
+interface AgentDialogState extends ScopedDialogState {
   noProviders: boolean
   sessionIdError: string | null
 }
 
-interface WorkspaceDialogState extends AgentDialogState {
+interface WorkspaceDialogState extends BaseDialogState {
+  noProviders: boolean
+  sessionIdError: string | null
   titleError: string | null
 }
 
-interface TerminalDialogState extends BaseDialogState {
+interface TerminalDialogState extends ScopedDialogState {
   shell: string
 }
 
@@ -55,6 +61,7 @@ export function isWorkspaceCreateDisabled(state: WorkspaceDialogState): boolean 
 
 export function isAgentCreateDisabled(state: AgentDialogState): boolean {
   return state.submitting
+    || !state.workspaceId
     || !state.workerId
     || !state.workingDir.trim()
     || state.noProviders
@@ -64,6 +71,7 @@ export function isAgentCreateDisabled(state: AgentDialogState): boolean {
 
 export function isTerminalCreateDisabled(state: TerminalDialogState): boolean {
   return state.submitting
+    || !state.workspaceId
     || !state.workerId
     || !state.workingDir.trim()
     || !state.shell

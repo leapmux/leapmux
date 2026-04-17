@@ -62,7 +62,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
-    if (!state.workerId() || !state.workingDir().trim())
+    if (!props.workspaceId || !state.workerId() || !state.workingDir().trim())
       return
 
     submitting.start()
@@ -154,7 +154,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), sessionIdError: sessionIdError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isAgentCreateDisabled({ submitting: submitting.loading(), workspaceId: props.workspaceId, workerId: state.workerId(), workingDir: state.workingDir(), noProviders: noProviders(), sessionIdError: sessionIdError(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}

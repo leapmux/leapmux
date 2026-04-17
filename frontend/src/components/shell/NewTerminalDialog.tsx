@@ -63,7 +63,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
-    if (!state.workerId() || !state.workingDir().trim() || !shell())
+    if (!props.workspaceId || !state.workerId() || !state.workingDir().trim() || !shell())
       return
 
     submitting.start()
@@ -160,7 +160,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
           </button>
           <button
             type="submit"
-            disabled={isTerminalCreateDisabled({ submitting: submitting.loading(), workerId: state.workerId(), workingDir: state.workingDir(), shell: shell(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
+            disabled={isTerminalCreateDisabled({ submitting: submitting.loading(), workspaceId: props.workspaceId, workerId: state.workerId(), workingDir: state.workingDir(), shell: shell(), gitMode: state.gitMode(), worktreeBranchError: state.worktreeBranchError(), checkoutBranch: state.checkoutBranch(), createBranchError: state.createBranchError(), useWorktreePath: state.useWorktreePath() })}
           >
             <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}
