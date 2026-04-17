@@ -46,6 +46,14 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		if r.GetWorkspaceId() == "" {
+			sendInvalidArgument(sender, "workspace_id is required")
+			return
+		}
+		if !svc.requireAccessibleWorkspace(sender, r.GetWorkspaceId()) {
+			return
+		}
+
 		if err := validate.ValidateSessionID(r.GetAgentSessionId()); err != nil {
 			sendInvalidArgument(sender, err.Error())
 			return
@@ -162,6 +170,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		agentID := r.GetAgentId()
+		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
+			return
+		}
 
 		// Stop the agent process.
 		svc.Agents.StopAgent(agentID)
@@ -188,6 +199,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		agentID := r.GetAgentId()
+		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
+		if !ok {
+			return
+		}
+
 		content := r.GetContent()
 		attachments := r.GetAttachments()
 
@@ -210,12 +226,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-		if err != nil {
-			sendInternalError(sender, "agent not found")
-			return
-		}
-
 		// Pre-resolve the resume session ID BEFORE persisting the user
 		// message. HasUserMessages must run before the current message is
 		// written; otherwise the just-persisted message is counted as a
@@ -223,7 +233,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// had any messages (e.g. after an app restart on an idle tab).
 		resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
-		attachments, err = agent.NormalizeAttachmentsForProvider(
+		attachments, err := agent.NormalizeAttachmentsForProvider(
 			leapmuxv1.AgentProvider(dbAgent.AgentProvider),
 			attachments,
 		)
@@ -370,11 +380,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		agentID := r.GetAgentId()
+		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
+		if !ok {
+			return
+		}
 		content := r.GetContent()
-		if dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID); err == nil {
-			if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX && isInterruptRequest(content) {
-				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]")
-			}
+		if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX && isInterruptRequest(content) {
+			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]")
 		}
 
 		svc.handleControlRequestMessage(agentID, content)
@@ -454,9 +466,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		agentID := r.GetAgentId()
+		agentRow, ok := svc.requireAccessibleAgent(sender, agentID)
+		if !ok {
+			return
+		}
 
 		// Return empty for closed agents.
-		if agentRow, err := svc.Queries.GetAgentByID(bgCtx(), agentID); err == nil && agentRow.ClosedAt.Valid {
+		if agentRow.ClosedAt.Valid {
 			sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{})
 			return
 		}
@@ -526,11 +542,16 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		agentID := r.GetAgentId()
+		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
+			return
+		}
+
 		if _, err := svc.Queries.RenameAgent(bgCtx(), db.RenameAgentParams{
 			Title: r.GetTitle(),
-			ID:    r.GetAgentId(),
+			ID:    agentID,
 		}); err != nil {
-			slog.Error("failed to rename agent", "agent_id", r.GetAgentId(), "error", err)
+			slog.Error("failed to rename agent", "agent_id", agentID, "error", err)
 			sendInternalError(sender, "failed to rename agent")
 			return
 		}
@@ -545,11 +566,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		agentID := r.GetAgentId()
+		messageID := r.GetMessageId()
+		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
+			return
+		}
+
 		if err := svc.Queries.DeleteMessageByAgentAndID(bgCtx(), db.DeleteMessageByAgentAndIDParams{
-			AgentID: r.GetAgentId(),
-			ID:      r.GetMessageId(),
+			AgentID: agentID,
+			ID:      messageID,
 		}); err != nil {
-			slog.Error("failed to delete message", "agent_id", r.GetAgentId(), "message_id", r.GetMessageId(), "error", err)
+			slog.Error("failed to delete message", "agent_id", agentID, "message_id", messageID, "error", err)
 			sendInternalError(sender, "failed to delete message")
 			return
 		}
@@ -557,12 +584,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
 
 		// Broadcast deletion to all watchers.
-		svc.Watchers.BroadcastAgentEvent(r.GetAgentId(), &leapmuxv1.AgentEvent{
-			AgentId: r.GetAgentId(),
+		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+			AgentId: agentID,
 			Event: &leapmuxv1.AgentEvent_MessageDeleted{
 				MessageDeleted: &leapmuxv1.AgentMessageDeleted{
-					AgentId:   r.GetAgentId(),
-					MessageId: r.GetMessageId(),
+					AgentId:   agentID,
+					MessageId: messageID,
 				},
 			},
 		})
@@ -576,12 +603,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		agentID := r.GetAgentId()
-
-		// Fetch current agent to get existing values for unchanged fields.
-		dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-		if err != nil {
-			slog.Error("failed to fetch agent for settings update", "agent_id", agentID, "error", err)
-			sendNotFoundError(sender, "agent not found")
+		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
+		if !ok {
 			return
 		}
 
@@ -727,17 +750,14 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		agentID := r.GetAgentId()
+		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
+		if !ok {
+			return
+		}
 		content := r.GetContent()
 
 		if svc.handleCodexPlanModePromptResponse(agentID, content) {
 			sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
-			return
-		}
-
-		dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-		if err != nil {
-			slog.Error("failed to look up agent for control response", "agent_id", agentID, "error", err)
-			sendNotFoundError(sender, "agent not found")
 			return
 		}
 

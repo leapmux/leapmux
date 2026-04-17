@@ -28,6 +28,14 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 			sendInvalidArgument(sender, "workspace_id is required")
 			return
 		}
+		// Gate on the channel's accessible set. The hub removes the workspace
+		// before calling CleanupWorkspace, but the accessible set is add-only
+		// per-channel — a user who previously owned the workspace (i.e. was
+		// told about it at handshake or via AddAccessibleWorkspaceID) can
+		// still clean up. Fabricated/foreign IDs are rejected.
+		if !svc.requireAccessibleWorkspace(sender, workspaceID) {
+			return
+		}
 
 		// 1. Stop all active agents for this workspace.
 		agentIDs, err := svc.Queries.ListOpenAgentIDsByWorkspaceID(bgCtx(), workspaceID)

@@ -30,14 +30,28 @@ func handleMoveTabWorkspace(svc *Context) channel.HandlerFunc {
 			return
 		}
 
-		// Verify the target workspace is accessible to this channel's user.
-		chID := sender.ChannelID()
-		if chID != "" {
-			awsIDs := svc.Channels.AccessibleWorkspaceIDs(chID)
-			if awsIDs != nil && !awsIDs[newWsID] {
-				sendPermissionDenied(sender, "target workspace not accessible")
+		// Verify the **source** tab's current workspace is accessible on this
+		// channel. Without this check, a user could steal a tab from another
+		// user's workspace by calling MoveTabWorkspace with tabID=<theirs>,
+		// newWorkspaceId=<mine>. requireAccessibleAgent / Terminal also
+		// return NOT_FOUND when the tab id is unknown.
+		switch r.GetTabType() {
+		case leapmuxv1.TabType_TAB_TYPE_AGENT:
+			if _, ok := svc.requireAccessibleAgent(sender, tabID); !ok {
 				return
 			}
+		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
+			if _, ok := svc.requireAccessibleTerminal(sender, tabID); !ok {
+				return
+			}
+		default:
+			sendInvalidArgument(sender, "unsupported tab type for workspace move")
+			return
+		}
+
+		// Verify the target workspace is accessible to this channel's user.
+		if !svc.requireAccessibleWorkspace(sender, newWsID) {
+			return
 		}
 
 		switch r.GetTabType() {

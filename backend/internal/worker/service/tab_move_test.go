@@ -142,14 +142,17 @@ func TestMoveTabWorkspace_UnsupportedTabType(t *testing.T) {
 func TestMoveTabWorkspace_NonexistentAgent(t *testing.T) {
 	_, d, w := setupTestService(t, "ws-1", "ws-2")
 
-	// Moving a non-existent agent — the SQL UPDATE affects 0 rows but
-	// doesn't error. The handler should still return a success response.
+	// Moving a non-existent agent must be rejected so callers cannot probe
+	// for valid IDs or fabricate rows. The source-side access check happens
+	// before the SQL UPDATE, so a missing row surfaces as NOT_FOUND rather
+	// than silently succeeding.
 	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
 		TabType:        leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabId:          "nonexistent",
 		NewWorkspaceId: "ws-2",
 	}, w)
 
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1)
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(5), w.errors[0].code, "expected NOT_FOUND")
+	assert.Empty(t, w.responses)
 }

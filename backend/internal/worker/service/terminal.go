@@ -27,6 +27,9 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInvalidArgument(sender, "workspace_id is required")
 			return
 		}
+		if !svc.requireAccessibleWorkspace(sender, workspaceID) {
+			return
+		}
 
 		cols := r.GetCols()
 		if cols == 0 {
@@ -182,8 +185,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		terminalID := r.GetTerminalId()
-		if terminalID == "" {
-			sendInvalidArgument(sender, "terminal_id is required")
+		if _, ok := svc.requireAccessibleTerminal(sender, terminalID); !ok {
 			return
 		}
 
@@ -205,8 +207,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		terminalID := r.GetTerminalId()
-		if terminalID == "" {
-			sendInvalidArgument(sender, "terminal_id is required")
+		if _, ok := svc.requireAccessibleTerminal(sender, terminalID); !ok {
 			return
 		}
 
@@ -232,8 +233,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		terminalID := r.GetTerminalId()
-		if terminalID == "" {
-			sendInvalidArgument(sender, "terminal_id is required")
+		if _, ok := svc.requireAccessibleTerminal(sender, terminalID); !ok {
 			return
 		}
 
@@ -263,8 +263,8 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		terminalID := r.GetTerminalId()
-		if terminalID == "" {
-			sendInvalidArgument(sender, "terminal_id is required")
+		dbTerm, ok := svc.requireAccessibleTerminal(sender, terminalID)
+		if !ok {
 			return
 		}
 
@@ -272,22 +272,19 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		svc.Terminals.UpdateTitle(terminalID, title)
 
 		// Persist to DB so it survives restarts.
-		dbTerm, err := svc.Queries.GetTerminal(bgCtx(), terminalID)
-		if err == nil {
-			_ = svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
-				ID:            dbTerm.ID,
-				WorkspaceID:   dbTerm.WorkspaceID,
-				WorkingDir:    dbTerm.WorkingDir,
-				HomeDir:       dbTerm.HomeDir,
-				ShellStartDir: dbTerm.ShellStartDir,
-				Title:         title,
-				Cols:          dbTerm.Cols,
-				Rows:          dbTerm.Rows,
-				Screen:        dbTerm.Screen,
-				ExitCode:      dbTerm.ExitCode,
-				ClosedAt:      dbTerm.ClosedAt,
-			})
-		}
+		_ = svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+			ID:            dbTerm.ID,
+			WorkspaceID:   dbTerm.WorkspaceID,
+			WorkingDir:    dbTerm.WorkingDir,
+			HomeDir:       dbTerm.HomeDir,
+			ShellStartDir: dbTerm.ShellStartDir,
+			Title:         title,
+			Cols:          dbTerm.Cols,
+			Rows:          dbTerm.Rows,
+			Screen:        dbTerm.Screen,
+			ExitCode:      dbTerm.ExitCode,
+			ClosedAt:      dbTerm.ClosedAt,
+		})
 
 		sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
 	})

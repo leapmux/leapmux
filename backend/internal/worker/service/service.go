@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -363,6 +364,72 @@ func sendPermissionDenied(sender *channel.Sender, msg string) {
 // sendInvalidArgument sends an INVALID_ARGUMENT (3) error response.
 func sendInvalidArgument(sender *channel.Sender, msg string) {
 	_ = sender.SendError(3, msg)
+}
+
+// requireAccessibleWorkspace verifies the workspace_id is accessible on the
+// sender's channel. Sends PERMISSION_DENIED and returns false when the channel
+// has no context or the workspace is not in its accessible set (populated at
+// channel handshake by the hub's list of workspaces the user owns). The
+// caller is responsible for rejecting empty workspace_id up front.
+func (svc *Context) requireAccessibleWorkspace(sender *channel.Sender, workspaceID string) bool {
+	channelID := sender.ChannelID()
+	if channelID == "" {
+		sendPermissionDenied(sender, "workspace is not accessible")
+		return false
+	}
+	if !svc.Channels.AccessibleWorkspaceIDs(channelID)[workspaceID] {
+		sendPermissionDenied(sender, "workspace is not accessible")
+		return false
+	}
+	return true
+}
+
+// requireAccessibleAgent looks up the agent and verifies its workspace is
+// accessible on the sender's channel. Sends the appropriate error response
+// and returns ok=false on empty id, missing row, db error, or denial. The
+// returned Agent is the freshly-loaded row so callers can reuse it.
+func (svc *Context) requireAccessibleAgent(sender *channel.Sender, agentID string) (db.Agent, bool) {
+	if agentID == "" {
+		sendInvalidArgument(sender, "agent_id is required")
+		return db.Agent{}, false
+	}
+	agentRow, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendNotFoundError(sender, "agent not found")
+			return db.Agent{}, false
+		}
+		slog.Error("failed to load agent for access check", "agent_id", agentID, "error", err)
+		sendInternalError(sender, "failed to load agent")
+		return db.Agent{}, false
+	}
+	if !svc.requireAccessibleWorkspace(sender, agentRow.WorkspaceID) {
+		return db.Agent{}, false
+	}
+	return agentRow, true
+}
+
+// requireAccessibleTerminal looks up the terminal and verifies its workspace
+// is accessible on the sender's channel. Mirror of requireAccessibleAgent.
+func (svc *Context) requireAccessibleTerminal(sender *channel.Sender, terminalID string) (db.Terminal, bool) {
+	if terminalID == "" {
+		sendInvalidArgument(sender, "terminal_id is required")
+		return db.Terminal{}, false
+	}
+	termRow, err := svc.Queries.GetTerminal(bgCtx(), terminalID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendNotFoundError(sender, "terminal not found")
+			return db.Terminal{}, false
+		}
+		slog.Error("failed to load terminal for access check", "terminal_id", terminalID, "error", err)
+		sendInternalError(sender, "failed to load terminal")
+		return db.Terminal{}, false
+	}
+	if !svc.requireAccessibleWorkspace(sender, termRow.WorkspaceID) {
+		return db.Terminal{}, false
+	}
+	return termRow, true
 }
 
 // expandTilde expands a leading "~" or "~/" in a path to the user's home
