@@ -39,55 +39,113 @@ func TestHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+// TestHelperProcessControlResponder is a test helper that acts as a
+// control-protocol mock. For each control_request line on stdin it emits a
+// canned control_response determined by the LEAPMUX_TEST_CONTROL_SCRIPT env
+// var, a "|"-separated list where each entry is:
+//
+//	success           — emit a success control_response
+//	error:<text>      — emit an error control_response with the given text
+//	skip              — ignore the request (simulate a timeout / no reply)
+//
+// Each incoming control_request body is appended to
+// LEAPMUX_TEST_CONTROL_LOG (if set) as one JSON line, in the order
+// received. Non-control lines on stdin are ignored.
+func TestHelperProcessControlResponder(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS_RESPONDER") != "1" {
+		return
+	}
+
+	scriptRaw := os.Getenv("LEAPMUX_TEST_CONTROL_SCRIPT")
+	var script []string
+	if scriptRaw != "" {
+		script = strings.Split(scriptRaw, "|")
+	}
+
+	var logFile *os.File
+	if p := os.Getenv("LEAPMUX_TEST_CONTROL_LOG"); p != "" {
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			logFile = f
+			defer func() { _ = f.Close() }()
+		}
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	idx := 0
+	for scanner.Scan() {
+		var env struct {
+			Type      string          `json:"type"`
+			RequestID string          `json:"request_id"`
+			Request   json.RawMessage `json:"request"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
+			continue
+		}
+		if env.Type != "control_request" {
+			continue
+		}
+		if logFile != nil {
+			_, _ = logFile.Write(env.Request)
+			_, _ = logFile.WriteString("\n")
+			_ = logFile.Sync()
+		}
+
+		var action string
+		if idx < len(script) {
+			action = script[idx]
+		}
+		idx++
+
+		switch {
+		case action == "success":
+			resp := map[string]any{
+				"type": "control_response",
+				"response": map[string]any{
+					"subtype":    "success",
+					"request_id": env.RequestID,
+					"response":   map[string]any{},
+				},
+			}
+			b, _ := json.Marshal(resp)
+			fmt.Println(string(b))
+		case strings.HasPrefix(action, "error:"):
+			resp := map[string]any{
+				"type": "control_response",
+				"response": map[string]any{
+					"subtype":    "error",
+					"request_id": env.RequestID,
+					"error":      strings.TrimPrefix(action, "error:"),
+				},
+			}
+			b, _ := json.Marshal(resp)
+			fmt.Println(string(b))
+		case action == "skip":
+			// no response — the waiter will time out.
+		}
+	}
+	os.Exit(0)
+}
+
+// mockStartWithResponder spawns TestHelperProcessControlResponder as the
+// child process and wires it up as a ClaudeCodeAgent. script is forwarded
+// as LEAPMUX_TEST_CONTROL_SCRIPT; logPath (optional) as
+// LEAPMUX_TEST_CONTROL_LOG.
+func mockStartWithResponder(ctx context.Context, opts Options, sink OutputSink, script, logPath string) (*ClaudeCodeAgent, error) {
+	env := []string{
+		"GO_WANT_HELPER_PROCESS_RESPONDER=1",
+		"LEAPMUX_TEST_CONTROL_SCRIPT=" + script,
+	}
+	if logPath != "" {
+		env = append(env, "LEAPMUX_TEST_CONTROL_LOG="+logPath)
+	}
+	return spawnMockClaudeAgent(ctx, "TestHelperProcessControlResponder", env, opts, sink)
+}
+
 // mockStart spawns a test helper process instead of the real claude binary.
 func mockStart(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess", "--")
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
-	cmd.Dir = opts.WorkingDir
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	cmd.Stderr = nil
-
-	a := &ClaudeCodeAgent{
-		processBase: processBase{
-			agentID:     opts.AgentID,
-			cmd:         cmd,
-			stdin:       stdin,
-			ctx:         ctx,
-			cancel:      cancel,
-			processDone: make(chan struct{}),
-			stderrDone:  make(chan struct{}),
-		},
-		model:          opts.Model,
-		workingDir:     opts.WorkingDir,
-		sink:           sink,
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
-	}
-	close(a.stderrDone)
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, err
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
-
-	return a, nil
+	return spawnMockClaudeAgent(ctx, "TestHelperProcess", []string{"GO_WANT_HELPER_PROCESS=1"}, opts, sink)
 }
 
 func TestAgent_StartAndStop(t *testing.T) {
@@ -199,53 +257,8 @@ func TestHelperProcessWithInit(t *testing.T) {
 // mockStartWithInit spawns a test helper process that outputs an init line
 // with a session_id, simulating real Claude Code behavior.
 func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessWithInit", "--")
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS_WITH_INIT=1")
-	cmd.Dir = opts.WorkingDir
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	cmd.Stderr = nil
-
-	a := &ClaudeCodeAgent{
-		processBase: processBase{
-			agentID:     opts.AgentID,
-			cmd:         cmd,
-			stdin:       stdin,
-			ctx:         ctx,
-			cancel:      cancel,
-			processDone: make(chan struct{}),
-			stderrDone:  make(chan struct{}),
-		},
-		model:          opts.Model,
-		workingDir:     opts.WorkingDir,
-		sink:           sink,
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
-	}
-	close(a.stderrDone)
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, err
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
-
-	return a, nil
+	return spawnMockClaudeAgent(ctx, "TestHelperProcessWithInit",
+		[]string{"GO_WANT_HELPER_PROCESS_WITH_INIT=1"}, opts, sink)
 }
 
 // TestAgent_InitMessageFlowsThrough verifies that the init message with
@@ -871,7 +884,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	}, "expected output after preamble")
 
 	// Verify metadata was parsed.
-	assert.Equal(t, "false", a.preambleMeta["can_change_model_and_effort"])
+	assert.Equal(t, "false", a.preambleMetaValue("can_change_model_and_effort"))
 
 	// Verify preamble output does NOT contain the metadata line.
 	preamble := a.PreambleOutput()
@@ -880,6 +893,234 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 
 	a.Stop()
 	_ = a.Wait()
+}
+
+func TestClaudeCodePermissionModeOptions_AllDescriptionsPopulated(t *testing.T) {
+	groups := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NotEmpty(t, groups, "expected at least the permission-mode group")
+
+	var permGroup *leapmuxv1.AvailableOptionGroup
+	for _, g := range groups {
+		if g.GetKey() == OptionGroupKeyPermissionMode {
+			permGroup = g
+			break
+		}
+	}
+	require.NotNil(t, permGroup, "permission-mode option group not found")
+
+	wantIDs := []string{
+		PermissionModeDefault,
+		PermissionModePlan,
+		PermissionModeAcceptEdits,
+		PermissionModeBypassPermissions,
+		PermissionModeDontAsk,
+		PermissionModeAuto,
+	}
+	options := permGroup.GetOptions()
+	require.Len(t, options, len(wantIDs), "expected 6 permission modes")
+
+	gotIDs := make([]string, 0, len(options))
+	defaultCount := 0
+	for _, o := range options {
+		gotIDs = append(gotIDs, o.GetId())
+		assert.NotEmptyf(t, o.GetName(), "mode %q: Name must be set", o.GetId())
+		assert.NotEmptyf(t, o.GetDescription(), "mode %q: Description must be set (used as tooltip)", o.GetId())
+		if o.GetIsDefault() {
+			defaultCount++
+		}
+	}
+	assert.Equal(t, wantIDs, gotIDs, "unexpected mode ids or order")
+	assert.Equal(t, 1, defaultCount, "exactly one option should be marked IsDefault")
+}
+
+func TestFilterPermissionModeGroup_AutoAvailable(t *testing.T) {
+	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
+
+	got := filterPermissionModeGroup(staticGroup, true)
+
+	assert.Same(t, staticGroup, got, "when auto is available, the static group should be returned unchanged")
+	assert.Len(t, got.GetOptions(), 6)
+}
+
+func TestFilterPermissionModeGroup_AutoUnavailable(t *testing.T) {
+	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
+
+	got := filterPermissionModeGroup(staticGroup, false)
+
+	require.NotSame(t, staticGroup, got, "filtered result must be a fresh copy")
+	assert.Equal(t, staticGroup.GetKey(), got.GetKey())
+	assert.Equal(t, staticGroup.GetLabel(), got.GetLabel())
+
+	ids := make([]string, 0, len(got.GetOptions()))
+	for _, o := range got.GetOptions() {
+		ids = append(ids, o.GetId())
+		assert.NotEmptyf(t, o.GetDescription(), "mode %q: Description must be preserved after filtering", o.GetId())
+	}
+	assert.NotContains(t, ids, PermissionModeAuto, "auto must be filtered out")
+	assert.ElementsMatch(t, []string{
+		PermissionModeDefault,
+		PermissionModePlan,
+		PermissionModeAcceptEdits,
+		PermissionModeBypassPermissions,
+		PermissionModeDontAsk,
+	}, ids, "remaining modes should include dontAsk and all non-auto modes")
+}
+
+func TestIsAutoModeUnavailableError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"bare prefix", fmt.Errorf("Cannot set permission mode to auto"), true},
+		{"settings reason", fmt.Errorf("Cannot set permission mode to auto: auto mode disabled by settings"), true},
+		{"circuit-breaker reason", fmt.Errorf("Cannot set permission mode to auto: auto mode is unavailable for your plan"), true},
+		{"model reason", fmt.Errorf("Cannot set permission mode to auto: auto mode unavailable for this model"), true},
+		{"wrapped error", fmt.Errorf("set_permission_mode failed: %w", fmt.Errorf("Cannot set permission mode to auto: auto mode disabled by settings")), true},
+		{"unrelated error", fmt.Errorf("timeout waiting for agent to respond"), false},
+		{"other mode rejection", fmt.Errorf("Cannot set permission mode to plan"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isAutoModeUnavailableError(tc.err))
+		})
+	}
+}
+
+func TestClaudeCodeAgent_AvailableOptionGroupsFiltersAutoWhenUnavailable(t *testing.T) {
+	agent := &ClaudeCodeAgent{
+		processBase:       processBase{agentID: "t"},
+		pendingControl:    make(map[string]chan<- claudeCodeControlResult),
+		autoModeAvailable: false,
+	}
+
+	groups := agent.AvailableOptionGroups()
+	require.NotEmpty(t, groups, "expected at least the permission-mode group")
+
+	permGroup := groups[0]
+	assert.Equal(t, OptionGroupKeyPermissionMode, permGroup.GetKey())
+	for _, o := range permGroup.GetOptions() {
+		assert.NotEqual(t, PermissionModeAuto, o.GetId(), "auto must not appear when autoModeAvailable is false")
+	}
+
+	agent.autoModeAvailable = true
+	groups = agent.AvailableOptionGroups()
+	permGroup = groups[0]
+	found := false
+	for _, o := range permGroup.GetOptions() {
+		if o.GetId() == PermissionModeAuto {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "auto should appear when autoModeAvailable is true")
+}
+
+func readHandshakeModes(t *testing.T, logPath string) []string {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err, "read control log")
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	modes := make([]string, 0, len(lines))
+	for _, line := range lines {
+		var body struct {
+			Subtype string `json:"subtype"`
+			Mode    string `json:"mode"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &body))
+		require.Equal(t, "set_permission_mode", body.Subtype)
+		modes = append(modes, body.Mode)
+	}
+	return modes
+}
+
+func TestApplyStartupPermissionMode(t *testing.T) {
+	cases := []struct {
+		name          string
+		agentID       string
+		script        string
+		requested     string
+		wantAuto      bool
+		wantModes     []string
+		wantErrSubstr string // non-empty means the call must fail; checks err contains it
+	}{
+		{
+			name:      "AutoAccepted",
+			agentID:   "handshake-auto-ok",
+			script:    "success",
+			requested: PermissionModeAuto,
+			wantAuto:  true,
+			wantModes: []string{PermissionModeAuto},
+		},
+		{
+			name:      "AutoRejectedFallsBack",
+			agentID:   "handshake-auto-reject",
+			script:    "error:Cannot set permission mode to auto: auto mode disabled by settings|success",
+			requested: PermissionModeAuto,
+			wantAuto:  false,
+			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+		},
+		{
+			name:          "AutoTransientErrorPropagates",
+			agentID:       "handshake-auto-transient",
+			script:        "error:some unrelated runtime error",
+			requested:     PermissionModeAuto,
+			wantAuto:      false,
+			wantModes:     []string{PermissionModeAuto},
+			wantErrSubstr: "some unrelated runtime error",
+		},
+		{
+			name:      "NonAutoProbesAutoAvailable",
+			agentID:   "handshake-probe-ok",
+			script:    "success|success",
+			requested: PermissionModeDefault,
+			wantAuto:  true,
+			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+		},
+		{
+			name:      "NonAutoProbeRejected",
+			agentID:   "handshake-probe-reject",
+			script:    "error:Cannot set permission mode to auto: auto mode disabled by settings|success",
+			requested: PermissionModePlan,
+			wantAuto:  false,
+			wantModes: []string{PermissionModeAuto, PermissionModePlan},
+		},
+		{
+			name:      "NonAutoProbeTransient",
+			agentID:   "handshake-probe-transient",
+			script:    "error:some unrelated runtime error|success",
+			requested: PermissionModeDefault,
+			wantAuto:  false,
+			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			logPath := filepath.Join(t.TempDir(), "control.log")
+			agent, err := mockStartWithResponder(ctx,
+				Options{AgentID: tc.agentID, WorkingDir: t.TempDir()},
+				noopSink{}, tc.script, logPath)
+			require.NoError(t, err, "mockStartWithResponder")
+			defer func() { agent.Stop(); _ = agent.Wait() }()
+
+			_, err = agent.applyStartupPermissionMode(ctx, tc.requested, 2*time.Second)
+			if tc.wantErrSubstr == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErrSubstr)
+				assert.NotContains(t, err.Error(), autoModeUnavailableErrorPrefix)
+			}
+
+			assert.Equal(t, tc.wantAuto, agent.autoModeAvailable)
+			assert.Equal(t, tc.wantModes, readHandshakeModes(t, logPath))
+		})
+	}
 }
 
 func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
@@ -923,4 +1164,40 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	}
 	assert.True(t, foundWorker, "LEAPMUX_WORKER=1 should be in shell-wrapped env")
 	assert.True(t, foundClaudeCode, "CLAUDECODE=1 should be in shell-wrapped env")
+}
+
+func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
+	byID := map[string]*leapmuxv1.AvailableModel{}
+	for _, m := range claudeCodeAvailableModels {
+		byID[m.Id] = m
+	}
+
+	effortIDs := func(m *leapmuxv1.AvailableModel) []string {
+		ids := make([]string, 0, len(m.SupportedEfforts))
+		for _, e := range m.SupportedEfforts {
+			ids = append(ids, e.Id)
+		}
+		return ids
+	}
+
+	opusEfforts := []string{"auto", "max", "xhigh", "high", "medium", "low"}
+	sonnetEfforts := []string{"auto", "max", "high", "medium", "low"}
+
+	for _, id := range []string{"opus", "opus[1m]"} {
+		m := byID[id]
+		require.NotNil(t, m, "model %q missing", id)
+		assert.Equal(t, opusEfforts, effortIDs(m), "opus effort list for %q", id)
+		assert.Equal(t, "xhigh", m.DefaultEffort, "opus default effort for %q", id)
+	}
+
+	for _, id := range []string{"sonnet", "sonnet[1m]"} {
+		m := byID[id]
+		require.NotNil(t, m, "model %q missing", id)
+		assert.Equal(t, sonnetEfforts, effortIDs(m), "sonnet effort list for %q", id)
+		assert.Equal(t, "high", m.DefaultEffort, "sonnet default effort for %q", id)
+	}
+
+	haiku := byID["haiku"]
+	require.NotNil(t, haiku)
+	assert.Empty(t, haiku.SupportedEfforts, "haiku has no effort UI")
 }

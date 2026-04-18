@@ -191,11 +191,28 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		close(inst.hubDone)
 	}()
 
-	// Wait for Hub's local listener (unix socket or named pipe).
-	if err := locallisten.WaitReady(soloCtx, listenURL); err != nil {
+	// Wait for Hub's local listener (unix socket or named pipe). Race
+	// against inst.hubDone so that if Serve returns before the listener
+	// is ready, we surface the underlying Serve error (e.g. "bind:
+	// invalid argument") instead of the generic "not ready" timeout.
+	readyCh := make(chan error, 1)
+	go func() { readyCh <- locallisten.WaitReady(soloCtx, listenURL) }()
+	select {
+	case err := <-readyCh:
+		if err != nil {
+			cancel()
+			inst.wg.Wait()
+			if inst.hubErr != nil && !errors.Is(inst.hubErr, context.Canceled) {
+				return nil, fmt.Errorf("hub serve: %w", inst.hubErr)
+			}
+			return nil, fmt.Errorf("wait for hub local listener: %w", err)
+		}
+	case <-inst.hubDone:
 		cancel()
-		inst.wg.Wait()
-		return nil, fmt.Errorf("wait for hub local listener: %w", err)
+		if inst.hubErr != nil {
+			return nil, fmt.Errorf("hub serve: %w", inst.hubErr)
+		}
+		return nil, errors.New("hub serve exited before listener became ready")
 	}
 
 	// Auto-register worker.

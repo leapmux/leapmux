@@ -88,6 +88,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			agentProvider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 		}
 		model := modelOrDefault(r.GetModel(), agentProvider)
+		effort := effortOrDefault(r.GetEffort(), model, agentProvider)
 		extraSettings := resolveCodexExtras(mergeExtraSettings(nil, r.GetExtraSettings()), agentProvider)
 
 		// Track whether this agent was created via session resume.
@@ -102,7 +103,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Title:         r.GetTitle(),
 			Model:         model,
 			SystemPrompt:  r.GetSystemPrompt(),
-			Effort:        r.GetEffort(),
+			Effort:        effort,
 			ExtraSettings: marshalExtraSettings(extraSettings),
 			AgentProvider: agentProvider,
 			Resumed:       resumed,
@@ -116,7 +117,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		agentOpts := agent.Options{
 			AgentID:         agentID,
 			Model:           model,
-			Effort:          r.GetEffort(),
+			Effort:          effort,
 			WorkingDir:      workingDir,
 			ResumeSessionID: r.GetAgentSessionId(),
 			ExtraSettings:   extraSettings,
@@ -709,7 +710,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 		}
 		if dbAgent.Effort != newEffort {
-			oldID := effortOrDefault(dbAgent.Effort, dbAgent.AgentProvider)
+			oldID := effortOrDefault(dbAgent.Effort, dbAgent.Model, dbAgent.AgentProvider)
 			changes["effort"] = map[string]string{
 				"old": oldID, "new": newEffort,
 				"oldLabel": effortLabel(oldID), "newLabel": effortLabel(newEffort),

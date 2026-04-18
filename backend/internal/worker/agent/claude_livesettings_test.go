@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +106,7 @@ func TestAvailableOptionGroups_FastModeDefaultsToOff(t *testing.T) {
 
 func TestAvailableOptionGroups_AlwaysIncludesThinking(t *testing.T) {
 	a := &ClaudeCodeAgent{
-		alwaysThinking: "off",
+		alwaysThinking: AlwaysThinkingOff,
 	}
 	groups := a.AvailableOptionGroups()
 
@@ -120,12 +119,113 @@ func TestAvailableOptionGroups_AlwaysIncludesThinking(t *testing.T) {
 	}
 	require.NotNil(t, thinkingGroup, "thinking group should always be present")
 	for _, opt := range thinkingGroup.Options {
-		if opt.Id == "off" {
+		if opt.Id == AlwaysThinkingOff {
 			assert.True(t, opt.IsDefault)
 		} else {
 			assert.False(t, opt.IsDefault)
 		}
 	}
+}
+
+// The enabled option's display name tracks Claude Code's per-model
+// thinking-type gate: "Adaptive" for first-party models, "On" for Haiku
+// (legacy type:"enabled"). The option ID stays "on" for all models.
+func TestAvailableOptionGroups_ThinkingLabelsByModel(t *testing.T) {
+	cases := []struct {
+		model     string
+		wantName  string
+		current   string // initial a.alwaysThinking
+		wantOnDef bool   // whether the "on" option is IsDefault
+	}{
+		{"opus", "Adaptive", AlwaysThinkingOn, true},
+		{"opus[1m]", "Adaptive", AlwaysThinkingOn, true},
+		{"sonnet", "Adaptive", AlwaysThinkingOn, true},
+		{"sonnet[1m]", "Adaptive", AlwaysThinkingOff, false},
+		{"haiku", "On", AlwaysThinkingOn, true},
+		{"haiku", "On", AlwaysThinkingOff, false},
+		{"", "Adaptive", AlwaysThinkingOn, true},
+		{"unknown-future-model", "Adaptive", AlwaysThinkingOn, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model+"/"+tc.current, func(t *testing.T) {
+			a := &ClaudeCodeAgent{model: tc.model, alwaysThinking: tc.current}
+			groups := a.AvailableOptionGroups()
+
+			var g *leapmuxv1.AvailableOptionGroup
+			for _, gr := range groups {
+				if gr.Key == ExtraKeyAlwaysThinking {
+					g = gr
+					break
+				}
+			}
+			require.NotNil(t, g)
+			require.Len(t, g.Options, 2, "thinking group has exactly two options (enabled + off)")
+
+			enabled := g.Options[0]
+			off := g.Options[1]
+			assert.Equal(t, AlwaysThinkingOn, enabled.Id, "enabled option ID is always 'on'")
+			assert.Equal(t, tc.wantName, enabled.Name, "enabled option name varies by model")
+			assert.Equal(t, tc.wantOnDef, enabled.IsDefault, "'on' IsDefault")
+			assert.Equal(t, AlwaysThinkingOff, off.Id)
+			assert.Equal(t, "Off", off.Name)
+			assert.Equal(t, !tc.wantOnDef, off.IsDefault, "'off' IsDefault")
+		})
+	}
+}
+
+func TestModelSupportsAdaptiveThinking(t *testing.T) {
+	// Expects the short alias. Fully-qualified IDs should be normalized
+	// via normalizeClaudeCodeModel before calling.
+	cases := map[string]bool{
+		"opus":                 true,
+		"opus[1m]":             true,
+		"sonnet":               true,
+		"sonnet[1m]":           true,
+		"haiku":                false,
+		"":                     true, // unknown → default-on
+		"unknown-future-model": true,
+	}
+	for model, want := range cases {
+		t.Run(model, func(t *testing.T) {
+			assert.Equal(t, want, modelSupportsAdaptiveThinking(model))
+		})
+	}
+}
+
+func TestNormalizeClaudeCodeModel(t *testing.T) {
+	cases := map[string]string{
+		// Short aliases pass through.
+		"opus":       "opus",
+		"opus[1m]":   "opus[1m]",
+		"sonnet":     "sonnet",
+		"sonnet[1m]": "sonnet[1m]",
+		"haiku":      "haiku",
+		// Fully-qualified IDs Claude Code returns from get_settings.
+		"claude-opus-4-7":            "opus",
+		"claude-opus-4-7[1m]":        "opus[1m]",
+		"claude-opus-4-6":            "opus",
+		"claude-opus-4-6[1m]":        "opus[1m]",
+		"claude-sonnet-4-6":          "sonnet",
+		"claude-sonnet-4-6[1m]":      "sonnet[1m]",
+		"claude-haiku-4-5-20251001":  "haiku",
+		"claude-haiku-4-5":           "haiku",
+		"claude-sonnet-4-5-20240101": "sonnet",
+		// Degenerate input.
+		"":              "",
+		"unknown-thing": "unknown",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			assert.Equal(t, want, normalizeClaudeCodeModel(in))
+		})
+	}
+}
+
+func TestFlagSettingThinking(t *testing.T) {
+	assert.Equal(t, false, flagSettingThinking(AlwaysThinkingOff))
+	assert.Nil(t, flagSettingThinking(AlwaysThinkingOn), "on → nil (lets Claude Code default-on kick in)")
+	assert.Nil(t, flagSettingThinking(""), "empty → nil")
+	assert.Nil(t, flagSettingThinking("anything-else"), "unknown → nil")
 }
 
 // --- Unit tests for CurrentSettings ---
@@ -278,17 +378,17 @@ func TestUpdateSettings_AlwaysThinkingOn(t *testing.T) {
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
-	a.alwaysThinking = "off"
+	a.alwaysThinking = AlwaysThinkingOff
 
 	result := a.UpdateSettings(&leapmuxv1.AgentSettings{
 		Model:  a.model,
 		Effort: a.effort,
 		ExtraSettings: map[string]string{
-			ExtraKeyAlwaysThinking: "on",
+			ExtraKeyAlwaysThinking: AlwaysThinkingOn,
 		},
 	})
 	assert.True(t, result)
-	assert.Equal(t, "on", a.alwaysThinking)
+	assert.Equal(t, AlwaysThinkingOn, a.alwaysThinking)
 }
 
 func TestUpdateSettings_ApplyFlagSettingsFails(t *testing.T) {
@@ -525,49 +625,21 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 // defaults set for testing UpdateSettings.
 func newTestAgentWithControlProtocol(t *testing.T) *ClaudeCodeAgent {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessWithControlProtocol", "--")
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS_CONTROL=1")
-	cmd.Dir = t.TempDir()
-
-	stdin, err := cmd.StdinPipe()
-	require.NoError(t, err)
-
-	stdout, err := cmd.StdoutPipe()
-	require.NoError(t, err)
-
-	cmd.Stderr = nil
-
-	a := &ClaudeCodeAgent{
-		processBase: processBase{
-			agentID:     "test-ctrl",
-			cmd:         cmd,
-			stdin:       stdin,
-			ctx:         ctx,
-			cancel:      cancel,
-			processDone: make(chan struct{}),
-			stderrDone:  make(chan struct{}),
-			apiTimeout:  5 * time.Second,
+	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
+		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1"},
+		Options{
+			AgentID:    "test-ctrl",
+			Model:      "opus[1m]",
+			WorkingDir: t.TempDir(),
+			APITimeout: 5 * time.Second,
 		},
-		model:                 "opus[1m]",
-		effort:                "high",
-		outputStyle:           "default",
-		availableOutputStyles: []string{"default", "Explanatory", "Learning"},
-		fastMode:              "off",
-		alwaysThinking:        "on",
-		workingDir:            t.TempDir(),
-		sink:                  noopSink{},
-		pendingControl:        make(map[string]chan<- claudeCodeControlResult),
-	}
-	close(a.stderrDone)
-
-	require.NoError(t, cmd.Start())
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
-
+		noopSink{})
+	require.NoError(t, err)
+	a.effort = "high"
+	a.outputStyle = "default"
+	a.availableOutputStyles = []string{"default", "Explanatory", "Learning"}
+	a.fastMode = FastModeOff
+	a.alwaysThinking = AlwaysThinkingOn
 	return a
 }
 

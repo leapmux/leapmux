@@ -279,19 +279,28 @@ func (s *ChannelService) PrepareWorkspaceAccess(
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
 	}
 
+	// Send a ChannelAccessUpdate to each matching channel and wait for the
+	// worker to ack before returning. Without the ack the caller races the
+	// worker's AddAccessibleWorkspaceID handler — the next inner RPC on the
+	// channel (e.g. OpenAgent / ListAgents) can arrive first and fail the
+	// worker-side requireAccessibleWorkspace check.
 	for _, chID := range channelIDs {
 		if s.channelMgr.GetWorkerID(chID) != workerID {
 			continue
 		}
-		if err := conn.Send(&leapmuxv1.ConnectResponse{
+		resp, err := s.pending.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{
 			Payload: &leapmuxv1.ConnectResponse_ChannelAccessUpdate{
 				ChannelAccessUpdate: &leapmuxv1.ChannelAccessUpdate{
 					ChannelId:   chID,
 					WorkspaceId: workspaceID,
 				},
 			},
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("failed to update worker: %w", err))
+		}
+		if resp.GetChannelAccessUpdateAck() == nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unexpected response from worker for channel access update"))
 		}
 	}
 

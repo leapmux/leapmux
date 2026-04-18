@@ -248,6 +248,24 @@ export async function openAgentViaAPI(
 ): Promise<string> {
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/leapmux/v1/agent_pb')
   const channel = await getTestChannel(hubUrl, cookie)
+
+  // Notify the worker that the test channel has access to this workspace
+  // BEFORE issuing any workspace-scoped RPC. getTestChannel caches a
+  // ChannelManager across tests, so on the 2nd+ test the channel's
+  // AccessibleWorkspaceIds set was frozen at handshake time and does not
+  // include the workspace created in this test. The worker's hardened
+  // requireAccessibleWorkspace check would reject OpenAgent until the
+  // ChannelAccessUpdate lands. Calling PrepareWorkspaceAccess first — which
+  // now blocks on the worker's ack — guarantees the set is up-to-date.
+  const prepResp = await fetch(`${hubUrl}/leapmux.v1.ChannelService/PrepareWorkspaceAccess`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ workerId, workspaceId }),
+  })
+  if (!prepResp.ok) {
+    throw new Error(`openAgentViaAPI: PrepareWorkspaceAccess failed: ${prepResp.status}`)
+  }
+
   const resp = await channel.callWorker(
     workerId,
     'OpenAgent',
@@ -277,16 +295,6 @@ export async function openAgentViaAPI(
       workspaceId,
       tab: { tabType: 'TAB_TYPE_AGENT', tabId: resp.agent.id, workerId },
     }),
-  })
-
-  // Notify the worker that the test channel now has access to this workspace.
-  // OpenChannel only includes workspaces that existed at handshake time; any
-  // workspace created after that is invisible to ListAgents until the worker
-  // receives a PrepareWorkspaceAccess (ChannelAccessUpdate) notification.
-  await fetch(`${hubUrl}/leapmux.v1.ChannelService/PrepareWorkspaceAccess`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({ workerId, workspaceId }),
   })
 
   return resp.agent.id

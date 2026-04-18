@@ -46,11 +46,30 @@ func (c *Client) handleChannelClose(notification *leapmuxv1.ChannelCloseNotifica
 	c.channelMgr.HandleClose(notification.GetChannelId())
 }
 
-func (c *Client) handleChannelAccessUpdate(update *leapmuxv1.ChannelAccessUpdate) {
+func (c *Client) handleChannelAccessUpdate(requestID string, update *leapmuxv1.ChannelAccessUpdate) {
 	if c.channelMgr == nil {
 		slog.Warn("channel access update received but no channel manager configured")
 		return
 	}
 
 	c.channelMgr.AddAccessibleWorkspaceID(update.GetChannelId(), update.GetWorkspaceId())
+
+	// Ack synchronously so the hub-side PrepareWorkspaceAccess caller can
+	// observe that the accessible set is updated before it issues the next
+	// inner RPC. Without this ack the worker's hardened access checks race
+	// the frontend's follow-up RPC.
+	if requestID == "" {
+		return
+	}
+	if err := c.Send(&leapmuxv1.ConnectRequest{
+		RequestId: requestID,
+		Payload: &leapmuxv1.ConnectRequest_ChannelAccessUpdateAck{
+			ChannelAccessUpdateAck: &leapmuxv1.ChannelAccessUpdateAck{},
+		},
+	}); err != nil {
+		slog.Warn("failed to send channel access update ack",
+			"channel_id", update.GetChannelId(),
+			"workspace_id", update.GetWorkspaceId(),
+			"error", err)
+	}
 }

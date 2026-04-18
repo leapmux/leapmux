@@ -110,3 +110,40 @@ func TestSoloStart_InvalidLocalListenErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "local_listen",
 		"error should surface the offending flag name")
 }
+
+// TestSoloStart_SurfacesHubServeError confirms that when the hub's Serve
+// goroutine fails before the listener is ready (e.g. a well-formed URL that
+// points at an unwritable location), solo.Start returns the underlying error
+// immediately instead of blocking on the 5-second WaitReady timeout.
+//
+// Regression test for a bug where any Serve-time failure was masked as
+// "wait for hub local listener: ... not ready after 5s", making diagnosis
+// unnecessarily hard.
+func TestSoloStart_SurfacesHubServeError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix-socket-specific reproduction")
+	}
+	locallistentest.SandboxHome(t)
+	// Well-formed URL, but the parent directory does not exist, so
+	// net.Listen("unix", ...) fails with ENOENT.
+	t.Setenv(locallisten.EnvLocalListen, "unix:/nonexistent-parent-dir-for-solo-test/hub.sock")
+
+	// Use a short deadline: if the fix regresses, we'd fall back to the
+	// 5s WaitReady timeout and this test would flake-fail, making the
+	// regression obvious.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := solo.Start(ctx, solo.Config{
+		SkipBanner: true,
+		NoTCP:      true,
+	})
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "solo.Start should surface the bind failure")
+	assert.Contains(t, err.Error(), "hub serve",
+		"error should attribute the failure to hub Serve, not the WaitReady timeout")
+	assert.Less(t, elapsed, 5*time.Second,
+		"should not wait the full WaitReady timeout once Serve has already failed")
+}

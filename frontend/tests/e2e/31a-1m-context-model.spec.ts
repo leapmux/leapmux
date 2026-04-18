@@ -1,20 +1,23 @@
 import { expect, test } from './fixtures'
 import { lastAssistantBubble, openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
 
-const MODEL_CHANGE_PATTERN = /Model.*Sonnet.*Sonnet.*1M/
+// The e2e account can't bill Sonnet's 1M-context tier, so this suite uses
+// Opus[1m] instead. The underlying coverage — bracketed model IDs and the
+// settings-change notification — is the same.
+const MODEL_CHANGE_PATTERN = /Model.*Sonnet.*Opus.*1M/
 
 test.describe('1m-context model', () => {
-  test('switch to sonnet[1m] and exchange messages', async ({ authenticatedWorkspace, page }) => {
+  test('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, page }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
     // Default model should be Sonnet
     await expect(trigger).toContainText('Sonnet')
 
-    // Switch to Sonnet[1m]
+    // Switch to Opus[1m]
     await openSettingsMenu(page)
-    await page.locator('[data-testid="model-sonnet\\[1m\\]"]').click()
-    await expect(trigger).toContainText('Sonnet (1M context)')
+    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
+    await expect(trigger).toContainText('Opus (1M context)')
 
     // Verify the settings change notification appears in chat
     await expect(page.getByText(MODEL_CHANGE_PATTERN)).toBeVisible()
@@ -40,7 +43,7 @@ test.describe('1m-context model', () => {
     const lastAssistant2 = lastAssistantBubble(page)
     await expect(lastAssistant2).toContainText('6', { timeout: 30000 })
 
-    // Verify the model is still shown as Sonnet[1m] after exchanging messages
-    await expect(trigger).toContainText('Sonnet (1M context)')
+    // Verify the model is still shown as Opus[1m] after exchanging messages
+    await expect(trigger).toContainText('Opus (1M context)')
   })
 })

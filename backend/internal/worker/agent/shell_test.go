@@ -298,15 +298,39 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			expected: []string{"--model", "opus[1m]", "--effort", "max"},
 		},
 		{
-			name:     "sonnet with max effort falls back to high",
+			name:     "sonnet with max effort unchanged",
 			model:    "sonnet",
 			effort:   "max",
+			expected: []string{"--model", "sonnet", "--effort", "max"},
+		},
+		{
+			name:     "sonnet[1m] with max effort unchanged",
+			model:    "sonnet[1m]",
+			effort:   "max",
+			expected: []string{"--model", "sonnet[1m]", "--effort", "max"},
+		},
+		{
+			name:     "opus with xhigh effort",
+			model:    "opus",
+			effort:   "xhigh",
+			expected: []string{"--model", "opus", "--effort", "xhigh"},
+		},
+		{
+			name:     "opus[1m] with xhigh effort",
+			model:    "opus[1m]",
+			effort:   "xhigh",
+			expected: []string{"--model", "opus[1m]", "--effort", "xhigh"},
+		},
+		{
+			name:     "sonnet with xhigh effort falls back to high",
+			model:    "sonnet",
+			effort:   "xhigh",
 			expected: []string{"--model", "sonnet", "--effort", "high"},
 		},
 		{
-			name:     "sonnet[1m] with max effort falls back to high",
+			name:     "sonnet[1m] with xhigh effort falls back to high",
 			model:    "sonnet[1m]",
-			effort:   "max",
+			effort:   "xhigh",
 			expected: []string{"--model", "sonnet[1m]", "--effort", "high"},
 		},
 		{
@@ -328,6 +352,12 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			expected: []string{"--model", "haiku"},
 		},
 		{
+			name:     "haiku omits xhigh effort",
+			model:    "haiku",
+			effort:   "xhigh",
+			expected: []string{"--model", "haiku"},
+		},
+		{
 			name:     "empty effort omitted",
 			model:    "sonnet",
 			effort:   "",
@@ -338,6 +368,12 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			model:    "sonnet",
 			effort:   "auto",
 			expected: []string{"--model", "sonnet", "--effort", "auto"},
+		},
+		{
+			name:     "unknown model passes effort through",
+			model:    "claude-future-preview",
+			effort:   "xhigh",
+			expected: []string{"--model", "claude-future-preview", "--effort", "xhigh"},
 		},
 	}
 	for _, tt := range tests {

@@ -177,6 +177,10 @@ func (p *processBase) formatStartupError(phase string, err error) error {
 // agent's JSONL stream. Metadata lines (key=value pairs prefixed with
 // preambleMetaPrefix) are parsed and stored; other preamble lines are captured
 // for diagnostics. This is a no-op if preambleDelimiter is empty.
+//
+// Writes to preambleMeta and preambleOutput are guarded by p.mu so concurrent
+// readers (e.g. AvailableModels called from the hub goroutine) observe
+// consistent state.
 func (p *processBase) skipPreamble(scanner *bufio.Scanner) {
 	if p.preambleDelimiter == "" {
 		return
@@ -193,19 +197,33 @@ func (p *processBase) skipPreamble(scanner *bufio.Scanner) {
 		if len(metaPrefixBytes) > 0 && bytes.HasPrefix(trimmed, metaPrefixBytes) {
 			kv := string(trimmed[len(metaPrefixBytes):])
 			if eqIdx := strings.IndexByte(kv, '='); eqIdx >= 0 {
+				p.mu.Lock()
 				p.preambleMeta[kv[:eqIdx]] = kv[eqIdx+1:]
+				p.mu.Unlock()
 			}
 			continue
 		}
+		p.mu.Lock()
 		if len(p.preambleOutput) < maxPreambleLines {
 			p.preambleOutput = append(p.preambleOutput, string(line))
 		}
+		p.mu.Unlock()
 	}
+}
+
+// preambleMetaValue returns the parsed preamble metadata value for key, or
+// the empty string if absent. Safe to call concurrently with skipPreamble.
+func (p *processBase) preambleMetaValue(key string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.preambleMeta[key]
 }
 
 // PreambleOutput returns the captured stdout preamble lines (before the
 // delimiter) when running under a login shell wrapper.
 func (p *processBase) PreambleOutput() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if len(p.preambleOutput) == 0 {
 		return ""
 	}
