@@ -14,5 +14,5 @@ func spawnMockClaudeAgent(ctx context.Context, testRun string, extraEnv []string
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run="+testRun, "--")
 	cmd.Env = append(os.Environ(), extraEnv...)
-	return wireClaudeMockAgent(ctx, cancel, cmd, opts, sink, "")
+	return wireClaudeMockAgent(ctx, cancel, cmd, opts, sink)
 }

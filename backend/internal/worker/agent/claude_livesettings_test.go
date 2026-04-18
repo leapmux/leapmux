@@ -638,7 +638,7 @@ func newTestAgentWithControlProtocol(t *testing.T) *ClaudeCodeAgent {
 	a.effort = "high"
 	a.outputStyle = "default"
 	a.availableOutputStyles = []string{"default", "Explanatory", "Learning"}
-	a.fastMode = "off"
+	a.fastMode = FastModeOff
 	a.alwaysThinking = AlwaysThinkingOn
 	return a
 }

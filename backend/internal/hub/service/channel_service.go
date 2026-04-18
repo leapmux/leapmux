@@ -283,7 +283,7 @@ func (s *ChannelService) PrepareWorkspaceAccess(
 	// worker to ack before returning. Without the ack the caller races the
 	// worker's AddAccessibleWorkspaceID handler — the next inner RPC on the
 	// channel (e.g. OpenAgent / ListAgents) can arrive first and fail the
-	// requireAccessibleWorkspace check at worker/service/service.go:369.
+	// worker-side requireAccessibleWorkspace check.
 	for _, chID := range channelIDs {
 		if s.channelMgr.GetWorkerID(chID) != workerID {
 			continue

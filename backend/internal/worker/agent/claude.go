@@ -212,7 +212,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		a.outputStyle = initResp.OutputStyle
 	}
 	a.availableOutputStyles = initResp.AvailableOutputStyles
-	if initResp.FastModeState == "on" || initResp.FastModeState == "cooldown" {
+	if initResp.FastModeState == FastModeOn || initResp.FastModeState == "cooldown" {
 		a.fastMode = FastModeOn
 	} else {
 		a.fastMode = FastModeOff
@@ -580,7 +580,7 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 // for apply_flag_settings. "on" → true, anything else → nil (which resets
 // the flag to its default).
 func flagSettingOnOff(v string) interface{} {
-	if v == "on" {
+	if v == FastModeOn {
 		return true
 	}
 	return nil

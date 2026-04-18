@@ -27,14 +27,14 @@ func mockStartForTest(ctx context.Context, opts Options, sink OutputSink) (Provi
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, "cat")
 	cmd.Env = os.Environ()
-	return wireClaudeMockAgent(ctx, cancel, cmd, opts, sink, opts.HomeDir)
+	return wireClaudeMockAgent(ctx, cancel, cmd, opts, sink)
 }
 
 // wireClaudeMockAgent takes a cmd pre-bound to ctx via exec.CommandContext
 // and builds a ClaudeCodeAgent around it: wires stdin/stdout, starts the
 // process, and spawns the output reader loop. Callers pass the matching
 // cancel so cmd.Start failures can release the context.
-func wireClaudeMockAgent(ctx context.Context, cancel context.CancelFunc, cmd *exec.Cmd, opts Options, sink OutputSink, homeDir string) (*ClaudeCodeAgent, error) {
+func wireClaudeMockAgent(ctx context.Context, cancel context.CancelFunc, cmd *exec.Cmd, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
 	cmd.Dir = opts.WorkingDir
 
 	stdin, err := cmd.StdinPipe()
@@ -62,7 +62,7 @@ func wireClaudeMockAgent(ctx context.Context, cancel context.CancelFunc, cmd *ex
 		},
 		model:          opts.Model,
 		workingDir:     opts.WorkingDir,
-		homeDir:        homeDir,
+		homeDir:        opts.HomeDir,
 		sink:           sink,
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
