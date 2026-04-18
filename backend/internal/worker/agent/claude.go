@@ -89,7 +89,7 @@ type ClaudeCodeAgent struct {
 	availableOutputStyles []string
 	fastMode              string // "on" / "off"
 	alwaysThinking        string // "on" / "off"
-	autoModeAvailable     bool   // set by probeAutoMode() at startup
+	autoModeAvailable     bool
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -171,7 +171,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		sink:                   sink,
 		thirdPartyFromSettings: thirdPartyFromSettings,
 		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
-		alwaysThinking:         AlwaysThinkingOn, // Claude Code default; refreshSettingsFromAgent confirms after apply_flag_settings
+		alwaysThinking:         AlwaysThinkingOn,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -385,9 +385,13 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 	model := a.model
 	a.mu.Unlock()
 
-	staticPermMode := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
-	groups := []*leapmuxv1.AvailableOptionGroup{
-		filterPermissionModeGroup(staticPermMode, autoAvail),
+	var groups []*leapmuxv1.AvailableOptionGroup
+	for _, g := range AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE) {
+		if g.GetKey() == OptionGroupKeyPermissionMode {
+			groups = append(groups, filterPermissionModeGroup(g, autoAvail))
+			continue
+		}
+		groups = append(groups, g)
 	}
 
 	if len(availStyles) > 0 {

@@ -133,109 +133,19 @@ func TestHelperProcessControlResponder(t *testing.T) {
 // as LEAPMUX_TEST_CONTROL_SCRIPT; logPath (optional) as
 // LEAPMUX_TEST_CONTROL_LOG.
 func mockStartWithResponder(ctx context.Context, opts Options, sink OutputSink, script, logPath string) (*ClaudeCodeAgent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessControlResponder", "--")
-	env := append(os.Environ(),
+	env := []string{
 		"GO_WANT_HELPER_PROCESS_RESPONDER=1",
-		"LEAPMUX_TEST_CONTROL_SCRIPT="+script,
-	)
+		"LEAPMUX_TEST_CONTROL_SCRIPT=" + script,
+	}
 	if logPath != "" {
 		env = append(env, "LEAPMUX_TEST_CONTROL_LOG="+logPath)
 	}
-	cmd.Env = env
-	cmd.Dir = opts.WorkingDir
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	cmd.Stderr = nil
-
-	a := &ClaudeCodeAgent{
-		processBase: processBase{
-			agentID:     opts.AgentID,
-			cmd:         cmd,
-			stdin:       stdin,
-			ctx:         ctx,
-			cancel:      cancel,
-			processDone: make(chan struct{}),
-			stderrDone:  make(chan struct{}),
-		},
-		model:          opts.Model,
-		workingDir:     opts.WorkingDir,
-		sink:           sink,
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
-	}
-	close(a.stderrDone)
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, err
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
-
-	return a, nil
+	return spawnMockClaudeAgent(ctx, "TestHelperProcessControlResponder", env, opts, sink)
 }
 
 // mockStart spawns a test helper process instead of the real claude binary.
 func mockStart(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess", "--")
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
-	cmd.Dir = opts.WorkingDir
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	cmd.Stderr = nil
-
-	a := &ClaudeCodeAgent{
-		processBase: processBase{
-			agentID:     opts.AgentID,
-			cmd:         cmd,
-			stdin:       stdin,
-			ctx:         ctx,
-			cancel:      cancel,
-			processDone: make(chan struct{}),
-			stderrDone:  make(chan struct{}),
-		},
-		model:          opts.Model,
-		workingDir:     opts.WorkingDir,
-		sink:           sink,
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
-	}
-	close(a.stderrDone)
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, err
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
-
-	return a, nil
+	return spawnMockClaudeAgent(ctx, "TestHelperProcess", []string{"GO_WANT_HELPER_PROCESS=1"}, opts, sink)
 }
 
 func TestAgent_StartAndStop(t *testing.T) {
@@ -347,53 +257,8 @@ func TestHelperProcessWithInit(t *testing.T) {
 // mockStartWithInit spawns a test helper process that outputs an init line
 // with a session_id, simulating real Claude Code behavior.
 func mockStartWithInit(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessWithInit", "--")
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS_WITH_INIT=1")
-	cmd.Dir = opts.WorkingDir
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	cmd.Stderr = nil
-
-	a := &ClaudeCodeAgent{
-		processBase: processBase{
-			agentID:     opts.AgentID,
-			cmd:         cmd,
-			stdin:       stdin,
-			ctx:         ctx,
-			cancel:      cancel,
-			processDone: make(chan struct{}),
-			stderrDone:  make(chan struct{}),
-		},
-		model:          opts.Model,
-		workingDir:     opts.WorkingDir,
-		sink:           sink,
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
-	}
-	close(a.stderrDone)
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, err
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
-
-	return a, nil
+	return spawnMockClaudeAgent(ctx, "TestHelperProcessWithInit",
+		[]string{"GO_WANT_HELPER_PROCESS_WITH_INIT=1"}, opts, sink)
 }
 
 // TestAgent_InitMessageFlowsThrough verifies that the init message with
@@ -1170,136 +1035,92 @@ func readHandshakeModes(t *testing.T, logPath string) []string {
 	return modes
 }
 
-// Auto startup succeeds in a single round trip when Claude Code accepts it
-// — probe and apply are merged into one set_permission_mode call.
-func TestApplyStartupPermissionMode_AutoAccepted(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+func TestApplyStartupPermissionMode(t *testing.T) {
+	cases := []struct {
+		name          string
+		agentID       string
+		script        string
+		requested     string
+		wantAuto      bool
+		wantModes     []string
+		wantErrSubstr string // non-empty means the call must fail; checks err contains it
+	}{
+		{
+			name:      "AutoAccepted",
+			agentID:   "handshake-auto-ok",
+			script:    "success",
+			requested: PermissionModeAuto,
+			wantAuto:  true,
+			wantModes: []string{PermissionModeAuto},
+		},
+		{
+			name:      "AutoRejectedFallsBack",
+			agentID:   "handshake-auto-reject",
+			script:    "error:Cannot set permission mode to auto: auto mode disabled by settings|success",
+			requested: PermissionModeAuto,
+			wantAuto:  false,
+			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+		},
+		{
+			name:          "AutoTransientErrorPropagates",
+			agentID:       "handshake-auto-transient",
+			script:        "error:some unrelated runtime error",
+			requested:     PermissionModeAuto,
+			wantAuto:      false,
+			wantModes:     []string{PermissionModeAuto},
+			wantErrSubstr: "some unrelated runtime error",
+		},
+		{
+			name:      "NonAutoProbesAutoAvailable",
+			agentID:   "handshake-probe-ok",
+			script:    "success|success",
+			requested: PermissionModeDefault,
+			wantAuto:  true,
+			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+		},
+		{
+			name:      "NonAutoProbeRejected",
+			agentID:   "handshake-probe-reject",
+			script:    "error:Cannot set permission mode to auto: auto mode disabled by settings|success",
+			requested: PermissionModePlan,
+			wantAuto:  false,
+			wantModes: []string{PermissionModeAuto, PermissionModePlan},
+		},
+		{
+			name:      "NonAutoProbeTransient",
+			agentID:   "handshake-probe-transient",
+			script:    "error:some unrelated runtime error|success",
+			requested: PermissionModeDefault,
+			wantAuto:  false,
+			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+		},
+	}
 
-	logPath := filepath.Join(t.TempDir(), "control.log")
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "handshake-auto-ok", WorkingDir: t.TempDir()},
-		noopSink{}, "success", logPath)
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 
-	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeAuto, 2*time.Second)
-	require.NoError(t, err)
+			logPath := filepath.Join(t.TempDir(), "control.log")
+			agent, err := mockStartWithResponder(ctx,
+				Options{AgentID: tc.agentID, WorkingDir: t.TempDir()},
+				noopSink{}, tc.script, logPath)
+			require.NoError(t, err, "mockStartWithResponder")
+			defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	assert.True(t, agent.autoModeAvailable)
-	assert.Equal(t, []string{PermissionModeAuto}, readHandshakeModes(t, logPath),
-		"accepted auto must complete in one set_permission_mode call")
-}
+			_, err = agent.applyStartupPermissionMode(ctx, tc.requested, 2*time.Second)
+			if tc.wantErrSubstr == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErrSubstr)
+				assert.NotContains(t, err.Error(), autoModeUnavailableErrorPrefix)
+			}
 
-// Auto startup falls back to default when Claude Code rejects it with the
-// auto-unavailable prefix.
-func TestApplyStartupPermissionMode_AutoRejectedFallsBack(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	logPath := filepath.Join(t.TempDir(), "control.log")
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "handshake-auto-reject", WorkingDir: t.TempDir()},
-		noopSink{},
-		"error:Cannot set permission mode to auto: auto mode disabled by settings|success",
-		logPath)
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
-
-	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeAuto, 2*time.Second)
-	require.NoError(t, err)
-
-	assert.False(t, agent.autoModeAvailable,
-		"auto must be marked unavailable after a rejection with the auto-unavailable prefix")
-	assert.Equal(t, []string{PermissionModeAuto, PermissionModeDefault}, readHandshakeModes(t, logPath),
-		"fallback path must issue auto then default")
-}
-
-// A non-auto-unavailable error surfaces as a startup failure without retry.
-func TestApplyStartupPermissionMode_AutoTransientErrorPropagates(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	logPath := filepath.Join(t.TempDir(), "control.log")
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "handshake-auto-transient", WorkingDir: t.TempDir()},
-		noopSink{},
-		"error:some unrelated runtime error",
-		logPath)
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
-
-	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeAuto, 2*time.Second)
-	require.Error(t, err, "transient errors should not be treated as unavailability")
-	assert.NotContains(t, err.Error(), autoModeUnavailableErrorPrefix)
-	assert.Equal(t, []string{PermissionModeAuto}, readHandshakeModes(t, logPath),
-		"transient error must not trigger a retry")
-}
-
-// Non-auto startup probes auto first so the UI reflects actual availability,
-// then applies the requested mode.
-func TestApplyStartupPermissionMode_NonAutoProbesAutoAvailable(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	logPath := filepath.Join(t.TempDir(), "control.log")
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "handshake-probe-ok", WorkingDir: t.TempDir()},
-		noopSink{}, "success|success", logPath)
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
-
-	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeDefault, 2*time.Second)
-	require.NoError(t, err)
-
-	assert.True(t, agent.autoModeAvailable, "probe should confirm auto availability")
-	assert.Equal(t, []string{PermissionModeAuto, PermissionModeDefault}, readHandshakeModes(t, logPath),
-		"non-auto startup must probe auto, then apply the requested mode")
-}
-
-// A rejected probe marks auto unavailable; the requested mode is still
-// applied so the session proceeds.
-func TestApplyStartupPermissionMode_NonAutoProbeRejected(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	logPath := filepath.Join(t.TempDir(), "control.log")
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "handshake-probe-reject", WorkingDir: t.TempDir()},
-		noopSink{},
-		"error:Cannot set permission mode to auto: auto mode disabled by settings|success",
-		logPath)
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
-
-	_, err = agent.applyStartupPermissionMode(ctx, PermissionModePlan, 2*time.Second)
-	require.NoError(t, err)
-
-	assert.False(t, agent.autoModeAvailable, "probe rejection must hide auto from the UI")
-	assert.Equal(t, []string{PermissionModeAuto, PermissionModePlan}, readHandshakeModes(t, logPath),
-		"requested mode must be applied after the probe")
-}
-
-// A transient probe error is conservatively treated as unavailable and
-// doesn't block startup; the requested mode is still applied.
-func TestApplyStartupPermissionMode_NonAutoProbeTransient(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	logPath := filepath.Join(t.TempDir(), "control.log")
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "handshake-probe-transient", WorkingDir: t.TempDir()},
-		noopSink{},
-		"error:some unrelated runtime error|success",
-		logPath)
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
-
-	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeDefault, 2*time.Second)
-	require.NoError(t, err, "transient probe error must not fail startup")
-
-	assert.False(t, agent.autoModeAvailable, "transient probe failure must conservatively hide auto")
-	assert.Equal(t, []string{PermissionModeAuto, PermissionModeDefault}, readHandshakeModes(t, logPath))
+			assert.Equal(t, tc.wantAuto, agent.autoModeAvailable)
+			assert.Equal(t, tc.wantModes, readHandshakeModes(t, logPath))
+		})
+	}
 }
 
 func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
@@ -1345,9 +1166,6 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	assert.True(t, foundClaudeCode, "CLAUDECODE=1 should be in shell-wrapped env")
 }
 
-// TestClaudeCodeAvailableModels_EffortsMatchDocs pins the per-model effort
-// lists and defaults to the documented Claude Code rules so accidental edits
-// to the tables get caught at test time.
 func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
 	byID := map[string]*leapmuxv1.AvailableModel{}
 	for _, m := range claudeCodeAvailableModels {

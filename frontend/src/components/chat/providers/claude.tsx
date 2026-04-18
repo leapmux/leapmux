@@ -49,9 +49,11 @@ function buildInterruptRequest(): string {
 
 /** Extra notification types for Claude Code (plan_execution, system subtypes). */
 const CLAUDE_EXTRA_TYPES = new Set(['plan_execution'])
+/** System message subtypes that should never surface in the UI. */
+const HIDDEN_SYSTEM_SUBTYPES = new Set(['init', 'task_notification', 'task_updated'])
 function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
   return isNotificationThreadWrapper(wrapper, CLAUDE_EXTRA_TYPES, (t, st) =>
-    t === 'system' && st !== 'init' && st !== 'task_notification' && st !== 'task_updated')
+    t === 'system' && !HIDDEN_SYSTEM_SUBTYPES.has(st ?? ''))
 }
 
 /** Claude Code message classification. */
@@ -89,11 +91,9 @@ function classifyClaudeCodeMessage(
   if (type === 'system') {
     if (input.parentSpanId && (subtype === 'task_started' || subtype === 'task_progress'))
       return { kind: 'hidden' }
-    if (subtype === 'init')
+    if (HIDDEN_SYSTEM_SUBTYPES.has(subtype ?? ''))
       return { kind: 'hidden' }
     if (subtype === 'status' && parentObject.status !== 'compacting')
-      return { kind: 'hidden' }
-    if (subtype === 'task_notification' || subtype === 'task_updated')
       return { kind: 'hidden' }
     return { kind: 'notification' }
   }

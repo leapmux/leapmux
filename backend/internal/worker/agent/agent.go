@@ -139,12 +139,6 @@ func DefaultModel(provider leapmuxv1.AgentProvider) string {
 	return ""
 }
 
-// DefaultEffort returns the default effort ID for a provider's default
-// model. See DefaultEffortForModel for the general lookup.
-func DefaultEffort(provider leapmuxv1.AgentProvider) string {
-	return DefaultEffortForModel(provider, "")
-}
-
 // DefaultEffortForModel returns the default effort ID for the given model
 // within a provider. It checks the provider's environment variable first,
 // then the model's DefaultEffort from the registry. If modelID is empty
@@ -159,25 +153,20 @@ func DefaultEffortForModel(provider leapmuxv1.AgentProvider, modelID string) str
 			return env
 		}
 	}
-	if modelID == "" {
-		modelID = DefaultModel(provider)
-	}
-	for _, m := range reg.defaultModels {
-		if m.Id == modelID && m.DefaultEffort != "" {
-			return m.DefaultEffort
-		}
-	}
-	// Fall back to the default model's DefaultEffort if the specified
-	// model is unknown or has no default (e.g. legacy records).
-	defaultID := DefaultModel(provider)
-	if defaultID != modelID {
+	lookup := func(id string) string {
 		for _, m := range reg.defaultModels {
-			if m.Id == defaultID && m.DefaultEffort != "" {
+			if m.Id == id && m.DefaultEffort != "" {
 				return m.DefaultEffort
 			}
 		}
+		return ""
 	}
-	return ""
+	if modelID != "" {
+		if e := lookup(modelID); e != "" {
+			return e
+		}
+	}
+	return lookup(DefaultModel(provider))
 }
 
 // filterEnv returns a copy of environ with entries matching any of the

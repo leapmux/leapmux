@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -128,11 +127,9 @@ func TestAvailableOptionGroups_AlwaysIncludesThinking(t *testing.T) {
 	}
 }
 
-// TestAvailableOptionGroups_ThinkingLabelsByModel verifies that the
-// enabled thinking option re-labels to match Claude Code's per-model
-// thinking-type gate: "Adaptive" for Opus/Sonnet and unknown models
-// (first-party fallback), "On" for Haiku (legacy type:"enabled"). The
-// option ID stays "on" for all models; only the display name changes.
+// The enabled option's display name tracks Claude Code's per-model
+// thinking-type gate: "Adaptive" for first-party models, "On" for Haiku
+// (legacy type:"enabled"). The option ID stays "on" for all models.
 func TestAvailableOptionGroups_ThinkingLabelsByModel(t *testing.T) {
 	cases := []struct {
 		model     string
@@ -377,9 +374,6 @@ func TestUpdateSettings_FastModeOff(t *testing.T) {
 	assert.Equal(t, "off", a.fastMode)
 }
 
-// TestUpdateSettings_AlwaysThinkingOn verifies that flipping from "off"
-// to "on" sends alwaysThinkingEnabled:null (nil, "use default") and that
-// the get_settings round-trip confirms the enabled state.
 func TestUpdateSettings_AlwaysThinkingOn(t *testing.T) {
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
@@ -631,49 +625,21 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 // defaults set for testing UpdateSettings.
 func newTestAgentWithControlProtocol(t *testing.T) *ClaudeCodeAgent {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessWithControlProtocol", "--")
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS_CONTROL=1")
-	cmd.Dir = t.TempDir()
-
-	stdin, err := cmd.StdinPipe()
-	require.NoError(t, err)
-
-	stdout, err := cmd.StdoutPipe()
-	require.NoError(t, err)
-
-	cmd.Stderr = nil
-
-	a := &ClaudeCodeAgent{
-		processBase: processBase{
-			agentID:     "test-ctrl",
-			cmd:         cmd,
-			stdin:       stdin,
-			ctx:         ctx,
-			cancel:      cancel,
-			processDone: make(chan struct{}),
-			stderrDone:  make(chan struct{}),
-			apiTimeout:  5 * time.Second,
+	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
+		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1"},
+		Options{
+			AgentID:    "test-ctrl",
+			Model:      "opus[1m]",
+			WorkingDir: t.TempDir(),
+			APITimeout: 5 * time.Second,
 		},
-		model:                 "opus[1m]",
-		effort:                "high",
-		outputStyle:           "default",
-		availableOutputStyles: []string{"default", "Explanatory", "Learning"},
-		fastMode:              "off",
-		alwaysThinking:        AlwaysThinkingOn,
-		workingDir:            t.TempDir(),
-		sink:                  noopSink{},
-		pendingControl:        make(map[string]chan<- claudeCodeControlResult),
-	}
-	close(a.stderrDone)
-
-	require.NoError(t, cmd.Start())
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	go a.readOutputLoop(scanner)
-
+		noopSink{})
+	require.NoError(t, err)
+	a.effort = "high"
+	a.outputStyle = "default"
+	a.availableOutputStyles = []string{"default", "Explanatory", "Learning"}
+	a.fastMode = "off"
+	a.alwaysThinking = AlwaysThinkingOn
 	return a
 }
 
