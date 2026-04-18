@@ -42,4 +42,3 @@ func (a *App) stopSolo() {
 		a.prevLogHandler = nil
 	}
 }
-

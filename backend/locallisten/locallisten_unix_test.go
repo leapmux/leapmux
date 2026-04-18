@@ -27,7 +27,7 @@ func TestListen_UnixBindsAcceptsAndRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -45,7 +45,7 @@ func TestListen_UnixBindsAcceptsAndRoundTrips(t *testing.T) {
 			acceptErr <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 5)
 		if _, err := io.ReadFull(conn, buf); err != nil {
 			acceptErr <- err
@@ -58,7 +58,7 @@ func TestListen_UnixBindsAcceptsAndRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.Write([]byte("hello")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestWaitReady_UnixSucceedsOnceListening(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -166,7 +166,7 @@ func TestWaitReady_UnixSucceedsAfterDelayedListen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	select {
 	case err := <-readyCh:
@@ -184,7 +184,7 @@ func TestDialer_UnixReachesListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	accepted := make(chan struct{}, 1)
 	go func() {

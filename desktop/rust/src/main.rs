@@ -1602,6 +1602,9 @@ async fn switch_mode(
     Ok(())
 }
 
+// restart_app is macOS-only: only the Full Disk Access flow needs the app
+// to relaunch itself, and FDA is macOS-only.
+#[cfg(target_os = "macos")]
 #[tauri::command]
 async fn restart_app(
     shell: State<'_, Arc<DesktopShell>>,
@@ -1609,7 +1612,24 @@ async fn restart_app(
 ) -> Result<(), String> {
     let current_exe =
         std::env::current_exe().map_err(|err| format!("resolve current exe: {err}"))?;
-    Command::new(current_exe)
+    let app_bundle = current_exe
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .unwrap_or(&current_exe)
+        .to_path_buf();
+
+    // The single-instance plugin kills any second instance that starts while
+    // the primary is still alive, so the relaunch helper polls for the parent
+    // PID to disappear before invoking the new instance via LaunchServices.
+    let parent_pid = std::process::id();
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "while kill -0 {pid} 2>/dev/null; do sleep 0.1; done; \
+             exec /usr/bin/open -n {bundle:?}",
+            pid = parent_pid,
+            bundle = app_bundle,
+        ))
         .spawn()
         .map_err(|err| format!("restart app: {err}"))?;
     shell.app_handle.exit(0);
@@ -1935,6 +1955,7 @@ fn main() {
             delete_tunnel,
             list_tunnels,
             switch_mode,
+            #[cfg(target_os = "macos")]
             restart_app,
             save_window_geometry,
             quit_app,
@@ -2024,7 +2045,8 @@ mod tests {
         let socket_path = unique_test_socket_path();
         let server = spawn_fake_sidecar(socket_path.clone());
 
-        let (reader, writer, info) = connect_and_handshake_dev_sidecar(&socket_path)
+        let endpoint = socket_path.to_str().expect("socket path is utf-8");
+        let (reader, writer, info) = connect_and_handshake_dev_sidecar(endpoint)
             .expect("handshake ok")
             .expect("server present");
 

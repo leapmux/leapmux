@@ -23,7 +23,7 @@ import (
 
 // RunConfig holds configuration for running the worker as a library.
 type RunConfig struct {
-	HubURL               string                      // Hub server URL: http[s]://host:port, unix:<socket-path>, or npipe:<name>
+	HubURL string // Hub server URL: http[s]://host:port, unix:<socket-path>, or npipe:<name>
 
 	DataDir              string                      // Directory for persistent state
 	AuthToken            string                      // Pre-provisioned auth token (skip registration)
