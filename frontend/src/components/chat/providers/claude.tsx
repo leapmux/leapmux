@@ -5,6 +5,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import ChevronsDown from 'lucide-solid/icons/chevrons-down'
 import ChevronsUp from 'lucide-solid/icons/chevrons-up'
 import Dot from 'lucide-solid/icons/dot'
+import Flame from 'lucide-solid/icons/flame'
 import Sparkles from 'lucide-solid/icons/sparkles'
 import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, Show } from 'solid-js'
@@ -138,8 +139,18 @@ function classifyClaudeCodeMessage(
         }
         if (contentArr.some(c => isObject(c) && c.type === 'text'))
           return { kind: 'assistant_text' }
-        if (contentArr.some(c => isObject(c) && c.type === 'thinking'))
+        if (contentArr.some(c => isObject(c) && c.type === 'thinking')) {
+          // Defense-in-depth: hide thinking blocks that arrive without any
+          // visible text. The agent is launched with --thinking-display
+          // summarized so this should be rare, but the model can still
+          // emit a signature-only block in edge cases.
+          const hasText = contentArr.some(c =>
+            isObject(c) && c.type === 'thinking'
+            && typeof c.thinking === 'string' && c.thinking.length > 0)
+          if (!hasText)
+            return { kind: 'hidden' }
           return { kind: 'assistant_thinking' }
+        }
       }
     }
     return { kind: 'unknown' }
@@ -194,7 +205,7 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
   const currentMode = () => props.permissionMode || 'default'
   const currentOutputStyle = () => props.extraSettings?.[OUTPUT_STYLE_KEY] || optionGroupDefaultValue(props.availableOptionGroups, OUTPUT_STYLE_KEY) || 'default'
   const currentFastMode = () => props.extraSettings?.[FAST_MODE_KEY] || optionGroupDefaultValue(props.availableOptionGroups, FAST_MODE_KEY) || 'off'
-  const currentThinking = () => props.extraSettings?.[ALWAYS_THINKING_KEY] || optionGroupDefaultValue(props.availableOptionGroups, ALWAYS_THINKING_KEY) || 'on'
+  const currentThinking = () => props.extraSettings?.[ALWAYS_THINKING_KEY] || optionGroupDefaultValue(props.availableOptionGroups, ALWAYS_THINKING_KEY)
 
   const models = () => modelItems(props.availableModels)
   const efforts = () => effortItems(props.availableModels, currentModel())
@@ -245,9 +256,14 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
             current={currentModel()}
             onChange={(v) => {
               props.onModelChange?.(v)
-              // If switching away from opus and effort is max, downgrade to high
-              if (!v.startsWith('opus') && currentEffort() === 'max') {
-                props.onEffortChange?.('high')
+              // If the new model doesn't support the current effort, fall
+              // back to its default so the UI doesn't show a selection that
+              // the backend will silently downgrade.
+              const next = props.availableModels?.find(m => m.id === v)
+              if (next && currentEffort()) {
+                const ok = next.supportedEfforts.some(e => e.id === currentEffort())
+                if (!ok)
+                  props.onEffortChange?.(next.defaultEffort || 'high')
               }
             }}
           />
@@ -303,6 +319,7 @@ function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element 
       case 'auto': return <Icon icon={Sparkles} size="xs" />
       case 'low': return <Icon icon={ChevronsDown} size="xs" />
       case 'high': return <Icon icon={ChevronsUp} size="xs" />
+      case 'xhigh': return <Icon icon={Flame} size="xs" />
       case 'max': return <Icon icon={Zap} size="xs" />
       default: return <Icon icon={Dot} size="xs" />
     }

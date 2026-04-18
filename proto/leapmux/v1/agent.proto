@@ -217,6 +217,8 @@ message AgentStatusChange {
   reserved 9; // was supports_model_effort
   AgentProvider agent_provider = 10; // Provider for this agent
   map<string, string> extra_settings = 11; // Provider-specific persisted settings
+  repeated AvailableModel available_models = 12; // Models reported by the agent process (empty = don't update)
+  repeated AvailableOptionGroup available_option_groups = 13; // Option groups reported by the agent (empty = don't update)
 }
 
 // AgentGitStatus holds git repository status for an agent's working directory.

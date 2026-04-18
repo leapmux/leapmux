@@ -15,10 +15,21 @@ import (
 )
 
 // uniqueUnixPathShort returns a per-test socket path whose full length stays
-// well under the AF_UNIX sun_path limit. t.TempDir handles cleanup.
+// well under the AF_UNIX sun_path limit (104 bytes on macOS).
+//
+// We avoid t.TempDir() because its path embeds the full test name plus a
+// sequence counter; on macOS that yields paths like
+// /var/folders/.../<TestName>/001/ which can push past the limit once a
+// filename is appended. Instead we mint a short temp dir with prefix "lm"
+// and register cleanup ourselves.
 func uniqueUnixPathShort(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "s.sock")
+	dir, err := os.MkdirTemp("", "lm")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
 }
 
 func TestListen_UnixBindsAcceptsAndRoundTrips(t *testing.T) {

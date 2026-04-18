@@ -78,4 +78,30 @@ describe('claude classify', () => {
     }
     expect(plugin.classify(input(parent))).toEqual({ kind: 'tool_result' })
   })
+
+  it('classifies assistant thinking with visible text', () => {
+    const parent = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Let me consider...', signature: 'sig' },
+        ],
+      },
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_thinking' })
+  })
+
+  it('hides assistant thinking with empty text', () => {
+    const parent = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'sig' },
+        ],
+      },
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
 })

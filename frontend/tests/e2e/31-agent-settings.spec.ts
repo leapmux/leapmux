@@ -40,8 +40,26 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toContainText('Bypass Permissions')
     await waitForSettingsIdle(page)
 
-    // Switch back to Default
+    // Switch to Don't Ask (always available — not plan/admin-gated)
     await openSettingsMenu(page)
+    await page.locator('[data-testid="permission-mode-dontAsk"]').click()
+    await expect(trigger).toContainText('Don\'t Ask')
+    await waitForSettingsIdle(page)
+
+    // Switch to Auto Mode if the backend's startup probe surfaced it.
+    // Auto mode depends on plan / model / admin-managed settings
+    // (see permission-modes docs); if the probe rejected it, the radio
+    // is filtered out server-side and this block becomes a no-op.
+    await openSettingsMenu(page)
+    const autoOption = page.locator('[data-testid="permission-mode-auto"]')
+    if (await autoOption.isVisible()) {
+      await autoOption.click()
+      await expect(trigger).toContainText('Auto Mode')
+      await waitForSettingsIdle(page)
+      await openSettingsMenu(page)
+    }
+
+    // Switch back to Default
     await page.locator('[data-testid="permission-mode-default"]').click()
     await expect(trigger).toContainText('Default')
   })
@@ -60,11 +78,13 @@ test.describe('Agent Settings', () => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Switch to Sonnet[1m] — model name contains brackets that must be
+    // Switch to Opus[1m] — model name contains brackets that must be
     // properly escaped in the shell command when spawning Claude Code.
+    // We use Opus[1m] (not Sonnet[1m]) because the e2e account doesn't have
+    // extra-usage billing enabled for Sonnet's 1M context tier.
     await openSettingsMenu(page)
-    await page.locator('[data-testid="model-sonnet\\[1m\\]"]').click()
-    await expect(trigger).toContainText('Sonnet (1M context)')
+    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
+    await expect(trigger).toContainText('Opus (1M context)')
     await waitForSettingsIdle(page)
 
     // Verify agent restarted successfully by sending a message
@@ -115,6 +135,104 @@ test.describe('Agent Settings', () => {
 
     await openSettingsMenu(page)
     await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
+    await page.keyboard.press('Escape')
+  })
+
+  test('xhigh effort is opus-only', async ({ authenticatedWorkspace, page }) => {
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    await expect(trigger).toBeVisible()
+
+    // Default (Sonnet): xhigh must not be offered, max must be offered.
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
+
+    // Switch to Opus — xhigh and max both appear.
+    await page.locator('[data-testid="model-opus"]').click()
+    await expect(trigger).toContainText('Opus')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
+
+    // Switch back to Sonnet — xhigh disappears, max stays.
+    await page.locator('[data-testid="model-sonnet"]').click()
+    await expect(trigger).toContainText('Sonnet')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
+    await page.keyboard.press('Escape')
+  })
+
+  test('Extended Thinking label reflects model', async ({ authenticatedWorkspace, page }) => {
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const onOpt = page.locator('[data-testid="thinking-on"]')
+    const offOpt = page.locator('[data-testid="thinking-off"]')
+
+    // Default (Sonnet — set via LEAPMUX_CLAUDE_DEFAULT_MODEL) supports
+    // adaptive thinking, so the enabled option is labeled "Adaptive".
+    // The option ID is always "on"; only the display name varies.
+    await openSettingsMenu(page)
+    await expect(onOpt).toBeVisible()
+    await expect(onOpt).toContainText('Adaptive')
+    await expect(offOpt).toBeVisible()
+    await expect(offOpt).toContainText('Off')
+
+    // Toggle Off + back on to verify the radio wires through.
+    await offOpt.click()
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="thinking-off"] input[type="radio"]')).toBeChecked()
+    await onOpt.click()
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="thinking-on"] input[type="radio"]')).toBeChecked()
+
+    // Switch to Haiku — no adaptive support, so the enabled option
+    // relabels to "On". AgentStatusChange carries fresh option groups, so
+    // this happens without a page reload.
+    await page.locator('[data-testid="model-haiku"]').click()
+    await expect(trigger).toContainText('Haiku')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(onOpt).toContainText('On')
+    await expect(onOpt).not.toContainText('Adaptive')
+
+    // Switch back to Opus — adaptive support returns.
+    await page.locator('[data-testid="model-opus"]').click()
+    await expect(trigger).toContainText('Opus')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(onOpt).toContainText('Adaptive')
+    await page.keyboard.press('Escape')
+  })
+
+  test('xhigh downgrades when switching from opus to sonnet', async ({ authenticatedWorkspace, page }) => {
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    await expect(trigger).toBeVisible()
+
+    // Switch to Opus first, then pick xhigh.
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="model-opus"]').click()
+    await expect(trigger).toContainText('Opus')
+    await waitForSettingsIdle(page)
+
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="effort-xhigh"]').click()
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-xhigh"] input[type="radio"]')).toBeChecked()
+
+    // Switching to Sonnet must auto-downgrade xhigh to the model's default
+    // (high) since Sonnet doesn't support xhigh.
+    await page.locator('[data-testid="model-sonnet"]').click()
+    await expect(trigger).toContainText('Sonnet')
+    await waitForSettingsIdle(page)
+
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="effort-high"] input[type="radio"]')).toBeChecked()
     await page.keyboard.press('Escape')
   })
 
@@ -271,13 +389,15 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="model-opus"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-opus\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
 
-    // Verify effort items are enabled when idle (max is only shown for opus)
+    // Verify effort items are enabled when idle
     await expect(page.locator('[data-testid="effort-auto"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-low"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-medium"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-high"]')).not.toHaveAttribute('data-disabled', '')
-    // Max effort is hidden for non-opus models (default is Sonnet)
-    await expect(page.locator('[data-testid="effort-max"]')).not.toBeVisible()
+    // Sonnet (default) supports max; xhigh is Opus-only
+    await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effort-max"]')).not.toHaveAttribute('data-disabled', '')
+    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
 
     // Verify permission mode items are enabled when idle
     await expect(page.locator('[data-testid="permission-mode-default"]')).not.toHaveAttribute('data-disabled', '')

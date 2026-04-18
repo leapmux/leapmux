@@ -14,6 +14,14 @@ export const OUTPUT_STYLE_KEY = 'outputStyle' as const
 export const FAST_MODE_KEY = 'fastMode' as const
 export const ALWAYS_THINKING_KEY = 'alwaysThinkingEnabled' as const
 
+/**
+ * Extended Thinking option IDs. The backend picks the display name per
+ * model ("Adaptive" for Opus/Sonnet, "On" for Haiku); the ID is always
+ * "on" because Claude Code decides thinking.type internally.
+ */
+export const ALWAYS_THINKING_ON = 'on' as const
+export const ALWAYS_THINKING_OFF = 'off' as const
+
 /** Shared item type used by RadioGroup and settings helpers. */
 export interface SettingsItem {
   label: string

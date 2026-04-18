@@ -589,16 +589,18 @@ func (s *agentOutputSink) buildStatusChange(
 	sessionID, permissionMode string,
 ) *leapmuxv1.AgentStatusChange {
 	return &leapmuxv1.AgentStatusChange{
-		AgentId:        s.agentID,
-		Status:         status,
-		AgentSessionId: sessionID,
-		WorkerOnline:   true,
-		PermissionMode: permissionMode,
-		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
-		Effort:         dbAgent.Effort,
-		GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
-		AgentProvider:  s.agentProvider,
-		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		AgentId:               s.agentID,
+		Status:                status,
+		AgentSessionId:        sessionID,
+		WorkerOnline:          true,
+		PermissionMode:        permissionMode,
+		Model:                 modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:                dbAgent.Effort,
+		GitStatus:             gitutil.GetGitStatus(dbAgent.WorkingDir),
+		AgentProvider:         s.agentProvider,
+		ExtraSettings:         loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		AvailableModels:       s.h.agents.AvailableModels(s.agentID, dbAgent.AgentProvider),
+		AvailableOptionGroups: s.h.agents.AvailableOptionGroups(s.agentID, dbAgent.AgentProvider),
 	}
 }
 

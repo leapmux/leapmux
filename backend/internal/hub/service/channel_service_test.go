@@ -35,6 +35,7 @@ type channelTestEnv struct {
 	store           store.Store
 	workerMgr       *workermgr.Manager
 	channelMgr      *channelmgr.Manager
+	pending         *workermgr.PendingRequests
 }
 
 func setupChannelTestServer(t *testing.T) *channelTestEnv {
@@ -84,6 +85,26 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 		store:           st,
 		workerMgr:       wMgr,
 		channelMgr:      cMgr,
+		pending:         pendingReqs,
+	}
+}
+
+// autoAckChannelAccessUpdate returns a SendFn that records each sent message
+// on out and, for ChannelAccessUpdate payloads, synthesizes the matching
+// ChannelAccessUpdateAck so PrepareWorkspaceAccess (which uses SendAndWait)
+// doesn't block waiting for a worker that isn't present in this unit test.
+func (e *channelTestEnv) autoAckChannelAccessUpdate(out chan<- *leapmuxv1.ConnectResponse) func(*leapmuxv1.ConnectResponse) error {
+	return func(msg *leapmuxv1.ConnectResponse) error {
+		out <- msg
+		if msg.GetChannelAccessUpdate() != nil && msg.GetRequestId() != "" {
+			e.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+				RequestId: msg.GetRequestId(),
+				Payload: &leapmuxv1.ConnectRequest_ChannelAccessUpdateAck{
+					ChannelAccessUpdateAck: &leapmuxv1.ChannelAccessUpdateAck{},
+				},
+			})
+		}
+		return nil
 	}
 }
 
@@ -527,14 +548,12 @@ func TestPrepareWorkspaceAccess_Success(t *testing.T) {
 
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
 
-	// Simulate worker online with a mock connection that captures sent messages.
+	// Simulate worker online with a mock connection that captures sent
+	// messages and auto-acks ChannelAccessUpdate.
 	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn := &workermgr.Conn{
 		WorkerID: workerID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sentMsgs <- msg
-			return nil
-		},
+		SendFn:   env.autoAckChannelAccessUpdate(sentMsgs),
 	}
 	env.workerMgr.Register(conn)
 
@@ -553,15 +572,80 @@ func TestPrepareWorkspaceAccess_Success(t *testing.T) {
 		}, token))
 	require.NoError(t, err)
 
-	// Verify a ChannelAccessUpdate was sent to the worker.
+	// Verify a ChannelAccessUpdate was sent to the worker with a non-empty
+	// request_id so the worker can ack it (used by SendAndWait to avoid a
+	// race with the worker's async AddAccessibleWorkspaceID handler).
 	select {
 	case msg := <-sentMsgs:
 		update := msg.GetChannelAccessUpdate()
 		require.NotNil(t, update)
 		assert.Equal(t, channelID, update.GetChannelId())
 		assert.Equal(t, wsID, update.GetWorkspaceId())
+		assert.NotEmpty(t, msg.GetRequestId(), "ChannelAccessUpdate must carry a request_id for ack correlation")
 	default:
 		t.Fatal("expected a ChannelAccessUpdate to be sent to worker")
+	}
+}
+
+// TestPrepareWorkspaceAccess_AckTimeout verifies that when the worker fails
+// to reply with ChannelAccessUpdateAck within the context deadline, the hub
+// returns CodeUnavailable instead of succeeding (which would race the
+// worker's async access-set update and trip requireAccessibleWorkspace).
+func TestPrepareWorkspaceAccess_AckTimeout(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	adminUser, err := env.store.Users().GetByUsername(ctx, "admin")
+	require.NoError(t, err)
+
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	// Worker is online but NEVER acks — simulates a buggy or crashed
+	// worker that received the frame but didn't (or couldn't) process it.
+	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 10)
+	conn := &workermgr.Conn{
+		WorkerID: workerID,
+		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+			sentMsgs <- msg
+			return nil
+		},
+	}
+	env.workerMgr.Register(conn)
+
+	channelID := id.Generate()
+	env.channelMgr.Register(channelID, workerID, adminUser.ID, nil)
+
+	wsID := env.createWorkspace(t, adminUser.ID, adminUser.OrgID)
+
+	// Short deadline so the test doesn't wait the default 10s timeout.
+	shortCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+
+	_, err = env.channelClient.PrepareWorkspaceAccess(shortCtx, authedReq(
+		&leapmuxv1.PrepareWorkspaceAccessRequest{
+			WorkerId:    workerID,
+			WorkspaceId: wsID,
+		}, token))
+	require.Error(t, err)
+	// Either code is correct: the handler returns CodeUnavailable when its
+	// SendAndWait observes the context deadline, but because both the
+	// client-side transport and the server handler share the same short
+	// deadline, the connect transport can see the client context cancel
+	// first and surface CodeDeadlineExceeded before the handler's error
+	// response arrives. Both outcomes are "ack did not arrive", which is
+	// what this test is verifying.
+	code := connect.CodeOf(err)
+	assert.Truef(t,
+		code == connect.CodeUnavailable || code == connect.CodeDeadlineExceeded,
+		"want CodeUnavailable or CodeDeadlineExceeded, got %v (%v)", code, err)
+
+	// The hub should still have attempted to send the update before waiting.
+	select {
+	case msg := <-sentMsgs:
+		require.NotNil(t, msg.GetChannelAccessUpdate())
+	default:
+		t.Fatal("expected ChannelAccessUpdate to be sent before waiting for ack")
 	}
 }
 
@@ -576,24 +660,19 @@ func TestPrepareWorkspaceAccess_OnlySendsToMatchingWorker(t *testing.T) {
 	worker1ID := env.createWorkerWithKey(t, token, []byte("key1"))
 	worker2ID := env.createWorkerWithKey(t, token, []byte("key2"))
 
-	// Register both workers online.
+	// Register both workers online, each with auto-ack for
+	// ChannelAccessUpdate so SendAndWait doesn't hang.
 	sent1 := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn1 := &workermgr.Conn{
 		WorkerID: worker1ID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sent1 <- msg
-			return nil
-		},
+		SendFn:   env.autoAckChannelAccessUpdate(sent1),
 	}
 	env.workerMgr.Register(conn1)
 
 	sent2 := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn2 := &workermgr.Conn{
 		WorkerID: worker2ID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sent2 <- msg
-			return nil
-		},
+		SendFn:   env.autoAckChannelAccessUpdate(sent2),
 	}
 	env.workerMgr.Register(conn2)
 
@@ -683,14 +762,11 @@ func TestPrepareWorkspaceAccess_SharedWorkspaceAccess(t *testing.T) {
 
 	workerID := env.createWorkerWithKey(t, adminToken, []byte("key"))
 
-	// Simulate worker online.
+	// Simulate worker online with auto-ack for ChannelAccessUpdate.
 	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 10)
 	conn := &workermgr.Conn{
 		WorkerID: workerID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sentMsgs <- msg
-			return nil
-		},
+		SendFn:   env.autoAckChannelAccessUpdate(sentMsgs),
 	}
 	env.workerMgr.Register(conn)
 

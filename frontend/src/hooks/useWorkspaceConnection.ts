@@ -308,6 +308,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
                 ...(sc.model ? { model: sc.model } : {}),
                 ...(sc.effort ? { effort: sc.effort } : {}),
               }),
+          // Agent-reported catalogs. Empty arrays mean "unchanged" — the
+          // status change events cover non-setting transitions too, and we
+          // don't want those to clobber the previously-fetched groups.
+          ...(sc.availableModels && sc.availableModels.length > 0
+            ? { availableModels: sc.availableModels }
+            : {}),
+          ...(sc.availableOptionGroups && sc.availableOptionGroups.length > 0
+            ? { availableOptionGroups: sc.availableOptionGroups }
+            : {}),
           gitStatus: sc.gitStatus,
         })
         if (sc.gitStatus) {

@@ -22,7 +22,14 @@ const (
 	PermissionModePlan              = "plan"
 	PermissionModeAcceptEdits       = "acceptEdits"
 	PermissionModeBypassPermissions = "bypassPermissions"
+	PermissionModeDontAsk           = "dontAsk"
+	PermissionModeAuto              = "auto"
 )
+
+// autoModeUnavailableErrorPrefix is the prefix of the error message Claude
+// Code returns when set_permission_mode:auto is rejected (regardless of
+// reason: admin settings, plan circuit-breaker, or unsupported model).
+const autoModeUnavailableErrorPrefix = "Cannot set permission mode to auto"
 
 // claudeCodeControlResult holds the outcome of a pending control request.
 type claudeCodeControlResult struct {
@@ -40,6 +47,16 @@ const (
 	ExtraKeyOutputStyle    = "outputStyle"
 	ExtraKeyFastMode       = "fastMode"
 	ExtraKeyAlwaysThinking = "alwaysThinkingEnabled"
+)
+
+// Extended Thinking option IDs. Claude Code only exposes a single
+// alwaysThinkingEnabled boolean — it picks thinking.type:"adaptive" vs
+// "enabled" per-model — so there is nothing to store beyond on/off. The
+// UI label for the "on" option is set per-model in AvailableOptionGroups
+// ("Adaptive" for Opus/Sonnet, "On" for Haiku).
+const (
+	AlwaysThinkingOn  = "on"
+	AlwaysThinkingOff = "off"
 )
 
 // ClaudeCodeAgent manages a single Claude Code process.
@@ -66,6 +83,7 @@ type ClaudeCodeAgent struct {
 	availableOutputStyles []string
 	fastMode              string // "on" / "off"
 	alwaysThinking        string // "on" / "off"
+	autoModeAvailable     bool   // set by probeAutoMode() at startup
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -92,6 +110,9 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		"--dangerously-skip-permissions",
 		"--permission-prompt-tool", "stdio",
 		"--setting-sources", "user,project,local",
+		// Emit summarized thinking text in thinking blocks; without this,
+		// thinking blocks arrive with an empty `thinking` field.
+		"--thinking-display", "summarized",
 	}
 
 	if opts.ResumeSessionID != "" {
@@ -144,7 +165,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		sink:                   sink,
 		thirdPartyFromSettings: thirdPartyFromSettings,
 		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
-		alwaysThinking:         "on", // default
+		alwaysThinking:         AlwaysThinkingOn, // default; Claude Code's get_settings confirms at startup
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -191,10 +212,24 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		a.fastMode = "off"
 	}
 
+	// Probe auto-mode availability before locking in the real mode. The
+	// probe leaves the agent briefly in auto mode on success, but the
+	// subsequent set_permission_mode below restores the intended mode.
+	// Admin-disabled / plan-gated / unsupported-model sessions return an
+	// error matching autoModeUnavailableErrorPrefix; any other failure is
+	// treated as unavailable (conservative default) so the UI does not
+	// offer a mode the agent cannot enter.
+	a.autoModeAvailable = a.probeAutoMode(ctx, timeout)
+
 	// Send set_permission_mode to configure the agent's permission mode.
 	// This serves as both a health check and permission mode sync (restores
 	// mode after worker restart).
 	mode := StringOrDefault(opts.PermissionMode, PermissionModeDefault)
+	if mode == PermissionModeAuto && !a.autoModeAvailable {
+		slog.Warn("requested auto permission mode is unavailable; falling back to default",
+			"agent_id", a.agentID)
+		mode = PermissionModeDefault
+	}
 	resp, err := a.sendControlAndWait(ctx,
 		fmt.Sprintf(`{"subtype":"set_permission_mode","mode":"%s"}`, mode), timeout)
 	if err != nil {
@@ -230,7 +265,7 @@ func (a *ClaudeCodeAgent) buildStartupFlagSettings(extra map[string]string) map[
 		fs[ExtraKeyFastMode] = flagSettingOnOff(v)
 	}
 	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != a.alwaysThinking {
-		fs[ExtraKeyAlwaysThinking] = flagSettingOffOn(v)
+		fs[ExtraKeyAlwaysThinking] = flagSettingThinking(v)
 	}
 	return fs
 }
@@ -358,10 +393,13 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 	a.mu.Lock()
 	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
 	availStyles := a.availableOutputStyles
+	autoAvail := a.autoModeAvailable
+	model := a.model
 	a.mu.Unlock()
 
+	staticPermMode := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
 	groups := []*leapmuxv1.AvailableOptionGroup{
-		AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0], // permission mode
+		filterPermissionModeGroup(staticPermMode, autoAvail),
 	}
 
 	if len(availStyles) > 0 {
@@ -389,16 +427,41 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 		},
 	})
 
+	enabledName := "On"
+	if modelSupportsAdaptiveThinking(model) {
+		enabledName = "Adaptive"
+	}
 	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
 		Key:   ExtraKeyAlwaysThinking,
 		Label: "Extended Thinking",
 		Options: []*leapmuxv1.AvailableOption{
-			{Id: "on", Name: "On", IsDefault: thinking != "off"},
-			{Id: "off", Name: "Off", IsDefault: thinking == "off"},
+			{Id: AlwaysThinkingOn, Name: enabledName, IsDefault: thinking != AlwaysThinkingOff},
+			{Id: AlwaysThinkingOff, Name: "Off", IsDefault: thinking == AlwaysThinkingOff},
 		},
 	})
 
 	return groups
+}
+
+// filterPermissionModeGroup returns a copy of the permission-mode option
+// group with modes unavailable to this agent instance removed. Currently
+// only filters "auto" when auto mode was rejected by the probe at startup.
+func filterPermissionModeGroup(group *leapmuxv1.AvailableOptionGroup, autoAvail bool) *leapmuxv1.AvailableOptionGroup {
+	if autoAvail {
+		return group
+	}
+	opts := make([]*leapmuxv1.AvailableOption, 0, len(group.GetOptions()))
+	for _, o := range group.GetOptions() {
+		if o.GetId() == PermissionModeAuto {
+			continue
+		}
+		opts = append(opts, o)
+	}
+	return &leapmuxv1.AvailableOptionGroup{
+		Key:     group.GetKey(),
+		Label:   group.GetLabel(),
+		Options: opts,
+	}
 }
 
 // UpdateSettings applies settings changes via the apply_flag_settings control
@@ -431,7 +494,7 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		flagSettings[ExtraKeyFastMode] = flagSettingOnOff(v)
 	}
 	if v := extra[ExtraKeyAlwaysThinking]; v != "" && v != curThinking {
-		flagSettings[ExtraKeyAlwaysThinking] = flagSettingOffOn(v)
+		flagSettings[ExtraKeyAlwaysThinking] = flagSettingThinking(v)
 	}
 
 	if len(flagSettings) == 0 {
@@ -481,7 +544,7 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 
 	a.mu.Lock()
 	if settings.Applied.Model != "" {
-		a.model = settings.Applied.Model
+		a.model = normalizeClaudeCodeModel(settings.Applied.Model)
 	}
 	if settings.Applied.Effort != nil {
 		a.effort = *settings.Applied.Effort
@@ -498,9 +561,9 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 	}
 	if settings.Effective.AlwaysThinkingEnabled != nil {
 		if *settings.Effective.AlwaysThinkingEnabled {
-			a.alwaysThinking = "on"
+			a.alwaysThinking = AlwaysThinkingOn
 		} else {
-			a.alwaysThinking = "off"
+			a.alwaysThinking = AlwaysThinkingOff
 		}
 	}
 	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
@@ -533,37 +596,100 @@ func flagSettingOnOff(v string) interface{} {
 	return nil
 }
 
-// flagSettingOffOn maps an "off"/"on" string to a boolean flag setting value
-// for apply_flag_settings. "off" → false, anything else → nil (which resets
-// the flag to its default).
-func flagSettingOffOn(v string) interface{} {
-	if v == "off" {
+// flagSettingThinking maps an "on"/"off" string to the alwaysThinkingEnabled
+// flag value for apply_flag_settings. "off" → false (thinking disabled).
+// Anything else returns nil, which removes the key from flagSettings and
+// lets Claude Code fall back to its default-on behavior — internally picking
+// type:"adaptive" or type:"enabled" per its own model gate.
+func flagSettingThinking(v string) interface{} {
+	if v == AlwaysThinkingOff {
 		return false
 	}
 	return nil
 }
 
-// claudeCodeEfforts shared across models (except haiku gets none, and only opus gets max).
-var claudeCodeEffortAll = []*leapmuxv1.AvailableEffort{
+// normalizeClaudeCodeModel collapses the fully-qualified model ID that
+// Claude Code's get_settings "applied.model" field returns (e.g.
+// "claude-opus-4-7", "claude-haiku-4-5-20251001", "claude-sonnet-4-6[1m]")
+// back to the short alias leapmux uses (opus, opus[1m], sonnet,
+// sonnet[1m], haiku). Short aliases pass through unchanged.
+//
+// Rules:
+//   - Strip an optional "claude-" prefix.
+//   - Preserve a trailing "[...]" bracket suffix (the 1M-context marker).
+//   - Keep only the leading alphabetic token (opus/sonnet/haiku), dropping
+//     version numbers (e.g. "-4-7") and date suffixes (e.g. "-20251001").
+func normalizeClaudeCodeModel(model string) string {
+	if model == "" {
+		return ""
+	}
+	core := strings.TrimPrefix(model, "claude-")
+	var suffix string
+	if i := strings.IndexByte(core, '['); i >= 0 {
+		suffix = core[i:]
+		core = core[:i]
+	}
+	end := 0
+	for end < len(core) {
+		c := core[end]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			break
+		}
+		end++
+	}
+	alias := core[:end]
+	if alias == "" {
+		// Unrecognized shape — return the original input unchanged so the
+		// caller can still display it.
+		return model
+	}
+	return alias + suffix
+}
+
+// modelSupportsAdaptiveThinking reports whether Claude Code emits
+// thinking.type:"adaptive" for this model (Opus and Sonnet) versus
+// thinking.type:"enabled" with a budget (Haiku). Unknown model strings
+// default to true to match Claude Code's first-party fallback. This is
+// used purely to pick the "Adaptive" vs "On" display label in
+// AvailableOptionGroups — the wire payload (alwaysThinkingEnabled) is
+// identical either way.
+//
+// Expects the short alias (e.g. "opus", "haiku"). `a.model` is kept
+// normalized after every refreshSettingsFromAgent call, so internal
+// callers can pass it directly without re-normalizing.
+func modelSupportsAdaptiveThinking(model string) bool {
+	return !strings.HasPrefix(model, "haiku")
+}
+
+// Claude Code effort levels are model-dependent. Keep each slice ordered
+// strongest → weakest so the RadioGroup renders in the same order.
+
+// claudeEffortXHighMax is used by models that support both xhigh and max
+// (currently Opus 4.7).
+var claudeEffortXHighMax = []*leapmuxv1.AvailableEffort{
 	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort"},
-	{Id: "max", Name: "Max", Description: "Deepest reasoning; uses extended thinking"},
+	{Id: "max", Name: "Max", Description: "Deepest reasoning; no constraints on token spend"},
+	{Id: "xhigh", Name: "X-High", Description: "Extended capability for long-horizon agentic tasks"},
 	{Id: "high", Name: "High", Description: "Thorough reasoning for complex tasks"},
 	{Id: "medium", Name: "Medium", Description: "Balanced speed and reasoning depth"},
 	{Id: "low", Name: "Low", Description: "Faster responses with lighter reasoning"},
 }
 
-var claudeCodeEffortNoMax = []*leapmuxv1.AvailableEffort{
+// claudeEffortMax is used by models that support max but not xhigh
+// (currently Sonnet 4.6, older Opus).
+var claudeEffortMax = []*leapmuxv1.AvailableEffort{
 	{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort"},
+	{Id: "max", Name: "Max", Description: "Deepest reasoning; no constraints on token spend"},
 	{Id: "high", Name: "High", Description: "Thorough reasoning for complex tasks"},
 	{Id: "medium", Name: "Medium", Description: "Balanced speed and reasoning depth"},
 	{Id: "low", Name: "Low", Description: "Faster responses with lighter reasoning"},
 }
 
 var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
-	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortAll, ContextWindow: 200_000},
-	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", IsDefault: true, DefaultEffort: "high", SupportedEfforts: claudeCodeEffortAll, ContextWindow: 1_000_000},
-	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax, ContextWindow: 200_000},
-	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeCodeEffortNoMax, ContextWindow: 1_000_000},
+	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: "xhigh", SupportedEfforts: claudeEffortXHighMax, ContextWindow: 200_000},
+	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", IsDefault: true, DefaultEffort: "xhigh", SupportedEfforts: claudeEffortXHighMax, ContextWindow: 1_000_000},
+	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeEffortMax, ContextWindow: 200_000},
+	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeEffortMax, ContextWindow: 1_000_000},
 	{Id: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", DefaultEffort: "high", ContextWindow: 200_000},
 }
 
@@ -599,6 +725,36 @@ func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody st
 		a.unregisterPendingControl(requestID)
 		return claudeCodeControlResult{}, fmt.Errorf("timeout waiting for agent to respond")
 	}
+}
+
+// probeAutoMode sends a set_permission_mode:auto control request to detect
+// whether auto mode is available for this session. It does not leave auto
+// mode active — the caller must set the real mode afterward.
+//
+// Returns true if auto mode is accepted. Returns false if the agent rejects
+// it with the "Cannot set permission mode to auto" prefix, which covers all
+// unavailability reasons (managed settings, plan circuit-breaker, or
+// unsupported model). Other errors are treated conservatively as
+// unavailable and logged.
+func (a *ClaudeCodeAgent) probeAutoMode(ctx context.Context, timeout time.Duration) bool {
+	_, err := a.sendControlAndWait(ctx,
+		fmt.Sprintf(`{"subtype":"set_permission_mode","mode":"%s"}`, PermissionModeAuto), timeout)
+	if err == nil {
+		return true
+	}
+	if isAutoModeUnavailableError(err) {
+		return false
+	}
+	slog.Warn("auto-mode probe failed (transient)",
+		"agent_id", a.agentID, "error", err)
+	return false
+}
+
+// isAutoModeUnavailableError reports whether err is the Claude Code
+// control_response rejection for set_permission_mode:auto (admin-disabled,
+// plan-gated, or unsupported-model).
+func isAutoModeUnavailableError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), autoModeUnavailableErrorPrefix)
 }
 
 func (a *ClaudeCodeAgent) registerPendingControl(requestID string, ch chan<- claudeCodeControlResult) {
@@ -687,18 +843,36 @@ func generateRequestID() string {
 }
 
 // buildModelEffortArgs constructs the --model and --effort CLI arguments for
-// Claude Code. Haiku does not support effort, and max effort is only
-// supported for opus models (falls back to high for others).
+// Claude Code. Haiku does not support --effort at all. Other models each
+// expose a subset of effort levels via claudeCodeAvailableModels; any effort
+// not in the subset is downgraded to "high" as a universal safe fallback.
 func buildModelEffortArgs(model, effort string) []string {
 	args := []string{"--model", model}
-	if effort != "" && model != "haiku" {
-		// Max effort is only supported for opus models; fall back to high.
-		if effort == "max" && !strings.HasPrefix(model, "opus") {
-			effort = "high"
-		}
-		args = append(args, "--effort", effort)
+	if effort == "" || model == "haiku" {
+		return args
 	}
-	return args
+	if !effortSupported(model, effort) {
+		effort = "high"
+	}
+	return append(args, "--effort", effort)
+}
+
+// effortSupported reports whether the given effort ID is in the known
+// SupportedEfforts list for the given model. Unknown models are trusted
+// (returns true) so new aliases work without a code change.
+func effortSupported(modelID, effort string) bool {
+	for _, m := range claudeCodeAvailableModels {
+		if m.Id != modelID {
+			continue
+		}
+		for _, e := range m.SupportedEfforts {
+			if e.Id == effort {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 func init() {
@@ -712,10 +886,37 @@ func init() {
 			Key:   OptionGroupKeyPermissionMode,
 			Label: "Permission Mode",
 			Options: []*leapmuxv1.AvailableOption{
-				{Id: PermissionModeDefault, Name: "Default", IsDefault: true},
-				{Id: PermissionModePlan, Name: "Plan Mode"},
-				{Id: PermissionModeAcceptEdits, Name: "Accept Edits"},
-				{Id: PermissionModeBypassPermissions, Name: "Bypass Permissions"},
+				{
+					Id:          PermissionModeDefault,
+					Name:        "Default",
+					Description: "Standard behavior, prompts for dangerous operations.",
+					IsDefault:   true,
+				},
+				{
+					Id:          PermissionModePlan,
+					Name:        "Plan Mode",
+					Description: "Planning mode, no actual tool execution.",
+				},
+				{
+					Id:          PermissionModeAcceptEdits,
+					Name:        "Accept Edits",
+					Description: "Auto-accept file edit operations.",
+				},
+				{
+					Id:          PermissionModeBypassPermissions,
+					Name:        "Bypass Permissions",
+					Description: "Bypass all permission checks (requires allowDangerouslySkipPermissions).",
+				},
+				{
+					Id:          PermissionModeDontAsk,
+					Name:        "Don't Ask",
+					Description: "Don't prompt for permissions, deny if not pre-approved.",
+				},
+				{
+					Id:          PermissionModeAuto,
+					Name:        "Auto Mode",
+					Description: "Uses an AI classifier to auto-approve safe tool calls and falls back to prompting for risky ones.",
+				},
 			},
 		}},
 		"LEAPMUX_CLAUDE_DEFAULT_MODEL",

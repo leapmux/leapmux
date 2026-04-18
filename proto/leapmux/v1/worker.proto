@@ -150,6 +150,8 @@ message ConnectRequest {
     ChannelMessage channel_message_resp = 5;
     // Health
     Heartbeat heartbeat = 6;
+    // Access control
+    ChannelAccessUpdateAck channel_access_update_ack = 7;
   }
 }
 
@@ -185,11 +187,18 @@ message ConnectResponse {
 
 // ChannelAccessUpdate is sent by the Hub to a Worker when a new workspace
 // becomes accessible to a channel (e.g. after the user creates a workspace).
-// The Worker adds the workspace ID to the channel's accessible set.
+// The Worker adds the workspace ID to the channel's accessible set and
+// replies with ChannelAccessUpdateAck using the request's request_id so the
+// Hub can wait for the update to land before responding to the caller.
 message ChannelAccessUpdate {
   string channel_id = 1;
   string workspace_id = 2;
 }
+
+// ChannelAccessUpdateAck confirms the Worker has added the workspace ID to
+// the channel's accessible set. The matching request_id is carried on the
+// ConnectRequest envelope.
+message ChannelAccessUpdateAck {}
 
 // --- Notification messages (used in bidi stream) ---
 
