@@ -10,7 +10,7 @@ vars:
   COMMIT_TIME:
     sh: echo "${COMMIT_TIME:-$(git log -1 --format=%cI 2>/dev/null)}"
   BUILD_TIME:
-    sh: echo "${BUILD_TIME:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
+    sh: echo "${BUILD_TIME:-{{dateInZone `2006-01-02T15:04:05Z` now `UTC`}}}"
   VERSION_LDFLAGS: >-
     -X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}
     -X github.com/leapmux/leapmux/util/version.CommitHash={{.COMMIT_HASH}}
@@ -93,19 +93,20 @@ tasks:
   generate-spinners:
     desc: Download spinner verb JSON files from awesome-claude-spinners
     vars:
-      CACHE_DIR: '{{.HOME}}/.cache/awesome-claude-spinners'
+      CACHE_DIR:
+        sh: echo "${HOME:-$USERPROFILE}/.cache/awesome-claude-spinners"
     generates:
       - frontend/src/spinners/**/*
     status:
       - test -d frontend/src/spinners
     cmds:
       - |
-        if [ ! -d "{{.CACHE_DIR}}" ] || [ -n "$(find "{{.CACHE_DIR}}" -maxdepth 0 -mtime +30 2>/dev/null)" ]; then
-          rm -rf "{{.CACHE_DIR}}"
+        if [ ! -d "{{.CACHE_DIR}}" ]; then
           git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners "{{.CACHE_DIR}}"
         fi
+      - rm -rf frontend/src/spinners
       - mkdir -p frontend/src/spinners
-      - rsync -a --delete "{{.CACHE_DIR}}/spinners/" frontend/src/spinners/
+      - cp -r "{{.CACHE_DIR}}/spinners/." frontend/src/spinners/
 
   # --- Preparation ---
 
@@ -165,9 +166,10 @@ tasks:
       - task: generate-proto
       - task: generate-sqlc
       - task: build-frontend
+      - rm -rf backend/internal/hub/generated/frontend/public
       - mkdir -p backend/internal/hub/generated/frontend/public
-      - rsync -a backend/internal/hub/frontend.embed backend/internal/hub/generated/frontend/embed.go
-      - rsync -a --delete frontend/.output/public/ backend/internal/hub/generated/frontend/public/
+      - cp backend/internal/hub/frontend.embed backend/internal/hub/generated/frontend/embed.go
+      - cp -r frontend/.output/public/. backend/internal/hub/generated/frontend/public/
 
   prepare-desktop:
     desc: Prepare desktop for builds
@@ -238,10 +240,10 @@ tasks:
       - backend/**/*.go
       - backend/internal/hub/generated/frontend/public/**/*
     generates:
-      - leapmux
+      - leapmux{{if eq OS "windows"}}.exe{{end}}
     cmds:
       - task: prepare-backend
-      - cd backend && go build -ldflags "{{.VERSION_LDFLAGS}}" -o ../leapmux ./cmd/leapmux
+      - cd backend && go build -ldflags "{{.VERSION_LDFLAGS}}" -o ../leapmux{{if eq OS "windows"}}.exe{{end}} ./cmd/leapmux
 
   build-backend-docker:
     desc: Build backend for Docker images
@@ -372,19 +374,41 @@ tasks:
       - desktop/rust/Cargo.*
       - desktop/rust/capabilities/**/*
       - desktop/rust/tauri.conf.json
+      - desktop/rust/tauri.windows.conf.json
       - desktop/rust/icons/icon.ico
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
     generates:
-      - LeapMux*.exe
-      - LeapMux*.msi
+      - LeapMuxDesktop*.exe
+      - LeapMuxDesktop*.msi
+      - leapmux-desktop-service-*.exe
     cmds:
       - task: prepare-desktop
       - task: build-desktop-sidecar
-      - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
-      - cp -f desktop/rust/target/release/bundle/nsis/LeapMux*.exe .
-      - cp -f desktop/rust/target/release/bundle/msi/LeapMux*.msi .
+      - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION | replace "-dev" ""}}"}'
+      - cp -f desktop/rust/target/release/LeapMuxDesktop.exe .
+      - cp -f desktop/go/bin/leapmux-desktop-service-*.exe .
+      # Tauri's NSIS and WiX bundlers name the installer after productName
+      # ("LeapMux Desktop" — with a space), regardless of our mainBinaryName
+      # override. Copy with a space-stripping rename so we ship spaceless
+      # filenames. The WiX bundler additionally appends "_en-US"; strip that
+      # too. Destination is a bare filename so it resolves to cwd = repo
+      # root without triggering mvdan/sh's `./`-path quirk.
+      - |
+        for src in desktop/rust/target/release/bundle/nsis/LeapMux*-setup.exe; do
+          [ -e "$src" ] || continue
+          name="${src##*/}"
+          cp -f "$src" "${name// /}"
+        done
+      - |
+        for src in desktop/rust/target/release/bundle/msi/LeapMux*_en-US.msi; do
+          [ -e "$src" ] || continue
+          name="${src##*/}"
+          dest="${name// /}"
+          dest="${dest/_en-US/}"
+          cp -f "$src" "$dest"
+        done
 
   # --- Testing ---
 
@@ -556,7 +580,9 @@ tasks:
       - |
         TARGET="{{if eq OS "darwin"}}{{if eq ARCH "arm64"}}aarch64{{else}}x86_64{{end}}-apple-darwin{{else if eq OS "linux"}}{{if eq ARCH "arm64"}}aarch64{{else}}x86_64{{end}}-unknown-linux-gnu{{else}}x86_64-pc-windows-msvc{{end}}"
         BIN="./bin/leapmux-desktop-service-${TARGET}{{if eq OS "windows"}}.exe{{end}}"
-        cd desktop/go && go build -ldflags "{{.VERSION_LDFLAGS}}" -o "${BIN}" .
+        # -H=windowsgui links the sidecar for the Windows GUI subsystem so
+        # spawning it from the Tauri shell doesn't pop up a console window.
+        cd desktop/go && go build -ldflags "{{.VERSION_LDFLAGS}}{{if eq OS "windows"}} -H=windowsgui{{end}}" -o "${BIN}" .
 
   # --- Docker ---
 
@@ -665,8 +691,8 @@ tasks:
   clean-backend:
     desc: Remove backend build artifacts
     cmds:
-      - rm -f  leapmux
-      - rm -f  backend/leapmux
+      - rm -f  leapmux leapmux.exe
+      - rm -f  backend/leapmux backend/leapmux.exe
       - rm -rf backend/generated/
       - rm -rf backend/*/generated/
       - rm -rf backend/*/*/generated/
@@ -682,8 +708,9 @@ tasks:
       - rm -f  leapmux-desktop-service-*
       - rm -f  leapmux-desktop*.deb
       - rm -f  leapmux-desktop*.AppImage
+      - rm -f  LeapMux*.exe
       - rm -f  LeapMux*.msi
-      - rm -f  desktop/go/leapmux-desktop
+      - rm -f  desktop/go/leapmux-desktop desktop/go/leapmux-desktop.exe
       - rm -rf desktop/go/bin/
       - rm -rf desktop/rust/gen/
       - rm -rf desktop/rust/icons/

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
+	"golang.org/x/net/http2"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -22,7 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
-	"golang.org/x/net/http2"
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // Client manages the connection to the Hub.
@@ -65,26 +67,12 @@ type Client struct {
 
 // New creates a new Hub client with integrated lifecycle management.
 // It creates agent and terminal managers internally.
-// If hubURL starts with "unix:", it creates a Unix domain socket transport automatically.
+// hubURL may be:
+//   - http[s]://host:port — a remote Hub reached over TCP
+//   - unix:<socket-path>  — a local Hub reached over a Unix domain socket
+//   - npipe:<pipe-name>   — a local Hub reached over a Windows named pipe
 func New(hubURL string) *Client {
-	if strings.HasPrefix(hubURL, "unix:") {
-		socketPath := strings.TrimPrefix(hubURL, "unix:")
-		return NewWithHTTPClient(newUnixSocketClient(socketPath), hubURL)
-	}
-	return NewWithHTTPClient(newH2CClient(), hubURL)
-}
-
-// NewWithHTTPClient creates a new Hub client that uses the provided HTTP client
-// for ConnectRPC communication. This allows callers to provide a custom transport
-// (e.g. one that dials via Unix domain socket).
-func NewWithHTTPClient(httpClient *http.Client, hubURL string) *Client {
-	// When connecting via Unix domain socket, hubURL is "unix:<path>".
-	// ConnectRPC needs a valid HTTP base URL, so use http://localhost instead.
-	connectURL := hubURL
-	if strings.HasPrefix(hubURL, "unix:") {
-		connectURL = "http://localhost"
-	}
-
+	httpClient, connectURL := clientForHubURL(hubURL)
 	c := &Client{
 		connector: leapmuxv1connect.NewWorkerConnectorServiceClient(
 			httpClient,
@@ -94,7 +82,6 @@ func NewWithHTTPClient(httpClient *http.Client, hubURL string) *Client {
 		hubURL:    hubURL,
 		terminals: terminal.NewManager(),
 	}
-
 	c.agents = agent.NewManager(func(agentID string, exitCode int, err error) {
 		if err != nil {
 			slog.Info("agent exited with error", "agent_id", agentID, "exit_code", exitCode, "error", err)
@@ -102,8 +89,26 @@ func NewWithHTTPClient(httpClient *http.Client, hubURL string) *Client {
 			slog.Info("agent exited", "agent_id", agentID, "exit_code", exitCode)
 		}
 	})
-
 	return c
+}
+
+// clientForHubURL picks the HTTP client and ConnectRPC URL for hubURL.
+// Local-IPC schemes (unix:/npipe:) get a dialer-backed h2c client and a
+// placeholder "http://localhost" route (the transport dials the real
+// endpoint); remote URLs pass through to a plain h2c client.
+func clientForHubURL(hubURL string) (*http.Client, string) {
+	if locallisten.IsLocal(hubURL) {
+		dial, _ := locallisten.Dialer(hubURL) // IsLocal guarantees success.
+		return &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}, "http://localhost"
+	}
+	transport := &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	}
+	return &http.Client{Transport: transport}, hubURL
 }
 
 // Stop gracefully stops all managers.
@@ -130,33 +135,6 @@ func (c *Client) AgentManager() *agent.Manager {
 // TerminalManager returns the terminal manager.
 func (c *Client) TerminalManager() *terminal.Manager {
 	return c.terminals
-}
-
-// newH2CClient creates an HTTP client that supports HTTP/2 cleartext (h2c),
-// which is required for gRPC bidirectional streaming over plain HTTP.
-func newH2CClient() *http.Client {
-	return &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		},
-	}
-}
-
-// newUnixSocketClient creates an h2c HTTP client that dials via a Unix domain socket.
-func newUnixSocketClient(socketPath string) *http.Client {
-	return &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", socketPath)
-			},
-		},
-	}
 }
 
 // Send sends a message to the Hub via the bidi stream.
@@ -413,12 +391,9 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 
 // isCodeUnauthenticated checks if an error is a ConnectRPC Unauthenticated error.
 func isCodeUnauthenticated(err error) bool {
-	if err == nil {
-		return false
-	}
-	if connectErr, ok := err.(*connect.Error); ok {
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) {
 		return connectErr.Code() == connect.CodeUnauthenticated
 	}
-	// The error may be wrapped - check for the string pattern as fallback.
-	return strings.Contains(err.Error(), "unauthenticated")
+	return false
 }

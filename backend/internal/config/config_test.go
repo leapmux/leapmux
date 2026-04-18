@@ -190,8 +190,11 @@ func TestResolveDataDir(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("absolute data dir used as-is", func(t *testing.T) {
-		result := ResolveDataDir("/absolute/data", "/some/config.yaml", "/default/config/dir")
-		assert.Equal(t, "/absolute/data", result)
+		// Pick a path that's absolute on whatever OS we're running on so the
+		// "return as-is" branch of ResolveDataDir is actually exercised.
+		absDir := t.TempDir() // always absolute
+		result := ResolveDataDir(absDir, "/some/config.yaml", "/default/config/dir")
+		assert.Equal(t, absDir, result)
 	})
 
 	t.Run("relative data dir resolved against config file directory", func(t *testing.T) {

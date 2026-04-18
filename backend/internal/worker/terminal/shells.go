@@ -5,38 +5,41 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
-var shellCache struct {
-	once         sync.Once
-	shells       []string
-	defaultShell string
+// resolveShells is swapped out by tests to invalidate the cache between
+// cases that mutate environment variables.
+var resolveShells = newShellsResolver()
+
+func newShellsResolver() func() (shells []string, defaultShell string) {
+	return sync.OnceValues(computeShells)
 }
 
-func initShellCache() {
-	shellCache.defaultShell = resolveDefaultShellOnce()
-
+func computeShells() (shells []string, defaultShell string) {
+	defaultShell = resolveDefaultShellOnce()
 	// Place the default shell first so it appears at the top of
 	// the UI dropdown.
-	if shellCache.defaultShell != "" {
-		shellCache.shells = append(shellCache.shells, shellCache.defaultShell)
+	if defaultShell != "" {
+		shells = append(shells, defaultShell)
 	}
 
-	knownShells := []string{"sh", "bash", "zsh", "fish"}
+	knownShells := []string{"sh", "bash", "zsh", "fish", "pwsh", "powershell"}
+	defaultBase := strings.ToLower(strings.TrimSuffix(filepath.Base(defaultShell), ".exe"))
 	for _, name := range knownShells {
+		if name == defaultBase {
+			continue
+		}
 		path, err := exec.LookPath(name)
 		if err != nil {
 			continue
 		}
-		// Skip if it duplicates the default shell already at [0].
-		if path == shellCache.defaultShell {
-			continue
-		}
-		shellCache.shells = append(shellCache.shells, path)
+		shells = append(shells, path)
 	}
 
-	slog.Info("available shells resolved", "shells", shellCache.shells, "default", shellCache.defaultShell)
+	slog.Info("available shells resolved", "shells", shells, "default", defaultShell)
+	return shells, defaultShell
 }
 
 // ResolveDefaultShell returns the user's default shell.  It checks the
@@ -45,8 +48,8 @@ func initShellCache() {
 // environment variable, and finally falls back to platform-specific detection
 // (e.g. dscl on macOS, /etc/passwd on Linux).
 func ResolveDefaultShell() string {
-	shellCache.once.Do(initShellCache)
-	return shellCache.defaultShell
+	_, def := resolveShells()
+	return def
 }
 
 func resolveDefaultShellOnce() string {
@@ -91,7 +94,5 @@ func resolveShellEnv(name string) string {
 // as separate entries even if the underlying binary is the same, because
 // invoking as "sh" activates POSIX mode.
 func ListAvailableShells() (shells []string, defaultShell string) {
-	shellCache.once.Do(initShellCache)
-
-	return shellCache.shells, shellCache.defaultShell
+	return resolveShells()
 }

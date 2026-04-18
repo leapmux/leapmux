@@ -12,6 +12,7 @@ import (
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 const (
@@ -31,6 +32,7 @@ const (
 // Config holds the hub's runtime configuration.
 type Config struct {
 	Addr                         string        `koanf:"addr"`
+	LocalListen                  string        `koanf:"local_listen"`
 	DataDir                      string        `koanf:"data_dir"`
 	DevFrontend                  string        `koanf:"dev_frontend"`
 	MaxMessageSize               int           `koanf:"max_message_size"`
@@ -235,6 +237,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 
 	allFlags := []flagDef{
 		{"addr", "addr", "listen address", ptrconv.Ptr(addr), nil, nil},
+		{"local-listen", "local_listen", "local IPC listen URL (unix:<path> or npipe:<name>); platform default used if empty", ptrconv.Ptr(""), nil, nil},
 		{"data-dir", "data_dir", "data directory", ptrconv.Ptr("."), nil, nil},
 		{"dev-frontend", "dev_frontend", "Vite dev server URL for reverse proxy (dev mode only)", ptrconv.Ptr(""), nil, nil},
 		{"max-message-size", "max_message_size", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, ptrconv.Ptr(0), nil},
@@ -334,6 +337,14 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	var cfg Config
 	if err := k.Unmarshal("", &cfg); err != nil {
 		return nil, false, fmt.Errorf("unmarshal config: %w", err)
+	}
+
+	// Validate --local-listen early: malformed values should surface at
+	// startup with a clear error rather than failing later inside Serve.
+	if cfg.LocalListen != "" {
+		if _, _, err := locallisten.Parse(cfg.LocalListen); err != nil {
+			return nil, false, fmt.Errorf("invalid local_listen: %w", err)
+		}
 	}
 
 	// Resolve relative data_dir against config file directory.
@@ -440,7 +451,13 @@ func (c *Config) BaseURL() string {
 	return scheme + "://" + host
 }
 
-// SocketPath returns the path to the Unix domain socket.
-func (c *Config) SocketPath() string {
-	return filepath.Join(c.DataDir, "hub.sock")
+// LocalListenURL returns the local IPC listen URL the hub should bind.
+// If the user set --local-listen explicitly, that value is returned verbatim.
+// Otherwise a per-platform default is used: unix:<data-dir>/hub.sock on Unix,
+// npipe:leapmux-hub-<SID> on Windows.
+func (c *Config) LocalListenURL() (string, error) {
+	if c.LocalListen != "" {
+		return c.LocalListen, nil
+	}
+	return defaultLocalListen(c.DataDir)
 }

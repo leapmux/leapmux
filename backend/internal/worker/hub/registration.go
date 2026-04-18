@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -14,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/logging"
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // RegistrationResult contains the credentials obtained after registration approval.
@@ -28,17 +27,10 @@ type RegistrationResult struct {
 // 2. Print the approval URL for the user.
 // 3. Poll until the registration is approved or expires.
 //
-// If hubURL starts with "unix:", it creates a Unix domain socket transport automatically.
+// A hubURL with a local-IPC scheme (locallisten.SchemeUnix or SchemeNpipe)
+// is dispatched to the matching transport automatically.
 func Register(ctx context.Context, hubURL, version string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (*RegistrationResult, error) {
-	var httpClient *http.Client
-	connectURL := hubURL
-	if strings.HasPrefix(hubURL, "unix:") {
-		socketPath := strings.TrimPrefix(hubURL, "unix:")
-		httpClient = newUnixSocketClient(socketPath)
-		connectURL = "http://localhost"
-	} else {
-		httpClient = newH2CClient()
-	}
+	httpClient, connectURL := clientForHubURL(hubURL)
 	client := leapmuxv1connect.NewWorkerConnectorServiceClient(
 		httpClient,
 		connectURL,
@@ -50,7 +42,8 @@ func Register(ctx context.Context, hubURL, version string, publicKey, mlkemPubli
 func registerWithClient(
 	ctx context.Context,
 	client leapmuxv1connect.WorkerConnectorServiceClient,
-	hubURL, version string,
+	hubURL string,
+	version string,
 	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
 	bo backoff.BackOff,
 ) (*RegistrationResult, error) {
@@ -87,9 +80,10 @@ func registerWithClient(
 	regToken := reqResp.Msg.GetRegistrationToken()
 	regPath := reqResp.Msg.GetRegistrationUrl()
 
-	if strings.HasPrefix(hubURL, "unix:") {
-		// Unix socket — can't construct a browser-navigable URL.
-		// Show the relative path and let the user navigate via the Hub's web UI.
+	if locallisten.IsLocal(hubURL) {
+		// Local IPC (unix socket or named pipe) — can't construct a
+		// browser-navigable URL. Show the relative path and let the user
+		// navigate via the Hub's web UI.
 		slog.Info("registration requested — approve via Hub web UI",
 			"path", regPath,
 			"token", regToken,

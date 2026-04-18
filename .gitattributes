@@ -1,0 +1,24 @@
+# Enforce LF line endings for all text files, in both the index and the
+# working tree, on every platform. Overrides core.autocrlf/core.eol.
+* text=auto eol=lf
+
+# Explicit binary markers so autodetection doesn't surprise us. text=auto
+# already skips these, but being explicit is safer when adding new files.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary

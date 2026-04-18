@@ -2,17 +2,14 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
 
-	"golang.org/x/net/http2"
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // ProxyResponse is the response metadata returned from ProxyHTTP.
@@ -29,33 +26,30 @@ type HubProxy struct {
 	baseURL  string
 }
 
-// newUnixSocketProxy creates a proxy that connects to the Hub via Unix socket.
-func newUnixSocketProxy(socketPath string) *HubProxy {
+// newLocalProxy returns a proxy that dials whichever local IPC transport
+// the supplied URL names. `unix:<path>` uses the kernel's AF_UNIX listener;
+// `npipe:<name>` uses a Windows named pipe via go-winio. Any other scheme
+// is rejected.
+func newLocalProxy(listenURL string) (*HubProxy, error) {
+	dial, err := locallisten.Dialer(listenURL)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported local proxy URL %q: %w", listenURL, err)
+	}
 	jar, _ := cookiejar.New(nil)
-
 	return &HubProxy{
 		client: &http.Client{
-			Jar: jar,
-			Transport: &http2.Transport{
-				AllowHTTP: true,
-				DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", socketPath)
-				},
-			},
+			Jar:       jar,
+			Transport: locallisten.NewLocalH2CTransport(dial),
 		},
 		// WebSocket upgrade requires HTTP/1.1, not h2c.
 		wsClient: &http.Client{
 			Jar: jar,
 			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", socketPath)
-				},
+				DialContext: locallisten.HTTPDialContext(dial),
 			},
 		},
 		baseURL: "http://localhost",
-	}
+	}, nil
 }
 
 // newHTTPProxy creates a proxy that connects to a remote Hub via HTTP(S).
@@ -108,11 +102,14 @@ func (a *App) ProxyHTTP(method, path string, headers map[string]string, body []b
 	// Build response headers. For Set-Cookie, join all values so the
 	// frontend can see them (map[string]string loses multi-values).
 	respHeaders := make(map[string]string, len(resp.Header))
-	for k := range resp.Header {
-		if strings.EqualFold(k, "Set-Cookie") {
-			respHeaders[k] = strings.Join(resp.Header.Values(k), ", ")
+	for k, v := range resp.Header {
+		if len(v) == 0 {
+			continue
+		}
+		if k == "Set-Cookie" {
+			respHeaders[k] = strings.Join(v, ", ")
 		} else {
-			respHeaders[k] = resp.Header.Get(k)
+			respHeaders[k] = v[0]
 		}
 	}
 

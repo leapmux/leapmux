@@ -14,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // Control response behavior values (shared protocol between frontend and backend).
@@ -249,5 +250,6 @@ func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool
 
 	cmd := exec.CommandContext(ctx, shellPath, args...)
 	cmd.Dir = os.TempDir()
+	procutil.HideConsoleWindow(cmd)
 	return cmd.Run() == nil
 }

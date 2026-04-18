@@ -13,13 +13,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/worker"
 )
@@ -36,6 +36,9 @@ type Config struct {
 	Args []string
 	// CLIFlags restricts which flags are registered (nil = all hub flags).
 	CLIFlags []string
+	// ExtraFlags registers additional koanf-backed flags; nil uses the
+	// desktop-oriented default (encryption-mode, use-login-shell).
+	ExtraFlags []hubconfig.ExtraFlagDef
 	// DevMode runs in dev mode (binds to all interfaces, logs "dev" banner).
 	DevMode bool
 	// SkipBanner suppresses the ASCII art banner and access URL.
@@ -48,20 +51,33 @@ type Config struct {
 
 // Instance represents a running solo Hub+Worker pair.
 type Instance struct {
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	addr   string
-	server *hub.Server
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	listenURL string
+	server    *hub.Server
+	hubErr    error         // set before hubDone is closed
+	hubDone   chan struct{} // closed when the Hub goroutine exits
 }
 
-// Addr returns the listen address of the running instance.
-func (i *Instance) Addr() string {
-	return i.addr
+// LocalListenURL returns the URL at which the Hub is accepting local IPC
+// connections (unix:<path> on Unix, npipe:<name> on Windows). Callers that
+// need to dial the Hub from within the same process tree (e.g. the desktop
+// proxy) should use this rather than reconstructing a path.
+func (i *Instance) LocalListenURL() string {
+	return i.listenURL
 }
 
 // Server returns the underlying Hub server instance.
 func (i *Instance) Server() *hub.Server {
 	return i.server
+}
+
+// Wait blocks until the Hub exits (either via Stop or because it failed
+// on its own) and returns its terminal error. Returns nil on clean
+// shutdown or http.ErrServerClosed. Safe to call multiple times.
+func (i *Instance) Wait() error {
+	<-i.hubDone
+	return i.hubErr
 }
 
 // Stop gracefully shuts down the Hub and Worker.
@@ -102,17 +118,22 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		cliFlags = []string{"addr", "data-dir", "dev-frontend", "storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level", "use-login-shell"}
 	}
 
+	extraFlags := cfg.ExtraFlags
+	if extraFlags == nil {
+		extraFlags = []hubconfig.ExtraFlagDef{
+			{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
+			{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap claude invocation in user's login shell", StrDefault: "true"},
+		}
+	}
+
 	hubCfg, _, err := hubconfig.LoadWithOptions(cfg.Args, hubconfig.LoadOptions{
 		DefaultAddr:       defaultAddr,
 		DefaultConfigDir:  configDir,
 		DefaultConfigFile: configFile,
 		FlagSetName:       "leapmux",
 		CLIFlags:          cliFlags,
-		ExtraFlags: []hubconfig.ExtraFlagDef{
-			{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
-			{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap claude invocation in user's login shell", StrDefault: "true"},
-		},
-		SoloMode: !cfg.DevMode,
+		ExtraFlags:        extraFlags,
+		SoloMode:          !cfg.DevMode,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("load hub config: %w", err)
@@ -150,22 +171,31 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	soloCtx, cancel := context.WithCancel(ctx)
 
-	inst := &Instance{cancel: cancel, addr: hubCfg.Addr, server: server}
+	listenURL, err := hubCfg.LocalListenURL()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("resolve local-listen URL: %w", err)
+	}
+	inst := &Instance{
+		cancel:    cancel,
+		listenURL: listenURL,
+		server:    server,
+		hubDone:   make(chan struct{}),
+	}
 
-	// Start Hub.
-	hubErrCh := make(chan error, 1)
+	// Start Hub. hubErr/hubDone publish the terminal error to Wait callers.
 	inst.wg.Add(1)
 	go func() {
 		defer inst.wg.Done()
-		hubErrCh <- server.Serve(soloCtx)
+		inst.hubErr = server.Serve(soloCtx)
+		close(inst.hubDone)
 	}()
 
-	// Wait for Hub's Unix socket.
-	socketPath := server.SocketPath()
-	if err := waitForSocket(soloCtx, socketPath); err != nil {
+	// Wait for Hub's local listener (unix socket or named pipe).
+	if err := locallisten.WaitReady(soloCtx, listenURL); err != nil {
 		cancel()
 		inst.wg.Wait()
-		return nil, fmt.Errorf("wait for hub socket: %w", err)
+		return nil, fmt.Errorf("wait for hub local listener: %w", err)
 	}
 
 	// Auto-register worker.
@@ -218,7 +248,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	slog.Info(modeName+" worker registered",
 		"worker_id", state.WorkerID,
-		"socket", socketPath,
+		"local", listenURL,
 	)
 
 	// Start Worker.
@@ -226,7 +256,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	go func() {
 		defer inst.wg.Done()
 		if wErr := worker.Run(soloCtx, worker.RunConfig{
-			HubURL:               "unix:" + socketPath,
+			HubURL:               listenURL,
 			DataDir:              workerDataDir,
 			AuthToken:            state.AuthToken,
 			CompositeKey:         compositeKey,
@@ -248,12 +278,13 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	slog.Info("leapmux "+modeName+" listening", "addr", hubCfg.Addr)
 
-	// Monitor Hub in background.
+	// If the Hub exits unexpectedly, cancel soloCtx so the worker tears down
+	// promptly instead of looping against a dead endpoint.
 	go func() {
 		select {
-		case err := <-hubErrCh:
-			if err != nil {
-				slog.Error("hub error", "error", err)
+		case <-inst.hubDone:
+			if inst.hubErr != nil {
+				slog.Error("hub error", "error", inst.hubErr)
 			}
 			cancel()
 		case <-soloCtx.Done():
@@ -274,20 +305,6 @@ type soloState struct {
 	MlkemPrivateKey  string `json:"mlkem_private_key,omitempty"`
 	SlhdsaPublicKey  string `json:"slhdsa_public_key,omitempty"`
 	SlhdsaPrivateKey string `json:"slhdsa_private_key,omitempty"`
-}
-
-func waitForSocket(ctx context.Context, path string) error {
-	for range 50 {
-		if _, err := os.Stat(path); err == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("socket %s not created in time", path)
 }
 
 func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath, workerDataDir string) (*soloState, error) {

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // buildShellWrappedCommand constructs an exec.Cmd that launches a binary
@@ -46,7 +47,7 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 			cmdArgs = []string{"-Command", inner}
 		}
 	case shellName == "tcsh" || shellName == "csh":
-		inner := buildPosixCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
+		inner := buildPosixCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs)
 		if interactive {
 			cmdArgs = []string{"-ic", inner} // tcsh: -l must be the only flag
 		} else {
@@ -61,7 +62,7 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 		}
 	default:
 		// bash, zsh, fish, sh, ash, dash, ksh, xonsh, and unknown shells
-		inner := buildPosixCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs, true)
+		inner := buildPosixCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs)
 		if interactive {
 			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-c", inner)
 		} else {
@@ -71,22 +72,18 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 
 	cmd := exec.CommandContext(ctx, shellPath, cmdArgs...)
 	cmd.Dir = workingDir
+	procutil.HideConsoleWindow(cmd)
 	return cmd, delimiter, metaPrefix
 }
 
 // buildPosixCommand builds the inner command string for POSIX-like shells.
-// If useExec is true, the command uses exec to replace the shell process.
-// When modelEffortArgs is non-empty, a conditional is emitted to check for
-// third-party provider env vars at runtime.
-func buildPosixCommand(binaryName string, stripEnvKeys []string, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string, useExec bool) string {
+// The command is always prefixed with `exec` so the shell process is
+// replaced. When modelEffortArgs is non-empty, a conditional is emitted to
+// check for third-party provider env vars at runtime.
+func buildPosixCommand(binaryName string, stripEnvKeys []string, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
 	quotedBase := make([]string, len(baseArgs))
 	for i, arg := range baseArgs {
 		quotedBase[i] = posixQuote(arg)
-	}
-
-	execPrefix := ""
-	if useExec {
-		execPrefix = "exec "
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
@@ -94,8 +91,8 @@ func buildPosixCommand(binaryName string, stripEnvKeys []string, delimiter, meta
 
 	// Simple path: no model/effort args (third-party detected from settings).
 	if len(modelEffortArgs) == 0 {
-		return fmt.Sprintf("%secho '%s' && %s%s %s",
-			clearEnvPrefix, delimiter, execPrefix, binaryName, baseArgsStr)
+		return fmt.Sprintf("%secho '%s' && exec %s %s",
+			clearEnvPrefix, delimiter, binaryName, baseArgsStr)
 	}
 
 	// Conditional path: check env vars at runtime.
@@ -109,14 +106,14 @@ func buildPosixCommand(binaryName string, stripEnvKeys []string, delimiter, meta
 		"%s"+
 			"if "+posixEnvCondition()+"; then "+
 			"echo '%scan_change_model_and_effort=false' && "+
-			"echo '%s' && %s%s %s; "+
+			"echo '%s' && exec %s %s; "+
 			"else "+
 			"echo '%scan_change_model_and_effort=true' && "+
-			"echo '%s' && %s%s %s %s; "+
+			"echo '%s' && exec %s %s %s; "+
 			"fi",
 		clearEnvPrefix,
-		metaPrefix, delimiter, execPrefix, binaryName, baseArgsStr,
-		metaPrefix, delimiter, execPrefix, binaryName, baseArgsStr, meArgsStr,
+		metaPrefix, delimiter, binaryName, baseArgsStr,
+		metaPrefix, delimiter, binaryName, baseArgsStr, meArgsStr,
 	)
 }
 

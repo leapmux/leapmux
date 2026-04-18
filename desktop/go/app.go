@@ -12,6 +12,7 @@ import (
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/solo"
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -148,7 +149,9 @@ func (a *App) Restart() error {
 	if err != nil {
 		return err
 	}
-	return exec.Command(exe).Start()
+	cmd := exec.Command(exe)
+	procutil.HideConsoleWindow(cmd)
+	return cmd.Start()
 }
 
 func (a *App) SwitchMode() error {
@@ -169,13 +172,15 @@ func (a *App) ConnectSolo() error {
 		return err
 	}
 
-	socketPath := a.solo.Server().SocketPath()
-	if err := a.waitForSoloReady(a.ctx, socketPath); err != nil {
+	// solo.Start already blocked until the Hub's local listener was reachable,
+	// so no extra polling is needed before building the proxy.
+	proxy, err := newLocalProxy(a.solo.LocalListenURL())
+	if err != nil {
 		a.stopSolo()
-		return fmt.Errorf("waiting for LeapMux to start: %w", err)
+		return fmt.Errorf("build local proxy: %w", err)
 	}
-
-	a.proxy = newUnixSocketProxy(socketPath)
+	a.proxy = proxy
+	a.applyProxyToTunnels()
 	a.config.Mode = "solo"
 	a.config.HubURL = ""
 	if err := SaveConfig(a.config); err != nil {
@@ -200,6 +205,7 @@ func (a *App) ConnectDistributed(hubURL string) error {
 	}
 
 	a.proxy = newHTTPProxy(hubURL)
+	a.applyProxyToTunnels()
 	a.hubURL = hubURL
 	a.config.Mode = "distributed"
 	a.config.HubURL = hubURL
@@ -220,11 +226,19 @@ func (a *App) CreateTunnel(config TunnelConfig) (*TunnelInfo, error) {
 	}
 
 	config.HubURL = a.proxy.baseURL
+	return a.tunnels.CreateTunnel(a.ctx, config)
+}
+
+// applyProxyToTunnels wires the current proxy's HTTP clients into the tunnel
+// manager so subsequent CreateTunnel calls dial through them.
+func (a *App) applyProxyToTunnels() {
+	if a.proxy == nil {
+		return
+	}
 	a.tunnels.SetChannelOptions(&tunnelpkg.OpenChannelOptions{
 		HTTPClient:          a.proxy.client,
 		WebSocketHTTPClient: a.proxy.wsClient,
 	})
-	return a.tunnels.CreateTunnel(a.ctx, config)
 }
 
 func (a *App) DeleteTunnel(tunnelID string) error {

@@ -3,6 +3,7 @@ module github.com/leapmux/leapmux-desktop
 go 1.26.1
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0
 	github.com/leapmux/leapmux v0.0.0-20260417013050-e9c57827d9d2

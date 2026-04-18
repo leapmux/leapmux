@@ -47,6 +47,9 @@ func (s *RPCSession) Run() error {
 		if req == nil {
 			continue
 		}
+		// Unbounded per-request goroutine is intentional: the peer is the
+		// trusted Tauri shell (one session at a time, enforced by socket.go),
+		// not an untrusted network client.
 		go s.handleRequest(req)
 	}
 }
@@ -61,6 +64,11 @@ func isBenignSessionReadError(err error) bool {
 	if errors.Is(err, net.ErrClosed) {
 		return true
 	}
+	if isPipeClosed(err) {
+		return true
+	}
+	// Fallback for errors that don't implement Unwrap (net/net.OpError
+	// occasionally wraps the bare "use of closed network connection" string).
 	return strings.Contains(err.Error(), "use of closed network connection")
 }
 

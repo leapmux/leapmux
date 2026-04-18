@@ -18,11 +18,11 @@ import { WindowCloseIcon, WindowMaximizeIcon, WindowMinimizeIcon, WindowRestoreI
 
 const platform = getPlatform()
 const desktop = isDesktopApp()
-const isLinuxDesktop = desktop && platform === 'linux'
+// Linux and Windows run with `decorations: false`, so the app renders its own
+// min/max/close buttons. macOS keeps native traffic lights.
+const showCustomWindowControls = desktop && (platform === 'linux' || platform === 'windows')
 const MAC_TRAFFIC_LIGHT_INSET_PX = 78
-const WINDOWS_CAPTION_BUTTON_INSET_PX = 138
 const macPadding = desktop && platform === 'mac' ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px` : undefined
-const windowsPadding = desktop && platform === 'windows' ? `${WINDOWS_CAPTION_BUTTON_INSET_PX}px` : undefined
 
 const hamburgerPlacement = platform === 'mac'
   ? { placement: 'auto' as const, xOffset: MAC_TRAFFIC_LIGHT_INSET_PX, yOffset: headerHeightPx }
@@ -46,7 +46,6 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
       class={styles.titlebar}
       style={{
         'padding-left': macPadding,
-        'padding-right': windowsPadding,
       }}
     >
       <DropdownMenu
@@ -99,7 +98,7 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
         onClick={() => props.onToggleRightSidebar()}
       />
 
-      <Show when={isLinuxDesktop}>
+      <Show when={showCustomWindowControls}>
         <div class={styles.windowControls}>
           <IconButton
             icon={WindowMinimizeIcon}

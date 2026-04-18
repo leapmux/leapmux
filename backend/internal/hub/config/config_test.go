@@ -96,8 +96,9 @@ log_level: "debug"
 		tmpDir := t.TempDir()
 		dataDir := filepath.Join(tmpDir, "mydata")
 		configPath := filepath.Join(tmpDir, "hub.yaml")
-		yamlContent := `data_dir: "` + dataDir + `"
-`
+		// YAML single quotes are literal — no backslash escape processing,
+		// which matters on Windows where dataDir looks like `C:\Users\...`.
+		yamlContent := "data_dir: '" + dataDir + "'\n"
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
 		cfg, _, err := Load([]string{"-config", configPath})
@@ -244,8 +245,7 @@ func TestValidate(t *testing.T) {
 
 func TestPaths(t *testing.T) {
 	cfg := &Config{DataDir: "/test/dir"}
-	assert.Equal(t, "/test/dir/hub.db", cfg.SQLiteDBPath(), "defaults to DataDir/hub.db")
-	assert.Equal(t, "/test/dir/hub.sock", cfg.SocketPath())
+	assert.Equal(t, filepath.Join("/test/dir", "hub.db"), cfg.SQLiteDBPath(), "defaults to DataDir/hub.db")
 
 	cfg.Storage.SQLite.Path = "/custom/path.db"
 	assert.Equal(t, "/custom/path.db", cfg.SQLiteDBPath(), "uses explicit SQLite path")
