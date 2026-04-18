@@ -580,7 +580,7 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 // for apply_flag_settings. "on" → true, anything else → nil (which resets
 // the flag to its default).
 func flagSettingOnOff(v string) interface{} {
-	if v == FastModeOn {
+	if v == "on" {
 		return true
 	}
 	return nil
@@ -738,12 +738,12 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 		resp, err := setMode(PermissionModeAuto)
 		switch {
 		case err == nil:
-			a.autoModeAvailable = true
+			a.setAutoModeAvailable(true)
 			return resp, nil
 		case isAutoModeUnavailableError(err):
 			slog.Warn("requested auto permission mode is unavailable; falling back to default",
 				"agent_id", a.agentID)
-			a.autoModeAvailable = false
+			a.setAutoModeAvailable(false)
 			return setMode(PermissionModeDefault)
 		default:
 			return claudeCodeControlResult{}, err
@@ -755,11 +755,19 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 			slog.Warn("auto-mode probe failed (transient); treating as unavailable",
 				"agent_id", a.agentID, "error", err)
 		}
-		a.autoModeAvailable = false
+		a.setAutoModeAvailable(false)
 	} else {
-		a.autoModeAvailable = true
+		a.setAutoModeAvailable(true)
 	}
 	return setMode(requested)
+}
+
+// setAutoModeAvailable stores the auto-mode probe result under a.mu so
+// concurrent readers (e.g. AvailableOptionGroups) observe a consistent value.
+func (a *ClaudeCodeAgent) setAutoModeAvailable(v bool) {
+	a.mu.Lock()
+	a.autoModeAvailable = v
+	a.mu.Unlock()
 }
 
 // isAutoModeUnavailableError reports whether err is the Claude Code
