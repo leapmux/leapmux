@@ -5,7 +5,6 @@ import (
 	"net"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -187,25 +186,32 @@ func TestTunnelTargetEOF(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 
 	// Wait for stream messages (data + EOF).
-	time.Sleep(200 * time.Millisecond)
+	testutil.AssertEventually(t, func() bool {
+		data, hasEOF := collectTunnelEvents(w.streamsSnapshot())
+		return len(data) > 0 && hasEOF
+	}, "expected both data and EOF stream messages")
 
-	// Check stream messages.
-	hasData := false
-	hasEOF := false
-	for _, s := range w.streams {
+	data, hasEOF := collectTunnelEvents(w.streamsSnapshot())
+	assert.Equal(t, "hello", string(data), "expected data stream message")
+	assert.True(t, hasEOF, "expected EOF stream message")
+}
+
+// collectTunnelEvents decodes stream payloads and returns the concatenated
+// data bytes plus whether any event signalled EOF.
+func collectTunnelEvents(streams []*leapmuxv1.InnerStreamMessage) (data []byte, hasEOF bool) {
+	for _, s := range streams {
 		var event leapmuxv1.TunnelConnEvent
-		if proto.Unmarshal(s.GetPayload(), &event) == nil {
-			if len(event.GetData()) > 0 {
-				hasData = true
-				assert.Equal(t, "hello", string(event.GetData()))
-			}
-			if event.GetEof() {
-				hasEOF = true
-			}
+		if proto.Unmarshal(s.GetPayload(), &event) != nil {
+			continue
+		}
+		if len(event.GetData()) > 0 {
+			data = append(data, event.GetData()...)
+		}
+		if event.GetEof() {
+			hasEOF = true
 		}
 	}
-	assert.True(t, hasData, "expected data stream message")
-	assert.True(t, hasEOF, "expected EOF stream message")
+	return
 }
 
 func TestTunnelConcurrentConnections(t *testing.T) {
@@ -278,16 +284,12 @@ func TestTunnelEchoIntegration(t *testing.T) {
 	require.Len(t, w2.errors, 0)
 
 	// Wait for echo response via stream.
-	time.Sleep(200 * time.Millisecond)
+	testutil.AssertEventually(t, func() bool {
+		echoed, _ := collectTunnelEvents(w.streamsSnapshot())
+		return len(echoed) >= len("echo test")
+	}, "expected echoed data via stream")
 
-	// The echo data should appear in stream messages.
-	var echoed []byte
-	for _, s := range w.streams {
-		var event leapmuxv1.TunnelConnEvent
-		if proto.Unmarshal(s.GetPayload(), &event) == nil {
-			echoed = append(echoed, event.GetData()...)
-		}
-	}
+	echoed, _ := collectTunnelEvents(w.streamsSnapshot())
 	assert.Equal(t, "echo test", string(echoed), "expected echoed data")
 
 	// Clean up.
@@ -358,18 +360,15 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 		require.Len(t, w2.errors, 0, "send chunk at offset %d failed", sent)
 	}
 
-	// Wait for echo data.
-	time.Sleep(500 * time.Millisecond)
-
-	// Verify we received data back via stream.
-	var totalReceived int
-	for _, s := range w.streams {
-		var event leapmuxv1.TunnelConnEvent
-		if proto.Unmarshal(s.GetPayload(), &event) == nil {
-			totalReceived += len(event.GetData())
-		}
+	// Wait for the full echo to come back via stream.
+	totalReceived := func() int {
+		echoed, _ := collectTunnelEvents(w.streamsSnapshot())
+		return len(echoed)
 	}
-	assert.Equal(t, totalSize, totalReceived, "expected all data echoed back")
+	testutil.AssertEventually(t, func() bool {
+		return totalReceived() >= totalSize
+	}, "expected all echoed data via stream")
+	assert.Equal(t, totalSize, totalReceived(), "expected all data echoed back")
 
 	w3 := &testResponseWriter{channelID: "test-ch"}
 	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w3)
@@ -456,22 +455,12 @@ func TestTunnelHalfClose_TargetClosesFirst(t *testing.T) {
 	require.Len(t, w2.errors, 0)
 
 	// Wait for echo + EOF.
-	time.Sleep(300 * time.Millisecond)
+	testutil.AssertEventually(t, func() bool {
+		data, hasEOF := collectTunnelEvents(w.streamsSnapshot())
+		return len(data) > 0 && hasEOF
+	}, "expected echo data followed by EOF")
 
-	hasData := false
-	hasEOF := false
-	for _, s := range w.streams {
-		var event leapmuxv1.TunnelConnEvent
-		if proto.Unmarshal(s.GetPayload(), &event) == nil {
-			if len(event.GetData()) > 0 {
-				hasData = true
-				assert.Equal(t, "half-close-test", string(event.GetData()))
-			}
-			if event.GetEof() {
-				hasEOF = true
-			}
-		}
-	}
-	assert.True(t, hasData, "expected echo data")
+	data, hasEOF := collectTunnelEvents(w.streamsSnapshot())
+	assert.Equal(t, "half-close-test", string(data), "expected echo data")
 	assert.True(t, hasEOF, "expected EOF after target closes")
 }

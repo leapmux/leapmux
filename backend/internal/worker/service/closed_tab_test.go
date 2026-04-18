@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,8 +25,14 @@ import (
 )
 
 // testResponseWriter captures responses and stream messages sent by handlers.
+//
+// Some handlers (e.g. tunnel reads) emit stream messages from background
+// goroutines, so writes are guarded by mu. Tests that read fields while a
+// background goroutine may still be writing should call streamsSnapshot
+// instead of accessing the slice directly.
 type testResponseWriter struct {
 	channelID string
+	mu        sync.Mutex
 	responses []*leapmuxv1.InnerRpcResponse
 	errors    []testError
 	streams   []*leapmuxv1.InnerStreamMessage
@@ -37,21 +44,45 @@ type testError struct {
 }
 
 func (w *testResponseWriter) SendResponse(r *leapmuxv1.InnerRpcResponse) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.responses = append(w.responses, r)
 	return nil
 }
 
 func (w *testResponseWriter) SendError(code int32, msg string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.errors = append(w.errors, testError{code, msg})
 	return nil
 }
 
 func (w *testResponseWriter) SendStream(m *leapmuxv1.InnerStreamMessage) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.streams = append(w.streams, m)
 	return nil
 }
 
 func (w *testResponseWriter) ChannelID() string { return w.channelID }
+
+// streamsSnapshot returns a copy of streams under the lock so callers can
+// iterate without racing concurrent SendStream writes from handler
+// goroutines. The lock also establishes happens-before with the writer so
+// proto payload bytes produced in another goroutine are safe to unmarshal.
+func (w *testResponseWriter) streamsSnapshot() []*leapmuxv1.InnerStreamMessage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*leapmuxv1.InnerStreamMessage(nil), w.streams...)
+}
+
+// streamCount returns len(streams) under the lock, for AssertEventually
+// conditions that wait for handler goroutines to produce output.
+func (w *testResponseWriter) streamCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.streams)
+}
 
 // setupTestService creates a minimal service.Context with an in-memory DB
 // and a channel manager that grants access to the given workspace IDs.
