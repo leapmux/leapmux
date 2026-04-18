@@ -53,6 +53,7 @@ frontend/src/spinners/
 .idea/
 .vscode/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # OS
 .DS_Store
