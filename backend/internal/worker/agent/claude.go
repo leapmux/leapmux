@@ -218,7 +218,6 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		a.fastMode = FastModeOff
 	}
 
-	// Configure the permission mode and detect auto-mode availability for the UI.
 	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode, PermissionModeDefault), timeout)
 	if err != nil {
 		cleanup()
@@ -435,9 +434,8 @@ func (a *ClaudeCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 	return groups
 }
 
-// filterPermissionModeGroup returns a copy of the permission-mode option
-// group with modes unavailable to this agent instance removed. Currently
-// only filters "auto" when auto mode was rejected by the probe at startup.
+// filterPermissionModeGroup hides "auto" when the startup probe rejected it,
+// so the UI can't offer a mode this Claude Code instance can't enter.
 func filterPermissionModeGroup(group *leapmuxv1.AvailableOptionGroup, autoAvail bool) *leapmuxv1.AvailableOptionGroup {
 	if autoAvail {
 		return group
