@@ -51,7 +51,7 @@ function buildInterruptRequest(): string {
 const CLAUDE_EXTRA_TYPES = new Set(['plan_execution'])
 function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
   return isNotificationThreadWrapper(wrapper, CLAUDE_EXTRA_TYPES, (t, st) =>
-    t === 'system' && st !== 'init' && st !== 'task_notification')
+    t === 'system' && st !== 'init' && st !== 'task_notification' && st !== 'task_updated')
 }
 
 /** Claude Code message classification. */
@@ -93,7 +93,7 @@ function classifyClaudeCodeMessage(
       return { kind: 'hidden' }
     if (subtype === 'status' && parentObject.status !== 'compacting')
       return { kind: 'hidden' }
-    if (subtype === 'task_notification')
+    if (subtype === 'task_notification' || subtype === 'task_updated')
       return { kind: 'hidden' }
     return { kind: 'notification' }
   }

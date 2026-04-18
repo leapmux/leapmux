@@ -92,6 +92,16 @@ describe('claude classify', () => {
     expect(plugin.classify(input(parent))).toEqual({ kind: 'assistant_thinking' })
   })
 
+  it('hides task_updated system messages', () => {
+    const parent = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'bi3vq0jmx',
+      patch: { is_backgrounded: true },
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
   it('hides assistant thinking with empty text', () => {
     const parent = {
       type: 'assistant',
