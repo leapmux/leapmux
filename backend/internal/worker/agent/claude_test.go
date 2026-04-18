@@ -1019,7 +1019,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	}, "expected output after preamble")
 
 	// Verify metadata was parsed.
-	assert.Equal(t, "false", a.preambleMeta["can_change_model_and_effort"])
+	assert.Equal(t, "false", a.preambleMetaValue("can_change_model_and_effort"))
 
 	// Verify preamble output does NOT contain the metadata line.
 	preamble := a.PreambleOutput()
@@ -1152,92 +1152,162 @@ func TestClaudeCodeAgent_AvailableOptionGroupsFiltersAutoWhenUnavailable(t *test
 	assert.True(t, found, "auto should appear when autoModeAvailable is true")
 }
 
-func TestProbeAutoMode_Available(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "probe-ok", WorkingDir: t.TempDir()},
-		noopSink{}, "success", "")
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
-
-	assert.True(t, agent.probeAutoMode(ctx, 2*time.Second),
-		"probe should return true when the agent accepts set_permission_mode:auto")
+func readHandshakeModes(t *testing.T, logPath string) []string {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err, "read control log")
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	modes := make([]string, 0, len(lines))
+	for _, line := range lines {
+		var body struct {
+			Subtype string `json:"subtype"`
+			Mode    string `json:"mode"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &body))
+		require.Equal(t, "set_permission_mode", body.Subtype)
+		modes = append(modes, body.Mode)
+	}
+	return modes
 }
 
-func TestProbeAutoMode_DisabledBySettings(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "probe-disabled", WorkingDir: t.TempDir()},
-		noopSink{},
-		"error:Cannot set permission mode to auto: auto mode disabled by settings",
-		"")
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
-
-	assert.False(t, agent.probeAutoMode(ctx, 2*time.Second),
-		"probe should return false when the agent rejects with the auto-unavailable prefix")
-}
-
-func TestProbeAutoMode_TransientError(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "probe-transient", WorkingDir: t.TempDir()},
-		noopSink{},
-		"error:some unrelated runtime error",
-		"")
-	require.NoError(t, err, "mockStartWithResponder")
-	defer func() { agent.Stop(); _ = agent.Wait() }()
-
-	assert.False(t, agent.probeAutoMode(ctx, 2*time.Second),
-		"probe should conservatively return false on non-matching errors")
-}
-
-// TestStartupHandshake_ProbeBeforeMode verifies the auto-mode probe is
-// issued before the user's real set_permission_mode request.
-func TestStartupHandshake_ProbeBeforeMode(t *testing.T) {
+// Auto startup succeeds in a single round trip when Claude Code accepts it
+// — probe and apply are merged into one set_permission_mode call.
+func TestApplyStartupPermissionMode_AutoAccepted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	logPath := filepath.Join(t.TempDir(), "control.log")
 	agent, err := mockStartWithResponder(ctx,
-		Options{AgentID: "ord", WorkingDir: t.TempDir()},
-		noopSink{},
-		"success|success", logPath)
+		Options{AgentID: "handshake-auto-ok", WorkingDir: t.TempDir()},
+		noopSink{}, "success", logPath)
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	// Step 1: probe auto-mode availability (mirrors claude.go:213).
-	agent.autoModeAvailable = agent.probeAutoMode(ctx, 2*time.Second)
-	require.True(t, agent.autoModeAvailable, "probe should succeed in this scripted scenario")
+	mode := PermissionModeAuto
+	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	require.NoError(t, err)
 
-	// Step 2: set the user's requested mode (mirrors claude.go:224-225).
-	_, err = agent.sendControlAndWait(ctx,
-		fmt.Sprintf(`{"subtype":"set_permission_mode","mode":"%s"}`, PermissionModeDefault),
-		2*time.Second)
-	require.NoError(t, err, "real-mode set_permission_mode should succeed")
+	assert.True(t, agent.autoModeAvailable)
+	assert.Equal(t, PermissionModeAuto, mode, "requested mode should be preserved on acceptance")
+	assert.Equal(t, []string{PermissionModeAuto}, readHandshakeModes(t, logPath),
+		"accepted auto must complete in one set_permission_mode call")
+}
 
-	data, err := os.ReadFile(logPath)
-	require.NoError(t, err, "read control log")
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	require.Len(t, lines, 2, "expected exactly two control_request bodies recorded")
+// Auto startup falls back to default when Claude Code rejects it with the
+// auto-unavailable prefix.
+func TestApplyStartupPermissionMode_AutoRejectedFallsBack(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	var first, second struct {
-		Subtype string `json:"subtype"`
-		Mode    string `json:"mode"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(lines[0]), &first))
-	require.NoError(t, json.Unmarshal([]byte(lines[1]), &second))
+	logPath := filepath.Join(t.TempDir(), "control.log")
+	agent, err := mockStartWithResponder(ctx,
+		Options{AgentID: "handshake-auto-reject", WorkingDir: t.TempDir()},
+		noopSink{},
+		"error:Cannot set permission mode to auto: auto mode disabled by settings|success",
+		logPath)
+	require.NoError(t, err, "mockStartWithResponder")
+	defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	assert.Equal(t, "set_permission_mode", first.Subtype, "first request should be set_permission_mode")
-	assert.Equal(t, PermissionModeAuto, first.Mode, "probe must send mode=auto first")
-	assert.Equal(t, "set_permission_mode", second.Subtype, "second request should be set_permission_mode")
-	assert.Equal(t, PermissionModeDefault, second.Mode, "user's real mode must be sent after the probe")
+	mode := PermissionModeAuto
+	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	require.NoError(t, err)
+
+	assert.False(t, agent.autoModeAvailable,
+		"auto must be marked unavailable after a rejection with the auto-unavailable prefix")
+	assert.Equal(t, PermissionModeDefault, mode, "mode should be rewritten to default on fallback")
+	assert.Equal(t, []string{PermissionModeAuto, PermissionModeDefault}, readHandshakeModes(t, logPath),
+		"fallback path must issue auto then default")
+}
+
+// A non-auto-unavailable error surfaces as a startup failure without retry.
+func TestApplyStartupPermissionMode_AutoTransientErrorPropagates(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	logPath := filepath.Join(t.TempDir(), "control.log")
+	agent, err := mockStartWithResponder(ctx,
+		Options{AgentID: "handshake-auto-transient", WorkingDir: t.TempDir()},
+		noopSink{},
+		"error:some unrelated runtime error",
+		logPath)
+	require.NoError(t, err, "mockStartWithResponder")
+	defer func() { agent.Stop(); _ = agent.Wait() }()
+
+	mode := PermissionModeAuto
+	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	require.Error(t, err, "transient errors should not be treated as unavailability")
+	assert.NotContains(t, err.Error(), autoModeUnavailableErrorPrefix)
+	assert.Equal(t, []string{PermissionModeAuto}, readHandshakeModes(t, logPath),
+		"transient error must not trigger a retry")
+}
+
+// Non-auto startup probes auto first so the UI reflects actual availability,
+// then applies the requested mode.
+func TestApplyStartupPermissionMode_NonAutoProbesAutoAvailable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	logPath := filepath.Join(t.TempDir(), "control.log")
+	agent, err := mockStartWithResponder(ctx,
+		Options{AgentID: "handshake-probe-ok", WorkingDir: t.TempDir()},
+		noopSink{}, "success|success", logPath)
+	require.NoError(t, err, "mockStartWithResponder")
+	defer func() { agent.Stop(); _ = agent.Wait() }()
+
+	mode := PermissionModeDefault
+	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	require.NoError(t, err)
+
+	assert.True(t, agent.autoModeAvailable, "probe should confirm auto availability")
+	assert.Equal(t, []string{PermissionModeAuto, PermissionModeDefault}, readHandshakeModes(t, logPath),
+		"non-auto startup must probe auto, then apply the requested mode")
+}
+
+// A rejected probe marks auto unavailable; the requested mode is still
+// applied so the session proceeds.
+func TestApplyStartupPermissionMode_NonAutoProbeRejected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	logPath := filepath.Join(t.TempDir(), "control.log")
+	agent, err := mockStartWithResponder(ctx,
+		Options{AgentID: "handshake-probe-reject", WorkingDir: t.TempDir()},
+		noopSink{},
+		"error:Cannot set permission mode to auto: auto mode disabled by settings|success",
+		logPath)
+	require.NoError(t, err, "mockStartWithResponder")
+	defer func() { agent.Stop(); _ = agent.Wait() }()
+
+	mode := PermissionModePlan
+	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	require.NoError(t, err)
+
+	assert.False(t, agent.autoModeAvailable, "probe rejection must hide auto from the UI")
+	assert.Equal(t, []string{PermissionModeAuto, PermissionModePlan}, readHandshakeModes(t, logPath),
+		"requested mode must be applied after the probe")
+}
+
+// A transient probe error is conservatively treated as unavailable and
+// doesn't block startup; the requested mode is still applied.
+func TestApplyStartupPermissionMode_NonAutoProbeTransient(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	logPath := filepath.Join(t.TempDir(), "control.log")
+	agent, err := mockStartWithResponder(ctx,
+		Options{AgentID: "handshake-probe-transient", WorkingDir: t.TempDir()},
+		noopSink{},
+		"error:some unrelated runtime error|success",
+		logPath)
+	require.NoError(t, err, "mockStartWithResponder")
+	defer func() { agent.Stop(); _ = agent.Wait() }()
+
+	mode := PermissionModeDefault
+	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	require.NoError(t, err, "transient probe error must not fail startup")
+
+	assert.False(t, agent.autoModeAvailable, "transient probe failure must conservatively hide auto")
+	assert.Equal(t, []string{PermissionModeAuto, PermissionModeDefault}, readHandshakeModes(t, logPath))
 }
 
 func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
