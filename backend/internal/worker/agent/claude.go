@@ -218,14 +218,8 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		a.fastMode = FastModeOff
 	}
 
-	// Configure the agent's permission mode. This also doubles as a probe
-	// for auto-mode availability so the UI never offers auto to a session
-	// that cannot enter it (admin-disabled, plan-gated, or unsupported
-	// model). When the user requested auto we merge probe and apply into a
-	// single set_permission_mode call; otherwise we probe auto separately
-	// and then apply the requested mode.
-	mode := StringOrDefault(opts.PermissionMode, PermissionModeDefault)
-	resp, err := a.applyStartupPermissionMode(ctx, &mode, timeout)
+	// Configure the permission mode and detect auto-mode availability for the UI.
+	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode, PermissionModeDefault), timeout)
 	if err != nil {
 		cleanup()
 		return nil, a.formatStartupError("set_permission_mode", err)
@@ -722,25 +716,23 @@ func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody st
 }
 
 // applyStartupPermissionMode sets the agent's permission mode during startup
-// while also detecting whether auto mode is available for this session. It
-// updates a.autoModeAvailable as a side effect.
+// while also detecting whether auto mode is available for this session.
+// a.autoModeAvailable is updated as a side effect; the returned result
+// reflects the mode actually applied (which may be default if the requested
+// auto mode was rejected with autoModeUnavailableErrorPrefix).
 //
-// When the requested mode is auto, a single set_permission_mode call serves
-// both purposes: success means auto is available and active; a response
-// matching autoModeUnavailableErrorPrefix means auto is unavailable and the
-// mode is rewritten to default and re-sent. Any other error is fatal.
-//
-// When the requested mode is non-auto, we probe auto first (leaving the
-// session briefly in auto on success) and then apply the requested mode,
-// which restores the intended state. Transient probe errors are treated as
-// unavailable so the UI does not offer a mode the agent cannot enter.
-func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, mode *string, timeout time.Duration) (claudeCodeControlResult, error) {
+// When requested == auto a single set_permission_mode call serves both
+// purposes; otherwise auto is probed first (leaving the session briefly in
+// auto on success) before the requested mode is applied to restore the
+// intended state. Transient probe errors are treated as unavailable so the
+// UI does not offer a mode the agent cannot enter.
+func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, requested string, timeout time.Duration) (claudeCodeControlResult, error) {
 	setMode := func(m string) (claudeCodeControlResult, error) {
 		return a.sendControlAndWait(ctx,
 			fmt.Sprintf(`{"subtype":"set_permission_mode","mode":"%s"}`, m), timeout)
 	}
 
-	if *mode == PermissionModeAuto {
+	if requested == PermissionModeAuto {
 		resp, err := setMode(PermissionModeAuto)
 		switch {
 		case err == nil:
@@ -750,7 +742,6 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, mode *
 			slog.Warn("requested auto permission mode is unavailable; falling back to default",
 				"agent_id", a.agentID)
 			a.autoModeAvailable = false
-			*mode = PermissionModeDefault
 			return setMode(PermissionModeDefault)
 		default:
 			return claudeCodeControlResult{}, err
@@ -766,7 +757,7 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, mode *
 	} else {
 		a.autoModeAvailable = true
 	}
-	return setMode(*mode)
+	return setMode(requested)
 }
 
 // isAutoModeUnavailableError reports whether err is the Claude Code

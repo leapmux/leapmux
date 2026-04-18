@@ -1183,12 +1183,10 @@ func TestApplyStartupPermissionMode_AutoAccepted(t *testing.T) {
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	mode := PermissionModeAuto
-	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeAuto, 2*time.Second)
 	require.NoError(t, err)
 
 	assert.True(t, agent.autoModeAvailable)
-	assert.Equal(t, PermissionModeAuto, mode, "requested mode should be preserved on acceptance")
 	assert.Equal(t, []string{PermissionModeAuto}, readHandshakeModes(t, logPath),
 		"accepted auto must complete in one set_permission_mode call")
 }
@@ -1208,13 +1206,11 @@ func TestApplyStartupPermissionMode_AutoRejectedFallsBack(t *testing.T) {
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	mode := PermissionModeAuto
-	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeAuto, 2*time.Second)
 	require.NoError(t, err)
 
 	assert.False(t, agent.autoModeAvailable,
 		"auto must be marked unavailable after a rejection with the auto-unavailable prefix")
-	assert.Equal(t, PermissionModeDefault, mode, "mode should be rewritten to default on fallback")
 	assert.Equal(t, []string{PermissionModeAuto, PermissionModeDefault}, readHandshakeModes(t, logPath),
 		"fallback path must issue auto then default")
 }
@@ -1233,8 +1229,7 @@ func TestApplyStartupPermissionMode_AutoTransientErrorPropagates(t *testing.T) {
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	mode := PermissionModeAuto
-	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeAuto, 2*time.Second)
 	require.Error(t, err, "transient errors should not be treated as unavailability")
 	assert.NotContains(t, err.Error(), autoModeUnavailableErrorPrefix)
 	assert.Equal(t, []string{PermissionModeAuto}, readHandshakeModes(t, logPath),
@@ -1254,8 +1249,7 @@ func TestApplyStartupPermissionMode_NonAutoProbesAutoAvailable(t *testing.T) {
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	mode := PermissionModeDefault
-	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeDefault, 2*time.Second)
 	require.NoError(t, err)
 
 	assert.True(t, agent.autoModeAvailable, "probe should confirm auto availability")
@@ -1278,8 +1272,7 @@ func TestApplyStartupPermissionMode_NonAutoProbeRejected(t *testing.T) {
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	mode := PermissionModePlan
-	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	_, err = agent.applyStartupPermissionMode(ctx, PermissionModePlan, 2*time.Second)
 	require.NoError(t, err)
 
 	assert.False(t, agent.autoModeAvailable, "probe rejection must hide auto from the UI")
@@ -1302,8 +1295,7 @@ func TestApplyStartupPermissionMode_NonAutoProbeTransient(t *testing.T) {
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { agent.Stop(); _ = agent.Wait() }()
 
-	mode := PermissionModeDefault
-	_, err = agent.applyStartupPermissionMode(ctx, &mode, 2*time.Second)
+	_, err = agent.applyStartupPermissionMode(ctx, PermissionModeDefault, 2*time.Second)
 	require.NoError(t, err, "transient probe error must not fail startup")
 
 	assert.False(t, agent.autoModeAvailable, "transient probe failure must conservatively hide auto")

@@ -76,14 +76,6 @@ func (w *testResponseWriter) streamsSnapshot() []*leapmuxv1.InnerStreamMessage {
 	return append([]*leapmuxv1.InnerStreamMessage(nil), w.streams...)
 }
 
-// streamCount returns len(streams) under the lock, for AssertEventually
-// conditions that wait for handler goroutines to produce output.
-func (w *testResponseWriter) streamCount() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return len(w.streams)
-}
-
 // setupTestService creates a minimal service.Context with an in-memory DB
 // and a channel manager that grants access to the given workspace IDs.
 func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.Dispatcher, *testResponseWriter) {
