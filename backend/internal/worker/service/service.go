@@ -240,13 +240,14 @@ func modelOrDefault(model string, provider leapmuxv1.AgentProvider) string {
 	return agent.DefaultModel(provider)
 }
 
-// effortOrDefault returns the effort if non-empty, otherwise the
-// provider's default effort from the agent registry.
-func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
+// effortOrDefault returns the effort if non-empty, otherwise the default
+// effort for the given model (falling back to the provider's default model
+// if the given model has no configured default).
+func effortOrDefault(effort, model string, provider leapmuxv1.AgentProvider) string {
 	if effort != "" {
 		return effort
 	}
-	return agent.DefaultEffort(provider)
+	return agent.DefaultEffortForModel(provider, model)
 }
 
 // settingsDisplayLabels returns lookup functions for model and effort display
