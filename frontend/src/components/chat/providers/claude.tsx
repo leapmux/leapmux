@@ -140,10 +140,9 @@ function classifyClaudeCodeMessage(
         if (contentArr.some(c => isObject(c) && c.type === 'text'))
           return { kind: 'assistant_text' }
         if (contentArr.some(c => isObject(c) && c.type === 'thinking')) {
-          // Defense-in-depth: hide thinking blocks that arrive without any
-          // visible text. The agent is launched with --thinking-display
-          // summarized so this should be rare, but the model can still
-          // emit a signature-only block in edge cases.
+          // Signature-only thinking blocks (no visible text) can slip past
+          // --thinking-display summarized; hide them so the UI doesn't
+          // render an empty row.
           const hasText = contentArr.some(c =>
             isObject(c) && c.type === 'thinking'
             && typeof c.thinking === 'string' && c.thinking.length > 0)

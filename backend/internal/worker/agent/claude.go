@@ -165,7 +165,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		sink:                   sink,
 		thirdPartyFromSettings: thirdPartyFromSettings,
 		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
-		alwaysThinking:         AlwaysThinkingOn, // default; Claude Code's get_settings confirms at startup
+		alwaysThinking:         AlwaysThinkingOn, // Claude Code default; refreshSettingsFromAgent confirms after apply_flag_settings
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -212,13 +212,8 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		a.fastMode = "off"
 	}
 
-	// Probe auto-mode availability before locking in the real mode. The
-	// probe leaves the agent briefly in auto mode on success, but the
-	// subsequent set_permission_mode below restores the intended mode.
-	// Admin-disabled / plan-gated / unsupported-model sessions return an
-	// error matching autoModeUnavailableErrorPrefix; any other failure is
-	// treated as unavailable (conservative default) so the UI does not
-	// offer a mode the agent cannot enter.
+	// Probe auto-mode availability. The subsequent set_permission_mode
+	// below overrides any mode the probe may have left active.
 	a.autoModeAvailable = a.probeAutoMode(ctx, timeout)
 
 	// Send set_permission_mode to configure the agent's permission mode.

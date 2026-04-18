@@ -1198,12 +1198,8 @@ func TestProbeAutoMode_TransientError(t *testing.T) {
 		"probe should conservatively return false on non-matching errors")
 }
 
-// TestStartupHandshake_ProbeBeforeMode replicates the post-init control-
-// request sequence from StartClaudeCode and verifies the probe is issued
-// before the user's real-mode request. This mirrors the pattern used by
-// TestAgent_TimeoutDetected's startUnresponsive helper, which also
-// replicates (rather than invokes) StartClaudeCode to exercise individual
-// handshake steps.
+// TestStartupHandshake_ProbeBeforeMode verifies the auto-mode probe is
+// issued before the user's real set_permission_mode request.
 func TestStartupHandshake_ProbeBeforeMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
