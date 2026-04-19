@@ -186,16 +186,6 @@ test.describe('Section Reorder & Move', () => {
     await expect(filesHandle).toBeVisible()
   })
 
-  test('should not show drag handle on user menu section', async ({ page, authenticatedWorkspace }) => {
-    // The user menu section is rail-only and not draggable.
-    // It doesn't have a section-header testid, so verify the user-menu-trigger exists
-    // but has no drag handle nearby.
-    await expect(page.locator('[data-testid="user-menu-trigger"]')).toBeVisible()
-
-    // There should be no drag handle for user-menu (it's railOnly, not in expandable sections)
-    await expect(page.locator('[data-testid^="section-drag-handle-user-menu"]')).toHaveCount(0)
-  })
-
   test('should not shift section title when drag handle is present', async ({ page, authenticatedWorkspace }) => {
     // The drag handle should be absolutely positioned and not affect the
     // section title alignment.

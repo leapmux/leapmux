@@ -245,10 +245,9 @@ test.describe('Pane Resize Handles', () => {
     expect(distFromOriginalAfterReset).toBeLessThan(distFromOriginalAfterDrag)
   })
 
-  test('should not show pane resize handle above user menu', async ({ page, authenticatedWorkspace }) => {
-    // The user menu is a railOnly section at the bottom — it should never
-    // get a resize handle. Verify by ensuring only In Progress is open and
-    // confirming no pane handles exist despite user menu being present.
+  test('should not show pane resize handle when only one section is open', async ({ page, authenticatedWorkspace }) => {
+    // With a single expanded section, there is nothing to split — so no
+    // pane handle should be rendered.
 
     await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
@@ -268,8 +267,5 @@ test.describe('Pane Resize Handles', () => {
 
     // With only In Progress open, there should be no pane handles
     await expect(page.locator('[data-testid="pane-resize-handle"]')).toHaveCount(0)
-
-    // The user menu section should be visible at the bottom
-    await expect(page.locator('[data-testid="user-menu-trigger"]')).toBeVisible()
   })
 })

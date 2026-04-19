@@ -73,9 +73,9 @@ export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
 // UI helpers
 // ──────────────────────────────────────────────
 
-/** Open the Preferences dialog from the user menu. */
+/** Open the Preferences dialog from the app menu. */
 export async function openPreferencesDialog(page: Page) {
-  await page.getByTestId('user-menu-trigger').first().click()
+  await page.getByTestId('app-menu-trigger').first().click()
   await page.getByRole('menuitem', { name: 'Preferences' }).click()
   await expect(page.getByRole('dialog', { name: 'Preferences' })).toBeVisible()
 }
@@ -225,26 +225,20 @@ export async function signUpViaUI(page: Page, username: string, password: string
 }
 
 /**
- * Logout via the user menu at the bottom of the sidebar.
+ * Logout via the app menu in the custom titlebar.
  */
 export async function logoutViaUI(page: Page) {
-  // Click the username trigger at the bottom of the sidebar
-  await page.getByTestId('user-menu-trigger').first().click()
-  // Click "Log out" in the popup menu
+  await page.getByTestId('app-menu-trigger').first().click()
   await page.getByText('Log out').click()
-  // Wait for redirect to login page
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
 }
 
 /**
- * Switch to a different organization via the user menu.
+ * Switch to a different organization via the app menu.
  */
 export async function switchOrgViaUI(page: Page, orgName: string) {
-  // Open user menu
-  await page.getByTestId('user-menu-trigger').first().click()
-  // Click the org name
+  await page.getByTestId('app-menu-trigger').first().click()
   await page.getByText(orgName, { exact: true }).click()
-  // Wait for navigation
   await expect(page).toHaveURL(new RegExp(`/o/${orgName}`))
 }
 
