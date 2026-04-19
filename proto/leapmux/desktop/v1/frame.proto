@@ -92,7 +92,6 @@ message Response {
     SetWindowSizeResponse set_window_size = 11;
     BuildInfo build_info = 12;
     BoolValue bool_value = 13;
-    ConnectDistributedResponse connect_distributed = 14;
     ProxyHttpResponse proxy_http = 15;
     StringValue string_value = 16;
     CreateTunnelResponse create_tunnel = 17;
@@ -105,10 +104,6 @@ message Response {
 message SetWindowSizeResponse {}
 message BoolValue { bool value = 1; }
 message StringValue { string value = 1; }
-
-message ConnectDistributedResponse {
-  string hub_url = 1;
-}
 
 message ProxyHttpResponse {
   int32 status = 1;
