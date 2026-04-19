@@ -106,6 +106,13 @@ func (s *RPCSession) writeOK(id uint64) {
 	})
 }
 
+func (s *RPCSession) writeSidecarInfo(id uint64) {
+	s.writeResponse(&desktoppb.Response{
+		Id:     id,
+		Result: &desktoppb.Response_SidecarInfo{SidecarInfo: s.app.SidecarInfo()},
+	})
+}
+
 func (s *RPCSession) handleRequest(req *desktoppb.Request) {
 	id := req.Id
 
@@ -138,12 +145,7 @@ func (s *RPCSession) handleRequest(req *desktoppb.Request) {
 		})
 
 	case *desktoppb.Request_GetSidecarInfo:
-		s.writeResponse(&desktoppb.Response{
-			Id: id,
-			Result: &desktoppb.Response_SidecarInfo{
-				SidecarInfo: s.app.SidecarInfo(),
-			},
-		})
+		s.writeSidecarInfo(id)
 
 	case *desktoppb.Request_GetStartupInfo:
 		s.writeResponse(&desktoppb.Response{
@@ -171,21 +173,14 @@ func (s *RPCSession) handleRequest(req *desktoppb.Request) {
 			s.writeError(id, err)
 			return
 		}
-		s.writeOK(id)
+		s.writeSidecarInfo(id)
 
 	case *desktoppb.Request_ConnectDistributed:
 		if err := s.app.ConnectDistributed(m.ConnectDistributed.HubUrl); err != nil {
 			s.writeError(id, err)
 			return
 		}
-		s.writeResponse(&desktoppb.Response{
-			Id: id,
-			Result: &desktoppb.Response_ConnectDistributed{
-				ConnectDistributed: &desktoppb.ConnectDistributedResponse{
-					HubUrl: s.app.GetHubURL(),
-				},
-			},
-		})
+		s.writeSidecarInfo(id)
 
 	case *desktoppb.Request_ProxyHttp:
 		resp, body, err := s.app.ProxyHTTP(m.ProxyHttp.Method, m.ProxyHttp.Path, m.ProxyHttp.Headers, m.ProxyHttp.Body)
@@ -230,7 +225,7 @@ func (s *RPCSession) handleRequest(req *desktoppb.Request) {
 			s.writeError(id, err)
 			return
 		}
-		s.writeOK(id)
+		s.writeSidecarInfo(id)
 
 	case *desktoppb.Request_CreateTunnel:
 		cfg := m.CreateTunnel.Config

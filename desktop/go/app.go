@@ -216,10 +216,6 @@ func (a *App) ConnectDistributed(hubURL string) error {
 	return nil
 }
 
-func (a *App) GetHubURL() string {
-	return a.hubURL
-}
-
 func (a *App) CreateTunnel(config TunnelConfig) (*TunnelInfo, error) {
 	if a.proxy == nil {
 		return nil, fmt.Errorf("not connected")

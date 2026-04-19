@@ -32,7 +32,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, Window, WindowEvent,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 #[cfg(target_os = "macos")]
 const APP_SUBMENU_ID: &str = "leapmux-app-menu";
@@ -129,7 +129,7 @@ enum HubTransport {
     Proxy,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ShellMode {
     Launcher,
@@ -229,7 +229,7 @@ struct ShellState {
 
 struct SidecarProcess {
     _child: Option<Child>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer_tx: mpsc::UnboundedSender<proto::Frame>,
     pending: PendingMap,
     next_id: AtomicU64,
 }
@@ -269,6 +269,35 @@ fn start_sidecar_reader_thread(
             }
         }
     });
+}
+
+// Owns the writer end of the sidecar stream on a dedicated OS thread so
+// async invoke handlers never block a Tokio worker on pipe I/O, and so
+// concurrent senders serialize implicitly through the channel rather than
+// contending on a Mutex.
+//
+// The channel is unbounded. Practical depth is bounded by the number of
+// in-flight RPCs — each caller holds a pending oneshot while awaiting a
+// response — and the writer drains a local pipe much faster than callers
+// enqueue frames, so the channel stays near-empty in the steady state.
+fn start_sidecar_writer_thread(
+    writer: Box<dyn Write + Send>,
+    pending: PendingMap,
+) -> mpsc::UnboundedSender<proto::Frame> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<proto::Frame>();
+    thread::spawn(move || {
+        let mut writer = writer;
+        while let Some(frame) = rx.blocking_recv() {
+            if let Err(err) = write_frame(&mut writer, &frame) {
+                eprintln!("sidecar frame write error: {err}");
+                break;
+            }
+        }
+        // Drop in-flight callers so their oneshot receivers resolve with
+        // an error instead of hanging when the peer goes away.
+        pending.lock().unwrap().clear();
+    });
+    tx
 }
 
 fn bootstrap_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
@@ -511,13 +540,7 @@ fn fetch_sidecar_info(
         Some(proto::frame::Message::Response(resp)) => resp,
         _ => return Err("unexpected frame while reading sidecar info".to_string()),
     };
-    if !resp.error.is_empty() {
-        return Err(resp.error);
-    }
-    match resp.result {
-        Some(proto::response::Result::SidecarInfo(info)) => Ok(info),
-        _ => Err("unexpected response for get_sidecar_info".to_string()),
-    }
+    sidecar_info_from_response(check_response(resp)?, "get_sidecar_info")
 }
 
 #[cfg(unix)]
@@ -988,12 +1011,13 @@ impl DesktopShell {
 
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         start_sidecar_reader_thread(app_handle.clone(), pending.clone(), bootstrap.reader);
+        let writer_tx = start_sidecar_writer_thread(bootstrap.writer, pending.clone());
 
         let shell = Self {
             app_handle,
             sidecar: SidecarProcess {
                 _child: bootstrap.child,
-                writer: Mutex::new(bootstrap.writer),
+                writer_tx,
                 pending,
                 next_id: AtomicU64::new(1),
             },
@@ -1048,19 +1072,8 @@ impl DesktopShell {
             ))
             .await?,
         )?;
-        let info = match resp.result {
-            Some(proto::response::Result::SidecarInfo(info)) => info,
-            _ => return Err("unexpected response for get_sidecar_info".to_string()),
-        };
-        let shell_mode = match info.shell_mode() {
-            proto::SidecarShellMode::Solo => ShellMode::Solo,
-            proto::SidecarShellMode::Distributed => ShellMode::Distributed,
-            _ => ShellMode::Launcher,
-        };
-        let mut state = self.state.lock().unwrap();
-        state.shell_mode = shell_mode;
-        state.connected = info.connected;
-        state.hub_url = info.hub_url;
+        let info = sidecar_info_from_response(resp, "get_sidecar_info")?;
+        apply_sidecar_info(&self.state, info);
         Ok(())
     }
 
@@ -1123,12 +1136,9 @@ async fn send_sidecar_request(
             method: Some(method),
         })),
     };
-    {
-        let mut writer = sidecar.writer.lock().unwrap();
-        if let Err(err) = write_frame(&mut *writer, &frame) {
-            sidecar.pending.lock().unwrap().remove(&id);
-            return Err(format!("write request: {err}"));
-        }
+    if sidecar.writer_tx.send(frame).is_err() {
+        sidecar.pending.lock().unwrap().remove(&id);
+        return Err("desktop sidecar writer disconnected".to_string());
     }
 
     rx.await
@@ -1143,6 +1153,32 @@ fn check_response(resp: proto::Response) -> Result<proto::Response, String> {
     } else {
         Err(resp.error)
     }
+}
+
+fn sidecar_info_from_response(
+    resp: proto::Response,
+    context: &str,
+) -> Result<proto::SidecarInfo, String> {
+    match resp.result {
+        Some(proto::response::Result::SidecarInfo(info)) => Ok(info),
+        _ => Err(format!("unexpected response for {context}")),
+    }
+}
+
+fn shell_mode_from_proto(info: &proto::SidecarInfo) -> ShellMode {
+    match info.shell_mode() {
+        proto::SidecarShellMode::Solo => ShellMode::Solo,
+        proto::SidecarShellMode::Distributed => ShellMode::Distributed,
+        _ => ShellMode::Launcher,
+    }
+}
+
+fn apply_sidecar_info(state: &Mutex<ShellState>, info: proto::SidecarInfo) {
+    let shell_mode = shell_mode_from_proto(&info);
+    let mut guard = state.lock().unwrap();
+    guard.shell_mode = shell_mode;
+    guard.connected = info.connected;
+    guard.hub_url = info.hub_url;
 }
 
 // --- Sidecar message handling ---
@@ -1357,17 +1393,15 @@ async fn open_full_disk_access_settings(shell: State<'_, Arc<DesktopShell>>) -> 
 
 #[tauri::command]
 async fn connect_solo(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
-    check_response(
+    let resp = check_response(
         shell
             .send_request_async(proto::request::Method::ConnectSolo(
                 proto::ConnectSoloRequest {},
             ))
             .await?,
     )?;
-    let mut state = shell.state.lock().unwrap();
-    state.shell_mode = ShellMode::Solo;
-    state.connected = true;
-    state.hub_url.clear();
+    let info = sidecar_info_from_response(resp, "connect_solo")?;
+    apply_sidecar_info(&shell.state, info);
     Ok(())
 }
 
@@ -1384,18 +1418,9 @@ async fn connect_distributed(
             ))
             .await?,
     )?;
-
-    let normalized_hub_url = match resp.result {
-        Some(proto::response::Result::ConnectDistributed(r)) => r.hub_url,
-        _ => return Err("unexpected response for connect_distributed".to_string()),
-    };
-
-    {
-        let mut state = shell.state.lock().unwrap();
-        state.shell_mode = ShellMode::Distributed;
-        state.connected = true;
-        state.hub_url = normalized_hub_url.clone();
-    }
+    let info = sidecar_info_from_response(resp, "connect_distributed")?;
+    let normalized_hub_url = info.hub_url.clone();
+    apply_sidecar_info(&shell.state, info);
 
     let target_url =
         Url::parse(&normalized_hub_url).map_err(|err| format!("parse hub url: {err}"))?;
@@ -1578,22 +1603,17 @@ async fn switch_mode(
     shell: State<'_, Arc<DesktopShell>>,
     window: WebviewWindow,
 ) -> Result<(), String> {
-    check_response(
+    let resp = check_response(
         shell
             .send_request_async(proto::request::Method::SwitchMode(
                 proto::SwitchModeRequest {},
             ))
             .await?,
     )?;
+    let info = sidecar_info_from_response(resp, "switch_mode")?;
+    apply_sidecar_info(&shell.state, info);
 
-    let local_app_url = {
-        let mut state = shell.state.lock().unwrap();
-        state.shell_mode = ShellMode::Launcher;
-        state.connected = false;
-        state.hub_url.clear();
-        state.local_app_url.clone()
-    };
-
+    let local_app_url = shell.state.lock().unwrap().local_app_url.clone();
     let target_url =
         Url::parse(&local_app_url).map_err(|err| format!("parse launcher url: {err}"))?;
     window
@@ -2018,18 +2038,13 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept fake sidecar");
             // Consume the GetSidecarInfo request so the handshake completes.
             let _ = read_frame(&mut stream).expect("read handshake request");
+            let mut info = sidecar_info(proto::SidecarShellMode::Unspecified, false, "");
+            info.pid = std::process::id() as i64;
             let response = proto::Frame {
                 message: Some(proto::frame::Message::Response(proto::Response {
                     id: 1,
                     error: String::new(),
-                    result: Some(proto::response::Result::SidecarInfo(proto::SidecarInfo {
-                        protocol_version: SIDECAR_PROTOCOL_VERSION.to_string(),
-                        binary_hash: "test-hash".to_string(),
-                        pid: std::process::id() as i64,
-                        shell_mode: 0,
-                        connected: false,
-                        hub_url: String::new(),
-                    })),
+                    result: Some(proto::response::Result::SidecarInfo(info)),
                 })),
             };
             write_frame(&mut stream, &response).expect("write handshake response");
@@ -2112,18 +2127,13 @@ mod tests {
                 );
             }
             let _ = read_frame(&mut stream).expect("read handshake request");
+            let mut info = sidecar_info(proto::SidecarShellMode::Unspecified, false, "");
+            info.pid = std::process::id() as i64;
             let response = proto::Frame {
                 message: Some(proto::frame::Message::Response(proto::Response {
                     id: 1,
                     error: String::new(),
-                    result: Some(proto::response::Result::SidecarInfo(proto::SidecarInfo {
-                        protocol_version: SIDECAR_PROTOCOL_VERSION.to_string(),
-                        binary_hash: "test-hash".to_string(),
-                        pid: std::process::id() as i64,
-                        shell_mode: 0,
-                        connected: false,
-                        hub_url: String::new(),
-                    })),
+                    result: Some(proto::response::Result::SidecarInfo(info)),
                 })),
             };
             write_frame(&mut stream, &response).expect("write handshake response");
@@ -2301,9 +2311,10 @@ mod tests {
         let writer = SharedBuffer::default();
         let buffer = writer.clone();
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let writer_tx = start_sidecar_writer_thread(Box::new(writer), pending.clone());
         let sidecar = SidecarProcess {
             _child: None,
-            writer: Mutex::new(Box::new(writer)),
+            writer_tx,
             pending: pending.clone(),
             next_id: AtomicU64::new(1),
         };
@@ -2320,7 +2331,7 @@ mod tests {
                     }));
                     break;
                 }
-                thread::sleep(Duration::from_millis(10));
+                thread::sleep(Duration::from_millis(100));
             }
         });
 
@@ -2333,8 +2344,15 @@ mod tests {
 
         assert_eq!(resp.id, 1);
 
+        assert!(
+            wait_until(
+                || read_frame(&mut io::Cursor::new(buffer.snapshot())).is_ok(),
+                Duration::from_secs(1),
+            ),
+            "writer thread never flushed the shutdown frame"
+        );
         let mut cursor = io::Cursor::new(buffer.snapshot());
-        let frame = read_frame(&mut cursor).expect("read request frame");
+        let frame = read_frame(&mut cursor).expect("decode flushed frame");
         let request = match frame.message {
             Some(proto::frame::Message::Request(req)) => req,
             other => panic!("unexpected frame: {other:?}"),
@@ -2344,5 +2362,276 @@ mod tests {
             request.method,
             Some(proto::request::Method::Shutdown(_))
         ));
+    }
+
+    fn sidecar_info(mode: proto::SidecarShellMode, connected: bool, hub_url: &str) -> proto::SidecarInfo {
+        proto::SidecarInfo {
+            protocol_version: SIDECAR_PROTOCOL_VERSION.to_string(),
+            binary_hash: "test-hash".to_string(),
+            pid: 0,
+            shell_mode: mode as i32,
+            connected,
+            hub_url: hub_url.to_string(),
+        }
+    }
+
+    fn fresh_state() -> Mutex<ShellState> {
+        Mutex::new(ShellState {
+            shell_mode: ShellMode::Launcher,
+            connected: false,
+            hub_url: String::new(),
+            local_app_url: "http://localhost:4328".to_string(),
+        })
+    }
+
+    #[test]
+    fn shell_mode_from_proto_maps_solo() {
+        let info = sidecar_info(proto::SidecarShellMode::Solo, true, "");
+        assert_eq!(shell_mode_from_proto(&info), ShellMode::Solo);
+    }
+
+    #[test]
+    fn shell_mode_from_proto_maps_distributed() {
+        let info = sidecar_info(proto::SidecarShellMode::Distributed, true, "https://hub");
+        assert_eq!(shell_mode_from_proto(&info), ShellMode::Distributed);
+    }
+
+    #[test]
+    fn shell_mode_from_proto_maps_launcher() {
+        let info = sidecar_info(proto::SidecarShellMode::Launcher, false, "");
+        assert_eq!(shell_mode_from_proto(&info), ShellMode::Launcher);
+    }
+
+    #[test]
+    fn shell_mode_from_proto_falls_back_to_launcher_on_unspecified() {
+        // Forward-compat: an older sidecar or an unknown enum value must
+        // not silently flip the shell into Solo/Distributed.
+        let info = sidecar_info(proto::SidecarShellMode::Unspecified, true, "https://hub");
+        assert_eq!(shell_mode_from_proto(&info), ShellMode::Launcher);
+    }
+
+    #[test]
+    fn apply_sidecar_info_overwrites_stale_cache() {
+        let state = fresh_state();
+        {
+            let mut guard = state.lock().unwrap();
+            guard.shell_mode = ShellMode::Solo;
+            guard.connected = true;
+            guard.hub_url = "stale".to_string();
+        }
+
+        apply_sidecar_info(
+            &state,
+            sidecar_info(proto::SidecarShellMode::Distributed, true, "https://hub.example"),
+        );
+
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.shell_mode, ShellMode::Distributed);
+        assert!(guard.connected);
+        assert_eq!(guard.hub_url, "https://hub.example");
+    }
+
+    #[test]
+    fn apply_sidecar_info_clears_hub_url_on_launcher() {
+        let state = fresh_state();
+        {
+            let mut guard = state.lock().unwrap();
+            guard.shell_mode = ShellMode::Distributed;
+            guard.connected = true;
+            guard.hub_url = "https://hub".to_string();
+        }
+
+        apply_sidecar_info(
+            &state,
+            sidecar_info(proto::SidecarShellMode::Launcher, false, ""),
+        );
+
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.shell_mode, ShellMode::Launcher);
+        assert!(!guard.connected);
+        assert!(guard.hub_url.is_empty());
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "forced failure"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn wait_until<F: FnMut() -> bool>(mut cond: F, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        cond()
+    }
+
+    #[test]
+    fn concurrent_send_sidecar_requests_produce_distinct_wellformed_frames() {
+        const N: u64 = 8;
+        let writer = SharedBuffer::default();
+        let buffer = writer.clone();
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let writer_tx = start_sidecar_writer_thread(Box::new(writer), pending.clone());
+        let sidecar = Arc::new(SidecarProcess {
+            _child: None,
+            writer_tx,
+            pending: pending.clone(),
+            next_id: AtomicU64::new(1),
+        });
+
+        let responder_pending = pending.clone();
+        let responder = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut answered = 0u64;
+            while answered < N && Instant::now() < deadline {
+                let ids: Vec<u64> =
+                    { responder_pending.lock().unwrap().keys().copied().collect() };
+                for id in ids {
+                    if let Some(tx) = responder_pending.lock().unwrap().remove(&id) {
+                        let _ = tx.send(Ok(proto::Response {
+                            id,
+                            error: String::new(),
+                            result: Some(proto::response::Result::BoolValue(proto::BoolValue {
+                                value: true,
+                            })),
+                        }));
+                        answered += 1;
+                    }
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime");
+        runtime.block_on(async {
+            let mut handles = Vec::new();
+            for _ in 0..N {
+                let s = sidecar.clone();
+                handles.push(tokio::spawn(async move {
+                    send_sidecar_request(
+                        &s,
+                        proto::request::Method::GetSidecarInfo(proto::GetSidecarInfoRequest {}),
+                    )
+                    .await
+                }));
+            }
+            for h in handles {
+                h.await.expect("join").expect("request");
+            }
+        });
+        responder.join().expect("responder join");
+
+        assert!(
+            wait_until(
+                || {
+                    let snap = buffer.snapshot();
+                    let mut cursor = io::Cursor::new(snap);
+                    let mut count = 0u64;
+                    while read_frame(&mut cursor).is_ok() {
+                        count += 1;
+                    }
+                    count == N
+                },
+                Duration::from_secs(2),
+            ),
+            "writer thread did not flush all frames"
+        );
+
+        let snapshot = buffer.snapshot();
+        let mut cursor = io::Cursor::new(snapshot);
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..N {
+            let frame = read_frame(&mut cursor).expect("decode frame");
+            let request = match frame.message {
+                Some(proto::frame::Message::Request(req)) => req,
+                other => panic!("unexpected frame: {other:?}"),
+            };
+            assert!(matches!(
+                request.method,
+                Some(proto::request::Method::GetSidecarInfo(_))
+            ));
+            assert!(ids.insert(request.id), "duplicate id {}", request.id);
+        }
+        assert_eq!(ids.len() as u64, N);
+    }
+
+    #[test]
+    fn send_sidecar_request_errors_when_writer_thread_has_exited() {
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let writer_tx = start_sidecar_writer_thread(Box::new(FailingWriter), pending.clone());
+        let sidecar = SidecarProcess {
+            _child: None,
+            writer_tx,
+            pending: pending.clone(),
+            next_id: AtomicU64::new(1),
+        };
+
+        let first = tauri::async_runtime::block_on(send_sidecar_request(
+            &sidecar,
+            proto::request::Method::Shutdown(proto::ShutdownRequest {}),
+        ));
+        assert_eq!(first, Err("desktop sidecar disconnected".to_string()));
+
+        assert!(
+            wait_until(
+                || sidecar.writer_tx.is_closed(),
+                Duration::from_secs(1),
+            ),
+            "writer channel never closed"
+        );
+
+        let second = tauri::async_runtime::block_on(send_sidecar_request(
+            &sidecar,
+            proto::request::Method::Shutdown(proto::ShutdownRequest {}),
+        ));
+        assert_eq!(
+            second,
+            Err("desktop sidecar writer disconnected".to_string())
+        );
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn writer_thread_exit_clears_pending_entries() {
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let (phantom_tx, phantom_rx) = oneshot::channel::<Result<proto::Response, String>>();
+        pending.lock().unwrap().insert(42, phantom_tx);
+
+        let writer_tx = start_sidecar_writer_thread(Box::new(FailingWriter), pending.clone());
+
+        writer_tx
+            .send(proto::Frame {
+                message: Some(proto::frame::Message::Request(proto::Request {
+                    id: 1,
+                    method: Some(proto::request::Method::Shutdown(proto::ShutdownRequest {})),
+                })),
+            })
+            .expect("send to writer");
+
+        assert!(
+            wait_until(
+                || pending.lock().unwrap().is_empty(),
+                Duration::from_secs(1),
+            ),
+            "writer thread never cleared pending on exit"
+        );
+
+        // The phantom receiver must observe the sender drop — the signal a
+        // real in-flight send_sidecar_request relies on to unblock.
+        let dropped = tauri::async_runtime::block_on(phantom_rx);
+        assert!(dropped.is_err(), "phantom oneshot should be dropped");
     }
 }
