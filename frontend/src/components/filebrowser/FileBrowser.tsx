@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
-import { For, Show } from 'solid-js'
+import { createMemo, For, Show } from 'solid-js'
+import { detectFlavor, parentDirectory, pathSegments, sep } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './FileBrowser.css'
 
@@ -24,18 +25,6 @@ function formatSize(bytes: bigint): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} G`
 }
 
-function pathSegments(path: string): { name: string, path: string }[] {
-  const parts = path.split('/').filter(Boolean)
-  const segments: { name: string, path: string }[] = []
-  for (let i = 0; i < parts.length; i++) {
-    segments.push({
-      name: parts[i],
-      path: `/${parts.slice(0, i + 1).join('/')}`,
-    })
-  }
-  return segments
-}
-
 function sortedEntries(entries: FileInfo[]): FileInfo[] {
   return entries.toSorted((a, b) => {
     if (a.isDir !== b.isDir)
@@ -54,6 +43,9 @@ export const FileBrowser: Component<FileBrowserProps> = (props) => {
     }
   }
 
+  const flavor = createMemo(() => detectFlavor(props.currentPath))
+  const segments = createMemo(() => pathSegments(props.currentPath, flavor()))
+
   return (
     <div class={styles.container}>
       <nav aria-label="Breadcrumb" class={styles.pathBar}>
@@ -63,10 +55,10 @@ export const FileBrowser: Component<FileBrowserProps> = (props) => {
               ~
             </button>
           </li>
-          <For each={pathSegments(props.currentPath)}>
+          <For each={segments()}>
             {segment => (
               <li>
-                <span class={styles.pathSeparator}>/</span>
+                <span class={styles.pathSeparator}>{sep(flavor())}</span>
                 <button
                   class={styles.pathSegment}
                   onClick={() => props.onNavigate(segment.path)}
@@ -97,9 +89,7 @@ export const FileBrowser: Component<FileBrowserProps> = (props) => {
               <div
                 class={styles.fileItem}
                 onClick={() => {
-                  const parts = props.currentPath.split('/')
-                  parts.pop()
-                  props.onNavigate(parts.join('/') || '.')
+                  props.onNavigate(parentDirectory(props.currentPath, flavor()) || '.')
                 }}
               >
                 <span class={styles.dirIcon}>..</span>

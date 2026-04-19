@@ -4,6 +4,7 @@ import type { createTabStore } from '~/stores/tab.store'
 import { createMemo } from 'solid-js'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { after, mid } from '~/lib/lexorank'
+import { basename } from '~/lib/paths'
 import { tabKey } from '~/stores/tab.store'
 import * as styles from './AppShell.css'
 
@@ -76,7 +77,7 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
     const tab = tabStore.state.tabs.find(t => tabKey(t) === key)
     if (!tab)
       return <></>
-    const label = tab.title || (tab.type === TabType.AGENT ? 'Agent' : tab.type === TabType.FILE ? (tab.filePath?.split('/').pop() ?? 'File') : 'Terminal')
+    const label = tab.title || (tab.type === TabType.AGENT ? 'Agent' : tab.type === TabType.FILE ? ((tab.filePath ? basename(tab.filePath) : '') || 'File') : 'Terminal')
     return (
       <div class={styles.dragPreviewTooltip}>
         <span>{label}</span>

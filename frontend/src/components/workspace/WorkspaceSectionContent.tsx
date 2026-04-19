@@ -278,7 +278,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         const stats = workspaceDiffStatsFor(id)
                         return (
                           <Show when={stats.added > 0 || stats.deleted > 0 || stats.untracked > 0}>
-                            <DiffStatsBadge added={stats.added} deleted={stats.deleted} untracked={stats.untracked} />
+                            <DiffStatsBadge stats={stats} />
                           </Show>
                         )
                       })()}

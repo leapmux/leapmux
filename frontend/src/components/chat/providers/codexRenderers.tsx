@@ -19,6 +19,7 @@ import { TodoList } from '~/components/todo/TodoList'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { codexPlanToTodos, todosToMarkdown } from '~/lib/messageParser'
+import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
@@ -28,7 +29,7 @@ import { ThinkingBubble, useSharedExpandedState } from '../messageRenderers'
 import {
   resultDivider,
 } from '../messageStyles.css'
-import { isObject, relativizePath } from '../messageUtils'
+import { isObject } from '../messageUtils'
 import { formatDuration } from '../rendererUtils'
 import { renderAgentDetail, renderBashDetail, renderDeleteDetail, renderEditDetail, renderQueryDetail, renderUrlDetail, renderWriteDetail } from '../toolDetailRenderers'
 import { EmptyTodoLayout, renderBashHighlight, ToolResultMessage, ToolUseLayout } from '../toolRenderers'
@@ -594,7 +595,7 @@ export function codexFileChangeRenderer(parsed: unknown, _role: MessageRole, con
                   <div class={toolResultPrompt}>
                     <span class={toolInputPath}>{relativizePath(entry.path, context?.workingDir, context?.homeDir)}</span>
                     {' '}
-                    <DiffStatsBadge added={stats.added} deleted={stats.deleted} class={toolInputText} />
+                    <DiffStatsBadge stats={{ added: stats.added, deleted: stats.deleted, untracked: 0 }} class={toolInputText} />
                   </div>
                 </Show>
                 <DiffView

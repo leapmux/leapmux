@@ -5,12 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 
 	"github.com/stretchr/testify/assert"
@@ -277,23 +277,23 @@ func TestDetachedHEAD_ShowsShortSHA(t *testing.T) {
 	assert.Equal(t, expectedSHA, branch)
 }
 
-func TestResolveMainRepoRoot_RegularRepo(t *testing.T) {
+func TestQueryGitPathInfo_RegularRepo(t *testing.T) {
 	dir := initRepo(t)
 	resolved, err := filepath.EvalSymlinks(dir)
 	require.NoError(t, err)
 
-	root, err := resolveMainRepoRoot(context.Background(), dir)
+	info, err := queryGitPathInfo(context.Background(), dir)
 	require.NoError(t, err)
-	assert.Equal(t, resolved, root)
+	assert.Equal(t, resolved, info.RepoRoot)
 }
 
-func TestResolveMainRepoRoot_NonGitDir(t *testing.T) {
+func TestQueryGitPathInfo_NonGitDir(t *testing.T) {
 	dir := t.TempDir()
-	_, err := resolveMainRepoRoot(context.Background(), dir)
+	_, err := queryGitPathInfo(context.Background(), dir)
 	assert.ErrorIs(t, err, errNotGitRepo)
 }
 
-func TestResolveMainRepoRoot_Subdirectory(t *testing.T) {
+func TestQueryGitPathInfo_Subdirectory(t *testing.T) {
 	dir := initRepo(t)
 	resolved, err := filepath.EvalSymlinks(dir)
 	require.NoError(t, err)
@@ -301,50 +301,43 @@ func TestResolveMainRepoRoot_Subdirectory(t *testing.T) {
 	subDir := filepath.Join(dir, "sub")
 	require.NoError(t, os.MkdirAll(subDir, 0o755))
 
-	root, err := resolveMainRepoRoot(context.Background(), subDir)
+	info, err := queryGitPathInfo(context.Background(), subDir)
 	require.NoError(t, err)
-	assert.Equal(t, resolved, root)
+	assert.Equal(t, resolved, info.RepoRoot)
 }
 
-func TestResolveMainRepoRoot_LinkedWorktree(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("resolveMainRepoRoot needs Windows-path awareness")
-	}
+func TestQueryGitPathInfo_LinkedWorktree(t *testing.T) {
 	dir := initRepo(t)
 	resolved, err := filepath.EvalSymlinks(dir)
 	require.NoError(t, err)
 
-	// Create a linked worktree.
 	wtDir := filepath.Join(t.TempDir(), "my-worktree")
 	run(t, dir, "git", "worktree", "add", "-b", "wt-branch", wtDir)
 
-	// resolveMainRepoRoot from the worktree should return the main repo root.
-	root, err := resolveMainRepoRoot(context.Background(), wtDir)
+	info, err := queryGitPathInfo(context.Background(), wtDir)
 	require.NoError(t, err)
-	assert.Equal(t, resolved, root)
+	assert.True(t, pathutil.SamePath(resolved, info.RepoRoot),
+		"expected same path; got resolved=%q root=%q", resolved, info.RepoRoot)
 }
 
-func TestResolveMainRepoRoot_NestedWorktree(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("resolveMainRepoRoot needs Windows-path awareness")
-	}
+func TestQueryGitPathInfo_NestedWorktree(t *testing.T) {
 	dir := initRepo(t)
 	resolved, err := filepath.EvalSymlinks(dir)
 	require.NoError(t, err)
 
-	// Create a worktree, then resolve from a subdirectory within it.
 	wtDir := filepath.Join(t.TempDir(), "nested-wt")
 	run(t, dir, "git", "worktree", "add", "-b", "nested-branch", wtDir)
 
 	subDir := filepath.Join(wtDir, "deep")
 	require.NoError(t, os.MkdirAll(subDir, 0o755))
 
-	root, err := resolveMainRepoRoot(context.Background(), subDir)
+	info, err := queryGitPathInfo(context.Background(), subDir)
 	require.NoError(t, err)
-	assert.Equal(t, resolved, root)
+	assert.True(t, pathutil.SamePath(resolved, info.RepoRoot),
+		"expected same path; got resolved=%q root=%q", resolved, info.RepoRoot)
 }
 
-func TestCurrentBranchForPath_LinkedWorktreeUsesWorktreeBranch(t *testing.T) {
+func TestQueryGitPathInfo_LinkedWorktreeUsesWorktreeBranch(t *testing.T) {
 	dir := initRepo(t)
 	ctx := context.Background()
 
@@ -354,8 +347,13 @@ func TestCurrentBranchForPath_LinkedWorktreeUsesWorktreeBranch(t *testing.T) {
 	wtDir := filepath.Join(t.TempDir(), "feature-worktree")
 	run(t, dir, "git", "worktree", "add", "-b", "feature-branch", wtDir)
 
-	require.Equal(t, "main-branch", currentBranchForPath(ctx, dir))
-	require.Equal(t, "feature-branch", currentBranchForPath(ctx, wtDir))
+	infoMain, err := queryGitPathInfo(ctx, dir)
+	require.NoError(t, err)
+	require.Equal(t, "main-branch", branchOrShortSHA(ctx, dir, infoMain))
+
+	infoWt, err := queryGitPathInfo(ctx, wtDir)
+	require.NoError(t, err)
+	require.Equal(t, "feature-branch", branchOrShortSHA(ctx, wtDir, infoWt))
 }
 
 func createAgentForPath(t *testing.T, svc *Context, agentID, workingDir string) {
@@ -377,9 +375,6 @@ func waitForPathToDisappear(t *testing.T, path string) {
 }
 
 func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("worktree path handling needs Windows-path awareness")
-	}
 	svc, _, _ := setupTestService(t, "ws-1")
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "inspect-clean-wt")
@@ -396,7 +391,8 @@ func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
 	assert.True(t, resp.GetShouldPrompt())
 	expectedPath, err := filepath.EvalSymlinks(wtDir)
 	require.NoError(t, err)
-	assert.Equal(t, expectedPath, resp.GetWorktreePath())
+	assert.True(t, pathutil.SamePath(expectedPath, resp.GetWorktreePath()),
+		"expected same path; got expected=%q actual=%q", expectedPath, resp.GetWorktreePath())
 	assert.Equal(t, "inspect-clean", resp.GetBranchName())
 }
 
@@ -498,9 +494,6 @@ func TestPushBranchForClose_RecreatesUpstream(t *testing.T) {
 }
 
 func TestScheduleWorktreeDeletion_ExternalTrackedWorktreeDeletes(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("worktree path handling needs Windows-path awareness")
-	}
 	svc, _, _ := setupTestService(t, "ws-1")
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "external-tracked")

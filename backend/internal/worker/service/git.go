@@ -12,6 +12,8 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
@@ -25,7 +27,7 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		dirPath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -34,74 +36,21 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		ctx := bgCtx()
 		resp := &leapmuxv1.GetGitInfoResponse{}
 
-		// Check if inside a git work tree.
-		isWorkTree, err := gitOutput(ctx, dirPath, "rev-parse", "--is-inside-work-tree")
+		info, err := queryGitPathInfo(ctx, dirPath)
 		if err != nil {
-			// Not a git repo.
 			sendProtoResponse(sender, resp)
 			return
 		}
-		resp.IsGitRepo = strings.TrimSpace(isWorkTree) == "true"
-		if !resp.IsGitRepo {
-			sendProtoResponse(sender, resp)
-			return
+		canonDirPath := pathutil.Canonicalize(dirPath)
+		resp.IsGitRepo = true
+		resp.RepoRoot = info.RepoRoot
+		resp.RepoDirName = filepath.Base(info.RepoRoot)
+		resp.IsRepoRoot = pathutil.SamePath(canonDirPath, info.RepoRoot)
+		resp.IsWorktree = info.IsWorktree
+		if info.IsWorktree {
+			resp.IsWorktreeRoot = pathutil.SamePath(canonDirPath, info.TopLevel)
 		}
-
-		// Get the repo root (toplevel).
-		if topLevel, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel"); err == nil {
-			topLevel = strings.TrimSpace(topLevel)
-			// Resolve symlinks so paths are consistent (e.g. /var → /private/var on macOS).
-			if resolved, err := filepath.EvalSymlinks(topLevel); err == nil {
-				topLevel = resolved
-			}
-			resp.RepoRoot = topLevel
-			resp.RepoDirName = filepath.Base(topLevel)
-
-			// Resolve symlinks to compare paths accurately.
-			resolvedPath, _ := filepath.EvalSymlinks(dirPath)
-			resolvedTop, _ := filepath.EvalSymlinks(topLevel)
-			if resolvedPath != "" && resolvedTop != "" {
-				resp.IsRepoRoot = resolvedPath == resolvedTop
-			}
-		}
-
-		// Detect worktree: if .git is a file (not a directory), it's a linked worktree.
-		if gitDir, err := gitOutput(ctx, dirPath, "rev-parse", "--git-dir"); err == nil {
-			gitDir = strings.TrimSpace(gitDir)
-			// In linked worktrees, --git-dir points to <main-repo>/.git/worktrees/<name>.
-			if strings.Contains(gitDir, filepath.Join(".git", "worktrees")) {
-				resp.IsWorktree = true
-
-				// Resolve the actual main repo root through the worktree link.
-				if commonDir, err := gitOutput(ctx, dirPath, "rev-parse", "--git-common-dir"); err == nil {
-					commonDir = strings.TrimSpace(commonDir)
-					if !filepath.IsAbs(commonDir) {
-						if topLevel, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel"); err == nil {
-							commonDir = filepath.Join(strings.TrimSpace(topLevel), commonDir)
-						}
-					}
-					// commonDir is <main-repo>/.git, so parent is the main repo root.
-					mainRepoRoot := filepath.Dir(filepath.Clean(commonDir))
-					// Resolve symlinks so paths are consistent.
-					if resolved, err := filepath.EvalSymlinks(mainRepoRoot); err == nil {
-						mainRepoRoot = resolved
-					}
-					resp.RepoRoot = mainRepoRoot
-					resp.RepoDirName = filepath.Base(mainRepoRoot)
-				}
-
-				// Check if this path IS the worktree root.
-				if topLevel, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel"); err == nil {
-					resolvedPath, _ := filepath.EvalSymlinks(dirPath)
-					resolvedTop, _ := filepath.EvalSymlinks(strings.TrimSpace(topLevel))
-					if resolvedPath != "" && resolvedTop != "" {
-						resp.IsWorktreeRoot = resolvedPath == resolvedTop
-					}
-				}
-			}
-		}
-
-		resp.CurrentBranch = currentBranchForPath(ctx, dirPath)
+		resp.CurrentBranch = branchOrShortSHA(ctx, dirPath, info)
 
 		// Origin URL.
 		if originURL, err := gitOutput(ctx, dirPath, "config", "--get", "remote.origin.url"); err == nil {
@@ -123,7 +72,7 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		dirPath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -171,7 +120,7 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		absPath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		absPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -232,7 +181,7 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		dirPath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -240,12 +189,12 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 
 		ctx := bgCtx()
 
-		// Resolve the main repo root (works for both regular repos and linked worktrees).
-		repoRoot, err := resolveMainRepoRoot(ctx, dirPath)
+		info, err := queryGitPathInfo(ctx, dirPath)
 		if err != nil {
 			sendInternalError(sender, "not a git repository")
 			return
 		}
+		repoRoot := info.RepoRoot
 
 		// Get local branches.
 		localOut, err := gitOutput(ctx, repoRoot, "branch", "--list", "--format=%(refname:short)")
@@ -282,7 +231,7 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 
 		sendProtoResponse(sender, &leapmuxv1.ListGitBranchesResponse{
 			Branches:      branches,
-			CurrentBranch: currentBranchForPath(ctx, dirPath),
+			CurrentBranch: branchOrShortSHA(ctx, dirPath, info),
 		})
 	})
 
@@ -293,7 +242,7 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		dirPath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -498,15 +447,15 @@ func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	resp.DiffUntracked = untracked
 	resp.HasUncommittedChanges = hasChanges
 
-	unpushedCount, upstreamExists, remoteMissing, originExists, canPush, err := pushStatusForPath(ctx, tabCtx.commitDir(), tabCtx.branchName)
+	push, err := pushStatusForPath(ctx, tabCtx.commitDir(), tabCtx.branchName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect push status: %w", err)
 	}
-	resp.UnpushedCommitCount = unpushedCount
-	resp.UpstreamExists = upstreamExists
-	resp.RemoteBranchMissing = remoteMissing
-	resp.OriginExists = originExists
-	resp.CanPush = canPush
+	resp.UnpushedCommitCount = push.Unpushed
+	resp.UpstreamExists = push.UpstreamExists
+	resp.RemoteBranchMissing = push.RemoteMissing
+	resp.OriginExists = push.OriginExists
+	resp.CanPush = push.CanPush(tabCtx.branchName)
 
 	if tabCtx.isWorktree {
 		tabCount, err := svc.Queries.CountWorktreeTabs(ctx, tabCtx.worktreeID)
@@ -524,7 +473,7 @@ func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	if err != nil {
 		return nil, err
 	}
-	if otherTabs == 0 && (hasChanges || unpushedCount > 0 || remoteMissing) {
+	if otherTabs == 0 && (hasChanges || push.Unpushed > 0 || push.RemoteMissing) {
 		resp.Target = leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH
 		resp.ShouldPrompt = true
 	}
@@ -557,19 +506,19 @@ func (svc *Context) pushBranchForClose(ctx context.Context, tabType leapmuxv1.Ta
 		}
 	}
 
-	_, upstreamExists, _, originExists, canPush, err := pushStatusForPath(ctx, commitDir, tabCtx.branchName)
+	push, err := pushStatusForPath(ctx, commitDir, tabCtx.branchName)
 	if err != nil {
 		return err
 	}
-	if !canPush {
-		if !originExists {
+	if !push.CanPush(tabCtx.branchName) {
+		if !push.OriginExists {
 			return errors.New("cannot push: remote origin does not exist")
 		}
 		return errors.New("cannot push this branch")
 	}
 
 	pushArgs := []string{"push"}
-	if !upstreamExists {
+	if !push.UpstreamExists {
 		pushArgs = append(pushArgs, "-u", "origin", tabCtx.branchName)
 	}
 	stderr, err := gitOutputStderr(ctx, commitDir, pushArgs...)
@@ -623,23 +572,22 @@ func (svc *Context) loadTabGitContext(ctx context.Context, tabType leapmuxv1.Tab
 		return nil, err
 	}
 
-	repoRoot, err := resolveMainRepoRoot(ctx, workingDir)
+	info, err := queryGitPathInfo(ctx, workingDir)
 	if err != nil {
 		return nil, errors.New("tab is not in a git repository")
 	}
 
-	branchName := currentBranchForPath(ctx, workingDir)
-	worktreeRoot, err := linkedWorktreeRoot(ctx, workingDir)
-	if err != nil {
-		return nil, err
+	branchName := branchOrShortSHA(ctx, workingDir, info)
+	var worktreeRoot string
+	if info.IsWorktree {
+		worktreeRoot = info.TopLevel
 	}
-
 	tabCtx := &tabGitContext{
 		workingDir:   workingDir,
-		repoRoot:     repoRoot,
+		repoRoot:     info.RepoRoot,
 		branchName:   branchName,
 		worktreeRoot: worktreeRoot,
-		isWorktree:   worktreeRoot != "",
+		isWorktree:   info.IsWorktree,
 	}
 
 	if tabCtx.isWorktree {
@@ -680,6 +628,10 @@ func (svc *Context) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabT
 }
 
 func (svc *Context) countOtherNonWorktreeTabsOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, repoRoot, branchName string) (int, error) {
+	// Two terminals in the same repo share a workingDir; cache so each unique
+	// dir costs one rev-parse.
+	infoCache := map[string]*gitPathInfo{}
+
 	countMatching := func(query string, skipType leapmuxv1.TabType) (int, error) {
 		rows, err := svc.DB.QueryContext(ctx, query)
 		if err != nil {
@@ -699,7 +651,7 @@ func (svc *Context) countOtherNonWorktreeTabsOnBranch(ctx context.Context, tabTy
 			if tabType == skipType && id == tabID {
 				continue
 			}
-			if matches, err := tabMatchesBranch(ctx, workingDir, repoRoot, branchName); err == nil && matches {
+			if matches, err := tabMatchesBranch(ctx, workingDir, repoRoot, branchName, infoCache); err == nil && matches {
 				n++
 			}
 		}
@@ -717,19 +669,22 @@ func (svc *Context) countOtherNonWorktreeTabsOnBranch(ctx context.Context, tabTy
 	return agents + terminals, nil
 }
 
-func tabMatchesBranch(ctx context.Context, workingDir, repoRoot, branchName string) (bool, error) {
-	otherRepoRoot, err := resolveMainRepoRoot(ctx, workingDir)
-	if err != nil || otherRepoRoot != repoRoot {
-		return false, err
+// tabMatchesBranch reports whether a tab's workingDir resolves to repoRoot
+// and is on branchName. infoCache amortizes rev-parse cost across many tabs.
+func tabMatchesBranch(ctx context.Context, workingDir, repoRoot, branchName string, infoCache map[string]*gitPathInfo) (bool, error) {
+	info := infoCache[workingDir]
+	if info == nil {
+		fetched, err := queryGitPathInfo(ctx, workingDir)
+		if err != nil {
+			return false, err
+		}
+		info = fetched
+		infoCache[workingDir] = info
 	}
-	worktreeRoot, err := linkedWorktreeRoot(ctx, workingDir)
-	if err != nil {
-		return false, err
-	}
-	if worktreeRoot != "" {
+	if !pathutil.SamePath(info.RepoRoot, repoRoot) || info.IsWorktree {
 		return false, nil
 	}
-	return currentBranchForPath(ctx, workingDir) == branchName, nil
+	return branchOrShortSHA(ctx, workingDir, info) == branchName, nil
 }
 
 func diffStatsForPath(ctx context.Context, dir string) (added, deleted, untracked int32, hasChanges bool, err error) {
@@ -748,53 +703,66 @@ func diffStatsForPath(ctx context.Context, dir string) (added, deleted, untracke
 	return added, deleted, untracked, len(files) > 0, nil
 }
 
-func pushStatusForPath(ctx context.Context, dir, branchName string) (unpushed int32, upstreamExists, remoteMissing, originExists, canPush bool, err error) {
+type pushStatus struct {
+	Unpushed       int32
+	UpstreamExists bool
+	RemoteMissing  bool
+	OriginExists   bool
+}
+
+// CanPush reports whether a branch can be pushed to origin. Detached HEAD and
+// empty branch names are rejected even when origin exists.
+func (s pushStatus) CanPush(branchName string) bool {
+	return s.OriginExists && branchName != "" && branchName != "HEAD"
+}
+
+func pushStatusForPath(ctx context.Context, dir, branchName string) (pushStatus, error) {
+	var s pushStatus
 	if _, originErr := gitOutput(ctx, dir, "config", "--get", "remote.origin.url"); originErr == nil {
-		originExists = true
+		s.OriginExists = true
 	}
 
-	canPush = originExists && branchName != "" && branchName != "HEAD"
 	if branchName == "" || branchName == "HEAD" {
-		return
+		return s, nil
 	}
 
 	remoteName, remoteErr := gitOutput(ctx, dir, "config", "--get", "branch."+branchName+".remote")
 	mergeRef, mergeErr := gitOutput(ctx, dir, "config", "--get", "branch."+branchName+".merge")
 	if remoteErr != nil || mergeErr != nil {
-		if originExists {
+		if s.OriginExists {
 			if out, revErr := gitOutput(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes"); revErr == nil {
 				var count int
 				if _, scanErr := fmt.Sscanf(strings.TrimSpace(out), "%d", &count); scanErr != nil {
-					return 0, false, false, originExists, canPush, scanErr
+					return s, scanErr
 				}
-				unpushed = int32(count)
+				s.Unpushed = int32(count)
 			}
 		}
-		return
+		return s, nil
 	}
 
-	upstreamExists = true
+	s.UpstreamExists = true
 	remoteName = strings.TrimSpace(remoteName)
 	mergeRef = strings.TrimSpace(mergeRef)
 	remoteBranch := strings.TrimPrefix(mergeRef, "refs/heads/")
 	if remoteName == "" || remoteBranch == "" {
-		return
+		return s, nil
 	}
 
-	remoteMissing = !remoteRefExists(ctx, dir, remoteName, remoteBranch)
-	if remoteMissing {
-		return
+	s.RemoteMissing = !remoteRefExists(ctx, dir, remoteName, remoteBranch)
+	if s.RemoteMissing {
+		return s, nil
 	}
 
 	upstreamRef := "refs/remotes/" + remoteName + "/" + remoteBranch
 	if out, revErr := gitOutput(ctx, dir, "rev-list", "--count", upstreamRef+"..HEAD"); revErr == nil {
 		var count int
 		if _, scanErr := fmt.Sscanf(strings.TrimSpace(out), "%d", &count); scanErr != nil {
-			return 0, true, false, originExists, canPush, scanErr
+			return s, scanErr
 		}
-		unpushed = int32(count)
+		s.Unpushed = int32(count)
 	}
-	return
+	return s, nil
 }
 
 func remoteRefExists(ctx context.Context, dir, remoteName, branchName string) bool {
@@ -1090,92 +1058,62 @@ func applyNumstat(data []byte, fileMap map[string]*leapmuxv1.GitFileStatusEntry,
 	}
 }
 
-// resolveMainRepoRoot resolves to the main repository root, even if dirPath is
-// inside a linked worktree. For regular repos, returns the toplevel directory.
-// Uses a single `git rev-parse` invocation for all three values.
-func resolveMainRepoRoot(ctx context.Context, dirPath string) (string, error) {
-	// Query all three values in one subprocess call.
-	output, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
+type gitPathInfo struct {
+	RepoRoot   string // canonical main repo root
+	TopLevel   string // canonical --show-toplevel (worktree root when IsWorktree)
+	BranchName string // abbrev-ref of HEAD; empty when detached
+	IsWorktree bool
+}
+
+// queryGitPathInfo runs one `git rev-parse` and returns the resolved metadata
+// for dirPath. Fails with errNotGitRepo if dirPath is not in a work tree.
+func queryGitPathInfo(ctx context.Context, dirPath string) (*gitPathInfo, error) {
+	output, err := gitOutput(ctx, dirPath,
+		"rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir", "--abbrev-ref", "HEAD")
 	if err != nil {
-		return "", errNotGitRepo
+		return nil, errNotGitRepo
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) < 4 {
+		return nil, errNotGitRepo
 	}
 
-	lines := strings.SplitN(strings.TrimSpace(output), "\n", 3)
-	if len(lines) < 3 {
-		return "", errNotGitRepo
-	}
-
-	topLevel := strings.TrimSpace(lines[0])
+	topLevel := pathutil.Canonicalize(strings.TrimSpace(lines[0]))
 	gitDir := strings.TrimSpace(lines[1])
 	commonDir := strings.TrimSpace(lines[2])
-
-	if resolved, err := filepath.EvalSymlinks(topLevel); err == nil {
-		topLevel = resolved
+	info := &gitPathInfo{
+		TopLevel: topLevel,
+		RepoRoot: topLevel,
 	}
-
-	repoRoot := topLevel
-
-	// If --git-dir contains ".git/worktrees", this is a linked worktree.
-	// Resolve the main repo root through --git-common-dir.
-	if strings.Contains(gitDir, filepath.Join(".git", "worktrees")) {
+	if b := strings.TrimSpace(lines[3]); b != "HEAD" {
+		info.BranchName = b
+	}
+	if gitutil.IsLinkedWorktreeGitDir(gitDir) {
+		info.IsWorktree = true
 		if !filepath.IsAbs(commonDir) {
 			commonDir = filepath.Join(topLevel, commonDir)
 		}
-		mainRepoRoot := filepath.Dir(filepath.Clean(commonDir))
-		if resolved, err := filepath.EvalSymlinks(mainRepoRoot); err == nil {
-			mainRepoRoot = resolved
-		}
-		repoRoot = mainRepoRoot
+		// commonDir is <main-repo>/.git, so its parent is the main repo root.
+		info.RepoRoot = pathutil.Canonicalize(filepath.Dir(filepath.Clean(commonDir)))
 	}
-
-	return repoRoot, nil
+	return info, nil
 }
 
-func linkedWorktreeRoot(ctx context.Context, dirPath string) (string, error) {
-	output, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel", "--git-dir")
-	if err != nil {
-		return "", errNotGitRepo
+// branchOrShortSHA returns info.BranchName when set, otherwise the short HEAD
+// SHA via a second subprocess. Handles the "detached HEAD" display case.
+func branchOrShortSHA(ctx context.Context, dirPath string, info *gitPathInfo) string {
+	if info.BranchName != "" {
+		return info.BranchName
 	}
-	lines := strings.SplitN(strings.TrimSpace(output), "\n", 2)
-	if len(lines) < 2 {
-		return "", errNotGitRepo
-	}
-
-	topLevel := strings.TrimSpace(lines[0])
-	gitDir := strings.TrimSpace(lines[1])
-	if !strings.Contains(gitDir, filepath.Join(".git", "worktrees")) {
-		return "", nil
-	}
-	if resolved, err := filepath.EvalSymlinks(topLevel); err == nil {
-		topLevel = resolved
-	}
-	return topLevel, nil
+	return shortHEADSHA(ctx, dirPath)
 }
 
-func currentBranchForPath(ctx context.Context, dirPath string) string {
-	branch, err := gitOutput(ctx, dirPath, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return ""
-	}
-
-	currentBranch := strings.TrimSpace(branch)
-	if currentBranch != "HEAD" {
-		return currentBranch
-	}
-
+func shortHEADSHA(ctx context.Context, dirPath string) string {
 	sha, err := gitOutput(ctx, dirPath, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(sha)
-}
-
-func currentLocalBranchForPath(ctx context.Context, dirPath string) (string, error) {
-	branch, err := gitOutput(ctx, dirPath, "branch", "--show-current")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(branch), nil
 }
 
 // parseGitLines splits git output by newlines, trimming whitespace and filtering empty lines.

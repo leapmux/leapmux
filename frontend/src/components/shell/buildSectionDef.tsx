@@ -22,6 +22,7 @@ import { WorkerSectionContent } from '~/components/workers/WorkerSectionContent'
 import { emptySection as emptySectionStyle } from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
+import { flavorFromOs } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
@@ -191,6 +192,7 @@ export function buildSectionDef(
             workerId={ctx.workerId}
             workingDir={ctx.workingDir}
             homeDir={ctx.homeDir}
+            flavor={flavorFromOs(ctx.workerInfoFn(ctx.workerId)?.os)}
             fileTreePath={ctx.fileTreePath}
             onFileSelect={ctx.onFileSelect}
             onFileOpen={ctx.onFileOpen}

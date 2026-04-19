@@ -1,12 +1,3 @@
-//go:build unix
-
-// filebrowser's ListDirectory / ReadFile / StatFile call
-// validate.SanitizePath, which only accepts POSIX-style absolute paths
-// (starting with `/`). Windows absolute paths (`C:\...`) are rejected, so
-// these integration tests are inherently Unix-only. Until file browsing
-// grows explicit Windows-path support, the Windows path is exercised via
-// the desktop end-to-end tests instead.
-
 package filebrowser
 
 import (

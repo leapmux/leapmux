@@ -30,9 +30,9 @@ type FileEntry struct {
 // When maxDepth > 0, single-child directory entries are merged server-side
 // (e.g. "a/b/c") to reduce round-trip RPC calls from the frontend.
 func ListDirectory(path string, maxDepth int) (string, []FileEntry, error) {
-	absPath := validate.SanitizePath(path, userHomeDir())
-	if absPath == "" {
-		return "", nil, fmt.Errorf("invalid path")
+	absPath, err := validate.SanitizePath(path, userHomeDir())
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid path: %w", err)
 	}
 
 	entries, err := os.ReadDir(absPath)
@@ -93,9 +93,9 @@ func mergeEntry(dirPath string, entry FileEntry, remaining int) FileEntry {
 
 // ReadFile reads file content with offset and limit. The path must be absolute.
 func ReadFile(path string, offset, limit int64) (string, []byte, int64, error) {
-	absPath := validate.SanitizePath(path, userHomeDir())
-	if absPath == "" {
-		return "", nil, 0, fmt.Errorf("invalid path")
+	absPath, err := validate.SanitizePath(path, userHomeDir())
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("invalid path: %w", err)
 	}
 
 	info, err := os.Stat(absPath)
@@ -134,9 +134,9 @@ func ReadFile(path string, offset, limit int64) (string, []byte, int64, error) {
 
 // StatFile returns information about a file or directory. The path must be absolute.
 func StatFile(path string) (string, *FileEntry, error) {
-	absPath := validate.SanitizePath(path, userHomeDir())
-	if absPath == "" {
-		return "", nil, fmt.Errorf("invalid path")
+	absPath, err := validate.SanitizePath(path, userHomeDir())
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid path: %w", err)
 	}
 
 	info, err := os.Stat(absPath)

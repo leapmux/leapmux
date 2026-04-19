@@ -1,6 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
-import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
+import type { PathFlavor } from '~/lib/paths'
+import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
 import AtSign from 'lucide-solid/icons/at-sign'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ClipboardCopy from 'lucide-solid/icons/clipboard-copy'
@@ -10,15 +11,14 @@ import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import TerminalIcon from 'lucide-solid/icons/terminal'
-import { createContext, createEffect, createSignal, For, on, onCleanup, onMount, Show, useContext } from 'solid-js'
+import { createContext, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, useContext } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
-import { relativizePath, tildify } from '~/components/chat/messageUtils'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
+import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, relativizePath, tildify, untildify } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
@@ -39,6 +39,9 @@ export interface DirectoryTreeProps {
   onOpenTerminal?: (dirPath: string) => void
   rootPath?: string
   homeDir?: string
+  /** Path flavor for the worker this tree is rendering. Defaults to a
+   *  best-effort sniff from homeDir/rootPath. */
+  flavor?: PathFlavor
   gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
   /** When set, only show nodes whose paths are in this set. */
   visiblePaths?: Set<string>
@@ -57,6 +60,21 @@ interface TreeNodeData {
   hidden: boolean
 }
 
+// Content equality for the children cache; see setChildrenInStore.
+function sameTreeEntries(a: readonly TreeNodeData[], b: readonly TreeNodeData[]): boolean {
+  if (a === b)
+    return true
+  if (a.length !== b.length)
+    return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (x.path !== y.path || x.displayName !== y.displayName || x.isDir !== y.isDir || x.hidden !== y.hidden)
+      return false
+  }
+  return true
+}
+
 // -------------------------------------------------------------------------
 // Tree context — bundles stable, tree-wide values to avoid prop drilling
 // -------------------------------------------------------------------------
@@ -66,6 +84,7 @@ interface TreeContextValue {
   showFiles: boolean
   rootPath: string
   homeDir?: string
+  flavor: () => PathFlavor
   scrollContainer?: HTMLDivElement
   gitStatusStore: () => ReturnType<typeof createGitFileStatusStore> | undefined
   showHiddenFiles: boolean
@@ -129,23 +148,22 @@ function deserializeState(raw: string): { expandedPaths: Record<string, boolean>
 // Visibility helpers
 // -------------------------------------------------------------------------
 
-/**
- * Check if a path is visible either directly or via an ancestor directory
- * entry in the visible set. Git reports untracked directories with a trailing
- * slash (e.g. "build/"), so when the tree merges single-child directories
- * (e.g. "build/bin"), walking up from the merged path finds the ancestor.
- */
-function isPathVisible(path: string, visible: Set<string>): boolean {
-  if (visible.has(path))
-    return true
+function isDescendantPath(child: string, parent: string, flavor: PathFlavor): boolean {
+  const rel = relativeUnder(child, parent, flavor)
+  return rel !== null && rel !== ''
+}
+
+// Git emits untracked dirs as "build/"; merged tree nodes like "build/bin"
+// match by walking ancestors.
+function isPathVisible(path: string, visible: Set<string>, flavor: PathFlavor): boolean {
   let dir = path
   while (true) {
-    const lastSlash = dir.lastIndexOf('/')
-    if (lastSlash <= 0)
-      return false
-    dir = dir.substring(0, lastSlash)
-    if (visible.has(`${dir}/`))
+    if (visible.has(dir))
       return true
+    const i = lastSepIndex(dir, flavor)
+    if (i <= 0)
+      return false
+    dir = dir.substring(0, i)
   }
 }
 
@@ -241,7 +259,7 @@ const TreeContextMenu: Component<{
         onClick={() => {
           const rel = props.path === tree.rootPath
             ? '.'
-            : relativizePath(props.path, tree.rootPath, tree.homeDir)
+            : relativizePath(props.path, tree.rootPath, tree.homeDir, tree.flavor())
           navigator.clipboard.writeText(rel)
         }}
       >
@@ -252,48 +270,8 @@ const TreeContextMenu: Component<{
   )
 }
 
-/** Return a CSS class to color the file/folder icon based on git status. */
-function getGitIconClass(
-  node: TreeNodeData,
-  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>,
-): { class: string, testId: string | undefined } {
-  if (!gitStatusStore)
-    return { class: '', testId: undefined }
-  if (node.isDir) {
-    const hasChanges = gitStatusStore.hasChanges(node.path)
-    return hasChanges
-      ? { class: styles.iconDirChanged, testId: undefined }
-      : { class: '', testId: undefined }
-  }
-  const entry = gitStatusStore.getFileStatus(node.path)
-  if (!entry)
-    return { class: '', testId: undefined }
-  return getGitFileIconClass(entry)
-}
-
-/** Render diff stats for a tree node (file or directory). */
-function renderNodeDiffStats(
-  node: TreeNodeData,
-  gitStatusStore?: ReturnType<typeof createGitFileStatusStore>,
-): JSX.Element {
-  if (!gitStatusStore)
-    return <></>
-  if (node.isDir) {
-    const stats = gitStatusStore.getDirDiffStats(node.path)
-    return <DiffStatsBadge added={stats.added} deleted={stats.deleted} untracked={stats.untracked} />
-  }
-  const entry = gitStatusStore.getFileStatus(node.path)
-  if (!entry)
-    return <></>
-  const isUntracked = entry.unstagedStatus === GitFileStatusCode.UNTRACKED
-  return (
-    <DiffStatsBadge
-      added={isUntracked ? 0 : entry.linesAdded + entry.stagedLinesAdded}
-      deleted={isUntracked ? 0 : entry.linesDeleted + entry.stagedLinesDeleted}
-      untracked={isUntracked ? 1 : 0}
-    />
-  )
-}
+interface GitIconInfo { class: string, testId: string | undefined }
+const NO_GIT_ICON: GitIconInfo = { class: '', testId: undefined }
 
 const TreeNode: Component<{
   node: TreeNodeData
@@ -315,9 +293,10 @@ const TreeNode: Component<{
     const visible = tree.visiblePaths()
     if (showHidden && !visible)
       return all
+    const flavor = tree.flavor()
     return all.filter(c =>
       (showHidden || !c.hidden)
-      && (!visible || isPathVisible(c.path, visible)),
+      && (!visible || isPathVisible(c.path, visible, flavor)),
     )
   }
   const loaded = () => tree.getChildren(props.node.path) !== undefined
@@ -401,7 +380,8 @@ const TreeNode: Component<{
     (selected) => {
       if (!props.node.isDir)
         return
-      if (!selected.startsWith(`${props.node.path}/`))
+      const flavor = tree.flavor()
+      if (!isDescendantPath(selected, props.node.path, flavor))
         return
 
       if (!loaded()) {
@@ -410,7 +390,7 @@ const TreeNode: Component<{
           // Scroll into view for the deepest auto-expanded node.
           // Only scroll if this is the closest ancestor (children will handle deeper).
           const hasMatchingChild = children().some(
-            c => c.isDir && (selected.startsWith(`${c.path}/`) || selected === c.path),
+            c => c.isDir && (isDescendantPath(selected, c.path, flavor) || selected === c.path),
           )
           if (!hasMatchingChild) {
             scrollIntoViewIfNeeded()
@@ -466,7 +446,22 @@ const TreeNode: Component<{
   })
 
   const indent = () => `${8 + props.depth * 16}px`
-  const gitIcon = () => getGitIconClass(props.node, tree.gitStatusStore())
+  const gitIcon = createMemo<GitIconInfo>(() => {
+    const store = tree.gitStatusStore()
+    if (!store)
+      return NO_GIT_ICON
+    if (props.node.isDir) {
+      return store.hasChanges(props.node.path)
+        ? { class: styles.iconDirChanged, testId: undefined }
+        : NO_GIT_ICON
+    }
+    const entry = store.getFileStatus(props.node.path)
+    return entry ? getGitFileIconClass(entry) : NO_GIT_ICON
+  })
+  const diffStats = createMemo<DiffStats | null>(() => {
+    const store = tree.gitStatusStore()
+    return store ? store.getNodeDiffStats(props.node.path, props.node.isDir) : null
+  })
 
   return (
     <div ref={wrapperRef}>
@@ -495,7 +490,9 @@ const TreeNode: Component<{
           </Show>
         </Show>
         <span class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>
-        {renderNodeDiffStats(props.node, tree.gitStatusStore())}
+        <Show when={diffStats()}>
+          {s => <DiffStatsBadge stats={s()} />}
+        </Show>
         <div class={sidebarActions}>
           <TreeContextMenu
             path={props.node.path}
@@ -645,7 +642,17 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
 
   const getChildren = (path: string): TreeNodeData[] | undefined => state.childrenCache[path]
   const isTruncated = (path: string): boolean => !!state.truncatedDirs[path]
+  // Every turn-end fans out into one loadChildren per expanded TreeNode.
+  // Most subtrees haven't changed between turns, so skip the setState when
+  // data and truncation match the cache — otherwise Solid would invalidate
+  // children(), per-node gitIcon/diffStats, prefixIndex (walks every file ×
+  // every ancestor), and downstream JSX for a subtree whose contents are
+  // already on screen. Load-bearing; keep.
   const setChildrenInStore = (path: string, data: TreeNodeData[], truncated: boolean) => {
+    const existing = state.childrenCache[path]
+    const truncationUnchanged = !!state.truncatedDirs[path] === truncated
+    if (truncationUnchanged && existing && sameTreeEntries(existing, data))
+      return
     setState(produce((s) => {
       s.childrenCache[path] = data
       if (truncated) {
@@ -660,7 +667,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const rootPath = () => props.rootPath ?? '~'
   const rootDisplayName = () => {
     const rp = rootPath()
-    return rp.split('/').pop() || rp
+    return basename(rp, workerFlavor()) || rp
   }
 
   // Root children derived from the centralized cache, optionally filtered.
@@ -673,15 +680,26 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     const visible = props.visiblePaths
     if (sh && !visible)
       return all
+    const flavor = workerFlavor()
     return all.filter(c =>
       (sh || !c.hidden)
-      && (!visible || isPathVisible(c.path, visible)),
+      && (!visible || isPathVisible(c.path, visible, flavor)),
     )
+  }
+
+  const workerFlavor = createMemo<PathFlavor>(() =>
+    props.flavor ?? detectFlavor(props.homeDir || props.rootPath || ''))
+
+  const submitPath = (raw: string) => {
+    const value = raw.trim()
+    if (!value)
+      return
+    props.onSelect(untildify(value, props.homeDir, workerFlavor()))
   }
 
   // Sync external selectedPath to input (tildified for display)
   createEffect(() => {
-    setInputValue(tildify(props.selectedPath, props.homeDir))
+    setInputValue(tildify(props.selectedPath, props.homeDir, workerFlavor()))
   })
 
   // Load root children when workerId or rootPath changes
@@ -745,10 +763,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const handlePathKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault()
-      const value = inputValue().trim()
-      if (value) {
-        props.onSelect(value)
-      }
+      submitPath(inputValue())
     }
   }
 
@@ -756,20 +771,38 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     const value = inputValue().trim()
     if (!value)
       return
-    // Only emit onSelect if the user actually edited the path.
-    // The input displays a tildified version, so re-emitting on blur
-    // would change the signal (e.g. "/home/user/repo" → "~/repo"),
-    // causing downstream effects to refire unnecessarily.
-    if (value === tildify(props.selectedPath, props.homeDir))
+    // Avoid re-emitting the displayed tildified value.
+    if (value === tildify(props.selectedPath, props.homeDir, workerFlavor()))
       return
-    props.onSelect(value)
+    submitPath(value)
   }
+
+  const rootDiffStats = createMemo<DiffStats | null>(() => {
+    const store = props.gitStatusStore
+    return store ? store.getNodeDiffStats(rootPath(), true) : null
+  })
+
+  const flavorHint = createMemo(() => {
+    const raw = inputValue().trim()
+    if (!raw || raw.startsWith('~'))
+      return null
+    const rawFlavor = detectFlavor(raw)
+    if (!isAbsolute(raw, rawFlavor))
+      return null
+    const wf = workerFlavor()
+    if (rawFlavor === wf)
+      return null
+    return wf === 'win32'
+      ? 'This looks like a POSIX path but the worker expects Windows paths.'
+      : 'This looks like a Windows path but the worker expects POSIX paths.'
+  })
 
   const treeContextValue: TreeContextValue = {
     get workerId() { return props.workerId },
     get showFiles() { return props.showFiles ?? false },
     get rootPath() { return rootPath() },
     get homeDir() { return props.homeDir },
+    flavor: workerFlavor,
     get scrollContainer() { return treeRef },
     get showHiddenFiles() { return showHidden() },
     gitStatusStore: () => props.gitStatusStore,
@@ -803,6 +836,11 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
             />
           </Tooltip>
         </div>
+        <Show when={flavorHint()}>
+          {hint => (
+            <div class={styles.pathHint} data-testid="path-flavor-hint">{hint()}</div>
+          )}
+        </Show>
         <div class={styles.tree} ref={treeRef}>
           <Show when={error()}>
             <div class={styles.errorState}>{error()}</div>
@@ -822,7 +860,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
               >
                 <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
                 <span class={styles.nodeName}>{rootDisplayName()}</span>
-                {renderNodeDiffStats({ path: rootPath(), displayName: rootDisplayName(), isDir: true, hidden: false }, props.gitStatusStore)}
+                <Show when={rootDiffStats()}>
+                  {s => <DiffStatsBadge stats={s()} />}
+                </Show>
                 <div class={sidebarActions}>
                   <TreeContextMenu
                     path={rootPath()}

@@ -4,7 +4,9 @@ import solid from 'vite-plugin-solid'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
-  plugins: [vanillaExtractPlugin(), solid()],
+  // hot: false — HMR-runtime injection (/@solid-refresh) breaks fileURLToPath
+  // on Windows and tests don't need it.
+  plugins: [vanillaExtractPlugin(), solid({ hot: false })],
   resolve: {
     alias: {
       '~': resolve(__dirname, 'src'),

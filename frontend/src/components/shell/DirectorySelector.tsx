@@ -8,6 +8,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
 import { KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { flavorFromOs } from '~/lib/paths'
 import { registerDialogFileTreeOps } from '~/lib/fileTreeOps'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { emptyState } from '~/styles/shared.css'
@@ -65,6 +66,7 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
             onSelect={props.state.setWorkingDir}
             rootPath="~"
             homeDir={props.state.workerInfoStore.getHomeDir(props.state.workerId())}
+            flavor={flavorFromOs(props.state.workerInfoStore.getOs(props.state.workerId()))}
             showHiddenFiles={showHiddenFiles()}
             ref={props.state.treeRef}
           />

@@ -12,6 +12,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { canCloseTab, tabKey, TabType } from '~/stores/tab.store'
 import { terminalStatusClassList } from '../shell/terminalStatus'
+import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
@@ -224,7 +225,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                 />
                 <FolderGit size={14} class={css.groupIcon} />
                 <span class={css.groupLabel}>{group.repoLabel}</span>
-                <DiffStatsBadge added={group.diffAdded} deleted={group.diffDeleted} untracked={group.diffUntracked} />
+                <DiffStatsBadge stats={diffStatsFromTabFields(group)} />
               </div>
 
               <div class={`${shared.childrenWrapper} ${!isCollapsed(group.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
@@ -245,7 +246,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                           />
                           <GitBranch size={14} class={css.groupIcon} />
                           <span class={css.groupLabel}>{branch.branchName}</span>
-                          <DiffStatsBadge added={branch.diffAdded} deleted={branch.diffDeleted} untracked={branch.diffUntracked} />
+                          <DiffStatsBadge stats={diffStatsFromTabFields(branch)} />
                         </div>
 
                         <div class={`${shared.childrenWrapper} ${!isCollapsed(`${group.repoKey}:${branch.branchName}`) ? shared.childrenWrapperExpanded : ''}`}>

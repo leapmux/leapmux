@@ -23,3 +23,13 @@ if (typeof globalThis.sessionStorage?.getItem !== 'function' && typeof jsdom !==
 // Stub HTMLCanvasElement.getContext() to suppress jsdom's
 // "Not implemented" warning when the canvas npm package is not installed.
 HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext
+
+// jsdom does not implement ResizeObserver; provide an inert stub so
+// components that observe layout changes render without throwing.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+}

@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
+import type { DiffStats } from '~/stores/gitFileStatus.store'
 import { Show } from 'solid-js'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import * as dtStyles from './DirectoryTree.css'
@@ -17,29 +18,32 @@ export function getGitFileIconClass(entry: GitFileStatusEntry): { class: string,
 }
 
 /** Diff stats badge showing +N -M *U. */
-export const DiffStatsBadge: Component<{ added: number, deleted: number, untracked?: number, class?: string }> = (props) => {
-  const hasContent = () => props.added > 0 || props.deleted > 0 || (props.untracked ?? 0) > 0
+export const DiffStatsBadge: Component<{ stats: DiffStats, class?: string }> = (props) => {
+  const added = () => props.stats.added
+  const deleted = () => props.stats.deleted
+  const untracked = () => props.stats.untracked
+  const hasContent = () => added() > 0 || deleted() > 0 || untracked() > 0
   return (
     <Show when={hasContent()}>
       <span class={props.class ?? gsStyles.diffStats} data-testid="git-diff-stats">
-        <Show when={props.added > 0}>
+        <Show when={added() > 0}>
           <span class={gsStyles.diffStatsAdded}>
             +
-            {props.added}
+            {added()}
           </span>
         </Show>
-        {props.added > 0 && props.deleted > 0 ? ' ' : ''}
-        <Show when={props.deleted > 0}>
+        {added() > 0 && deleted() > 0 ? ' ' : ''}
+        <Show when={deleted() > 0}>
           <span class={gsStyles.diffStatsDeleted}>
             -
-            {props.deleted}
+            {deleted()}
           </span>
         </Show>
-        {(props.added > 0 || props.deleted > 0) && (props.untracked ?? 0) > 0 ? ' ' : ''}
-        <Show when={(props.untracked ?? 0) > 0}>
+        {(added() > 0 || deleted() > 0) && untracked() > 0 ? ' ' : ''}
+        <Show when={untracked() > 0}>
           <span class={gsStyles.diffStatsUntracked}>
             *
-            {props.untracked}
+            {untracked()}
           </span>
         </Show>
       </span>

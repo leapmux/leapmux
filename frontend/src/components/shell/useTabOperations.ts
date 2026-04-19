@@ -11,6 +11,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { tabKey } from '~/stores/tab.store'
 
@@ -222,7 +223,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       fileDiffBase = 'head-vs-working'
     }
 
-    const fileName = path.split('/').pop() ?? path
+    const fileName = basename(path) || path
     const tileId = layoutStore.focusedTileId()
     const afterKey = tabStore.getActiveTabKeyForTile(tileId)
     const tabId = `file-${++fileTabCounter}-${Date.now()}`

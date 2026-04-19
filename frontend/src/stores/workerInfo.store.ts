@@ -14,6 +14,17 @@ import { getWorkerInfo, setWorkerInfo } from '~/lib/workerInfoCache'
 
 type InfoMap = Record<string, WorkerInfo>
 
+function sameInfo(a: WorkerInfo | undefined, b: WorkerInfo): boolean {
+  return a !== undefined
+    && a.name === b.name
+    && a.os === b.os
+    && a.arch === b.arch
+    && a.homeDir === b.homeDir
+    && a.version === b.version
+    && a.commitHash === b.commitHash
+    && a.buildTime === b.buildTime
+}
+
 export function createWorkerInfoStore() {
   const [infoMap, setInfoMap] = createSignal<InfoMap>({})
   // Track in-flight fetches to avoid duplicate requests.
@@ -55,7 +66,11 @@ export function createWorkerInfoStore() {
           updatedAt: Date.now(),
         }
         setWorkerInfo(workerId, info)
-        setInfoMap(prev => ({ ...prev, [workerId]: info }))
+        setInfoMap((prev) => {
+          if (sameInfo(prev[workerId], info))
+            return prev
+          return { ...prev, [workerId]: info }
+        })
         return info
       }
       catch {
@@ -75,9 +90,15 @@ export function createWorkerInfoStore() {
     return workerInfo(workerId)?.homeDir ?? ''
   }
 
+  /** Convenience: get the worker's reported OS (from cache), or undefined. */
+  function getOs(workerId: string): string | undefined {
+    return workerInfo(workerId)?.os
+  }
+
   return {
     workerInfo,
     fetchWorkerInfo,
     getHomeDir,
+    getOs,
   }
 }

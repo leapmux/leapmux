@@ -93,6 +93,13 @@ export const pathInput = style({
   flexShrink: 0,
 })
 
+export const pathHint = style({
+  fontSize: 'var(--text-8)',
+  color: 'var(--warning-foreground, var(--faint-foreground))',
+  padding: '2px var(--space-2) 0',
+  lineHeight: 1.2,
+})
+
 export const pathInputField = style({
   'all': 'unset',
   'flex': 1,
