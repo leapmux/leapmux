@@ -254,7 +254,10 @@ jobs:
           test -x "$(go env GOPATH)/bin/sqlc" || test -x "$(go env GOPATH)/bin/sqlc.exe" || go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${{ env.SQLC_VERSION }}
 
       - name: Prepare backend (generate proto + sqlc, build frontend embed)
-        shell: bash
+        # Use pwsh so Git Bash's /usr/bin isn't prepended to PATH; see the
+        # "Build all modules" step for details. Task has a portable shell,
+        # so the Taskfile commands still execute correctly.
+        shell: pwsh
         run: task prepare-backend
 
       - name: Backend tests (Windows-relevant packages)
@@ -298,8 +301,6 @@ jobs:
         # PATH, and /usr/bin/link.exe (a Unix hard-link utility shipped
         # with Git for Windows) shadows MSVC's link.exe, causing the
         # Rust/Tauri build to fail with "/usr/bin/link: extra operand".
-        # Task has its own portable shell, so the Taskfile commands still
-        # work from pwsh.
         shell: pwsh
         run: task build
 
