@@ -158,8 +158,8 @@ func TestBuildShellWrappedCommand_Nu_NonInteractive(t *testing.T) {
 	assert.Equal(t, "-c", cmd.Args[1])
 }
 
-func TestBuildShellWrappedCommand_Pwsh_Interactive(t *testing.T) {
-	for _, shell := range []string{"/usr/bin/pwsh", "/usr/bin/powershell", "/usr/bin/pwsh-preview", "/usr/bin/powershell-preview"} {
+func TestBuildShellWrappedCommand_PwshCore_Interactive(t *testing.T) {
+	for _, shell := range []string{"/usr/bin/pwsh", "/usr/bin/pwsh-preview"} {
 		t.Run(shell, func(t *testing.T) {
 			cmd, delimiter, _ := buildShellWrappedCommand(
 				context.Background(), shell, true, "claude",
@@ -174,6 +174,30 @@ func TestBuildShellWrappedCommand_Pwsh_Interactive(t *testing.T) {
 			assert.Contains(t, cmd.Args[3], "& claude")
 			assert.NotContains(t, cmd.Args[3], "exec")
 			assert.Contains(t, cmd.Args[3], "CLAUDE_CODE_USE_BEDROCK")
+		})
+	}
+}
+
+// Windows PowerShell 5.1 (powershell.exe) does not understand -Login; its
+// CLI parser treats unknown leading switches as command names, raising
+// "ObjectNotFound: (-Login:String), CommandNotFoundException". Interactive
+// invocations must therefore omit -Login for powershell(-preview) and
+// invoke -Command directly.
+func TestBuildShellWrappedCommand_WindowsPowerShell_Interactive(t *testing.T) {
+	for _, shell := range []string{"/usr/bin/powershell", "/usr/bin/powershell-preview"} {
+		t.Run(shell, func(t *testing.T) {
+			cmd, delimiter, _ := buildShellWrappedCommand(
+				context.Background(), shell, true, "claude",
+				[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+			)
+			assert.Equal(t, shell, cmd.Path)
+			require.Len(t, cmd.Args, 3) // powershell -Command <cmd>
+			assert.Equal(t, "-Command", cmd.Args[1])
+			assert.NotContains(t, cmd.Args, "-Login")
+			assert.Contains(t, cmd.Args[2], "Write-Output '"+delimiter+"'")
+			assert.Contains(t, cmd.Args[2], "Remove-Item Env:CLAUDECODE")
+			assert.Contains(t, cmd.Args[2], "& claude")
+			assert.Contains(t, cmd.Args[2], "CLAUDE_CODE_USE_BEDROCK")
 		})
 	}
 }

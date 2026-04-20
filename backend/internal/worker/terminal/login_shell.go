@@ -5,7 +5,13 @@ import (
 	"strings"
 )
 
-var pwshPattern = regexp.MustCompile(`^(?:pwsh|powershell)(?:-preview)?$`)
+var (
+	pwshPattern = regexp.MustCompile(`^(?:pwsh|powershell)(?:-preview)?$`)
+	// pwshCorePattern matches only PowerShell Core (pwsh 6+), excluding
+	// Windows PowerShell 5.1 (powershell.exe). Used to gate the -Login
+	// switch, which Core introduced and 5.1 does not understand.
+	pwshCorePattern = regexp.MustCompile(`^pwsh(?:-preview)?$`)
+)
 
 // IsPwsh returns true if name is one of the PowerShell kind-names
 // (pwsh, powershell, pwsh-preview, powershell-preview). The input must be
@@ -30,15 +36,20 @@ func ShellBaseName(p string) string {
 // interactive login shell (no -c command). The returned slice is safe to
 // append to.
 //
-//   - pwsh/powershell: ["-Login"]
-//   - cmd.exe:         []  — cmd has no login concept and rejects POSIX flags
-//   - tcsh/csh:        ["-l"]  — tcsh requires -l as the only flag
-//   - all others:      ["-i", "-l"]
+//   - pwsh/pwsh-preview:        ["-Login"]  — PowerShell Core 6+
+//   - powershell(-preview):     nil  — Windows PowerShell 5.1 has no -Login
+//     and parses the unknown switch as a command name, raising
+//     "ObjectNotFound: (-Login:String), CommandNotFoundException".
+//   - cmd.exe:                  nil  — no login concept; rejects POSIX flags
+//   - tcsh/csh:                 ["-l"]  — tcsh requires -l as the only flag
+//   - all others:               ["-i", "-l"]
 func LoginShellArgs(shellPath string) []string {
 	name := ShellBaseName(shellPath)
 	switch {
-	case IsPwsh(name):
+	case pwshCorePattern.MatchString(name):
 		return []string{"-Login"}
+	case IsPwsh(name):
+		return nil
 	case name == "cmd":
 		return nil
 	case name == "tcsh" || name == "csh":
