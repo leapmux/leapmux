@@ -293,9 +293,9 @@ jobs:
             ./tunnel/... \
             ./worker/...
 
-      - name: Build desktop app
+      - name: Build all modules
         shell: bash
-        run: task build-desktop
+        run: task build
 
   docker:
     if: github.event_name == 'pull_request'
