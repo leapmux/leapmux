@@ -155,7 +155,12 @@ jobs:
         # `Read tool versions` step below silently produces empty values
         # because bash command substitution swallows the missing-binary
         # failure inside `echo "FOO=$(yq ...)"`.
-        run: choco install yq -y --no-progress
+        run: >-
+          winget install --id mikefarah.yq -e
+          --silent
+          --accept-package-agreements
+          --accept-source-agreements
+          --disable-interactivity
 
       - name: Read tool versions
         shell: bash
