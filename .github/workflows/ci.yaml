@@ -153,13 +153,65 @@ jobs:
       - name: Read tool versions
         shell: bash
         run: |
+          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
+          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
+          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
+          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
+          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
+
+      - name: Setup MSVC dev environment
+        # Puts link.exe, cl.exe, and the Windows SDK on PATH so Tauri's
+        # Rust build (and any CGO packages) can link against MSVC.
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: backend/go.sum
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Setup buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: ${{ env.TASK_VERSION }}
+
+      - name: Cache Go tool binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin
+          key: go-tools-${{ runner.os }}-sqlc${{ env.SQLC_VERSION }}
+
+      - name: Install tools
+        shell: bash
+        run: |
+          test -x "$(go env GOPATH)/bin/sqlc" || test -x "$(go env GOPATH)/bin/sqlc.exe" || go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${{ env.SQLC_VERSION }}
+
+      - name: Prepare backend (generate proto + sqlc, build frontend embed)
+        shell: bash
+        run: task prepare-backend
 
       - name: Backend tests (Windows-relevant packages)
         shell: bash
