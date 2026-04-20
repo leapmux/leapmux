@@ -144,9 +144,6 @@ jobs:
 
   ci-windows:
     runs-on: windows-latest
-    # windows-latest runner behaviour is still being validated; failures
-    # are reported but not merge-blocking.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
