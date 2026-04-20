@@ -42,6 +42,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID:            opts.AgentID,
+				providerName:       "cursor",
 				cmd:                cmd,
 				stdin:              stdin,
 				ctx:                ctx,
@@ -53,9 +54,8 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 				preambleMeta:       make(map[string]string),
 				apiTimeout:         opts.apiTimeout(),
 			}},
-			sink:         sink,
-			providerName: "cursor",
-			model:        normalizeCursorModelID(opts.Model),
+			sink:  sink,
+			model: normalizeCursorModelID(opts.Model),
 		},
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
@@ -64,9 +64,8 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	a.reapplySettings = a.reapplyModelAndMode
 	a.refreshFromSession = a.refreshCursorFromSession
 
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("start agent (cursor): %w", err)
+	if err := a.startCmd(cmd, cancel); err != nil {
+		return nil, err
 	}
 
 	initParams, err := json.Marshal(map[string]interface{}{

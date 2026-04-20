@@ -336,7 +336,7 @@ export const infoLabel = style({
 export const infoValue = style({
   fontSize: 'var(--text-8)',
   color: 'var(--foreground)',
-  fontFamily: 'monospace',
+  fontFamily: 'var(--font-mono)',
   wordBreak: 'break-all',
 })
 

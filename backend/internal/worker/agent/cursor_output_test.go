@@ -14,11 +14,11 @@ func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
 	a := &CursorCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID: "test-agent",
+				agentID:      "test-agent",
+				providerName: "cursor",
 			}},
-			sink:         sink,
-			providerName: "cursor",
-			sessionID:    "test-session",
+			sink:      sink,
+			sessionID: "test-session",
 		},
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
@@ -104,16 +104,16 @@ func TestHandleCursorOutput_UpdateTodosAcknowledgesRequest(t *testing.T) {
 	agent := &CursorCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:     "test-agent",
-				stdin:       writePipe,
-				ctx:         ctx,
-				cancel:      cancel,
-				processDone: make(chan struct{}),
-				stderrDone:  make(chan struct{}),
+				agentID:      "test-agent",
+				providerName: "cursor",
+				stdin:        writePipe,
+				ctx:          ctx,
+				cancel:       cancel,
+				processDone:  make(chan struct{}),
+				stderrDone:   make(chan struct{}),
 			}},
-			sink:         &testSink{},
-			providerName: "cursor",
-			sessionID:    "test-session",
+			sink:      &testSink{},
+			sessionID: "test-session",
 		},
 	}
 	agent.extraMethod = agent.handleExtraMethod

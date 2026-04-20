@@ -80,13 +80,16 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 
 		ctx := bgCtx()
 
-		// Resolve repo root.
+		// Resolve repo root. `git rev-parse --show-toplevel` emits posix
+		// separators on Windows (e.g. `C:/foo/bar`), and when git is invoked
+		// from Git-Bash/MSYS it can produce `/c/foo/bar`; both mismatch
+		// native paths like agent.workingDir on the frontend, so normalize.
 		repoRoot, err := gitOutput(ctx, dirPath, "rev-parse", "--show-toplevel")
 		if err != nil {
 			sendInternalError(sender, "not a git repository")
 			return
 		}
-		repoRoot = strings.TrimSpace(repoRoot)
+		repoRoot = pathutil.NormalizeNative(strings.TrimSpace(repoRoot))
 
 		files, err := getGitFileStatusEntries(ctx, repoRoot)
 		if err != nil {

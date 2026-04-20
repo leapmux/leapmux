@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -26,7 +25,7 @@ func computeShells() (shells []string, defaultShell string) {
 	}
 
 	knownShells := []string{"sh", "bash", "zsh", "fish", "pwsh", "powershell"}
-	defaultBase := strings.ToLower(strings.TrimSuffix(filepath.Base(defaultShell), ".exe"))
+	defaultBase := ShellBaseName(defaultShell)
 	for _, name := range knownShells {
 		if name == defaultBase {
 			continue

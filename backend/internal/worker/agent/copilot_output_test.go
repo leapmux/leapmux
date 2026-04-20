@@ -10,11 +10,11 @@ func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
 	a := &CopilotCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID: "test-agent",
+				agentID:      "test-agent",
+				providerName: "copilot",
 			}},
-			sink:         sink,
-			providerName: "copilot",
-			sessionID:    "test-session",
+			sink:      sink,
+			sessionID: "test-session",
 		},
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)

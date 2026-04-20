@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/terminal"
@@ -35,7 +34,7 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 	if len(modelEffortArgs) > 0 {
 		metaPrefix = "__LEAPMUX_META_" + id + "__ "
 	}
-	shellName := filepath.Base(shellPath)
+	shellName := terminal.ShellBaseName(shellPath)
 
 	var cmdArgs []string
 	switch {

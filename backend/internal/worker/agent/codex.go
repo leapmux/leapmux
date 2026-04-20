@@ -93,8 +93,9 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 
 	// Codex doesn't have third-party provider detection or model/effort
 	// conditional args, so we pass empty modelEffortArgs for a simple command.
+	binary := resolveBinaryName(ctx, opts.Shell, opts.LoginShell, codexBinaryCandidates)
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "codex", []string{"CODEX_CI"}, []string{"app-server"}, nil, opts.WorkingDir,
+		ctx, opts.Shell, opts.LoginShell, binary, []string{"CODEX_CI"}, []string{"app-server"}, nil, opts.WorkingDir,
 	)
 
 	cmd.Env = filterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
@@ -111,6 +112,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	a := &CodexAgent{
 		jsonrpcBase: jsonrpcBase{processBase: processBase{
 			agentID:            opts.AgentID,
+			providerName:       "codex",
 			cmd:                cmd,
 			stdin:              stdin,
 			ctx:                ctx,
@@ -128,9 +130,8 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 		sink:       sink,
 	}
 
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("start codex: %w", err)
+	if err := a.startCmd(cmd, cancel); err != nil {
+		return nil, err
 	}
 
 	// Drain stderr in background.
@@ -778,6 +779,11 @@ var codexDefaultModels = []*leapmuxv1.AvailableModel{
 	{Id: "gpt-5.1-codex-mini", DisplayName: "GPT-5.1 Codex Mini", Description: "Optimized for Codex; cheaper, faster, but less capable", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
 }
 
+// codexBinaryCandidates lists the executable names to probe for Codex, in
+// preference order. The second entry is the full Rust host triple produced
+// by `cargo install` on Windows when a shorter `codex` shim is absent.
+var codexBinaryCandidates = []string{"codex", "codex-x86_64-pc-windows-msvc"}
+
 func init() {
 	registerProvider(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -831,7 +837,7 @@ func init() {
 		},
 		"LEAPMUX_CODEX_DEFAULT_MODEL",
 		"LEAPMUX_CODEX_DEFAULT_EFFORT",
-		"codex",
+		codexBinaryCandidates...,
 	)
 }
 

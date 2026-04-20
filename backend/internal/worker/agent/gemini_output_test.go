@@ -12,11 +12,11 @@ func newGeminiAgentWithSink(sink OutputSink) *GeminiCLIAgent {
 	a := &GeminiCLIAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID: "test-agent",
+				agentID:      "test-agent",
+				providerName: "gemini",
 			}},
-			sink:         sink,
-			providerName: "gemini",
-			sessionID:    "test-session",
+			sink:      sink,
+			sessionID: "test-session",
 		},
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate

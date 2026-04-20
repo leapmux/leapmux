@@ -72,7 +72,6 @@ type jsonrpcBase struct {
 type acpBase struct {
 	jsonrpcBase
 	sink                   OutputSink
-	providerName           string                  // e.g. "copilot", "gemini", "opencode" — used in log messages
 	extraSessionUpdate     acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod            acpMethodHandler        // optional provider-specific request/notification handler
 	reapplySettings        func()                  // called by ClearContext after session/new to re-apply model, mode, etc.

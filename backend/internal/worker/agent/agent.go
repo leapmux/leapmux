@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -86,9 +85,9 @@ type providerRegistration struct {
 	start         startFunc
 	defaultModels []*leapmuxv1.AvailableModel
 	optionGroups  []*leapmuxv1.AvailableOptionGroup
-	envModelKey   string // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
-	envEffortKey  string // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
-	binaryName    string // e.g. "claude", "codex"
+	envModelKey   string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
+	envEffortKey  string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+	binaryNames   []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
 }
 
 // providerRegistry maps each AgentProvider to its registration.
@@ -97,13 +96,14 @@ var providerRegistry = map[leapmuxv1.AgentProvider]providerRegistration{}
 
 // registerProvider registers a provider's factory function, default model list,
 // option groups, and environment variable keys for overriding defaults.
+// binaryNames lists the executable names to probe (first entry is preferred).
 func registerProvider(
 	provider leapmuxv1.AgentProvider,
 	start startFunc,
 	defaultModels []*leapmuxv1.AvailableModel,
 	optionGroups []*leapmuxv1.AvailableOptionGroup,
 	envModelKey, envEffortKey string,
-	binaryName string,
+	binaryNames ...string,
 ) {
 	providerRegistry[provider] = providerRegistration{
 		start:         start,
@@ -111,7 +111,7 @@ func registerProvider(
 		optionGroups:  optionGroups,
 		envModelKey:   envModelKey,
 		envEffortKey:  envEffortKey,
-		binaryName:    binaryName,
+		binaryNames:   binaryNames,
 	}
 }
 
@@ -196,12 +196,12 @@ func filterEnv(environ []string, keys ...string) []string {
 func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell bool) []leapmuxv1.AgentProvider {
 	type check struct {
 		provider leapmuxv1.AgentProvider
-		binary   string
+		binaries []string
 	}
 	var checks []check
 	for provider, reg := range providerRegistry {
-		if reg.binaryName != "" {
-			checks = append(checks, check{provider, reg.binaryName})
+		if len(reg.binaryNames) > 0 {
+			checks = append(checks, check{provider, reg.binaryNames})
 		}
 	}
 
@@ -209,10 +209,15 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 	var wg sync.WaitGroup
 	for i, c := range checks {
 		wg.Add(1)
-		go func(idx int, binary string) {
+		go func(idx int, binaries []string) {
 			defer wg.Done()
-			found[idx] = checkBinaryAvailable(ctx, shellPath, useLoginShell, binary)
-		}(i, c.binary)
+			for _, b := range binaries {
+				if checkBinaryAvailable(ctx, shellPath, useLoginShell, b) {
+					found[idx] = true
+					return
+				}
+			}
+		}(i, c.binaries)
 	}
 	wg.Wait()
 
@@ -230,8 +235,51 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 	return result
 }
 
+// resolveBinaryName returns the first binary from candidates that is
+// available in the user's shell environment. If none are found, the first
+// candidate is returned so that invocation produces a meaningful
+// "command not found" error rather than silently picking an alias.
+func resolveBinaryName(ctx context.Context, shellPath string, loginShell bool, candidates []string) string {
+	for _, c := range candidates {
+		if checkBinaryAvailable(ctx, shellPath, loginShell, c) {
+			return c
+		}
+	}
+	return candidates[0]
+}
+
+// binaryAvailabilityCache memoizes the result of a login-shell binary probe.
+// Each probe spawns a (possibly login) shell that sources user profiles —
+// commonly hundreds of milliseconds — so repeat calls from
+// ListAvailableProviders and resolveBinaryName share results for the
+// worker's lifetime. Installed binaries don't appear or disappear within
+// a session, so no TTL is needed.
+var (
+	binaryAvailabilityCache   sync.Map // binaryAvailabilityKey -> bool
+	binaryAvailabilitySingles sync.Map // binaryAvailabilityKey -> *sync.Once
+)
+
+type binaryAvailabilityKey struct {
+	shellPath  string
+	loginShell bool
+	binaryName string
+}
+
 func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool, binaryName string) bool {
-	shellName := filepath.Base(shellPath)
+	key := binaryAvailabilityKey{shellPath, loginShell, binaryName}
+	if v, ok := binaryAvailabilityCache.Load(key); ok {
+		return v.(bool)
+	}
+	onceAny, _ := binaryAvailabilitySingles.LoadOrStore(key, &sync.Once{})
+	onceAny.(*sync.Once).Do(func() {
+		binaryAvailabilityCache.Store(key, probeBinary(ctx, shellPath, loginShell, binaryName))
+	})
+	v, _ := binaryAvailabilityCache.Load(key)
+	return v.(bool)
+}
+
+func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) bool {
+	shellName := terminal.ShellBaseName(shellPath)
 
 	var inner, flag string
 	switch {

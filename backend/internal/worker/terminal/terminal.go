@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/creack/pty"
+	pty "github.com/aymanbagabas/go-pty"
 
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -68,8 +68,9 @@ type OutputHandler func(data []byte)
 // Terminal manages a single PTY session.
 type Terminal struct {
 	id        string
-	cmd       *exec.Cmd
-	ptmx      *os.File
+	cmd       *pty.Cmd
+	ptmx      pty.Pty
+	jobObject *procutil.JobObject
 	outputFn  OutputHandler
 	screenBuf *ScreenBuffer
 	mu        sync.Mutex
@@ -97,27 +98,48 @@ func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 	}
 
 	args := LoginShellArgs(shell)
-	cmd := exec.Command(shell, args...)
+
+	ptmx, err := pty.New()
+	if err != nil {
+		return nil, fmt.Errorf("new pty: %w", err)
+	}
+
+	cmd := ptmx.Command(shell, args...)
 	cmd.Dir = opts.WorkingDir
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 	)
-	procutil.HideConsoleWindow(cmd)
+	// No procutil.HideConsoleWindow here: on Windows, CREATE_NO_WINDOW is
+	// incompatible with ConPTY — the pseudo console already serves as the
+	// child's console, and the flag would leave it with none.
 
-	winSize := &pty.Winsize{
-		Cols: opts.Cols,
-		Rows: opts.Rows,
+	cols, rows := opts.Cols, opts.Rows
+	if cols == 0 {
+		cols = 80
 	}
-	if winSize.Cols == 0 {
-		winSize.Cols = 80
+	if rows == 0 {
+		rows = 24
 	}
-	if winSize.Rows == 0 {
-		winSize.Rows = 24
+	if err := ptmx.Resize(int(cols), int(rows)); err != nil {
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("resize pty: %w", err)
 	}
 
-	ptmx, err := pty.StartWithSize(cmd, winSize)
-	if err != nil {
+	if err := cmd.Start(); err != nil {
+		_ = ptmx.Close()
 		return nil, fmt.Errorf("start pty: %w", err)
+	}
+
+	// Put the shell and its descendants into a kill group so closing the
+	// tab reaps the whole tree, not just the direct shell. Failure is
+	// non-fatal: the terminal still works, it just loses the tree-kill
+	// guarantee for this session.
+	jobObject, err := procutil.AssignPID(cmd.Process.Pid)
+	if err != nil {
+		slog.Warn("terminal attach job object failed",
+			"terminal_id", opts.ID,
+			"error", err,
+		)
 	}
 
 	screenBuf := NewScreenBuffer()
@@ -130,6 +152,7 @@ func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 		id:        opts.ID,
 		cmd:       cmd,
 		ptmx:      ptmx,
+		jobObject: jobObject,
 		outputFn:  wrappedOutput,
 		screenBuf: screenBuf,
 		exitCh:    make(chan struct{}),
@@ -170,13 +193,13 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 		return fmt.Errorf("terminal is stopped")
 	}
 
-	return pty.Setsize(t.ptmx, &pty.Winsize{
-		Cols: cols,
-		Rows: rows,
-	})
+	return t.ptmx.Resize(int(cols), int(rows))
 }
 
-// Stop terminates the terminal session.
+// Stop terminates the terminal session and every process spawned beneath
+// the shell. Closing the PTY master triggers the kernel's normal hang-up
+// flow; Terminate then reaps anything still alive in the shell's kill
+// group (JobObject on Windows, process-group SIGHUP+SIGKILL on Unix).
 func (t *Terminal) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -187,7 +210,15 @@ func (t *Terminal) Stop() {
 	t.stopped = true
 
 	_ = t.ptmx.Close()
-	if t.cmd.Process != nil {
+	if err := t.jobObject.Terminate(); err != nil {
+		slog.Debug("terminal job object terminate failed",
+			"terminal_id", t.id,
+			"error", err,
+		)
+	}
+	if t.jobObject == nil && t.cmd.Process != nil {
+		// Fallback when AssignPID failed at startup; better than leaking
+		// the direct shell process even if we lose the tree guarantee.
 		_ = t.cmd.Process.Kill()
 	}
 }
@@ -257,6 +288,12 @@ func (t *Terminal) waitForExit() {
 		} else {
 			t.exitCode = -1
 		}
+	}
+	if closeErr := t.jobObject.Close(); closeErr != nil {
+		slog.Debug("terminal job object close failed",
+			"terminal_id", t.id,
+			"error", closeErr,
+		)
 	}
 	close(t.exitCh)
 

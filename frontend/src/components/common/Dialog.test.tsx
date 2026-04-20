@@ -93,7 +93,8 @@ describe('dialog', () => {
     const dialog = container.querySelector('dialog')!
     // Mock bounding rect so the click coordinates fall outside.
     dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
-    // Simulate a click on the backdrop (target is dialog, coordinates outside content).
+    // Simulate a full press+release on the backdrop (target is dialog, coordinates outside content).
+    dialog.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }))
     dialog.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 10, clientY: 10 }))
     expect(onClose).toHaveBeenCalled()
   })
@@ -107,7 +108,45 @@ describe('dialog', () => {
     ))
 
     const dialog = container.querySelector('dialog')!
-    dialog.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
+    dialog.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }))
+    dialog.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 10, clientY: 10 }))
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('does not close when a drag started inside the dialog ends on the backdrop', () => {
+    const onClose = vi.fn()
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
+    const content = container.querySelector('p')!
+    // Press starts inside the dialog content (e.g. beginning of a text selection).
+    content.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 300, clientY: 300 }))
+    // Release ends on the backdrop — target is the dialog itself, coords outside content.
+    dialog.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 10, clientY: 10 }))
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('does not close when a drag started on the backdrop ends inside the dialog', () => {
+    const onClose = vi.fn()
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
+    // Press starts on the backdrop.
+    dialog.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }))
+    // Release ends on the dialog content — click target is the content element.
+    const content = container.querySelector('p')!
+    content.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 300, clientY: 300 }))
     expect(onClose).not.toHaveBeenCalled()
   })
 

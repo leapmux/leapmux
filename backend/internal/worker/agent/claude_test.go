@@ -1148,7 +1148,7 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	assert.False(t, foundClaudeCode, "CLAUDECODE=1 should NOT be in env without login shell")
 
 	// With login shell - verify the env is set on the command.
-	shellCmd, _, _ := buildShellWrappedCommand(ctx, "/bin/sh", true, "claude", []string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "test"}, t.TempDir())
+	shellCmd, _, _ := buildShellWrappedCommand(ctx, testutil.TestShell(), true, "claude", []string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "test"}, t.TempDir())
 	shellCmd.Env = filterEnv(shellCmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 	shellCmd.Env = append(shellCmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1", "CLAUDECODE=1")
 

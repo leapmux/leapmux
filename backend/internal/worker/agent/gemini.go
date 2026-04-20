@@ -44,6 +44,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID:            opts.AgentID,
+				providerName:       "gemini",
 				cmd:                cmd,
 				stdin:              stdin,
 				ctx:                ctx,
@@ -55,9 +56,8 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 				preambleMeta:       make(map[string]string),
 				apiTimeout:         opts.apiTimeout(),
 			}},
-			sink:         sink,
-			providerName: "gemini",
-			model:        opts.Model,
+			sink:  sink,
+			model: opts.Model,
 		},
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate
@@ -65,9 +65,8 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provide
 	a.reapplySettings = a.reapplyModelAndPermissionMode
 	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
 
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("start gemini: %w", err)
+	if err := a.startCmd(cmd, cancel); err != nil {
+		return nil, err
 	}
 
 	initParams, err := json.Marshal(map[string]interface{}{

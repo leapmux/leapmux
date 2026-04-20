@@ -13,11 +13,11 @@ func newKiloAgentWithSink(sink OutputSink) *KiloAgent {
 	return &KiloAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID: "test-agent",
+				agentID:      "test-agent",
+				providerName: "kilo",
 			}},
-			sink:         sink,
-			providerName: "kilo",
-			sessionID:    "test-session",
+			sink:      sink,
+			sessionID: "test-session",
 		},
 	}
 }

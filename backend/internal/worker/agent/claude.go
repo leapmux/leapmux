@@ -153,6 +153,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	a := &ClaudeCodeAgent{
 		processBase: processBase{
 			agentID:            opts.AgentID,
+			providerName:       "claude",
 			cmd:                cmd,
 			stdin:              stdin,
 			ctx:                ctx,
@@ -174,9 +175,8 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		alwaysThinking:         AlwaysThinkingOn,
 	}
 
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("start claude: %w", err)
+	if err := a.startCmd(cmd, cancel); err != nil {
+		return nil, err
 	}
 
 	// Drain stderr in a background goroutine.

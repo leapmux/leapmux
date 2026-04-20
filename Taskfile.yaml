@@ -392,22 +392,26 @@ tasks:
       # Tauri's NSIS and WiX bundlers name the installer after productName
       # ("LeapMux Desktop" — with a space), regardless of our mainBinaryName
       # override. Copy with a space-stripping rename so we ship spaceless
-      # filenames. The WiX bundler additionally appends "_en-US"; strip that
-      # too. Destination is a bare filename so it resolves to cwd = repo
-      # root without triggering mvdan/sh's `./`-path quirk.
+      # filenames. The WiX bundler additionally appends "_en-US"; strip
+      # that too. We cd into the bundle dir first so the glob expands to
+      # bare filenames: on Windows, mvdan/sh expands globs with directory
+      # segments to native backslash paths, and the resulting behavior of
+      # `${##*/}` varies with the parent shell (bash vs PowerShell).
       - |
-        for src in desktop/rust/target/release/bundle/nsis/LeapMux*-setup.exe; do
+        repo_root="$(pwd)"
+        cd desktop/rust/target/release/bundle/nsis
+        for src in LeapMux*-setup.exe; do
           [ -e "$src" ] || continue
-          name="${src##*/}"
-          cp -f "$src" "${name// /}"
+          cp -f "$src" "$repo_root/${src// /}"
         done
       - |
-        for src in desktop/rust/target/release/bundle/msi/LeapMux*_en-US.msi; do
+        repo_root="$(pwd)"
+        cd desktop/rust/target/release/bundle/msi
+        for src in LeapMux*_en-US.msi; do
           [ -e "$src" ] || continue
-          name="${src##*/}"
-          dest="${name// /}"
+          dest="${src// /}"
           dest="${dest/_en-US/}"
-          cp -f "$src" "$dest"
+          cp -f "$src" "$repo_root/$dest"
         done
 
   # --- Testing ---

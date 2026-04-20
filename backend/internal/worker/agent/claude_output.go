@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 )
 
 // contextUsageSnapshot tracks token usage for debounced broadcasting.
@@ -198,8 +200,8 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 			}
 			filePath := input.FilePath
 			if filePath != "" && a.homeDir != "" {
-				planDir := a.homeDir + "/.claude/plans/"
-				if strings.HasPrefix(filePath, planDir) {
+				planDir := filepath.Join(a.homeDir, ".claude", "plans")
+				if pathutil.HasPathPrefix(filePath, planDir) {
 					planFileProcessed = true
 
 					var planContentStr string
