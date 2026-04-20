@@ -294,7 +294,13 @@ jobs:
             ./worker/...
 
       - name: Build all modules
-        shell: bash
+        # Run under pwsh rather than bash: Git Bash prepends /usr/bin to
+        # PATH, and /usr/bin/link.exe (a Unix hard-link utility shipped
+        # with Git for Windows) shadows MSVC's link.exe, causing the
+        # Rust/Tauri build to fail with "/usr/bin/link: extra operand".
+        # Task has its own portable shell, so the Taskfile commands still
+        # work from pwsh.
+        shell: pwsh
         run: task build
 
   docker:
