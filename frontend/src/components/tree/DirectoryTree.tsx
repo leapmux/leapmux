@@ -1,4 +1,4 @@
-import type { Component, JSX } from 'solid-js'
+import type { Component } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
 import type { PathFlavor } from '~/lib/paths'
 import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
@@ -39,8 +39,10 @@ export interface DirectoryTreeProps {
   onOpenTerminal?: (dirPath: string) => void
   rootPath?: string
   homeDir?: string
-  /** Path flavor for the worker this tree is rendering. Defaults to a
-   *  best-effort sniff from homeDir/rootPath. */
+  /**
+   * Path flavor for the worker this tree is rendering. Defaults to a
+   *  best-effort sniff from homeDir/rootPath.
+   */
   flavor?: PathFlavor
   gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
   /** When set, only show nodes whose paths are in this set. */
@@ -664,6 +666,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     }))
   }
 
+  const workerFlavor = createMemo<PathFlavor>(() =>
+    props.flavor ?? detectFlavor(props.homeDir || props.rootPath || ''))
+
   const rootPath = () => props.rootPath ?? '~'
   const rootDisplayName = () => {
     const rp = rootPath()
@@ -686,9 +691,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       && (!visible || isPathVisible(c.path, visible, flavor)),
     )
   }
-
-  const workerFlavor = createMemo<PathFlavor>(() =>
-    props.flavor ?? detectFlavor(props.homeDir || props.rootPath || ''))
 
   const submitPath = (raw: string) => {
     const value = raw.trim()

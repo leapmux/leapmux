@@ -2,6 +2,9 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { openWebInspector, quitApp, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
+import { CustomTitlebar } from './CustomTitlebar'
+
 // Hoisted so the vi.mock factories below can close over them — vi.mock
 // runs above any top-level `const` in the file.
 const { initialMaximized, setShowAboutDialog } = vi.hoisted(() => ({
@@ -52,9 +55,6 @@ vi.mock('~/components/shell/UserMenuItems', () => ({
 vi.mock('~/components/shell/UserMenuState', () => ({
   setShowAboutDialog,
 }))
-
-import { CustomTitlebar } from './CustomTitlebar'
-import { openWebInspector, quitApp, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
 
 // Stub native Popover API (jsdom doesn't implement it).
 beforeAll(() => {

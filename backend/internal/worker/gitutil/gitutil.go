@@ -447,4 +447,3 @@ func ReadFileAtRef(dir, relPath, ref string) ([]byte, bool, error) {
 	}
 	return output, true, nil
 }
-

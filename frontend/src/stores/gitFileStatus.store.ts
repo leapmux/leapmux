@@ -22,8 +22,10 @@ export function fileEntryToDiffStats(entry: GitFileStatusEntry): DiffStats {
   }
 }
 
-/** Adapts the `diff{Added,Deleted,Untracked}` field convention (tab store,
- * worktree-close prompts, etc.) to a DiffStats value. */
+/**
+ * Adapts the `diff{Added,Deleted,Untracked}` field convention (tab store,
+ * worktree-close prompts, etc.) to a DiffStats value.
+ */
 export function diffStatsFromTabFields(
   t: { diffAdded: number, diffDeleted: number, diffUntracked: number },
 ): DiffStats {

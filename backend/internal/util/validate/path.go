@@ -29,7 +29,9 @@ var (
 //
 // Accepted on POSIX:   /home/user, /Users/john, ~, ~/projects
 // Accepted on Windows: C:\Users\u, c:/Users/u, \\server\share\x,
-//                      \\?\C:\foo, ~\foo, ~/foo
+//
+//	\\?\C:\foo, ~\foo, ~/foo
+//
 // Rejected on both:    relative paths, "..", empty/whitespace input.
 func SanitizePath(value, homeDir string) (string, error) {
 	s := value
