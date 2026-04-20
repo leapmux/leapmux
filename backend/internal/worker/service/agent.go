@@ -651,8 +651,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			})
 
 			if !updated {
-				svc.Agents.StopAndWaitAgent(agentID)
-
 				resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
 				agentOpts := agent.Options{
@@ -673,7 +671,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 				sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 
-				confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agentOpts, sink)
+				confirmedSettings, err := svc.Agents.RestartAgent(bgCtx(), agentOpts, sink)
 				if err != nil {
 					slog.Error("failed to restart agent with new settings",
 						"agent_id", agentID, "error", err)
@@ -1088,6 +1086,9 @@ func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapm
 // handleClearContext implements the /clear command by restarting the agent
 // without resuming the previous session, giving it a fresh context window.
 func (svc *Context) handleClearContext(agentID string) {
+	unlock := svc.Agents.LockAgent(agentID)
+	defer unlock()
+
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("clear context: failed to fetch agent", "agent_id", agentID, "error", err)
@@ -1109,7 +1110,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
 	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
+	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
 		Model:          model,
 		Effort:         dbAgent.Effort,
@@ -1133,14 +1134,16 @@ func (svc *Context) handleClearContext(agentID string) {
 			"type":  "agent_error",
 			"error": "Failed to restart agent after clearing context: " + err.Error(),
 		})
-	} else {
-		if err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings); err != nil {
-			slog.Warn("clear context: failed to persist confirmed settings", "agent_id", agentID, "error", err)
-		}
-		slog.Info("clear context: agent restarted successfully", "agent_id", agentID)
+		return
 	}
+	if err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings); err != nil {
+		slog.Warn("clear context: failed to persist confirmed settings", "agent_id", agentID, "error", err)
+	}
+	slog.Info("clear context: agent restarted successfully", "agent_id", agentID)
 
-	// Broadcast a context_cleared notification.
+	// Only broadcast context_cleared once the new agent is up; on failure
+	// the agent_error notification above stands on its own so clients do
+	// not see a "cleared" UI state for an agent that is actually down.
 	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 		"type": "context_cleared",
 	})
@@ -1946,10 +1949,11 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 // initiatePlanExecutionRestart performs a full stop-and-restart to clear
 // context for providers that don't support in-place clearing (e.g. Claude Code).
 func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbAgent db.Agent, planMsg string) {
-	// Discard remaining output and stop the agent. DiscardOutput prevents
-	// persisting spurious errors (e.g. "stream closed") emitted during
-	// shutdown. Waits for the process to fully exit so StartAgent below
-	// doesn't fail with "agent already running".
+	unlock := svc.Agents.LockAgent(agentID)
+	defer unlock()
+
+	// DiscardOutput before stop so shutdown noise ("stream closed") does not
+	// land in the persisted chat history.
 	svc.Agents.DiscardOutputAndStopAgent(agentID)
 
 	// Clear span tracking state from the previous session.

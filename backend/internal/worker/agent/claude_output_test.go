@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +29,14 @@ type outputTestSink struct {
 
 	modeMu          sync.Mutex
 	permissionModes []string
+
+	planMu    sync.Mutex
+	planCalls []planUpdateCall
+}
+
+type planUpdateCall struct {
+	FilePath string
+	Title    string
 }
 
 func (s *outputTestSink) OpenSpan(spanID, parentSpanID string) {
@@ -63,6 +73,18 @@ func (s *outputTestSink) PermissionModes() []string {
 	s.modeMu.Lock()
 	defer s.modeMu.Unlock()
 	return append([]string(nil), s.permissionModes...)
+}
+
+func (s *outputTestSink) UpdatePlan(filePath string, _ []byte, _ leapmuxv1.ContentCompression, title string) {
+	s.planMu.Lock()
+	defer s.planMu.Unlock()
+	s.planCalls = append(s.planCalls, planUpdateCall{FilePath: filePath, Title: title})
+}
+
+func (s *outputTestSink) PlanCalls() []planUpdateCall {
+	s.planMu.Lock()
+	defer s.planMu.Unlock()
+	return append([]planUpdateCall(nil), s.planCalls...)
 }
 
 // newTestAgent creates a minimal ClaudeCodeAgent for unit-testing HandleOutput.
@@ -197,6 +219,74 @@ func TestHandleOutput_AssistantNoToolUse(t *testing.T) {
 	// No spans opened.
 	assert.Empty(t, sink.OpenedSpans())
 	assert.Equal(t, 0, agent.turnToolUses)
+}
+
+// testHomeDir returns a platform-appropriate home directory path for tests
+// that exercise OS-native path handling.
+func testHomeDir() string {
+	if filepath.Separator == '/' {
+		return "/home/user"
+	}
+	return filepath.Join("C:", "Users", "user")
+}
+
+func TestHandleOutput_PlanFileDetected_UsesPlatformPathSeparators(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.homeDir = testHomeDir()
+	planPath := filepath.Join(agent.homeDir, ".claude", "plans", "my-plan.md")
+
+	input, err := json.Marshal(map[string]string{
+		"file_path": planPath,
+		"content":   "# My Plan\n\nHere is the body.",
+	})
+	require.NoError(t, err)
+
+	content := []byte(fmt.Sprintf(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{"type": "tool_use", "id": "tu-plan", "name": "Write", "input": %s}
+			]
+		}
+	}`, input))
+
+	agent.HandleOutput(content)
+
+	calls := sink.PlanCalls()
+	require.Len(t, calls, 1, "UpdatePlan should fire for a Write to ~/.claude/plans/")
+	assert.Equal(t, planPath, calls[0].FilePath)
+	assert.Equal(t, "My Plan", calls[0].Title)
+}
+
+func TestHandleOutput_PlanFileIgnored_WhenPathIsOutsidePlansDir(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.homeDir = testHomeDir()
+	otherPath := filepath.Join(agent.homeDir, ".claude", "other", "note.md")
+
+	input, err := json.Marshal(map[string]string{
+		"file_path": otherPath,
+		"content":   "not a plan",
+	})
+	require.NoError(t, err)
+
+	content := []byte(fmt.Sprintf(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{"type": "tool_use", "id": "tu-other", "name": "Write", "input": %s}
+			]
+		}
+	}`, input))
+
+	agent.HandleOutput(content)
+
+	assert.Empty(t, sink.PlanCalls())
 }
 
 func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {

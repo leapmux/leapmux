@@ -39,6 +39,7 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID:            opts.AgentID,
+				providerName:       "kilo",
 				cmd:                cmd,
 				stdin:              stdin,
 				ctx:                ctx,
@@ -50,18 +51,16 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, er
 				preambleMeta:       make(map[string]string),
 				apiTimeout:         opts.apiTimeout(),
 			}},
-			sink:         sink,
-			providerName: "kilo",
-			model:        opts.Model,
+			sink:  sink,
+			model: opts.Model,
 		},
 	}
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndPrimaryAgent
 	a.refreshFromSession = a.refreshModelAndPrimaryAgentFromSession
 
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("start kilo: %w", err)
+	if err := a.startCmd(cmd, cancel); err != nil {
+		return nil, err
 	}
 
 	initParams, err := json.Marshal(map[string]interface{}{

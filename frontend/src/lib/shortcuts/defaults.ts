@@ -23,6 +23,15 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   { key: '$mod+7', command: 'app.switchToTab7' },
   { key: '$mod+8', command: 'app.switchToTab8' },
   { key: '$mod+9', command: 'app.switchToTab9' },
+  { key: 'Alt+1', command: 'app.switchToTab1' },
+  { key: 'Alt+2', command: 'app.switchToTab2' },
+  { key: 'Alt+3', command: 'app.switchToTab3' },
+  { key: 'Alt+4', command: 'app.switchToTab4' },
+  { key: 'Alt+5', command: 'app.switchToTab5' },
+  { key: 'Alt+6', command: 'app.switchToTab6' },
+  { key: 'Alt+7', command: 'app.switchToTab7' },
+  { key: 'Alt+8', command: 'app.switchToTab8' },
+  { key: 'Alt+9', command: 'app.switchToTab9' },
 
   // Tab navigation
   { key: '$mod+BracketLeft', command: 'app.previousTab' },

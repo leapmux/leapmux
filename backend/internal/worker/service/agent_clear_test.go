@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -74,13 +75,19 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 	svc, d, w := setupTestService(t, "ws-1")
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
+	// Mock a successful restart so we can validate the happy-path ordering
+	// without spawning a real agent process. context_cleared is only
+	// broadcast when the new agent starts successfully.
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		return &leapmuxv1.AgentSettings{}, nil
+	}
+
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		// Leave AgentProvider unspecified so restart fails immediately and
-		// deterministically without spawning a real agent process.
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
 	sender := channel.NewSender(w)
@@ -124,6 +131,51 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 	require.NotEqual(t, -1, userIdx, "expected a streamed user message")
 	require.NotEqual(t, -1, contextClearedIdx, "expected a streamed context_cleared notification")
 	assert.Less(t, userIdx, contextClearedIdx, "the /clear user message must be streamed before context_cleared")
+}
+
+func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          "agent-1",
+		WorkspaceID: "ws-1",
+		WorkingDir:  t.TempDir(),
+		HomeDir:     t.TempDir(),
+		// Unspecified provider → StartAgent returns an error, exercising
+		// the failure branch of handleClearContext.
+	}))
+
+	sender := channel.NewSender(w)
+	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
+		ChannelID: w.channelID,
+		Sender:    sender,
+	})
+
+	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+		AgentId: "agent-1",
+		Content: "/clear",
+	}, w)
+
+	require.Empty(t, w.errors)
+
+	sawAgentError := false
+	sawContextCleared := false
+	for _, stream := range w.streams {
+		msg := decodeWatchAgentMessage(t, stream)
+		for _, typ := range decodeMessageTypes(t, msg) {
+			switch typ {
+			case "agent_error":
+				sawAgentError = true
+			case "context_cleared":
+				sawContextCleared = true
+			}
+		}
+	}
+
+	assert.True(t, sawAgentError, "expected an agent_error notification when restart fails")
+	assert.False(t, sawContextCleared, "context_cleared must not be broadcast when the restart fails — clients would otherwise think the agent is ready")
 }
 
 func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testing.T) {

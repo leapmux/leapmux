@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -37,7 +38,7 @@ func TestCodex_LoginShellEnvUsesCodexMarkers(t *testing.T) {
 	assert.False(t, foundCodexCI, "CODEX_CI=1 should NOT be in env without login shell")
 	assert.False(t, foundThreadID, "CODEX_THREAD_ID should be filtered from env")
 
-	shellCmd, _, _ := buildShellWrappedCommand(ctx, "/bin/sh", true, "codex", []string{"CODEX_CI"}, []string{"app-server"}, nil, t.TempDir())
+	shellCmd, _, _ := buildShellWrappedCommand(ctx, testutil.TestShell(), true, "codex", []string{"CODEX_CI"}, []string{"app-server"}, nil, t.TempDir())
 	shellCmd.Env = filterEnv(shellCmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
 	shellCmd.Env = append(shellCmd.Env, "LEAPMUX_WORKER=1", "CODEX_CI=1")
 

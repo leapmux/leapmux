@@ -40,6 +40,7 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Provider
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID:            opts.AgentID,
+				providerName:       "goose",
 				cmd:                cmd,
 				stdin:              stdin,
 				ctx:                ctx,
@@ -51,9 +52,8 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Provider
 				preambleMeta:       make(map[string]string),
 				apiTimeout:         opts.apiTimeout(),
 			}},
-			sink:         sink,
-			providerName: "goose",
-			model:        opts.Model,
+			sink:  sink,
+			model: opts.Model,
 		},
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
@@ -61,9 +61,8 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Provider
 	a.reapplySettings = a.reapplyModelAndPermissionMode
 	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
 
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("start goose: %w", err)
+	if err := a.startCmd(cmd, cancel); err != nil {
+		return nil, err
 	}
 
 	initParams, err := json.Marshal(map[string]interface{}{

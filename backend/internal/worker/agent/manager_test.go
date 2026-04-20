@@ -153,6 +153,48 @@ func TestManager_StopAndWaitAgent_NotRunning(t *testing.T) {
 	assert.False(t, m.StopAndWaitAgent("nonexistent"), "expected false for non-running agent")
 }
 
+func TestManager_LockAgent_ComposesStopAndStart(t *testing.T) {
+	m := NewManager(nil)
+	ctx := context.Background()
+
+	_, err := m.startAgentWith(ctx, Options{AgentID: "r1", Model: "test", WorkingDir: t.TempDir()}, noopSink{}, startMockAgent)
+	require.NoError(t, err)
+
+	unlock := m.LockAgent("r1")
+	m.stopAndWait("r1", false)
+	_, err = m.startAgentWith(ctx, Options{AgentID: "r1", Model: "test", WorkingDir: t.TempDir()}, noopSink{}, startMockAgent)
+	unlock()
+	require.NoError(t, err, "restart composed under LockAgent should succeed")
+	assert.True(t, m.HasAgent("r1"))
+	m.StopAgent("r1")
+}
+
+func TestManager_LockAgent_SerializesConcurrentRestarts(t *testing.T) {
+	m := NewManager(nil)
+	ctx := context.Background()
+
+	_, err := m.startAgentWith(ctx, Options{AgentID: "race", Model: "test", WorkingDir: t.TempDir()}, noopSink{}, startMockAgent)
+	require.NoError(t, err)
+
+	restart := func() error {
+		unlock := m.LockAgent("race")
+		defer unlock()
+		m.stopAndWait("race", false)
+		_, err := m.startAgentWith(ctx, Options{AgentID: "race", Model: "test", WorkingDir: t.TempDir()}, noopSink{}, startMockAgent)
+		return err
+	}
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- restart() }()
+	go func() { errCh <- restart() }()
+
+	// Both must succeed: the lock serializes them so neither trips the
+	// "agent already running" guard.
+	assert.NoError(t, <-errCh)
+	assert.NoError(t, <-errCh)
+	m.StopAgent("race")
+}
+
 func TestManager_StopUnknownAgent(t *testing.T) {
 	m := NewManager(nil)
 	// Should not panic.

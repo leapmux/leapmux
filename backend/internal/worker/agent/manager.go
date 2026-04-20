@@ -21,7 +21,15 @@ type Manager struct {
 	agents             map[string]Provider                          // agentID -> Provider
 	cachedModels       map[string][]*leapmuxv1.AvailableModel       // agentID -> last known models
 	cachedOptionGroups map[string][]*leapmuxv1.AvailableOptionGroup // agentID -> last known option groups
+	lifecycleLocks     map[string]*lifecycleEntry                   // agentID -> refcounted mutex
 	onExit             ExitHandler
+}
+
+// lifecycleEntry is a per-agent mutex whose refcount is guarded by Manager.mu.
+// Entries are evicted when no caller holds or is waiting for the lock.
+type lifecycleEntry struct {
+	mu       sync.Mutex
+	refcount int
 }
 
 // NewManager creates a new agent Manager.
@@ -31,8 +39,48 @@ func NewManager(onExit ExitHandler) *Manager {
 		agents:             make(map[string]Provider),
 		cachedModels:       make(map[string][]*leapmuxv1.AvailableModel),
 		cachedOptionGroups: make(map[string][]*leapmuxv1.AvailableOptionGroup),
+		lifecycleLocks:     make(map[string]*lifecycleEntry),
 		onExit:             onExit,
 	}
+}
+
+// LockAgent acquires a per-agent mutex that serializes multi-step lifecycle
+// operations (typically stop-then-start) against concurrent callers. Without
+// this, a second restart can slip in between the first's stop and start and
+// race the "agent already running" check in StartAgent. The returned function
+// releases the lock — callers should defer it.
+func (m *Manager) LockAgent(agentID string) func() {
+	m.mu.Lock()
+	entry, ok := m.lifecycleLocks[agentID]
+	if !ok {
+		entry = &lifecycleEntry{}
+		m.lifecycleLocks[agentID] = entry
+	}
+	entry.refcount++
+	m.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		m.mu.Lock()
+		entry.refcount--
+		if entry.refcount == 0 {
+			delete(m.lifecycleLocks, agentID)
+		}
+		m.mu.Unlock()
+	}
+}
+
+// RestartAgent atomically stops any running agent for opts.AgentID, waits
+// for it to fully exit, then starts a new one. Concurrent restarts for the
+// same agent ID are serialized via LockAgent. Callers that need to interleave
+// work between stop and start should use LockAgent directly.
+func (m *Manager) RestartAgent(ctx context.Context, opts Options, sink OutputSink) (*leapmuxv1.AgentSettings, error) {
+	unlock := m.LockAgent(opts.AgentID)
+	defer unlock()
+
+	m.stopAndWait(opts.AgentID, false)
+	return m.StartAgent(ctx, opts, sink)
 }
 
 // startFunc is the function signature for starting an agent process.

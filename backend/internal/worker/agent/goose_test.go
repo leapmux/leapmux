@@ -96,7 +96,7 @@ func TestStartGooseCLI_NewSessionHandshake(t *testing.T) {
 	provider, err := StartGooseCLI(context.Background(), Options{
 		AgentID:       "goose-new",
 		WorkingDir:    t.TempDir(),
-		Shell:         "/bin/sh",
+		Shell:         testutil.TestShell(),
 		LoginShell:    false,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 	}, &testSink{})
@@ -130,7 +130,7 @@ func TestStartGooseCLI_LoadSessionUsesResumeID(t *testing.T) {
 		AgentID:         "goose-load",
 		WorkingDir:      t.TempDir(),
 		ResumeSessionID: "goose-resume",
-		Shell:           "/bin/sh",
+		Shell:           testutil.TestShell(),
 		LoginShell:      false,
 		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 	}, &testSink{})

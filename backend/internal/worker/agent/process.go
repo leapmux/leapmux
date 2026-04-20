@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // maxStderrSize is the maximum amount of stderr to buffer.
@@ -23,8 +25,9 @@ const maxStderrSize = 1 << 20 // 1MB
 // ClaudeCodeAgent embeds it directly; ACP agents (GeminiCLIAgent, OpenCodeAgent)
 // and CodexAgent embed it via jsonrpcBase which adds JSON-RPC request plumbing.
 type processBase struct {
-	agentID string
-	stdin   io.WriteCloser
+	agentID      string
+	providerName string // e.g. "claude", "codex", "copilot" — used in log and error messages
+	stdin        io.WriteCloser
 
 	cmd         *exec.Cmd
 	ctx         context.Context
@@ -38,6 +41,12 @@ type processBase struct {
 
 	mu      sync.Mutex
 	stopped bool
+
+	// jobObject, when non-nil, is the Windows kill-on-close job group that
+	// holds the shell wrapper and every descendant it spawns. Terminating or
+	// closing it reaps the whole tree — the Windows analogue of Unix's
+	// process-group signalling.
+	jobObject *procutil.JobObject
 
 	discardOutput atomic.Bool
 
@@ -73,8 +82,10 @@ func (p *processBase) SendRawInput(data []byte) error {
 }
 
 // Stop terminates the process gracefully. It closes stdin and gives the
-// process a short grace period before cancelling the context (which sends
-// SIGTERM, then SIGKILL after WaitDelay).
+// process a short grace period to exit on its own. If the grace period
+// elapses, the process tree is torn down: on Windows via the job object
+// (kills orphaned grandchildren too), then via context cancellation as a
+// fallback (SIGTERM + WaitDelay).
 func (p *processBase) Stop() {
 	p.mu.Lock()
 	if p.stopped {
@@ -90,6 +101,9 @@ func (p *processBase) Stop() {
 	case <-p.processDone:
 		return
 	case <-time.After(3 * time.Second):
+		if err := p.jobObject.Terminate(); err != nil {
+			slog.Debug("job object terminate failed", "agent_id", p.agentID, "error", err)
+		}
 		p.cancel()
 	}
 
@@ -230,6 +244,33 @@ func (p *processBase) PreambleOutput() string {
 	return strings.Join(p.preambleOutput, "\n")
 }
 
+// attachJobObject assigns a freshly-started command to a Windows kill-on-close
+// job object so that force-killing later reaps the whole process tree. Must
+// be called immediately after cmd.Start. Non-Windows is a no-op; a job
+// creation failure is logged but not fatal — the agent still works, we just
+// lose the tree-kill guarantee for that session.
+func (p *processBase) attachJobObject(cmd *exec.Cmd) {
+	job, err := procutil.AssignCmd(cmd)
+	if err != nil {
+		slog.Warn("attach job object failed", "agent_id", p.agentID, "error", err)
+		return
+	}
+	p.jobObject = job
+}
+
+// startCmd runs cmd.Start and, on success, attaches the process to a Windows
+// kill-on-close job object so later force-kills reap the whole tree.
+// On failure, cancel is invoked and the error is wrapped as "start <providerName>".
+// Callers must populate p.agentID and p.providerName before calling.
+func (p *processBase) startCmd(cmd *exec.Cmd, cancel func()) error {
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return fmt.Errorf("start %s: %w", p.providerName, err)
+	}
+	p.attachJobObject(cmd)
+	return nil
+}
+
 // setupProcessPipes configures the command's cancel/wait behavior and opens
 // stdin, stdout, and stderr pipes. On error it calls cancel() and returns.
 func setupProcessPipes(cmd *exec.Cmd, cancel func()) (stdin io.WriteCloser, stdout, stderr io.ReadCloser, err error) {
@@ -331,6 +372,9 @@ func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterce
 	}
 
 	p.waitErr = p.cmd.Wait()
+	if err := p.jobObject.Close(); err != nil {
+		slog.Debug("job object close failed", "agent_id", p.agentID, "error", err)
+	}
 	close(p.processDone)
 }
 

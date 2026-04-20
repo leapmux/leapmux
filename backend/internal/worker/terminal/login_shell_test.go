@@ -24,6 +24,10 @@ func TestLoginShellArgs(t *testing.T) {
 		{"pwsh-preview", "/usr/bin/pwsh-preview", []string{"-Login"}},
 		{"pwsh.exe", `C:\Program Files\PowerShell\7\pwsh.exe`, []string{"-Login"}},
 		{"powershell.exe", `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, []string{"-Login"}},
+		{"cmd.exe", `C:\Windows\System32\cmd.exe`, nil},
+		{"cmd.exe upper", `C:\Windows\System32\CMD.EXE`, nil},
+		{"cmd bare", "cmd", nil},
+		{"powershell.exe upper", `C:\Windows\System32\WindowsPowerShell\v1.0\POWERSHELL.EXE`, []string{"-Login"}},
 		{"unknown", "/usr/bin/xonsh", []string{"-i", "-l"}},
 	}
 	for _, tt := range tests {
@@ -34,23 +38,15 @@ func TestLoginShellArgs(t *testing.T) {
 }
 
 func TestIsPwsh(t *testing.T) {
-	// Positive cases — Unix name forms
 	assert.True(t, IsPwsh("pwsh"))
 	assert.True(t, IsPwsh("powershell"))
 	assert.True(t, IsPwsh("pwsh-preview"))
 	assert.True(t, IsPwsh("powershell-preview"))
 
-	// Positive cases — Windows ".exe" suffix forms produced by filepath.Base
-	assert.True(t, IsPwsh("pwsh.exe"))
-	assert.True(t, IsPwsh("powershell.exe"))
-	assert.True(t, IsPwsh("pwsh-preview.exe"))
-	assert.True(t, IsPwsh("powershell-preview.exe"))
-
-	// Negative cases
 	assert.False(t, IsPwsh("bash"))
-	assert.False(t, IsPwsh("bash.exe"))
 	assert.False(t, IsPwsh("zsh"))
 	assert.False(t, IsPwsh("fish"))
 	assert.False(t, IsPwsh("pwsh-extra-stuff"))
-	assert.False(t, IsPwsh("pwshxexe")) // no dot -> must not match
+	// IsPwsh expects normalized input — callers must strip .exe via ShellBaseName.
+	assert.False(t, IsPwsh("pwsh.exe"))
 }

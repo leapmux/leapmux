@@ -1,9 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -316,9 +316,6 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 }
 
 func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("terminal tests require /bin/sh and creack/pty, which are not available on Windows")
-	}
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, "ws-1")
 	workingDir := t.TempDir()
@@ -327,7 +324,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	require.NoError(t, svc.Terminals.StartTerminal(terminal.Options{
 		ID:            "term-1",
 		WorkspaceID:   "ws-1",
-		Shell:         "/bin/sh",
+		Shell:         testutil.TestShell(),
 		WorkingDir:    workingDir,
 		ShellStartDir: "",
 		Cols:          80,
@@ -348,13 +345,13 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	}))
 
 	// Send a command so the terminal has screen content.
-	require.NoError(t, svc.Terminals.SendInput("term-1", []byte("echo shutdown_test\n")))
+	require.NoError(t, svc.Terminals.SendInput("term-1", []byte("echo shutdown_test"+testutil.TestShellEnter())))
 
-	// Wait for the terminal to have screen data.
+	// Wait until the echo output appears in the screen buffer; otherwise
+	// Shutdown can race ahead of the shell processing the input.
 	testutil.AssertEventually(t, func() bool {
-		screen := svc.Terminals.ScreenSnapshot("term-1")
-		return len(screen) > 0
-	}, "expected terminal to have screen data")
+		return bytes.Contains(svc.Terminals.ScreenSnapshot("term-1"), []byte("shutdown_test"))
+	}, "expected terminal screen to contain 'shutdown_test'")
 
 	// Call Shutdown — should persist screen to DB.
 	svc.Shutdown()
@@ -373,16 +370,13 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 }
 
 func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("terminal tests require /bin/sh and creack/pty, which are not available on Windows")
-	}
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
 	workingDir := t.TempDir()
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkspaceId: "ws-1",
-		Shell:       "/bin/sh",
+		Shell:       testutil.TestShell(),
 		WorkingDir:  workingDir,
 		Cols:        80,
 		Rows:        24,
@@ -395,9 +389,10 @@ func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
 	require.NotEmpty(t, terminalID)
 
 	w2 := &testResponseWriter{channelID: "test-ch"}
+	enter := testutil.TestShellEnter()
 	dispatch(d, "SendInput", &leapmuxv1.SendInputRequest{
 		TerminalId: terminalID,
-		Data:       []byte("echo exit_notice_test\nexit\n"),
+		Data:       []byte("echo exit_notice_test" + enter + "exit" + enter),
 	}, w2)
 	require.Empty(t, w2.errors)
 

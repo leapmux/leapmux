@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
@@ -110,7 +111,7 @@ func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: branchName,
-		Shell:          "/bin/sh",
+		Shell:          testutil.TestShell(),
 	}, w)
 
 	require.Len(t, w.errors, 1)
@@ -136,7 +137,7 @@ func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 		WorkspaceId:  "ws-1",
 		WorkingDir:   repoDir,
 		CreateBranch: branchName,
-		Shell:        "/bin/sh",
+		Shell:        testutil.TestShell(),
 	}, w)
 
 	require.Len(t, w.errors, 1)
@@ -233,7 +234,7 @@ func TestOpenTerminal_DoesNotRollBackSwitchBranchOnStartFailure(t *testing.T) {
 		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CheckoutBranch: "feature/existing",
-		Shell:          "/bin/sh",
+		Shell:          testutil.TestShell(),
 	}, w)
 
 	require.Len(t, w.errors, 1)

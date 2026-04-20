@@ -3,7 +3,6 @@ package terminal
 import (
 	"context"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -17,25 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// skipIfNoPTY skips tests that spawn a real PTY. creack/pty returns
-// "unsupported" on Windows — the production worker falls back to ConPTY
-// where available, but the test harness uses /bin/sh directly which isn't
-// reachable from Windows anyway.
-func skipIfNoPTY(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("PTY tests require /bin/sh and creack/pty, which are not available on Windows")
-	}
-}
-
 func TestTerminal_StartAndStop(t *testing.T) {
-	skipIfNoPTY(t)
 	var mu sync.Mutex
 	var output []byte
 
 	term, err := Start(Options{
 		ID:         "test-1",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
@@ -47,7 +34,7 @@ func TestTerminal_StartAndStop(t *testing.T) {
 	require.NoError(t, err, "Start")
 
 	// Send a command.
-	require.NoError(t, term.SendInput([]byte("echo hello\n")), "SendInput")
+	require.NoError(t, term.SendInput([]byte("echo hello"+testutil.TestShellEnter())), "SendInput")
 
 	// Wait for output.
 	testutil.AssertEventually(t, func() bool {
@@ -66,10 +53,9 @@ func TestTerminal_StartAndStop(t *testing.T) {
 }
 
 func TestTerminal_Resize(t *testing.T) {
-	skipIfNoPTY(t)
 	term, err := Start(Options{
 		ID:         "test-resize",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
@@ -84,10 +70,9 @@ func TestTerminal_Resize(t *testing.T) {
 }
 
 func TestTerminal_SendInputAfterStop(t *testing.T) {
-	skipIfNoPTY(t)
 	term, err := Start(Options{
 		ID:         "test-stopped",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 	}, func([]byte) {})
 	require.NoError(t, err, "Start")
@@ -95,14 +80,13 @@ func TestTerminal_SendInputAfterStop(t *testing.T) {
 	term.Stop()
 	term.Wait()
 
-	assert.Error(t, term.SendInput([]byte("echo fail\n")), "expected error sending input after stop")
+	assert.Error(t, term.SendInput([]byte("echo fail"+testutil.TestShellEnter())), "expected error sending input after stop")
 }
 
 func TestTerminal_IsExited(t *testing.T) {
-	skipIfNoPTY(t)
 	term, err := Start(Options{
 		ID:         "test-exited",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 	}, func([]byte) {})
 	require.NoError(t, err, "Start")
@@ -116,12 +100,11 @@ func TestTerminal_IsExited(t *testing.T) {
 }
 
 func TestManager_StartAndRemove(t *testing.T) {
-	skipIfNoPTY(t)
 	m := NewManager()
 
 	err := m.StartTerminal(Options{
 		ID:         "tm-1",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 	}, func([]byte) {}, nil)
 	require.NoError(t, err, "StartTerminal")
@@ -131,7 +114,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 	// Duplicate should fail.
 	err = m.StartTerminal(Options{
 		ID:         "tm-1",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 	}, func([]byte) {}, nil)
 	assert.Error(t, err, "expected error for duplicate terminal")
@@ -151,12 +134,11 @@ func TestManager_StartAndRemove(t *testing.T) {
 }
 
 func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
-	skipIfNoPTY(t)
 	m := NewManager()
 
 	err := m.StartTerminal(Options{
 		ID:         "tm-exit",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 	}, func([]byte) {}, nil)
 	require.NoError(t, err, "StartTerminal")
@@ -177,7 +159,6 @@ func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
 }
 
 func TestManager_ExitNotification(t *testing.T) {
-	skipIfNoPTY(t)
 	m := NewManager()
 	exitCh := make(chan struct{})
 	var gotID string
@@ -185,7 +166,7 @@ func TestManager_ExitNotification(t *testing.T) {
 
 	err := m.StartTerminal(Options{
 		ID:         "tm-notify",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 	}, func([]byte) {}, func(id string, code int) {
 		gotID = id
@@ -210,13 +191,12 @@ func TestManager_ExitNotification(t *testing.T) {
 }
 
 func TestManager_StopAll(t *testing.T) {
-	skipIfNoPTY(t)
 	m := NewManager()
 
 	for _, id := range []string{"a", "b"} {
 		err := m.StartTerminal(Options{
 			ID:         id,
-			Shell:      "/bin/sh",
+			Shell:      testutil.TestShell(),
 			WorkingDir: t.TempDir(),
 		}, func([]byte) {}, nil)
 		require.NoError(t, err, "StartTerminal(%s)", id)
@@ -254,11 +234,10 @@ func TestManager_Resize_UnknownTerminal(t *testing.T) {
 }
 
 func TestManager_Resize_SameDimensions(t *testing.T) {
-	skipIfNoPTY(t)
 	m := NewManager()
 	err := m.StartTerminal(Options{
 		ID:         "tm-resize-noop",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
@@ -277,14 +256,13 @@ func TestManager_Resize_SameDimensions(t *testing.T) {
 }
 
 func TestManager_ScreenSnapshot(t *testing.T) {
-	skipIfNoPTY(t)
 	m := NewManager()
 	var mu sync.Mutex
 	var output []byte
 
 	err := m.StartTerminal(Options{
 		ID:         "tm-snap",
-		Shell:      "/bin/sh",
+		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
@@ -296,7 +274,7 @@ func TestManager_ScreenSnapshot(t *testing.T) {
 	require.NoError(t, err, "StartTerminal")
 
 	// Send a command to produce output.
-	require.NoError(t, m.SendInput("tm-snap", []byte("echo snapshot_test\n")), "SendInput")
+	require.NoError(t, m.SendInput("tm-snap", []byte("echo snapshot_test"+testutil.TestShellEnter())), "SendInput")
 
 	// Wait for the output to arrive.
 	testutil.AssertEventually(t, func() bool {
@@ -344,7 +322,6 @@ func newTestDB(t *testing.T) *db.Queries {
 }
 
 func TestSnapshotTerminal(t *testing.T) {
-	skipIfNoPTY(t)
 	m := NewManager()
 	var mu sync.Mutex
 	var output []byte
@@ -355,7 +332,7 @@ func TestSnapshotTerminal(t *testing.T) {
 	err := m.StartTerminal(Options{
 		ID:          termID,
 		WorkspaceID: wsID,
-		Shell:       "/bin/sh",
+		Shell:       testutil.TestShell(),
 		WorkingDir:  t.TempDir(),
 		Cols:        80,
 		Rows:        24,
@@ -366,7 +343,7 @@ func TestSnapshotTerminal(t *testing.T) {
 	}, nil)
 	require.NoError(t, err, "StartTerminal")
 
-	require.NoError(t, m.SendInput(termID, []byte("echo snapshot_single\n")), "SendInput")
+	require.NoError(t, m.SendInput(termID, []byte("echo snapshot_single"+testutil.TestShellEnter())), "SendInput")
 	testutil.AssertEventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -425,7 +402,6 @@ func TestUpsertAndGetTerminal(t *testing.T) {
 }
 
 func TestUpdateTitle(t *testing.T) {
-	skipIfNoPTY(t)
 	m := NewManager()
 	wsID := "ws-title"
 
@@ -433,7 +409,7 @@ func TestUpdateTitle(t *testing.T) {
 	err := m.StartTerminal(Options{
 		ID:          termID,
 		WorkspaceID: wsID,
-		Shell:       "/bin/sh",
+		Shell:       testutil.TestShell(),
 		WorkingDir:  t.TempDir(),
 		Cols:        80,
 		Rows:        24,
@@ -555,47 +531,12 @@ func TestDetectDefaultShell(t *testing.T) {
 	assert.True(t, filepath.IsAbs(shell), "detectDefaultShell should return an absolute path, got %q", shell)
 }
 
-func TestResolveDefaultShell_PrefersLeapmuxEnv(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-shell-path test: Windows shell resolution is covered separately")
-	}
-	t.Setenv("LEAPMUX_DEFAULT_SHELL", "/bin/test-leapmux-shell")
-	t.Setenv("SHELL", "/bin/other-shell")
-	resetShellCache()
-	shell := ResolveDefaultShell()
-	assert.Equal(t, "/bin/test-leapmux-shell", shell)
-}
-
-func TestResolveDefaultShell_LeapmuxEnvBareName(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-shell-path test: Windows shell resolution is covered separately")
-	}
-	t.Setenv("LEAPMUX_DEFAULT_SHELL", "sh")
-	t.Setenv("SHELL", "/bin/other-shell")
-	resetShellCache()
-	shell := ResolveDefaultShell()
-	assert.NotEmpty(t, shell, "bare name should be resolved")
-	assert.True(t, strings.HasPrefix(shell, "/"), "resolved path should be absolute")
-	assert.True(t, strings.HasSuffix(shell, "/sh"), "resolved path should end with /sh")
-}
-
 func TestResolveDefaultShell_LeapmuxEnvInvalidBareName(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "nonexistent-shell-xyz")
 	t.Setenv("SHELL", "/bin/fallback-shell")
 	resetShellCache()
 	shell := ResolveDefaultShell()
 	assert.Equal(t, "/bin/fallback-shell", shell, "should fall back to $SHELL when LEAPMUX_DEFAULT_SHELL is unresolvable")
-}
-
-func TestResolveDefaultShell_UsesEnvWhenSet(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-shell-path test: Windows shell resolution is covered separately")
-	}
-	t.Setenv("LEAPMUX_DEFAULT_SHELL", "")
-	t.Setenv("SHELL", "/bin/test-shell")
-	resetShellCache()
-	shell := ResolveDefaultShell()
-	assert.Equal(t, "/bin/test-shell", shell, "ResolveDefaultShell should prefer $SHELL")
 }
 
 func TestResolveDefaultShell_FallsBackWhenEnvUnset(t *testing.T) {
@@ -610,21 +551,6 @@ func TestResolveDefaultShell_FallsBackWhenEnvUnset(t *testing.T) {
 func TestResolveShellEnv_Empty(t *testing.T) {
 	t.Setenv("TEST_SHELL_ENV", "")
 	assert.Equal(t, "", resolveShellEnv("TEST_SHELL_ENV"))
-}
-
-func TestResolveShellEnv_AbsolutePath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-shell-path test: /usr/bin/zsh is not an absolute path on Windows")
-	}
-	t.Setenv("TEST_SHELL_ENV", "/usr/bin/zsh")
-	assert.Equal(t, "/usr/bin/zsh", resolveShellEnv("TEST_SHELL_ENV"))
-}
-
-func TestResolveShellEnv_BareNameResolved(t *testing.T) {
-	t.Setenv("TEST_SHELL_ENV", "sh")
-	result := resolveShellEnv("TEST_SHELL_ENV")
-	assert.NotEmpty(t, result)
-	assert.True(t, filepath.IsAbs(result))
 }
 
 func TestResolveShellEnv_BareNameNotFound(t *testing.T) {

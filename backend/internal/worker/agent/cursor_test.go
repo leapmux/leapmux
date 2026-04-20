@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func newCursorAgentForRPC(t *testing.T) (*CursorCLIAgent, func() []recordedRequest) {
@@ -95,7 +96,7 @@ func TestStartCursorCLI_NewSessionHandshake(t *testing.T) {
 	provider, err := StartCursorCLI(context.Background(), Options{
 		AgentID:       "cursor-new",
 		WorkingDir:    t.TempDir(),
-		Shell:         "/bin/sh",
+		Shell:         testutil.TestShell(),
 		LoginShell:    false,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}, &testSink{})
@@ -123,7 +124,7 @@ func TestStartCursorCLI_LoadSessionUsesResumeID(t *testing.T) {
 		AgentID:         "cursor-load",
 		WorkingDir:      t.TempDir(),
 		ResumeSessionID: "cursor-resume",
-		Shell:           "/bin/sh",
+		Shell:           testutil.TestShell(),
 		LoginShell:      false,
 		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}, &testSink{})

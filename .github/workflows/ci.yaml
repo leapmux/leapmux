@@ -142,6 +142,61 @@ jobs:
       - name: Test
         run: task test
 
+  ci-windows:
+    runs-on: windows-latest
+    # windows-latest runner behaviour is still being validated; failures
+    # are reported but not merge-blocking.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read tool versions
+        shell: bash
+        run: |
+          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Backend tests (Windows-relevant packages)
+        shell: bash
+        working-directory: backend
+        run: |
+          # Excludes hub/store/{cockroachdb,mysql,postgres,tidb,yugabytedb}
+          # which require Docker (testcontainers) and are not part of the
+          # Windows worker/desktop runtime.
+          go test -tags integration -timeout 10m \
+            ./cmd/... \
+            ./channelwire/... \
+            ./hub/... \
+            ./internal/config/... \
+            ./internal/hub/auth/... \
+            ./internal/hub/bootstrap/... \
+            ./internal/hub/channelmgr/... \
+            ./internal/hub/cleanup/... \
+            ./internal/hub/config/... \
+            ./internal/hub/keystore/... \
+            ./internal/hub/layout/... \
+            ./internal/hub/oauth/... \
+            ./internal/hub/password/... \
+            ./internal/hub/service/... \
+            ./internal/hub/store/sqlite/... \
+            ./internal/hub/store/sqlutil/... \
+            ./internal/hub/workermgr/... \
+            ./internal/logging/... \
+            ./internal/metrics/... \
+            ./internal/noise/... \
+            ./internal/util/... \
+            ./internal/worker/... \
+            ./locallisten/... \
+            ./solo/... \
+            ./spautil/... \
+            ./tunnel/... \
+            ./worker/...
+
   docker:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

@@ -39,6 +39,7 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID:            opts.AgentID,
+				providerName:       "copilot",
 				cmd:                cmd,
 				stdin:              stdin,
 				ctx:                ctx,
@@ -50,9 +51,8 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 				preambleMeta:       make(map[string]string),
 				apiTimeout:         opts.apiTimeout(),
 			}},
-			sink:         sink,
-			providerName: "copilot",
-			model:        opts.Model,
+			sink:  sink,
+			model: opts.Model,
 		},
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
@@ -60,9 +60,8 @@ func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provid
 	a.reapplySettings = a.reapplyModelAndPermissionMode
 	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
 
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("start copilot: %w", err)
+	if err := a.startCmd(cmd, cancel); err != nil {
+		return nil, err
 	}
 
 	initParams, err := json.Marshal(map[string]interface{}{

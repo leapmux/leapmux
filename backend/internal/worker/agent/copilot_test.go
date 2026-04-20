@@ -116,7 +116,7 @@ func TestStartCopilotCLI_NewSessionHandshake(t *testing.T) {
 	provider, err := StartCopilotCLI(context.Background(), Options{
 		AgentID:       "copilot-new",
 		WorkingDir:    t.TempDir(),
-		Shell:         "/bin/sh",
+		Shell:         testutil.TestShell(),
 		LoginShell:    false,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	}, &testSink{})
@@ -144,7 +144,7 @@ func TestStartCopilotCLI_LoadSessionUsesResumeID(t *testing.T) {
 		AgentID:         "copilot-load",
 		WorkingDir:      t.TempDir(),
 		ResumeSessionID: "copilot-resume",
-		Shell:           "/bin/sh",
+		Shell:           testutil.TestShell(),
 		LoginShell:      false,
 		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	}, &testSink{})

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func newGeminiAgentForRPC(t *testing.T) (*GeminiCLIAgent, func() []recordedRequest) {
@@ -116,7 +117,7 @@ func TestStartGeminiCLI_NewSessionHandshake(t *testing.T) {
 	provider, err := StartGeminiCLI(context.Background(), Options{
 		AgentID:       "gemini-new",
 		WorkingDir:    t.TempDir(),
-		Shell:         "/bin/sh",
+		Shell:         testutil.TestShell(),
 		LoginShell:    false,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 	}, &testSink{})
@@ -145,7 +146,7 @@ func TestStartGeminiCLI_NewSessionAppliesRequestedModelAndMode(t *testing.T) {
 	provider, err := StartGeminiCLI(context.Background(), Options{
 		AgentID:        "gemini-settings",
 		WorkingDir:     t.TempDir(),
-		Shell:          "/bin/sh",
+		Shell:          testutil.TestShell(),
 		LoginShell:     false,
 		Model:          "gemini-2.5-flash",
 		PermissionMode: GeminiCLIModePlan,
@@ -170,7 +171,7 @@ func TestStartGeminiCLI_LoadSessionUsesResumeID(t *testing.T) {
 		AgentID:         "gemini-load",
 		WorkingDir:      t.TempDir(),
 		ResumeSessionID: "session-resume",
-		Shell:           "/bin/sh",
+		Shell:           testutil.TestShell(),
 		LoginShell:      false,
 		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 	}, &testSink{})
