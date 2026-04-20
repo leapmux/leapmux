@@ -61,7 +61,10 @@ func SanitizePath(value, homeDir string) (string, error) {
 			if rest == "" {
 				s = homeDir
 			} else {
-				s = filepath.Join(homeDir, rest)
+				// Plain concatenation, not filepath.Join: Join would Clean the
+				// result and collapse ".." components before the traversal
+				// check below has a chance to reject them.
+				s = strings.TrimRight(homeDir, `/\`) + string(filepath.Separator) + rest
 			}
 		}
 	}
