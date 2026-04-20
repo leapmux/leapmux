@@ -18,6 +18,12 @@ interface DialogProps {
 export const Dialog: Component<DialogProps> = (props) => {
   let dialogRef!: HTMLDialogElement
   let unmounting = false
+  let pointerDownOnBackdrop = false
+
+  const isOutsideDialogRect = (clientX: number, clientY: number) => {
+    const rect = dialogRef.getBoundingClientRect()
+    return clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom
+  }
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
@@ -68,14 +74,21 @@ export const Dialog: Component<DialogProps> = (props) => {
       data-testid={props['data-testid']}
       data-busy={props.busy ? '' : undefined}
       aria-label={props.title}
+      onPointerDown={(e) => {
+        // Only treat this as a backdrop press if the pointer went down directly
+        // on the dialog element in the ::backdrop area. Presses that start
+        // inside the dialog content (e.g. the start of a text selection drag)
+        // must not be treated as backdrop interactions, even if the release
+        // lands on the backdrop.
+        pointerDownOnBackdrop = e.target === dialogRef && isOutsideDialogRect(e.clientX, e.clientY)
+      }}
       onClick={(e) => {
-        // Close on backdrop click: check if the click landed outside
-        // the dialog's bounding rect (i.e. on the ::backdrop).
-        if (e.target === dialogRef && !props.busy) {
-          const rect = dialogRef.getBoundingClientRect()
-          if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
-            dialogRef.close()
-          }
+        // Close on backdrop click: require both press and release to land on
+        // the backdrop, so drags that end on the backdrop don't dismiss.
+        const startedOnBackdrop = pointerDownOnBackdrop
+        pointerDownOnBackdrop = false
+        if (startedOnBackdrop && e.target === dialogRef && !props.busy && isOutsideDialogRect(e.clientX, e.clientY)) {
+          dialogRef.close()
         }
       }}
       onClose={() => {
