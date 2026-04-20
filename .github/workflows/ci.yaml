@@ -156,7 +156,8 @@ jobs:
         # because bash command substitution swallows the missing-binary
         # failure inside `echo "FOO=$(yq ...)"`.
         run: >-
-          winget install --id mikefarah.yq -e
+          winget install --id MikeFarah.yq -e
+          --source winget
           --silent
           --accept-package-agreements
           --accept-source-agreements
