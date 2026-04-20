@@ -237,6 +237,13 @@ jobs:
         with:
           version: ${{ env.BUF_VERSION }}
 
+      - name: Setup protoc
+        # Tauri/Rust's prost-build invokes protoc directly; the Linux job
+        # gets it from `apt install protobuf-compiler`.
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Task
         uses: arduino/setup-task@v2
         with:
