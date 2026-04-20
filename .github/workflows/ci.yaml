@@ -155,13 +155,19 @@ jobs:
         # `Read tool versions` step below silently produces empty values
         # because bash command substitution swallows the missing-binary
         # failure inside `echo "FOO=$(yq ...)"`.
-        run: >-
-          winget install --id MikeFarah.yq -e
-          --source winget
-          --silent
-          --accept-package-agreements
-          --accept-source-agreements
-          --disable-interactivity
+        shell: pwsh
+        run: |
+          winget install --id MikeFarah.yq -e `
+            --source winget `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements `
+            --disable-interactivity
+          # winget drops a yq.exe shim into %LOCALAPPDATA%\Microsoft\WinGet\Links,
+          # but its PATH update only applies to new shells — the subsequent CI
+          # steps inherit the job's original PATH, so yq wouldn't be found.
+          # Surface the Links dir explicitly via GITHUB_PATH.
+          "$env:LOCALAPPDATA\Microsoft\WinGet\Links" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Read tool versions
         shell: bash
