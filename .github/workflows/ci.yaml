@@ -177,7 +177,9 @@ jobs:
           echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
           echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
+          echo "RUST_VERSION=$(yq '.rust-version' versions.yaml)" >> $GITHUB_ENV
           echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
+          echo "CACHE_WEEK=$(date -u +%G-W%V)" >> $GITHUB_ENV
 
       - name: Setup MSVC dev environment
         # Puts link.exe, cl.exe, and the Windows SDK on PATH so Tauri's
@@ -193,7 +195,30 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GOLANG_VERSION }}
-          cache-dependency-path: backend/go.sum
+          cache-dependency-path: |
+            backend/go.sum
+            desktop/go/go.sum
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/rust/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cache Tauri downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/tauri
+          key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -267,6 +292,10 @@ jobs:
             ./spautil/... \
             ./tunnel/... \
             ./worker/...
+
+      - name: Build desktop app
+        shell: bash
+        run: task build-desktop
 
   docker:
     if: github.event_name == 'pull_request'
