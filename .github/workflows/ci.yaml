@@ -150,6 +150,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install yq
+        # windows-latest does not ship mikefarah/yq; without it the
+        # `Read tool versions` step below silently produces empty values
+        # because bash command substitution swallows the missing-binary
+        # failure inside `echo "FOO=$(yq ...)"`.
+        run: choco install yq -y --no-progress
+
       - name: Read tool versions
         shell: bash
         run: |
