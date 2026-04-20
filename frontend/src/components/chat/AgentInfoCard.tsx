@@ -7,10 +7,10 @@ import { AgentProviderIcon, agentProviderLabel } from '~/components/common/Agent
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useCopyButton } from '~/hooks/useCopyButton'
+import { tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
 import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './ContextUsageGrid'
-import { tildify } from './messageUtils'
 
 export interface AgentInfoCardProps {
   agent?: AgentInfo

@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
+import type { PathFlavor } from '~/lib/paths'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import ChevronsDownUp from 'lucide-solid/icons/chevrons-down-up'
 import Eye from 'lucide-solid/icons/eye'
@@ -9,13 +10,14 @@ import FileIcon from 'lucide-solid/icons/file'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import List from 'lucide-solid/icons/list'
 import LocateFixed from 'lucide-solid/icons/locate-fixed'
-import { createEffect, createSignal, For, on, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { PREFIX_FILES_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { join, sep, trimLastSegment } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
+import { fileEntryToDiffStats } from '~/stores/gitFileStatus.store'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
 import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
@@ -34,6 +36,8 @@ export interface FilesSectionProps {
   workerId: string
   workingDir: string
   homeDir: string
+  /** Path flavor for the worker this section is rendering. */
+  flavor: PathFlavor
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen?: (path: string, openSource?: GitFilterTab) => void
@@ -68,24 +72,6 @@ const FILTER_TABS: { key: GitFilterTab, label: string }[] = [
   { key: 'staged', label: 'Staged' },
   { key: 'unstaged', label: 'Unstaged' },
 ]
-
-/** Colored file icon for a git file entry. */
-export const FileStatusIcon: Component<{ entry: GitFileStatusEntry }> = (props) => {
-  const gitIcon = () => getGitFileIconClass(props.entry)
-  return <Icon icon={FileIcon} size="sm" class={gitIcon().class} data-testid={gitIcon().testId} />
-}
-
-/** Diff stats badge showing +N -M for a git file entry, or *1 for untracked. */
-export const FileDiffStatsBadge: Component<{ entry: GitFileStatusEntry }> = (props) => {
-  const isUntracked = () => props.entry.unstagedStatus === GitFileStatusCode.UNTRACKED
-  return (
-    <DiffStatsBadge
-      added={isUntracked() ? 0 : props.entry.linesAdded + props.entry.stagedLinesAdded}
-      deleted={isUntracked() ? 0 : props.entry.linesDeleted + props.entry.stagedLinesDeleted}
-      untracked={isUntracked() ? 1 : 0}
-    />
-  )
-}
 
 /** Toolbar buttons rendered in the section header. */
 export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps> = (props) => {
@@ -177,40 +163,36 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
 
   const handleFlatFileOpen = (entry: GitFileStatusEntry) => {
     const root = props.gitStatusStore.state.repoRoot || props.workingDir
-    const absPath = `${root}/${entry.path}`
+    const absPath = join([root, entry.path], props.flavor)
     props.onFileOpen?.(absPath, activeFilter())
   }
 
-  /** Compute visible paths for filtered tree view. */
-  const visiblePaths = (): Set<string> | undefined => {
+  const visiblePaths = createMemo<Set<string> | undefined>(() => {
     if (!isFiltered())
       return undefined
 
     const files = changedFiles()
     const root = props.gitStatusStore.state.repoRoot || props.workingDir
     const paths = new Set<string>()
-
-    // Always include root.
     paths.add(root)
 
+    const s = sep(props.flavor)
     for (const f of files) {
-      const absPath = `${root}/${f.path}`
-      paths.add(absPath)
-      // Add all ancestor directories.
-      let dir = absPath
+      let dir = join([root, f.path], props.flavor)
+      paths.add(dir)
       while (true) {
-        const lastSlash = dir.lastIndexOf('/')
-        if (lastSlash <= 0)
+        dir = trimLastSegment(dir, s)
+        if (!dir || dir === root)
           break
-        dir = dir.substring(0, lastSlash)
-        if (dir === root)
+        // Ancestor already seen via another file — skip the rest of the walk.
+        if (paths.has(dir))
           break
         paths.add(dir)
       }
     }
 
     return paths
-  }
+  })
 
   return (
     <div class={styles.wrapper}>
@@ -245,6 +227,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
               onOpenTerminal={props.onOpenTerminal}
               rootPath={props.workingDir || '~'}
               homeDir={props.homeDir}
+              flavor={props.flavor}
               gitStatusStore={props.gitStatusStore}
               visiblePaths={visiblePaths()}
               showHiddenFiles={showHiddenFiles()}
@@ -256,16 +239,19 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
       >
         <div class={styles.flatList} data-testid="files-flat-list">
           <For each={changedFiles()}>
-            {entry => (
-              <div
-                class={styles.flatListItem}
-                onClick={() => handleFlatFileOpen(entry)}
-              >
-                <FileStatusIcon entry={entry} />
-                <span>{entry.path}</span>
-                <FileDiffStatsBadge entry={entry} />
-              </div>
-            )}
+            {(entry) => {
+              const gitIcon = getGitFileIconClass(entry)
+              return (
+                <div
+                  class={styles.flatListItem}
+                  onClick={() => handleFlatFileOpen(entry)}
+                >
+                  <Icon icon={FileIcon} size="sm" class={gitIcon.class} data-testid={gitIcon.testId} />
+                  <span>{entry.path}</span>
+                  <DiffStatsBadge stats={fileEntryToDiffStats(entry)} />
+                </div>
+              )
+            }}
           </For>
           <Show when={changedFiles().length === 0}>
             <div style={{ 'padding': 'var(--space-4)', 'color': 'var(--faint-foreground)', 'font-size': 'var(--text-7)', 'text-align': 'center' }}>

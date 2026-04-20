@@ -29,6 +29,7 @@ import { useIsMobile } from '~/hooks/useIsMobile'
 import { useShortcuts } from '~/hooks/useShortcuts'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createLogger } from '~/lib/logger'
+import { detectFlavor, parentDirectory, relativeUnder } from '~/lib/paths'
 import { printConsoleBanner } from '~/lib/systemInfo'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -337,7 +338,7 @@ export const AppShell: ParentComponent = (props) => {
       return { workerId, workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
     }
     else if (tab.type === TabType.FILE) {
-      const dir = tab.workingDir || (tab.filePath ? tab.filePath.substring(0, tab.filePath.lastIndexOf('/')) || '/' : '')
+      const dir = tab.workingDir || (tab.filePath ? parentDirectory(tab.filePath) : '')
       const homeDir = agentStore.state.agents.find(a => a.workerId === tab.workerId)?.homeDir ?? ''
       return { workerId: tab.workerId ?? '', workingDir: dir, homeDir }
     }
@@ -392,22 +393,33 @@ export const AppShell: ParentComponent = (props) => {
       gitOriginUrl: originUrl || undefined,
       gitBranch: currentBranch || undefined,
     }
+    const tabAlreadyMatches = (tab: Tab): boolean =>
+      tab.gitDiffAdded === gitFields.gitDiffAdded
+      && tab.gitDiffDeleted === gitFields.gitDiffDeleted
+      && tab.gitDiffUntracked === gitFields.gitDiffUntracked
+      && tab.gitOriginUrl === gitFields.gitOriginUrl
+      && tab.gitBranch === gitFields.gitBranch
+    const rootFlavor = detectFlavor(repoRoot)
     for (const tab of untrack(() => tabStore.state.tabs)) {
       if (tab.type === TabType.AGENT) {
         const agent = untrack(() => agentStore.state.agents.find(a => a.id === tab.id))
         if (!agent?.workingDir)
           continue
-        if (agent.workingDir === repoRoot || agent.workingDir.startsWith(`${repoRoot}/`)) {
-          tabStore.updateTab(TabType.AGENT, tab.id, gitFields)
-        }
+        if (relativeUnder(agent.workingDir, repoRoot, rootFlavor) === null)
+          continue
+        if (tabAlreadyMatches(tab))
+          continue
+        tabStore.updateTab(TabType.AGENT, tab.id, gitFields)
       }
       else if (tab.type === TabType.TERMINAL) {
         const workingDir = tab.workingDir
         if (!workingDir)
           continue
-        if (workingDir === repoRoot || workingDir.startsWith(`${repoRoot}/`)) {
-          tabStore.updateTab(TabType.TERMINAL, tab.id, gitFields)
-        }
+        if (relativeUnder(workingDir, repoRoot, rootFlavor) === null)
+          continue
+        if (tabAlreadyMatches(tab))
+          continue
+        tabStore.updateTab(TabType.TERMINAL, tab.id, gitFields)
       }
     }
   })

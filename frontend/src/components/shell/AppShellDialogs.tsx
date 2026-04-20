@@ -21,6 +21,7 @@ import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { pluralize } from '~/lib/plural'
+import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
 import { spinner } from '~/styles/animations.css'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
@@ -259,7 +260,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
                   <p>
                     Uncommitted changes:
                     {' '}
-                    <DiffStatsBadge added={confirm().diffAdded} deleted={confirm().diffDeleted} untracked={confirm().diffUntracked} />
+                    <DiffStatsBadge stats={diffStatsFromTabFields(confirm())} />
                   </p>
                 </Show>
                 <Show when={confirm().unpushedCommitCount > 0}>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { relativizePath, tildify } from '~/components/chat/messageUtils'
+import { relativizePath, tildify } from '~/lib/paths'
 
 describe('relativizePath', () => {
   // --- Existing behavior (no homeDir) ---

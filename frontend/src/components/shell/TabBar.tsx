@@ -20,6 +20,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useMruProviders } from '~/hooks/useMruProviders'
+import { basename } from '~/lib/paths'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import { canCloseTab, tabKey, TabType } from '~/stores/tab.store'
 import { menuSectionHeader } from '~/styles/shared.css'
@@ -145,7 +146,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
     if (tab.title)
       return tab.title
     if (tab.type === TabType.FILE)
-      return tab.filePath?.split('/').pop() ?? 'File'
+      return (tab.filePath ? basename(tab.filePath) : '') || 'File'
     return tab.type === TabType.AGENT ? 'Agent' : 'Terminal'
   }
 

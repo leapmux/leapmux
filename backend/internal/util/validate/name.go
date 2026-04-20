@@ -3,6 +3,7 @@ package validate
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // SanitizeName sanitizes and validates a name/title string.
@@ -11,7 +12,7 @@ import (
 func SanitizeName(name string) (string, error) {
 	var b strings.Builder
 	for _, r := range name {
-		if r >= 0x20 && r != 0x7F && r != '"' && r != '\\' && r != '$' && r != '%' {
+		if !unicode.IsControl(r) && r != '"' && r != '\\' && r != '$' && r != '%' {
 			b.WriteRune(r)
 		}
 	}

@@ -197,8 +197,8 @@ func TestListDirectory_MergeHiddenDirs(t *testing.T) {
 		entries, _, err := listDirectory(dir, dir, 5, 0, false)
 		require.NoError(t, err)
 		require.Len(t, entries, 1)
-		expected := filepath.Join(".github", "workflows")
-		assert.Equal(t, expected, entries[0].Name)
+		// Merged Name is a display-only label that always uses "/".
+		assert.Equal(t, ".github/workflows", entries[0].Name)
 		assert.True(t, entries[0].Hidden, "expected Hidden=true for merged .github/workflows")
 	})
 
@@ -212,8 +212,7 @@ func TestListDirectory_MergeHiddenDirs(t *testing.T) {
 		entries, _, err := listDirectory(dir, dir, 5, 0, false)
 		require.NoError(t, err)
 		require.Len(t, entries, 1)
-		expected := filepath.Join("src", ".internal", "utils")
-		assert.Equal(t, expected, entries[0].Name)
+		assert.Equal(t, "src/.internal/utils", entries[0].Name)
 		assert.True(t, entries[0].Hidden, "expected Hidden=true when a hidden dir is in the merged path")
 	})
 
@@ -227,8 +226,7 @@ func TestListDirectory_MergeHiddenDirs(t *testing.T) {
 		entries, _, err := listDirectory(dir, dir, 5, 0, false)
 		require.NoError(t, err)
 		require.Len(t, entries, 1)
-		expected := filepath.Join("src", "main", "java")
-		assert.Equal(t, expected, entries[0].Name)
+		assert.Equal(t, "src/main/java", entries[0].Name)
 		assert.False(t, entries[0].Hidden, "expected Hidden=false for non-hidden merged path")
 	})
 }

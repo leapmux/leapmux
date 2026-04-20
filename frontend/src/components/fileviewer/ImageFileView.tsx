@@ -3,6 +3,7 @@ import type { ZoomMode } from './ImageToolbar'
 import type { ViewMode } from './ViewToggle'
 import { createEffect, createMemo, createSignal, Match, onCleanup, Switch, untrack } from 'solid-js'
 import { isSvgExtension } from '~/lib/fileType'
+import { basename } from '~/lib/paths'
 import * as styles from './FileViewer.css'
 import { ImageToolbar, ZOOM_MAX, ZOOM_MIN } from './ImageToolbar'
 import { TextFileView } from './TextFileView'
@@ -138,7 +139,7 @@ function ImageRender(props: {
     return { w: ns.w * s, h: ns.h * s }
   })
 
-  const alt = () => props.filePath.split('/').pop() ?? 'Image'
+  const alt = () => basename(props.filePath) || 'Image'
 
   const handleLoad: JSX.EventHandler<HTMLImageElement, Event> = (e) => {
     const img = e.currentTarget

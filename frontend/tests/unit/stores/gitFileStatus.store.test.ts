@@ -25,7 +25,7 @@ function makeEntry(overrides: Partial<GitFileStatusEntry> & { path: string }): G
 }
 
 describe('gitFileStatusStore', () => {
-  describe('getDirDiffStats', () => {
+  describe('getNodeDiffStats (directories)', () => {
     it('counts untracked files separately in diff stats', async () => {
       await createRoot(async (dispose) => {
         const store = createGitFileStatusStore()
@@ -42,7 +42,7 @@ describe('gitFileStatusStore', () => {
 
         await store.refresh('worker1', '/repo')
 
-        const stats = store.getDirDiffStats('/repo')
+        const stats = store.getNodeDiffStats('/repo', true)
         expect(stats.added).toBe(0)
         expect(stats.deleted).toBe(0)
         expect(stats.untracked).toBe(1)
@@ -78,7 +78,7 @@ describe('gitFileStatusStore', () => {
 
         await store.refresh('worker1', '/repo')
 
-        const stats = store.getDirDiffStats('/repo')
+        const stats = store.getNodeDiffStats('/repo', true)
         expect(stats.added).toBe(5 + 20)
         expect(stats.deleted).toBe(2)
         expect(stats.untracked).toBe(1)
@@ -107,10 +107,10 @@ describe('gitFileStatusStore', () => {
 
         await store.refresh('worker1', '/repo')
 
-        const srcStats = store.getDirDiffStats('/repo/src')
+        const srcStats = store.getNodeDiffStats('/repo/src', true)
         expect(srcStats.untracked).toBe(1)
 
-        const rootStats = store.getDirDiffStats('/repo')
+        const rootStats = store.getNodeDiffStats('/repo', true)
         expect(rootStats.untracked).toBe(2)
 
         dispose()
@@ -134,11 +134,11 @@ describe('gitFileStatusStore', () => {
         await store.refresh('worker1', '/repo')
 
         // Merged node "build/bin" should pick up stats from ancestor "build/"
-        const stats = store.getDirDiffStats('/repo/build/bin')
+        const stats = store.getNodeDiffStats('/repo/build/bin', true)
         expect(stats.untracked).toBe(1)
 
         // Deeply merged node should also match
-        const deepStats = store.getDirDiffStats('/repo/build/bin/sub')
+        const deepStats = store.getNodeDiffStats('/repo/build/bin/sub', true)
         expect(deepStats.untracked).toBe(1)
 
         dispose()
@@ -161,7 +161,7 @@ describe('gitFileStatusStore', () => {
 
         await store.refresh('worker1', '/repo')
 
-        const stats = store.getDirDiffStats('/repo/build/bin')
+        const stats = store.getNodeDiffStats('/repo/build/bin', true)
         expect(stats.untracked).toBe(0)
 
         dispose()
@@ -186,7 +186,7 @@ describe('gitFileStatusStore', () => {
 
         // "build" (no trailing slash) is a file, not a directory —
         // should not match "build/bin" via ancestor check.
-        const stats = store.getDirDiffStats('/repo/build/bin')
+        const stats = store.getNodeDiffStats('/repo/build/bin', true)
         expect(stats.untracked).toBe(0)
 
         dispose()
@@ -287,6 +287,173 @@ describe('gitFileStatusStore', () => {
         expect(store.getChangedFiles('changed')).toHaveLength(1)
         expect(store.getChangedFiles('unstaged')).toHaveLength(1)
         expect(store.getChangedFiles('staged')).toHaveLength(0)
+
+        dispose()
+      })
+    })
+  })
+
+  describe('windows-flavored repoRoot', () => {
+    it('resolves absolute path lookups against a C:\\ repoRoot', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: 'C:\\repo',
+          // git always reports paths with '/' regardless of host OS.
+          files: [
+            makeEntry({
+              path: 'src/foo.ts',
+              unstagedStatus: GitFileStatusCode.MODIFIED,
+              linesAdded: 3,
+              linesDeleted: 1,
+            }),
+            makeEntry({
+              path: 'build/',
+              unstagedStatus: GitFileStatusCode.UNTRACKED,
+            }),
+          ],
+        })
+
+        await store.refresh('worker1', 'C:\\repo')
+
+        // getFileStatus: flavor-native abs path → relativized and compared
+        // against the git-style path.
+        const entry = store.getFileStatus('C:\\repo\\src\\foo.ts')
+        expect(entry?.path).toBe('src/foo.ts')
+
+        // Subdir stats scoped to Windows path.
+        const srcStats = store.getNodeDiffStats('C:\\repo\\src', true)
+        expect(srcStats.added).toBe(3)
+        expect(srcStats.deleted).toBe(1)
+
+        // Untracked dir "build/" should match merged descendant C:\repo\build\bin.
+        const buildStats = store.getNodeDiffStats('C:\\repo\\build\\bin', true)
+        expect(buildStats.untracked).toBe(1)
+
+        expect(store.hasChanges('C:\\repo\\build\\bin')).toBe(true)
+        expect(store.hasChanges('C:\\repo\\other')).toBe(false)
+
+        dispose()
+      })
+    })
+
+    it('case-insensitively matches C:\\ prefixes', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: 'C:\\Repo',
+          files: [makeEntry({
+            path: 'src/foo.ts',
+            unstagedStatus: GitFileStatusCode.MODIFIED,
+          })],
+        })
+
+        await store.refresh('worker1', 'C:\\Repo')
+
+        // Different casing on the drive letter / dir should still resolve.
+        expect(store.getFileStatus('c:\\repo\\src\\foo.ts')?.path).toBe('src/foo.ts')
+
+        dispose()
+      })
+    })
+  })
+
+  describe('hasChanges at repoRoot', () => {
+    it('returns true when any file has changed', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [makeEntry({
+            path: 'src/foo.ts',
+            unstagedStatus: GitFileStatusCode.MODIFIED,
+          })],
+        })
+
+        await store.refresh('worker1', '/repo')
+
+        expect(store.hasChanges('/repo')).toBe(true)
+
+        dispose()
+      })
+    })
+
+    it('returns false when the repo is clean', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [],
+        })
+
+        await store.refresh('worker1', '/repo')
+
+        expect(store.hasChanges('/repo')).toBe(false)
+
+        dispose()
+      })
+    })
+  })
+
+  describe('refresh equality guard', () => {
+    it('preserves state.files reference when content is unchanged', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        const firstFiles = [
+          makeEntry({ path: 'a.txt', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 1 }),
+          makeEntry({ path: 'b.txt', unstagedStatus: GitFileStatusCode.UNTRACKED }),
+        ]
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: firstFiles,
+        })
+        await store.refresh('worker1', '/repo')
+        const firstRef = store.state.files
+
+        // Different array with identical contents — guard should prevent
+        // reassignment so downstream memos don't invalidate.
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({ path: 'a.txt', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 1 }),
+            makeEntry({ path: 'b.txt', unstagedStatus: GitFileStatusCode.UNTRACKED }),
+          ],
+        })
+        await store.refresh('worker1', '/repo')
+        expect(store.state.files).toBe(firstRef)
+
+        dispose()
+      })
+    })
+
+    it('replaces state.files when content differs', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [makeEntry({ path: 'a.txt', unstagedStatus: GitFileStatusCode.MODIFIED })],
+        })
+        await store.refresh('worker1', '/repo')
+        const firstRef = store.state.files
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          // Different linesAdded — should trigger replacement.
+          files: [makeEntry({
+            path: 'a.txt',
+            unstagedStatus: GitFileStatusCode.MODIFIED,
+            linesAdded: 2,
+          })],
+        })
+        await store.refresh('worker1', '/repo')
+        expect(store.state.files).not.toBe(firstRef)
+        expect(store.state.files[0].linesAdded).toBe(2)
 
         dispose()
       })

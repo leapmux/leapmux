@@ -11,6 +11,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
@@ -59,22 +61,19 @@ func (svc *Context) createWorktreeIfRequested(
 		return "", "", nil, fmt.Errorf("branch %q already exists", branchName)
 	}
 
-	// Resolve to the main repo root (handles linked worktrees).
-	repoRoot, err := resolveMainRepoRoot(ctx, workingDir)
+	info, err := queryGitPathInfo(ctx, workingDir)
 	if err != nil {
 		return "", "", nil, errNotGitRepo
 	}
-
+	repoRoot := info.RepoRoot
 	repoDirName := filepath.Base(repoRoot)
 
-	// Determine the start point: use baseBranch if provided, otherwise current branch.
+	// Use baseBranch if provided; else current branch; else HEAD.
 	startPoint := "HEAD"
 	if baseBranch != "" {
 		startPoint = baseBranch
-	} else if branch, err := gitOutput(ctx, workingDir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
-		if b := strings.TrimSpace(branch); b != "" {
-			startPoint = b
-		}
+	} else if info.BranchName != "" {
+		startPoint = info.BranchName
 	}
 
 	// Compute worktree path.
@@ -118,35 +117,27 @@ func (svc *Context) registerTabForWorktree(worktreeID string, tabType leapmuxv1.
 }
 
 func (svc *Context) ensureTrackedWorktree(ctx context.Context, worktreePath string) (string, error) {
-	canonicalPath := worktreePath
-	if resolved, err := filepath.EvalSymlinks(worktreePath); err == nil {
-		canonicalPath = resolved
-	}
+	canonicalPath := pathutil.Canonicalize(worktreePath)
 
 	existing, err := svc.Queries.GetWorktreeByPath(ctx, canonicalPath)
 	if err == nil {
 		return existing.ID, nil
 	}
-	if err != nil && err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
 
-	repoRoot, err := resolveMainRepoRoot(ctx, canonicalPath)
+	info, err := queryGitPathInfo(ctx, canonicalPath)
 	if err != nil {
 		return "", err
-	}
-
-	branchName, err := currentLocalBranchForPath(ctx, canonicalPath)
-	if err != nil {
-		branchName = ""
 	}
 
 	wtID := id.Generate()
 	if err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
 		ID:           wtID,
 		WorktreePath: canonicalPath,
-		RepoRoot:     repoRoot,
-		BranchName:   branchName,
+		RepoRoot:     info.RepoRoot,
+		BranchName:   info.BranchName,
 	}); err != nil {
 		return "", err
 	}
@@ -183,11 +174,10 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) {
 }
 
 func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBranch, error) {
-	branchName, err := currentLocalBranchForPath(ctx, workingDir)
-	if err == nil && branchName != "" {
+	if info, err := queryGitPathInfo(ctx, workingDir); err == nil && info.BranchName != "" {
 		return &rollbackBranch{
 			WorkingDir:     workingDir,
-			OriginalBranch: branchName,
+			OriginalBranch: info.BranchName,
 		}, nil
 	}
 
@@ -380,7 +370,7 @@ func (svc *Context) useExistingWorktreeIfRequested(workingDir, worktreePath stri
 		return workingDir, "", nil
 	}
 
-	sanitized, err := sanitizePath(worktreePath, svc.HomeDir)
+	sanitized, err := validate.SanitizePath(worktreePath, svc.HomeDir)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid worktree path: %w", err)
 	}
@@ -393,19 +383,13 @@ func (svc *Context) useExistingWorktreeIfRequested(workingDir, worktreePath stri
 		return "", "", fmt.Errorf("failed to list worktrees: %w", err)
 	}
 
-	// Resolve symlinks for the sanitized path for accurate comparison.
-	resolvedSanitized := sanitized
-	if r, err := filepath.EvalSymlinks(sanitized); err == nil {
-		resolvedSanitized = r
+	canonSanitized, err := filepath.EvalSymlinks(sanitized)
+	if err != nil {
+		return "", "", fmt.Errorf("path %q is not a known worktree", sanitized)
 	}
-
 	found := false
 	for _, wt := range worktrees {
-		resolvedWt := wt.Path
-		if r, err := filepath.EvalSymlinks(wt.Path); err == nil {
-			resolvedWt = r
-		}
-		if resolvedWt == resolvedSanitized {
+		if canonWt, err := filepath.EvalSymlinks(wt.Path); err == nil && pathutil.SamePath(canonSanitized, canonWt) {
 			found = true
 			break
 		}
@@ -495,11 +479,11 @@ func (svc *Context) applyGitMode(workingDir string, r gitModeRequest) (gitModeRe
 
 	// "Use current state" — if the selected dir is an already-managed worktree, register this tab.
 	if !r.GetCreateWorktree() && r.GetCheckoutBranch() == "" && r.GetCreateBranch() == "" && r.GetUseWorktreePath() == "" {
-		if worktreeRoot, err := linkedWorktreeRoot(bgCtx(), workingDir); err == nil && worktreeRoot != "" {
-			if wtID, err := svc.ensureTrackedWorktree(bgCtx(), worktreeRoot); err == nil {
+		if info, err := queryGitPathInfo(bgCtx(), workingDir); err == nil && info.IsWorktree {
+			if wtID, err := svc.ensureTrackedWorktree(bgCtx(), info.TopLevel); err == nil {
 				worktreeID = wtID
 			} else {
-				slog.Warn("failed to track current worktree", "path", worktreeRoot, "error", err)
+				slog.Warn("failed to track current worktree", "path", info.TopLevel, "error", err)
 			}
 		}
 	}

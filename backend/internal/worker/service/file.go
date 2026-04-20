@@ -12,6 +12,8 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -33,16 +35,14 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		dirPath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
 		}
 
 		// Resolve symlinks so paths are consistent (e.g. /var → /private/var on macOS).
-		if resolved, err := filepath.EvalSymlinks(dirPath); err == nil {
-			dirPath = resolved
-		}
+		dirPath = pathutil.Canonicalize(dirPath)
 
 		entries, truncated, err := listDirectory(dirPath, dirPath, r.GetMaxDepth(), 0, r.GetDirsOnly())
 		if err != nil {
@@ -65,7 +65,7 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		filePath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		filePath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -135,7 +135,7 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		filePath, err := sanitizePath(r.GetPath(), svc.HomeDir)
+		filePath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -158,56 +158,6 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 			Info: fileInfoToProto(info, filePath),
 		})
 	})
-}
-
-// sanitizePath validates and normalizes a filesystem path.
-// It strips control characters, trims whitespace, rejects path traversal (..),
-// expands tilde (~) using homeDir, and requires absolute paths.
-func sanitizePath(path, homeDir string) (string, error) {
-	// Strip control characters (< 0x20 and 0x7F).
-	var b strings.Builder
-	for _, r := range path {
-		if r < 0x20 || r == 0x7F {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	s := strings.TrimSpace(b.String())
-
-	if s == "" {
-		return homeDir, nil
-	}
-
-	// Expand tilde paths.
-	if s == "~" || strings.HasPrefix(s, "~/") {
-		if homeDir == "" {
-			return "", fmt.Errorf("cannot expand tilde: home directory not set")
-		}
-		if s == "~" {
-			s = homeDir
-		} else {
-			rest := strings.TrimLeft(s[2:], "/")
-			if rest == "" {
-				s = homeDir
-			} else {
-				s = homeDir + "/" + rest
-			}
-		}
-	}
-
-	// Must be absolute.
-	if !filepath.IsAbs(s) {
-		return "", fmt.Errorf("path must be absolute: %q", s)
-	}
-
-	// Reject path traversal before normalizing (Clean resolves ".." components).
-	for _, comp := range strings.Split(s, "/") {
-		if comp == ".." {
-			return "", fmt.Errorf("path traversal not allowed: %q", path)
-		}
-	}
-
-	return filepath.Clean(s), nil
 }
 
 // fileInfoToProto converts an os.FileInfo into a protobuf FileInfo.
@@ -377,9 +327,8 @@ func mergeSingleChildDirs(fi *leapmuxv1.FileInfo, dirPath string, maxDepth int32
 	}
 
 	merged := fileInfoToProto(childInfo, childPath)
-	merged.Name = fi.Name + string(filepath.Separator) + child.Name()
-	// Propagate hidden flag so the frontend can filter merged entries
-	// even when a hidden directory has been merged into the path.
+	// Breadcrumb label; always '/' so rendering is uniform across OSes.
+	merged.Name = fi.Name + "/" + child.Name()
 	if fi.Hidden {
 		merged.Hidden = true
 	}

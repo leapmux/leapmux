@@ -4,17 +4,16 @@ import type { GitMode } from '~/hooks/createWorkerDialogState'
 import { generateSlug } from 'random-word-slugs'
 import { batch, createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { tildify } from '~/components/chat/messageUtils'
 import { labelRow, pathPreview, radioGroup, radioRow, radioSubContent } from '~/components/common/Dialog.css'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useOrg } from '~/context/OrgContext'
 import { createLogger } from '~/lib/logger'
+import { detectFlavor, join, parentDirectory, tildify } from '~/lib/paths'
 import { validateBranchName } from '~/lib/validate'
 import { errorText, warningText } from '~/styles/shared.css'
 
 const log = createLogger('GitOptions')
-const LAST_PATH_SEGMENT_RE = /\/[^/]+$/
 const REMOTE_PREFIX_RE = /^[^/]+\//
 
 interface GitOptionsProps {
@@ -89,10 +88,11 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   const showGitOptions = () => isGitRepo() && (isRepoRoot() || isWorktreeRoot())
 
   const worktreePath = () => {
-    if (!repoRoot() || !branchName())
+    const root = repoRoot()
+    if (!root || !branchName())
       return ''
-    const parentDir = repoRoot().replace(LAST_PATH_SEGMENT_RE, '')
-    return `${parentDir}/${repoDirName()}-worktrees/${branchName()}`
+    const flavor = detectFlavor(root)
+    return join([parentDirectory(root, flavor), `${repoDirName()}-worktrees`, branchName()], flavor)
   }
 
   const localBranches = createMemo(() => branches().filter(b => !b.isRemote))
