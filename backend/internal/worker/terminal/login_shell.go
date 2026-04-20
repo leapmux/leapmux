@@ -31,13 +31,16 @@ func baseName(p string) string {
 // append to.
 //
 //   - pwsh/powershell: ["-Login"]
+//   - cmd.exe:         []  — cmd has no login concept and rejects POSIX flags
 //   - tcsh/csh:        ["-l"]  — tcsh requires -l as the only flag
 //   - all others:      ["-i", "-l"]
 func LoginShellArgs(shellPath string) []string {
-	name := baseName(shellPath)
+	name := strings.ToLower(baseName(shellPath))
 	switch {
 	case IsPwsh(name):
 		return []string{"-Login"}
+	case name == "cmd" || name == "cmd.exe":
+		return nil
 	case name == "tcsh" || name == "csh":
 		return []string{"-l"}
 	default:

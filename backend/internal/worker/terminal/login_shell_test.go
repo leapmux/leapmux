@@ -24,6 +24,10 @@ func TestLoginShellArgs(t *testing.T) {
 		{"pwsh-preview", "/usr/bin/pwsh-preview", []string{"-Login"}},
 		{"pwsh.exe", `C:\Program Files\PowerShell\7\pwsh.exe`, []string{"-Login"}},
 		{"powershell.exe", `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, []string{"-Login"}},
+		{"cmd.exe", `C:\Windows\System32\cmd.exe`, nil},
+		{"cmd.exe upper", `C:\Windows\System32\CMD.EXE`, nil},
+		{"cmd bare", "cmd", nil},
+		{"powershell.exe upper", `C:\Windows\System32\WindowsPowerShell\v1.0\POWERSHELL.EXE`, []string{"-Login"}},
 		{"unknown", "/usr/bin/xonsh", []string{"-i", "-l"}},
 	}
 	for _, tt := range tests {

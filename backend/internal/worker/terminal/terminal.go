@@ -9,9 +9,7 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/creack/pty"
-
-	"github.com/leapmux/leapmux/util/procutil"
+	pty "github.com/aymanbagabas/go-pty"
 )
 
 const screenBufferSize = 100 * 1024 // 100KB ring buffer for screen restore
@@ -68,8 +66,8 @@ type OutputHandler func(data []byte)
 // Terminal manages a single PTY session.
 type Terminal struct {
 	id        string
-	cmd       *exec.Cmd
-	ptmx      *os.File
+	cmd       *pty.Cmd
+	ptmx      pty.Pty
 	outputFn  OutputHandler
 	screenBuf *ScreenBuffer
 	mu        sync.Mutex
@@ -97,26 +95,35 @@ func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 	}
 
 	args := LoginShellArgs(shell)
-	cmd := exec.Command(shell, args...)
+
+	ptmx, err := pty.New()
+	if err != nil {
+		return nil, fmt.Errorf("new pty: %w", err)
+	}
+
+	cmd := ptmx.Command(shell, args...)
 	cmd.Dir = opts.WorkingDir
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 	)
-	procutil.HideConsoleWindow(cmd)
+	// No procutil.HideConsoleWindow here: on Windows, CREATE_NO_WINDOW is
+	// incompatible with ConPTY — the pseudo console already serves as the
+	// child's console, and the flag would leave it with none.
 
-	winSize := &pty.Winsize{
-		Cols: opts.Cols,
-		Rows: opts.Rows,
+	cols, rows := opts.Cols, opts.Rows
+	if cols == 0 {
+		cols = 80
 	}
-	if winSize.Cols == 0 {
-		winSize.Cols = 80
+	if rows == 0 {
+		rows = 24
 	}
-	if winSize.Rows == 0 {
-		winSize.Rows = 24
+	if err := ptmx.Resize(int(cols), int(rows)); err != nil {
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("resize pty: %w", err)
 	}
 
-	ptmx, err := pty.StartWithSize(cmd, winSize)
-	if err != nil {
+	if err := cmd.Start(); err != nil {
+		_ = ptmx.Close()
 		return nil, fmt.Errorf("start pty: %w", err)
 	}
 
@@ -170,10 +177,7 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 		return fmt.Errorf("terminal is stopped")
 	}
 
-	return pty.Setsize(t.ptmx, &pty.Winsize{
-		Cols: cols,
-		Rows: rows,
-	})
+	return t.ptmx.Resize(int(cols), int(rows))
 }
 
 // Stop terminates the terminal session.
