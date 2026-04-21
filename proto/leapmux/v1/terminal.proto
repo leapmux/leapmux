@@ -4,11 +4,18 @@ package leapmux.v1;
 import "leapmux/v1/common.proto";
 
 // TerminalStatus tracks the lifecycle state of a terminal PTY.
+//
+// STARTING, READY, and STARTUP_FAILED are reported by the worker via
+// TerminalStatusChange. DISCONNECTED and EXITED are client-derived states
+// (worker channel dropped; TerminalClosed event observed) surfaced in the
+// same enum so frontend and persistence layers can use one type.
 enum TerminalStatus {
   TERMINAL_STATUS_UNSPECIFIED = 0;
   TERMINAL_STATUS_STARTING = 1;        // PTY spawn in progress
   TERMINAL_STATUS_READY = 2;           // PTY spawned; xterm can mount
   TERMINAL_STATUS_STARTUP_FAILED = 3;  // PTY spawn failed; see startup_error
+  TERMINAL_STATUS_DISCONNECTED = 4;    // Client-derived: worker channel lost
+  TERMINAL_STATUS_EXITED = 5;          // Client-derived: TerminalClosed observed
 }
 
 message OpenTerminalRequest {

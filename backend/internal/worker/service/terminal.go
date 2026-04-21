@@ -168,7 +168,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// OpenTerminal response, so this broadcast's live delivery set
 		// is empty — the client retrieves the label via WatchEvents
 		// catch-up replay, which reads the registry.
-		startupMessage := "Starting " + shellDisplayName(shell) + "…"
+		startupMessage := "Starting " + filepath.Base(shell) + "…"
 		svc.TerminalStartup.setMessage(terminalID, startupMessage)
 		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
 			startupMessage: startupMessage,
@@ -530,13 +530,4 @@ func (svc *Context) broadcastTerminalStartupStatus(terminalID string, status lea
 			StatusChange: buildTerminalStatusChange(terminalID, status, details),
 		},
 	})
-}
-
-// shellDisplayName returns a short label for a shell path or command.
-// Used to render the "Starting <shell>…" startup-panel message.
-func shellDisplayName(shell string) string {
-	if shell == "" {
-		return "terminal"
-	}
-	return filepath.Base(shell)
 }

@@ -3,6 +3,7 @@ import Bot from 'lucide-solid/icons/bot'
 import { createUniqueId, Match, Switch } from 'solid-js'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 
+// Keep in sync with backend/internal/worker/agent/agent.go DisplayName().
 export function agentProviderLabel(provider?: AgentProvider): string {
   switch (provider) {
     case AgentProvider.CLAUDE_CODE: return 'Claude Code'

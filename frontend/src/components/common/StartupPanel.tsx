@@ -10,7 +10,7 @@ import * as styles from './StartupPanel.css'
  * empty-state, absolute overlay over xterm, etc.) and just drops this in.
  */
 export const StartupSpinner: Component<{ label: JSX.Element }> = props => (
-  <div style={{ 'display': 'inline-flex', 'align-items': 'center', 'gap': '0.5em' }}>
+  <div class={styles.startupSpinner}>
     <Icon icon={LoaderCircle} size="sm" class={spinner} />
     <span>{props.label}</span>
   </div>

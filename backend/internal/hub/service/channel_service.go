@@ -39,9 +39,7 @@ func NewChannelService(
 }
 
 // GetWorkerHandshakeParams returns the persisted public key material and the
-// live encryption mode a client needs to start a Noise_NK handshake. Both are
-// required by every OpenChannel caller, so they travel together to avoid an
-// unnecessary second round trip.
+// live encryption mode a client needs to start a Noise_NK handshake.
 func (s *ChannelService) GetWorkerHandshakeParams(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.GetWorkerHandshakeParamsRequest],

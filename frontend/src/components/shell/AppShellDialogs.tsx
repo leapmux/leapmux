@@ -19,6 +19,7 @@ import { showWarnToast } from '~/components/common/Toast'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { pluralize } from '~/lib/plural'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
@@ -122,7 +123,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             const title = `Terminal ${nextTabNumber(props.tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
             const tileId = props.layoutStore.focusedTileId()
             const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-            props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir, status: 'running' }, { afterKey })
+            props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir, status: TerminalStatus.READY }, { afterKey })
             props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, terminalId)
             props.persistLayout()
           }}

@@ -1,23 +1,15 @@
 import type { listTerminals } from '~/api/workerRpc'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
-import { TerminalStatus as TerminalStatusEnum } from '~/generated/leapmux/v1/terminal_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { after, first, mid } from '~/lib/lexorank'
 
-export { TabType }
+export { TabType, TerminalStatus }
 
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
-/**
- * Frontend-only superset of the backend's TerminalStatus proto enum.
- * `'starting'`, `'running'`, and `'startup-failed'` map to the proto
- * values; `'disconnected'` and `'exited'` are client-derived lifecycle
- * states the backend doesn't carry. Keep as a string union rather than
- * converging on the proto enum so the UI can reason about all five.
- */
-export type TerminalStatus = 'starting' | 'running' | 'disconnected' | 'exited' | 'startup-failed'
 
 export interface Tab {
   type: TabType
@@ -49,9 +41,9 @@ export interface Tab {
   screen?: Uint8Array
   cols?: number
   rows?: number
-  /** Error string from TerminalStatusChange when status is 'startup-failed'. */
+  /** Error string from TerminalStatusChange when status is STARTUP_FAILED. */
   startupError?: string
-  /** Phase label from TerminalStatusChange.startup_message while status is 'starting' (e.g. "Starting zsh…"). */
+  /** Phase label from TerminalStatusChange.startup_message while status is STARTING (e.g. "Starting zsh…"). */
   startupMessage?: string
   /**
    * True once the terminal has emitted any non-whitespace output to the
@@ -73,15 +65,15 @@ type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][numb
 export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<Tab> {
   let status: TerminalStatus
   switch (term.status) {
-    case TerminalStatusEnum.STARTING:
-      status = 'starting'
+    case TerminalStatus.STARTING:
+      status = TerminalStatus.STARTING
       break
-    case TerminalStatusEnum.STARTUP_FAILED:
-      status = 'startup-failed'
+    case TerminalStatus.STARTUP_FAILED:
+      status = TerminalStatus.STARTUP_FAILED
       break
-    case TerminalStatusEnum.READY:
+    case TerminalStatus.READY:
     default:
-      status = term.exited ? 'exited' : 'running'
+      status = term.exited ? TerminalStatus.EXITED : TerminalStatus.READY
   }
   return {
     title: term.title || undefined,
@@ -404,9 +396,9 @@ export function createTabStore() {
     markTerminalsDisconnected(workerId: string) {
       setState(
         'tabs',
-        t => t.type === TabType.TERMINAL && t.workerId === workerId && t.status === 'running',
+        t => t.type === TabType.TERMINAL && t.workerId === workerId && t.status === TerminalStatus.READY,
         'status',
-        'disconnected',
+        TerminalStatus.DISCONNECTED,
       )
     },
 
@@ -414,9 +406,9 @@ export function createTabStore() {
     markTerminalExited(id: string) {
       setState(
         'tabs',
-        t => t.type === TabType.TERMINAL && t.id === id && t.status !== 'exited',
+        t => t.type === TabType.TERMINAL && t.id === id && t.status !== TerminalStatus.EXITED,
         'status',
-        'exited',
+        TerminalStatus.EXITED,
       )
     },
 

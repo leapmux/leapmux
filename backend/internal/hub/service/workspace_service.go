@@ -504,8 +504,8 @@ func (s *WorkspaceService) RemoveTab(
 // If the request's WorkspaceIds is empty, it returns tabs for every workspace
 // in the org the caller can read. Otherwise the given IDs are resolved
 // individually and silently dropped when they don't exist, belong to a
-// different org, or aren't accessible to the caller — so stale client state
-// (e.g. sessionStorage-restored sidebar) never produces 404/PermissionDenied.
+// different org, or aren't accessible to the caller, so stale client state
+// never surfaces as a 404 or PermissionDenied.
 func (s *WorkspaceService) ListTabs(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.ListTabsRequest],
@@ -543,32 +543,27 @@ func (s *WorkspaceService) ListTabs(
 			}
 			seen[wsID] = struct{}{}
 
-			ws, err := s.store.Workspaces().GetByID(ctx, wsID)
+			ws, err := s.loadWorkspaceForRead(ctx, s.store, wsID, user.ID)
 			if err != nil {
-				if errors.Is(err, store.ErrNotFound) {
+				code := connect.CodeOf(err)
+				if code == connect.CodeNotFound || code == connect.CodePermissionDenied {
 					continue
 				}
-				return nil, connect.NewError(connect.CodeInternal, err)
+				return nil, err
 			}
 			if orgID != "" && ws.OrgID != orgID {
 				continue
-			}
-			if ws.OwnerUserID != user.ID {
-				hasAccess, err := s.store.WorkspaceAccess().HasAccess(ctx, store.HasWorkspaceAccessParams{
-					WorkspaceID: ws.ID,
-					UserID:      user.ID,
-				})
-				if err != nil {
-					return nil, connect.NewError(connect.CodeInternal, err)
-				}
-				if !hasAccess {
-					continue
-				}
 			}
 			workspaceIDs = append(workspaceIDs, ws.ID)
 		}
 	}
 
+	// One ListByWorkspace per ID. The frontend batcher already collapses N
+	// client→hub RPCs into one call, so the remaining cost here is N local
+	// DB reads on the hub store. A `WHERE workspace_id IN (...)` query
+	// would need sqlc changes across sqlite/postgres/mysql backends +
+	// interface churn for a sub-millisecond saving per workspace; not
+	// worth the reach today.
 	var pbTabs []*leapmuxv1.WorkspaceTab
 	for _, wsID := range workspaceIDs {
 		tabs, err := s.store.WorkspaceTabs().ListByWorkspace(ctx, wsID)

@@ -11,20 +11,10 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import { createSignal } from 'solid-js'
 import { getWorkerSystemInfo } from '~/api/workerRpc'
 import { createInflightCache } from '~/lib/inflightCache'
+import { shallowEqual } from '~/lib/shallowEqual'
 import { getWorkerInfo, setWorkerInfo } from '~/lib/workerInfoCache'
 
 type InfoMap = Record<string, WorkerInfo>
-
-function sameInfo(a: WorkerInfo | undefined, b: WorkerInfo): boolean {
-  return a !== undefined
-    && a.name === b.name
-    && a.os === b.os
-    && a.arch === b.arch
-    && a.homeDir === b.homeDir
-    && a.version === b.version
-    && a.commitHash === b.commitHash
-    && a.buildTime === b.buildTime
-}
 
 export function createWorkerInfoStore() {
   const [infoMap, setInfoMap] = createSignal<InfoMap>({})
@@ -62,7 +52,9 @@ export function createWorkerInfoStore() {
         }
         setWorkerInfo(workerId, info)
         setInfoMap((prev) => {
-          if (sameInfo(prev[workerId], info))
+          const existing = prev[workerId]
+          // updatedAt changes on every fetch, so normalize it before comparing.
+          if (existing && shallowEqual({ ...existing, updatedAt: 0 }, { ...info, updatedAt: 0 }))
             return prev
           return { ...prev, [workerId]: info }
         })

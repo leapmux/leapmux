@@ -1,16 +1,18 @@
 import type { WorkspaceTab } from '~/generated/leapmux/v1/workspace_pb'
+import { createInflightCache } from '~/lib/inflightCache'
 import { workspaceClient } from './clients'
 
 interface Batch {
   orgId: string
   ids: Set<string>
-  waiters: Map<string, Array<{
+  resolvers: Map<string, {
     resolve: (value: { tabs: WorkspaceTab[] }) => void
     reject: (reason: unknown) => void
-  }>>
+  }>
 }
 
 const pendingBatches = new Map<string, Batch>()
+const inflight = createInflightCache<string, { tabs: WorkspaceTab[] }>()
 
 /**
  * Fetches the tabs for a single workspace, coalescing concurrent calls into
@@ -18,17 +20,17 @@ const pendingBatches = new Map<string, Batch>()
  * the workspace it asked for.
  */
 export function listTabsForWorkspace(orgId: string, workspaceId: string): Promise<{ tabs: WorkspaceTab[] }> {
-  const batch = pendingBatches.get(orgId) ?? createBatch(orgId)
-  batch.ids.add(workspaceId)
-  return new Promise((resolve, reject) => {
-    const list = batch.waiters.get(workspaceId) ?? []
-    list.push({ resolve, reject })
-    batch.waiters.set(workspaceId, list)
+  return inflight.run(`${orgId}:${workspaceId}`, () => {
+    const batch = pendingBatches.get(orgId) ?? createBatch(orgId)
+    batch.ids.add(workspaceId)
+    return new Promise((resolve, reject) => {
+      batch.resolvers.set(workspaceId, { resolve, reject })
+    })
   })
 }
 
 function createBatch(orgId: string): Batch {
-  const batch: Batch = { orgId, ids: new Set(), waiters: new Map() }
+  const batch: Batch = { orgId, ids: new Set(), resolvers: new Map() }
   pendingBatches.set(orgId, batch)
   queueMicrotask(() => {
     // Remove first so any call that arrives during the RPC opens a fresh batch.
@@ -52,16 +54,12 @@ async function flushBatch(batch: Batch): Promise<void> {
       else
         byWorkspace.set(tab.workspaceId, [tab])
     }
-    for (const [wsId, waiters] of batch.waiters) {
-      const tabs = byWorkspace.get(wsId) ?? []
-      for (const w of waiters)
-        w.resolve({ tabs })
+    for (const [wsId, waiter] of batch.resolvers) {
+      waiter.resolve({ tabs: byWorkspace.get(wsId) ?? [] })
     }
   }
   catch (err) {
-    for (const waiters of batch.waiters.values()) {
-      for (const w of waiters)
-        w.reject(err)
-    }
+    for (const waiter of batch.resolvers.values())
+      waiter.reject(err)
   }
 }

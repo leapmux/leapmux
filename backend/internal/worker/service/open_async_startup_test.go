@@ -467,26 +467,6 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 	})
 }
 
-// TestShellDisplayName covers the label that feeds the terminal
-// startup-panel's "Starting <shell>…" message.
-func TestShellDisplayName(t *testing.T) {
-	cases := []struct {
-		shell string
-		want  string
-	}{
-		{"/bin/zsh", "zsh"},
-		{"/usr/bin/fish", "fish"},
-		{"zsh", "zsh"},
-		{"/bin/bash", "bash"},
-		{"", "terminal"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.shell, func(t *testing.T) {
-			assert.Equal(t, tc.want, shellDisplayName(tc.shell))
-		})
-	}
-}
-
 // TestOpenAgent_StartupFailurePhaseCarriesGitStatus asserts that when
 // startAgent fails, the STARTUP_FAILED broadcast still carries the
 // gitStatus computed during the pre-startAgent phase, so the frontend

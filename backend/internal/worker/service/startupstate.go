@@ -3,9 +3,18 @@ package service
 import (
 	"context"
 	"sync"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
+
+// failedEntryTTL bounds how long a terminal-state failure entry lingers
+// in the registry after fail() so long-lived workers with user churn
+// don't accumulate entries for never-closed failed tabs. The DB
+// startup_error column is the authoritative source across restarts, so
+// expiry just evicts the in-memory copy; subsequent reads fall back to
+// the DB path.
+const failedEntryTTL = 5 * time.Minute
 
 // startupEntry tracks the in-flight (or recently-failed) startup of a single
 // agent or terminal. It exists to:
@@ -71,17 +80,21 @@ func (r *startupCore) succeed(id string) {
 	delete(r.entries, id)
 }
 
-// fail retains the entry with the error string for later observation.
-// Entries live until CloseAgent / CloseTerminal calls cancelAndClear,
-// so a failed tab the user never closes keeps its entry for the
-// worker's lifetime. The practical bound is the open-tab count (one
-// entry per failed tab) and the DB's startup_error column is the
-// authoritative source across restarts, so a TTL would add complexity
-// without meaningfully reducing memory.
+// fail retains the entry with the error string for later observation and
+// schedules its eviction after failedEntryTTL so a failed tab the user
+// never closes eventually drops out of the in-memory map. Status queries
+// after eviction fall back to the persisted startup_error column.
 func (r *startupCore) fail(id, startupError string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.entries[id] = &startupEntry{failed: true, startupError: startupError}
+	r.mu.Unlock()
+	time.AfterFunc(failedEntryTTL, func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if entry, ok := r.entries[id]; ok && entry.failed {
+			delete(r.entries, id)
+		}
+	})
 }
 
 // cancelAndClear triggers the cancel func if one is registered and removes
@@ -107,6 +120,13 @@ func (r *startupCore) snapshot(id string) (failed bool, startupError, startupMes
 	}
 	return entry.failed, entry.startupError, entry.startupMessage, true
 }
+
+// agentStartupRegistry and terminalStartupRegistry are intentionally
+// separate wrappers around startupCore even though their status()
+// methods look structurally similar — each returns a distinct proto
+// enum type (AgentStatus vs TerminalStatus). A generic collapse would
+// force callers to pass the enum values in, which is noisier than the
+// typed wrapper at every call site.
 
 // agentStartupRegistry tracks in-flight / recently-failed agent startups.
 type agentStartupRegistry struct{ startupCore }

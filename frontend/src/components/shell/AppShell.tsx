@@ -370,6 +370,13 @@ export const AppShell: ParentComponent = (props) => {
   // Use untrack for tab/agent reads so this effect only re-runs when the
   // git store changes — not when tabs change due to a workspace switch,
   // which would apply stale git data from the previous workspace.
+  //
+  // Why this pushes into tab fields instead of deriving via createMemo:
+  // downstream consumers (WorkspaceTabTree, AppShellDialogs) read the
+  // diff stats off Tab directly via diffStatsFromTabFields, so moving
+  // derivation to a memo would force every consumer to take a dependency
+  // on gitFileStatusStore. The tabAlreadyMatches guard below already
+  // suppresses no-op writes, which is the real cost to avoid.
   createEffect(() => {
     const files = gitFileStatusStore.state.files
     const repoRoot = gitFileStatusStore.state.repoRoot
@@ -572,9 +579,13 @@ export const AppShell: ParentComponent = (props) => {
         // so they don't disappear from the sidebar on a transient error. An empty
         // successful result means the worker truly has no terminals.
         if (anyTerminalFetchFailed && existing) {
-          const existingTerminalIds = new Set(tabs.filter(t => t.type === TabType.TERMINAL).map(t => t.id))
+          const freshTerminalIds = new Set<string>()
+          for (const t of tabs) {
+            if (t.type === TabType.TERMINAL)
+              freshTerminalIds.add(t.id)
+          }
           for (const t of existing.tabs) {
-            if (t.type === TabType.TERMINAL && !existingTerminalIds.has(t.id))
+            if (t.type === TabType.TERMINAL && !freshTerminalIds.has(t.id))
               tabs.push(t)
           }
         }

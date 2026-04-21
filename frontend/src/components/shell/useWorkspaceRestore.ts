@@ -11,6 +11,7 @@ import { workspaceClient } from '~/api/clients'
 import { listTabsForWorkspace } from '~/api/listTabsBatcher'
 import * as workerRpc from '~/api/workerRpc'
 import { readExpandedWorkspaceIds } from '~/components/workspace/expandedWorkspaces'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
@@ -417,7 +418,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     for (const tab of tabStore.state.tabs) {
       if (tab.type !== TabType.TERMINAL || !tab.workerId)
         continue
-      if (tab.status !== undefined && tab.status !== 'disconnected')
+      if (tab.status !== undefined && tab.status !== TerminalStatus.DISCONNECTED)
         continue
       const ids = missingByWorker.get(tab.workerId) ?? []
       ids.push(tab.id)

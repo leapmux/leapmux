@@ -246,6 +246,58 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const tabBarElement = () => createTabBarForTile(layoutStore.focusedTileId())
 
+  const TileTerminalPane: Component<{
+    terminals: Tab[]
+    activeTerminalId: string | null
+    visible: boolean
+  }> = (props) => {
+    let terminalPageScroll: ((direction: -1 | 1) => void) | undefined
+    let terminalWrite: ((data: string) => void) | undefined
+    let registeredTerminalId: string | null = null
+    const syncTerminalHandler = () => {
+      const activeTerminalId = props.activeTerminalId
+      if (registeredTerminalId && registeredTerminalId !== activeTerminalId)
+        terminalHandlers.delete(registeredTerminalId)
+      registeredTerminalId = activeTerminalId
+      if (activeTerminalId && terminalPageScroll && terminalWrite) {
+        terminalHandlers.set(activeTerminalId, {
+          pageScroll: terminalPageScroll,
+          write: terminalWrite,
+        })
+      }
+    }
+    createEffect(syncTerminalHandler)
+    onCleanup(() => {
+      for (const terminal of props.terminals)
+        terminalHandlers.delete(terminal.id)
+    })
+    return (
+      <div
+        class={styles.centerContent}
+        classList={{ [styles.layoutHidden]: !props.visible }}
+      >
+        <TerminalView
+          terminals={props.terminals}
+          activeTerminalId={props.activeTerminalId}
+          visible={props.visible}
+          onInput={termOps.handleTerminalInput}
+          onResize={termOps.handleTerminalResize}
+          onTitleChange={termOps.handleTerminalTitleChange}
+          onBell={termOps.handleTerminalBell}
+          onContentReady={id => tabStore.markTerminalContentReady(id)}
+          pageScrollRef={(fn) => {
+            terminalPageScroll = fn
+            syncTerminalHandler()
+          }}
+          writeRef={(fn) => {
+            terminalWrite = fn
+            syncTerminalHandler()
+          }}
+        />
+      </div>
+    )
+  }
+
   const renderTileContent = (tileId: string) => {
     const tab = () => getActiveTabForTile(tileId)
     const agentTab = () => {
@@ -349,53 +401,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
         </For>
 
         <Show when={hasTerminals()}>
-          {(() => {
-            let terminalPageScroll: ((direction: -1 | 1) => void) | undefined
-            let terminalWrite: ((data: string) => void) | undefined
-            let registeredTerminalId: string | null = null
-            const syncTerminalHandler = () => {
-              const activeTerminalId = terminalTab()?.id ?? null
-              if (registeredTerminalId && registeredTerminalId !== activeTerminalId)
-                terminalHandlers.delete(registeredTerminalId)
-              registeredTerminalId = activeTerminalId
-              if (activeTerminalId && terminalPageScroll && terminalWrite) {
-                terminalHandlers.set(activeTerminalId, {
-                  pageScroll: terminalPageScroll,
-                  write: terminalWrite,
-                })
-              }
-            }
-            createEffect(syncTerminalHandler)
-            onCleanup(() => {
-              for (const terminal of tileTerminals())
-                terminalHandlers.delete(terminal.id)
-            })
-            return (
-              <div
-                class={styles.centerContent}
-                classList={{ [styles.layoutHidden]: !terminalTab() }}
-              >
-                <TerminalView
-                  terminals={tileTerminals()}
-                  activeTerminalId={terminalTab()?.id ?? null}
-                  visible={!!terminalTab()}
-                  onInput={termOps.handleTerminalInput}
-                  onResize={termOps.handleTerminalResize}
-                  onTitleChange={termOps.handleTerminalTitleChange}
-                  onBell={termOps.handleTerminalBell}
-                  onContentReady={id => tabStore.markTerminalContentReady(id)}
-                  pageScrollRef={(fn) => {
-                    terminalPageScroll = fn
-                    syncTerminalHandler()
-                  }}
-                  writeRef={(fn) => {
-                    terminalWrite = fn
-                    syncTerminalHandler()
-                  }}
-                />
-              </div>
-            )
-          })()}
+          <TileTerminalPane
+            terminals={tileTerminals()}
+            activeTerminalId={terminalTab()?.id ?? null}
+            visible={!!terminalTab()}
+          />
         </Show>
 
         <For each={tileFileTabs()}>

@@ -7,6 +7,7 @@ import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPan
 import { usePreferences } from '~/context/PreferencesContext'
 import { isMac } from '~/lib/shortcuts/platform'
 import { bufferHasVisibleContent, createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
+import { TerminalStatus } from '~/stores/tab.store'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
@@ -268,7 +269,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                 />
               )}
             >
-              <Match when={terminal.status === 'startup-failed'}>
+              <Match when={terminal.status === TerminalStatus.STARTUP_FAILED}>
                 <div
                   class={styles.startupErrorPane}
                   data-testid="terminal-startup-error"

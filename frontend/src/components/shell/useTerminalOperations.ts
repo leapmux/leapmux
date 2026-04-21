@@ -7,6 +7,7 @@ import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.store'
 
@@ -84,7 +85,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: 'starting' }, { afterKey })
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: TerminalStatus.STARTING }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
@@ -134,7 +135,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: 'starting' }, { afterKey })
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: TerminalStatus.STARTING }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
@@ -162,7 +163,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     try {
       const ws = props.activeWorkspace()
       const tab = props.tabStore.getTerminalTab(terminalId)
-      if (!ws || tab?.status !== 'running')
+      if (!ws || tab?.status !== TerminalStatus.READY)
         return
       await workerRpc.sendInput(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
     }
@@ -224,7 +225,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     try {
       const ws = props.activeWorkspace()
       const tab = props.tabStore.getTerminalTab(terminalId)
-      if (!ws || tab?.status !== 'running')
+      if (!ws || tab?.status !== TerminalStatus.READY)
         return
       await workerRpc.resizeTerminal(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
     }

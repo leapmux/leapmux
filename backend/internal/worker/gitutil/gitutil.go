@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,6 +63,8 @@ func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
 
 // GetGitStatus returns the git status for the given directory.
 // Best-effort: returns nil if git is not available or the path is not a git repo.
+// Failures are logged at debug level so operators can diagnose unexpected misses
+// (e.g. permission errors) without the nil return silently losing context.
 func GetGitStatus(dir string) *leapmuxv1.AgentGitStatus {
 	status := &leapmuxv1.AgentGitStatus{}
 
@@ -69,7 +72,7 @@ func GetGitStatus(dir string) *leapmuxv1.AgentGitStatus {
 	cmd := NewGitCmd(context.Background(), "-C", dir, "status", "--porcelain=v2", "--branch")
 	output, err := cmd.Output()
 	if err != nil {
-		// Fallback to porcelain v1 for older git versions.
+		slog.Debug("git status --porcelain=v2 failed, falling back to v1", "dir", dir, "error", err)
 		return getGitStatusV1(dir)
 	}
 	parseStatusV2(output, status)
@@ -157,6 +160,7 @@ func getGitStatusV1(dir string) *leapmuxv1.AgentGitStatus {
 	cmd := NewGitCmd(context.Background(), "-C", dir, "status", "--porcelain", "--branch")
 	output, err := cmd.Output()
 	if err != nil {
+		slog.Debug("git status --porcelain failed", "dir", dir, "error", err)
 		return nil
 	}
 

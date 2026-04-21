@@ -2,6 +2,7 @@ import type { TerminalInstance } from '~/lib/terminal'
 import { render, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 
 const mockCreateTerminalInstance = vi.fn()
 
@@ -115,7 +116,7 @@ describe('terminalView', () => {
           terminals={[{
             id: 'term-1',
             workspaceId: 'ws-1',
-            status: 'starting',
+            status: TerminalStatus.STARTING,
             startupMessage: 'Starting zsh…',
             screen: new Uint8Array(),
           }]}
@@ -144,7 +145,7 @@ describe('terminalView', () => {
           terminals={[{
             id: 'term-1',
             workspaceId: 'ws-1',
-            status: 'starting',
+            status: TerminalStatus.STARTING,
             screen: new Uint8Array(),
           }]}
           activeTerminalId="term-1"

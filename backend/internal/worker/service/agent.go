@@ -136,11 +136,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		startupCtx, cancel := context.WithCancel(context.Background())
 		svc.AgentStartup.begin(agentID, cancel)
 
-		// Broadcast STARTING before returning so any already-subscribed
-		// watcher sees the transition. gitStatus is nil here — the
-		// startup goroutine computes it and re-broadcasts.
-		svc.broadcastAgentStartupStatus(&dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{})
-
 		agentOpts := agent.Options{
 			AgentID:         agentID,
 			Model:           model,
@@ -907,6 +902,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// refresh (and multiple tabs on the same repo share one call).
 		type replayState struct {
 			dbAgent   db.Agent
+			hasAgent  bool
 			fetchErr  error
 			gitStatus *leapmuxv1.AgentGitStatus
 		}
@@ -917,7 +913,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			go func(idx int, id string) {
 				defer replayWG.Done()
 				dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), id)
-				replayStates[idx] = replayState{dbAgent: dbAgent, fetchErr: err}
+				replayStates[idx] = replayState{
+					dbAgent:  dbAgent,
+					hasAgent: svc.Agents.HasAgent(id),
+					fetchErr: err,
+				}
 			}(i, agentEntry.GetAgentId())
 		}
 		replayWG.Wait()
@@ -969,14 +969,14 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			} else {
 				dbAgent := state.dbAgent
 				// Preload cached models/option groups from DB for inactive agents.
-				if !svc.Agents.HasAgent(agentID) {
+				if !state.hasAgent {
 					svc.Agents.PreloadCache(
 						agentID,
 						unmarshalAvailableModels(dbAgent.AvailableModels),
 						unmarshalAvailableOptionGroups(dbAgent.AvailableOptionGroups),
 					)
 				}
-				status, startupError, startupMessage := svc.deriveAgentStatus(&dbAgent, svc.Agents.HasAgent(agentID))
+				status, startupError, startupMessage := svc.deriveAgentStatus(&dbAgent, state.hasAgent)
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
 						AgentEvent: &leapmuxv1.AgentEvent{
@@ -1141,17 +1141,10 @@ func (svc *Context) agentToProto(a *db.Agent, permissionMode string, isRunning b
 
 // runAgentStartup is the async body of OpenAgent: it spawns the subprocess,
 // runs the initialize handshake, then reports success/failure via
-// broadcastAgentStartupStatus and cleans up on failure. Progress is
-// surfaced via phased STARTING broadcasts so the frontend startup panel
-// can show the current phase rather than a static label.
-//
-// Phase 1 (git status) and phase 2 (subprocess spawn) are sequential on
-// purpose even though they have no data dependency: running them in
-// parallel would let the "Starting {provider}…" broadcast fire before
-// (or concurrently with) "Checking Git status…", collapsing the phased
-// UI into a single indistinguishable label. Git status is typically
-// <100ms and subprocess spawn dominates total latency, so the serial
-// cost is negligible compared to the UX benefit.
+// broadcastAgentStartupStatus and cleans up on failure. Phase 1 (git status)
+// and phase 2 (subprocess spawn) are sequential on purpose: running them in
+// parallel would collapse the phased "Checking Git status…" / "Starting
+// {provider}…" labels the frontend displays.
 func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, gm gitModeResult, agentOpts agent.Options) {
 	agentID := agentOpts.AgentID
 	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)

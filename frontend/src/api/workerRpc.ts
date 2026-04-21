@@ -149,6 +149,7 @@ import {
 } from '~/generated/leapmux/v1/workspace_pb'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { ChannelManager } from '~/lib/channel'
+import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
 
 const log = createLogger('workerRpc')
@@ -349,19 +350,15 @@ function callWorker<
   req: MessageInitShape<ReqSchema>,
   opts?: { timeoutMs?: number },
 ): Promise<MessageShape<RespSchema>> {
-  // Instrumentation hook for e2e timing tests. Gated on LEAPMUX_DEV so
-  // the dispatchEvent cost is zero in production builds (the bundler
-  // dead-code-eliminates the block when the flag is false).
+  emitDevEvent('leapmux:rpc-send', { method, at: performance.now() })
+  const p = channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
   if (import.meta.env.LEAPMUX_DEV && typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('leapmux:rpc-send', { detail: { method, at: performance.now() } }))
-    const p = channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
     p.then(
-      () => window.dispatchEvent(new CustomEvent('leapmux:rpc-recv', { detail: { method, at: performance.now(), ok: true } })),
-      () => window.dispatchEvent(new CustomEvent('leapmux:rpc-recv', { detail: { method, at: performance.now(), ok: false } })),
+      () => emitDevEvent('leapmux:rpc-recv', { method, at: performance.now(), ok: true }),
+      () => emitDevEvent('leapmux:rpc-recv', { method, at: performance.now(), ok: false }),
     )
-    return p
   }
-  return channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
+  return p
 }
 
 // ---------------------------------------------------------------------------

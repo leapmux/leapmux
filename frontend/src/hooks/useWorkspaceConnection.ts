@@ -11,7 +11,7 @@ import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import { TerminalStatus as TerminalStatusEnum } from '~/generated/leapmux/v1/terminal_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
@@ -289,6 +289,29 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const sc = inner.value
         setWorkerOnline(sc.workerOnline)
 
+        // Skip events that carry no status, git, or settings payload — they
+        // only surface as catch-up sentinels and would otherwise allocate a
+        // full updates object and iterate every reactive reader for a no-op.
+        const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
+        const hasPayload = hasStatus
+          || sc.gitStatus !== undefined
+          || Boolean(sc.permissionMode)
+          || Boolean(sc.extraSettings)
+          || Boolean(sc.model)
+          || Boolean(sc.effort)
+          || (sc.availableModels && sc.availableModels.length > 0)
+          || (sc.availableOptionGroups && sc.availableOptionGroups.length > 0)
+        if (!hasPayload) {
+          if (catchUpPhases.get(agentId) === 'catchingUp') {
+            const replayEndSeq = chatStore.getLastSeq(agentId)
+            if (replayEndSeq > 0n) {
+              const wid = agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
+              void chatStore.loadNewerMessages(wid, agentId, replayEndSeq, signal)
+            }
+          }
+          break
+        }
+
         // Read the prior status before updateAgent overwrites it so
         // STARTING → ACTIVE / STARTUP_FAILED transitions can drain the
         // per-agent pending-message queue.
@@ -333,7 +356,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // would otherwise overwrite valid agent state with defaults,
         // causing the agent to become "unwatchable" and dropping the
         // event stream.
-        const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
         agentStore.updateAgent(sc.agentId, {
           ...(hasStatus ? { status: sc.status, agentSessionId: sc.agentSessionId } : {}),
           // Carry startupError alongside status transitions so the tab's
@@ -460,12 +482,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
         // Skip replayed events: only update when the tab exists and isn't already exited.
         const owningWsId = params.registry.findContaining(
-          s => s.tabs.some(t => tabKey(t) === key && t.status !== 'exited'),
+          s => s.tabs.some(t => tabKey(t) === key && t.status !== TerminalStatus.EXITED),
         )?.workspaceId
         if (owningWsId) {
           params.registry.update(owningWsId, snap => ({
             ...snap,
-            tabs: snap.tabs.map(t => tabKey(t) === key ? { ...t, status: 'exited' } : t),
+            tabs: snap.tabs.map(t => tabKey(t) === key ? { ...t, status: TerminalStatus.EXITED } : t),
           }))
         }
       }
@@ -515,35 +537,34 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           t => t.type === TabType.TERMINAL && t.id === terminalId,
         )
         switch (sc.status) {
-          case TerminalStatusEnum.STARTING:
-            if (existingTab && existingTab.status !== 'running' && existingTab.status !== 'starting') {
+          case TerminalStatus.STARTING:
+            if (existingTab && existingTab.status !== TerminalStatus.READY && existingTab.status !== TerminalStatus.STARTING) {
               tabStore.updateTab(TabType.TERMINAL, terminalId, {
-                status: 'starting',
+                status: TerminalStatus.STARTING,
                 startupMessage: sc.startupMessage || undefined,
               })
             }
-            else if (existingTab?.status === 'starting' && sc.startupMessage && sc.startupMessage !== existingTab.startupMessage) {
+            else if (existingTab?.status === TerminalStatus.STARTING && sc.startupMessage && sc.startupMessage !== existingTab.startupMessage) {
               // Same-status STARTING event with an updated phase label —
               // refresh the overlay text without re-triggering the
               // status-change observers.
               tabStore.updateTab(TabType.TERMINAL, terminalId, { startupMessage: sc.startupMessage })
             }
             break
-          case TerminalStatusEnum.READY:
-            // Preserve 'disconnected' / 'exited' — a previously-alive
-            // terminal whose worker reconnected should not be dragged
-            // back to 'running'.
-            if (existingTab?.status === 'starting' || existingTab?.status === undefined) {
+          case TerminalStatus.READY:
+            // Preserve DISCONNECTED / EXITED — a previously-alive terminal
+            // whose worker reconnected should not be dragged back to READY.
+            if (existingTab?.status === TerminalStatus.STARTING || existingTab?.status === undefined) {
               tabStore.updateTab(TabType.TERMINAL, terminalId, {
-                status: 'running',
+                status: TerminalStatus.READY,
                 startupError: undefined,
                 startupMessage: undefined,
               })
             }
             break
-          case TerminalStatusEnum.STARTUP_FAILED:
+          case TerminalStatus.STARTUP_FAILED:
             tabStore.updateTab(TabType.TERMINAL, terminalId, {
-              status: 'startup-failed',
+              status: TerminalStatus.STARTUP_FAILED,
               startupError: sc.startupError || undefined,
               startupMessage: undefined,
             })
@@ -554,10 +575,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   }
 
-  // Handle from the previous stream iteration. Kept alive during the
-  // gap between abort and new stream registration so that the old
-  // listener can still receive terminal data (the server-side watcher
-  // still routes via the old sender until the new WatchEvents updates it).
+  // Previous stream handle, kept alive during the gap between abort and
+  // new stream registration so the server-side watcher can still deliver
+  // terminal data until the new WatchEvents updates its routing.
   let previousHandle: { close: () => void } | null = null
 
   // Unified event stream via E2EE channel with retry.
@@ -765,7 +785,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       return
     const workerId = params.getWorkerId()
     const isAffected = (t: Tab) =>
-      t.type === TabType.TERMINAL && t.workerId === workerId && t.status === 'running'
+      t.type === TabType.TERMINAL && t.workerId === workerId && t.status === TerminalStatus.READY
     batch(() => {
       tabStore.markTerminalsDisconnected(workerId)
       for (const snap of params.registry.all()) {
@@ -773,7 +793,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           continue
         params.registry.update(snap.workspaceId, s => ({
           ...s,
-          tabs: s.tabs.map(t => isAffected(t) ? { ...t, status: 'disconnected' as const } : t),
+          tabs: s.tabs.map(t => isAffected(t) ? { ...t, status: TerminalStatus.DISCONNECTED } : t),
         }))
       }
     })

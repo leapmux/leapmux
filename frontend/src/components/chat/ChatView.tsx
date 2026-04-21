@@ -596,6 +596,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           onPointerUp={clearPointerOverscroll}
           onPointerCancel={clearPointerOverscroll}
         >
+          {/*
+            AgentStartupBanner is rendered in two places below: once in the
+            empty-state fallback and once trailing the message list. They
+            are NOT redundant — the outer <Show> only renders one branch at
+            a time, so at most one banner is in the DOM for any given state.
+          */}
           <Show
             when={hasVisibleEntries() || props.streamingText || props.agentWorking}
             fallback={(

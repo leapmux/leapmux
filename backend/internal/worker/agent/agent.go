@@ -170,10 +170,13 @@ func DefaultEffortForModel(provider leapmuxv1.AgentProvider, modelID string) str
 }
 
 // DisplayName returns a human-readable label for an AgentProvider (e.g.
-// "Claude Code", "Gemini CLI"). Used in user-facing strings like startup
-// progress messages. Kept in lockstep with the frontend's
-// agentProviderLabel via TestProviderDisplayName; add a new case here
-// and in the frontend when a provider is added.
+// "Claude Code", "Gemini CLI"). Keep in sync with
+// frontend/src/components/common/AgentProviderIcon.tsx agentProviderLabel.
+//
+// Moving this into the proto via EnumValueOptions custom extensions was
+// considered and rejected: descriptor-introspection plumbing on both Go
+// and TS sides is disproportionate for a handful of labels, and the
+// TestDisplayName coverage catches Go drift before it ships.
 func DisplayName(provider leapmuxv1.AgentProvider) string {
 	switch provider {
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:

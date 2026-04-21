@@ -6,7 +6,7 @@ import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
-import { createTabStore, TabType } from '~/stores/tab.store'
+import { createTabStore, TabType, TerminalStatus } from '~/stores/tab.store'
 
 /**
  * These tests verify the control-request guard in useWorkspaceConnection's
@@ -516,13 +516,13 @@ describe('startupMessage handling in terminal statusChange', () => {
     const existing = tabStore.state.tabs.find(
       t => t.type === TabType.TERMINAL && t.id === terminalId,
     )
-    if (existing && existing.status !== 'running' && existing.status !== 'starting') {
+    if (existing && existing.status !== TerminalStatus.READY && existing.status !== TerminalStatus.STARTING) {
       tabStore.updateTab(TabType.TERMINAL, terminalId, {
-        status: 'starting',
+        status: TerminalStatus.STARTING,
         startupMessage: msg || undefined,
       })
     }
-    else if (existing?.status === 'starting' && msg && msg !== existing.startupMessage) {
+    else if (existing?.status === TerminalStatus.STARTING && msg && msg !== existing.startupMessage) {
       tabStore.updateTab(TabType.TERMINAL, terminalId, { startupMessage: msg })
     }
   }
@@ -535,7 +535,7 @@ describe('startupMessage handling in terminal statusChange', () => {
       applyStarting(tabStore, 'term-1', 'Starting zsh…')
 
       const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
-      expect(tab?.status).toBe('starting')
+      expect(tab?.status).toBe(TerminalStatus.STARTING)
       expect(tab?.startupMessage).toBe('Starting zsh…')
       dispose()
     })
@@ -544,7 +544,7 @@ describe('startupMessage handling in terminal statusChange', () => {
   it('updates startupMessage on a same-status STARTING event so later phase broadcasts refresh the overlay label', () => {
     createRoot((dispose) => {
       const tabStore = createTabStore()
-      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: 'starting', startupMessage: 'Starting zsh…' })
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
 
       applyStarting(tabStore, 'term-1', 'Starting fish…')
 

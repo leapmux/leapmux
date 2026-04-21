@@ -1,5 +1,11 @@
 import { style } from '@vanilla-extract/css'
 
+export const startupSpinner = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '0.5em',
+})
+
 /** Two-row layout for the startup-failure body (heading on top, details below). */
 export const startupErrorBody = style({
   display: 'flex',

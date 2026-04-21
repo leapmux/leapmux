@@ -1,36 +1,13 @@
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
+import { shallowEqual } from '~/lib/shallowEqual'
 
 function cacheLabels(agents: AgentInfo[]) {
   for (const a of agents) {
     if ((a.availableModels && a.availableModels.length > 0) || (a.availableOptionGroups && a.availableOptionGroups.length > 0))
       updateSettingsLabelCache(a.availableModels, a.availableOptionGroups)
   }
-}
-
-/**
- * Shallow-equal comparison tuned for AgentInfo fields. Primitive values
- * use Object.is. For object values (e.g. gitStatus) we shallow-compare
- * sub-fields so a fresh proto instance carrying the same data is treated
- * as unchanged — proto decoding allocates a new object every time.
- */
-function agentFieldEqual(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b))
-    return true
-  if (!a || !b || typeof a !== 'object' || typeof b !== 'object')
-    return false
-  if (Array.isArray(a) || Array.isArray(b))
-    return false
-  const aKeys = Object.keys(a as object)
-  const bKeys = Object.keys(b as object)
-  if (aKeys.length !== bKeys.length)
-    return false
-  for (const k of aKeys) {
-    if (!Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
-      return false
-  }
-  return true
 }
 
 interface AgentStoreState {
@@ -47,6 +24,13 @@ export function createAgentStore() {
   // Buffered updateAgent calls for agent IDs the store doesn't know
   // about yet — applied in addAgent so status events that overtake the
   // OpenAgent RPC response (or a ListAgents fetch) are not lost.
+  //
+  // Why: WatchEvents catch-up replay covers most cases, but live
+  // statusChange events can arrive in the window between ListAgents
+  // starting and its result being applied via setAgents/addAgent. Folding
+  // this into a "call addAgent with synthesized AgentInfo" would require
+  // inventing workspaceId/workerId/workingDir/createdAt at statusChange
+  // time, so the parallel Map stays.
   const pendingUpdates = new Map<string, Partial<AgentInfo>>()
 
   function mergePartial(a: Partial<AgentInfo>, b: Partial<AgentInfo>): Partial<AgentInfo> {
@@ -83,20 +67,18 @@ export function createAgentStore() {
     updateAgent(id: string, updates: Partial<AgentInfo>) {
       const existing = state.agents.find(a => a.id === id)
       if (!existing) {
-        // Buffer until addAgent is called — avoids losing the transition
-        // from STARTING → ACTIVE when the broadcast overtakes ListAgents.
+        // Buffer the update: statusChange broadcasts can overtake a ListAgents
+        // fetch, and losing them would strand the agent in STARTING state.
         pendingUpdates.set(id, mergePartial(pendingUpdates.get(id) ?? {}, updates))
         return
       }
-      // Filter out no-op fields so setState doesn't notify subscribers
-      // for values that didn't actually change. statusChange events carry
-      // the full snapshot on every turn boundary; without this guard,
-      // every field's reactive readers re-run even when only one changed.
+      // statusChange carries the full snapshot on every turn boundary; skip
+      // fields that didn't actually change so reactive readers don't re-run.
       const changed: Partial<AgentInfo> = {}
       let hasChange = false
       for (const key of Object.keys(updates) as (keyof AgentInfo)[]) {
         const next = updates[key]
-        if (!agentFieldEqual(existing[key], next)) {
+        if (!shallowEqual(existing[key], next)) {
           ;(changed as Record<string, unknown>)[key] = next
           hasChange = true
         }
