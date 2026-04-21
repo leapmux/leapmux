@@ -7,15 +7,17 @@ import type { createControlStore } from '~/stores/control.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { watchEventsViaChannel } from '~/api/workerRpc'
+import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
+import { bufferHasVisibleContent } from '~/lib/terminal'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { tabKey } from '~/stores/tab.store'
 
@@ -287,6 +289,63 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const sc = inner.value
         setWorkerOnline(sc.workerOnline)
 
+        // Skip events that carry no status, git, or settings payload — they
+        // only surface as catch-up sentinels and would otherwise allocate a
+        // full updates object and iterate every reactive reader for a no-op.
+        const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
+        const hasPayload = hasStatus
+          || sc.gitStatus !== undefined
+          || Boolean(sc.permissionMode)
+          || Boolean(sc.extraSettings)
+          || Boolean(sc.model)
+          || Boolean(sc.effort)
+          || (sc.availableModels && sc.availableModels.length > 0)
+          || (sc.availableOptionGroups && sc.availableOptionGroups.length > 0)
+        if (!hasPayload) {
+          if (catchUpPhases.get(agentId) === 'catchingUp') {
+            const replayEndSeq = chatStore.getLastSeq(agentId)
+            if (replayEndSeq > 0n) {
+              const wid = agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
+              void chatStore.loadNewerMessages(wid, agentId, replayEndSeq, signal)
+            }
+          }
+          break
+        }
+
+        // Read the prior status before updateAgent overwrites it so
+        // STARTING → ACTIVE / STARTUP_FAILED transitions can drain the
+        // per-agent pending-message queue.
+        const prev = agentStore.state.agents.find(a => a.id === sc.agentId)
+        if (prev?.status === AgentStatus.STARTING) {
+          const queued = chatStore.takePendingOutbound(sc.agentId)
+          if (queued.length > 0) {
+            if (sc.status === AgentStatus.ACTIVE) {
+              const wid = prev.workerId
+              void (async () => {
+                for (const m of queued) {
+                  chatStore.clearMessagePendingLabel(m.localId)
+                  try {
+                    await sendAgentMessage(wid, {
+                      agentId: sc.agentId,
+                      content: m.content,
+                      attachments: m.attachments,
+                    })
+                  }
+                  catch {
+                    chatStore.setMessageError(m.localId, 'Failed to deliver')
+                  }
+                }
+              })()
+            }
+            else if (sc.status === AgentStatus.STARTUP_FAILED) {
+              for (const m of queued) {
+                chatStore.clearMessagePendingLabel(m.localId)
+                chatStore.setMessageError(m.localId, 'Agent failed to start')
+              }
+            }
+          }
+        }
+
         // When a settings change is in progress (optimistic update active),
         // don't overwrite the optimistically-set fields — the pending RPC
         // will resolve or revert them.
@@ -297,9 +356,22 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // would otherwise overwrite valid agent state with defaults,
         // causing the agent to become "unwatchable" and dropping the
         // event stream.
-        const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
         agentStore.updateAgent(sc.agentId, {
           ...(hasStatus ? { status: sc.status, agentSessionId: sc.agentSessionId } : {}),
+          // Carry startupError alongside status transitions so the tab's
+          // in-tab error view can render the server-formatted message.
+          // Only set on the failed/cleared transitions — other status
+          // changes (e.g. INACTIVE from turn end) leave it alone.
+          ...(sc.status === AgentStatus.STARTUP_FAILED ? { startupError: sc.startupError } : {}),
+          ...(sc.status === AgentStatus.ACTIVE ? { startupError: '' } : {}),
+          // Carry startupMessage while STARTING so the startup panel can
+          // show the current phase ("Checking Git status…", "Starting
+          // Claude Code…"). Clear on any terminal transition; ignore
+          // status-less events (catchUp sentinels, git-only updates) so
+          // an unrelated event doesn't wipe a live phase label.
+          ...(sc.status === AgentStatus.STARTING
+            ? { startupMessage: sc.startupMessage }
+            : hasStatus ? { startupMessage: '' } : {}),
           ...(pendingSettings
             ? {}
             : {
@@ -404,19 +476,38 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const terminalId = termEvent.terminalId
 
     // Non-active workspace terminal — skip data events (no terminal instance
-    // exists), but handle closed events to update the snapshot.
+    // exists), but handle closed + statusChange to keep the snapshot's
+    // status / gitBranch / gitOriginUrl fresh for the sidebar badge.
     if (nonActiveTerminalIds.has(terminalId)) {
       if (termEvent.event.case === 'closed') {
         const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
-        // Skip replayed events: only update when the tab exists and isn't already exited.
         const owningWsId = params.registry.findContaining(
-          s => s.tabs.some(t => tabKey(t) === key && t.status !== 'exited'),
+          s => s.tabs.some(t => tabKey(t) === key && t.status !== TerminalStatus.EXITED),
         )?.workspaceId
         if (owningWsId) {
           params.registry.update(owningWsId, snap => ({
             ...snap,
-            tabs: snap.tabs.map(t => tabKey(t) === key ? { ...t, status: 'exited' } : t),
+            tabs: snap.tabs.map(t => tabKey(t) === key ? { ...t, status: TerminalStatus.EXITED } : t),
           }))
+        }
+      }
+      else if (termEvent.event.case === 'statusChange') {
+        const sc = termEvent.event.value
+        if (sc.gitBranch || sc.gitOriginUrl) {
+          const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
+          const owningWsId = params.registry.findContaining(s => s.tabs.some(t => tabKey(t) === key))?.workspaceId
+          if (owningWsId) {
+            const nextBranch = sc.gitBranch || undefined
+            const nextOrigin = sc.gitOriginUrl || undefined
+            params.registry.update(owningWsId, (snap) => {
+              const i = snap.tabs.findIndex(t => tabKey(t) === key)
+              if (i < 0 || (snap.tabs[i].gitBranch === nextBranch && snap.tabs[i].gitOriginUrl === nextOrigin))
+                return snap
+              const tabs = snap.tabs.slice()
+              tabs[i] = { ...tabs[i], gitBranch: nextBranch, gitOriginUrl: nextOrigin }
+              return { ...snap, tabs }
+            })
+          }
         }
       }
       return
@@ -426,6 +517,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'data': {
         const instance = getTerminalInstance(terminalId)
         if (instance) {
+          const tab = tabStore.getTerminalTab(terminalId)
+          const checkContent = tab && !tab.contentReady
+          const onParsed = () => {
+            if (checkContent && bufferHasVisibleContent(instance.terminal))
+              tabStore.markTerminalContentReady(terminalId)
+          }
           if (termEvent.event.value.isSnapshot) {
             // Initial screen snapshot from WatchEvents. Only apply if the
             // screen hasn't already been restored (e.g. from the
@@ -434,12 +531,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               instance.suppressInput = true
               instance.terminal.write(termEvent.event.value.data, () => {
                 instance!.suppressInput = false
+                onParsed()
               })
               instance.screenRestored = true
             }
           }
           else {
-            instance.terminal.write(termEvent.event.value.data)
+            instance.terminal.write(termEvent.event.value.data, onParsed)
           }
         }
         break
@@ -447,13 +545,71 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'closed':
         tabStore.markTerminalExited(terminalId)
         break
+      case 'statusChange': {
+        const sc = termEvent.event.value
+        // Only propagate into the tab store when the server reports a
+        // terminal lifecycle transition — STARTING, READY, or
+        // STARTUP_FAILED. READY and STARTUP_FAILED both arrive on
+        // normal subscribe via WatchEvents's catch-up, so the race of a
+        // late subscriber missing the one-shot broadcast is closed.
+        const existingTab = tabStore.state.tabs.find(
+          t => t.type === TabType.TERMINAL && t.id === terminalId,
+        )
+        // Git branch / origin are carried on every post-phase-0 STARTING
+        // broadcast. Update the tab whenever a non-empty value arrives so
+        // a reconnect or a late worktree-creation refreshes the badge.
+        if (existingTab && (sc.gitBranch || sc.gitOriginUrl)) {
+          const nextBranch = sc.gitBranch || undefined
+          const nextOrigin = sc.gitOriginUrl || undefined
+          if (existingTab.gitBranch !== nextBranch || existingTab.gitOriginUrl !== nextOrigin) {
+            tabStore.updateTab(TabType.TERMINAL, terminalId, {
+              gitBranch: nextBranch,
+              gitOriginUrl: nextOrigin,
+            })
+          }
+        }
+        switch (sc.status) {
+          case TerminalStatus.STARTING:
+            if (existingTab && existingTab.status !== TerminalStatus.READY && existingTab.status !== TerminalStatus.STARTING) {
+              tabStore.updateTab(TabType.TERMINAL, terminalId, {
+                status: TerminalStatus.STARTING,
+                startupMessage: sc.startupMessage || undefined,
+              })
+            }
+            else if (existingTab?.status === TerminalStatus.STARTING && sc.startupMessage && sc.startupMessage !== existingTab.startupMessage) {
+              // Same-status STARTING event with an updated phase label —
+              // refresh the overlay text without re-triggering the
+              // status-change observers.
+              tabStore.updateTab(TabType.TERMINAL, terminalId, { startupMessage: sc.startupMessage })
+            }
+            break
+          case TerminalStatus.READY:
+            // Preserve DISCONNECTED / EXITED — a previously-alive terminal
+            // whose worker reconnected should not be dragged back to READY.
+            if (existingTab?.status === TerminalStatus.STARTING || existingTab?.status === undefined) {
+              tabStore.updateTab(TabType.TERMINAL, terminalId, {
+                status: TerminalStatus.READY,
+                startupError: undefined,
+                startupMessage: undefined,
+              })
+            }
+            break
+          case TerminalStatus.STARTUP_FAILED:
+            tabStore.updateTab(TabType.TERMINAL, terminalId, {
+              status: TerminalStatus.STARTUP_FAILED,
+              startupError: sc.startupError || undefined,
+              startupMessage: undefined,
+            })
+            break
+        }
+        break
+      }
     }
   }
 
-  // Handle from the previous stream iteration. Kept alive during the
-  // gap between abort and new stream registration so that the old
-  // listener can still receive terminal data (the server-side watcher
-  // still routes via the old sender until the new WatchEvents updates it).
+  // Previous stream handle, kept alive during the gap between abort and
+  // new stream registration so the server-side watcher can still deliver
+  // terminal data until the new WatchEvents updates its routing.
   let previousHandle: { close: () => void } | null = null
 
   // Unified event stream via E2EE channel with retry.
@@ -629,9 +785,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
 
     // Build a key representing the current subscription set.
-    const agentIds = agentEntries.map(e => e.agentId).sort()
+    const sortedAgentIds = agentEntries.map(e => e.agentId).toSorted()
     const sortedTermIds = terminalIds.toSorted()
-    const newKey = workerId ? `${workerId}|a:${agentIds.join(',')}|t:${sortedTermIds.join(',')}` : ''
+    const newKey = workerId ? `${workerId}|a:${sortedAgentIds.join(',')}|t:${sortedTermIds.join(',')}` : ''
 
     // Skip if the subscription set hasn't changed.
     if (newKey === currentTargetsKey)
@@ -661,7 +817,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       return
     const workerId = params.getWorkerId()
     const isAffected = (t: Tab) =>
-      t.type === TabType.TERMINAL && t.workerId === workerId && t.status === 'running'
+      t.type === TabType.TERMINAL && t.workerId === workerId && t.status === TerminalStatus.READY
     batch(() => {
       tabStore.markTerminalsDisconnected(workerId)
       for (const snap of params.registry.all()) {
@@ -669,7 +825,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           continue
         params.registry.update(snap.workspaceId, s => ({
           ...s,
-          tabs: s.tabs.map(t => isAffected(t) ? { ...t, status: 'disconnected' as const } : t),
+          tabs: s.tabs.map(t => isAffected(t) ? { ...t, status: TerminalStatus.DISCONNECTED } : t),
         }))
       }
     })

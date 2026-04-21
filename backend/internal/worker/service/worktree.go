@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -37,67 +38,429 @@ type gitModeRollback struct {
 	CreatedBranch   *rollbackBranch
 }
 
-// createWorktreeIfRequested creates a git worktree on the local filesystem if
-// requested. Returns the final working directory (which may be the worktree
-// path) and the DB worktree ID (empty if no worktree was created/reused).
-func (svc *Context) createWorktreeIfRequested(
-	workingDir string,
-	createWorktree bool,
-	branchName string,
-	baseBranch string,
-) (finalWorkingDir string, worktreeID string, rollback *rollbackWorktree, err error) {
-	if !createWorktree {
-		return workingDir, "", nil, nil
-	}
+// HasPartialMutation reports whether executeGitMode made any rollback-worthy
+// change before returning (branch creation or worktree creation). Used by the
+// startup goroutines to decide whether to emit a rollback-in-progress label.
+func (r gitModeRollback) HasPartialMutation() bool {
+	return r.CreatedBranch != nil || r.CreatedWorktree != nil
+}
 
-	if err := gitutil.ValidateBranchName(branchName); err != nil {
-		return "", "", nil, err
-	}
+// gitModeKind identifies which git-mode operation a plan describes.
+type gitModeKind int
 
+const (
+	gitModeUseCurrent gitModeKind = iota
+	gitModeCreateWorktree
+	gitModeUseWorktreePath
+	gitModeCreateBranch
+	gitModeCheckoutBranch
+)
+
+// gitModePlan is the validated intent of a git-mode request produced by
+// validateGitMode. It is consumed later by executeGitMode on the async
+// startup goroutine, which performs the (potentially slow) mutations.
+type gitModePlan struct {
+	Mode gitModeKind
+
+	// WorkingDir is the input directory, with tilde expanded. It is the
+	// dir the user picked; for createWorktree it is the parent repo.
+	WorkingDir string
+
+	// PlannedWorkingDir is the working dir that the tab will ultimately
+	// run in. For createWorktree/useWorktreePath it differs from
+	// WorkingDir; for others it equals WorkingDir.
+	PlannedWorkingDir string
+
+	// RepoRoot is the main repo's top-level directory (used to scope git
+	// commands that must run against the main repo, e.g. `git worktree
+	// add`). Populated for modes that need it.
+	RepoRoot string
+
+	// BranchName is the new branch to be created (createWorktree or
+	// createBranch). Pre-validated with gitutil.ValidateBranchName.
+	BranchName string
+
+	// BaseBranch is the starting point for branch/worktree creation. May
+	// be empty, which means "current branch or HEAD" (createWorktree) or
+	// "HEAD" (createBranch).
+	BaseBranch string
+
+	// StartPoint is the resolved start ref for `git worktree add`.
+	StartPoint string
+
+	// CheckoutTarget is the branch being switched to (checkoutBranch).
+	CheckoutTarget string
+
+	// WorktreePath is the on-disk path — planned (createWorktree) or
+	// validated existing (useWorktreePath).
+	WorktreePath string
+}
+
+// PhaseLabel returns the user-visible "now doing X" label for this plan's
+// mode. Empty string means "no dedicated phase-0 broadcast" (useCurrent —
+// no mutation to announce).
+func (p gitModePlan) PhaseLabel() string {
+	switch p.Mode {
+	case gitModeCreateWorktree:
+		return fmt.Sprintf("Creating worktree %q…", p.BranchName)
+	case gitModeUseWorktreePath:
+		return fmt.Sprintf("Switching to worktree %q…", filepath.Base(p.WorktreePath))
+	case gitModeCreateBranch:
+		return fmt.Sprintf("Creating branch %q…", p.BranchName)
+	case gitModeCheckoutBranch:
+		return fmt.Sprintf("Switching to branch %q…", p.CheckoutTarget)
+	default:
+		return ""
+	}
+}
+
+// rollbackLabelFromRollback returns the user-visible "now rolling back X"
+// label for a partial git-mode mutation, derived from the rollback metadata
+// on a gitModeResult. Only createWorktree and createBranch mutate state
+// that we roll back on failure; the other modes return an empty label so
+// the startup goroutine can skip the pre-failure broadcast.
+func rollbackLabelFromRollback(r gitModeRollback) string {
+	if r.CreatedWorktree != nil && r.CreatedWorktree.BranchName != "" {
+		return fmt.Sprintf("Rolling back worktree %q…", r.CreatedWorktree.BranchName)
+	}
+	if r.CreatedBranch != nil && r.CreatedBranch.CreatedBranch != "" {
+		return fmt.Sprintf("Rolling back branch %q…", r.CreatedBranch.CreatedBranch)
+	}
+	return ""
+}
+
+// validateGitMode performs read-only validation of the git-mode fields of a
+// request and returns a gitModePlan describing what executeGitMode will do.
+// All returned errors are CodeInvalidArgument-eligible — callers should
+// surface them via sendInvalidArgument so bad user input fails fast at the
+// RPC boundary without mutating any state or creating any DB row.
+func (svc *Context) validateGitMode(workingDir string, r gitModeRequest) (gitModePlan, error) {
 	ctx := bgCtx()
 
-	// Fail early if a local branch with this name already exists.
-	if branchExists(ctx, workingDir, branchName) {
-		return "", "", nil, fmt.Errorf("branch %q already exists", branchName)
+	if r.GetCreateWorktree() {
+		return svc.validateCreateWorktree(ctx, workingDir, r.GetWorktreeBranch(), r.GetWorktreeBaseBranch())
+	}
+	if wp := r.GetUseWorktreePath(); wp != "" {
+		return svc.validateUseWorktreePath(ctx, workingDir, wp)
+	}
+	if br := r.GetCreateBranch(); br != "" {
+		return svc.validateCreateBranch(ctx, workingDir, br, r.GetCreateBranchBase())
+	}
+	if br := r.GetCheckoutBranch(); br != "" {
+		return svc.validateCheckoutBranch(ctx, workingDir, br)
+	}
+
+	// useCurrent: no mutation, nothing to validate against beyond the dir
+	// existing. If the dir happens to be inside a managed worktree we'll
+	// register the association during executeGitMode.
+	return gitModePlan{
+		Mode:              gitModeUseCurrent,
+		WorkingDir:        workingDir,
+		PlannedWorkingDir: workingDir,
+	}, nil
+}
+
+func (svc *Context) validateCreateWorktree(ctx context.Context, workingDir, branch, baseBranch string) (gitModePlan, error) {
+	if branch == "" {
+		return gitModePlan{}, errors.New("worktree_branch is required when create_worktree is true")
+	}
+	if err := gitutil.ValidateBranchName(branch); err != nil {
+		return gitModePlan{}, fmt.Errorf("invalid worktree branch name: %w", err)
 	}
 
 	info, err := queryGitPathInfo(ctx, workingDir)
 	if err != nil {
-		return "", "", nil, errNotGitRepo
+		return gitModePlan{}, fmt.Errorf("%s is not inside a git repository", workingDir)
 	}
 	repoRoot := info.RepoRoot
-	repoDirName := filepath.Base(repoRoot)
 
-	// Use baseBranch if provided; else current branch; else HEAD.
+	// Fail fast if the branch is already present anywhere in this repo —
+	// locally (git rev-parse refs/heads/X) or checked out in another
+	// worktree (git worktree list --porcelain).
+	if branchExists(ctx, workingDir, branch) {
+		return gitModePlan{}, fmt.Errorf("branch %q already exists", branch)
+	}
+	if inUse, err := gitutil.IsBranchInUse(repoRoot, branch); err == nil && inUse {
+		return gitModePlan{}, fmt.Errorf("branch %q is checked out in another worktree", branch)
+	}
+
+	// Resolve the start point up front so the user sees a base-branch
+	// error before we create the new tab row.
 	startPoint := "HEAD"
 	if baseBranch != "" {
+		if !branchExists(ctx, workingDir, baseBranch) && !isRemoteRef(ctx, workingDir, baseBranch) {
+			return gitModePlan{}, fmt.Errorf("base branch %q does not exist", baseBranch)
+		}
 		startPoint = baseBranch
 	} else if info.BranchName != "" {
 		startPoint = info.BranchName
 	}
 
-	// Compute worktree path.
-	worktreePath := filepath.Join(filepath.Dir(repoRoot), repoDirName+"-worktrees", branchName)
-	rollback = &rollbackWorktree{
-		WorktreePath: worktreePath,
-		RepoRoot:     repoRoot,
-		BranchName:   branchName,
+	// The worktree path follows a stable formula (<repo-parent>/<repo>-worktrees/<branch>),
+	// so we can plan it now and reject collisions before any mutation runs.
+	// This os.Stat is not about TOCTOU safety — `git worktree add` itself
+	// refuses to overwrite an existing path. It exists so a collision
+	// surfaces during the synchronous validation phase with a clean,
+	// worktree-specific error *before* OpenAgent returns and the tab row
+	// is created. Without it, the collision would instead surface
+	// asynchronously in phase 0, wrapped in git's message, after the
+	// frontend has already rendered a partially-initialized tab.
+	worktreePath := filepath.Join(filepath.Dir(repoRoot), filepath.Base(repoRoot)+"-worktrees", branch)
+	if _, err := os.Stat(worktreePath); err == nil {
+		return gitModePlan{}, fmt.Errorf("worktree path %q already exists on disk", worktreePath)
+	} else if !os.IsNotExist(err) {
+		return gitModePlan{}, fmt.Errorf("worktree path %q: %w", worktreePath, err)
 	}
 
-	// Create the worktree on disk.
-	if err := gitCommand(ctx, repoRoot, "worktree", "add", "-b", branchName, worktreePath, startPoint); err != nil {
-		return "", "", nil, err
-	}
+	return gitModePlan{
+		Mode:              gitModeCreateWorktree,
+		WorkingDir:        workingDir,
+		PlannedWorkingDir: worktreePath,
+		RepoRoot:          repoRoot,
+		BranchName:        branch,
+		BaseBranch:        baseBranch,
+		StartPoint:        startPoint,
+		WorktreePath:      worktreePath,
+	}, nil
+}
 
-	slog.Info("worktree created", "worktree_path", worktreePath, "branch_name", branchName)
-
-	wtID, err := svc.ensureTrackedWorktree(ctx, worktreePath)
+func (svc *Context) validateUseWorktreePath(ctx context.Context, workingDir, worktreePath string) (gitModePlan, error) {
+	sanitized, err := validate.SanitizePath(worktreePath, svc.HomeDir)
 	if err != nil {
-		svc.rollbackCreatedWorktree(*rollback)
-		return "", "", nil, err
+		return gitModePlan{}, fmt.Errorf("invalid worktree path: %w", err)
+	}
+
+	// Security: confirm the path is one this repo's `git worktree list`
+	// already knows about — prevents jumping to arbitrary dirs.
+	canonSanitized, err := filepath.EvalSymlinks(sanitized)
+	if err != nil {
+		return gitModePlan{}, fmt.Errorf("path %q does not exist", sanitized)
+	}
+	worktrees, err := listGitWorktrees(ctx, workingDir)
+	if err != nil {
+		return gitModePlan{}, fmt.Errorf("failed to list worktrees: %w", err)
+	}
+	found := false
+	for _, wt := range worktrees {
+		if canonWt, err := filepath.EvalSymlinks(wt.Path); err == nil && pathutil.SamePath(canonSanitized, canonWt) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return gitModePlan{}, fmt.Errorf("path %q is not a known worktree", sanitized)
+	}
+
+	return gitModePlan{
+		Mode:              gitModeUseWorktreePath,
+		WorkingDir:        workingDir,
+		PlannedWorkingDir: sanitized,
+		WorktreePath:      sanitized,
+	}, nil
+}
+
+func (svc *Context) validateCreateBranch(ctx context.Context, workingDir, branch, base string) (gitModePlan, error) {
+	if err := gitutil.ValidateBranchName(branch); err != nil {
+		return gitModePlan{}, fmt.Errorf("invalid branch name: %w", err)
+	}
+	if _, err := queryGitPathInfo(ctx, workingDir); err != nil {
+		return gitModePlan{}, fmt.Errorf("%s is not inside a git repository", workingDir)
+	}
+	if branchExists(ctx, workingDir, branch) {
+		return gitModePlan{}, fmt.Errorf("branch %q already exists", branch)
+	}
+	if base != "" && !branchExists(ctx, workingDir, base) && !isRemoteRef(ctx, workingDir, base) {
+		return gitModePlan{}, fmt.Errorf("base branch %q does not exist", base)
+	}
+	return gitModePlan{
+		Mode:              gitModeCreateBranch,
+		WorkingDir:        workingDir,
+		PlannedWorkingDir: workingDir,
+		BranchName:        branch,
+		BaseBranch:        base,
+	}, nil
+}
+
+func (svc *Context) validateCheckoutBranch(ctx context.Context, workingDir, branch string) (gitModePlan, error) {
+	if _, err := queryGitPathInfo(ctx, workingDir); err != nil {
+		return gitModePlan{}, fmt.Errorf("%s is not inside a git repository", workingDir)
+	}
+	if !branchExists(ctx, workingDir, branch) && !isRemoteRef(ctx, workingDir, branch) {
+		return gitModePlan{}, fmt.Errorf("branch %q does not exist", branch)
+	}
+	return gitModePlan{
+		Mode:              gitModeCheckoutBranch,
+		WorkingDir:        workingDir,
+		PlannedWorkingDir: workingDir,
+		CheckoutTarget:    branch,
+	}, nil
+}
+
+// gitModeRequest is the common interface for proto messages that carry
+// git-mode fields (OpenAgentRequest, OpenTerminalRequest, etc.).
+type gitModeRequest interface {
+	GetCreateWorktree() bool
+	GetWorktreeBranch() string
+	GetWorktreeBaseBranch() string
+	GetCheckoutBranch() string
+	GetCreateBranch() string
+	GetCreateBranchBase() string
+	GetUseWorktreePath() string
+}
+
+// gitModeResult holds the final working directory and worktree ID after
+// executeGitMode completes (or partially completes before failing).
+type gitModeResult struct {
+	WorkingDir string
+	WorktreeID string
+	Rollback   gitModeRollback
+}
+
+// executeGitMode performs the mutations described by plan. Runs on the async
+// startup goroutine. Returns partial results with Rollback populated even on
+// error, so the caller can decide whether to emit a rollback label and then
+// call rollbackGitMode. Honors ctx cancellation between shell-outs so
+// CloseAgent/CloseTerminal can abort an in-progress phase 0.
+func (svc *Context) executeGitMode(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+	if err := ctx.Err(); err != nil {
+		return gitModeResult{}, err
+	}
+
+	switch plan.Mode {
+	case gitModeCreateWorktree:
+		return svc.executeCreateWorktree(ctx, plan)
+	case gitModeUseWorktreePath:
+		return svc.executeUseWorktreePath(ctx, plan)
+	case gitModeCreateBranch:
+		return svc.executeCreateBranch(ctx, plan)
+	case gitModeCheckoutBranch:
+		return svc.executeCheckoutBranch(ctx, plan)
+	default:
+		return svc.executeUseCurrent(ctx, plan)
+	}
+}
+
+func (svc *Context) executeCreateWorktree(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+	rollback := &rollbackWorktree{
+		WorktreePath: plan.WorktreePath,
+		RepoRoot:     plan.RepoRoot,
+		BranchName:   plan.BranchName,
+	}
+	result := gitModeResult{Rollback: gitModeRollback{CreatedWorktree: rollback}}
+
+	args := []string{"-C", plan.RepoRoot, "worktree", "add", "-b", plan.BranchName, plan.WorktreePath, plan.StartPoint}
+	if err := gitutil.NewGitCmd(ctx, args...).Run(); err != nil {
+		// Worktree add failed before the dir was created. Drop the
+		// rollback pointer so the caller doesn't emit a spurious
+		// "rolling back" label for a worktree that never existed.
+		return gitModeResult{}, fmt.Errorf("failed to create worktree: %w", err)
+	}
+	slog.Info("worktree created", "worktree_path", plan.WorktreePath, "branch_name", plan.BranchName)
+
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+
+	wtID, err := svc.ensureTrackedWorktree(ctx, plan.WorktreePath)
+	if err != nil {
+		return result, fmt.Errorf("failed to track worktree: %w", err)
 	}
 	rollback.WorktreeID = wtID
-	return worktreePath, wtID, rollback, nil
+	result.WorkingDir = plan.WorktreePath
+	result.WorktreeID = wtID
+	return result, nil
+}
+
+func (svc *Context) executeUseWorktreePath(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+	wtID, err := svc.ensureTrackedWorktree(ctx, plan.WorktreePath)
+	if err != nil {
+		return gitModeResult{}, err
+	}
+	return gitModeResult{
+		WorkingDir: plan.WorktreePath,
+		WorktreeID: wtID,
+	}, nil
+}
+
+func (svc *Context) executeCreateBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+	// Capture the current checkout now so the rollback can restore
+	// HEAD if `git checkout -b` partially succeeds.
+	currentTarget, err := currentCheckoutTarget(ctx, plan.WorkingDir)
+	if err != nil {
+		return gitModeResult{}, fmt.Errorf("failed to capture current checkout: %w", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return gitModeResult{}, err
+	}
+
+	args := []string{"checkout", "-b", plan.BranchName}
+	if plan.BaseBranch != "" {
+		args = append(args, plan.BaseBranch)
+	}
+	stderr, err := gitOutputStderr(ctx, plan.WorkingDir, args...)
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
+		if msg == "" {
+			msg = err.Error()
+		}
+		return gitModeResult{}, fmt.Errorf("failed to create branch: %s", msg)
+	}
+
+	currentTarget.CreatedBranch = plan.BranchName
+	return gitModeResult{
+		WorkingDir: plan.WorkingDir,
+		Rollback:   gitModeRollback{CreatedBranch: currentTarget},
+	}, nil
+}
+
+func (svc *Context) executeCheckoutBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+	target := plan.CheckoutTarget
+
+	// Remote tracking refs ("origin/feature") become a new local branch
+	// that tracks the remote; otherwise fall through to a plain checkout.
+	if isRemoteRef(ctx, plan.WorkingDir, target) {
+		if parts := strings.SplitN(target, "/", 2); len(parts) == 2 {
+			localName := parts[1]
+			if branchExists(ctx, plan.WorkingDir, localName) {
+				target = localName
+			} else {
+				stderr, err := gitOutputStderr(ctx, plan.WorkingDir, "checkout", "-b", localName, "--track", plan.CheckoutTarget)
+				if err != nil {
+					msg := strings.TrimSpace(stderr)
+					if msg == "" {
+						msg = err.Error()
+					}
+					return gitModeResult{}, fmt.Errorf("failed to check out branch: %s", msg)
+				}
+				return gitModeResult{WorkingDir: plan.WorkingDir}, nil
+			}
+		}
+	}
+
+	stderr, err := gitOutputStderr(ctx, plan.WorkingDir, "checkout", target)
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
+		if msg == "" {
+			msg = err.Error()
+		}
+		return gitModeResult{}, fmt.Errorf("failed to check out branch: %s", msg)
+	}
+	return gitModeResult{WorkingDir: plan.WorkingDir}, nil
+}
+
+func (svc *Context) executeUseCurrent(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
+	result := gitModeResult{WorkingDir: plan.WorkingDir}
+	// If the dir happens to be inside a managed worktree, register the
+	// association so CloseAgent cleanup can find it later.
+	if info, err := queryGitPathInfo(ctx, plan.WorkingDir); err == nil && info.IsWorktree {
+		if wtID, err := svc.ensureTrackedWorktree(ctx, info.TopLevel); err == nil {
+			result.WorktreeID = wtID
+		} else {
+			slog.Warn("failed to track current worktree", "path", info.TopLevel, "error", err)
+		}
+	}
+	return result, nil
 }
 
 // registerTabForWorktree associates a tab with a worktree.
@@ -277,50 +640,6 @@ func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID str
 	}
 }
 
-// checkoutBranchIfRequested runs `git checkout <branch>` in the given working directory.
-// When the branch is a remote tracking ref (e.g. "origin/feature"), it creates a local
-// branch that tracks the remote branch instead of checking out a detached HEAD.
-// No-op if branch is empty.
-func (svc *Context) checkoutBranchIfRequested(workingDir, branch string) error {
-	if branch == "" {
-		return nil
-	}
-
-	ctx := bgCtx()
-
-	// Check if this is a remote tracking branch (e.g. "origin/feature").
-	// If so, create a local branch that tracks it.
-	if isRemoteRef(ctx, workingDir, branch) {
-		// Extract local branch name by stripping the remote prefix (e.g. "origin/feature" -> "feature").
-		parts := strings.SplitN(branch, "/", 2)
-		if len(parts) == 2 {
-			localName := parts[1]
-			if branchExists(ctx, workingDir, localName) {
-				// Local branch already exists — just switch to it.
-				branch = localName
-			} else {
-				stderr, err := gitOutputStderr(ctx, workingDir, "checkout", "-b", localName, "--track", branch)
-				if err != nil {
-					if msg := strings.TrimSpace(stderr); msg != "" {
-						return errors.New(msg)
-					}
-					return fmt.Errorf("git checkout failed: %w", err)
-				}
-				return nil
-			}
-		}
-	}
-
-	stderr, err := gitOutputStderr(ctx, workingDir, "checkout", branch)
-	if err != nil {
-		if msg := strings.TrimSpace(stderr); msg != "" {
-			return errors.New(msg)
-		}
-		return fmt.Errorf("git checkout failed: %w", err)
-	}
-	return nil
-}
-
 // isRemoteRef checks if the given name is a remote tracking ref (e.g. "origin/feature").
 func isRemoteRef(ctx context.Context, workingDir, name string) bool {
 	_, err := gitOutput(ctx, workingDir, "rev-parse", "--verify", "refs/remotes/"+name)
@@ -331,168 +650,6 @@ func isRemoteRef(ctx context.Context, workingDir, name string) bool {
 func branchExists(ctx context.Context, workingDir, branch string) bool {
 	_, err := gitOutput(ctx, workingDir, "rev-parse", "--verify", "refs/heads/"+branch)
 	return err == nil
-}
-
-// createBranchIfRequested runs `git checkout -b <branch> [base]` in the given working directory.
-// No-op if branch is empty. Returns an error if the branch already exists.
-func (svc *Context) createBranchIfRequested(workingDir, branch, base string) error {
-	if branch == "" {
-		return nil
-	}
-
-	if err := gitutil.ValidateBranchName(branch); err != nil {
-		return err
-	}
-
-	ctx := bgCtx()
-	if branchExists(ctx, workingDir, branch) {
-		return fmt.Errorf("branch %q already exists", branch)
-	}
-
-	args := []string{"checkout", "-b", branch}
-	if base != "" {
-		args = append(args, base)
-	}
-	stderr, err := gitOutputStderr(ctx, workingDir, args...)
-	if err != nil {
-		if msg := strings.TrimSpace(stderr); msg != "" {
-			return errors.New(msg)
-		}
-		return fmt.Errorf("git checkout -b failed: %w", err)
-	}
-	return nil
-}
-
-// useExistingWorktreeIfRequested switches to an existing worktree directory.
-// Returns the final working directory and the worktree DB ID (if managed).
-func (svc *Context) useExistingWorktreeIfRequested(workingDir, worktreePath string) (string, string, error) {
-	if worktreePath == "" {
-		return workingDir, "", nil
-	}
-
-	sanitized, err := validate.SanitizePath(worktreePath, svc.HomeDir)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid worktree path: %w", err)
-	}
-
-	ctx := bgCtx()
-
-	// Verify the path appears in the worktree list (security: prevent arbitrary path access).
-	worktrees, err := listGitWorktrees(ctx, workingDir)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to list worktrees: %w", err)
-	}
-
-	canonSanitized, err := filepath.EvalSymlinks(sanitized)
-	if err != nil {
-		return "", "", fmt.Errorf("path %q is not a known worktree", sanitized)
-	}
-	found := false
-	for _, wt := range worktrees {
-		if canonWt, err := filepath.EvalSymlinks(wt.Path); err == nil && pathutil.SamePath(canonSanitized, canonWt) {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return "", "", fmt.Errorf("path %q is not a known worktree", sanitized)
-	}
-
-	wtID, err := svc.ensureTrackedWorktree(ctx, sanitized)
-	if err != nil {
-		return "", "", err
-	}
-
-	return sanitized, wtID, nil
-}
-
-// gitModeRequest is the common interface for proto messages that carry
-// git-mode fields (OpenAgentRequest, OpenTerminalRequest, etc.).
-type gitModeRequest interface {
-	GetCreateWorktree() bool
-	GetWorktreeBranch() string
-	GetWorktreeBaseBranch() string
-	GetCheckoutBranch() string
-	GetCreateBranch() string
-	GetCreateBranchBase() string
-	GetUseWorktreePath() string
-}
-
-// gitModeResult holds the final working directory and worktree ID after
-// applying git-mode options (create-worktree, checkout-branch, etc.).
-type gitModeResult struct {
-	WorkingDir string
-	WorktreeID string
-	Rollback   gitModeRollback
-}
-
-// applyGitMode applies the git-mode options from a request to the working
-// directory, returning the (possibly changed) working directory and worktree ID.
-func (svc *Context) applyGitMode(workingDir string, r gitModeRequest) (gitModeResult, error) {
-	var worktreeID string
-	var rollback gitModeRollback
-
-	// Create a worktree if requested.
-	if r.GetCreateWorktree() {
-		finalDir, wtID, wtRollback, err := svc.createWorktreeIfRequested(
-			workingDir, true, r.GetWorktreeBranch(), r.GetWorktreeBaseBranch(),
-		)
-		if err != nil {
-			return gitModeResult{}, fmt.Errorf("failed to create worktree: %w", err)
-		}
-		workingDir = finalDir
-		worktreeID = wtID
-		rollback.CreatedWorktree = wtRollback
-	}
-
-	// Checkout branch if requested.
-	if branch := r.GetCheckoutBranch(); branch != "" {
-		if err := svc.checkoutBranchIfRequested(workingDir, branch); err != nil {
-			return gitModeResult{}, fmt.Errorf("failed to checkout branch: %w", err)
-		}
-	}
-
-	// Create new branch if requested.
-	if branch := r.GetCreateBranch(); branch != "" {
-		currentTarget, err := currentCheckoutTarget(bgCtx(), workingDir)
-		if err != nil {
-			return gitModeResult{}, fmt.Errorf("failed to capture current checkout: %w", err)
-		}
-		if err := svc.createBranchIfRequested(workingDir, branch, r.GetCreateBranchBase()); err != nil {
-			return gitModeResult{}, fmt.Errorf("failed to create branch: %w", err)
-		}
-		currentTarget.CreatedBranch = branch
-		rollback.CreatedBranch = currentTarget
-	}
-
-	// Use existing worktree if requested.
-	if wtPath := r.GetUseWorktreePath(); wtPath != "" {
-		finalDir, wtID, err := svc.useExistingWorktreeIfRequested(workingDir, wtPath)
-		if err != nil {
-			return gitModeResult{}, fmt.Errorf("failed to use worktree: %w", err)
-		}
-		workingDir = finalDir
-		if wtID != "" {
-			worktreeID = wtID
-		}
-	}
-
-	// "Use current state" — if the selected dir is an already-managed worktree, register this tab.
-	if !r.GetCreateWorktree() && r.GetCheckoutBranch() == "" && r.GetCreateBranch() == "" && r.GetUseWorktreePath() == "" {
-		if info, err := queryGitPathInfo(bgCtx(), workingDir); err == nil && info.IsWorktree {
-			if wtID, err := svc.ensureTrackedWorktree(bgCtx(), info.TopLevel); err == nil {
-				worktreeID = wtID
-			} else {
-				slog.Warn("failed to track current worktree", "path", info.TopLevel, "error", err)
-			}
-		}
-	}
-
-	return gitModeResult{
-		WorkingDir: workingDir,
-		WorktreeID: worktreeID,
-		Rollback:   rollback,
-	}, nil
 }
 
 var errNotGitRepo = errors.New("path is not inside a git repository")

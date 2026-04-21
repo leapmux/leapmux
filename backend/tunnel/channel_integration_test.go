@@ -106,14 +106,14 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	// where the worker is online but has no public key yet.
 	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL)
 	for i := 0; i < 60; i++ {
-		resp, keyErr := channelClient.GetWorkerPublicKey(ctx, connect.NewRequest(
-			&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: wID},
+		resp, keyErr := channelClient.GetWorkerHandshakeParams(ctx, connect.NewRequest(
+			&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: wID},
 		))
 		if keyErr == nil && len(resp.Msg.GetPublicKey()) > 0 {
 			break
 		}
 		if i == 59 {
-			require.NoError(t, keyErr, "worker public key not available in time")
+			require.NoError(t, keyErr, "worker handshake params not available in time")
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

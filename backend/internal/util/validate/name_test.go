@@ -89,4 +89,22 @@ func TestValidateSessionID(t *testing.T) {
 		assert.Error(t, ValidateSessionID("has\ttab"))
 		assert.Error(t, ValidateSessionID(strings.Repeat("a", 129)))
 	})
+
+	t.Run("rejects control characters", func(t *testing.T) {
+		// SanitizeName silently strips control chars; ValidateSessionID
+		// must reject them because a session ID is an opaque token whose
+		// original bytes matter, so silent mutation would confuse the
+		// caller (they'd get back a different token than they sent).
+		cases := []string{
+			"has\x00nul",
+			"has\x01soh",
+			"has\x1Funitsep",
+			"has\x7Fdel",
+			"has\nnewline",
+			"has\rcarriage",
+		}
+		for _, id := range cases {
+			assert.Errorf(t, ValidateSessionID(id), "expected rejection for %q", id)
+		}
+	})
 }

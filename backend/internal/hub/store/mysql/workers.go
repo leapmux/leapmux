@@ -32,6 +32,14 @@ func (s *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, er
 	return fromDBWorker(row), nil
 }
 
+func (s *workerStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.Worker, error) {
+	row, err := s.conn.q.GetWorkerByIDIncludeDeleted(ctx, id)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return fromDBWorker(row), nil
+}
+
 func (s *workerStore) GetByAuthToken(ctx context.Context, token string) (*store.Worker, error) {
 	row, err := s.conn.q.GetWorkerByAuthToken(ctx, token)
 	if err != nil {

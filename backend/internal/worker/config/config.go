@@ -25,8 +25,10 @@ const (
 	defaultLogLevel   = "info"
 
 	// DefaultAgentStartupTimeoutSeconds is the default timeout (in seconds) for
-	// agent startup handshake. Must match the hub's default.
-	DefaultAgentStartupTimeoutSeconds = 30
+	// agent startup handshake. Must match the hub's default. Sized for agents
+	// that initialize slow MCP servers during the handshake (e.g. Claude Code
+	// loading a workspace .mcp.json with multiple servers).
+	DefaultAgentStartupTimeoutSeconds = 300
 
 	// DefaultAPITimeoutSeconds is the default timeout (in seconds) for
 	// JSON-RPC requests to agent processes (e.g. turn/start, session/new).

@@ -120,6 +120,7 @@ message WorkspaceTab {
   string position = 3;
   string tile_id = 4;
   string worker_id = 5;         // Worker that owns this tab
+  string workspace_id = 6;      // Populated by ListTabs; ignored on mutation inputs
 }
 
 message AddTabRequest {
@@ -139,7 +140,10 @@ message RemoveTabResponse {}
 
 message ListTabsRequest {
   string org_id = 1;
-  string workspace_id = 2;
+  // Workspaces to fetch tabs for. Empty = every workspace in the org the caller
+  // can read. Unknown / inaccessible IDs are silently dropped so stale sidebar
+  // state doesn't produce errors.
+  repeated string workspace_ids = 2;
 }
 
 message ListTabsResponse {
@@ -300,5 +304,6 @@ message TerminalEvent {
   oneof event {
     TerminalData data = 2;
     TerminalClosed closed = 3;
+    TerminalStatusChange status_change = 4;
   }
 }

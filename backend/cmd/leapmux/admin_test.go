@@ -936,7 +936,7 @@ func TestCLI_UserDelete_WorkersMarkedDeleted(t *testing.T) {
 
 	_, q = openTestDB(t, dir)
 
-	worker, err := q.GetWorkerByID(context.Background(), workerID)
+	worker, err := q.GetWorkerByIDIncludeDeleted(context.Background(), workerID)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, worker.Status)
 	assert.True(t, worker.DeletedAt.Valid, "worker should have non-null deleted_at")

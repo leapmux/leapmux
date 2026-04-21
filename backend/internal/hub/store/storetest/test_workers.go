@@ -353,7 +353,11 @@ func (s *Suite) testWorkers(t *testing.T) {
 		err := st.Workers().MarkDeleted(ctx, worker.ID)
 		require.NoError(t, err)
 
-		found, err := st.Workers().GetByID(ctx, worker.ID)
+		// Soft-deleted rows are hidden from GetByID; use the audit variant.
+		_, err = st.Workers().GetByID(ctx, worker.ID)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+
+		found, err := st.Workers().GetByIDIncludeDeleted(ctx, worker.ID)
 		require.NoError(t, err)
 		assert.NotNil(t, found.DeletedAt)
 	})

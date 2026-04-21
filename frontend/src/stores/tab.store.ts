@@ -1,15 +1,13 @@
 import type { listTerminals } from '~/api/workerRpc'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { after, first, mid } from '~/lib/lexorank'
-
-export { TabType }
 
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
-export type TerminalStatus = 'running' | 'disconnected' | 'exited'
 
 export interface Tab {
   type: TabType
@@ -41,6 +39,18 @@ export interface Tab {
   screen?: Uint8Array
   cols?: number
   rows?: number
+  /** Error string from TerminalStatusChange when status is STARTUP_FAILED. */
+  startupError?: string
+  /** Phase label from TerminalStatusChange.startup_message while status is STARTING (e.g. "Starting zsh…"). */
+  startupMessage?: string
+  /**
+   * True once the terminal has emitted any non-whitespace output to the
+   * xterm buffer. Drives the "Starting terminal…" overlay — kept visible
+   * over the mounted xterm until the shell has actually painted its
+   * prompt (not just the moment the PTY was spawned). Preseeded true on
+   * reconnect when a screen snapshot is restored.
+   */
+  contentReady?: boolean
 }
 
 type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
@@ -51,6 +61,18 @@ type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][numb
  * `tileId`, `position`) which the caller controls.
  */
 export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<Tab> {
+  let status: TerminalStatus
+  switch (term.status) {
+    case TerminalStatus.STARTING:
+      status = TerminalStatus.STARTING
+      break
+    case TerminalStatus.STARTUP_FAILED:
+      status = TerminalStatus.STARTUP_FAILED
+      break
+    case TerminalStatus.READY:
+    default:
+      status = term.exited ? TerminalStatus.EXITED : TerminalStatus.READY
+  }
   return {
     title: term.title || undefined,
     workerId,
@@ -61,7 +83,12 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     rows: term.rows || undefined,
     gitBranch: term.gitBranch || undefined,
     gitOriginUrl: term.gitOriginUrl || undefined,
-    status: term.exited ? 'exited' : 'running',
+    status,
+    startupError: term.startupError || undefined,
+    startupMessage: term.startupMessage || undefined,
+    // Any persisted screen → the shell already painted content; skip the
+    // "Starting…" overlay on reconnect to avoid a flash.
+    contentReady: term.screen.length > 0 ? true : undefined,
   }
 }
 
@@ -367,9 +394,9 @@ export function createTabStore() {
     markTerminalsDisconnected(workerId: string) {
       setState(
         'tabs',
-        t => t.type === TabType.TERMINAL && t.workerId === workerId && t.status === 'running',
+        t => t.type === TabType.TERMINAL && t.workerId === workerId && t.status === TerminalStatus.READY,
         'status',
-        'disconnected',
+        TerminalStatus.DISCONNECTED,
       )
     },
 
@@ -377,9 +404,19 @@ export function createTabStore() {
     markTerminalExited(id: string) {
       setState(
         'tabs',
-        t => t.type === TabType.TERMINAL && t.id === id && t.status !== 'exited',
+        t => t.type === TabType.TERMINAL && t.id === id && t.status !== TerminalStatus.EXITED,
         'status',
-        'exited',
+        TerminalStatus.EXITED,
+      )
+    },
+
+    /** Idempotently mark a terminal as having painted non-whitespace content. */
+    markTerminalContentReady(id: string) {
+      setState(
+        'tabs',
+        t => t.type === TabType.TERMINAL && t.id === id && !t.contentReady,
+        'contentReady',
+        true,
       )
     },
 

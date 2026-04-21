@@ -7,6 +7,7 @@ import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.store'
 
@@ -75,7 +76,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
         cols: 80,
-        rows: 24,
+        rows: 25,
         workingDir: ctx.workingDir,
         shell: '',
         workerId: ctx.workerId,
@@ -84,7 +85,9 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: 'running' }, { afterKey })
+      // git branch / origin arrive later via TerminalStatusChange (phase 1
+      // of the async startup reports the post-mutation gitStatus).
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, status: TerminalStatus.STARTING }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
@@ -126,7 +129,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
         cols: 80,
-        rows: 24,
+        rows: 25,
         workingDir: ctx.workingDir,
         shell,
         workerId: ctx.workerId,
@@ -134,7 +137,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: 'running' }, { afterKey })
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, status: TerminalStatus.STARTING }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
@@ -162,7 +165,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     try {
       const ws = props.activeWorkspace()
       const tab = props.tabStore.getTerminalTab(terminalId)
-      if (!ws || tab?.status !== 'running')
+      if (!ws || tab?.status !== TerminalStatus.READY)
         return
       await workerRpc.sendInput(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
     }
@@ -224,7 +227,12 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     try {
       const ws = props.activeWorkspace()
       const tab = props.tabStore.getTerminalTab(terminalId)
-      if (!ws || tab?.status !== 'running')
+      // Do NOT gate on status === READY: the ResizeObserver's first fit()
+      // fires well before the backend broadcasts READY, and that first
+      // fit is often the only resize event the layout produces. The
+      // backend stashes resizes received during STARTING and applies
+      // them when the PTY is registered (see resize_during_startup_test).
+      if (!ws || !tab)
         return
       await workerRpc.resizeTerminal(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
     }

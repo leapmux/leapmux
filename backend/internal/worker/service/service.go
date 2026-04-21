@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,12 +17,14 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -43,20 +46,26 @@ type Context struct {
 	Send                SendFunc                  // Forwards messages to the Hub via WebSocket
 	Watchers            *WatcherManager           // Fan-out manager for event broadcasting
 	Output              *OutputHandler            // Agent output NDJSON processor
-	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 30s)
+	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 5m)
 	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
 	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
 	RegisteredBy        string                    // User ID who registered this worker (for tunnel authorization)
 
 	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error)
-	startTerminalFn     func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
+	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
+
+	// AgentStartup / TerminalStartup track in-flight startups — the
+	// window between OpenAgent/OpenTerminal returning and the subprocess
+	// being ready. See startupstate.go.
+	AgentStartup    *startupRegistry[leapmuxv1.AgentStatus]
+	TerminalStartup *startupRegistry[leapmuxv1.TerminalStatus]
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
-// or 30s if not set.
+// or the default if not set.
 func (svc *Context) agentStartupTimeout() time.Duration {
 	if svc.AgentStartupTimeout > 0 {
 		return svc.AgentStartupTimeout
@@ -79,15 +88,17 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 	output := NewOutputHandler(queries, watchers, agents, wl)
 	output.DataDir = dataDir
 	svc := &Context{
-		DB:        sqlDB,
-		Queries:   queries,
-		Agents:    agents,
-		Terminals: terminals,
-		HomeDir:   homeDir,
-		DataDir:   dataDir,
-		Watchers:  watchers,
-		Output:    output,
-		WakeLock:  wl,
+		DB:              sqlDB,
+		Queries:         queries,
+		Agents:          agents,
+		Terminals:       terminals,
+		HomeDir:         homeDir,
+		DataDir:         dataDir,
+		Watchers:        watchers,
+		Output:          output,
+		WakeLock:        wl,
+		AgentStartup:    newAgentStartupRegistry(),
+		TerminalStartup: newTerminalStartupRegistry(),
 	}
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
@@ -103,11 +114,11 @@ func (svc *Context) startAgent(ctx context.Context, opts agent.Options, sink age
 	return svc.Agents.StartAgent(ctx, opts, sink)
 }
 
-func (svc *Context) startTerminal(opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
+func (svc *Context) startTerminal(ctx context.Context, opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
 	if svc.startTerminalFn != nil {
-		return svc.startTerminalFn(opts, outputFn, exitFn)
+		return svc.startTerminalFn(ctx, opts, outputFn, exitFn)
 	}
-	return svc.Terminals.StartTerminal(opts, outputFn, exitFn)
+	return svc.Terminals.StartTerminal(ctx, opts, outputFn, exitFn)
 }
 
 func (svc *Context) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {
@@ -149,8 +160,16 @@ func (svc *Context) Init() {
 
 // Shutdown persists in-memory terminal state to the database so it
 // survives a worker restart. Call this before stopping the terminal
-// manager (which clears in-memory state).
+// manager (which clears in-memory state). Callers must have already
+// stopped dispatching new OpenAgent/OpenTerminal requests; otherwise
+// WaitForInFlight can race with a fresh begin().
 func (svc *Context) Shutdown() {
+	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
+	// trailing DB writes and filesystem work land before the caller
+	// closes the DB or removes data directories.
+	svc.AgentStartup.WaitForInFlight()
+	svc.TerminalStartup.WaitForInFlight()
+
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
 		svc.appendTerminalDisconnectNotice(tid)
 
@@ -327,7 +346,7 @@ func sendProtoResponse(sender *channel.Sender, msg proto.Message) {
 	data, err := proto.Marshal(msg)
 	if err != nil {
 		slog.Error("failed to marshal response", "error", err)
-		_ = sender.SendError(13, "internal: marshal response") // INTERNAL
+		_ = sender.SendError(int32(codes.Internal), "internal: marshal response")
 		return
 	}
 	_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{
@@ -347,24 +366,32 @@ func unmarshalRequest(req *leapmuxv1.InnerRpcRequest, msg proto.Message) error {
 	return nil
 }
 
-// sendInternalError sends an INTERNAL (13) error response.
+// sendInternalError sends an Internal error response.
 func sendInternalError(sender *channel.Sender, msg string) {
-	_ = sender.SendError(13, msg)
+	_ = sender.SendError(int32(codes.Internal), msg)
 }
 
-// sendNotFoundError sends a NOT_FOUND (5) error response.
+// sendNotFoundError sends a NotFound error response.
 func sendNotFoundError(sender *channel.Sender, msg string) {
-	_ = sender.SendError(5, msg)
+	_ = sender.SendError(int32(codes.NotFound), msg)
 }
 
-// sendPermissionDenied sends a PERMISSION_DENIED (7) error response.
+// sendPermissionDenied sends a PermissionDenied error response.
 func sendPermissionDenied(sender *channel.Sender, msg string) {
-	_ = sender.SendError(7, msg)
+	_ = sender.SendError(int32(codes.PermissionDenied), msg)
 }
 
-// sendInvalidArgument sends an INVALID_ARGUMENT (3) error response.
+// sendInvalidArgument sends an InvalidArgument error response.
 func sendInvalidArgument(sender *channel.Sender, msg string) {
-	_ = sender.SendError(3, msg)
+	_ = sender.SendError(int32(codes.InvalidArgument), msg)
+}
+
+// sendFailedPrecondition sends a FailedPrecondition error response.
+// Used when the request is valid but the target is not in a state that
+// permits the operation (e.g. sending a message to an agent that is
+// still starting up).
+func sendFailedPrecondition(sender *channel.Sender, msg string) {
+	_ = sender.SendError(int32(codes.FailedPrecondition), msg)
 }
 
 // requireAccessibleWorkspace verifies the workspace_id is accessible on the
@@ -431,6 +458,22 @@ func (svc *Context) requireAccessibleTerminal(sender *channel.Sender, terminalID
 		return db.Terminal{}, false
 	}
 	return termRow, true
+}
+
+// sanitizeOptionalTitle normalizes an OpenAgent/OpenTerminal title. An empty
+// title is allowed (falls back to "Agent N"/"Terminal N" assignments
+// downstream); a non-empty title goes through SanitizeName, which caps
+// length at 128 chars and strips control characters + the set known to
+// cause trouble in downstream string templating.
+func sanitizeOptionalTitle(title string) (string, error) {
+	if title == "" {
+		return "", nil
+	}
+	sanitized, err := validate.SanitizeName(title)
+	if err != nil {
+		return "", fmt.Errorf("invalid title: %w", err)
+	}
+	return sanitized, nil
 }
 
 // expandTilde expands a leading "~" or "~/" in a path to the user's home

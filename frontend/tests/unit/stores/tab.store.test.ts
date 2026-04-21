@@ -1,6 +1,7 @@
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { createTabStore, tabKey, TabType } from '~/stores/tab.store'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createTabStore, tabKey } from '~/stores/tab.store'
 
 describe('tabKey', () => {
   it('should create composite key from type and id', () => {

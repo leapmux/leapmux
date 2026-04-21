@@ -28,6 +28,12 @@ test.describe('Workspace Chat', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
+    // OpenAgent now returns immediately (status=STARTING); wait for the
+    // "Starting …" overlay to disappear so the send takes the fast path
+    // rather than going through the pending-message queue (the queue is
+    // tested separately in 122).
+    await expect(page.getByText(/^Starting /)).not.toBeVisible({ timeout: 60_000 })
+
     // Send a message to Claude via the rich text editor
     await editor.click()
     await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')

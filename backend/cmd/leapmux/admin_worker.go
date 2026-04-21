@@ -107,7 +107,9 @@ func runWorkerGet(args []string) error {
 			return fmt.Errorf("--id is required")
 		}
 
-		worker, err := st.Workers().GetByID(ctx, *workerID)
+		// Admin inspect intentionally surfaces soft-deleted workers so operators
+		// can audit deletions; the displayed Status field makes the state explicit.
+		worker, err := st.Workers().GetByIDIncludeDeleted(ctx, *workerID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return fmt.Errorf("worker not found: %s", *workerID)

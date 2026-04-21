@@ -1,7 +1,7 @@
 import type { Tab } from '~/stores/tab.store'
 import { describe, expect, it } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
-import { TabType } from '~/stores/tab.store'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { buildTree, formatGitOriginUrl } from './WorkspaceTabTree'
 
 describe('formatGitOriginUrl', () => {

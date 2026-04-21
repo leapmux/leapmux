@@ -5,10 +5,12 @@ import type { CommandStreamSegment } from '~/stores/chat.store'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
+import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 import { usePreferences } from '~/context/PreferencesContext'
+import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -28,6 +30,8 @@ interface ChatViewProps {
   /** Whether the agent is actively working (for showing the thinking indicator). */
   agentWorking?: boolean
   messageErrors?: Record<string, string>
+  /** Per-message non-error sublabels (e.g. "Queued — agent is starting…"). */
+  messagePendingLabels?: Record<string, string>
   onRetryMessage?: (messageId: string) => void
   onDeleteMessage?: (messageId: string) => void
   /** Workspace working directory for relativizing file paths in tool messages. */
@@ -66,7 +70,50 @@ interface ChatViewProps {
   getToolResultBySpanId?: (spanId: string) => AgentChatMessage | undefined
   /** Look up live Codex span stream segments by span id. */
   getCommandStreamBySpanId?: (spanId: string) => CommandStreamSegment[]
+  /**
+   * Agent status. STARTING shows a loader with the provider name in
+   * the empty-state area; STARTUP_FAILED shows the server error in
+   * --danger. The editor beneath remains interactive during STARTING
+   * so the user can type ahead.
+   */
+  agentStatus?: AgentStatus
+  /** Error text from the backend's AgentStatusChange.startup_error. */
+  startupError?: string
+  /** Phase label from AgentStatusChange.startup_message while STARTING (e.g. "Checking Git status…"). */
+  startupMessage?: string
+  /** Human-readable label for the agent provider (e.g. "Claude Code"). */
+  providerLabel?: string
 }
+
+interface AgentStartupBannerProps {
+  status: AgentStatus | undefined
+  providerLabel: string | undefined
+  startupError: string | undefined
+  startupMessage: string | undefined
+  containerClass: string
+}
+
+const AgentStartupBanner: Component<AgentStartupBannerProps> = props => (
+  <Switch>
+    <Match when={props.status === AgentStatus.STARTING}>
+      <div class={props.containerClass} data-testid="agent-startup-overlay">
+        <StartupSpinner label={props.startupMessage || `Starting ${props.providerLabel ?? 'agent'}…`} />
+      </div>
+    </Match>
+    <Match when={props.status === AgentStatus.STARTUP_FAILED}>
+      <div
+        class={props.containerClass}
+        data-testid="agent-startup-error"
+        style={{ color: 'var(--danger)' }}
+      >
+        <StartupErrorBody
+          title={`${props.providerLabel ?? 'Agent'} failed to start`}
+          error={props.startupError ?? ''}
+        />
+      </div>
+    </Match>
+  </Switch>
+)
 
 export const ChatView: Component<ChatViewProps> = (props) => {
   const prefs = usePreferences()
@@ -549,9 +596,27 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           onPointerUp={clearPointerOverscroll}
           onPointerCancel={clearPointerOverscroll}
         >
+          {/*
+            AgentStartupBanner is rendered in two places below: once in the
+            empty-state fallback and once trailing the message list. They
+            are NOT redundant — the outer <Show> only renders one branch at
+            a time, so at most one banner is in the DOM for any given state.
+          */}
           <Show
             when={hasVisibleEntries() || props.streamingText || props.agentWorking}
-            fallback={<div class={styles.emptyChat}>Send a message to start</div>}
+            fallback={(
+              <Switch fallback={<div class={styles.emptyChat}>Send a message to start</div>}>
+                <Match when={props.agentStatus === AgentStatus.STARTING || props.agentStatus === AgentStatus.STARTUP_FAILED}>
+                  <AgentStartupBanner
+                    status={props.agentStatus}
+                    providerLabel={props.providerLabel}
+                    startupError={props.startupError}
+                    startupMessage={props.startupMessage}
+                    containerClass={styles.emptyChat}
+                  />
+                </Match>
+              </Switch>
+            )}
           >
             <Show when={props.fetchingOlder}>
               <div class={styles.loadingOlderIndicator}>
@@ -584,6 +649,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         parsed={parsed}
                         category={category}
                         error={props.messageErrors?.[msg.id]}
+                        pendingLabel={props.messagePendingLabels?.[msg.id]}
                         onRetry={() => props.onRetryMessage?.(msg.id)}
                         onDelete={() => props.onDeleteMessage?.(msg.id)}
                         workingDir={props.workingDir}
@@ -647,6 +713,13 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     if (isAtBottom())
                       messageListRef!.scrollTop = messageListRef!.scrollHeight
                   }}
+                />
+                <AgentStartupBanner
+                  status={props.agentStatus}
+                  providerLabel={props.providerLabel}
+                  startupError={props.startupError}
+                  startupMessage={props.startupMessage}
+                  containerClass={styles.startupPanelInline}
                 />
               </div>
             </SelectionQuotePopover>

@@ -41,3 +41,6 @@ SELECT workspace_id FROM terminals WHERE id = ?;
 
 -- name: UpdateTerminalWorkspace :exec
 UPDATE terminals SET workspace_id = ? WHERE id = ?;
+
+-- name: SetTerminalStartupError :exec
+UPDATE terminals SET startup_error = ? WHERE id = ?;

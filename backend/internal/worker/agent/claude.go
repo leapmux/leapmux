@@ -101,6 +101,7 @@ type ClaudeCodeAgent struct {
 // extracted later from the init message when the first user message triggers
 // output from Claude.
 func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*ClaudeCodeAgent, error) {
+	TraceStartupPhase(opts.AgentID, "claude_begin")
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Check Claude Code settings files for third-party LLM provider env vars.
@@ -175,9 +176,11 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		alwaysThinking:         AlwaysThinkingOn,
 	}
 
+	TraceStartupPhase(opts.AgentID, "before_exec_start")
 	if err := a.startCmd(cmd, cancel); err != nil {
 		return nil, err
 	}
+	TraceStartupPhase(opts.AgentID, "after_exec_start")
 
 	// Drain stderr in a background goroutine.
 	a.drainStderr(stderrPipe)
@@ -201,11 +204,13 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	// Send "initialize" as the first control request, matching the Agent SDK
 	// protocol. This triggers Claude Code to emit the init system message
 	// (which contains the session_id) and establishes the control protocol.
+	TraceStartupPhase(opts.AgentID, "before_initialize")
 	initResp, err := a.sendControlAndWait(ctx, `{"subtype":"initialize"}`, timeout)
 	if err != nil {
 		cleanup()
 		return nil, a.formatStartupError("initialize", err)
 	}
+	TraceStartupPhase(opts.AgentID, "after_initialize")
 
 	// Extract settings from the initialize response.
 	if initResp.OutputStyle != "" {
@@ -218,12 +223,14 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		a.fastMode = FastModeOff
 	}
 
+	TraceStartupPhase(opts.AgentID, "before_permission_mode")
 	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode, PermissionModeDefault), timeout)
 	if err != nil {
 		cleanup()
 		return nil, a.formatStartupError("set_permission_mode", err)
 	}
 	a.confirmedPermissionMode = resp.Mode
+	TraceStartupPhase(opts.AgentID, "after_permission_mode")
 
 	// Apply persisted extra settings that differ from initialized defaults.
 	if flagSettings := a.buildStartupFlagSettings(opts.ExtraSettings); len(flagSettings) > 0 {
@@ -697,6 +704,7 @@ func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody st
 		a.unregisterPendingControl(requestID)
 		return claudeCodeControlResult{}, err
 	}
+	TraceStartupPhase(a.agentID, "control_stdin_write")
 
 	select {
 	case resp := <-ch:

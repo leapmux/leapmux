@@ -76,7 +76,7 @@ UPDATE users SET deleted_at = NOW(3) WHERE id = ?;
 DELETE FROM users WHERE id IN (SELECT u.id FROM (SELECT users.id FROM users WHERE users.deleted_at IS NOT NULL AND users.deleted_at < ? LIMIT 1000) u);
 
 -- name: GetUserPrefs :one
-SELECT prefs FROM users WHERE id = ?;
+SELECT prefs FROM users WHERE id = ? AND deleted_at IS NULL;
 
 -- name: UpdateUserPrefs :exec
 UPDATE users SET prefs = ?, updated_at = NOW(3)

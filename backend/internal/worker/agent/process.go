@@ -206,6 +206,7 @@ func (p *processBase) skipPreamble(scanner *bufio.Scanner) {
 		line := scanner.Bytes()
 		trimmed := bytes.TrimSpace(line)
 		if bytes.Equal(trimmed, delimBytes) {
+			TraceStartupPhase(p.agentID, "preamble_delimiter_seen")
 			break
 		}
 		if len(metaPrefixBytes) > 0 && bytes.HasPrefix(trimmed, metaPrefixBytes) {
@@ -338,10 +339,15 @@ type outputHandler func(line *parsedLine)
 func (p *processBase) readOutput(scanner *bufio.Scanner, intercept outputInterceptor, handle outputHandler) {
 	p.skipPreamble(scanner)
 
+	firstLineTraced := false
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
+		}
+		if !firstLineTraced {
+			TraceStartupPhase(p.agentID, "first_agent_line")
+			firstLineTraced = true
 		}
 
 		if p.isDiscardingOutput() {

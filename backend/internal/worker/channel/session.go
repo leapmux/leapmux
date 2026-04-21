@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -344,7 +345,7 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			"method", bs.method,
 		)
 		if !sess.verified {
-			go func() { _ = bs.SendError(9, "user ID not verified") }() // FAILED_PRECONDITION
+			go func() { _ = bs.SendError(int32(codes.FailedPrecondition), "user ID not verified") }()
 			return
 		}
 		if m.dispatcher != nil {
@@ -352,7 +353,7 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			// blocked by slow handlers (e.g. WatchEvents with git ops).
 			go m.dispatcher.DispatchWith(sess.UserID, kind.Request, bs)
 		} else {
-			go func() { _ = bs.SendError(12, "no dispatcher configured") }() // UNIMPLEMENTED
+			go func() { _ = bs.SendError(int32(codes.Unimplemented), "no dispatcher configured") }()
 		}
 
 	default:

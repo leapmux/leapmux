@@ -10,7 +10,6 @@ import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import { getPlatform } from '~/lib/shortcuts/platform'
 import { isDesktopApp } from '~/lib/systemInfo'
 import { menuSectionHeader } from '~/styles/shared.css'
-import { headerHeightPx } from '~/styles/tokens'
 import * as styles from './CustomTitlebar.css'
 import { PanelLeftFilled, PanelRightFilled } from './SidebarIcons'
 import { UserMenuItems } from './UserMenuItems'
@@ -23,10 +22,6 @@ const desktop = isDesktopApp()
 const showCustomWindowControls = desktop && (platform === 'linux' || platform === 'windows')
 const MAC_TRAFFIC_LIGHT_INSET_PX = 78
 const macPadding = desktop && platform === 'mac' ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px` : undefined
-
-const hamburgerPlacement = platform === 'mac'
-  ? { placement: 'auto' as const, xOffset: MAC_TRAFFIC_LIGHT_INSET_PX, yOffset: headerHeightPx }
-  : { placement: 'auto' as const, yOffset: headerHeightPx }
 
 interface CustomTitlebarProps {
   onToggleLeftSidebar: () => void
@@ -49,7 +44,7 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
       }}
     >
       <DropdownMenu
-        trigger={(
+        trigger={triggerProps => (
           <IconButton
             icon={MenuIcon}
             iconSize="lg"
@@ -57,9 +52,9 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
             class={styles.menuTrigger}
             title="Menu"
             data-testid="app-menu-trigger"
+            {...triggerProps}
           />
         )}
-        placement={hamburgerPlacement}
         data-testid="app-menu"
       >
         <UserMenuItems />

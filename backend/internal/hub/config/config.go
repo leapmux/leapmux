@@ -25,7 +25,7 @@ const (
 // Default timeout values (in seconds).
 const (
 	DefaultAPITimeoutSeconds            = 10
-	DefaultAgentStartupTimeoutSeconds   = 30
+	DefaultAgentStartupTimeoutSeconds   = 300
 	DefaultWorktreeCreateTimeoutSeconds = 60
 )
 

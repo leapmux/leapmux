@@ -5,9 +5,6 @@ import * as workerRpc from '~/api/workerRpc'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { detectFlavor, relativeUnder, toPosixSeparators } from '~/lib/paths'
 
-export { GitFileStatusCode }
-export type { GitFileStatusEntry }
-
 export type GitFilterTab = 'all' | 'changed' | 'staged' | 'unstaged'
 
 export interface DiffStats { added: number, deleted: number, untracked: number }

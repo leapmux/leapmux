@@ -4,7 +4,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { generateSlug } from 'random-word-slugs'
 import { createEffect, createMemo, createSignal, Show } from 'solid-js'
 import { channelClient, workspaceClient } from '~/api/clients'
-import { agentLoadingTimeoutMs } from '~/api/transport'
+import { apiLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog, DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { labelRow } from '~/components/common/Dialog.css'
@@ -37,7 +37,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const state = createWorkerDialogState({ preselectedWorkerId: props.preselectedWorkerId })
   const randomTitle = () => generateSlug(3, { format: 'title' })
   const [title, setTitle] = createSignal(randomTitle())
-  const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
+  const submitting = createLoadingSignal(apiLoadingTimeoutMs())
 
   const available = () => getAvailableAgentProviders(props.availableProviders)
   const { mruProviders, recordProviderUse } = useMruProviders(available, 1)

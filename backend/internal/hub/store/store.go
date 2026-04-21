@@ -128,6 +128,10 @@ type OrgMemberStore interface {
 type WorkerStore interface {
 	Create(ctx context.Context, p CreateWorkerParams) error
 	GetByID(ctx context.Context, id string) (*Worker, error)
+	// GetByIDIncludeDeleted returns the worker row even if it has been
+	// soft-deleted. Use this only for admin tooling / audit paths that need
+	// to inspect deleted records; normal business logic should use GetByID.
+	GetByIDIncludeDeleted(ctx context.Context, id string) (*Worker, error)
 	GetByAuthToken(ctx context.Context, token string) (*Worker, error)
 	GetPublicKey(ctx context.Context, id string) (*WorkerPublicKeys, error)
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)

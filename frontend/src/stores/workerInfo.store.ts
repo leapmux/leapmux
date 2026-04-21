@@ -10,25 +10,15 @@
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import { createSignal } from 'solid-js'
 import { getWorkerSystemInfo } from '~/api/workerRpc'
+import { createInflightCache } from '~/lib/inflightCache'
+import { shallowEqualExcept } from '~/lib/shallowEqual'
 import { getWorkerInfo, setWorkerInfo } from '~/lib/workerInfoCache'
 
 type InfoMap = Record<string, WorkerInfo>
 
-function sameInfo(a: WorkerInfo | undefined, b: WorkerInfo): boolean {
-  return a !== undefined
-    && a.name === b.name
-    && a.os === b.os
-    && a.arch === b.arch
-    && a.homeDir === b.homeDir
-    && a.version === b.version
-    && a.commitHash === b.commitHash
-    && a.buildTime === b.buildTime
-}
-
 export function createWorkerInfoStore() {
   const [infoMap, setInfoMap] = createSignal<InfoMap>({})
-  // Track in-flight fetches to avoid duplicate requests.
-  const pending = new Map<string, Promise<WorkerInfo | null>>()
+  const pending = createInflightCache<string, WorkerInfo | null>()
 
   /** Get cached info for a worker (reactive). Returns null if not yet fetched. */
   function workerInfo(workerId: string): WorkerInfo | null {
@@ -47,12 +37,7 @@ export function createWorkerInfoStore() {
 
   /** Fetch system info from an online worker via E2EE and cache it. */
   async function fetchWorkerInfo(workerId: string): Promise<WorkerInfo | null> {
-    // Deduplicate concurrent fetches for the same worker.
-    const existing = pending.get(workerId)
-    if (existing)
-      return existing
-
-    const promise = (async () => {
+    return pending.run(workerId, async () => {
       try {
         const resp = await getWorkerSystemInfo(workerId)
         const info: WorkerInfo = {
@@ -67,7 +52,8 @@ export function createWorkerInfoStore() {
         }
         setWorkerInfo(workerId, info)
         setInfoMap((prev) => {
-          if (sameInfo(prev[workerId], info))
+          const existing = prev[workerId]
+          if (existing && shallowEqualExcept(existing, info, ['updatedAt']))
             return prev
           return { ...prev, [workerId]: info }
         })
@@ -76,13 +62,7 @@ export function createWorkerInfoStore() {
       catch {
         return null
       }
-      finally {
-        pending.delete(workerId)
-      }
-    })()
-
-    pending.set(workerId, promise)
-    return promise
+    })
   }
 
   /** Convenience: get homeDir for a worker (from cache), or empty string. */

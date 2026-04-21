@@ -61,7 +61,7 @@ import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/ch
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
 import { getCapabilities, isTauriApp, platformBridge } from '~/api/platformBridge'
-import { agentRpcTimeoutMs, transport } from '~/api/transport'
+import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
   CloseAgentResponseSchema,
@@ -149,6 +149,7 @@ import {
 } from '~/generated/leapmux/v1/workspace_pb'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { ChannelManager } from '~/lib/channel'
+import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
 
 const log = createLogger('workerRpc')
@@ -172,18 +173,16 @@ export function setGetUserId(fn: () => string): void {
 }
 
 class BrowserChannelTransport implements ChannelTransport {
-  async getWorkerPublicKey(workerId: string): Promise<WorkerKeyBundle> {
-    const resp = await channelRpcClient.getWorkerPublicKey({ workerId })
+  async getWorkerHandshakeParams(workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
+    const resp = await channelRpcClient.getWorkerHandshakeParams({ workerId })
     return {
-      x25519PublicKey: resp.publicKey,
-      mlkemPublicKey: resp.mlkemPublicKey,
-      slhdsaPublicKey: resp.slhdsaPublicKey,
+      keys: {
+        x25519PublicKey: resp.publicKey,
+        mlkemPublicKey: resp.mlkemPublicKey,
+        slhdsaPublicKey: resp.slhdsaPublicKey,
+      },
+      encryptionMode: resp.encryptionMode,
     }
-  }
-
-  async getWorkerEncryptionMode(workerId: string): Promise<EncryptionMode> {
-    const resp = await channelRpcClient.getWorkerEncryptionMode({ workerId })
-    return resp.encryptionMode
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {
@@ -334,7 +333,9 @@ class TauriRelayWebSocket {
   }
 }
 
-export const channelManager = new ChannelManager(new BrowserChannelTransport())
+export const channelManager = new ChannelManager(new BrowserChannelTransport(), {
+  rpcTimeoutFn: apiLoadingTimeoutMs,
+})
 
 // ---------------------------------------------------------------------------
 // Generic helper
@@ -351,7 +352,13 @@ function callWorker<
   req: MessageInitShape<ReqSchema>,
   opts?: { timeoutMs?: number },
 ): Promise<MessageShape<RespSchema>> {
-  return channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
+  emitDevEvent('leapmux:rpc-send', () => ({ method, at: performance.now() }))
+  const p = channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
+  p.then(
+    () => emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: true })),
+    () => emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: false })),
+  )
+  return p
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +387,7 @@ export function moveTabWorkspace(workerId: string, req: MessageInitShape<typeof 
 
 export function openAgent(workerId: string, req: MessageInitShape<typeof OpenAgentRequestSchema>): Promise<OpenAgentResponse> {
   return callWorker(workerId, 'OpenAgent', OpenAgentRequestSchema, OpenAgentResponseSchema, req, {
-    timeoutMs: agentRpcTimeoutMs(false),
+    timeoutMs: apiLoadingTimeoutMs(),
   })
 }
 

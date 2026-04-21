@@ -5,6 +5,7 @@ import (
 	"runtime/debug"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"google.golang.org/grpc/codes"
 )
 
 // ResponseWriter sends inner RPC responses back through the transport layer.
@@ -87,7 +88,7 @@ func (d *Dispatcher) DispatchWith(userID string, req *leapmuxv1.InnerRpcRequest,
 		slog.Warn("unknown inner RPC method",
 			"method", req.GetMethod(),
 		)
-		_ = w.SendError(12, "unknown method: "+req.GetMethod()) // UNIMPLEMENTED
+		_ = w.SendError(int32(codes.Unimplemented), "unknown method: "+req.GetMethod())
 		return
 	}
 
@@ -100,7 +101,7 @@ func (d *Dispatcher) DispatchWith(userID string, req *leapmuxv1.InnerRpcRequest,
 				"panic", r,
 				"stack", string(debug.Stack()),
 			)
-			_ = w.SendError(13, "internal error") // INTERNAL
+			_ = w.SendError(int32(codes.Internal), "internal error")
 		}
 	}()
 

@@ -1,5 +1,5 @@
 import type { Tab } from '~/stores/tab.store'
-import { TabType } from '~/stores/tab.store'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 
 export interface EditorRef {
   get: () => string

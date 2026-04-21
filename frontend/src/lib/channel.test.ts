@@ -176,17 +176,17 @@ const sessions = new Map<string, { initiator: Session, responder: Session }>()
 
 function createMockTransport(mockWs: MockWebSocket): ChannelTransport {
   return {
-    async getWorkerPublicKey(_workerId: string): Promise<WorkerKeyBundle> {
+    async getWorkerHandshakeParams(_workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
       // Return dummy keys. The real handshake is bypassed
       // since we mock initiatorHandshake1/2.
       return {
-        x25519PublicKey: new Uint8Array(32),
-        mlkemPublicKey: new Uint8Array(1568),
-        slhdsaPublicKey: new Uint8Array(64),
+        keys: {
+          x25519PublicKey: new Uint8Array(32),
+          mlkemPublicKey: new Uint8Array(1568),
+          slhdsaPublicKey: new Uint8Array(64),
+        },
+        encryptionMode: EncryptionMode.POST_QUANTUM,
       }
-    },
-    async getWorkerEncryptionMode(_workerId: string): Promise<EncryptionMode> {
-      return EncryptionMode.POST_QUANTUM
     },
     async openChannel(_workerId: string, _handshakePayload: Uint8Array) {
       const channelId = `ch-${Math.random().toString(36).slice(2, 8)}`
@@ -470,15 +470,15 @@ describe('channelManager', () => {
       expect(resp2.payload).toEqual(new Uint8Array([20]))
     })
 
-    it('should timeout after default rpcTimeout (10s)', async () => {
+    it('should timeout after default rpcTimeout (15s)', async () => {
       vi.useFakeTimers()
       try {
         const channelId = await openTestChannel('w1')
         const callPromise = mgr.call(channelId, 'SlowMethod', new Uint8Array())
 
-        vi.advanceTimersByTime(10_000)
+        vi.advanceTimersByTime(15_000)
 
-        await expect(callPromise).rejects.toThrow('timed out after 10s')
+        await expect(callPromise).rejects.toThrow('timed out after 15s')
       }
       finally {
         vi.useRealTimers()
@@ -1060,15 +1060,15 @@ describe('channelManager', () => {
       const classicSessions = new Map<string, { initiator: Session, responder: Session }>()
 
       const classicTransport: ChannelTransport = {
-        async getWorkerPublicKey(_workerId: string): Promise<WorkerKeyBundle> {
+        async getWorkerHandshakeParams(_workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
           return {
-            x25519PublicKey: new Uint8Array(32),
-            mlkemPublicKey: new Uint8Array(0),
-            slhdsaPublicKey: new Uint8Array(0),
+            keys: {
+              x25519PublicKey: new Uint8Array(32),
+              mlkemPublicKey: new Uint8Array(0),
+              slhdsaPublicKey: new Uint8Array(0),
+            },
+            encryptionMode: EncryptionMode.CLASSIC,
           }
-        },
-        async getWorkerEncryptionMode(_workerId: string): Promise<EncryptionMode> {
-          return EncryptionMode.CLASSIC
         },
         async openChannel(_workerId: string, _handshakePayload: Uint8Array) {
           const channelId = `ch-classic-${Math.random().toString(36).slice(2, 8)}`

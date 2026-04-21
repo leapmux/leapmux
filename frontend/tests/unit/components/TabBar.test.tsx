@@ -2,9 +2,9 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
-import { TabType } from '~/stores/tab.store'
 
 // Mock solid-dnd to avoid DragDropProvider context requirement
 vi.mock('@thisbeyond/solid-dnd', () => ({

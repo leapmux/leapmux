@@ -720,6 +720,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     setLoading(true)
     setError(null)
     loadChildren(workerId, root, props.showFiles ?? false)
+      // eslint-disable-next-line solid/reactivity -- async promise callback; setChildrenInStore reads state as a current-value check, not a subscription
       .then((result) => {
         if (version !== loadVersion)
           return
@@ -755,6 +756,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       if (!workerId)
         return
       loadChildren(workerId, root, props.showFiles ?? false)
+        // eslint-disable-next-line solid/reactivity -- async promise callback; setChildrenInStore reads state as a current-value check, not a subscription
         .then((result) => {
           setChildrenInStore(root, result.entries, result.truncated)
         })

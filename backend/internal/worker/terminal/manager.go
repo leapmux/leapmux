@@ -1,9 +1,18 @@
 package terminal
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+// ErrTerminalNotFound is returned when a terminal operation targets an ID
+// the Manager does not know about. Callers distinguish this from other
+// failures with errors.Is so they can decide whether to retry or stash —
+// e.g. the ResizeTerminal handler stashes dims for a terminal whose PTY
+// is still being spawned in the background startup goroutine.
+var ErrTerminalNotFound = errors.New("terminal not found")
 
 // TerminalMeta holds the workspace ID and dimensions for a terminal.
 type TerminalMeta struct {
@@ -39,8 +48,13 @@ func NewManager() *Manager {
 // ExitHandler is called when a terminal process exits.
 type ExitHandler func(terminalID string, exitCode int)
 
-// StartTerminal creates a new PTY terminal.
-func (m *Manager) StartTerminal(opts Options, outputFn OutputHandler, exitFn ExitHandler) error {
+// StartTerminal creates a new PTY terminal. The supplied context
+// governs only the spawn — once StartTerminal returns successfully,
+// the terminal's lifetime is managed by RemoveTerminal / Stop.
+// Cancelling ctx mid-spawn aborts the PTY fork (returning ctx.Err())
+// so a CloseTerminal that lands during the sync-path phase of
+// runTerminalStartup tears the nascent child down instead of leaking it.
+func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn OutputHandler, exitFn ExitHandler) error {
 	m.mu.Lock()
 	if _, exists := m.terminals[opts.ID]; exists {
 		m.mu.Unlock()
@@ -48,7 +62,7 @@ func (m *Manager) StartTerminal(opts Options, outputFn OutputHandler, exitFn Exi
 	}
 	m.mu.Unlock()
 
-	t, err := Start(opts, outputFn)
+	t, err := Start(ctx, opts, outputFn)
 	if err != nil {
 		return err
 	}
@@ -85,7 +99,7 @@ func (m *Manager) SendInput(terminalID string, data []byte) error {
 	m.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("no terminal: %s", terminalID)
+		return fmt.Errorf("%w: %s", ErrTerminalNotFound, terminalID)
 	}
 	if t.IsExited() {
 		return fmt.Errorf("terminal exited: %s", terminalID)
@@ -102,7 +116,7 @@ func (m *Manager) Resize(terminalID string, cols, rows uint16) error {
 	m.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("no terminal: %s", terminalID)
+		return fmt.Errorf("%w: %s", ErrTerminalNotFound, terminalID)
 	}
 	if t.IsExited() {
 		return fmt.Errorf("terminal exited: %s", terminalID)

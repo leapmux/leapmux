@@ -1,4 +1,4 @@
-import type { CallOptions, Interceptor } from '@connectrpc/connect'
+import type { Interceptor } from '@connectrpc/connect'
 import { Code, ConnectError, createClient } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-web'
 import { desktopFetch, getCapabilities, isTauriApp } from '~/api/platformBridge'
@@ -57,19 +57,21 @@ export const transport = createConnectTransport({
 // Dynamic timeout configuration
 // ---------------------------------------------------------------------------
 
-/** Multiplier applied to backend timeouts for frontend RPC deadlines. */
+/**
+ * Multiplier applied to backend timeouts for frontend RPC deadlines.
+ *
+ * Invariant: the frontend always waits for (backend timeout × multiplier),
+ * so the backend has time to surface a DeadlineExceeded response before the
+ * frontend aborts the call on its own.
+ */
 const TIMEOUT_MULTIPLIER = 1.5
 
 export interface TimeoutConfig {
   apiTimeoutSeconds: number
-  agentStartupTimeoutSeconds: number
-  worktreeCreateTimeoutSeconds: number
 }
 
 const timeoutConfig: TimeoutConfig = {
   apiTimeoutSeconds: 10,
-  agentStartupTimeoutSeconds: 30,
-  worktreeCreateTimeoutSeconds: 60,
 }
 
 /** Load timeout configuration from the server. Call after authentication. */
@@ -79,58 +81,19 @@ export async function loadTimeouts(): Promise<void> {
     const resp = await client.getTimeouts({})
     if (resp.apiTimeoutSeconds > 0)
       timeoutConfig.apiTimeoutSeconds = resp.apiTimeoutSeconds
-    if (resp.agentStartupTimeoutSeconds > 0)
-      timeoutConfig.agentStartupTimeoutSeconds = resp.agentStartupTimeoutSeconds
-    if (resp.worktreeCreateTimeoutSeconds > 0)
-      timeoutConfig.worktreeCreateTimeoutSeconds = resp.worktreeCreateTimeoutSeconds
   }
   catch {
     // Use defaults if the server doesn't support this endpoint yet.
   }
 }
 
-// ---------------------------------------------------------------------------
-// Per-call timeout helpers (return CallOptions with timeoutMs)
-// ---------------------------------------------------------------------------
-
-/** RPC timeout for agent operations (start/resume + message delivery). */
-export function agentCallTimeout(agentActive: boolean): CallOptions {
-  return { timeoutMs: Math.ceil(TIMEOUT_MULTIPLIER * agentRpcTimeoutMs(agentActive)) }
-}
-
-/** Raw worker RPC timeout for agent operations, without frontend multiplier. */
-export function agentRpcTimeoutMs(agentActive: boolean): number {
-  const backendSec = agentActive
-    ? timeoutConfig.apiTimeoutSeconds
-    : timeoutConfig.agentStartupTimeoutSeconds + timeoutConfig.apiTimeoutSeconds
-  return backendSec * 1000
-}
-
-/** RPC timeout for worktree creation. */
-export function worktreeCreateCallTimeout(): CallOptions {
-  return { timeoutMs: Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.worktreeCreateTimeoutSeconds * 1000) }
-}
-
-/** RPC timeout for general API calls. */
-export function apiCallTimeout(): CallOptions {
-  return { timeoutMs: Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.apiTimeoutSeconds * 1000) }
-}
-
-// ---------------------------------------------------------------------------
-// Loading indicator timeout helpers (return milliseconds)
-// ---------------------------------------------------------------------------
-
-/** Loading timeout for agent operations. */
-export function agentLoadingTimeoutMs(agentActive: boolean): number {
-  return Math.ceil(TIMEOUT_MULTIPLIER * agentRpcTimeoutMs(agentActive))
-}
-
-/** Loading timeout for worktree creation. */
-export function worktreeCreateLoadingTimeoutMs(): number {
-  return Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.worktreeCreateTimeoutSeconds * 1000)
-}
-
-/** Loading timeout for general API calls. */
+/**
+ * Canonical frontend RPC deadline (milliseconds).
+ *
+ * Used both as the `timeoutMs` for unary RPC calls and as the UI loading
+ * signal budget — by design they match, so the RPC's own DeadlineExceeded
+ * error path always wins over a forced loading-state clear.
+ */
 export function apiLoadingTimeoutMs(): number {
   return Math.ceil(TIMEOUT_MULTIPLIER * timeoutConfig.apiTimeoutSeconds * 1000)
 }

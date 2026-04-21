@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,9 +24,14 @@ func TestOpenAgent_DefaultsEffortFromModel(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
+	var capturedMu sync.Mutex
 	var captured agent.Options
+	done := make(chan struct{})
 	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		capturedMu.Lock()
 		captured = opts
+		capturedMu.Unlock()
+		close(done)
 		return &leapmuxv1.AgentSettings{}, nil
 	}
 
@@ -37,17 +44,27 @@ func TestOpenAgent_DefaultsEffortFromModel(t *testing.T) {
 	require.Empty(t, w.errors, "OpenAgent should succeed")
 	require.Len(t, w.responses, 1)
 
-	assert.Equal(t, "xhigh", captured.Effort,
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startAgentFn not invoked within 5s")
+	}
+
+	capturedMu.Lock()
+	effort := captured.Effort
+	capturedMu.Unlock()
+	assert.Equal(t, "xhigh", effort,
 		"agent.Options.Effort should default to the resolved model's DefaultEffort")
 
 	var resp leapmuxv1.OpenAgentResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	require.NotNil(t, resp.GetAgent())
+
 	assert.Equal(t, "xhigh", resp.GetAgent().GetEffort(),
 		"response agent.effort should reflect the resolved default effort")
 
-	dbAgent, err := svc.Queries.GetAgentByID(ctx, resp.GetAgent().GetId())
-	require.NoError(t, err)
-	assert.Equal(t, "xhigh", dbAgent.Effort,
-		"persisted agent.effort should default to the resolved model's DefaultEffort")
+	require.Eventually(t, func() bool {
+		dbAgent, err := svc.Queries.GetAgentByID(ctx, resp.GetAgent().GetId())
+		return err == nil && dbAgent.Effort == "xhigh"
+	}, 5*time.Second, 20*time.Millisecond)
 }

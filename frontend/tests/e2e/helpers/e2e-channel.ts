@@ -33,40 +33,34 @@ class FetchChannelTransport implements ChannelTransport {
     this.userId = userId
   }
 
-  async getWorkerPublicKey(workerId: string): Promise<WorkerKeyBundle> {
-    const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/GetWorkerPublicKey`, {
+  async getWorkerHandshakeParams(workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
+    const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/GetWorkerHandshakeParams`, {
       method: 'POST',
       headers: authedHeaders(this.cookie),
       body: JSON.stringify({ workerId }),
     })
     if (!resp.ok) {
       const body = await resp.text().catch(() => '')
-      throw new Error(`GetWorkerPublicKey failed: ${resp.status} ${body}`)
+      throw new Error(`GetWorkerHandshakeParams failed: ${resp.status} ${body}`)
     }
-    const data = await resp.json() as { publicKey: string, mlkemPublicKey: string, slhdsaPublicKey: string }
+    const data = await resp.json() as {
+      publicKey: string
+      mlkemPublicKey: string
+      slhdsaPublicKey: string
+      encryptionMode: string
+    }
+    // UNSPECIFIED and POST_QUANTUM both use hybrid PQ; CLASSIC maps to X25519-only.
+    const encryptionMode = data.encryptionMode === 'ENCRYPTION_MODE_CLASSIC'
+      ? EncryptionMode.CLASSIC
+      : EncryptionMode.POST_QUANTUM
     return {
-      x25519PublicKey: base64ToBytes(data.publicKey),
-      mlkemPublicKey: base64ToBytes(data.mlkemPublicKey),
-      slhdsaPublicKey: base64ToBytes(data.slhdsaPublicKey),
+      keys: {
+        x25519PublicKey: base64ToBytes(data.publicKey),
+        mlkemPublicKey: base64ToBytes(data.mlkemPublicKey),
+        slhdsaPublicKey: base64ToBytes(data.slhdsaPublicKey),
+      },
+      encryptionMode,
     }
-  }
-
-  async getWorkerEncryptionMode(workerId: string): Promise<EncryptionMode> {
-    const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/GetWorkerEncryptionMode`, {
-      method: 'POST',
-      headers: authedHeaders(this.cookie),
-      body: JSON.stringify({ workerId }),
-    })
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => '')
-      throw new Error(`GetWorkerEncryptionMode failed: ${resp.status} ${body}`)
-    }
-    const data = await resp.json() as { encryptionMode: string }
-    // Map string enum to numeric value.
-    if (data.encryptionMode === 'ENCRYPTION_MODE_CLASSIC')
-      return EncryptionMode.CLASSIC
-    // UNSPECIFIED and POST_QUANTUM both use hybrid PQ.
-    return EncryptionMode.POST_QUANTUM
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {

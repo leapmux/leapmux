@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -90,8 +91,17 @@ type Options struct {
 	Rows          uint16
 }
 
-// Start creates a new PTY terminal session.
-func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
+// Start creates a new PTY terminal session. The supplied context
+// governs the spawn itself: if it is already cancelled Start returns
+// ctx.Err() without forking, and a later cancellation sends the child
+// process the usual exec.CommandContext kill signal. The caller still
+// owns the long-running Terminal — its lifetime is independent of ctx
+// once Start returns successfully.
+func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	shell := opts.Shell
 	if shell == "" {
 		shell = ResolveDefaultShell()
@@ -104,7 +114,7 @@ func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 		return nil, fmt.Errorf("new pty: %w", err)
 	}
 
-	cmd := ptmx.Command(shell, args...)
+	cmd := ptmx.CommandContext(ctx, shell, args...)
 	cmd.Dir = opts.WorkingDir
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
@@ -118,7 +128,7 @@ func Start(opts Options, outputFn OutputHandler) (*Terminal, error) {
 		cols = 80
 	}
 	if rows == 0 {
-		rows = 24
+		rows = 25
 	}
 	if err := ptmx.Resize(int(cols), int(rows)); err != nil {
 		_ = ptmx.Close()

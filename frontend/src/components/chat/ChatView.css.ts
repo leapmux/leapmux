@@ -101,6 +101,18 @@ export const scrollToBottomButton = style({
   },
 })
 
+/**
+ * Inline startup indicator rendered after the last message when the
+ * agent is STARTING or STARTUP_FAILED and the user has already queued
+ * messages. Keeps the startup panel visible even when the outer Show's
+ * fallback-centered empty state is no longer active. Aligned to match
+ * the left margin of message rows.
+ */
+export const startupPanelInline = style({
+  marginLeft: '1px',
+  color: 'var(--faint-foreground)',
+})
+
 export const emptyChat = style({
   display: 'flex',
   alignItems: 'center',

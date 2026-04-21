@@ -35,7 +35,7 @@ type RunConfig struct {
 	DBMmapSize           int                         // SQLite memory-mapped I/O size in bytes (0 = disabled)
 	MaxMessageSize       int                         // Maximum reassembled channel message size in bytes (0 = 16 MiB default)
 	MaxIncompleteChunked int                         // Maximum in-flight chunked sequences per channel (0 = 4 default)
-	AgentStartupTimeout  time.Duration               // Timeout for agent startup handshake (0 = 30s default)
+	AgentStartupTimeout  time.Duration               // Timeout for agent startup handshake (0 = 5m default)
 	APITimeout           time.Duration               // Timeout for JSON-RPC requests (0 = 10s default)
 	EncryptionMode       leapmuxv1.EncryptionMode    // Encryption mode (classic, post-quantum)
 	UseLoginShell        bool                        // Wrap claude invocation in user's login shell

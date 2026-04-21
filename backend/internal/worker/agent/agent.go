@@ -57,7 +57,7 @@ type Options struct {
 	ResumeSessionID string                  // If set, uses --resume to resume a previous session
 	PermissionMode  string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
 	ExtraSettings   map[string]string       // Provider-specific persisted settings (e.g. Codex extras)
-	StartupTimeout  time.Duration           // Timeout for the startup handshake (default: 30s)
+	StartupTimeout  time.Duration           // Timeout for the startup handshake (default: 5m)
 	APITimeout      time.Duration           // Timeout for JSON-RPC requests (default: 10s)
 	Shell           string                  // Default shell path (always set when using shell wrapper)
 	LoginShell      bool                    // If true, use interactive+login shell flags
@@ -167,6 +167,37 @@ func DefaultEffortForModel(provider leapmuxv1.AgentProvider, modelID string) str
 		}
 	}
 	return lookup(DefaultModel(provider))
+}
+
+// DisplayName returns a human-readable label for an AgentProvider (e.g.
+// "Claude Code", "Gemini CLI"). Keep in sync with
+// frontend/src/components/common/AgentProviderIcon.tsx agentProviderLabel.
+//
+// Moving this into the proto via EnumValueOptions custom extensions was
+// considered and rejected: descriptor-introspection plumbing on both Go
+// and TS sides is disproportionate for a handful of labels, and the
+// TestDisplayName coverage catches Go drift before it ships.
+func DisplayName(provider leapmuxv1.AgentProvider) string {
+	switch provider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:
+		return "Claude Code"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
+		return "Codex"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
+		return "Gemini CLI"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
+		return "OpenCode"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
+		return "GitHub Copilot"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
+		return "Cursor"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:
+		return "Goose"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:
+		return "Kilo"
+	default:
+		return "agent"
+	}
 }
 
 // filterEnv returns a copy of environ with entries matching any of the

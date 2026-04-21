@@ -42,8 +42,24 @@ UPDATE agents SET extra_settings = ? WHERE id = ?;
 -- name: UpdateAgentAllSettings :exec
 UPDATE agents SET model = ?, effort = ?, permission_mode = ?, extra_settings = ? WHERE id = ?;
 
--- name: UpdateAgentAvailableSettings :exec
-UPDATE agents SET available_models = ?, available_option_groups = ? WHERE id = ?;
+-- UpdateAgentConfirmedSettings persists both the confirmed request
+-- settings (model/effort/permissionMode/extraSettings) and the
+-- provider-reported catalogs (availableModels/availableOptionGroups)
+-- in a single UPDATE, returning the full row. Saves the trailing
+-- SELECT that would otherwise be needed to build the ACTIVE broadcast.
+-- name: UpdateAgentConfirmedSettings :one
+UPDATE agents SET
+  model = ?,
+  effort = ?,
+  permission_mode = ?,
+  extra_settings = ?,
+  available_models = ?,
+  available_option_groups = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: SetAgentStartupError :exec
+UPDATE agents SET startup_error = ? WHERE id = ?;
 
 -- name: UpdateAgentHomeDir :exec
 UPDATE agents SET home_dir = ? WHERE id = ?;

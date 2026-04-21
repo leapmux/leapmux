@@ -19,11 +19,12 @@ import { createEffect, createMemo, For, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
+import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
-import { AgentChatMessageSchema, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
@@ -245,6 +246,58 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const tabBarElement = () => createTabBarForTile(layoutStore.focusedTileId())
 
+  const TileTerminalPane: Component<{
+    terminals: Tab[]
+    activeTerminalId: string | null
+    visible: boolean
+  }> = (props) => {
+    let terminalPageScroll: ((direction: -1 | 1) => void) | undefined
+    let terminalWrite: ((data: string) => void) | undefined
+    let registeredTerminalId: string | null = null
+    const syncTerminalHandler = () => {
+      const activeTerminalId = props.activeTerminalId
+      if (registeredTerminalId && registeredTerminalId !== activeTerminalId)
+        terminalHandlers.delete(registeredTerminalId)
+      registeredTerminalId = activeTerminalId
+      if (activeTerminalId && terminalPageScroll && terminalWrite) {
+        terminalHandlers.set(activeTerminalId, {
+          pageScroll: terminalPageScroll,
+          write: terminalWrite,
+        })
+      }
+    }
+    createEffect(syncTerminalHandler)
+    onCleanup(() => {
+      if (registeredTerminalId)
+        terminalHandlers.delete(registeredTerminalId)
+    })
+    return (
+      <div
+        class={styles.centerContent}
+        classList={{ [styles.layoutHidden]: !props.visible }}
+      >
+        <TerminalView
+          terminals={props.terminals}
+          activeTerminalId={props.activeTerminalId}
+          visible={props.visible}
+          onInput={termOps.handleTerminalInput}
+          onResize={termOps.handleTerminalResize}
+          onTitleChange={termOps.handleTerminalTitleChange}
+          onBell={termOps.handleTerminalBell}
+          onContentReady={id => tabStore.markTerminalContentReady(id)}
+          pageScrollRef={(fn) => {
+            terminalPageScroll = fn
+            syncTerminalHandler()
+          }}
+          writeRef={(fn) => {
+            terminalWrite = fn
+            syncTerminalHandler()
+          }}
+        />
+      </div>
+    )
+  }
+
   const renderTileContent = (tileId: string) => {
     const tab = () => getActiveTabForTile(tileId)
     const agentTab = () => {
@@ -278,7 +331,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         <For each={tileAgentTabs()}>
           {(at) => {
             const agentId = at.id
-            const agent = () => agentStore.state.agents.find(a => a.id === agentId)
+            const agent = createMemo(() => agentStore.state.agents.find(a => a.id === agentId))
             onCleanup(() => {
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
@@ -297,13 +350,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     streamingType={agentSessionStore.getInfo(agentId).streamingType}
                     agentWorking={agentThinking(agentId)}
                     messageErrors={chatStore.state.messageErrors}
+                    messagePendingLabels={chatStore.state.messagePendingLabels}
                     onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
-                    workingDir={agentStore.state.agents.find(a => a.id === agentId)?.workingDir}
-                    homeDir={agentStore.state.agents.find(a => a.id === agentId)?.homeDir}
+                    workingDir={agent()?.workingDir}
+                    homeDir={agent()?.homeDir}
                     hasOlderMessages={chatStore.hasOlderMessages(agentId)}
                     fetchingOlder={chatStore.isFetchingOlder(agentId)}
-                    onLoadOlderMessages={() => chatStore.loadOlderMessages(agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? '', agentId)}
+                    onLoadOlderMessages={() => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId)}
                     onTrimOldMessages={() => chatStore.trimOldMessages(agentId, MAX_LOADED_CHAT_MESSAGES)}
                     savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
@@ -335,6 +389,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
                           appendText(agentId, text)
                           focusEditorRef.current?.()
                         }}
+                    agentStatus={agent()?.status}
+                    startupError={agent()?.startupError}
+                    startupMessage={agent()?.startupMessage}
+                    providerLabel={agentProviderLabel(agent()?.agentProvider)}
                   />
                 </Show>
               </div>
@@ -343,52 +401,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
         </For>
 
         <Show when={hasTerminals()}>
-          {(() => {
-            let terminalPageScroll: ((direction: -1 | 1) => void) | undefined
-            let terminalWrite: ((data: string) => void) | undefined
-            let registeredTerminalId: string | null = null
-            const syncTerminalHandler = () => {
-              const activeTerminalId = terminalTab()?.id ?? null
-              if (registeredTerminalId && registeredTerminalId !== activeTerminalId)
-                terminalHandlers.delete(registeredTerminalId)
-              registeredTerminalId = activeTerminalId
-              if (activeTerminalId && terminalPageScroll && terminalWrite) {
-                terminalHandlers.set(activeTerminalId, {
-                  pageScroll: terminalPageScroll,
-                  write: terminalWrite,
-                })
-              }
-            }
-            createEffect(syncTerminalHandler)
-            onCleanup(() => {
-              for (const terminal of tileTerminals())
-                terminalHandlers.delete(terminal.id)
-            })
-            return (
-              <div
-                class={styles.centerContent}
-                classList={{ [styles.layoutHidden]: !terminalTab() }}
-              >
-                <TerminalView
-                  terminals={tileTerminals()}
-                  activeTerminalId={terminalTab()?.id ?? null}
-                  visible={!!terminalTab()}
-                  onInput={termOps.handleTerminalInput}
-                  onResize={termOps.handleTerminalResize}
-                  onTitleChange={termOps.handleTerminalTitleChange}
-                  onBell={termOps.handleTerminalBell}
-                  pageScrollRef={(fn) => {
-                    terminalPageScroll = fn
-                    syncTerminalHandler()
-                  }}
-                  writeRef={(fn) => {
-                    terminalWrite = fn
-                    syncTerminalHandler()
-                  }}
-                />
-              </div>
-            )
-          })()}
+          <TileTerminalPane
+            terminals={tileTerminals()}
+            activeTerminalId={terminalTab()?.id ?? null}
+            visible={!!terminalTab()}
+          />
         </Show>
 
         <For each={tileFileTabs()}>
@@ -543,6 +560,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             return
           forceScrollToBottomRef.current?.()
           const sendAgent = agentStore.state.agents.find(a => a.id === id)
+          const status = sendAgent?.status
 
           // Build optimistic message JSON with attachment data so retry can
           // recover the binary content without re-uploading.
@@ -568,13 +586,35 @@ export function createTileRenderer(opts: TileRendererOpts) {
           })
           chatStore.addMessage(id, localMsg)
 
-          try {
-            const protoAttachments = fileAttachments?.map(a => ({
-              filename: a.filename,
-              mimeType: a.mimeType,
-              data: a.data,
-            })) ?? []
+          const protoAttachments = fileAttachments?.map(a => ({
+            filename: a.filename,
+            mimeType: a.mimeType,
+            data: a.data,
+          })) ?? []
 
+          // Agent is still starting — queue the message. The
+          // useWorkspaceConnection status-change handler flushes on
+          // ACTIVE, or marks failed on STARTUP_FAILED.
+          if (status === AgentStatus.STARTING) {
+            chatStore.setMessagePendingLabel(localId, `Queued — ${agentProviderLabel(sendAgent?.agentProvider)} is starting…`)
+            chatStore.enqueuePendingOutbound(id, { localId, content, attachments: protoAttachments })
+            return
+          }
+          // Agent failed to start — render the message as an error
+          // bubble immediately and reject the send.
+          if (status === AgentStatus.STARTUP_FAILED) {
+            chatStore.setMessageError(localId, 'Agent failed to start')
+            chatStore.persistLocalMessage(
+              id,
+              localId,
+              content,
+              'Agent failed to start',
+              fileAttachments?.map(a => ({ filename: a.filename, mime_type: a.mimeType, data: uint8ArrayToBase64(a.data) })),
+            )
+            return
+          }
+
+          try {
             await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', {
               agentId: id,
               content,

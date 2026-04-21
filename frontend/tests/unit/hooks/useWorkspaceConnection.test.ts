@@ -1,12 +1,14 @@
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
-import { createTabStore, TabType } from '~/stores/tab.store'
+import { createTabStore } from '~/stores/tab.store'
 
 /**
  * These tests verify the control-request guard in useWorkspaceConnection's
@@ -397,6 +399,224 @@ describe('streaming text preservation', () => {
 
       expect(chatStore.state.streamingText['agent-1']).toBe('')
       expect(agentSessionStore.getInfo('agent-1').streamingType).toBe('')
+      dispose()
+    })
+  })
+})
+
+/**
+ * These tests lock in the startup_message plumbing rules in
+ * useWorkspaceConnection's agent statusChange handler:
+ *  - STARTING status → store sc.startupMessage on the agent record.
+ *  - Any other concrete status → clear startupMessage (so stale phase
+ *    labels don't linger).
+ *  - UNSPECIFIED / status-less events (catchUp sentinels, git-only
+ *    updates) → leave startupMessage alone.
+ */
+describe('startupMessage handling in agent statusChange', () => {
+  function applyStatusChange(
+    agentStore: ReturnType<typeof createAgentStore>,
+    sc: { agentId: string, status: AgentStatus, startupMessage?: string },
+  ) {
+    const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
+    agentStore.updateAgent(sc.agentId, {
+      ...(hasStatus ? { status: sc.status } : {}),
+      ...(sc.status === AgentStatus.STARTING
+        ? { startupMessage: sc.startupMessage ?? '' }
+        : hasStatus ? { startupMessage: '' } : {}),
+    })
+  }
+
+  it('stores startupMessage while STARTING so the startup panel can render the phase label', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      agentStore.addAgent({ id: 'agent-1', status: AgentStatus.STARTING } as Parameters<typeof agentStore.addAgent>[0])
+
+      applyStatusChange(agentStore, {
+        agentId: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Checking Git status…',
+      })
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Checking Git status…')
+
+      applyStatusChange(agentStore, {
+        agentId: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Starting Claude Code…',
+      })
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Starting Claude Code…')
+      dispose()
+    })
+  })
+
+  it('clears startupMessage on ACTIVE so the label does not linger after startup succeeds', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      agentStore.addAgent({
+        id: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Starting Claude Code…',
+      } as Parameters<typeof agentStore.addAgent>[0])
+
+      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.ACTIVE })
+
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('')
+      dispose()
+    })
+  })
+
+  it('clears startupMessage on STARTUP_FAILED so the error banner replaces the phase label', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      agentStore.addAgent({
+        id: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Checking Git status…',
+      } as Parameters<typeof agentStore.addAgent>[0])
+
+      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.STARTUP_FAILED })
+
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('')
+      dispose()
+    })
+  })
+
+  it('leaves startupMessage alone on status-less events (UNSPECIFIED) so catchUp sentinels do not wipe live phases', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      agentStore.addAgent({
+        id: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Checking Git status…',
+      } as Parameters<typeof agentStore.addAgent>[0])
+
+      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.UNSPECIFIED })
+
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Checking Git status…')
+      dispose()
+    })
+  })
+})
+
+// Regression tests for the "new terminal tab shows 'Starting terminal…'
+// instead of 'Starting <shell>…'" bug: the client subscribes to
+// WatchEvents only after the OpenTerminal response, so the sync-path
+// STARTING broadcast lands with no watcher attached. The fix surfaces
+// the phase label via catch-up replay — these tests lock in the
+// frontend half of that contract.
+describe('startupMessage handling in terminal statusChange', () => {
+  // Mirrors the switch in useWorkspaceConnection.handleTerminalEvent's
+  // STARTING branch: on a STARTING event for a tab that is not
+  // already running/starting, store both status and message; on a
+  // same-status STARTING update with a fresh message, patch just the
+  // label so a later phase broadcast refreshes the overlay text.
+  function applyStarting(
+    tabStore: ReturnType<typeof createTabStore>,
+    terminalId: string,
+    msg: string | undefined,
+  ) {
+    const existing = tabStore.state.tabs.find(
+      t => t.type === TabType.TERMINAL && t.id === terminalId,
+    )
+    if (existing && existing.status !== TerminalStatus.READY && existing.status !== TerminalStatus.STARTING) {
+      tabStore.updateTab(TabType.TERMINAL, terminalId, {
+        status: TerminalStatus.STARTING,
+        startupMessage: msg || undefined,
+      })
+    }
+    else if (existing?.status === TerminalStatus.STARTING && msg && msg !== existing.startupMessage) {
+      tabStore.updateTab(TabType.TERMINAL, terminalId, { startupMessage: msg })
+    }
+  }
+
+  it('stores startupMessage on the initial STARTING event so the overlay renders the backend phase label', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1' })
+
+      applyStarting(tabStore, 'term-1', 'Starting zsh…')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.status).toBe(TerminalStatus.STARTING)
+      expect(tab?.startupMessage).toBe('Starting zsh…')
+      dispose()
+    })
+  })
+
+  it('updates startupMessage on a same-status STARTING event so later phase broadcasts refresh the overlay label', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+      applyStarting(tabStore, 'term-1', 'Starting fish…')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.startupMessage).toBe('Starting fish…')
+      dispose()
+    })
+  })
+
+  // Phase-0 ("Preparing working tree") labels are dispatched by the
+  // worker as same-status STARTING events with the per-mode label.
+  // Rolling back on failure uses the same pipe with the rollback label
+  // and then transitions to STARTUP_FAILED. Both should be applied.
+  it('applies the "Creating worktree" phase-0 label to the tab', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+      applyStarting(tabStore, 'term-1', 'Creating worktree "feature/x"…')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.startupMessage).toBe('Creating worktree "feature/x"…')
+      dispose()
+    })
+  })
+
+  it('applies a following "Rolling back worktree" label on same-status STARTING', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Creating worktree "feature/x"…' })
+
+      applyStarting(tabStore, 'term-1', 'Rolling back worktree "feature/x"…')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.startupMessage).toBe('Rolling back worktree "feature/x"…')
+      dispose()
+    })
+  })
+
+  // Mirrors the git-fields branch of useWorkspaceConnection.handleTerminalEvent:
+  // on any STARTING event that carries non-empty git_branch / git_origin_url,
+  // update the tab so the sidebar badge matches the new worktree immediately.
+  function applyGitFromStatusChange(
+    tabStore: ReturnType<typeof createTabStore>,
+    terminalId: string,
+    gitBranch: string,
+    gitOriginUrl: string,
+  ) {
+    const existing = tabStore.state.tabs.find(
+      t => t.type === TabType.TERMINAL && t.id === terminalId,
+    )
+    if (!existing)
+      return
+    const nextBranch = gitBranch || undefined
+    const nextOrigin = gitOriginUrl || undefined
+    if (existing.gitBranch !== nextBranch || existing.gitOriginUrl !== nextOrigin) {
+      tabStore.updateTab(TabType.TERMINAL, terminalId, { gitBranch: nextBranch, gitOriginUrl: nextOrigin })
+    }
+  }
+
+  it('updates gitBranch/gitOriginUrl from a terminal statusChange event', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING })
+
+      applyGitFromStatusChange(tabStore, 'term-1', 'feature/x', 'git@example.com:org/repo.git')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.gitBranch).toBe('feature/x')
+      expect(tab?.gitOriginUrl).toBe('git@example.com:org/repo.git')
       dispose()
     })
   })

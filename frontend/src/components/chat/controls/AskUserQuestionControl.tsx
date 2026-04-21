@@ -3,7 +3,7 @@ import type { ActionsProps, AskQuestionState, EditorContentRef, Question } from 
 import type { ControlRequest } from '~/stores/control.store'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createUniqueId, For, Show } from 'solid-js'
-import { agentLoadingTimeoutMs, apiLoadingTimeoutMs } from '~/api/transport'
+import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -298,7 +298,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
     restoreEditorForPage(newPage)
   }
 
-  const { loading: submitting, start: startSubmitting, stop: stopSubmitting } = createLoadingSignal(agentLoadingTimeoutMs(true))
+  const { loading: submitting, start: startSubmitting, stop: stopSubmitting } = createLoadingSignal(apiLoadingTimeoutMs())
   const { loading: stopping, start: startStopping, stop: stopStopping } = createLoadingSignal(apiLoadingTimeoutMs())
 
   const handleSubmit = async () => {

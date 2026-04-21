@@ -80,7 +80,7 @@ WITH to_delete AS (
 DELETE FROM users WHERE id IN (SELECT id FROM to_delete);
 
 -- name: GetUserPrefs :one
-SELECT prefs FROM users WHERE id = $1;
+SELECT prefs FROM users WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: UpdateUserPrefs :exec
 UPDATE users SET prefs = $1, updated_at = NOW()

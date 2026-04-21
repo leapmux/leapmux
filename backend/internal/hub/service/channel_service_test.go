@@ -149,54 +149,79 @@ func (e *channelTestEnv) createWorkerWithKey(t *testing.T, token string, publicK
 	return workerID
 }
 
-func TestGetWorkerPublicKey(t *testing.T) {
+func registerOnlineWorker(t *testing.T, env *channelTestEnv, workerID string, mode leapmuxv1.EncryptionMode) {
+	t.Helper()
+	env.workerMgr.Register(&workermgr.Conn{
+		WorkerID:       workerID,
+		EncryptionMode: mode,
+	})
+}
+
+func TestGetWorkerHandshakeParams(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
 
 	pubKey := []byte("fake-public-key-32-bytes-long!!!!")
 	workerID := env.createWorkerWithKey(t, token, pubKey)
+	registerOnlineWorker(t, env, workerID, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
 
-	resp, err := env.channelClient.GetWorkerPublicKey(ctx, authedReq(
-		&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: workerID}, token))
+	resp, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.NoError(t, err)
 	assert.Equal(t, pubKey, resp.Msg.GetPublicKey())
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.Msg.GetEncryptionMode())
 }
 
-func TestGetWorkerPublicKey_NoKey(t *testing.T) {
+func TestGetWorkerHandshakeParams_NoKey(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	// Create worker without public key.
+	// Create worker without public key but online.
 	workerID := env.createWorkerWithKey(t, token, nil)
+	registerOnlineWorker(t, env, workerID, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
 
-	_, err := env.channelClient.GetWorkerPublicKey(ctx, authedReq(
-		&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: workerID}, token))
+	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
-func TestGetWorkerPublicKey_NotFound(t *testing.T) {
+func TestGetWorkerHandshakeParams_NotFound(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	_, err := env.channelClient.GetWorkerPublicKey(ctx, authedReq(
-		&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: "nonexistent"}, token))
+	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: "nonexistent"}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
-func TestGetWorkerPublicKey_EmptyWorkerID(t *testing.T) {
+func TestGetWorkerHandshakeParams_EmptyWorkerID(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	_, err := env.channelClient.GetWorkerPublicKey(ctx, authedReq(
-		&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: ""}, token))
+	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: ""}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestGetWorkerHandshakeParams_WorkerOffline(t *testing.T) {
+	env := setupChannelTestServer(t)
+	ctx := context.Background()
+	token := env.adminToken(t)
+
+	// Worker exists with a public key but is not registered as online.
+	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+
+	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 }
 
 func TestOpenChannel_WorkerOffline(t *testing.T) {
@@ -342,107 +367,40 @@ func TestCloseChannel_WrongUser(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
-func TestGetWorkerPublicKey_Unauthenticated(t *testing.T) {
+func TestGetWorkerHandshakeParams_Unauthenticated(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 
-	_, err := env.channelClient.GetWorkerPublicKey(ctx, connect.NewRequest(
-		&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: "any"}))
+	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, connect.NewRequest(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: "any"}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
-// --- GetWorkerEncryptionMode tests ---
-
-func TestGetWorkerEncryptionMode_WorkerOffline(t *testing.T) {
+func TestGetWorkerHandshakeParams_Classic(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
 
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+	registerOnlineWorker(t, env, workerID, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC)
 
-	_, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
-		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID}, token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
-}
-
-func TestGetWorkerEncryptionMode_EmptyWorkerID(t *testing.T) {
-	env := setupChannelTestServer(t)
-	ctx := context.Background()
-	token := env.adminToken(t)
-
-	_, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
-		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: ""}, token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-}
-
-func TestGetWorkerEncryptionMode_Unauthenticated(t *testing.T) {
-	env := setupChannelTestServer(t)
-	ctx := context.Background()
-
-	_, err := env.channelClient.GetWorkerEncryptionMode(ctx, connect.NewRequest(
-		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: "any"}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-}
-
-func TestGetWorkerEncryptionMode_PostQuantum(t *testing.T) {
-	env := setupChannelTestServer(t)
-	ctx := context.Background()
-	token := env.adminToken(t)
-
-	workerID := env.createWorkerWithKey(t, token, []byte("key"))
-
-	// Simulate worker online with POST_QUANTUM mode.
-	conn := &workermgr.Conn{
-		WorkerID:       workerID,
-		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-	}
-	env.workerMgr.Register(conn)
-
-	resp, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
-		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID}, token))
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.Msg.GetEncryptionMode())
-}
-
-func TestGetWorkerEncryptionMode_Classic(t *testing.T) {
-	env := setupChannelTestServer(t)
-	ctx := context.Background()
-	token := env.adminToken(t)
-
-	workerID := env.createWorkerWithKey(t, token, []byte("key"))
-
-	conn := &workermgr.Conn{
-		WorkerID:       workerID,
-		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
-	}
-	env.workerMgr.Register(conn)
-
-	resp, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
-		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID}, token))
+	resp, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, resp.Msg.GetEncryptionMode())
 }
 
-func TestGetWorkerEncryptionMode_UnspecifiedDefaultsToPostQuantum(t *testing.T) {
+func TestGetWorkerHandshakeParams_UnspecifiedDefaultsToPostQuantum(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
 
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
+	registerOnlineWorker(t, env, workerID, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED)
 
-	// Register with UNSPECIFIED — should be normalized to POST_QUANTUM.
-	conn := &workermgr.Conn{
-		WorkerID:       workerID,
-		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED,
-	}
-	env.workerMgr.Register(conn)
-
-	resp, err := env.channelClient.GetWorkerEncryptionMode(ctx, authedReq(
-		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID}, token))
+	resp, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.Msg.GetEncryptionMode())
 }
