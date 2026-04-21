@@ -2,9 +2,17 @@ package terminal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+// ErrTerminalNotFound is returned when a terminal operation targets an ID
+// the Manager does not know about. Callers distinguish this from other
+// failures with errors.Is so they can decide whether to retry or stash —
+// e.g. the ResizeTerminal handler stashes dims for a terminal whose PTY
+// is still being spawned in the background startup goroutine.
+var ErrTerminalNotFound = errors.New("terminal not found")
 
 // TerminalMeta holds the workspace ID and dimensions for a terminal.
 type TerminalMeta struct {
@@ -91,7 +99,7 @@ func (m *Manager) SendInput(terminalID string, data []byte) error {
 	m.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("no terminal: %s", terminalID)
+		return fmt.Errorf("%w: %s", ErrTerminalNotFound, terminalID)
 	}
 	if t.IsExited() {
 		return fmt.Errorf("terminal exited: %s", terminalID)
@@ -108,7 +116,7 @@ func (m *Manager) Resize(terminalID string, cols, rows uint16) error {
 	m.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("no terminal: %s", terminalID)
+		return fmt.Errorf("%w: %s", ErrTerminalNotFound, terminalID)
 	}
 	if t.IsExited() {
 		return fmt.Errorf("terminal exited: %s", terminalID)

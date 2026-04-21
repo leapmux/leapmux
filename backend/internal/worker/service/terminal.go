@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -254,7 +255,25 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		if err := svc.Terminals.Resize(terminalID, uint16(cols), uint16(rows)); err != nil {
+		err := svc.Terminals.Resize(terminalID, uint16(cols), uint16(rows))
+		switch {
+		case err == nil:
+			// Drop any dims stashed during STARTING — the resize just
+			// landed on the real PTY, so the post-startup apply in
+			// runTerminalStartup must not overwrite it with older dims.
+			svc.TerminalStartup.clearPendingResize(terminalID)
+		case errors.Is(err, terminal.ErrTerminalNotFound):
+			// Async startup: the tab exists but the PTY isn't in the
+			// Manager yet. Stash the latest dims and ack success so the
+			// frontend's first fit() isn't silently dropped — vim/nvim
+			// would otherwise see the placeholder 80x24 from the
+			// OpenTerminal request on its first TIOCGWINSZ query.
+			if !svc.TerminalStartup.setPendingResize(terminalID, uint16(cols), uint16(rows)) {
+				slog.Error("failed to resize terminal", "terminal_id", terminalID, "error", err)
+				sendInternalError(sender, fmt.Sprintf("resize: %v", err))
+				return
+			}
+		default:
 			slog.Error("failed to resize terminal", "terminal_id", terminalID, "error", err)
 			sendInternalError(sender, fmt.Sprintf("resize: %v", err))
 			return
@@ -476,6 +495,18 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 		svc.failTerminalStartup(terminalID, gm, startErr)
 		return
 	}
+
+	// Apply any ResizeTerminal that arrived during the PTY-spawn window.
+	// The PTY was created with the placeholder cols/rows from the
+	// OpenTerminal request; the frontend's first fit() fires long before
+	// the Manager holds the terminal, so its RPC is stashed in the
+	// startup registry and drained here.
+	if cols, rows, ok := svc.TerminalStartup.takePendingResize(terminalID); ok {
+		if err := svc.Terminals.Resize(terminalID, cols, rows); err != nil {
+			slog.Warn("apply pending resize after startup", "terminal_id", terminalID, "error", err)
+		}
+	}
+
 	svc.persistTerminalStartupError(terminalID, "")
 	svc.broadcastTerminalReady(terminalID)
 	svc.TerminalStartup.succeed(terminalID)

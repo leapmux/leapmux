@@ -223,14 +223,14 @@ func TestManager_SendInput_UnknownTerminal(t *testing.T) {
 	m := NewManager()
 	err := m.SendInput("nonexistent", []byte("hello"))
 	assert.Error(t, err, "expected error for unknown terminal")
-	assert.Contains(t, err.Error(), "no terminal", "error should indicate unknown terminal")
+	assert.ErrorIs(t, err, ErrTerminalNotFound, "error should wrap ErrTerminalNotFound")
 }
 
 func TestManager_Resize_UnknownTerminal(t *testing.T) {
 	m := NewManager()
 	err := m.Resize("nonexistent", 80, 24)
 	assert.Error(t, err, "expected error for unknown terminal")
-	assert.Contains(t, err.Error(), "no terminal", "error should indicate unknown terminal")
+	assert.ErrorIs(t, err, ErrTerminalNotFound, "error should wrap ErrTerminalNotFound")
 }
 
 func TestManager_Resize_SameDimensions(t *testing.T) {

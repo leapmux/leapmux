@@ -26,6 +26,9 @@ const failedEntryTTL = 5 * time.Minute
 //   - retain the startup error so the frontend can re-fetch it after a
 //     page refresh (it is not persisted across worker restarts; that is
 //     an acceptable edge case).
+//   - hold a pending terminal resize (cols/rows) that arrived before the
+//     PTY was registered in the Manager, so runTerminalStartup can apply
+//     it the moment StartTerminal returns.
 type startupEntry struct {
 	// failed is set once startup fails terminally. While false and cancel
 	// is non-nil, startup is still in progress (STARTING).
@@ -42,6 +45,16 @@ type startupEntry struct {
 	// Stored so cancelAndClear/succeed can Stop() it and release the
 	// runtime timer slot early.
 	evictTimer *time.Timer
+	// pendingResize carries the latest ResizeTerminal dims that arrived
+	// while the PTY was still being spawned. The backend PTY is created
+	// with the placeholder 80x24 from the OpenTerminal request; the
+	// frontend's first fit() fires long before the Manager holds the
+	// terminal, so without this stash its RPC would land on a not-yet-
+	// registered terminal, be dropped, and vim/nvim would see 80x24 on
+	// its first TIOCGWINSZ query. runTerminalStartup calls
+	// takePendingResize after StartTerminal and applies the result.
+	pendingResize    [2]uint16
+	hasPendingResize bool
 }
 
 // startupCore is the shared state-machine for tracking a set of in-flight
@@ -126,6 +139,49 @@ func (r *startupCore) cancelAndClear(id string) {
 	}
 	if entry.cancel != nil {
 		entry.cancel()
+	}
+}
+
+// setPendingResize records the latest ResizeTerminal dims for id. Returns
+// false if no startup is in flight for id (caller should treat that as
+// "terminal not found"). Overwrites any prior stashed dims so only the
+// most recent resize is applied when startup completes.
+func (r *startupCore) setPendingResize(id string, cols, rows uint16) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.entries[id]
+	if !ok || entry.failed {
+		return false
+	}
+	entry.pendingResize = [2]uint16{cols, rows}
+	entry.hasPendingResize = true
+	return true
+}
+
+// takePendingResize returns the stashed dims (if any) and clears the
+// slot. Called by runTerminalStartup after StartTerminal registers the
+// PTY so the stored size lands on the real terminal.
+func (r *startupCore) takePendingResize(id string) (cols, rows uint16, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found := r.entries[id]
+	if !found || !entry.hasPendingResize {
+		return 0, 0, false
+	}
+	cols, rows = entry.pendingResize[0], entry.pendingResize[1]
+	entry.hasPendingResize = false
+	return cols, rows, true
+}
+
+// clearPendingResize drops any stashed dims for id. Called from the
+// ResizeTerminal handler when the PTY is already in the Manager so the
+// direct Resize call has already been applied; leaving a stale stash in
+// place would cause runTerminalStartup to overwrite the newer size.
+func (r *startupCore) clearPendingResize(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry, ok := r.entries[id]; ok {
+		entry.hasPendingResize = false
 	}
 }
 
