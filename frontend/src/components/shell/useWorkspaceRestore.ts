@@ -137,7 +137,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     tabStore.clear()
 
     // Fetch tabs and layout from hub (single call, no worker needed).
-    const tabsLoaded = workspaceClient.listTabs({ orgId: currentOrgId, workspaceId: activeId })
+    const tabsLoaded = workspaceClient.listTabs({ orgId: currentOrgId, workspaceIds: [activeId] })
       .catch(() => null)
 
     const layoutLoaded = workspaceClient.getLayout({ orgId: currentOrgId, workspaceId: activeId })

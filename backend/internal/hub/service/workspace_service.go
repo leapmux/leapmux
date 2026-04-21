@@ -499,6 +499,13 @@ func (s *WorkspaceService) RemoveTab(
 	return connect.NewResponse(&leapmuxv1.RemoveTabResponse{}), nil
 }
 
+// ListTabs returns tabs across one or more workspaces in a single call.
+//
+// If the request's WorkspaceIds is empty, it returns tabs for every workspace
+// in the org the caller can read. Otherwise the given IDs are resolved
+// individually and silently dropped when they don't exist, belong to a
+// different org, or aren't accessible to the caller — so stale client state
+// (e.g. sessionStorage-restored sidebar) never produces 404/PermissionDenied.
 func (s *WorkspaceService) ListTabs(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.ListTabsRequest],
@@ -507,23 +514,76 @@ func (s *WorkspaceService) ListTabs(
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.loadWorkspaceForRead(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID); err != nil {
-		return nil, err
+
+	orgID := req.Msg.GetOrgId()
+	requested := req.Msg.GetWorkspaceIds()
+
+	var workspaceIDs []string
+	if len(requested) == 0 {
+		workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
+			UserID: user.ID,
+			OrgID:  orgID,
+		})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accessible workspaces: %w", err))
+		}
+		workspaceIDs = make([]string, len(workspaces))
+		for i := range workspaces {
+			workspaceIDs[i] = workspaces[i].ID
+		}
+	} else {
+		workspaceIDs = make([]string, 0, len(requested))
+		seen := make(map[string]struct{}, len(requested))
+		for _, wsID := range requested {
+			if wsID == "" {
+				continue
+			}
+			if _, dup := seen[wsID]; dup {
+				continue
+			}
+			seen[wsID] = struct{}{}
+
+			ws, err := s.store.Workspaces().GetByID(ctx, wsID)
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					continue
+				}
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			if orgID != "" && ws.OrgID != orgID {
+				continue
+			}
+			if ws.OwnerUserID != user.ID {
+				hasAccess, err := s.store.WorkspaceAccess().HasAccess(ctx, store.HasWorkspaceAccessParams{
+					WorkspaceID: ws.ID,
+					UserID:      user.ID,
+				})
+				if err != nil {
+					return nil, connect.NewError(connect.CodeInternal, err)
+				}
+				if !hasAccess {
+					continue
+				}
+			}
+			workspaceIDs = append(workspaceIDs, ws.ID)
+		}
 	}
 
-	tabs, err := s.store.WorkspaceTabs().ListByWorkspace(ctx, req.Msg.GetWorkspaceId())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list tabs: %w", err))
-	}
-
-	pbTabs := make([]*leapmuxv1.WorkspaceTab, len(tabs))
-	for i, t := range tabs {
-		pbTabs[i] = &leapmuxv1.WorkspaceTab{
-			TabType:  t.TabType,
-			TabId:    t.TabID,
-			Position: t.Position,
-			TileId:   t.TileID,
-			WorkerId: t.WorkerID,
+	var pbTabs []*leapmuxv1.WorkspaceTab
+	for _, wsID := range workspaceIDs {
+		tabs, err := s.store.WorkspaceTabs().ListByWorkspace(ctx, wsID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list tabs for %s: %w", wsID, err))
+		}
+		for _, t := range tabs {
+			pbTabs = append(pbTabs, &leapmuxv1.WorkspaceTab{
+				TabType:     t.TabType,
+				TabId:       t.TabID,
+				Position:    t.Position,
+				TileId:      t.TileID,
+				WorkerId:    t.WorkerID,
+				WorkspaceId: wsID,
+			})
 		}
 	}
 

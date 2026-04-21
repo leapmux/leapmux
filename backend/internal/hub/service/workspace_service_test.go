@@ -406,10 +406,12 @@ func TestWorkspaceReadAccess_SharedMemberReadOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	tabsResp, err := env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
-		WorkspaceId: wsID,
+		OrgId:        env.orgID,
+		WorkspaceIds: []string{wsID},
 	}, viewerToken))
 	require.NoError(t, err)
 	require.Len(t, tabsResp.Msg.GetTabs(), 1)
+	assert.Equal(t, wsID, tabsResp.Msg.GetTabs()[0].GetWorkspaceId())
 
 	layoutResp, err := env.client.GetLayout(context.Background(), authedReq(&leapmuxv1.GetLayoutRequest{
 		WorkspaceId: wsID,
@@ -466,17 +468,68 @@ func TestWorkspaceReadAccess_UnsharedUserDenied(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
-	_, err = env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
-		WorkspaceId: wsID,
+	// ListTabs now silently drops workspaces the caller can't read rather than
+	// returning PermissionDenied, so stale sidebar state (e.g. IDs restored
+	// from sessionStorage) doesn't produce noisy 4xx responses.
+	tabsResp, err := env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
+		OrgId:        env.orgID,
+		WorkspaceIds: []string{wsID},
 	}, outsiderToken))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	require.NoError(t, err)
+	assert.Empty(t, tabsResp.Msg.GetTabs())
 
 	_, err = env.client.GetLayout(context.Background(), authedReq(&leapmuxv1.GetLayoutRequest{
 		WorkspaceId: wsID,
 	}, outsiderToken))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+func TestListTabs_BatchAndSilentDrop(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	ws1 := env.createWorkspace(t)
+	ws2 := env.createWorkspace(t)
+
+	for _, wsID := range []string{ws1, ws2} {
+		require.NoError(t, env.store.WorkspaceTabs().Upsert(context.Background(), store.UpsertWorkspaceTabParams{
+			WorkspaceID: wsID,
+			WorkerID:    "w1",
+			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+			TabID:       "agent-" + wsID,
+			Position:    "a",
+			TileID:      "tile-1",
+		}))
+	}
+
+	// Explicit IDs: both workspaces returned, tabs tagged with workspace_id.
+	resp, err := env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
+		OrgId:        env.orgID,
+		WorkspaceIds: []string{ws1, ws2},
+	}, env.token))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetTabs(), 2)
+	got := map[string]string{}
+	for _, tab := range resp.Msg.GetTabs() {
+		got[tab.GetWorkspaceId()] = tab.GetTabId()
+	}
+	assert.Equal(t, "agent-"+ws1, got[ws1])
+	assert.Equal(t, "agent-"+ws2, got[ws2])
+
+	// Empty workspace_ids → all accessible workspaces in the org.
+	resp, err = env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
+		OrgId: env.orgID,
+	}, env.token))
+	require.NoError(t, err)
+	assert.Len(t, resp.Msg.GetTabs(), 2)
+
+	// Unknown / inaccessible IDs silently drop; known IDs still returned.
+	resp, err = env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
+		OrgId:        env.orgID,
+		WorkspaceIds: []string{ws1, "does-not-exist", ""},
+	}, env.token))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetTabs(), 1)
+	assert.Equal(t, ws1, resp.Msg.GetTabs()[0].GetWorkspaceId())
 }
 
 func TestSaveLayout_RollsBackOnTabFailure(t *testing.T) {

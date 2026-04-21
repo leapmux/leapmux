@@ -770,7 +770,7 @@ export const AppShell: ParentComponent = (props) => {
         try {
           const resp = await workspaceClient.listTabs({
             orgId: currentOrgId,
-            workspaceId: resolvedTargetWsId,
+            workspaceIds: [resolvedTargetWsId],
           })
           const existingKeys = new Set(targetSnap.tabs.map(t => tabKey(t)))
           const extraTabs: Tab[] = []
@@ -837,7 +837,7 @@ export const AppShell: ParentComponent = (props) => {
     if (!currentOrgId)
       return
 
-    workspaceClient.listTabs({ orgId: currentOrgId, workspaceId }).then(async (tabsResp) => {
+    workspaceClient.listTabs({ orgId: currentOrgId, workspaceIds: [workspaceId] }).then(async (tabsResp) => {
       // Group tab IDs by worker and type.
       const agentIdsByWorker = new Map<string, string[]>()
       const terminalIdsByWorker = new Map<string, string[]>()
