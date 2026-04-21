@@ -53,6 +53,11 @@ type Context struct {
 	startTerminalFn     func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
+
+	// Startup tracks in-flight agent/terminal startups — the window
+	// between OpenAgent/OpenTerminal returning and the subprocess being
+	// ready. See startupstate.go.
+	Startup *startupRegistry
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -88,6 +93,7 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 		Watchers:  watchers,
 		Output:    output,
 		WakeLock:  wl,
+		Startup:   newStartupRegistry(),
 	}
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
@@ -365,6 +371,14 @@ func sendPermissionDenied(sender *channel.Sender, msg string) {
 // sendInvalidArgument sends an INVALID_ARGUMENT (3) error response.
 func sendInvalidArgument(sender *channel.Sender, msg string) {
 	_ = sender.SendError(3, msg)
+}
+
+// sendFailedPrecondition sends a FAILED_PRECONDITION (9) error response.
+// Used when the request is valid but the target is not in a state that
+// permits the operation (e.g. sending a message to an agent that is
+// still starting up).
+func sendFailedPrecondition(sender *channel.Sender, msg string) {
+	_ = sender.SendError(9, msg)
 }
 
 // requireAccessibleWorkspace verifies the workspace_id is accessible on the

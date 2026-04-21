@@ -20,6 +20,15 @@ export function createAgentStore() {
     activeAgentId: null,
   })
 
+  // Buffered updateAgent calls for agent IDs the store doesn't know
+  // about yet — applied in addAgent so status events that overtake the
+  // OpenAgent RPC response (or a ListAgents fetch) are not lost.
+  const pendingUpdates = new Map<string, Partial<AgentInfo>>()
+
+  function mergePartial(a: Partial<AgentInfo>, b: Partial<AgentInfo>): Partial<AgentInfo> {
+    return { ...a, ...b }
+  }
+
   return {
     state,
 
@@ -29,12 +38,18 @@ export function createAgentStore() {
     },
 
     addAgent(agent: AgentInfo) {
-      setState('agents', prev => [...prev, agent])
-      setState('activeAgentId', agent.id)
-      cacheLabels([agent])
+      // Apply any pre-arrived updates for this ID before inserting.
+      const buffered = pendingUpdates.get(agent.id)
+      const merged = buffered ? { ...agent, ...buffered } as AgentInfo : agent
+      if (buffered)
+        pendingUpdates.delete(agent.id)
+      setState('agents', prev => [...prev, merged])
+      setState('activeAgentId', merged.id)
+      cacheLabels([merged])
     },
 
     removeAgent(id: string) {
+      pendingUpdates.delete(id)
       setState('agents', prev => prev.filter(a => a.id !== id))
       if (state.activeAgentId === id) {
         setState('activeAgentId', state.agents[0]?.id ?? null)
@@ -42,6 +57,13 @@ export function createAgentStore() {
     },
 
     updateAgent(id: string, updates: Partial<AgentInfo>) {
+      const exists = state.agents.some(a => a.id === id)
+      if (!exists) {
+        // Buffer until addAgent is called — avoids losing the transition
+        // from STARTING → ACTIVE when the broadcast overtakes ListAgents.
+        pendingUpdates.set(id, mergePartial(pendingUpdates.get(id) ?? {}, updates))
+        return
+      }
       setState('agents', a => a.id === id, updates)
       if ((updates.availableModels && updates.availableModels.length > 0) || (updates.availableOptionGroups && updates.availableOptionGroups.length > 0))
         updateSettingsLabelCache(updates.availableModels, updates.availableOptionGroups)
@@ -52,6 +74,7 @@ export function createAgentStore() {
     },
 
     clear() {
+      pendingUpdates.clear()
       setState('agents', [])
       setState('activeAgentId', null)
     },

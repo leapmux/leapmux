@@ -3,6 +3,14 @@ package leapmux.v1;
 
 import "leapmux/v1/common.proto";
 
+// TerminalStatus tracks the lifecycle state of a terminal PTY.
+enum TerminalStatus {
+  TERMINAL_STATUS_UNSPECIFIED = 0;
+  TERMINAL_STATUS_STARTING = 1;        // PTY spawn in progress
+  TERMINAL_STATUS_READY = 2;           // PTY spawned; xterm can mount
+  TERMINAL_STATUS_STARTUP_FAILED = 3;  // PTY spawn failed; see startup_error
+}
+
 message OpenTerminalRequest {
   string org_id = 1;
   string workspace_id = 2;
@@ -87,6 +95,8 @@ message TerminalInfo {
   string git_branch = 8;        // Current git branch (if in a git repo)
   string git_origin_url = 9;    // Remote origin URL (if in a git repo)
   string title = 10;            // User-visible tab title
+  TerminalStatus status = 11;   // Lifecycle state (starting/ready/failed)
+  string startup_error = 12;    // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
 }
 
 message TerminalData {
@@ -96,6 +106,15 @@ message TerminalData {
 
 message TerminalClosed {
   int32 exit_code = 1;
+}
+
+// TerminalStatusChange notifies watchers of terminal lifecycle transitions,
+// in particular STARTING → READY or STARTING → STARTUP_FAILED during the
+// window between OpenTerminal returning and the PTY being ready for input.
+message TerminalStatusChange {
+  string terminal_id = 1;
+  TerminalStatus status = 2;
+  string startup_error = 3; // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
 }
 
 message ListAvailableShellsRequest {

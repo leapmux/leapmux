@@ -60,6 +60,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		agentID := id.Generate()
+		agent.TraceStartupPhase(agentID, "handler_begin")
 
 		workingDir := expandTilde(r.GetWorkingDir())
 		if workingDir == "" {
@@ -67,15 +68,21 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// Apply git-mode options (create-worktree, checkout-branch, etc.).
+		// This is kept on the sync path so git errors (dirty tree, unknown
+		// branch, etc.) surface as immediate RPC errors the caller can react
+		// to with a dialog.
 		gm, gmErr := svc.applyGitMode(workingDir, &r)
 		if gmErr != nil {
 			slog.Error("failed to apply git mode for agent", "error", gmErr)
 			sendInternalError(sender, gmErr.Error())
 			return
 		}
-		openSucceeded := false
+		// Rolled back iff the sync prologue fails before handing ownership
+		// to the startup goroutine. Once the goroutine is running it owns
+		// rollback on its own failure path.
+		syncSucceeded := false
 		defer func() {
-			if !openSucceeded {
+			if !syncSucceeded {
 				svc.rollbackGitMode(gm)
 			}
 		}()
@@ -93,6 +100,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Track whether this agent was created via session resume.
 		resumed := ptrconv.BoolToInt64(r.GetAgentSessionId() != "")
+
+		agent.TraceStartupPhase(agentID, "gitmode_applied")
 
 		// Create the agent record in the database.
 		if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
@@ -113,7 +122,31 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Start the agent process.
+		// Register the agent tab with the worktree. Moved ahead of startup
+		// (was after startAgent pre-split) so Close during startup still
+		// unregisters correctly.
+		svc.registerTabForWorktree(worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+
+		// Fetch for the early response; subprocess-dependent fields
+		// (session_id, permission_mode, available_models, ...) are filled
+		// in later via an AgentStatusChange{status=ACTIVE} event.
+		dbAgent, err := svc.getAgentByID(bgCtx(), agentID)
+		if err != nil {
+			slog.Error("failed to fetch created agent", "error", err)
+			sendInternalError(sender, "failed to fetch created agent")
+			return
+		}
+
+		// Register the startup and prepare the cancellable context that
+		// CloseAgent can use to abort an in-flight startup.
+		startupCtx, cancel := context.WithCancel(context.Background())
+		svc.Startup.begin(agentID, startupKindAgent, cancel)
+
+		// Broadcast STARTING before returning so any already-subscribed
+		// watcher sees the transition (the frontend just created the tab
+		// and its WatchEvents stream is already live).
+		svc.broadcastAgentStartupStatus(&dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, "")
+
 		agentOpts := agent.Options{
 			AgentID:         agentID,
 			Model:           model,
@@ -129,38 +162,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			AgentProvider:   agentProvider,
 		}
 
-		sink := svc.Output.NewSink(agentID, agentProvider)
-
-		confirmedSettings, err := svc.startAgent(bgCtx(), agentOpts, sink)
-		if err != nil {
-			slog.Error("failed to start agent", "agent_id", agentID, "error", err)
-			// Mark the agent as closed since the process failed to start.
-			_ = svc.Queries.CloseAgent(bgCtx(), agentID)
-			sendInternalError(sender, "failed to start agent: "+err.Error())
-			return
-		}
-		if err := svc.persistConfirmedAgentSettings(agentID, agentProvider, model, agentOpts.Effort, agentOpts.PermissionMode, extraSettings, confirmedSettings); err != nil {
-			slog.Warn("failed to persist confirmed agent settings", "agent_id", agentID, "error", err)
-		}
-
-		confirmedMode := confirmedSettings.GetPermissionMode()
-		slog.Info("agent started", "agent_id", agentID, "model", model, "permission_mode", confirmedMode)
-
-		// Register the agent tab with the worktree.
-		svc.registerTabForWorktree(worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
-
-		// Fetch the created agent for the response.
-		dbAgent, err := svc.getAgentByID(bgCtx(), agentID)
-		if err != nil {
-			slog.Error("failed to fetch created agent", "error", err)
-			sendInternalError(sender, "failed to fetch created agent")
-			return
-		}
-
-		openSucceeded = true
+		syncSucceeded = true
+		agent.TraceStartupPhase(agentID, "before_response")
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: agentToProto(&dbAgent, dbAgent.PermissionMode, svc.WorkerID, true, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(agentID, dbAgent.AgentProvider)),
+			Agent: agentToProtoWithStartup(&dbAgent, dbAgent.PermissionMode, svc.WorkerID, false, gitutil.GetGitStatus(dbAgent.WorkingDir), svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(agentID, dbAgent.AgentProvider), svc.Startup),
 		})
+		agent.TraceStartupPhase(agentID, "response_sent")
+
+		// Kick off subprocess startup in the background.
+		go svc.runAgentStartup(startupCtx, agentID, worktreeID, gm, agentOpts, model, effort, extraSettings)
 	})
 
 	d.Register("CloseAgent", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
@@ -174,6 +184,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
 			return
 		}
+
+		// Cancel any in-flight startup so the goroutine aborts the
+		// subprocess handshake cleanly.
+		svc.Startup.cancelAndClear(agentID)
 
 		// Stop the agent process.
 		svc.Agents.StopAgent(agentID)
@@ -202,6 +216,18 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		agentID := r.GetAgentId()
 		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
 		if !ok {
+			return
+		}
+
+		// Reject sends only on permanent startup failure — STARTING
+		// messages are queued on the frontend and dispatched on the
+		// status transition to ACTIVE. A STARTING-state send gate on
+		// the server would race with the ACTIVE broadcast that fires
+		// from the output sink before runAgentStartup's bookkeeping
+		// completes; ensureAgentRunning already restarts crashed
+		// subprocesses on demand.
+		if status, _, ok := svc.Startup.agentStatus(agentID); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+			sendFailedPrecondition(sender, "agent failed to start; open a new agent")
 			return
 		}
 
@@ -446,7 +472,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					unmarshalAvailableOptionGroups(agents[i].AvailableOptionGroups),
 				)
 			}
-			protoAgents = append(protoAgents, agentToProto(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].ID, agents[i].AgentProvider)))
+			protoAgents = append(protoAgents, agentToProtoWithStartup(&agents[i], agents[i].PermissionMode, svc.WorkerID, svc.Agents.HasAgent(agents[i].ID), gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].ID, agents[i].AgentProvider), svc.Startup))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -927,6 +953,14 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				if svc.Agents.HasAgent(agentID) {
 					status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
 				}
+				// Startup registry wins: a late-arriving subscriber must see
+				// STARTING / STARTUP_FAILED even though the runtime Manager
+				// doesn't yet show the agent as registered.
+				var startupError string
+				if sup, errStr, ok := svc.Startup.agentStatus(agentID); ok {
+					status = sup
+					startupError = errStr
+				}
 				sc := &leapmuxv1.AgentStatusChange{
 					AgentId:        agentID,
 					Status:         status,
@@ -937,6 +971,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					Effort:         dbAgent.Effort,
 					GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
 					AgentProvider:  dbAgent.AgentProvider,
+					StartupError:   startupError,
 				}
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
@@ -1004,6 +1039,31 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					},
 				})
 			}
+
+			// Replay current startup status so a subscriber that joins
+			// after READY / STARTUP_FAILED was broadcast still converges
+			// (the prior pure-broadcast design lost events for any
+			// watcher that attached after the one-shot fire).
+			status := leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY
+			var startupError string
+			if sup, errStr, ok := svc.Startup.terminalStatus(termID); ok {
+				status = sup
+				startupError = errStr
+			}
+			broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
+				Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
+					TerminalEvent: &leapmuxv1.TerminalEvent{
+						TerminalId: termID,
+						Event: &leapmuxv1.TerminalEvent_StatusChange{
+							StatusChange: &leapmuxv1.TerminalStatusChange{
+								TerminalId:   termID,
+								Status:       status,
+								StartupError: startupError,
+							},
+						},
+					},
+				},
+			})
 		}
 
 		// Stream stays open — events will be pushed via watcher.Sender.SendStream().
@@ -1013,9 +1073,24 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 // agentToProto converts a DB Agent to a proto AgentInfo.
 func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *leapmuxv1.AgentGitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
+	return agentToProtoWithStartup(a, permissionMode, workerID, isRunning, gs, availableModels, availableOptionGroups, nil)
+}
+
+// agentToProtoWithStartup is like agentToProto but lets the caller pass a
+// startup registry so STARTING / STARTUP_FAILED statuses (and the
+// accompanying startup_error) are surfaced for agents whose subprocesses
+// are not yet in the runtime Manager.
+func agentToProtoWithStartup(a *db.Agent, permissionMode, workerID string, isRunning bool, gs *leapmuxv1.AgentGitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup, startup *startupRegistry) *leapmuxv1.AgentInfo {
 	status := leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	if isRunning {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE
+	}
+	var startupError string
+	if startup != nil && !isRunning {
+		if sup, errStr, ok := startup.agentStatus(a.ID); ok {
+			status = sup
+			startupError = errStr
+		}
 	}
 	info := &leapmuxv1.AgentInfo{
 		Id:                    a.ID,
@@ -1035,6 +1110,7 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 		AvailableModels:       availableModels,
 		AvailableOptionGroups: availableOptionGroups,
 		ExtraSettings:         loadExtraSettings(a.ExtraSettings, a.AgentProvider),
+		StartupError:          startupError,
 	}
 
 	if a.ClosedAt.Valid {
@@ -1042,6 +1118,113 @@ func agentToProto(a *db.Agent, permissionMode, workerID string, isRunning bool, 
 	}
 
 	return info
+}
+
+// runAgentStartup is the async body of OpenAgent: it spawns the subprocess,
+// runs the initialize handshake, then reports success/failure via
+// broadcastAgentStartupStatus and cleans up on failure.
+func (svc *Context) runAgentStartup(ctx context.Context, agentID, worktreeID string, gm gitModeResult, agentOpts agent.Options, model, effort string, extraSettings map[string]string) {
+	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)
+
+	agent.TraceStartupPhase(agentID, "before_start_agent")
+	confirmedSettings, startErr := svc.startAgent(ctx, agentOpts, sink)
+	agent.TraceStartupPhase(agentID, "after_start_agent")
+
+	// After startAgent returns, re-read the DB row to see whether the tab
+	// was closed during startup (CloseAgent sets closed_at). If so, stop
+	// the just-started process and skip the success broadcast.
+	dbAgent, fetchErr := svc.getAgentByID(bgCtx(), agentID)
+	if fetchErr == nil && dbAgent.ClosedAt.Valid {
+		if startErr == nil {
+			svc.Agents.StopAgent(agentID)
+		}
+		svc.Startup.succeed(agentID)
+		svc.rollbackGitMode(gm)
+		return
+	}
+
+	if startErr != nil {
+		errMsg := startErr.Error()
+		slog.Error("failed to start agent", "agent_id", agentID, "error", errMsg)
+		// Keep the agent row open so the in-tab error UI is reachable
+		// across page refreshes (closing the row would make WatchEvents
+		// reject the subscribe). The user dismisses the dead tab via the
+		// "Close tab" button in AgentStartupError, which calls
+		// CloseAgent — which then closes the row + cleans up worktree
+		// + cancels any in-flight startup.
+		svc.rollbackGitMode(gm)
+		svc.Startup.fail(agentID, errMsg)
+		if fetchErr == nil {
+			svc.broadcastAgentStartupStatus(&dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, errMsg)
+		} else {
+			// DB row unreadable — emit a minimal status change anyway so
+			// the frontend can transition out of STARTING.
+			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				Event: &leapmuxv1.AgentEvent_StatusChange{
+					StatusChange: &leapmuxv1.AgentStatusChange{
+						AgentId:      agentID,
+						Status:       leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED,
+						WorkerOnline: true,
+						StartupError: errMsg,
+					},
+				},
+			})
+		}
+		return
+	}
+
+	// Clear the startup registry entry *before* persistConfirmedAgentSettings
+	// so that any SendAgentMessage racing against the early ACTIVE
+	// broadcast (emitted from the output sink when the first init message
+	// arrives inside startAgent) is not rejected by the SendAgentMessage
+	// startup-gate. The subprocess is up and ready for input at this
+	// point; settings persistence is a best-effort DB write.
+	svc.Startup.succeed(agentID)
+
+	if err := svc.persistConfirmedAgentSettings(agentID, agentOpts.AgentProvider, model, agentOpts.Effort, agentOpts.PermissionMode, extraSettings, confirmedSettings); err != nil {
+		slog.Warn("failed to persist confirmed agent settings", "agent_id", agentID, "error", err)
+	}
+
+	slog.Info("agent started", "agent_id", agentID, "model", model, "permission_mode", confirmedSettings.GetPermissionMode())
+
+	// Re-fetch dbAgent so the broadcast carries the persisted settings.
+	activeDbAgent, err := svc.getAgentByID(bgCtx(), agentID)
+	if err != nil {
+		slog.Warn("failed to re-fetch agent for active broadcast", "agent_id", agentID, "error", err)
+		activeDbAgent = dbAgent
+	}
+
+	svc.broadcastAgentStartupStatus(&activeDbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "")
+}
+
+// broadcastAgentStartupStatus emits an AgentStatusChange event for
+// STARTING / STARTUP_FAILED / ACTIVE transitions during the lifetime of
+// OpenAgent. Fields that depend on the subprocess (session_id,
+// available_models, available_option_groups) are only populated once
+// status=ACTIVE.
+func (svc *Context) broadcastAgentStartupStatus(dbAgent *db.Agent, status leapmuxv1.AgentStatus, startupError string) {
+	sc := &leapmuxv1.AgentStatusChange{
+		AgentId:        dbAgent.ID,
+		Status:         status,
+		WorkerOnline:   true,
+		PermissionMode: dbAgent.PermissionMode,
+		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
+		Effort:         dbAgent.Effort,
+		GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
+		AgentProvider:  dbAgent.AgentProvider,
+		ExtraSettings:  loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
+		StartupError:   startupError,
+	}
+	if status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+		sc.AgentSessionId = dbAgent.AgentSessionID
+		sc.AvailableModels = svc.Agents.AvailableModels(dbAgent.ID, dbAgent.AgentProvider)
+		sc.AvailableOptionGroups = svc.Agents.AvailableOptionGroups(dbAgent.ID, dbAgent.AgentProvider)
+	}
+	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
+		AgentId: dbAgent.ID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
+	})
 }
 
 func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapmuxv1.AgentProvider, model, effort, permissionMode string, extraSettings map[string]string, confirmed *leapmuxv1.AgentSettings) error {

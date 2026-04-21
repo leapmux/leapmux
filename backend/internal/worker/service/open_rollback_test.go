@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -17,6 +20,29 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
+
+var osStat = os.Stat
+
+// waitForStartupFailure polls until the startup registry reports a
+// STARTUP_FAILED state (for agents) / STARTUP_FAILED state (for terminals)
+// for the given id, or the timeout elapses. The OpenAgent/OpenTerminal RPC
+// now returns as soon as the sync prologue is done; rollback and the
+// failure broadcast happen in the startup goroutine, so tests that assert
+// on rollback state must wait.
+func waitForStartupFailure(t *testing.T, svc *Context, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if status, _, ok := svc.Startup.agentStatus(id); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+			return
+		}
+		if status, _, ok := svc.Startup.terminalStatus(id); ok && status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("startup never reached STARTUP_FAILED for id=%s", id)
+}
 
 func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 	ctx := context.Background()
@@ -37,13 +63,20 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 		WorktreeBranch: branchName,
 	}, w)
 
-	require.Len(t, w.errors, 1)
-	require.Equal(t, "failed to start agent: forced start failure", w.errors[0].message)
-	assert.NoDirExists(t, worktreePath)
+	// OpenAgent now returns OK immediately (status=STARTING); the
+	// rollback runs in the async startup goroutine.
+	require.Empty(t, w.errors)
+	require.Eventually(t, func() bool { return !directoryExists(worktreePath) }, 5*time.Second, 20*time.Millisecond)
 	assert.False(t, localBranchExists(t, repoDir, branchName))
 
 	_, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+// directoryExists is a helper for require.Eventually polling.
+func directoryExists(path string) bool {
+	_, err := osStat(path)
+	return err == nil
 }
 
 func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
@@ -63,10 +96,10 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 		CreateBranch: branchName,
 	}, w)
 
-	require.Len(t, w.errors, 1)
-	require.Equal(t, "failed to start agent: forced start failure", w.errors[0].message)
-	assert.Equal(t, originalBranch, currentBranchName(t, repoDir))
-	assert.False(t, localBranchExists(t, repoDir, branchName))
+	require.Empty(t, w.errors)
+	require.Eventually(t, func() bool {
+		return currentBranchName(t, repoDir) == originalBranch && !localBranchExists(t, repoDir, branchName)
+	}, 5*time.Second, 20*time.Millisecond)
 }
 
 func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing.T) {
@@ -88,11 +121,12 @@ func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing
 		CreateBranch: branchName,
 	}, w)
 
-	require.Len(t, w.errors, 1)
-	require.Equal(t, "failed to start agent: forced start failure", w.errors[0].message)
-	assert.Equal(t, "HEAD", strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "--abbrev-ref", "HEAD")))
-	assert.Equal(t, originalCommit, strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "HEAD")))
-	assert.False(t, localBranchExists(t, repoDir, branchName))
+	require.Empty(t, w.errors)
+	require.Eventually(t, func() bool {
+		head := strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "--abbrev-ref", "HEAD"))
+		commit := strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "HEAD"))
+		return head == "HEAD" && commit == originalCommit && !localBranchExists(t, repoDir, branchName)
+	}, 5*time.Second, 20*time.Millisecond)
 }
 
 func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
@@ -114,9 +148,8 @@ func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 		Shell:          testutil.TestShell(),
 	}, w)
 
-	require.Len(t, w.errors, 1)
-	require.Equal(t, "failed to start terminal", w.errors[0].message)
-	assert.NoDirExists(t, worktreePath)
+	require.Empty(t, w.errors)
+	require.Eventually(t, func() bool { return !directoryExists(worktreePath) }, 5*time.Second, 20*time.Millisecond)
 	assert.False(t, localBranchExists(t, repoDir, branchName))
 
 	_, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
@@ -140,10 +173,10 @@ func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 		Shell:        testutil.TestShell(),
 	}, w)
 
-	require.Len(t, w.errors, 1)
-	require.Equal(t, "failed to start terminal", w.errors[0].message)
-	assert.Equal(t, originalBranch, currentBranchName(t, repoDir))
-	assert.False(t, localBranchExists(t, repoDir, branchName))
+	require.Empty(t, w.errors)
+	require.Eventually(t, func() bool {
+		return currentBranchName(t, repoDir) == originalBranch && !localBranchExists(t, repoDir, branchName)
+	}, 5*time.Second, 20*time.Millisecond)
 }
 
 func expectedWorktreePath(repoDir, branchName string) string {
@@ -237,7 +270,25 @@ func TestOpenTerminal_DoesNotRollBackSwitchBranchOnStartFailure(t *testing.T) {
 		Shell:          testutil.TestShell(),
 	}, w)
 
-	require.Len(t, w.errors, 1)
-	require.Equal(t, "failed to start terminal", w.errors[0].message)
+	require.Empty(t, w.errors)
+	// Switching to an existing branch should NOT be rolled back on failure.
+	// Poll for the async startup to complete, then verify branch unchanged.
+	for _, id := range collectTerminalIDs(w) {
+		waitForStartupFailure(t, svc, id)
+	}
 	assert.Equal(t, "feature/existing", currentBranchName(t, repoDir))
+}
+
+// collectTerminalIDs extracts terminal_id values from OpenTerminal responses
+// captured on the test writer. Used by tests that need to synchronize on the
+// async startup goroutine completing.
+func collectTerminalIDs(w *testResponseWriter) []string {
+	var ids []string
+	for _, r := range w.responses {
+		var resp leapmuxv1.OpenTerminalResponse
+		if err := proto.Unmarshal(r.Payload, &resp); err == nil && resp.TerminalId != "" {
+			ids = append(ids, resp.TerminalId)
+		}
+	}
+	return ids
 }

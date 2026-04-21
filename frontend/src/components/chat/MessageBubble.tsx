@@ -111,6 +111,12 @@ interface MessageBubbleProps {
   parsed?: ParsedMessageContent
   category?: MessageCategory
   error?: string
+  /**
+   * Non-error pending label rendered beneath the bubble — used for
+   * optimistic user messages held in the per-agent startup queue while
+   * the agent's subprocess is still starting.
+   */
+  pendingLabel?: string
   onRetry?: () => void
   onDelete?: () => void
   workingDir?: string
@@ -571,6 +577,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           <button class={styles.messageRetryButton} onClick={() => props.onRetry?.()} data-testid="message-retry-button">Retry</button>
           <span class={styles.messageErrorDot}>&middot;</span>
           <button class={styles.messageDeleteButton} onClick={() => props.onDelete?.()} data-testid="message-delete-button">Delete</button>
+        </div>
+      </Show>
+      <Show when={!props.error && props.pendingLabel}>
+        <div class={styles.messageError} data-testid="message-pending">
+          <span class={styles.messageErrorText} style={{ color: 'inherit', opacity: '0.7' }}>{props.pendingLabel}</span>
         </div>
       </Show>
     </div>

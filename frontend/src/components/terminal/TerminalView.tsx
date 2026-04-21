@@ -2,10 +2,12 @@ import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
 import type { Tab } from '~/stores/tab.store'
-import { createEffect, For, onCleanup, onMount } from 'solid-js'
+import { createEffect, For, onCleanup, onMount, Show } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
 import { isMac } from '~/lib/shortcuts/platform'
 import { createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
+import { TerminalStartupError } from './TerminalStartupError'
+import { TerminalStartupOverlay } from './TerminalStartupOverlay'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
@@ -17,6 +19,8 @@ interface TerminalViewProps {
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
   onBell: (id: string) => void
+  /** Close the terminal tab (used by the startup-error "Close tab" button). */
+  onCloseTab?: (id: string) => void
   pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
   writeRef?: (fn: (data: string) => void) => void
 }
@@ -230,21 +234,39 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
       <div class={styles.terminalInner}>
         <For each={props.terminals}>
           {terminal => (
-            <TerminalContainer
-              terminalId={terminal.id}
-              active={terminal.id === props.activeTerminalId}
-              visible={props.visible}
-              screen={terminal.screen}
-              cols={terminal.cols}
-              rows={terminal.rows}
-              fontFamily={preferences.monoFontFamily()}
-              fontSize={13}
-              theme={terminalTheme()}
-              onInput={props.onInput}
-              onResize={props.onResize}
-              onTitleChange={props.onTitleChange}
-              onBell={props.onBell}
-            />
+            <Show
+              when={terminal.status === 'starting'}
+              fallback={(
+                <Show
+                  when={terminal.status === 'startup-failed'}
+                  fallback={(
+                    <TerminalContainer
+                      terminalId={terminal.id}
+                      active={terminal.id === props.activeTerminalId}
+                      visible={props.visible}
+                      screen={terminal.screen}
+                      cols={terminal.cols}
+                      rows={terminal.rows}
+                      fontFamily={preferences.monoFontFamily()}
+                      fontSize={13}
+                      theme={terminalTheme()}
+                      onInput={props.onInput}
+                      onResize={props.onResize}
+                      onTitleChange={props.onTitleChange}
+                      onBell={props.onBell}
+                    />
+                  )}
+                >
+                  <TerminalStartupError
+                    active={terminal.id === props.activeTerminalId}
+                    error={terminal.startupError ?? ''}
+                    onCloseTab={props.onCloseTab ? () => props.onCloseTab?.(terminal.id) : undefined}
+                  />
+                </Show>
+              )}
+            >
+              <TerminalStartupOverlay active={terminal.id === props.activeTerminalId} />
+            </Show>
           )}
         </For>
       </div>

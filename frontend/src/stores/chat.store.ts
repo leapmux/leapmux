@@ -142,6 +142,12 @@ interface ChatStoreState {
   streamingText: Record<string, string>
   commandStreamsByAgent: Record<string, Record<string, CommandStreamSegment[]>>
   messageErrors: Record<string, string>
+  /**
+   * Non-error pending labels displayed beneath a message bubble — used
+   * for optimistic bubbles that are held in the startup queue until the
+   * agent transitions to ACTIVE.
+   */
+  messagePendingLabels: Record<string, string>
   /** Latest TodoWrite todos per agent, updated incrementally as messages arrive. */
   todosByAgent: Record<string, TodoItem[]>
   loading: boolean
@@ -155,6 +161,26 @@ interface ChatStoreState {
   initialLoadComplete: Record<string, boolean>
   /** Monotonic counter incremented on every addMessage (including notification updates). */
   messageVersion: Record<string, number>
+  /**
+   * Per-agent outbound message queue used while the agent subprocess
+   * is still starting (AgentStatus.STARTING). Drained when the status
+   * transitions to ACTIVE; cleared and per-message errors set when it
+   * transitions to STARTUP_FAILED.
+   */
+  pendingOutboundMessages: Record<string, PendingOutboundMessage[]>
+}
+
+/** Plain attachment shape passed to workerRpc.sendAgentMessage as MessageInit. */
+export interface PendingOutboundAttachment {
+  filename: string
+  mimeType: string
+  data: Uint8Array
+}
+
+export interface PendingOutboundMessage {
+  localId: string
+  content: string
+  attachments: PendingOutboundAttachment[]
 }
 
 export function createChatStore() {
@@ -163,6 +189,8 @@ export function createChatStore() {
     streamingText: {},
     commandStreamsByAgent: {},
     messageErrors: {},
+    messagePendingLabels: {},
+    pendingOutboundMessages: {},
     todosByAgent: {},
     loading: false,
     hasMoreOlder: {},
@@ -399,6 +427,27 @@ export function createChatStore() {
 
     clearMessageError(messageId: string) {
       setState('messageErrors', messageId, undefined!)
+    },
+
+    setMessagePendingLabel(messageId: string, label: string) {
+      setState('messagePendingLabels', messageId, label)
+    },
+
+    clearMessagePendingLabel(messageId: string) {
+      setState('messagePendingLabels', messageId, undefined!)
+    },
+
+    enqueuePendingOutbound(agentId: string, msg: PendingOutboundMessage) {
+      const existing = state.pendingOutboundMessages[agentId] ?? []
+      setState('pendingOutboundMessages', agentId, [...existing, msg])
+    },
+
+    takePendingOutbound(agentId: string): PendingOutboundMessage[] {
+      const existing = state.pendingOutboundMessages[agentId] ?? []
+      if (existing.length === 0)
+        return []
+      setState('pendingOutboundMessages', agentId, [])
+      return existing
     },
 
     removeMessage(agentId: string, messageId: string) {

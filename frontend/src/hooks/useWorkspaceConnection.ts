@@ -11,12 +11,14 @@ import { watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { TerminalStatus as TerminalStatusEnum } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
+import { getFailHandler, getFlushHandler } from '~/stores/pendingMessages'
 import { tabKey } from '~/stores/tab.store'
 
 const log = createLogger('workspace')
@@ -287,6 +289,27 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const sc = inner.value
         setWorkerOnline(sc.workerOnline)
 
+        // Before applying the new status, detect STARTING → ACTIVE /
+        // STARTUP_FAILED transitions so we can drain (or mark-failed)
+        // the per-agent pending-message queue. Done before updateAgent
+        // so the old status is still readable.
+        const prev = agentStore.state.agents.find(a => a.id === sc.agentId)
+        if (prev?.status === AgentStatus.STARTING) {
+          const queued = chatStore.takePendingOutbound(sc.agentId)
+          if (queued.length > 0) {
+            if (sc.status === AgentStatus.ACTIVE) {
+              const flush = getFlushHandler(sc.agentId)
+              if (flush)
+                void flush(queued)
+            }
+            else if (sc.status === AgentStatus.STARTUP_FAILED) {
+              const fail = getFailHandler(sc.agentId)
+              if (fail)
+                fail(queued)
+            }
+          }
+        }
+
         // When a settings change is in progress (optimistic update active),
         // don't overwrite the optimistically-set fields — the pending RPC
         // will resolve or revert them.
@@ -300,6 +323,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
         agentStore.updateAgent(sc.agentId, {
           ...(hasStatus ? { status: sc.status, agentSessionId: sc.agentSessionId } : {}),
+          // Carry startupError alongside status transitions so the tab's
+          // in-tab error view can render the server-formatted message.
+          // Only set on the failed/cleared transitions — other status
+          // changes (e.g. INACTIVE from turn end) leave it alone.
+          ...(sc.status === AgentStatus.STARTUP_FAILED ? { startupError: sc.startupError } : {}),
+          ...(sc.status === AgentStatus.ACTIVE ? { startupError: '' } : {}),
           ...(pendingSettings
             ? {}
             : {
@@ -447,6 +476,39 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'closed':
         tabStore.markTerminalExited(terminalId)
         break
+      case 'statusChange': {
+        const sc = termEvent.event.value
+        // Only propagate into the tab store when the server reports a
+        // terminal lifecycle transition — STARTING, READY, or
+        // STARTUP_FAILED. READY and STARTUP_FAILED both arrive on
+        // normal subscribe via WatchEvents's catch-up, so the race of a
+        // late subscriber missing the one-shot broadcast is closed.
+        const existingTab = tabStore.state.tabs.find(
+          t => t.type === TabType.TERMINAL && t.id === terminalId,
+        )
+        switch (sc.status) {
+          case TerminalStatusEnum.STARTING:
+            if (existingTab?.status !== 'running') {
+              tabStore.updateTab(TabType.TERMINAL, terminalId, { status: 'starting' })
+            }
+            break
+          case TerminalStatusEnum.READY:
+            // Preserve 'disconnected' / 'exited' — a previously-alive
+            // terminal whose worker reconnected should not be dragged
+            // back to 'running'.
+            if (existingTab?.status === 'starting' || existingTab?.status === undefined) {
+              tabStore.updateTab(TabType.TERMINAL, terminalId, { status: 'running', startupError: undefined })
+            }
+            break
+          case TerminalStatusEnum.STARTUP_FAILED:
+            tabStore.updateTab(TabType.TERMINAL, terminalId, {
+              status: 'startup-failed',
+              startupError: sc.startupError || undefined,
+            })
+            break
+        }
+        break
+      }
     }
   }
 

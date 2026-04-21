@@ -1,6 +1,7 @@
 import type { listTerminals } from '~/api/workerRpc'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
+import { TerminalStatus as TerminalStatusEnum } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { after, first, mid } from '~/lib/lexorank'
 
@@ -9,7 +10,7 @@ export { TabType }
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
-export type TerminalStatus = 'running' | 'disconnected' | 'exited'
+export type TerminalStatus = 'starting' | 'running' | 'disconnected' | 'exited' | 'startup-failed'
 
 export interface Tab {
   type: TabType
@@ -41,6 +42,8 @@ export interface Tab {
   screen?: Uint8Array
   cols?: number
   rows?: number
+  /** Error string from TerminalStatusChange when status is 'startup-failed'. */
+  startupError?: string
 }
 
 type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
@@ -51,6 +54,18 @@ type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][numb
  * `tileId`, `position`) which the caller controls.
  */
 export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<Tab> {
+  let status: TerminalStatus
+  switch (term.status) {
+    case TerminalStatusEnum.STARTING:
+      status = 'starting'
+      break
+    case TerminalStatusEnum.STARTUP_FAILED:
+      status = 'startup-failed'
+      break
+    case TerminalStatusEnum.READY:
+    default:
+      status = term.exited ? 'exited' : 'running'
+  }
   return {
     title: term.title || undefined,
     workerId,
@@ -61,7 +76,22 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     rows: term.rows || undefined,
     gitBranch: term.gitBranch || undefined,
     gitOriginUrl: term.gitOriginUrl || undefined,
-    status: term.exited ? 'exited' : 'running',
+    status,
+    startupError: term.startupError || undefined,
+  }
+}
+
+/** Map the proto TerminalStatus enum onto the store's TerminalStatus. */
+export function terminalStatusToStoreStatus(status: TerminalStatusEnum): TerminalStatus {
+  switch (status) {
+    case TerminalStatusEnum.STARTING:
+      return 'starting'
+    case TerminalStatusEnum.STARTUP_FAILED:
+      return 'startup-failed'
+    case TerminalStatusEnum.READY:
+      return 'running'
+    default:
+      return 'running'
   }
 }
 

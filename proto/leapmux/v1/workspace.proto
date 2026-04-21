@@ -300,5 +300,6 @@ message TerminalEvent {
   oneof event {
     TerminalData data = 2;
     TerminalClosed closed = 3;
+    TerminalStatusChange status_change = 4;
   }
 }

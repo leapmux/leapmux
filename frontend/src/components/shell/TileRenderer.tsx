@@ -19,11 +19,12 @@ import { createEffect, createMemo, For, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
+import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
-import { AgentChatMessageSchema, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
@@ -32,6 +33,7 @@ import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
+import { clearPendingHandlers, setPendingHandlers } from '~/stores/pendingMessages'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { TabBar } from './TabBar'
@@ -279,7 +281,33 @@ export function createTileRenderer(opts: TileRendererOpts) {
           {(at) => {
             const agentId = at.id
             const agent = () => agentStore.state.agents.find(a => a.id === agentId)
+            setPendingHandlers(
+              agentId,
+              async (msgs) => {
+                const wid = agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
+                for (const m of msgs) {
+                  chatStore.clearMessagePendingLabel(m.localId)
+                  try {
+                    await workerRpc.sendAgentMessage(wid, {
+                      agentId,
+                      content: m.content,
+                      attachments: m.attachments,
+                    })
+                  }
+                  catch {
+                    chatStore.setMessageError(m.localId, 'Failed to deliver')
+                  }
+                }
+              },
+              (msgs) => {
+                for (const m of msgs) {
+                  chatStore.clearMessagePendingLabel(m.localId)
+                  chatStore.setMessageError(m.localId, 'Agent failed to start')
+                }
+              },
+            )
             onCleanup(() => {
+              clearPendingHandlers(agentId)
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
               chatHandlers.delete(agentId)
@@ -297,6 +325,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     streamingType={agentSessionStore.getInfo(agentId).streamingType}
                     agentWorking={agentThinking(agentId)}
                     messageErrors={chatStore.state.messageErrors}
+                    messagePendingLabels={chatStore.state.messagePendingLabels}
                     onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
                     workingDir={agentStore.state.agents.find(a => a.id === agentId)?.workingDir}
@@ -335,6 +364,19 @@ export function createTileRenderer(opts: TileRendererOpts) {
                           appendText(agentId, text)
                           focusEditorRef.current?.()
                         }}
+                    startupPhase={(() => {
+                      const a = agentStore.state.agents.find(a => a.id === agentId)
+                      if (!a)
+                        return undefined
+                      if (a.status === AgentStatus.STARTING)
+                        return 'starting'
+                      if (a.status === AgentStatus.STARTUP_FAILED)
+                        return 'startup-failed'
+                      return undefined
+                    })()}
+                    startupError={agentStore.state.agents.find(a => a.id === agentId)?.startupError}
+                    providerLabel={agentProviderLabel(agentStore.state.agents.find(a => a.id === agentId)?.agentProvider)}
+                    onCloseAgentTab={() => void agentOps.handleCloseAgent(agentId)}
                   />
                 </Show>
               </div>
@@ -377,6 +419,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   onResize={termOps.handleTerminalResize}
                   onTitleChange={termOps.handleTerminalTitleChange}
                   onBell={termOps.handleTerminalBell}
+                  onCloseTab={id => void termOps.handleTerminalClose(id)}
                   pageScrollRef={(fn) => {
                     terminalPageScroll = fn
                     syncTerminalHandler()
@@ -543,6 +586,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             return
           forceScrollToBottomRef.current?.()
           const sendAgent = agentStore.state.agents.find(a => a.id === id)
+          const status = sendAgent?.status
 
           // Build optimistic message JSON with attachment data so retry can
           // recover the binary content without re-uploading.
@@ -568,13 +612,35 @@ export function createTileRenderer(opts: TileRendererOpts) {
           })
           chatStore.addMessage(id, localMsg)
 
-          try {
-            const protoAttachments = fileAttachments?.map(a => ({
-              filename: a.filename,
-              mimeType: a.mimeType,
-              data: a.data,
-            })) ?? []
+          const protoAttachments = fileAttachments?.map(a => ({
+            filename: a.filename,
+            mimeType: a.mimeType,
+            data: a.data,
+          })) ?? []
 
+          // Agent is still starting — queue the message. The
+          // useWorkspaceConnection status-change handler flushes on
+          // ACTIVE, or marks failed on STARTUP_FAILED.
+          if (status === AgentStatus.STARTING) {
+            chatStore.setMessagePendingLabel(localId, `Queued — ${agentProviderLabel(sendAgent?.agentProvider)} is starting…`)
+            chatStore.enqueuePendingOutbound(id, { localId, content, attachments: protoAttachments })
+            return
+          }
+          // Agent failed to start — render the message as an error
+          // bubble immediately and reject the send.
+          if (status === AgentStatus.STARTUP_FAILED) {
+            chatStore.setMessageError(localId, 'Agent failed to start')
+            chatStore.persistLocalMessage(
+              id,
+              localId,
+              content,
+              'Agent failed to start',
+              fileAttachments?.map(a => ({ filename: a.filename, mime_type: a.mimeType, data: uint8ArrayToBase64(a.data) })),
+            )
+            return
+          }
+
+          try {
             await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', {
               agentId: id,
               content,

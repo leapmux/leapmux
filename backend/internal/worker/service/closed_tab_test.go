@@ -110,6 +110,7 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 		DataDir:   t.TempDir(),
 		Watchers:  NewWatcherManager(),
 		Terminals: terminal.NewManager(),
+		Startup:   newStartupRegistry(),
 	}
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.Output.DataDir = svc.DataDir
@@ -387,6 +388,12 @@ func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	terminalID := openResp.GetTerminalId()
 	require.NotEmpty(t, terminalID)
+
+	// OpenTerminal now returns before the PTY is spawned — wait for
+	// READY before sending input.
+	testutil.AssertEventually(t, func() bool {
+		return svc.Terminals.HasTerminal(terminalID)
+	}, "expected terminal to be ready")
 
 	w2 := &testResponseWriter{channelID: "test-ch"}
 	enter := testutil.TestShellEnter()

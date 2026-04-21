@@ -13,6 +13,8 @@ import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { spinner } from '~/styles/animations.css'
+import { AgentStartupError } from './AgentStartupError'
+import { AgentStartupOverlay } from './AgentStartupOverlay'
 import * as styles from './ChatView.css'
 import { markdownContent } from './markdownContent.css'
 import { classifyParsedMessage, MessageBubble } from './MessageBubble'
@@ -28,6 +30,8 @@ interface ChatViewProps {
   /** Whether the agent is actively working (for showing the thinking indicator). */
   agentWorking?: boolean
   messageErrors?: Record<string, string>
+  /** Per-message non-error sublabels (e.g. "Queued — agent is starting…"). */
+  messagePendingLabels?: Record<string, string>
   onRetryMessage?: (messageId: string) => void
   onDeleteMessage?: (messageId: string) => void
   /** Workspace working directory for relativizing file paths in tool messages. */
@@ -66,6 +70,19 @@ interface ChatViewProps {
   getToolResultBySpanId?: (spanId: string) => AgentChatMessage | undefined
   /** Look up live Codex span stream segments by span id. */
   getCommandStreamBySpanId?: (spanId: string) => CommandStreamSegment[]
+  /**
+   * Startup state for the agent. When 'starting', the empty-state area
+   * shows a loader with the provider name; while 'startup-failed', it
+   * shows the server error in the --danger color. The editor beneath
+   * remains interactive during 'starting' so the user can type ahead.
+   */
+  startupPhase?: 'starting' | 'startup-failed' | undefined
+  /** Error text from the backend's AgentStatusChange.startup_error. */
+  startupError?: string
+  /** Human-readable label for the agent provider (e.g. "Claude Code"). */
+  providerLabel?: string
+  /** Called when the user clicks "Close tab" in the startup-error state. */
+  onCloseAgentTab?: () => void
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
@@ -551,7 +568,25 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         >
           <Show
             when={hasVisibleEntries() || props.streamingText || props.agentWorking}
-            fallback={<div class={styles.emptyChat}>Send a message to start</div>}
+            fallback={(
+              <Show
+                when={props.startupPhase === 'starting'}
+                fallback={(
+                  <Show
+                    when={props.startupPhase === 'startup-failed'}
+                    fallback={<div class={styles.emptyChat}>Send a message to start</div>}
+                  >
+                    <AgentStartupError
+                      providerLabel={props.providerLabel ?? 'Agent'}
+                      error={props.startupError ?? ''}
+                      onCloseTab={props.onCloseAgentTab}
+                    />
+                  </Show>
+                )}
+              >
+                <AgentStartupOverlay providerLabel={props.providerLabel ?? 'agent'} />
+              </Show>
+            )}
           >
             <Show when={props.fetchingOlder}>
               <div class={styles.loadingOlderIndicator}>
@@ -584,6 +619,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         parsed={parsed}
                         category={category}
                         error={props.messageErrors?.[msg.id]}
+                        pendingLabel={props.messagePendingLabels?.[msg.id]}
                         onRetry={() => props.onRetryMessage?.(msg.id)}
                         onDelete={() => props.onDeleteMessage?.(msg.id)}
                         workingDir={props.workingDir}
