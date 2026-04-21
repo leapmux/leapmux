@@ -334,7 +334,7 @@ func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T
 		ExtraSettings: `{"primaryAgent":"build"}`,
 	}))
 
-	err := svc.persistConfirmedAgentSettings(
+	_, err := svc.persistConfirmedAgentSettings(
 		"agent-opencode",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		"",
@@ -378,7 +378,7 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 	// Simulate what the OpenAgent handler does: call persistConfirmedAgentSettings
 	// with empty requested extraSettings and confirmed settings that include
 	// the discovered primary agent.
-	err := svc.persistConfirmedAgentSettings(
+	_, err := svc.persistConfirmedAgentSettings(
 		"agent-opencode",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		"",  // model (empty, will be overridden by confirmed)
@@ -439,7 +439,7 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testi
 	svc.Agents.PreloadCache("agent-gemini", models, groups)
 
 	// Persist confirmed settings — should also persist available models/groups.
-	err := svc.persistConfirmedAgentSettings(
+	_, err := svc.persistConfirmedAgentSettings(
 		"agent-gemini",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		"auto", "", "", nil,

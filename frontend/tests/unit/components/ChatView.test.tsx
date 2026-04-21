@@ -5,7 +5,7 @@ import { createSignal } from 'solid-js'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 
 const A_TXT_RE = /a\.txt/
 const B_TXT_RE = /b\.txt/
@@ -286,6 +286,74 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
+  })
+
+  // The AgentStartupBanner sub-component is the visible surface of the
+  // backend's phased STARTING broadcasts. These tests lock in the
+  // fallback → phase-message → error contract so a regression in the
+  // startup-panel plumbing is caught at the unit level.
+  it('shows the default "Starting <provider>…" label when no startup_message is set', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={[]}
+          streamingText=""
+          agentStatus={AgentStatus.STARTING}
+          providerLabel="Claude Code"
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('agent-startup-overlay')).toBeInTheDocument()
+    expect(screen.getByText('Starting Claude Code…')).toBeInTheDocument()
+  })
+
+  it('shows the backend startup_message when one is provided (overrides the default)', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={[]}
+          streamingText=""
+          agentStatus={AgentStatus.STARTING}
+          providerLabel="Claude Code"
+          startupMessage="Checking Git status…"
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByText('Checking Git status…')).toBeInTheDocument()
+    // Default label must not also render — the backend message wins.
+    expect(screen.queryByText('Starting Claude Code…')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the default label when startup_message is empty string', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={[]}
+          streamingText=""
+          agentStatus={AgentStatus.STARTING}
+          providerLabel="Claude Code"
+          startupMessage=""
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByText('Starting Claude Code…')).toBeInTheDocument()
+  })
+
+  it('renders the startup-error banner with the server error on STARTUP_FAILED', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={[]}
+          streamingText=""
+          agentStatus={AgentStatus.STARTUP_FAILED}
+          providerLabel="Claude Code"
+          startupError="exec: claude: not found"
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('agent-startup-error')).toBeInTheDocument()
+    expect(screen.getByText('Claude Code failed to start')).toBeInTheDocument()
+    expect(screen.getByText('exec: claude: not found')).toBeInTheDocument()
   })
 
   it('renders empty state when all messages are hidden', () => {

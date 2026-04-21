@@ -289,10 +289,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const sc = inner.value
         setWorkerOnline(sc.workerOnline)
 
-        // Before applying the new status, detect STARTING → ACTIVE /
-        // STARTUP_FAILED transitions so we can drain (or mark-failed)
-        // the per-agent pending-message queue. Done before updateAgent
-        // so the old status is still readable.
+        // Read the prior status before updateAgent overwrites it so
+        // STARTING → ACTIVE / STARTUP_FAILED transitions can drain the
+        // per-agent pending-message queue.
         const prev = agentStore.state.agents.find(a => a.id === sc.agentId)
         if (prev?.status === AgentStatus.STARTING) {
           const queued = chatStore.takePendingOutbound(sc.agentId)
@@ -343,6 +342,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           // changes (e.g. INACTIVE from turn end) leave it alone.
           ...(sc.status === AgentStatus.STARTUP_FAILED ? { startupError: sc.startupError } : {}),
           ...(sc.status === AgentStatus.ACTIVE ? { startupError: '' } : {}),
+          // Carry startupMessage while STARTING so the startup panel can
+          // show the current phase ("Checking Git status…", "Starting
+          // Claude Code…"). Clear on any terminal transition; ignore
+          // status-less events (catchUp sentinels, git-only updates) so
+          // an unrelated event doesn't wipe a live phase label.
+          ...(sc.status === AgentStatus.STARTING
+            ? { startupMessage: sc.startupMessage }
+            : hasStatus ? { startupMessage: '' } : {}),
           ...(pendingSettings
             ? {}
             : {
@@ -509,7 +516,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         )
         switch (sc.status) {
           case TerminalStatusEnum.STARTING:
-            if (existingTab?.status !== 'running') {
+            if (existingTab && existingTab.status !== 'running' && existingTab.status !== 'starting') {
               tabStore.updateTab(TabType.TERMINAL, terminalId, { status: 'starting' })
             }
             break

@@ -339,6 +339,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                         }}
                     agentStatus={agent()?.status}
                     startupError={agent()?.startupError}
+                    startupMessage={agent()?.startupMessage}
                     providerLabel={agentProviderLabel(agent()?.agentProvider)}
                   />
                 </Show>

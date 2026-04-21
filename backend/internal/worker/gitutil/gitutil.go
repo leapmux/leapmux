@@ -8,11 +8,41 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/procutil"
 )
+
+// BatchGetGitStatus returns one AgentGitStatus per input directory,
+// deduplicating identical paths so a request listing many tabs rooted at
+// the same repo only runs a single `git status` shell-out. Unique paths
+// are fanned out concurrently; results are mapped back to every position
+// that asked for that path. Empty-string entries yield nil.
+func BatchGetGitStatus(dirs []string) []*leapmuxv1.AgentGitStatus {
+	results := make([]*leapmuxv1.AgentGitStatus, len(dirs))
+	unique := make(map[string][]int, len(dirs))
+	for i, d := range dirs {
+		if d == "" {
+			continue
+		}
+		unique[d] = append(unique[d], i)
+	}
+	var wg sync.WaitGroup
+	for dir, indexes := range unique {
+		wg.Add(1)
+		go func(dir string, indexes []int) {
+			defer wg.Done()
+			gs := GetGitStatus(dir)
+			for _, idx := range indexes {
+				results[idx] = gs
+			}
+		}(dir, indexes)
+	}
+	wg.Wait()
+	return results
+}
 
 // IsLinkedWorktreeGitDir reports whether a `git rev-parse --git-dir` output
 // points at a linked worktree's gitdir (.git/worktrees/<name>).

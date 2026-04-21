@@ -54,6 +54,12 @@ func (r *startupCore) succeed(id string) {
 }
 
 // fail retains the entry with the error string for later observation.
+// Entries live until CloseAgent / CloseTerminal calls cancelAndClear,
+// so a failed tab the user never closes keeps its entry for the
+// worker's lifetime. The practical bound is the open-tab count (one
+// entry per failed tab) and the DB's startup_error column is the
+// authoritative source across restarts, so a TTL would add complexity
+// without meaningfully reducing memory.
 func (r *startupCore) fail(id, startupError string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

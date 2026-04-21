@@ -401,3 +401,97 @@ describe('streaming text preservation', () => {
     })
   })
 })
+
+/**
+ * These tests lock in the startup_message plumbing rules in
+ * useWorkspaceConnection's agent statusChange handler:
+ *  - STARTING status → store sc.startupMessage on the agent record.
+ *  - Any other concrete status → clear startupMessage (so stale phase
+ *    labels don't linger).
+ *  - UNSPECIFIED / status-less events (catchUp sentinels, git-only
+ *    updates) → leave startupMessage alone.
+ */
+describe('startupMessage handling in agent statusChange', () => {
+  function applyStatusChange(
+    agentStore: ReturnType<typeof createAgentStore>,
+    sc: { agentId: string, status: AgentStatus, startupMessage?: string },
+  ) {
+    const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
+    agentStore.updateAgent(sc.agentId, {
+      ...(hasStatus ? { status: sc.status } : {}),
+      ...(sc.status === AgentStatus.STARTING
+        ? { startupMessage: sc.startupMessage ?? '' }
+        : hasStatus ? { startupMessage: '' } : {}),
+    })
+  }
+
+  it('stores startupMessage while STARTING so the startup panel can render the phase label', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      agentStore.addAgent({ id: 'agent-1', status: AgentStatus.STARTING } as Parameters<typeof agentStore.addAgent>[0])
+
+      applyStatusChange(agentStore, {
+        agentId: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Checking Git status…',
+      })
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Checking Git status…')
+
+      applyStatusChange(agentStore, {
+        agentId: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Starting Claude Code…',
+      })
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Starting Claude Code…')
+      dispose()
+    })
+  })
+
+  it('clears startupMessage on ACTIVE so the label does not linger after startup succeeds', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      agentStore.addAgent({
+        id: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Starting Claude Code…',
+      } as Parameters<typeof agentStore.addAgent>[0])
+
+      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.ACTIVE })
+
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('')
+      dispose()
+    })
+  })
+
+  it('clears startupMessage on STARTUP_FAILED so the error banner replaces the phase label', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      agentStore.addAgent({
+        id: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Checking Git status…',
+      } as Parameters<typeof agentStore.addAgent>[0])
+
+      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.STARTUP_FAILED })
+
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('')
+      dispose()
+    })
+  })
+
+  it('leaves startupMessage alone on status-less events (UNSPECIFIED) so catchUp sentinels do not wipe live phases', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      agentStore.addAgent({
+        id: 'agent-1',
+        status: AgentStatus.STARTING,
+        startupMessage: 'Checking Git status…',
+      } as Parameters<typeof agentStore.addAgent>[0])
+
+      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.UNSPECIFIED })
+
+      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Checking Git status…')
+      dispose()
+    })
+  })
+})

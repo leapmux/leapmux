@@ -144,3 +144,109 @@ func TestGetGitStatus_DetachedHEAD(t *testing.T) {
 	// Should show short SHA, not empty string or "HEAD".
 	assert.Equal(t, expectedSHA, status.Branch)
 }
+
+// TestBatchGetGitStatus_HappyPath runs BatchGetGitStatus across three
+// distinct repositories and verifies every slot receives a non-nil
+// status with the expected origin URL. This is the base case: no
+// duplicates, no empty strings, N unique repos → N results.
+func TestBatchGetGitStatus_HappyPath(t *testing.T) {
+	dir1 := initRepo(t)
+	dir2 := initRepo(t)
+	dir3 := initRepo(t)
+	for dir, origin := range map[string]string{
+		dir1: "https://example.com/one.git",
+		dir2: "https://example.com/two.git",
+		dir3: "https://example.com/three.git",
+	} {
+		cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", origin)
+		require.NoError(t, cmd.Run())
+	}
+
+	results := BatchGetGitStatus([]string{dir1, dir2, dir3})
+	require.Len(t, results, 3)
+	assert.Equal(t, "https://example.com/one.git", results[0].GetOriginUrl())
+	assert.Equal(t, "https://example.com/two.git", results[1].GetOriginUrl())
+	assert.Equal(t, "https://example.com/three.git", results[2].GetOriginUrl())
+}
+
+// TestBatchGetGitStatus_DeduplicatesIdenticalPaths verifies that
+// multiple slots pointing at the same directory receive the same
+// status pointer (one git shell-out, reused across slots). This is
+// the whole point of batching — multiple agent/terminal tabs on the
+// same repo shouldn't pay N× `git status` cost.
+func TestBatchGetGitStatus_DeduplicatesIdenticalPaths(t *testing.T) {
+	dir := initRepo(t)
+	cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", "https://example.com/shared.git")
+	require.NoError(t, cmd.Run())
+
+	results := BatchGetGitStatus([]string{dir, dir, dir, dir})
+	require.Len(t, results, 4)
+	// All slots must share the identical pointer — proof that the
+	// shell-out ran once and the result was fan-out to every slot.
+	for i := 1; i < len(results); i++ {
+		assert.Same(t, results[0], results[i],
+			"slot %d should share the dedup'd status pointer with slot 0", i)
+	}
+	assert.Equal(t, "https://example.com/shared.git", results[0].GetOriginUrl())
+}
+
+// TestBatchGetGitStatus_MixedDirsAndEmptyPaths covers the common case:
+// some slots are real repos, some share a repo, some are empty string
+// (e.g. terminals with no shell_start_dir). Empty-string slots must
+// map to nil; duplicates must dedupe; unique repos must get their own
+// status.
+func TestBatchGetGitStatus_MixedDirsAndEmptyPaths(t *testing.T) {
+	repoA := initRepo(t)
+	repoB := initRepo(t)
+	require.NoError(t, exec.Command("git", "-C", repoA, "remote", "add", "origin", "https://example.com/a.git").Run())
+	require.NoError(t, exec.Command("git", "-C", repoB, "remote", "add", "origin", "https://example.com/b.git").Run())
+
+	results := BatchGetGitStatus([]string{repoA, "", repoA, repoB, ""})
+	require.Len(t, results, 5)
+
+	assert.NotNil(t, results[0])
+	assert.Nil(t, results[1], "empty path must map to nil")
+	assert.Same(t, results[0], results[2], "repoA slots must share the dedup'd pointer")
+	assert.NotNil(t, results[3])
+	assert.NotSame(t, results[0], results[3], "different repos must yield different results")
+	assert.Nil(t, results[4], "second empty path must also map to nil")
+
+	assert.Equal(t, "https://example.com/a.git", results[0].GetOriginUrl())
+	assert.Equal(t, "https://example.com/b.git", results[3].GetOriginUrl())
+}
+
+// TestBatchGetGitStatus_NonGitDirsYieldNil verifies that
+// non-repository paths flow through as nil (matching GetGitStatus's
+// behavior for non-repo directories). Mixed with a real repo so we
+// also confirm the real one succeeds alongside.
+func TestBatchGetGitStatus_NonGitDirsYieldNil(t *testing.T) {
+	repo := initRepo(t)
+	notGit := t.TempDir()
+
+	results := BatchGetGitStatus([]string{repo, notGit})
+	require.Len(t, results, 2)
+	assert.NotNil(t, results[0])
+	assert.Nil(t, results[1], "non-git directory should map to nil")
+}
+
+// TestBatchGetGitStatus_EmptyInput handles the empty-slice edge case
+// that would otherwise panic or hang if the fan-out logic assumes ≥1
+// entry.
+func TestBatchGetGitStatus_EmptyInput(t *testing.T) {
+	results := BatchGetGitStatus(nil)
+	assert.Empty(t, results)
+
+	results = BatchGetGitStatus([]string{})
+	assert.Empty(t, results)
+}
+
+// TestBatchGetGitStatus_AllEmptyPathsYieldNilSlice confirms that a
+// batch of only empty-string inputs produces a slice of the correct
+// length, fully populated with nil — no git shell-outs run.
+func TestBatchGetGitStatus_AllEmptyPathsYieldNilSlice(t *testing.T) {
+	results := BatchGetGitStatus([]string{"", "", ""})
+	require.Len(t, results, 3)
+	for i, r := range results {
+		assert.Nil(t, r, "slot %d should be nil for empty-path input", i)
+	}
+}

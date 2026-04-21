@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -419,6 +418,4 @@ func TestGetAgentByID_StartupErrorSurvivesClose(t *testing.T) {
 	rows, err := svc.Queries.ListAgentsByIDs(ctx, []string{agentID})
 	require.NoError(t, err)
 	assert.Empty(t, rows, "ListAgentsByIDs must not surface closed rows")
-
-	_ = sql.ErrNoRows // silence unused-import
 }

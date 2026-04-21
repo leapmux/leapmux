@@ -60,10 +60,6 @@ func TestOpenAgent_DefaultsEffortFromModel(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	require.NotNil(t, resp.GetAgent())
 
-	// The response is sent before startup completes, so effort on the
-	// immediate response reflects the pre-startup default (also "xhigh"
-	// because the server fills it from the model). The DB row is updated
-	// by persistConfirmedAgentSettings in the goroutine.
 	assert.Equal(t, "xhigh", resp.GetAgent().GetEffort(),
 		"response agent.effort should reflect the resolved default effort")
 

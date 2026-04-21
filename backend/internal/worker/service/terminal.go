@@ -173,7 +173,15 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, resp)
 
 		// Kick off PTY spawn in the background.
-		go svc.runTerminalStartup(terminalID, workspaceID, shell, workingDir, shellStartDir, cols, rows, gm, outputFn, exitFn)
+		go svc.runTerminalStartup(terminal.Options{
+			ID:            terminalID,
+			WorkspaceID:   workspaceID,
+			Shell:         shell,
+			WorkingDir:    workingDir,
+			ShellStartDir: shellStartDir,
+			Cols:          uint16(cols),
+			Rows:          uint16(rows),
+		}, gm, outputFn, exitFn)
 	})
 
 	// CloseTerminal stops and removes a terminal session.
@@ -315,10 +323,13 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			accessibleWsIDs = svc.Channels.AccessibleWorkspaceIDs(chID)
 		}
 
-		// Collect running/exited terminals from the in-memory manager.
+		// Collect running/exited terminals from the in-memory manager and
+		// any DB-only rows, then compute git info for all of them in
+		// parallel to keep ListTerminals from serializing N git shell-outs.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
+		var gitDirs []string
 		for _, e := range entries {
 			if accessibleWsIDs != nil && !accessibleWsIDs[e.Meta.WorkspaceID] {
 				continue
@@ -339,8 +350,8 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				ti.Status = sup
 				ti.StartupError = errStr
 			}
-			populateTerminalGitInfo(ti, e.Meta.ShellStartDir)
 			terminals = append(terminals, ti)
+			gitDirs = append(gitDirs, e.Meta.ShellStartDir)
 		}
 
 		// Also include terminals from the DB that have been removed from
@@ -369,8 +380,27 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					Status:        status,
 					StartupError:  startupError,
 				}
-				populateTerminalGitInfo(ti, ts.ShellStartDir)
 				terminals = append(terminals, ti)
+				gitDirs = append(gitDirs, ts.ShellStartDir)
+			}
+		}
+
+		// Dedupe + fan out git status shell-outs: resolve the same empty
+		// ShellStartDir → WorkingDir fallback here so BatchGetGitStatus
+		// can dedupe across terminals that share a repo.
+		resolvedDirs := make([]string, len(terminals))
+		for i, ti := range terminals {
+			dir := gitDirs[i]
+			if dir == "" {
+				dir = ti.GetWorkingDir()
+			}
+			resolvedDirs[i] = dir
+		}
+		gitStatuses := gitutil.BatchGetGitStatus(resolvedDirs)
+		for i, gs := range gitStatuses {
+			if gs != nil {
+				terminals[i].GitBranch = gs.Branch
+				terminals[i].GitOriginUrl = gs.OriginUrl
 			}
 		}
 
@@ -397,17 +427,10 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 
 // runTerminalStartup is the async body of OpenTerminal: it spawns the PTY
 // and reports READY or STARTUP_FAILED to the frontend. On failure it also
-// rolls back any git-mode side effects and removes the DB row.
-func (svc *Context) runTerminalStartup(terminalID, workspaceID, shell, workingDir, shellStartDir string, cols, rows uint32, gm gitModeResult, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
-	err := svc.startTerminal(terminal.Options{
-		ID:            terminalID,
-		WorkspaceID:   workspaceID,
-		Shell:         shell,
-		WorkingDir:    workingDir,
-		ShellStartDir: shellStartDir,
-		Cols:          uint16(cols),
-		Rows:          uint16(rows),
-	}, outputFn, exitFn)
+// rolls back any git-mode side effects.
+func (svc *Context) runTerminalStartup(opts terminal.Options, gm gitModeResult, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
+	terminalID := opts.ID
+	err := svc.startTerminal(opts, outputFn, exitFn)
 	if err != nil {
 		errMsg := err.Error()
 		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", errMsg)
@@ -416,30 +439,33 @@ func (svc *Context) runTerminalStartup(terminalID, workspaceID, shell, workingDi
 		// Close-tab button which calls CloseTerminal. Rollback git-mode
 		// changes immediately though (worktree creation can be expensive).
 		svc.rollbackGitMode(gm)
-		// Persist the error so the startup panel survives a worker
-		// restart (the in-memory registry is wiped on restart).
-		if dbErr := svc.Queries.SetTerminalStartupError(bgCtx(), db.SetTerminalStartupErrorParams{
-			StartupError: errMsg,
-			ID:           terminalID,
-		}); dbErr != nil {
-			slog.Warn("failed to persist terminal startup error", "terminal_id", terminalID, "error", dbErr)
-		}
+		svc.persistTerminalStartupError(terminalID, errMsg)
 		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, errMsg)
-		// Mark the registry last so waitForStartupFailure in tests is a
-		// reliable "failure-handling goroutine finished" signal.
+		// Mark the registry last: rollback, DB persistence, and the
+		// STARTUP_FAILED broadcast must be durable before any observer
+		// sees the terminal state.
 		svc.TerminalStartup.fail(terminalID, errMsg)
 		return
 	}
-	// Clear any persisted startup_error from a prior failed attempt so
-	// the startup panel doesn't resurrect after a worker restart.
-	if dbErr := svc.Queries.SetTerminalStartupError(bgCtx(), db.SetTerminalStartupErrorParams{
-		StartupError: "",
-		ID:           terminalID,
-	}); dbErr != nil {
-		slog.Warn("failed to clear terminal startup error", "terminal_id", terminalID, "error", dbErr)
-	}
+	svc.persistTerminalStartupError(terminalID, "")
 	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "")
 	svc.TerminalStartup.succeed(terminalID)
+}
+
+// persistTerminalStartupError writes (or clears when errMsg is "") the
+// terminals.startup_error column so the startup panel survives a worker
+// restart that wipes the in-memory registry.
+func (svc *Context) persistTerminalStartupError(terminalID, errMsg string) {
+	if err := svc.Queries.SetTerminalStartupError(bgCtx(), db.SetTerminalStartupErrorParams{
+		StartupError: errMsg,
+		ID:           terminalID,
+	}); err != nil {
+		action := "persist"
+		if errMsg == "" {
+			action = "clear"
+		}
+		slog.Warn("failed to "+action+" terminal startup error", "terminal_id", terminalID, "error", err)
+	}
 }
 
 // buildTerminalStatusChange constructs a TerminalStatusChange proto.
@@ -479,22 +505,4 @@ func (svc *Context) broadcastTerminalStartupStatus(terminalID string, status lea
 			StatusChange: buildTerminalStatusChange(terminalID, status, startupError),
 		},
 	})
-}
-
-// populateTerminalGitInfo fills in the git branch and origin URL fields on a TerminalInfo
-// from the terminal's shell start directory. Best-effort: fields are left empty if the
-// directory is not inside a git repo.
-func populateTerminalGitInfo(ti *leapmuxv1.TerminalInfo, shellStartDir string) {
-	dir := shellStartDir
-	if dir == "" {
-		dir = ti.WorkingDir
-	}
-	if dir == "" {
-		return
-	}
-	gs := gitutil.GetGitStatus(dir)
-	if gs != nil {
-		ti.GitBranch = gs.Branch
-		ti.GitOriginUrl = gs.OriginUrl
-	}
 }

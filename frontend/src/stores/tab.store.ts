@@ -10,6 +10,13 @@ export { TabType }
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
+/**
+ * Frontend-only superset of the backend's TerminalStatus proto enum.
+ * `'starting'`, `'running'`, and `'startup-failed'` map to the proto
+ * values; `'disconnected'` and `'exited'` are client-derived lifecycle
+ * states the backend doesn't carry. Keep as a string union rather than
+ * converging on the proto enum so the UI can reason about all five.
+ */
 export type TerminalStatus = 'starting' | 'running' | 'disconnected' | 'exited' | 'startup-failed'
 
 export interface Tab {

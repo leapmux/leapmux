@@ -21,25 +21,20 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
-// waitForStartupFailure polls until the startup registry reports a
-// STARTUP_FAILED state (for agents) / STARTUP_FAILED state (for terminals)
-// for the given id, or the timeout elapses. The OpenAgent/OpenTerminal RPC
-// now returns as soon as the sync prologue is done; rollback and the
-// failure broadcast happen in the startup goroutine, so tests that assert
-// on rollback state must wait.
+// waitForStartupFailure blocks until the agent or terminal startup
+// registry reports STARTUP_FAILED for id, so tests can synchronize on
+// the async startup goroutine's post-rollback work before asserting.
 func waitForStartupFailure(t *testing.T, svc *Context, id string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testutil.RequireEventually(t, func() bool {
 		if status, _, ok := svc.AgentStartup.status(id); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
-			return
+			return true
 		}
 		if status, _, ok := svc.TerminalStartup.status(id); ok && status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED {
-			return
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("startup never reached STARTUP_FAILED for id=%s", id)
+		return false
+	}, "startup never reached STARTUP_FAILED for id=%s", id)
 }
 
 func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
@@ -61,8 +56,6 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 		WorktreeBranch: branchName,
 	}, w)
 
-	// OpenAgent now returns OK immediately (status=STARTING); the
-	// rollback runs in the async startup goroutine.
 	require.Empty(t, w.errors)
 	require.Eventually(t, func() bool { return !directoryExists(worktreePath) }, 5*time.Second, 20*time.Millisecond)
 	assert.False(t, localBranchExists(t, repoDir, branchName))
@@ -70,14 +63,13 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 	_, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 
-	// Wait for the startup goroutine to fully finish so its post-rollback
-	// DB writes and broadcasts don't race with TempDir cleanup.
+	// Synchronize on the startup goroutine finishing so its post-rollback
+	// DB writes and broadcasts don't race with t.TempDir cleanup.
 	for _, id := range collectAgentIDs(w) {
 		waitForStartupFailure(t, svc, id)
 	}
 }
 
-// directoryExists is a helper for require.Eventually polling.
 func directoryExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -296,9 +288,8 @@ func TestOpenTerminal_DoesNotRollBackSwitchBranchOnStartFailure(t *testing.T) {
 	assert.Equal(t, "feature/existing", currentBranchName(t, repoDir))
 }
 
-// collectTerminalIDs extracts terminal_id values from OpenTerminal responses
-// captured on the test writer. Used by tests that need to synchronize on the
-// async startup goroutine completing.
+// collectTerminalIDs extracts terminal_id values from OpenTerminal
+// responses captured on the test writer.
 func collectTerminalIDs(w *testResponseWriter) []string {
 	var ids []string
 	for _, r := range w.responses {
@@ -310,10 +301,8 @@ func collectTerminalIDs(w *testResponseWriter) []string {
 	return ids
 }
 
-// collectAgentIDs extracts agent ids from OpenAgent responses. Used to
-// synchronize a test on the startup goroutine finishing (via
-// waitForStartupFailure) so TempDir cleanup doesn't race with the
-// goroutine's post-rollback activity (DB writes, broadcasts).
+// collectAgentIDs extracts agent ids from OpenAgent responses on the
+// test writer.
 func collectAgentIDs(w *testResponseWriter) []string {
 	var ids []string
 	for _, r := range w.responses {

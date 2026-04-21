@@ -79,9 +79,41 @@ interface ChatViewProps {
   agentStatus?: AgentStatus
   /** Error text from the backend's AgentStatusChange.startup_error. */
   startupError?: string
+  /** Phase label from AgentStatusChange.startup_message while STARTING (e.g. "Checking Git status…"). */
+  startupMessage?: string
   /** Human-readable label for the agent provider (e.g. "Claude Code"). */
   providerLabel?: string
 }
+
+interface AgentStartupBannerProps {
+  status: AgentStatus | undefined
+  providerLabel: string | undefined
+  startupError: string | undefined
+  startupMessage: string | undefined
+  containerClass: string
+}
+
+const AgentStartupBanner: Component<AgentStartupBannerProps> = props => (
+  <Switch>
+    <Match when={props.status === AgentStatus.STARTING}>
+      <div class={props.containerClass} data-testid="agent-startup-overlay">
+        <StartupSpinner label={props.startupMessage || `Starting ${props.providerLabel ?? 'agent'}…`} />
+      </div>
+    </Match>
+    <Match when={props.status === AgentStatus.STARTUP_FAILED}>
+      <div
+        class={props.containerClass}
+        data-testid="agent-startup-error"
+        style={{ color: 'var(--danger)' }}
+      >
+        <StartupErrorBody
+          title={`${props.providerLabel ?? 'Agent'} failed to start`}
+          error={props.startupError ?? ''}
+        />
+      </div>
+    </Match>
+  </Switch>
+)
 
 export const ChatView: Component<ChatViewProps> = (props) => {
   const prefs = usePreferences()
@@ -568,22 +600,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             when={hasVisibleEntries() || props.streamingText || props.agentWorking}
             fallback={(
               <Switch fallback={<div class={styles.emptyChat}>Send a message to start</div>}>
-                <Match when={props.agentStatus === AgentStatus.STARTING}>
-                  <div class={styles.emptyChat} data-testid="agent-startup-overlay">
-                    <StartupSpinner label={`Starting ${props.providerLabel ?? 'agent'}…`} />
-                  </div>
-                </Match>
-                <Match when={props.agentStatus === AgentStatus.STARTUP_FAILED}>
-                  <div
-                    class={styles.emptyChat}
-                    data-testid="agent-startup-error"
-                    style={{ color: 'var(--danger)' }}
-                  >
-                    <StartupErrorBody
-                      title={`${props.providerLabel ?? 'Agent'} failed to start`}
-                      error={props.startupError ?? ''}
-                    />
-                  </div>
+                <Match when={props.agentStatus === AgentStatus.STARTING || props.agentStatus === AgentStatus.STARTUP_FAILED}>
+                  <AgentStartupBanner
+                    status={props.agentStatus}
+                    providerLabel={props.providerLabel}
+                    startupError={props.startupError}
+                    startupMessage={props.startupMessage}
+                    containerClass={styles.emptyChat}
+                  />
                 </Match>
               </Switch>
             )}
@@ -684,30 +708,13 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       messageListRef!.scrollTop = messageListRef!.scrollHeight
                   }}
                 />
-                {/* Keep the startup panel visible below queued messages
-                    until the agent transitions out of STARTING/FAILED.
-                    The fallback branch above covers the empty state; this
-                    handles the case where the user already typed a
-                    message (which flips the outer Show). */}
-                <Switch>
-                  <Match when={props.agentStatus === AgentStatus.STARTING}>
-                    <div class={styles.startupPanelInline} data-testid="agent-startup-overlay">
-                      <StartupSpinner label={`Starting ${props.providerLabel ?? 'agent'}…`} />
-                    </div>
-                  </Match>
-                  <Match when={props.agentStatus === AgentStatus.STARTUP_FAILED}>
-                    <div
-                      class={styles.startupPanelInline}
-                      data-testid="agent-startup-error"
-                      style={{ color: 'var(--danger)' }}
-                    >
-                      <StartupErrorBody
-                        title={`${props.providerLabel ?? 'Agent'} failed to start`}
-                        error={props.startupError ?? ''}
-                      />
-                    </div>
-                  </Match>
-                </Switch>
+                <AgentStartupBanner
+                  status={props.agentStatus}
+                  providerLabel={props.providerLabel}
+                  startupError={props.startupError}
+                  startupMessage={props.startupMessage}
+                  containerClass={styles.startupPanelInline}
+                />
               </div>
             </SelectionQuotePopover>
           </Show>

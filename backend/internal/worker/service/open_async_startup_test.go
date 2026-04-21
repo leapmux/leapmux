@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 // TestOpenAgent_SyncPrologueReturnsFast asserts that even when startAgent
@@ -102,6 +103,189 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 		}
 		return false
 	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after delayed startup")
+}
+
+// TestOpenAgent_ResponseHasNilGitStatus asserts that the immediate
+// OpenAgent response carries no gitStatus — it's deliberately moved
+// off the sync path and emitted via a subsequent STARTING broadcast so
+// the RPC returns without forking `git status`.
+func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	blocked := make(chan struct{})
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		select {
+		case <-blocked:
+		case <-ctx.Done():
+		}
+		return &leapmuxv1.AgentSettings{}, nil
+	}
+	defer close(blocked)
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    initRepo(t),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+
+	var resp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.Nil(t, resp.GetAgent().GetGitStatus(),
+		"OpenAgent response must not carry gitStatus — it's deferred to the async startup broadcast")
+}
+
+// TestOpenAgent_ActiveBroadcastCarriesGitStatus asserts that the final
+// ACTIVE broadcast emitted by runAgentStartup carries the gitStatus
+// computed in the pre-startAgent phase. Phase-ordering of the
+// intermediate STARTING broadcasts is not asserted here (they may land
+// before the test's WatchEvents subscription registers, since the
+// runAgentStartup goroutine fires concurrently with the RPC response);
+// TestBuildAgentStatusChange verifies the phase/error/gitStatus field
+// mapping directly, race-free.
+func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	// Block startAgent briefly so the test can subscribe before ACTIVE lands.
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		time.Sleep(100 * time.Millisecond)
+		return &leapmuxv1.AgentSettings{}, nil
+	}
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    initRepo(t),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	agentID := openResp.GetAgent().GetId()
+	require.NotEmpty(t, agentID)
+
+	wWatch := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
+	}, wWatch)
+
+	require.Eventually(t, func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			sc := resp.GetAgentEvent().GetStatusChange()
+			if sc == nil || sc.GetStatus() != leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+				continue
+			}
+			assert.NotNil(t, sc.GetGitStatus(), "ACTIVE broadcast must carry gitStatus")
+			return true
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast with gitStatus")
+}
+
+// TestBuildAgentStatusChange covers how the agentStatusDetails fields
+// flow into the AgentStatusChange proto. This is the race-free
+// companion to TestOpenAgent_ActiveBroadcastCarriesGitStatus: it locks
+// in the (gitStatus, startupError, startupMessage) mapping without
+// routing through the broadcast fan-out.
+func TestBuildAgentStatusChange(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	dbAgent := &db.Agent{
+		ID:            "agent-bac",
+		WorkspaceID:   "ws-1",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Model:         "opus[1m]",
+		Effort:        "xhigh",
+		WorkingDir:    t.TempDir(),
+	}
+
+	t.Run("STARTING carries startupMessage and gitStatus, no AvailableModels", func(t *testing.T) {
+		gs := &leapmuxv1.AgentGitStatus{Branch: "main", OriginUrl: "https://example.com/repo.git"}
+		sc := svc.buildAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{
+			gitStatus:      gs,
+			startupMessage: "Checking Git status…",
+		})
+		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, sc.GetStatus())
+		assert.Equal(t, "Checking Git status…", sc.GetStartupMessage())
+		assert.Empty(t, sc.GetStartupError())
+		assert.Same(t, gs, sc.GetGitStatus(), "gitStatus must flow through without a copy")
+		// AvailableModels / OptionGroups are deliberately skipped for non-ACTIVE
+		// so a STARTING broadcast doesn't overwrite the frontend's last-known
+		// catalog with an empty slice.
+		assert.Empty(t, sc.GetAvailableModels())
+		assert.Empty(t, sc.GetAvailableOptionGroups())
+	})
+
+	t.Run("STARTUP_FAILED carries startupError and gitStatus", func(t *testing.T) {
+		gs := &leapmuxv1.AgentGitStatus{Branch: "main"}
+		sc := svc.buildAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, agentStatusDetails{
+			gitStatus:    gs,
+			startupError: "exec: claude: not found",
+		})
+		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, sc.GetStatus())
+		assert.Equal(t, "exec: claude: not found", sc.GetStartupError())
+		assert.Empty(t, sc.GetStartupMessage())
+		assert.Same(t, gs, sc.GetGitStatus())
+	})
+
+	t.Run("empty details produce nil gitStatus and blank message/error", func(t *testing.T) {
+		sc := svc.buildAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{})
+		assert.Nil(t, sc.GetGitStatus(), "nil gitStatus must flow through unchanged (no auto-fetch)")
+		assert.Empty(t, sc.GetStartupMessage())
+		assert.Empty(t, sc.GetStartupError())
+	})
+}
+
+// TestOpenAgent_StartupFailurePhaseCarriesGitStatus asserts that when
+// startAgent fails, the STARTUP_FAILED broadcast still carries the
+// gitStatus computed during the pre-startAgent phase, so the frontend
+// can render branch info alongside the error.
+func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		return nil, errors.New("forced startup failure")
+	}
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    initRepo(t),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	agentID := openResp.GetAgent().GetId()
+
+	wWatch := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
+	}, wWatch)
+
+	require.Eventually(t, func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			sc := resp.GetAgentEvent().GetStatusChange()
+			if sc == nil {
+				continue
+			}
+			if sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+				assert.NotEmpty(t, sc.GetStartupError(), "STARTUP_FAILED must carry the error")
+				assert.NotNil(t, sc.GetGitStatus(),
+					"STARTUP_FAILED must still carry gitStatus computed pre-startAgent")
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "expected STARTUP_FAILED broadcast")
 }
 
 // TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack asserts that

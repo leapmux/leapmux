@@ -390,8 +390,7 @@ func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
 	terminalID := openResp.GetTerminalId()
 	require.NotEmpty(t, terminalID)
 
-	// OpenTerminal now returns before the PTY is spawned — wait for
-	// READY before sending input.
+	// Wait for the async PTY spawn to finish before sending input.
 	testutil.AssertEventually(t, func() bool {
 		return svc.Terminals.HasTerminal(terminalID)
 	}, "expected terminal to be ready")
