@@ -165,17 +165,23 @@ export function Tooltip(props: TooltipProps) {
 
     const handleShow = () => show()
     const handleHide = () => hide()
+    // Clicking (or activating via Space/Enter) means the user is taking an
+    // action — dismiss immediately so the tooltip doesn't linger over a
+    // menu or state change. `click` fires for both mouse and keyboard.
+    const handleDismiss = () => dismiss()
 
     target.addEventListener('mouseenter', handleShow)
     target.addEventListener('mouseleave', handleHide)
     target.addEventListener('focusin', handleShow)
     target.addEventListener('focusout', handleHide)
+    target.addEventListener('click', handleDismiss)
 
     onCleanup(() => {
       target.removeEventListener('mouseenter', handleShow)
       target.removeEventListener('mouseleave', handleHide)
       target.removeEventListener('focusin', handleShow)
       target.removeEventListener('focusout', handleHide)
+      target.removeEventListener('click', handleDismiss)
     })
   })
 

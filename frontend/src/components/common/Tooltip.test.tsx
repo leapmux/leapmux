@@ -34,6 +34,24 @@ describe('tooltip', () => {
     expect(button).not.toHaveAttribute('aria-describedby')
   })
 
+  it('dismisses immediately on click so it does not linger over a triggered menu', () => {
+    render(() => (
+      <Tooltip text="Tooltip text">
+        <button type="button">Trigger</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Trigger' })
+
+    fireEvent.mouseEnter(button)
+    vi.advanceTimersByTime(700)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    fireEvent.click(button)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(button).not.toHaveAttribute('aria-describedby')
+  })
+
   it('uses tooltip text as aria-label when ariaLabel is true', () => {
     render(() => (
       <Tooltip text="Zoom in" ariaLabel>
