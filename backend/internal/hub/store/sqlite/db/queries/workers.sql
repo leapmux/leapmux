@@ -3,6 +3,9 @@ INSERT INTO workers (id, auth_token, registered_by, public_key, mlkem_public_key
 VALUES (?, ?, ?, ?, ?, ?);
 
 -- name: GetWorkerByID :one
+SELECT * FROM workers WHERE id = ? AND deleted_at IS NULL;
+
+-- name: GetWorkerByIDIncludeDeleted :one
 SELECT * FROM workers WHERE id = ?;
 
 -- name: GetWorkerByAuthToken :one

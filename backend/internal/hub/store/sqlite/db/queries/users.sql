@@ -76,7 +76,7 @@ UPDATE users SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
 DELETE FROM users WHERE rowid IN (SELECT u.rowid FROM users u WHERE u.deleted_at IS NOT NULL AND u.deleted_at < ? LIMIT 1000);
 
 -- name: GetUserPrefs :one
-SELECT prefs FROM users WHERE id = ?;
+SELECT prefs FROM users WHERE id = ? AND deleted_at IS NULL;
 
 -- name: UpdateUserPrefs :exec
 UPDATE users SET prefs = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
