@@ -57,17 +57,18 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 	}, w)
 
 	require.Empty(t, w.errors)
-	require.Eventually(t, func() bool { return !directoryExists(worktreePath) }, 5*time.Second, 20*time.Millisecond)
+	// waitForStartupFailure syncs on AgentStartup.fail(), which the runAgentStartup
+	// goroutine calls AFTER rollbackGitMode completes (worktree remove + branch -D).
+	// Assert on git/DB state only once that's done — otherwise `git branch -D` may
+	// still be running when the earlier `directoryExists == false` poll fires.
+	for _, id := range collectAgentIDs(w) {
+		waitForStartupFailure(t, svc, id)
+	}
+	assert.False(t, directoryExists(worktreePath))
 	assert.False(t, localBranchExists(t, repoDir, branchName))
 
 	_, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
-
-	// Synchronize on the startup goroutine finishing so its post-rollback
-	// DB writes and broadcasts don't race with t.TempDir cleanup.
-	for _, id := range collectAgentIDs(w) {
-		waitForStartupFailure(t, svc, id)
-	}
 }
 
 func directoryExists(path string) bool {
@@ -151,15 +152,16 @@ func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 	}, w)
 
 	require.Empty(t, w.errors)
-	require.Eventually(t, func() bool { return !directoryExists(worktreePath) }, 5*time.Second, 20*time.Millisecond)
+	// See TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure for why the
+	// wait-for-fail synchronization precedes the git/DB asserts.
+	for _, id := range collectTerminalIDs(w) {
+		waitForStartupFailure(t, svc, id)
+	}
+	assert.False(t, directoryExists(worktreePath))
 	assert.False(t, localBranchExists(t, repoDir, branchName))
 
 	_, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
-
-	for _, id := range collectTerminalIDs(w) {
-		waitForStartupFailure(t, svc, id)
-	}
 }
 
 func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
@@ -211,7 +213,12 @@ func mustGitOutput(t *testing.T, ctx context.Context, repoDir string, args ...st
 	return out
 }
 
-func TestOpenAgent_RollsBackCreatedWorktreeOnCreateRecordFailure(t *testing.T) {
+// TestOpenAgent_NoWorktreeMutationOnCreateRecordFailure verifies that a
+// createAgentRecord failure aborts before any git mutation. Since validate
+// + DB write both run synchronously in OpenAgent and the worktree/branch
+// creation lives in runAgentStartup, a sync failure must leave the repo
+// untouched — there is literally nothing to roll back.
+func TestOpenAgent_NoWorktreeMutationOnCreateRecordFailure(t *testing.T) {
 	ctx := context.Background()
 	repoDir := initRepo(t)
 	branchName := "feature/agent-create-failure"
@@ -239,7 +246,10 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnCreateRecordFailure(t *testing.T) {
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
 
-func TestOpenAgent_RollsBackCreatedBranchOnCreateRecordFailure(t *testing.T) {
+// TestOpenAgent_NoBranchMutationOnCreateRecordFailure is the create-branch
+// analogue: a failing createAgentRecord returns before `git checkout -b`
+// runs, so the repo's HEAD and branch set are unchanged.
+func TestOpenAgent_NoBranchMutationOnCreateRecordFailure(t *testing.T) {
 	repoDir := initRepo(t)
 	originalBranch := currentBranchName(t, repoDir)
 	branchName := "feature/agent-create-branch"

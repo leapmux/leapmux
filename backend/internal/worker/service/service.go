@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
@@ -447,6 +449,22 @@ func (svc *Context) requireAccessibleTerminal(sender *channel.Sender, terminalID
 		return db.Terminal{}, false
 	}
 	return termRow, true
+}
+
+// sanitizeOptionalTitle normalizes an OpenAgent/OpenTerminal title. An empty
+// title is allowed (falls back to "Agent N"/"Terminal N" assignments
+// downstream); a non-empty title goes through SanitizeName, which caps
+// length at 128 chars and strips control characters + the set known to
+// cause trouble in downstream string templating.
+func sanitizeOptionalTitle(title string) (string, error) {
+	if title == "" {
+		return "", nil
+	}
+	sanitized, err := validate.SanitizeName(title)
+	if err != nil {
+		return "", fmt.Errorf("invalid title: %w", err)
+	}
+	return sanitized, nil
 }
 
 // expandTilde expands a leading "~" or "~/" in a path to the user's home

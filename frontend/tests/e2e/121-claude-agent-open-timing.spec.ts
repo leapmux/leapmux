@@ -290,20 +290,22 @@ test.describe('Claude Code agent open timing', () => {
       marks.sort((a, b) => a.tMs - b.tMs)
       runs.push(marks)
 
-      // Soft assertion: the tab DOM must appear well under 2s of the
-      // click — this is the perceived-latency improvement the OpenAgent
-      // split is meant to deliver. (Pre-split the same path took ~5s.)
+      // Soft assertion: the tab DOM must appear within 1s of the click.
+      // OpenAgent's sync prologue now performs only validation + a DB
+      // insert — all expensive work (worktree creation, git status,
+      // subprocess launch) happens in runAgentStartup afterwards — so
+      // the perceived-latency budget is well under the pre-split ~5s.
       // Iteration 0 includes one-time SolidJS warm-up so the budget is
       // generous; the median across iterations is typically well under
       // 100ms in the printed table.
-      expect(tTabDomMs - tClickMs).toBeLessThan(2000)
+      expect(tTabDomMs - tClickMs).toBeLessThan(1000)
 
       // Sanity: every expected backend phase present on iter 0.
       if (iter === 0) {
         const seen = new Set(backendPhases.map(p => p.phase))
         for (const expected of [
           'handler_begin',
-          'gitmode_applied',
+          'gitmode_validated',
           'before_start_agent',
           'claude_begin',
           'before_exec_start',

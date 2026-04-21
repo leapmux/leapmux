@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -558,4 +559,145 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 		return ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED && errStr != ""
 	}, 5*time.Second, 20*time.Millisecond, "expected Startup registry to retain STARTUP_FAILED")
 
+}
+
+// TestExecuteCreateWorktree_FailureIsRecoverable is a unit test of the
+// executeGitMode mutation path: when `git worktree add` fails (here
+// because the repo root is invalid), the helper reports the error without
+// leaving any persistent state. validateGitMode would have caught the bad
+// input in a real RPC, but this bypass proves the execute-side error path
+// is clean — the caller gets err, no rollback metadata, and no DB row.
+func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	bogusRoot := t.TempDir() // not a git repo
+	plan := gitModePlan{
+		Mode:         gitModeCreateWorktree,
+		WorkingDir:   bogusRoot,
+		RepoRoot:     bogusRoot,
+		BranchName:   "feature/x",
+		StartPoint:   "HEAD",
+		WorktreePath: filepath.Join(bogusRoot, "wt"),
+	}
+
+	result, err := svc.executeCreateWorktree(context.Background(), plan)
+	require.Error(t, err)
+	assert.False(t, result.Rollback.HasPartialMutation(),
+		"a worktree add that never created the dir should not signal partial mutation")
+}
+
+// TestOpenAgent_BroadcastsRollbackLabelOnStartFailure asserts the
+// STARTING-phase broadcast sequence when phase 0 succeeds but phase 2
+// (subprocess startup) fails: the tab sees "Creating worktree …" then
+// "Rolling back worktree …" then STARTUP_FAILED with the injected error.
+func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		return nil, errors.New("forced start failure")
+	}
+
+	repoDir := initRepo(t)
+	branchName := "feature/rollback-label"
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:    "ws-1",
+		WorkingDir:     repoDir,
+		CreateWorktree: true,
+		WorktreeBranch: branchName,
+		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	agentID := openResp.GetAgent().GetId()
+
+	wWatch := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
+	}, wWatch)
+
+	// Drain STATUS_CHANGE broadcasts until we see the final STARTUP_FAILED.
+	require.Eventually(t, func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			if sc := resp.GetAgentEvent().GetStatusChange(); sc != nil && sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "expected STARTUP_FAILED after start failure")
+
+	// Walk the full sequence. The exact ordering is: any number of
+	// STARTING events (the UI may see phase labels in any order relative
+	// to WatchEvents catch-up) — we only require that the phase-0 label
+	// AND the rollback label both appear before the STARTUP_FAILED.
+	var sawPhase0, sawRollback, sawFailed bool
+	var failedError string
+	for _, s := range wWatch.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		sc := resp.GetAgentEvent().GetStatusChange()
+		if sc == nil {
+			continue
+		}
+		switch sc.GetStatus() {
+		case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
+			if strings.Contains(sc.GetStartupMessage(), "Creating worktree") && strings.Contains(sc.GetStartupMessage(), branchName) {
+				sawPhase0 = true
+			}
+			if strings.Contains(sc.GetStartupMessage(), "Rolling back worktree") && strings.Contains(sc.GetStartupMessage(), branchName) {
+				sawRollback = true
+			}
+		case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
+			sawFailed = true
+			failedError = sc.GetStartupError()
+		}
+	}
+	assert.True(t, sawPhase0, `expected STARTING "Creating worktree %q…" broadcast`, branchName)
+	assert.True(t, sawRollback, `expected STARTING "Rolling back worktree %q…" broadcast`, branchName)
+	assert.True(t, sawFailed, "expected final STARTUP_FAILED broadcast")
+	assert.Contains(t, failedError, "forced start failure")
+
+	// After rollback completes, the worktree dir and branch should be gone.
+	waitForStartupFailure(t, svc, agentID)
+	assert.NoDirExists(t, expectedWorktreePath(repoDir, branchName))
+	assert.False(t, localBranchExists(t, repoDir, branchName))
+}
+
+// TestExecuteGitMode_HonorsCtxCancellation verifies executeGitMode exits
+// early when the context is cancelled between shell-outs. This is the
+// unit-level guarantee that CloseAgent / CloseTerminal mid-phase-0 does
+// not run expensive git commands against a doomed tab.
+func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before call
+
+	result, err := svc.executeGitMode(ctx, gitModePlan{Mode: gitModeUseCurrent, WorkingDir: t.TempDir()})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.False(t, result.Rollback.HasPartialMutation())
+}
+
+// TestBuildTerminalStatusChange_CarriesGitInfo locks in the wire contract
+// that replaced the dropped OpenTerminalResponse.git_branch /
+// git_origin_url fields: runTerminalStartup's phase-1 STARTING broadcast
+// now populates these via terminalStatusDetails, and the frontend reads
+// them into the tab. A regression here (e.g. someone re-pointing the
+// proto fields) would be caught without depending on goroutine timing.
+func TestBuildTerminalStatusChange_CarriesGitInfo(t *testing.T) {
+	sc := buildTerminalStatusChange("term-1", leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
+		startupMessage: "Starting zsh…",
+		gitBranch:      "feature/x",
+		gitOriginURL:   "git@example.com:org/repo.git",
+	})
+	assert.Equal(t, "term-1", sc.GetTerminalId())
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
+	assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
+	assert.Equal(t, "feature/x", sc.GetGitBranch())
+	assert.Equal(t, "git@example.com:org/repo.git", sc.GetGitOriginUrl())
 }

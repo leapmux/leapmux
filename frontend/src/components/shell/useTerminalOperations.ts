@@ -85,7 +85,9 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: TerminalStatus.STARTING }, { afterKey })
+      // git branch / origin arrive later via TerminalStatusChange (phase 1
+      // of the async startup reports the post-mutation gitStatus).
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, status: TerminalStatus.STARTING }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
@@ -135,7 +137,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, gitBranch: resp.gitBranch || undefined, gitOriginUrl: resp.gitOriginUrl || undefined, status: TerminalStatus.STARTING }, { afterKey })
+      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, status: TerminalStatus.STARTING }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.

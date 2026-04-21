@@ -59,6 +59,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		title, err := sanitizeOptionalTitle(r.GetTitle())
+		if err != nil {
+			sendInvalidArgument(sender, err.Error())
+			return
+		}
+
 		agentID := id.Generate()
 		agent.TraceStartupPhase(agentID, "handler_begin")
 
@@ -67,27 +73,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			workingDir = svc.HomeDir
 		}
 
-		// Apply git-mode options (create-worktree, checkout-branch, etc.).
-		// This is kept on the sync path so git errors (dirty tree, unknown
-		// branch, etc.) surface as immediate RPC errors the caller can react
-		// to with a dialog.
-		gm, gmErr := svc.applyGitMode(workingDir, &r)
+		// Validate git-mode options on the sync path so bad input (invalid
+		// branch name, non-existent base branch, worktree path collision,
+		// etc.) fails the RPC with InvalidArgument before we mutate any
+		// state. The actual mutation happens inside runAgentStartup.
+		plan, gmErr := svc.validateGitMode(workingDir, &r)
 		if gmErr != nil {
-			slog.Error("failed to apply git mode for agent", "error", gmErr)
-			sendInternalError(sender, gmErr.Error())
+			sendInvalidArgument(sender, gmErr.Error())
 			return
 		}
-		// Rolled back iff the sync prologue fails before handing ownership
-		// to the startup goroutine. Once the goroutine is running it owns
-		// rollback on its own failure path.
-		syncSucceeded := false
-		defer func() {
-			if !syncSucceeded {
-				svc.rollbackGitMode(gm)
-			}
-		}()
-		workingDir = gm.WorkingDir
-		worktreeID := gm.WorktreeID
 
 		// Resolve default model based on agent provider.
 		agentProvider := r.GetAgentProvider()
@@ -101,15 +95,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// Track whether this agent was created via session resume.
 		resumed := ptrconv.BoolToInt64(r.GetAgentSessionId() != "")
 
-		agent.TraceStartupPhase(agentID, "gitmode_applied")
+		agent.TraceStartupPhase(agentID, "gitmode_validated")
 
-		// Create the agent record in the database.
+		// Create the agent record using the *planned* working dir, so
+		// a post-refresh read sees the eventual worktree path. The
+		// actual worktree is created later inside runAgentStartup.
 		if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
 			ID:            agentID,
 			WorkspaceID:   r.GetWorkspaceId(),
-			WorkingDir:    workingDir,
+			WorkingDir:    plan.PlannedWorkingDir,
 			HomeDir:       svc.HomeDir,
-			Title:         r.GetTitle(),
+			Title:         title,
 			Model:         model,
 			SystemPrompt:  r.GetSystemPrompt(),
 			Effort:        effort,
@@ -121,10 +117,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInternalError(sender, "failed to create agent")
 			return
 		}
-
-		// Register before startup so CloseAgent during startup still
-		// unregisters correctly.
-		svc.registerTabForWorktree(worktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 
 		dbAgent, err := svc.getAgentByID(bgCtx(), agentID)
 		if err != nil {
@@ -140,7 +132,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			AgentID:         agentID,
 			Model:           model,
 			Effort:          effort,
-			WorkingDir:      workingDir,
+			WorkingDir:      plan.PlannedWorkingDir,
 			ResumeSessionID: r.GetAgentSessionId(),
 			ExtraSettings:   extraSettings,
 			StartupTimeout:  svc.agentStartupTimeout(),
@@ -151,7 +143,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			AgentProvider:   agentProvider,
 		}
 
-		syncSucceeded = true
 		agent.TraceStartupPhase(agentID, "before_response")
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
 			Agent: svc.agentToProto(&dbAgent, dbAgent.PermissionMode, false, nil, svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(agentID, dbAgent.AgentProvider)),
@@ -159,7 +150,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		agent.TraceStartupPhase(agentID, "response_sent")
 
 		// Kick off subprocess startup in the background.
-		go svc.runAgentStartup(startupCtx, dbAgent, gm, agentOpts)
+		go svc.runAgentStartup(startupCtx, dbAgent, plan, agentOpts)
 	})
 
 	d.Register("CloseAgent", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
@@ -1139,15 +1130,28 @@ func (svc *Context) agentToProto(a *db.Agent, permissionMode string, isRunning b
 	return info
 }
 
-// runAgentStartup is the async body of OpenAgent: it spawns the subprocess,
-// runs the initialize handshake, then reports success/failure via
-// broadcastAgentStartupStatus and cleans up on failure. Phase 1 (git status)
-// and phase 2 (subprocess spawn) are sequential on purpose: running them in
-// parallel would collapse the phased "Checking Git status…" / "Starting
-// {provider}…" labels the frontend displays.
-func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, gm gitModeResult, agentOpts agent.Options) {
+// runAgentStartup is the async body of OpenAgent: it executes the git-mode
+// plan, spawns the subprocess, runs the initialize handshake, and reports
+// success/failure via broadcastAgentStartupStatus. Phases 0–2 run serially
+// so the user sees a phased progress label ("Creating worktree…" → "Checking
+// Git status…" → "Starting {provider}…") rather than overlapping noise.
+func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan gitModePlan, agentOpts agent.Options) {
 	agentID := agentOpts.AgentID
 	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)
+
+	// Phase 0: execute the git-mode mutation (worktree add, branch create,
+	// checkout). Validation already ran synchronously in OpenAgent; what
+	// runs here is only the potentially slow shell-outs.
+	gm, gmErr := svc.runAgentPhase0(ctx, &dbAgent, plan)
+	if gmErr != nil {
+		svc.failAgentStartup(&dbAgent, gm, gmErr, nil)
+		return
+	}
+	// Register tab-for-worktree now that we know the worktree ID.
+	svc.registerTabForWorktree(gm.WorktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+	if gm.WorkingDir != "" {
+		agentOpts.WorkingDir = gm.WorkingDir
+	}
 
 	// Phase 1: compute gitStatus here rather than in the sync prologue —
 	// the git shell-out would otherwise block the OpenAgent RPC. Record
@@ -1189,21 +1193,8 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, gm gi
 	}
 
 	if startErr != nil {
-		errMsg := startErr.Error()
-		slog.Error("failed to start agent", "agent_id", agentID, "error", errMsg)
-		// Keep the agent row open so the in-tab error UI stays
-		// reachable across page refreshes; rollback git-mode now
-		// because worktree creation can be expensive.
-		svc.rollbackGitMode(gm)
-		svc.persistAgentStartupError(agentID, errMsg)
-		svc.broadcastAgentStartupStatus(&dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, agentStatusDetails{
-			gitStatus:    gitStatus,
-			startupError: errMsg,
-		})
-		// Mark the registry last: rollback, DB persistence, and the
-		// STARTUP_FAILED broadcast must be durable before any observer
-		// sees the terminal state.
-		svc.AgentStartup.fail(agentID, errMsg)
+		slog.Error("failed to start agent", "agent_id", agentID, "error", startErr)
+		svc.failAgentStartup(&dbAgent, gm, startErr, gitStatus)
 		return
 	}
 
@@ -1273,6 +1264,43 @@ func (svc *Context) broadcastAgentStartupStatus(dbAgent *db.Agent, status leapmu
 		AgentId: dbAgent.ID,
 		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: svc.buildAgentStatusChange(dbAgent, status, details)},
 	})
+}
+
+// runAgentPhase0 broadcasts the per-mode label and executes the git-mode
+// mutation. Returns the result (with rollback metadata populated iff a
+// mutation partially succeeded before failing) and any error.
+func (svc *Context) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan gitModePlan) (gitModeResult, error) {
+	if label := plan.PhaseLabel(); label != "" {
+		svc.AgentStartup.setMessage(dbAgent.ID, label)
+		svc.broadcastAgentStartupStatus(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{
+			startupMessage: label,
+		})
+	}
+	return svc.executeGitMode(ctx, plan)
+}
+
+// failAgentStartup is the common tail for every failure after the sync
+// prologue: it optionally shows a rollback label, rolls back any partial
+// git-mode mutation, persists the error, broadcasts STARTUP_FAILED, and
+// finally marks the registry failed. The order is deliberate: the broadcast
+// and DB write must be durable before any observer sees the terminal state.
+func (svc *Context) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.AgentGitStatus) {
+	if gm.Rollback.HasPartialMutation() {
+		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
+			svc.AgentStartup.setMessage(dbAgent.ID, label)
+			svc.broadcastAgentStartupStatus(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{
+				startupMessage: label,
+			})
+		}
+		svc.rollbackGitMode(gm)
+	}
+	errMsg := cause.Error()
+	svc.persistAgentStartupError(dbAgent.ID, errMsg)
+	svc.broadcastAgentStartupStatus(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, agentStatusDetails{
+		gitStatus:    gitStatus,
+		startupError: errMsg,
+	})
+	svc.AgentStartup.fail(dbAgent.ID, errMsg)
 }
 
 // persistAgentStartupError writes (or clears when errMsg is "") the

@@ -553,4 +553,69 @@ describe('startupMessage handling in terminal statusChange', () => {
       dispose()
     })
   })
+
+  // Phase-0 ("Preparing working tree") labels are dispatched by the
+  // worker as same-status STARTING events with the per-mode label.
+  // Rolling back on failure uses the same pipe with the rollback label
+  // and then transitions to STARTUP_FAILED. Both should be applied.
+  it('applies the "Creating worktree" phase-0 label to the tab', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+
+      applyStarting(tabStore, 'term-1', 'Creating worktree "feature/x"…')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.startupMessage).toBe('Creating worktree "feature/x"…')
+      dispose()
+    })
+  })
+
+  it('applies a following "Rolling back worktree" label on same-status STARTING', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING, startupMessage: 'Creating worktree "feature/x"…' })
+
+      applyStarting(tabStore, 'term-1', 'Rolling back worktree "feature/x"…')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.startupMessage).toBe('Rolling back worktree "feature/x"…')
+      dispose()
+    })
+  })
+
+  // Mirrors the git-fields branch of useWorkspaceConnection.handleTerminalEvent:
+  // on any STARTING event that carries non-empty git_branch / git_origin_url,
+  // update the tab so the sidebar badge matches the new worktree immediately.
+  function applyGitFromStatusChange(
+    tabStore: ReturnType<typeof createTabStore>,
+    terminalId: string,
+    gitBranch: string,
+    gitOriginUrl: string,
+  ) {
+    const existing = tabStore.state.tabs.find(
+      t => t.type === TabType.TERMINAL && t.id === terminalId,
+    )
+    if (!existing)
+      return
+    const nextBranch = gitBranch || undefined
+    const nextOrigin = gitOriginUrl || undefined
+    if (existing.gitBranch !== nextBranch || existing.gitOriginUrl !== nextOrigin) {
+      tabStore.updateTab(TabType.TERMINAL, terminalId, { gitBranch: nextBranch, gitOriginUrl: nextOrigin })
+    }
+  }
+
+  it('updates gitBranch/gitOriginUrl from a terminal statusChange event', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: TerminalStatus.STARTING })
+
+      applyGitFromStatusChange(tabStore, 'term-1', 'feature/x', 'git@example.com:org/repo.git')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.gitBranch).toBe('feature/x')
+      expect(tab?.gitOriginUrl).toBe('git@example.com:org/repo.git')
+      dispose()
+    })
+  })
 })

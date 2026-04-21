@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -55,22 +56,14 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			workingDir = svc.HomeDir
 		}
 
-		// Apply git-mode options (create-worktree, checkout-branch, etc.).
-		// Kept sync so git errors surface as immediate RPC errors.
-		gm, gmErr := svc.applyGitMode(workingDir, &r)
+		// Validate git-mode options on the sync path so bad input fails
+		// the RPC with InvalidArgument before we create any DB row. The
+		// actual mutation happens inside runTerminalStartup.
+		plan, gmErr := svc.validateGitMode(workingDir, &r)
 		if gmErr != nil {
-			slog.Error("failed to apply git mode for terminal", "error", gmErr)
-			sendInternalError(sender, gmErr.Error())
+			sendInvalidArgument(sender, gmErr.Error())
 			return
 		}
-		syncSucceeded := false
-		defer func() {
-			if !syncSucceeded {
-				svc.rollbackGitMode(gm)
-			}
-		}()
-		workingDir = gm.WorkingDir
-		worktreeID := gm.WorktreeID
 
 		terminalID := id.Generate()
 
@@ -98,7 +91,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 					ID:            tid,
 					WorkspaceID:   snap.WorkspaceID,
-					WorkingDir:    workingDir,
+					WorkingDir:    plan.PlannedWorkingDir,
 					HomeDir:       svc.HomeDir,
 					ShellStartDir: shellStartDir,
 					Title:         snap.Title,
@@ -114,7 +107,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 					ID:            tid,
 					WorkspaceID:   meta.WorkspaceID,
-					WorkingDir:    workingDir,
+					WorkingDir:    plan.PlannedWorkingDir,
 					HomeDir:       svc.HomeDir,
 					ShellStartDir: shellStartDir,
 					Title:         meta.Title,
@@ -137,12 +130,13 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			})
 		}
 
-		// Persist the initial terminal record so tab sync works
-		// even before the terminal starts up.
+		// Persist the initial terminal record using the planned working
+		// dir, so tab sync and post-refresh reads see the eventual path
+		// even before git-mode execution creates the worktree.
 		if upsertErr := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 			ID:            terminalID,
 			WorkspaceID:   workspaceID,
-			WorkingDir:    workingDir,
+			WorkingDir:    plan.PlannedWorkingDir,
 			HomeDir:       svc.HomeDir,
 			ShellStartDir: shellStartDir,
 			Cols:          int64(cols),
@@ -154,50 +148,34 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Register the terminal tab with the worktree.
-		svc.registerTabForWorktree(worktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
+		// Register the startup in the registry with a cancel ctx so
+		// CloseTerminal during phase 0 aborts executeGitMode.
+		startupCtx, cancel := context.WithCancel(context.Background())
+		svc.TerminalStartup.begin(terminalID, cancel)
 
-		// Register the startup in the registry (no cancel plumbing for
-		// terminals — PTY spawn is synchronous and fast, but we still
-		// report STARTING/READY/STARTUP_FAILED so the frontend can gate
-		// xterm mount and show a loader in the interim).
-		svc.TerminalStartup.begin(terminalID, func() {})
-
-		// Record the phase label in the registry *before* broadcasting.
-		// The client only subscribes to WatchEvents after receiving the
-		// OpenTerminal response, so this broadcast's live delivery set
-		// is empty — the client retrieves the label via WatchEvents
-		// catch-up replay, which reads the registry.
+		// Seed a STARTING broadcast with the provider label. Phase 0
+		// will overwrite the message with a mode-specific label (e.g.
+		// `Creating worktree "feature/x"…`) before mutation begins.
 		startupMessage := "Starting " + filepath.Base(shell) + "…"
 		svc.TerminalStartup.setMessage(terminalID, startupMessage)
 		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
 			startupMessage: startupMessage,
 		})
 
-		resp := &leapmuxv1.OpenTerminalResponse{
+		sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 			TerminalId: terminalID,
-		}
-		gitDir := shellStartDir
-		if gitDir == "" {
-			gitDir = workingDir
-		}
-		if gs := gitutil.GetGitStatus(gitDir); gs != nil {
-			resp.GitBranch = gs.Branch
-			resp.GitOriginUrl = gs.OriginUrl
-		}
-		syncSucceeded = true
-		sendProtoResponse(sender, resp)
+		})
 
-		// Kick off PTY spawn in the background.
-		go svc.runTerminalStartup(terminal.Options{
+		// Kick off git-mode execution + PTY spawn in the background.
+		go svc.runTerminalStartup(startupCtx, terminal.Options{
 			ID:            terminalID,
 			WorkspaceID:   workspaceID,
 			Shell:         shell,
-			WorkingDir:    workingDir,
+			WorkingDir:    plan.PlannedWorkingDir,
 			ShellStartDir: shellStartDir,
 			Cols:          uint16(cols),
 			Rows:          uint16(rows),
-		}, gm, outputFn, exitFn)
+		}, plan, outputFn, exitFn)
 	})
 
 	// CloseTerminal stops and removes a terminal session.
@@ -437,33 +415,87 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 }
 
-// runTerminalStartup is the async body of OpenTerminal: it spawns the PTY
-// and reports READY or STARTUP_FAILED to the frontend. On failure it also
-// rolls back any git-mode side effects.
-func (svc *Context) runTerminalStartup(opts terminal.Options, gm gitModeResult, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
+// runTerminalStartup is the async body of OpenTerminal: it executes the
+// git-mode plan, spawns the PTY, and reports READY or STARTUP_FAILED to the
+// frontend. On failure it rolls back any partial git-mode side effects.
+func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Options, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
 	terminalID := opts.ID
-	err := svc.startTerminal(opts, outputFn, exitFn)
-	if err != nil {
-		errMsg := err.Error()
-		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", errMsg)
-		// Keep the terminal row open so the in-tab error UI remains
-		// reachable across page refreshes; the user dismisses via the
-		// Close-tab button which calls CloseTerminal. Rollback git-mode
-		// changes immediately though (worktree creation can be expensive).
-		svc.rollbackGitMode(gm)
-		svc.persistTerminalStartupError(terminalID, errMsg)
-		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, terminalStatusDetails{
-			startupError: errMsg,
-		})
-		// Mark the registry last: rollback, DB persistence, and the
-		// STARTUP_FAILED broadcast must be durable before any observer
-		// sees the terminal state.
-		svc.TerminalStartup.fail(terminalID, errMsg)
+
+	// Phase 0: execute git-mode mutation (worktree add, branch create,
+	// checkout). Validation already ran synchronously.
+	gm, gmErr := svc.runTerminalPhase0(ctx, terminalID, plan)
+	if gmErr != nil {
+		svc.failTerminalStartup(terminalID, gm, gmErr)
+		return
+	}
+	svc.registerTabForWorktree(gm.WorktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
+	if gm.WorkingDir != "" {
+		opts.WorkingDir = gm.WorkingDir
+	}
+
+	// Phase 1: compute git status from the final working dir (may be a
+	// freshly-created worktree). The resulting branch/origin travels on
+	// the "Starting <shell>…" broadcast so the frontend can populate the
+	// tab's gitBranch / gitOriginUrl without an extra round-trip.
+	gitDir := opts.ShellStartDir
+	if gitDir == "" {
+		gitDir = opts.WorkingDir
+	}
+	var gitBranch, gitOriginURL string
+	if gs := gitutil.GetGitStatus(gitDir); gs != nil {
+		gitBranch = gs.Branch
+		gitOriginURL = gs.OriginUrl
+	}
+	shellMsg := "Starting " + filepath.Base(opts.Shell) + "…"
+	svc.TerminalStartup.setMessage(terminalID, shellMsg)
+	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
+		startupMessage: shellMsg,
+		gitBranch:      gitBranch,
+		gitOriginURL:   gitOriginURL,
+	})
+
+	if err := svc.startTerminal(opts, outputFn, exitFn); err != nil {
+		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", err)
+		svc.failTerminalStartup(terminalID, gm, err)
 		return
 	}
 	svc.persistTerminalStartupError(terminalID, "")
 	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, terminalStatusDetails{})
 	svc.TerminalStartup.succeed(terminalID)
+}
+
+// runTerminalPhase0 broadcasts the per-mode label and executes the
+// git-mode mutation.
+func (svc *Context) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan) (gitModeResult, error) {
+	if label := plan.PhaseLabel(); label != "" {
+		svc.TerminalStartup.setMessage(terminalID, label)
+		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
+			startupMessage: label,
+		})
+	}
+	return svc.executeGitMode(ctx, plan)
+}
+
+// failTerminalStartup is the common tail for every failure after the sync
+// prologue: optionally show a rollback label, roll back any partial
+// git-mode mutation, persist the error, broadcast STARTUP_FAILED, and mark
+// the registry failed last so observers see a durable terminal state.
+func (svc *Context) failTerminalStartup(terminalID string, gm gitModeResult, cause error) {
+	if gm.Rollback.HasPartialMutation() {
+		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
+			svc.TerminalStartup.setMessage(terminalID, label)
+			svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
+				startupMessage: label,
+			})
+		}
+		svc.rollbackGitMode(gm)
+	}
+	errMsg := cause.Error()
+	svc.persistTerminalStartupError(terminalID, errMsg)
+	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, terminalStatusDetails{
+		startupError: errMsg,
+	})
+	svc.TerminalStartup.fail(terminalID, errMsg)
 }
 
 // persistTerminalStartupError writes (or clears when errMsg is "") the
@@ -483,11 +515,14 @@ func (svc *Context) persistTerminalStartupError(terminalID, errMsg string) {
 }
 
 // terminalStatusDetails carries the optional, per-call fields of a
-// TerminalStatusChange — startupError (only on STARTUP_FAILED) and
-// startupMessage (only on STARTING, e.g. "Starting zsh…").
+// TerminalStatusChange — startupError (only on STARTUP_FAILED),
+// startupMessage (only on STARTING, e.g. "Starting zsh…"), and the
+// git branch/origin populated once git-mode execution finishes.
 type terminalStatusDetails struct {
 	startupError   string
 	startupMessage string
+	gitBranch      string
+	gitOriginURL   string
 }
 
 // buildTerminalStatusChange constructs a TerminalStatusChange proto.
@@ -498,6 +533,8 @@ func buildTerminalStatusChange(terminalID string, status leapmuxv1.TerminalStatu
 		Status:         status,
 		StartupError:   details.startupError,
 		StartupMessage: details.startupMessage,
+		GitBranch:      details.gitBranch,
+		GitOriginUrl:   details.gitOriginURL,
 	}
 }
 

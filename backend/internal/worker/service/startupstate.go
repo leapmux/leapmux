@@ -38,6 +38,10 @@ type startupEntry struct {
 	// through catch-up replay instead of showing a generic fallback.
 	startupMessage string
 	cancel         context.CancelFunc
+	// evictTimer fires failedEntryTTL after fail() to drop the entry.
+	// Stored so cancelAndClear/succeed can Stop() it and release the
+	// runtime timer slot early.
+	evictTimer *time.Timer
 }
 
 // startupCore is the shared state-machine for tracking a set of in-flight
@@ -76,8 +80,12 @@ func (r *startupCore) setMessage(id, message string) {
 // from the Manager, not from this registry).
 func (r *startupCore) succeed(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	entry := r.entries[id]
 	delete(r.entries, id)
+	r.mu.Unlock()
+	if entry != nil && entry.evictTimer != nil {
+		entry.evictTimer.Stop()
+	}
 }
 
 // fail retains the entry with the error string for later observation and
@@ -85,16 +93,21 @@ func (r *startupCore) succeed(id string) {
 // never closes eventually drops out of the in-memory map. Status queries
 // after eviction fall back to the persisted startup_error column.
 func (r *startupCore) fail(id, startupError string) {
-	r.mu.Lock()
-	r.entries[id] = &startupEntry{failed: true, startupError: startupError}
-	r.mu.Unlock()
-	time.AfterFunc(failedEntryTTL, func() {
+	entry := &startupEntry{failed: true, startupError: startupError}
+	entry.evictTimer = time.AfterFunc(failedEntryTTL, func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if entry, ok := r.entries[id]; ok && entry.failed {
+		if current, ok := r.entries[id]; ok && current == entry {
 			delete(r.entries, id)
 		}
 	})
+	r.mu.Lock()
+	// Stop any prior pending eviction if fail is called twice.
+	if prev, ok := r.entries[id]; ok && prev.evictTimer != nil {
+		prev.evictTimer.Stop()
+	}
+	r.entries[id] = entry
+	r.mu.Unlock()
 }
 
 // cancelAndClear triggers the cancel func if one is registered and removes
@@ -105,7 +118,13 @@ func (r *startupCore) cancelAndClear(id string) {
 	entry := r.entries[id]
 	delete(r.entries, id)
 	r.mu.Unlock()
-	if entry != nil && entry.cancel != nil {
+	if entry == nil {
+		return
+	}
+	if entry.evictTimer != nil {
+		entry.evictTimer.Stop()
+	}
+	if entry.cancel != nil {
 		entry.cancel()
 	}
 }

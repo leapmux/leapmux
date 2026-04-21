@@ -38,8 +38,9 @@ message OpenTerminalRequest {
 
 message OpenTerminalResponse {
   string terminal_id = 1;
-  string git_branch = 2;        // Current git branch (if working dir is in a git repo)
-  string git_origin_url = 3;    // Remote origin URL (if working dir is in a git repo)
+  // git_branch and git_origin_url used to live here but are now delivered
+  // via the first TerminalStatusChange (gitStatus) after worktree creation
+  // finishes on the async startup path.
 }
 
 message CloseTerminalRequest {
@@ -124,6 +125,12 @@ message TerminalStatusChange {
   TerminalStatus status = 2;
   string startup_error = 3;   // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
   string startup_message = 4; // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
+  // Populated by runTerminalStartup once git-mode execution finishes and
+  // the final working dir is known. Frontend reads these into the tab's
+  // gitBranch / gitOriginUrl fields (replaces the sync-response fields
+  // that used to live on OpenTerminalResponse).
+  string git_branch = 5;
+  string git_origin_url = 6;
 }
 
 message ListAvailableShellsRequest {

@@ -167,7 +167,7 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 	svc.AgentStartup.begin(agentID, func() {})
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	svc.runAgentStartup(ctx, dbAgent, gitModeResult{}, agent.Options{
+	svc.runAgentStartup(ctx, dbAgent, gitModePlan{Mode: gitModeUseCurrent}, agent.Options{
 		AgentID:       agentID,
 		Model:         "sonnet",
 		Effort:        "high",

@@ -476,11 +476,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const terminalId = termEvent.terminalId
 
     // Non-active workspace terminal — skip data events (no terminal instance
-    // exists), but handle closed events to update the snapshot.
+    // exists), but handle closed + statusChange to keep the snapshot's
+    // status / gitBranch / gitOriginUrl fresh for the sidebar badge.
     if (nonActiveTerminalIds.has(terminalId)) {
       if (termEvent.event.case === 'closed') {
         const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
-        // Skip replayed events: only update when the tab exists and isn't already exited.
         const owningWsId = params.registry.findContaining(
           s => s.tabs.some(t => tabKey(t) === key && t.status !== TerminalStatus.EXITED),
         )?.workspaceId
@@ -489,6 +489,25 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             ...snap,
             tabs: snap.tabs.map(t => tabKey(t) === key ? { ...t, status: TerminalStatus.EXITED } : t),
           }))
+        }
+      }
+      else if (termEvent.event.case === 'statusChange') {
+        const sc = termEvent.event.value
+        if (sc.gitBranch || sc.gitOriginUrl) {
+          const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
+          const owningWsId = params.registry.findContaining(s => s.tabs.some(t => tabKey(t) === key))?.workspaceId
+          if (owningWsId) {
+            const nextBranch = sc.gitBranch || undefined
+            const nextOrigin = sc.gitOriginUrl || undefined
+            params.registry.update(owningWsId, (snap) => {
+              const i = snap.tabs.findIndex(t => tabKey(t) === key)
+              if (i < 0 || (snap.tabs[i].gitBranch === nextBranch && snap.tabs[i].gitOriginUrl === nextOrigin))
+                return snap
+              const tabs = snap.tabs.slice()
+              tabs[i] = { ...tabs[i], gitBranch: nextBranch, gitOriginUrl: nextOrigin }
+              return { ...snap, tabs }
+            })
+          }
         }
       }
       return
@@ -536,6 +555,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const existingTab = tabStore.state.tabs.find(
           t => t.type === TabType.TERMINAL && t.id === terminalId,
         )
+        // Git branch / origin are carried on every post-phase-0 STARTING
+        // broadcast. Update the tab whenever a non-empty value arrives so
+        // a reconnect or a late worktree-creation refreshes the badge.
+        if (existingTab && (sc.gitBranch || sc.gitOriginUrl)) {
+          const nextBranch = sc.gitBranch || undefined
+          const nextOrigin = sc.gitOriginUrl || undefined
+          if (existingTab.gitBranch !== nextBranch || existingTab.gitOriginUrl !== nextOrigin) {
+            tabStore.updateTab(TabType.TERMINAL, terminalId, {
+              gitBranch: nextBranch,
+              gitOriginUrl: nextOrigin,
+            })
+          }
+        }
         switch (sc.status) {
           case TerminalStatus.STARTING:
             if (existingTab && existingTab.status !== TerminalStatus.READY && existingTab.status !== TerminalStatus.STARTING) {

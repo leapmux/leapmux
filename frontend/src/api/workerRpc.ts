@@ -350,14 +350,12 @@ function callWorker<
   req: MessageInitShape<ReqSchema>,
   opts?: { timeoutMs?: number },
 ): Promise<MessageShape<RespSchema>> {
-  emitDevEvent('leapmux:rpc-send', { method, at: performance.now() })
+  emitDevEvent('leapmux:rpc-send', () => ({ method, at: performance.now() }))
   const p = channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
-  if (import.meta.env.LEAPMUX_DEV && typeof window !== 'undefined') {
-    p.then(
-      () => emitDevEvent('leapmux:rpc-recv', { method, at: performance.now(), ok: true }),
-      () => emitDevEvent('leapmux:rpc-recv', { method, at: performance.now(), ok: false }),
-    )
-  }
+  p.then(
+    () => emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: true })),
+    () => emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: false })),
+  )
   return p
 }
 

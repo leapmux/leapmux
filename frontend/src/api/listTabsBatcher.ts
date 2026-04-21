@@ -4,7 +4,6 @@ import { workspaceClient } from './clients'
 
 interface Batch {
   orgId: string
-  ids: Set<string>
   resolvers: Map<string, {
     resolve: (value: { tabs: WorkspaceTab[] }) => void
     reject: (reason: unknown) => void
@@ -22,7 +21,6 @@ const inflight = createInflightCache<string, { tabs: WorkspaceTab[] }>()
 export function listTabsForWorkspace(orgId: string, workspaceId: string): Promise<{ tabs: WorkspaceTab[] }> {
   return inflight.run(`${orgId}:${workspaceId}`, () => {
     const batch = pendingBatches.get(orgId) ?? createBatch(orgId)
-    batch.ids.add(workspaceId)
     return new Promise((resolve, reject) => {
       batch.resolvers.set(workspaceId, { resolve, reject })
     })
@@ -30,7 +28,7 @@ export function listTabsForWorkspace(orgId: string, workspaceId: string): Promis
 }
 
 function createBatch(orgId: string): Batch {
-  const batch: Batch = { orgId, ids: new Set(), resolvers: new Map() }
+  const batch: Batch = { orgId, resolvers: new Map() }
   pendingBatches.set(orgId, batch)
   queueMicrotask(() => {
     // Remove first so any call that arrives during the RPC opens a fresh batch.
@@ -44,7 +42,7 @@ async function flushBatch(batch: Batch): Promise<void> {
   try {
     const resp = await workspaceClient.listTabs({
       orgId: batch.orgId,
-      workspaceIds: Array.from(batch.ids),
+      workspaceIds: Array.from(batch.resolvers.keys()),
     })
     const byWorkspace = new Map<string, WorkspaceTab[]>()
     for (const tab of resp.tabs) {

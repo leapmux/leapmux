@@ -268,8 +268,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
     }
     createEffect(syncTerminalHandler)
     onCleanup(() => {
-      for (const terminal of props.terminals)
-        terminalHandlers.delete(terminal.id)
+      if (registeredTerminalId)
+        terminalHandlers.delete(registeredTerminalId)
     })
     return (
       <div

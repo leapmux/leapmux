@@ -190,7 +190,7 @@ func TestCheckoutBranchIfRequested_RemoteBranch(t *testing.T) {
 
 	// Checkout the remote branch via the service method.
 	svc := &Context{}
-	err := svc.checkoutBranchIfRequested(dir, "origin/feature/remote-test")
+	_, err := svc.executeCheckoutBranch(context.Background(), gitModePlan{Mode: gitModeCheckoutBranch, WorkingDir: dir, CheckoutTarget: "origin/feature/remote-test"})
 	require.NoError(t, err)
 
 	// Verify we're on a local branch (not detached HEAD).
@@ -224,7 +224,7 @@ func TestCheckoutBranchIfRequested_RemoteBranchWithExistingLocal(t *testing.T) {
 
 	// Checkout the remote branch — should switch to existing local branch, not error.
 	svc := &Context{}
-	err := svc.checkoutBranchIfRequested(dir, "origin/feature/existing")
+	_, err := svc.executeCheckoutBranch(context.Background(), gitModePlan{Mode: gitModeCheckoutBranch, WorkingDir: dir, CheckoutTarget: "origin/feature/existing"})
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -243,7 +243,7 @@ func TestCheckoutBranchIfRequested_LocalBranch(t *testing.T) {
 
 	// Checkout the local branch.
 	svc := &Context{}
-	err := svc.checkoutBranchIfRequested(dir, "my-feature")
+	_, err := svc.executeCheckoutBranch(context.Background(), gitModePlan{Mode: gitModeCheckoutBranch, WorkingDir: dir, CheckoutTarget: "my-feature"})
 	require.NoError(t, err)
 
 	ctx := context.Background()
