@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -196,6 +197,39 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	}
 	assert.True(t, sawStartingWithMsg,
 		"expected a STARTING statusChange in the catch-up replay")
+}
+
+// TestOpenTerminal_ResolvesDefaultShellForStartupMessage covers the
+// frontend path: handleOpenTerminal sends shell="" and expects the
+// backend to pick the default. The startup-panel label must therefore
+// name the *resolved* binary ("Starting zsh…"), not fall back to a
+// generic "Starting terminal…". Regression test for the bug where the
+// label was computed from r.GetShell() before resolution.
+func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
+	svc, d, w := setupTestService(t, "ws-1")
+	blocked := make(chan struct{})
+	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+		<-blocked
+		return nil
+	}
+	defer close(blocked)
+
+	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+		WorkspaceId: "ws-1",
+		WorkingDir:  t.TempDir(),
+		Shell:       "", // frontend default: let the backend resolve.
+	}, w)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenTerminalResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	terminalID := openResp.GetTerminalId()
+
+	_, _, msg, ok := svc.TerminalStartup.status(terminalID)
+	require.True(t, ok, "terminal should still be in the STARTING registry (PTY spawn is blocked)")
+	assert.True(t, strings.HasPrefix(msg, "Starting "),
+		"startup message should start with 'Starting ' — got %q", msg)
+	assert.NotEqual(t, "Starting terminal…", msg,
+		"startup message must name the resolved shell, not the generic fallback (got %q)", msg)
 }
 
 // TestListTerminals_SurfacesRegistryStartupMessage verifies that the

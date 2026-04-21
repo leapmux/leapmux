@@ -41,7 +41,14 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			rows = 24
 		}
 
+		// Resolve the default shell here (not inside terminal.Start) so
+		// the startup-panel label reflects the actual binary, e.g.
+		// "Starting zsh…" rather than a generic "Starting terminal…"
+		// fallback when the client passes shell="".
 		shell := r.GetShell()
+		if shell == "" {
+			shell = terminal.ResolveDefaultShell()
+		}
 		shellStartDir := expandTilde(r.GetShellStartDir())
 		workingDir := expandTilde(r.GetWorkingDir())
 		if workingDir == "" {
