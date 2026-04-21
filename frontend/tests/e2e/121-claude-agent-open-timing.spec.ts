@@ -9,22 +9,14 @@
  * so we reimplement the small bits of fixtures.ts that we need.
  */
 import type { Buffer } from 'node:buffer'
-import type { ChildProcess } from 'node:child_process'
-import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import process from 'node:process'
+import type { DevServerHandle } from './helpers/devServer'
 import { expect, test } from '@playwright/test'
 import {
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
-  getAdminOrgId,
-  getWorkerId,
-  loginViaAPI,
   openAgentViaAPI,
 } from './helpers/api'
-import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
+import { startDevServer, stopDevServer } from './helpers/devServer'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
 // ──────────────────────────────────────────────
@@ -68,34 +60,12 @@ function findNewAgentId(logLines: Array<{ json: Record<string, unknown> | null }
 // Local fixture: dev server with stderr capture + timing env var
 // ──────────────────────────────────────────────
 
-interface TimingServer {
-  hubUrl: string
-  adminToken: string
-  adminOrgId: string
-  workerId: string
-  proc: ChildProcess
-  dataDir: string
+interface TimingServer extends DevServerHandle {
   /** All backend log lines emitted since server start, parsed if JSON. */
   logLines: Array<{ raw: string, json: Record<string, unknown> | null, rxAt: number }>
 }
 
 async function startTimingServer(): Promise<TimingServer> {
-  const { binaryPath } = getGlobalState()
-  const dataDir = mkdtempSync(join(tmpdir(), 'leapmux-timing-e2e-'))
-  const port = await findFreePort()
-  const hubUrl = `http://localhost:${port}`
-
-  const proc = spawn(binaryPath, ['dev', '-addr', `:${port}`, '-data-dir', dataDir], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet',
-      LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low',
-      LEAPMUX_WORKER_NAME: 'Local',
-      LEAPMUX_TRACE_AGENT_STARTUP: '1',
-    },
-  })
-
   const logLines: TimingServer['logLines'] = []
   const handleChunk = (chunk: Buffer) => {
     const text = chunk.toString('utf8')
@@ -106,25 +76,17 @@ async function startTimingServer(): Promise<TimingServer> {
       logLines.push({ raw: line, json: parseJsonLine(line), rxAt: now })
     }
   }
-  proc.stdout?.on('data', handleChunk)
-  proc.stderr?.on('data', handleChunk)
-
-  await waitForServer(hubUrl)
-  const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin123')
-  const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
-  const workerId = await getWorkerId(hubUrl, adminToken)
-
-  return { hubUrl, adminToken, adminOrgId, workerId, proc, dataDir, logLines }
-}
-
-async function stopTimingServer(srv: TimingServer): Promise<void> {
-  srv.proc.kill('SIGTERM')
-  await new Promise(r => setTimeout(r, 1000))
-  try {
-    srv.proc.kill('SIGKILL')
-  }
-  catch { /* already dead */ }
-  rmSync(srv.dataDir, { recursive: true, force: true })
+  const handle = await startDevServer({
+    dataDirPrefix: 'leapmux-timing-e2e',
+    env: {
+      LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet',
+      LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low',
+      LEAPMUX_WORKER_NAME: 'Local',
+      LEAPMUX_TRACE_AGENT_STARTUP: '1',
+    },
+    onStdio: handleChunk,
+  })
+  return { ...handle, logLines }
 }
 
 // ──────────────────────────────────────────────
@@ -164,7 +126,7 @@ test.describe('Claude Code agent open timing', () => {
 
   test.afterAll(async () => {
     if (srv)
-      await stopTimingServer(srv)
+      await stopDevServer(srv)
   })
 
   const ITERATIONS = 3

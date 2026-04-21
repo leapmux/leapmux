@@ -2,12 +2,11 @@ import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
 import type { Tab } from '~/stores/tab.store'
-import { createEffect, For, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
+import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 import { usePreferences } from '~/context/PreferencesContext'
 import { isMac } from '~/lib/shortcuts/platform'
-import { createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
-import { TerminalStartupError } from './TerminalStartupError'
-import { TerminalStartupOverlay } from './TerminalStartupOverlay'
+import { bufferHasVisibleContent, createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
@@ -19,8 +18,8 @@ interface TerminalViewProps {
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
   onBell: (id: string) => void
-  /** Close the terminal tab (used by the startup-error "Close tab" button). */
-  onCloseTab?: (id: string) => void
+  /** Called once the terminal has painted any non-whitespace content. */
+  onContentReady: (id: string) => void
   pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
   writeRef?: (fn: (data: string) => void) => void
 }
@@ -62,10 +61,12 @@ const TerminalContainer: Component<{
   fontFamily: string
   fontSize: number
   theme: ITheme
+  contentReady: boolean
   onInput: (id: string, data: Uint8Array) => void
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
   onBell: (id: string) => void
+  onContentReady: (id: string) => void
 }> = (props) => {
   let ref: HTMLDivElement | undefined
 
@@ -122,9 +123,13 @@ const TerminalContainer: Component<{
     // (DECRPM, DA, DECRQSS, OSC) from being forwarded to the PTY,
     // where the shell's echo would display them as visible text.
     if (props.screen && props.screen.length > 0) {
+      const termId = props.terminalId
+      const reportReady = props.onContentReady
       instance.suppressInput = true
       instance.terminal.write(props.screen, () => {
         instance!.suppressInput = false
+        if (bufferHasVisibleContent(instance!.terminal))
+          reportReady(termId)
       })
       instance.screenRestored = true
     }
@@ -170,11 +175,17 @@ const TerminalContainer: Component<{
 
   return (
     <div
-      ref={ref}
       class={styles.terminalWrapper}
       data-terminal-id={props.terminalId}
       style={{ display: props.active ? undefined : 'none' }}
-    />
+    >
+      <div ref={ref} class={styles.xtermHost} />
+      <Show when={!props.contentReady}>
+        <div class={styles.startupOverlay} data-testid="terminal-startup-overlay">
+          <StartupSpinner label="Starting terminal…" />
+        </div>
+      </Show>
+    </div>
   )
 }
 
@@ -234,39 +245,40 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
       <div class={styles.terminalInner}>
         <For each={props.terminals}>
           {terminal => (
-            <Show
-              when={terminal.status === 'starting'}
+            <Switch
               fallback={(
-                <Show
-                  when={terminal.status === 'startup-failed'}
-                  fallback={(
-                    <TerminalContainer
-                      terminalId={terminal.id}
-                      active={terminal.id === props.activeTerminalId}
-                      visible={props.visible}
-                      screen={terminal.screen}
-                      cols={terminal.cols}
-                      rows={terminal.rows}
-                      fontFamily={preferences.monoFontFamily()}
-                      fontSize={13}
-                      theme={terminalTheme()}
-                      onInput={props.onInput}
-                      onResize={props.onResize}
-                      onTitleChange={props.onTitleChange}
-                      onBell={props.onBell}
-                    />
-                  )}
-                >
-                  <TerminalStartupError
-                    active={terminal.id === props.activeTerminalId}
-                    error={terminal.startupError ?? ''}
-                    onCloseTab={props.onCloseTab ? () => props.onCloseTab?.(terminal.id) : undefined}
-                  />
-                </Show>
+                <TerminalContainer
+                  terminalId={terminal.id}
+                  active={terminal.id === props.activeTerminalId}
+                  visible={props.visible}
+                  screen={terminal.screen}
+                  cols={terminal.cols}
+                  rows={terminal.rows}
+                  fontFamily={preferences.monoFontFamily()}
+                  fontSize={13}
+                  theme={terminalTheme()}
+                  contentReady={terminal.contentReady ?? false}
+                  onInput={props.onInput}
+                  onResize={props.onResize}
+                  onTitleChange={props.onTitleChange}
+                  onBell={props.onBell}
+                  onContentReady={props.onContentReady}
+                />
               )}
             >
-              <TerminalStartupOverlay active={terminal.id === props.activeTerminalId} />
-            </Show>
+              <Match when={terminal.status === 'startup-failed'}>
+                <div
+                  class={styles.startupErrorPane}
+                  data-testid="terminal-startup-error"
+                  style={{ display: terminal.id === props.activeTerminalId ? 'flex' : 'none' }}
+                >
+                  <StartupErrorBody
+                    title="Terminal failed to start"
+                    error={terminal.startupError ?? ''}
+                  />
+                </div>
+              </Match>
+            </Switch>
           )}
         </For>
       </div>

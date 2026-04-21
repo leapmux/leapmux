@@ -102,15 +102,16 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 	})
 
 	svc := &Context{
-		DB:        sqlDB,
-		Queries:   db.New(sqlDB),
-		Channels:  chmgr,
-		Agents:    agent.NewManager(nil),
-		HomeDir:   t.TempDir(),
-		DataDir:   t.TempDir(),
-		Watchers:  NewWatcherManager(),
-		Terminals: terminal.NewManager(),
-		Startup:   newStartupRegistry(),
+		DB:              sqlDB,
+		Queries:         db.New(sqlDB),
+		Channels:        chmgr,
+		Agents:          agent.NewManager(nil),
+		HomeDir:         t.TempDir(),
+		DataDir:         t.TempDir(),
+		Watchers:        NewWatcherManager(),
+		Terminals:       terminal.NewManager(),
+		AgentStartup:    newAgentStartupRegistry(),
+		TerminalStartup: newTerminalStartupRegistry(),
 	}
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.Output.DataDir = svc.DataDir

@@ -16,9 +16,16 @@ function run(cmd: string, args: string[]): Promise<number> {
 }
 
 async function main() {
-  // Always clean and build before running e2e tests
+  // Build with LEAPMUX_DEV=1 so Vite inlines the `import.meta.env.LEAPMUX_DEV`
+  // gate as truthy — the workerRpc instrumentation (leapmux:rpc-send /
+  // leapmux:rpc-recv CustomEvents) that the timing spec listens for is
+  // tree-shaken out of production builds.
+  process.env.LEAPMUX_DEV = '1'
+
+  // Always clean and build before running e2e tests. Force the frontend
+  // rebuild (-f) so Task doesn't reuse an output built without LEAPMUX_DEV.
   const taskBin = resolveTaskBin()
-  const buildCode = await run(taskBin, ['build-frontend', 'build-backend'])
+  const buildCode = await run(taskBin, ['-f', 'build-frontend', 'build-backend'])
   if (buildCode !== 0) {
     console.error('`task clean build` failed with exit code', buildCode)
     process.exit(buildCode)

@@ -22,6 +22,7 @@ CREATE TABLE agents (
     available_option_groups  TEXT NOT NULL DEFAULT '[]',
     agent_provider   INTEGER NOT NULL DEFAULT 1,
     session_start_seq INTEGER NOT NULL DEFAULT 0,
+    startup_error    TEXT NOT NULL DEFAULT '',
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at        DATETIME
 );
@@ -97,6 +98,7 @@ CREATE TABLE terminals (
     rows          INTEGER NOT NULL DEFAULT 24,
     screen        BLOB NOT NULL DEFAULT x'',
     exit_code     INTEGER NOT NULL DEFAULT 0,
+    startup_error TEXT NOT NULL DEFAULT '',
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at     DATETIME
 );

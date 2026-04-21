@@ -351,22 +351,19 @@ function callWorker<
   req: MessageInitShape<ReqSchema>,
   opts?: { timeoutMs?: number },
 ): Promise<MessageShape<RespSchema>> {
-  // Instrumentation hook for e2e timing tests. Fires `leapmux:rpc-send`
-  // before the request and `leapmux:rpc-recv` when it resolves/rejects.
-  // performance.now() is captured by listeners via event.timeStamp /
-  // Date.now() at dispatch time. Cost per call is a single
-  // dispatchEvent; no listeners in production => effectively free.
-  if (typeof window !== 'undefined') {
+  // Instrumentation hook for e2e timing tests. Gated on LEAPMUX_DEV so
+  // the dispatchEvent cost is zero in production builds (the bundler
+  // dead-code-eliminates the block when the flag is false).
+  if (import.meta.env.LEAPMUX_DEV && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('leapmux:rpc-send', { detail: { method, at: performance.now() } }))
-  }
-  const p = channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
-  if (typeof window !== 'undefined') {
+    const p = channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
     p.then(
       () => window.dispatchEvent(new CustomEvent('leapmux:rpc-recv', { detail: { method, at: performance.now(), ok: true } })),
       () => window.dispatchEvent(new CustomEvent('leapmux:rpc-recv', { detail: { method, at: performance.now(), ok: false } })),
     )
+    return p
   }
-  return p
+  return channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ import type { createControlStore } from '~/stores/control.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { watchEventsViaChannel } from '~/api/workerRpc'
+import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
@@ -17,8 +17,8 @@ import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
+import { bufferHasVisibleContent } from '~/lib/terminal'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { getFailHandler, getFlushHandler } from '~/stores/pendingMessages'
 import { tabKey } from '~/stores/tab.store'
 
 const log = createLogger('workspace')
@@ -298,14 +298,28 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           const queued = chatStore.takePendingOutbound(sc.agentId)
           if (queued.length > 0) {
             if (sc.status === AgentStatus.ACTIVE) {
-              const flush = getFlushHandler(sc.agentId)
-              if (flush)
-                void flush(queued)
+              const wid = prev.workerId
+              void (async () => {
+                for (const m of queued) {
+                  chatStore.clearMessagePendingLabel(m.localId)
+                  try {
+                    await sendAgentMessage(wid, {
+                      agentId: sc.agentId,
+                      content: m.content,
+                      attachments: m.attachments,
+                    })
+                  }
+                  catch {
+                    chatStore.setMessageError(m.localId, 'Failed to deliver')
+                  }
+                }
+              })()
             }
             else if (sc.status === AgentStatus.STARTUP_FAILED) {
-              const fail = getFailHandler(sc.agentId)
-              if (fail)
-                fail(queued)
+              for (const m of queued) {
+                chatStore.clearMessagePendingLabel(m.localId)
+                chatStore.setMessageError(m.localId, 'Agent failed to start')
+              }
             }
           }
         }
@@ -455,6 +469,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'data': {
         const instance = getTerminalInstance(terminalId)
         if (instance) {
+          const tab = tabStore.getTerminalTab(terminalId)
+          const checkContent = tab && !tab.contentReady
+          const onParsed = () => {
+            if (checkContent && bufferHasVisibleContent(instance.terminal))
+              tabStore.markTerminalContentReady(terminalId)
+          }
           if (termEvent.event.value.isSnapshot) {
             // Initial screen snapshot from WatchEvents. Only apply if the
             // screen hasn't already been restored (e.g. from the
@@ -463,12 +483,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               instance.suppressInput = true
               instance.terminal.write(termEvent.event.value.data, () => {
                 instance!.suppressInput = false
+                onParsed()
               })
               instance.screenRestored = true
             }
           }
           else {
-            instance.terminal.write(termEvent.event.value.data)
+            instance.terminal.write(termEvent.event.value.data, onParsed)
           }
         }
         break

@@ -33,7 +33,6 @@ import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
-import { clearPendingHandlers, setPendingHandlers } from '~/stores/pendingMessages'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { TabBar } from './TabBar'
@@ -280,34 +279,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
         <For each={tileAgentTabs()}>
           {(at) => {
             const agentId = at.id
-            const agent = () => agentStore.state.agents.find(a => a.id === agentId)
-            setPendingHandlers(
-              agentId,
-              async (msgs) => {
-                const wid = agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
-                for (const m of msgs) {
-                  chatStore.clearMessagePendingLabel(m.localId)
-                  try {
-                    await workerRpc.sendAgentMessage(wid, {
-                      agentId,
-                      content: m.content,
-                      attachments: m.attachments,
-                    })
-                  }
-                  catch {
-                    chatStore.setMessageError(m.localId, 'Failed to deliver')
-                  }
-                }
-              },
-              (msgs) => {
-                for (const m of msgs) {
-                  chatStore.clearMessagePendingLabel(m.localId)
-                  chatStore.setMessageError(m.localId, 'Agent failed to start')
-                }
-              },
-            )
+            const agent = createMemo(() => agentStore.state.agents.find(a => a.id === agentId))
             onCleanup(() => {
-              clearPendingHandlers(agentId)
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
               chatHandlers.delete(agentId)
@@ -328,11 +301,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     messagePendingLabels={chatStore.state.messagePendingLabels}
                     onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
-                    workingDir={agentStore.state.agents.find(a => a.id === agentId)?.workingDir}
-                    homeDir={agentStore.state.agents.find(a => a.id === agentId)?.homeDir}
+                    workingDir={agent()?.workingDir}
+                    homeDir={agent()?.homeDir}
                     hasOlderMessages={chatStore.hasOlderMessages(agentId)}
                     fetchingOlder={chatStore.isFetchingOlder(agentId)}
-                    onLoadOlderMessages={() => chatStore.loadOlderMessages(agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? '', agentId)}
+                    onLoadOlderMessages={() => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId)}
                     onTrimOldMessages={() => chatStore.trimOldMessages(agentId, MAX_LOADED_CHAT_MESSAGES)}
                     savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
@@ -364,19 +337,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
                           appendText(agentId, text)
                           focusEditorRef.current?.()
                         }}
-                    startupPhase={(() => {
-                      const a = agentStore.state.agents.find(a => a.id === agentId)
-                      if (!a)
-                        return undefined
-                      if (a.status === AgentStatus.STARTING)
-                        return 'starting'
-                      if (a.status === AgentStatus.STARTUP_FAILED)
-                        return 'startup-failed'
-                      return undefined
-                    })()}
-                    startupError={agentStore.state.agents.find(a => a.id === agentId)?.startupError}
-                    providerLabel={agentProviderLabel(agentStore.state.agents.find(a => a.id === agentId)?.agentProvider)}
-                    onCloseAgentTab={() => void agentOps.handleCloseAgent(agentId)}
+                    agentStatus={agent()?.status}
+                    startupError={agent()?.startupError}
+                    providerLabel={agentProviderLabel(agent()?.agentProvider)}
                   />
                 </Show>
               </div>
@@ -419,7 +382,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   onResize={termOps.handleTerminalResize}
                   onTitleChange={termOps.handleTerminalTitleChange}
                   onBell={termOps.handleTerminalBell}
-                  onCloseTab={id => void termOps.handleTerminalClose(id)}
+                  onContentReady={id => tabStore.markTerminalContentReady(id)}
                   pageScrollRef={(fn) => {
                     terminalPageScroll = fn
                     syncTerminalHandler()

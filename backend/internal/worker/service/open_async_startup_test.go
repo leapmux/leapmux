@@ -144,26 +144,8 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 
 	// Startup registry should report STARTUP_FAILED with the error.
 	require.Eventually(t, func() bool {
-		status, errStr, ok := svc.Startup.agentStatus(agentID)
+		status, errStr, ok := svc.AgentStartup.status(agentID)
 		return ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED && errStr != ""
 	}, 5*time.Second, 20*time.Millisecond, "expected Startup registry to retain STARTUP_FAILED")
 
-	// A watcher subscribing after the failure should still receive
-	// STARTUP_FAILED via the WatchEvents catch-up replay (this is the
-	// guarantee that the page-refresh-after-failure case works).
-	wWatch := &testResponseWriter{channelID: "test-ch"}
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
-	}, wWatch)
-	// Watch RPC fails because the row is now closed; that's fine — what
-	// we care about is that *if* we keep it open, the catch-up branch
-	// would have surfaced STARTUP_FAILED. Until then, ListAgents is the
-	// page-refresh path. Verify it returns startup_error too.
-	listW := &testResponseWriter{channelID: "test-ch"}
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, listW)
-	// ListAgents filters by accessible workspace, so the row may or may
-	// not be present depending on whether closed agents are returned by
-	// ListAgents. The Startup registry assertion above is the real
-	// invariant.
-	_ = listW
 }

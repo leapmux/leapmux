@@ -44,6 +44,14 @@ export interface Tab {
   rows?: number
   /** Error string from TerminalStatusChange when status is 'startup-failed'. */
   startupError?: string
+  /**
+   * True once the terminal has emitted any non-whitespace output to the
+   * xterm buffer. Drives the "Starting terminal…" overlay — kept visible
+   * over the mounted xterm until the shell has actually painted its
+   * prompt (not just the moment the PTY was spawned). Preseeded true on
+   * reconnect when a screen snapshot is restored.
+   */
+  contentReady?: boolean
 }
 
 type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
@@ -78,20 +86,9 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     gitOriginUrl: term.gitOriginUrl || undefined,
     status,
     startupError: term.startupError || undefined,
-  }
-}
-
-/** Map the proto TerminalStatus enum onto the store's TerminalStatus. */
-export function terminalStatusToStoreStatus(status: TerminalStatusEnum): TerminalStatus {
-  switch (status) {
-    case TerminalStatusEnum.STARTING:
-      return 'starting'
-    case TerminalStatusEnum.STARTUP_FAILED:
-      return 'startup-failed'
-    case TerminalStatusEnum.READY:
-      return 'running'
-    default:
-      return 'running'
+    // Any persisted screen → the shell already painted content; skip the
+    // "Starting…" overlay on reconnect to avoid a flash.
+    contentReady: term.screen.length > 0 ? true : undefined,
   }
 }
 
@@ -410,6 +407,16 @@ export function createTabStore() {
         t => t.type === TabType.TERMINAL && t.id === id && t.status !== 'exited',
         'status',
         'exited',
+      )
+    },
+
+    /** Idempotently mark a terminal as having painted non-whitespace content. */
+    markTerminalContentReady(id: string) {
+      setState(
+        'tabs',
+        t => t.type === TabType.TERMINAL && t.id === id && !t.contentReady,
+        'contentReady',
+        true,
       )
     },
 

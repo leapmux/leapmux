@@ -54,10 +54,11 @@ type Context struct {
 	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
 
-	// Startup tracks in-flight agent/terminal startups — the window
-	// between OpenAgent/OpenTerminal returning and the subprocess being
-	// ready. See startupstate.go.
-	Startup *startupRegistry
+	// AgentStartup / TerminalStartup track in-flight startups — the
+	// window between OpenAgent/OpenTerminal returning and the subprocess
+	// being ready. See startupstate.go.
+	AgentStartup    *agentStartupRegistry
+	TerminalStartup *terminalStartupRegistry
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -84,16 +85,17 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 	output := NewOutputHandler(queries, watchers, agents, wl)
 	output.DataDir = dataDir
 	svc := &Context{
-		DB:        sqlDB,
-		Queries:   queries,
-		Agents:    agents,
-		Terminals: terminals,
-		HomeDir:   homeDir,
-		DataDir:   dataDir,
-		Watchers:  watchers,
-		Output:    output,
-		WakeLock:  wl,
-		Startup:   newStartupRegistry(),
+		DB:              sqlDB,
+		Queries:         queries,
+		Agents:          agents,
+		Terminals:       terminals,
+		HomeDir:         homeDir,
+		DataDir:         dataDir,
+		Watchers:        watchers,
+		Output:          output,
+		WakeLock:        wl,
+		AgentStartup:    newAgentStartupRegistry(),
+		TerminalStartup: newTerminalStartupRegistry(),
 	}
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal

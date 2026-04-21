@@ -5,16 +5,16 @@ import type { CommandStreamSegment } from '~/stores/chat.store'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
+import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 import { usePreferences } from '~/context/PreferencesContext'
+import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { spinner } from '~/styles/animations.css'
-import { AgentStartupError } from './AgentStartupError'
-import { AgentStartupOverlay } from './AgentStartupOverlay'
 import * as styles from './ChatView.css'
 import { markdownContent } from './markdownContent.css'
 import { classifyParsedMessage, MessageBubble } from './MessageBubble'
@@ -71,18 +71,16 @@ interface ChatViewProps {
   /** Look up live Codex span stream segments by span id. */
   getCommandStreamBySpanId?: (spanId: string) => CommandStreamSegment[]
   /**
-   * Startup state for the agent. When 'starting', the empty-state area
-   * shows a loader with the provider name; while 'startup-failed', it
-   * shows the server error in the --danger color. The editor beneath
-   * remains interactive during 'starting' so the user can type ahead.
+   * Agent status. STARTING shows a loader with the provider name in
+   * the empty-state area; STARTUP_FAILED shows the server error in
+   * --danger. The editor beneath remains interactive during STARTING
+   * so the user can type ahead.
    */
-  startupPhase?: 'starting' | 'startup-failed' | undefined
+  agentStatus?: AgentStatus
   /** Error text from the backend's AgentStatusChange.startup_error. */
   startupError?: string
   /** Human-readable label for the agent provider (e.g. "Claude Code"). */
   providerLabel?: string
-  /** Called when the user clicks "Close tab" in the startup-error state. */
-  onCloseAgentTab?: () => void
 }
 
 export const ChatView: Component<ChatViewProps> = (props) => {
@@ -569,23 +567,25 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           <Show
             when={hasVisibleEntries() || props.streamingText || props.agentWorking}
             fallback={(
-              <Show
-                when={props.startupPhase === 'starting'}
-                fallback={(
-                  <Show
-                    when={props.startupPhase === 'startup-failed'}
-                    fallback={<div class={styles.emptyChat}>Send a message to start</div>}
+              <Switch fallback={<div class={styles.emptyChat}>Send a message to start</div>}>
+                <Match when={props.agentStatus === AgentStatus.STARTING}>
+                  <div class={styles.emptyChat} data-testid="agent-startup-overlay">
+                    <StartupSpinner label={`Starting ${props.providerLabel ?? 'agent'}…`} />
+                  </div>
+                </Match>
+                <Match when={props.agentStatus === AgentStatus.STARTUP_FAILED}>
+                  <div
+                    class={styles.emptyChat}
+                    data-testid="agent-startup-error"
+                    style={{ color: 'var(--danger)' }}
                   >
-                    <AgentStartupError
-                      providerLabel={props.providerLabel ?? 'Agent'}
+                    <StartupErrorBody
+                      title={`${props.providerLabel ?? 'Agent'} failed to start`}
                       error={props.startupError ?? ''}
-                      onCloseTab={props.onCloseAgentTab}
                     />
-                  </Show>
-                )}
-              >
-                <AgentStartupOverlay providerLabel={props.providerLabel ?? 'agent'} />
-              </Show>
+                  </div>
+                </Match>
+              </Switch>
             )}
           >
             <Show when={props.fetchingOlder}>
@@ -684,6 +684,30 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       messageListRef!.scrollTop = messageListRef!.scrollHeight
                   }}
                 />
+                {/* Keep the startup panel visible below queued messages
+                    until the agent transitions out of STARTING/FAILED.
+                    The fallback branch above covers the empty state; this
+                    handles the case where the user already typed a
+                    message (which flips the outer Show). */}
+                <Switch>
+                  <Match when={props.agentStatus === AgentStatus.STARTING}>
+                    <div class={styles.startupPanelInline} data-testid="agent-startup-overlay">
+                      <StartupSpinner label={`Starting ${props.providerLabel ?? 'agent'}…`} />
+                    </div>
+                  </Match>
+                  <Match when={props.agentStatus === AgentStatus.STARTUP_FAILED}>
+                    <div
+                      class={styles.startupPanelInline}
+                      data-testid="agent-startup-error"
+                      style={{ color: 'var(--danger)' }}
+                    >
+                      <StartupErrorBody
+                        title={`${props.providerLabel ?? 'Agent'} failed to start`}
+                        error={props.startupError ?? ''}
+                      />
+                    </div>
+                  </Match>
+                </Switch>
               </div>
             </SelectionQuotePopover>
           </Show>

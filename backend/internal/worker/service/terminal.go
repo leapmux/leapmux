@@ -153,7 +153,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// terminals — PTY spawn is synchronous and fast, but we still
 		// report STARTING/READY/STARTUP_FAILED so the frontend can gate
 		// xterm mount and show a loader in the interim).
-		svc.Startup.begin(terminalID, startupKindTerminal, func() {})
+		svc.TerminalStartup.begin(terminalID, func() {})
 
 		// Broadcast STARTING so the frontend watcher sees the initial state.
 		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, "")
@@ -173,7 +173,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, resp)
 
 		// Kick off PTY spawn in the background.
-		go svc.runTerminalStartup(terminalID, workspaceID, shell, workingDir, shellStartDir, cols, rows, worktreeID, gm, outputFn, exitFn)
+		go svc.runTerminalStartup(terminalID, workspaceID, shell, workingDir, shellStartDir, cols, rows, gm, outputFn, exitFn)
 	})
 
 	// CloseTerminal stops and removes a terminal session.
@@ -190,7 +190,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// Clear any in-flight startup entry.
-		svc.Startup.cancelAndClear(terminalID)
+		svc.TerminalStartup.cancelAndClear(terminalID)
 
 		svc.Terminals.RemoveTerminal(terminalID)
 
@@ -335,7 +335,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				Title:         e.Meta.Title,
 				Status:        leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 			}
-			if sup, errStr, ok := svc.Startup.terminalStatus(e.ID); ok {
+			if sup, errStr, ok := svc.TerminalStartup.status(e.ID); ok {
 				ti.Status = sup
 				ti.StartupError = errStr
 			}
@@ -356,6 +356,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				if accessibleWsIDs != nil && !accessibleWsIDs[ts.WorkspaceID] {
 					continue
 				}
+				status, startupError := svc.deriveTerminalStatus(&ts)
 				ti := &leapmuxv1.TerminalInfo{
 					TerminalId:    ts.ID,
 					Cols:          uint32(ts.Cols),
@@ -365,11 +366,8 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					WorkingDir:    ts.WorkingDir,
 					ShellStartDir: ts.ShellStartDir,
 					Title:         ts.Title,
-					Status:        leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
-				}
-				if sup, errStr, ok := svc.Startup.terminalStatus(ts.ID); ok {
-					ti.Status = sup
-					ti.StartupError = errStr
+					Status:        status,
+					StartupError:  startupError,
 				}
 				populateTerminalGitInfo(ti, ts.ShellStartDir)
 				terminals = append(terminals, ti)
@@ -400,8 +398,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 // runTerminalStartup is the async body of OpenTerminal: it spawns the PTY
 // and reports READY or STARTUP_FAILED to the frontend. On failure it also
 // rolls back any git-mode side effects and removes the DB row.
-func (svc *Context) runTerminalStartup(terminalID, workspaceID, shell, workingDir, shellStartDir string, cols, rows uint32, worktreeID string, gm gitModeResult, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
-	_ = worktreeID // worktreeID is already registered on the sync path; kept in signature for future diagnostics
+func (svc *Context) runTerminalStartup(terminalID, workspaceID, shell, workingDir, shellStartDir string, cols, rows uint32, gm gitModeResult, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
 	err := svc.startTerminal(terminal.Options{
 		ID:            terminalID,
 		WorkspaceID:   workspaceID,
@@ -419,24 +416,67 @@ func (svc *Context) runTerminalStartup(terminalID, workspaceID, shell, workingDi
 		// Close-tab button which calls CloseTerminal. Rollback git-mode
 		// changes immediately though (worktree creation can be expensive).
 		svc.rollbackGitMode(gm)
-		svc.Startup.fail(terminalID, errMsg)
+		// Persist the error so the startup panel survives a worker
+		// restart (the in-memory registry is wiped on restart).
+		if dbErr := svc.Queries.SetTerminalStartupError(bgCtx(), db.SetTerminalStartupErrorParams{
+			StartupError: errMsg,
+			ID:           terminalID,
+		}); dbErr != nil {
+			slog.Warn("failed to persist terminal startup error", "terminal_id", terminalID, "error", dbErr)
+		}
 		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, errMsg)
+		// Mark the registry last so waitForStartupFailure in tests is a
+		// reliable "failure-handling goroutine finished" signal.
+		svc.TerminalStartup.fail(terminalID, errMsg)
 		return
 	}
-	svc.Startup.succeed(terminalID)
+	// Clear any persisted startup_error from a prior failed attempt so
+	// the startup panel doesn't resurrect after a worker restart.
+	if dbErr := svc.Queries.SetTerminalStartupError(bgCtx(), db.SetTerminalStartupErrorParams{
+		StartupError: "",
+		ID:           terminalID,
+	}); dbErr != nil {
+		slog.Warn("failed to clear terminal startup error", "terminal_id", terminalID, "error", dbErr)
+	}
 	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "")
+	svc.TerminalStartup.succeed(terminalID)
 }
 
-// broadcastTerminalStartupStatus emits a TerminalStatusChange event.
+// buildTerminalStatusChange constructs a TerminalStatusChange proto.
+// Shared by the WatchEvents catch-up replay and the broadcast path.
+func buildTerminalStatusChange(terminalID string, status leapmuxv1.TerminalStatus, startupError string) *leapmuxv1.TerminalStatusChange {
+	return &leapmuxv1.TerminalStatusChange{
+		TerminalId:   terminalID,
+		Status:       status,
+		StartupError: startupError,
+	}
+}
+
+// deriveTerminalStatus computes (status, startupError) for a terminal, in
+// priority order:
+//  1. in-memory startup registry — STARTING / STARTUP_FAILED while a
+//     startup is in flight or has just failed.
+//  2. persisted startup_error column — surfaces a prior failure across
+//     worker restarts (the in-memory registry is wiped on restart).
+//  3. READY otherwise (the caller uses `Exited` to distinguish a
+//     running terminal from an exited one).
+func (svc *Context) deriveTerminalStatus(t *db.Terminal) (leapmuxv1.TerminalStatus, string) {
+	if sup, errStr, ok := svc.TerminalStartup.status(t.ID); ok {
+		return sup, errStr
+	}
+	if t.StartupError != "" {
+		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, t.StartupError
+	}
+	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, ""
+}
+
+// broadcastTerminalStartupStatus fans out a TerminalStatusChange event
+// to all subscribers.
 func (svc *Context) broadcastTerminalStartupStatus(terminalID string, status leapmuxv1.TerminalStatus, startupError string) {
 	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
-			StatusChange: &leapmuxv1.TerminalStatusChange{
-				TerminalId:   terminalID,
-				Status:       status,
-				StartupError: startupError,
-			},
+			StatusChange: buildTerminalStatusChange(terminalID, status, startupError),
 		},
 	})
 }

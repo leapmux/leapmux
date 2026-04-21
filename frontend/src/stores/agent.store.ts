@@ -9,6 +9,30 @@ function cacheLabels(agents: AgentInfo[]) {
   }
 }
 
+/**
+ * Shallow-equal comparison tuned for AgentInfo fields. Primitive values
+ * use Object.is. For object values (e.g. gitStatus) we shallow-compare
+ * sub-fields so a fresh proto instance carrying the same data is treated
+ * as unchanged — proto decoding allocates a new object every time.
+ */
+function agentFieldEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b))
+    return true
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object')
+    return false
+  if (Array.isArray(a) || Array.isArray(b))
+    return false
+  const aKeys = Object.keys(a as object)
+  const bKeys = Object.keys(b as object)
+  if (aKeys.length !== bKeys.length)
+    return false
+  for (const k of aKeys) {
+    if (!Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+      return false
+  }
+  return true
+}
+
 interface AgentStoreState {
   agents: AgentInfo[]
   activeAgentId: string | null
@@ -57,16 +81,31 @@ export function createAgentStore() {
     },
 
     updateAgent(id: string, updates: Partial<AgentInfo>) {
-      const exists = state.agents.some(a => a.id === id)
-      if (!exists) {
+      const existing = state.agents.find(a => a.id === id)
+      if (!existing) {
         // Buffer until addAgent is called — avoids losing the transition
         // from STARTING → ACTIVE when the broadcast overtakes ListAgents.
         pendingUpdates.set(id, mergePartial(pendingUpdates.get(id) ?? {}, updates))
         return
       }
-      setState('agents', a => a.id === id, updates)
-      if ((updates.availableModels && updates.availableModels.length > 0) || (updates.availableOptionGroups && updates.availableOptionGroups.length > 0))
-        updateSettingsLabelCache(updates.availableModels, updates.availableOptionGroups)
+      // Filter out no-op fields so setState doesn't notify subscribers
+      // for values that didn't actually change. statusChange events carry
+      // the full snapshot on every turn boundary; without this guard,
+      // every field's reactive readers re-run even when only one changed.
+      const changed: Partial<AgentInfo> = {}
+      let hasChange = false
+      for (const key of Object.keys(updates) as (keyof AgentInfo)[]) {
+        const next = updates[key]
+        if (!agentFieldEqual(existing[key], next)) {
+          ;(changed as Record<string, unknown>)[key] = next
+          hasChange = true
+        }
+      }
+      if (!hasChange)
+        return
+      setState('agents', a => a.id === id, changed)
+      if ((changed.availableModels && changed.availableModels.length > 0) || (changed.availableOptionGroups && changed.availableOptionGroups.length > 0))
+        updateSettingsLabelCache(changed.availableModels, changed.availableOptionGroups)
     },
 
     setActiveAgent(id: string | null) {

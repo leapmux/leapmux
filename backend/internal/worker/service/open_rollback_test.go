@@ -21,8 +21,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
-var osStat = os.Stat
-
 // waitForStartupFailure polls until the startup registry reports a
 // STARTUP_FAILED state (for agents) / STARTUP_FAILED state (for terminals)
 // for the given id, or the timeout elapses. The OpenAgent/OpenTerminal RPC
@@ -33,10 +31,10 @@ func waitForStartupFailure(t *testing.T, svc *Context, id string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if status, _, ok := svc.Startup.agentStatus(id); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+		if status, _, ok := svc.AgentStartup.status(id); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
 			return
 		}
-		if status, _, ok := svc.Startup.terminalStatus(id); ok && status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED {
+		if status, _, ok := svc.TerminalStartup.status(id); ok && status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -71,11 +69,17 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 
 	_, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
+
+	// Wait for the startup goroutine to fully finish so its post-rollback
+	// DB writes and broadcasts don't race with TempDir cleanup.
+	for _, id := range collectAgentIDs(w) {
+		waitForStartupFailure(t, svc, id)
+	}
 }
 
 // directoryExists is a helper for require.Eventually polling.
 func directoryExists(path string) bool {
-	_, err := osStat(path)
+	_, err := os.Stat(path)
 	return err == nil
 }
 
@@ -100,6 +104,9 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return currentBranchName(t, repoDir) == originalBranch && !localBranchExists(t, repoDir, branchName)
 	}, 5*time.Second, 20*time.Millisecond)
+	for _, id := range collectAgentIDs(w) {
+		waitForStartupFailure(t, svc, id)
+	}
 }
 
 func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing.T) {
@@ -127,6 +134,9 @@ func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing
 		commit := strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "HEAD"))
 		return head == "HEAD" && commit == originalCommit && !localBranchExists(t, repoDir, branchName)
 	}, 5*time.Second, 20*time.Millisecond)
+	for _, id := range collectAgentIDs(w) {
+		waitForStartupFailure(t, svc, id)
+	}
 }
 
 func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
@@ -154,6 +164,10 @@ func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 
 	_, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
+
+	for _, id := range collectTerminalIDs(w) {
+		waitForStartupFailure(t, svc, id)
+	}
 }
 
 func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
@@ -177,6 +191,9 @@ func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return currentBranchName(t, repoDir) == originalBranch && !localBranchExists(t, repoDir, branchName)
 	}, 5*time.Second, 20*time.Millisecond)
+	for _, id := range collectTerminalIDs(w) {
+		waitForStartupFailure(t, svc, id)
+	}
 }
 
 func expectedWorktreePath(repoDir, branchName string) string {
@@ -288,6 +305,21 @@ func collectTerminalIDs(w *testResponseWriter) []string {
 		var resp leapmuxv1.OpenTerminalResponse
 		if err := proto.Unmarshal(r.Payload, &resp); err == nil && resp.TerminalId != "" {
 			ids = append(ids, resp.TerminalId)
+		}
+	}
+	return ids
+}
+
+// collectAgentIDs extracts agent ids from OpenAgent responses. Used to
+// synchronize a test on the startup goroutine finishing (via
+// waitForStartupFailure) so TempDir cleanup doesn't race with the
+// goroutine's post-rollback activity (DB writes, broadcasts).
+func collectAgentIDs(w *testResponseWriter) []string {
+	var ids []string
+	for _, r := range w.responses {
+		var resp leapmuxv1.OpenAgentResponse
+		if err := proto.Unmarshal(r.Payload, &resp); err == nil && resp.GetAgent().GetId() != "" {
+			ids = append(ids, resp.GetAgent().GetId())
 		}
 	}
 	return ids

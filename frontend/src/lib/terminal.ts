@@ -108,6 +108,25 @@ export function resolveTerminalTheme(pref: TerminalThemePreference): ITheme {
   return resolveTerminalThemeMode(pref) === 'dark' ? darkTerminalTheme : lightTerminalTheme
 }
 
+/**
+ * Returns true when any line in the active buffer contains at least one
+ * non-whitespace character (after trimming trailing spaces, which xterm
+ * pads unused cells with). Used to decide when to drop the "Starting
+ * terminal…" overlay — the moment the shell has actually painted its
+ * prompt, not just the moment the PTY spawned.
+ */
+export function bufferHasVisibleContent(terminal: Terminal): boolean {
+  const buffer = terminal.buffer.active
+  for (let i = 0; i < buffer.length; i++) {
+    const line = buffer.getLine(i)
+    if (!line)
+      continue
+    if (line.translateToString(true).trim().length > 0)
+      return true
+  }
+  return false
+}
+
 export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: ITheme }): TerminalInstance {
   const theme = opts?.theme ?? resolveTerminalTheme(getTerminalThemePreference())
 
