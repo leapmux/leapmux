@@ -8,7 +8,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/r
 import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { listTabsForWorkspace } from '~/api/listTabsBatcher'
-import { agentLoadingTimeoutMs } from '~/api/transport'
+import { apiLoadingTimeoutMs } from '~/api/transport'
 import { channelManager, moveTabWorkspace, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
@@ -105,7 +105,7 @@ export const AppShell: ParentComponent = (props) => {
   const [newAgentLoadingProvider, setNewAgentLoadingProvider] = createSignal<AgentProvider | null>(null)
   const [newTerminalLoading, setNewTerminalLoading] = createSignal(false)
   const [newShellLoading, setNewShellLoading] = createSignal(false)
-  const settingsLoading = createLoadingSignal(agentLoadingTimeoutMs(true))
+  const settingsLoading = createLoadingSignal(apiLoadingTimeoutMs())
   const [confirmDeleteWs, setConfirmDeleteWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
   const [confirmArchiveWs, setConfirmArchiveWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
   const [keyPinConfirm, setKeyPinConfirm] = createSignal<KeyPinConfirmState | null>(null)

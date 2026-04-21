@@ -61,7 +61,7 @@ import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/ch
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
 import { getCapabilities, isTauriApp, platformBridge } from '~/api/platformBridge'
-import { agentRpcTimeoutMs, transport } from '~/api/transport'
+import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
   CloseAgentResponseSchema,
@@ -333,7 +333,9 @@ class TauriRelayWebSocket {
   }
 }
 
-export const channelManager = new ChannelManager(new BrowserChannelTransport())
+export const channelManager = new ChannelManager(new BrowserChannelTransport(), {
+  rpcTimeoutFn: apiLoadingTimeoutMs,
+})
 
 // ---------------------------------------------------------------------------
 // Generic helper
@@ -385,7 +387,7 @@ export function moveTabWorkspace(workerId: string, req: MessageInitShape<typeof 
 
 export function openAgent(workerId: string, req: MessageInitShape<typeof OpenAgentRequestSchema>): Promise<OpenAgentResponse> {
   return callWorker(workerId, 'OpenAgent', OpenAgentRequestSchema, OpenAgentResponseSchema, req, {
-    timeoutMs: agentRpcTimeoutMs(false),
+    timeoutMs: apiLoadingTimeoutMs(),
   })
 }
 

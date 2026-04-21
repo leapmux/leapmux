@@ -41,6 +41,7 @@ import (
 func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	// Subscribe before OpenAgent so an accidental ACTIVE broadcast would
@@ -135,6 +136,7 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	var closeOnce sync.Once
@@ -208,6 +210,7 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	wWatch := &testResponseWriter{channelID: "test-ch"}
 

@@ -46,7 +46,7 @@ type Context struct {
 	Send                SendFunc                  // Forwards messages to the Hub via WebSocket
 	Watchers            *WatcherManager           // Fan-out manager for event broadcasting
 	Output              *OutputHandler            // Agent output NDJSON processor
-	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 30s)
+	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 5m)
 	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
 	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
 	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
@@ -65,7 +65,7 @@ type Context struct {
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
-// or 30s if not set.
+// or the default if not set.
 func (svc *Context) agentStartupTimeout() time.Duration {
 	if svc.AgentStartupTimeout > 0 {
 		return svc.AgentStartupTimeout
@@ -160,8 +160,16 @@ func (svc *Context) Init() {
 
 // Shutdown persists in-memory terminal state to the database so it
 // survives a worker restart. Call this before stopping the terminal
-// manager (which clears in-memory state).
+// manager (which clears in-memory state). Callers must have already
+// stopped dispatching new OpenAgent/OpenTerminal requests; otherwise
+// WaitForInFlight can race with a fresh begin().
 func (svc *Context) Shutdown() {
+	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
+	// trailing DB writes and filesystem work land before the caller
+	// closes the DB or removes data directories.
+	svc.AgentStartup.WaitForInFlight()
+	svc.TerminalStartup.WaitForInFlight()
+
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
 		svc.appendTerminalDisconnectNotice(tid)
 

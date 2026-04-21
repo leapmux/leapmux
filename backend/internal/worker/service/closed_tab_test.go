@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -121,6 +122,19 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 
 	w := &testResponseWriter{channelID: "test-ch"}
 	return svc, d, w
+}
+
+// drainStartups joins any runAgentStartup / runTerminalStartup goroutines
+// spawned during the test. Call via `defer` immediately after
+// setupTestService so it fires ahead of t.Cleanup-registered TempDir
+// removal (test-body t.TempDir cleanups run first in LIFO order, and a
+// `defer` runs even earlier — before any t.Cleanup). Without this, the
+// goroutine's trailing DB writes, git rollback, or broadcast work can
+// race the cleanup, surfacing as "sql: database is closed" warnings or
+// "directory not empty" TempDir removal failures.
+func drainStartups(svc *Context) {
+	svc.AgentStartup.WaitForInFlight()
+	svc.TerminalStartup.WaitForInFlight()
 }
 
 // dispatch is a helper that marshals a request proto and dispatches it.
@@ -407,11 +421,31 @@ func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
 		return svc.Terminals.IsExited(terminalID)
 	}, "expected terminal to exit")
 
+	// Assertions are split so a failure on any individual condition
+	// surfaces a specific error message rather than a generic "condition
+	// never satisfied". The disconnect notice is the behavior under test;
+	// the echoed-command check is an indirect sanity probe that the PTY
+	// actually processed input.
 	testutil.AssertEventually(t, func() bool {
 		dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
-		return err == nil &&
-			dbTerm.ExitCode == 0 &&
-			strings.Contains(string(dbTerm.Screen), "exit_notice_test") &&
-			strings.Contains(string(dbTerm.Screen), "[Connection to the terminal was lost.]")
-	}, "expected exit snapshot with disconnect notice to be persisted")
+		return err == nil && dbTerm.ExitCode == 0
+	}, "expected clean exit (exit_code=0) to be persisted")
+
+	testutil.AssertEventually(t, func() bool {
+		dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
+		return err == nil && strings.Contains(string(dbTerm.Screen), "[Connection to the terminal was lost.]")
+	}, "expected disconnect notice to be persisted in screen snapshot")
+
+	// Skip the echoed-command substring check on Windows: cmd.exe under
+	// ConPTY renders its banner and prompt through VT sequences that can
+	// push the typed command off the visible 80×24 buffer by the time
+	// the screen is snapshotted, so this check is unreliable there. The
+	// disconnect-notice assertion above already covers the behavior the
+	// test is meant to pin.
+	if runtime.GOOS != "windows" {
+		testutil.AssertEventually(t, func() bool {
+			dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
+			return err == nil && strings.Contains(string(dbTerm.Screen), "exit_notice_test")
+		}, "expected echoed command output to survive in screen snapshot")
+	}
 }

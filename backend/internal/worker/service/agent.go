@@ -808,7 +808,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInvalidArgument(sender, "invalid request")
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), svc.agentStartupTimeout())
+		// Discovery probes run in parallel (one goroutine per provider), so
+		// this deadline is effectively a per-probe wall-clock cap. Uses the
+		// API timeout rather than startup timeout: probing binary presence
+		// should never take as long as the MCP-heavy agent handshake.
+		ctx, cancel := context.WithTimeout(context.Background(), svc.agentAPITimeout())
 		defer cancel()
 		providers := agent.ListAvailableProviders(ctx, svc.agentShell(), svc.agentLoginShell())
 		sendProtoResponse(sender, &leapmuxv1.ListAvailableProvidersResponse{
@@ -1146,6 +1150,7 @@ func (svc *Context) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.Agen
 // label ("Creating worktree…" → "Checking Git status…" → "Starting
 // {provider}…") rather than overlapping noise.
 func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan gitModePlan, agentOpts agent.Options) {
+	defer svc.AgentStartup.finish()
 	agentID := agentOpts.AgentID
 	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)
 

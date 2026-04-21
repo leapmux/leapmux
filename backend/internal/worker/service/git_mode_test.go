@@ -38,7 +38,9 @@ func TestValidateGitMode_CreateWorktreeHappyPath(t *testing.T) {
 	assert.Equal(t, "feature/deep/slash", plan.BranchName)
 	// Path prefix/suffix only — repoRoot is canonicalized via
 	// pathutil.Canonicalize, so on macOS /var resolves to /private/var.
-	assert.True(t, strings.HasSuffix(plan.WorktreePath, "-worktrees/feature/deep/slash"),
+	// Normalize to forward slashes so the same literal suffix matches on
+	// Windows where filepath.Join produces backslash-separated paths.
+	assert.True(t, strings.HasSuffix(filepath.ToSlash(plan.WorktreePath), "-worktrees/feature/deep/slash"),
 		"worktree path should live under <repo>-worktrees/<branch>: %s", plan.WorktreePath)
 	assert.Equal(t, plan.WorktreePath, plan.PlannedWorkingDir, "planned working dir == worktree path")
 	assert.NotEmpty(t, plan.StartPoint, "start point should default to HEAD or current branch")
@@ -204,7 +206,10 @@ func TestValidateGitMode_WorktreePathNormalization(t *testing.T) {
 	// symlinks for comparison against `git worktree list` but returns
 	// the user-provided path so the later UpsertTerminal stores what
 	// the user actually referenced).
-	assert.True(t, strings.HasSuffix(plan.PlannedWorkingDir, "symlink") || strings.HasSuffix(plan.PlannedWorkingDir, "feature/deep/nest"),
+	// Normalize to forward slashes so the nested-branch suffix matches
+	// on Windows where the resolved path uses backslashes.
+	planned := filepath.ToSlash(plan.PlannedWorkingDir)
+	assert.True(t, strings.HasSuffix(planned, "symlink") || strings.HasSuffix(planned, "feature/deep/nest"),
 		"plan should keep either the symlinked path or its target: got %s", plan.PlannedWorkingDir)
 }
 
@@ -229,6 +234,7 @@ func osSymlink(target, link string) error { return os.Symlink(target, link) }
 
 func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return &leapmuxv1.AgentSettings{}, nil
@@ -258,12 +264,15 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 	// The agent's DB working_dir points at the worktree.
 	row, err := svc.Queries.GetAgentByID(context.Background(), agentID)
 	require.NoError(t, err)
-	assert.True(t, strings.HasSuffix(row.WorkingDir, branch),
+	// Normalize to forward slashes so the branch-name suffix matches on
+	// Windows where the worktree path uses backslash separators.
+	assert.True(t, strings.HasSuffix(filepath.ToSlash(row.WorkingDir), branch),
 		"DB row's working_dir should be the worktree path (got %s)", row.WorkingDir)
 }
 
 func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return &leapmuxv1.AgentSettings{}, nil

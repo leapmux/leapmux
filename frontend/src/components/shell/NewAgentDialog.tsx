@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createMemo, createSignal, Show } from 'solid-js'
-import { agentLoadingTimeoutMs } from '~/api/transport'
+import { apiLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { Dialog, DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { labelRow } from '~/components/common/Dialog.css'
@@ -39,7 +39,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     defaultWorkingDir: props.defaultWorkingDir,
     resolveWorktree: true,
   })
-  const submitting = createLoadingSignal(agentLoadingTimeoutMs(false))
+  const submitting = createLoadingSignal(apiLoadingTimeoutMs())
 
   const available = () => getAvailableAgentProviders(props.availableProviders)
   const { mruProviders, recordProviderUse } = useMruProviders(available, 1)

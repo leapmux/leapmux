@@ -57,7 +57,7 @@ type Options struct {
 	ResumeSessionID string                  // If set, uses --resume to resume a previous session
 	PermissionMode  string                  // Permission mode to set on startup (default, acceptEdits, plan, bypassPermissions)
 	ExtraSettings   map[string]string       // Provider-specific persisted settings (e.g. Codex extras)
-	StartupTimeout  time.Duration           // Timeout for the startup handshake (default: 30s)
+	StartupTimeout  time.Duration           // Timeout for the startup handshake (default: 5m)
 	APITimeout      time.Duration           // Timeout for JSON-RPC requests (default: 10s)
 	Shell           string                  // Default shell path (always set when using shell wrapper)
 	LoginShell      bool                    // If true, use interactive+login shell flags

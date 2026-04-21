@@ -130,8 +130,14 @@ interface ActiveChannel {
   claimReject?: (err: Error) => void
 }
 
-/** Default RPC call timeout in milliseconds (matches hub apiTimeoutSeconds). */
-const DEFAULT_RPC_TIMEOUT_MS = 10_000
+/**
+ * Fallback RPC call timeout in milliseconds, used only when the owner
+ * doesn't inject a `rpcTimeoutFn`. Must be larger than the worker's own
+ * `apiTimeoutSeconds` context deadline (10s default) so the worker has time
+ * to respond with DeadlineExceeded before this client-side timer fires.
+ * 15_000 == 10s × the 1.5× multiplier applied by ~/api/transport.
+ */
+const FALLBACK_RPC_TIMEOUT_MS = 15_000
 
 /** Optional overrides for testing (dependency injection). */
 export interface ChannelManagerOpts {
@@ -140,8 +146,12 @@ export interface ChannelManagerOpts {
   classicHandshake1?: typeof classicHandshake1
   classicHandshake2?: typeof classicHandshake2
   maxMessageSize?: number
-  /** Default timeout for individual RPC calls in milliseconds. */
-  rpcTimeout?: number
+  /**
+   * Default timeout for individual RPC calls in milliseconds. Resolved
+   * lazily on every call so callers (typically ~/api/workerRpc) can forward
+   * the current frontend-multiplied deadline from `loadTimeouts()`.
+   */
+  rpcTimeoutFn?: () => number
 }
 
 /** ChannelManager manages encrypted E2EE channels to Workers. */
@@ -157,7 +167,7 @@ export class ChannelManager {
   private classicHS1: typeof classicHandshake1
   private classicHS2: typeof classicHandshake2
   private maxMessageSize: number
-  private rpcTimeout: number
+  private rpcTimeoutFn: () => number
   /** Workers whose keys were rejected by the user during this session. */
   private rejectedWorkers = new Set<string>()
 
@@ -173,7 +183,7 @@ export class ChannelManager {
     this.classicHS1 = opts?.classicHandshake1 ?? classicHandshake1
     this.classicHS2 = opts?.classicHandshake2 ?? classicHandshake2
     this.maxMessageSize = opts?.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE
-    this.rpcTimeout = opts?.rpcTimeout ?? DEFAULT_RPC_TIMEOUT_MS
+    this.rpcTimeoutFn = opts?.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
   }
 
   /** Subscribe to channel state changes (open/close). Returns an unsubscribe function. */
@@ -356,7 +366,7 @@ export class ChannelManager {
     }
 
     const requestId = ch.nextRequestId++
-    const effectiveTimeoutMs = timeoutMs ?? this.rpcTimeout
+    const effectiveTimeoutMs = timeoutMs ?? this.rpcTimeoutFn()
 
     return new Promise<InnerRpcResponse>((resolve, reject) => {
       const timeoutSec = Math.round(effectiveTimeoutMs / 1000)

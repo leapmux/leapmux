@@ -443,6 +443,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 // git-mode plan, spawns the PTY, and reports READY or STARTUP_FAILED to the
 // frontend. On failure it rolls back any partial git-mode side effects.
 func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Options, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
+	defer svc.TerminalStartup.finish()
 	terminalID := opts.ID
 
 	// Phase 0: execute git-mode mutation (worktree add, branch create,

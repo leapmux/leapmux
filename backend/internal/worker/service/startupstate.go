@@ -60,21 +60,50 @@ type startupEntry struct {
 // startupCore is the shared state-machine for tracking a set of in-flight
 // or recently-failed startups keyed by id. It is embedded by the agent
 // and terminal registries which add typed status accessors.
+//
+// The embedded WaitGroup tracks goroutine lifecycles independently of the
+// entries map: state transitions (succeed / fail / cancelAndClear) can
+// fire while the startup goroutine is still doing trailing work (DB
+// writes, broadcasts, git rollback). WaitForInFlight drains that trailing
+// work so callers — test cleanups and future graceful-shutdown paths —
+// observe the filesystem and DB in a quiescent state.
 type startupCore struct {
 	mu      sync.Mutex
 	entries map[string]*startupEntry
+	wg      sync.WaitGroup
 }
 
 func newStartupCore() startupCore {
 	return startupCore{entries: make(map[string]*startupEntry)}
 }
 
-// begin records an entry in STARTING state. The cancel function should be
-// the one tied to the startup goroutine's context.
+// begin records an entry in STARTING state and adds one to the in-flight
+// counter. The cancel function should be the one tied to the startup
+// goroutine's context. Must be paired with a deferred finish() inside
+// the startup goroutine.
 func (r *startupCore) begin(id string, cancel context.CancelFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries[id] = &startupEntry{cancel: cancel}
+	r.wg.Add(1)
+}
+
+// finish marks one startup goroutine as returned. Always called via
+// `defer` at the top of runAgentStartup / runTerminalStartup so it fires
+// regardless of which branch the goroutine exits through (succeed, fail,
+// close-detected, panic recovery elsewhere, …).
+func (r *startupCore) finish() {
+	r.wg.Done()
+}
+
+// WaitForInFlight blocks until every startup goroutine counted by begin
+// has returned. Callers must guarantee no new begin() invocations land
+// after Wait starts — typically by stopping request dispatch first. The
+// trailing DB writes and git rollback inside runAgentStartup /
+// runTerminalStartup are joined by this call, which is why tests and
+// graceful shutdown use it to avoid racing TempDir cleanup or DB close.
+func (r *startupCore) WaitForInFlight() {
+	r.wg.Wait()
 }
 
 // setMessage records the current phase label for id. No-op if the entry

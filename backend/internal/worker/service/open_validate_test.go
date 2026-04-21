@@ -55,6 +55,7 @@ func countTerminalRows(t *testing.T, svc *Context) int {
 func TestOpenAgent_Validate_BranchNameSyntax(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:    "ws-1",
@@ -71,6 +72,7 @@ func TestOpenAgent_Validate_BranchNameSyntax(t *testing.T) {
 func TestOpenAgent_Validate_WorkingDirNotGitRepo(t *testing.T) {
 	notARepo := t.TempDir()
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:    "ws-1",
@@ -89,6 +91,7 @@ func TestOpenAgent_Validate_BranchAlreadyExists(t *testing.T) {
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:    "ws-1",
@@ -105,6 +108,7 @@ func TestOpenAgent_Validate_BranchAlreadyExists(t *testing.T) {
 func TestOpenAgent_Validate_BaseBranchMissing(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:        "ws-1",
@@ -126,6 +130,7 @@ func TestOpenAgent_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 	require.NoError(t, os.MkdirAll(worktreePath, 0o755))
 
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
@@ -141,6 +146,7 @@ func TestOpenAgent_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 func TestOpenAgent_Validate_CheckoutBranchMissing(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:    "ws-1",
@@ -158,6 +164,7 @@ func TestOpenAgent_Validate_CreateBranchAlreadyExists(t *testing.T) {
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:  "ws-1",
@@ -176,6 +183,7 @@ func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
 	require.NoError(t, os.MkdirAll(bogusPath, 0o755))
 
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:     "ws-1",
 		WorkingDir:      repoDir,
@@ -192,6 +200,7 @@ func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
 func TestOpenAgent_Validate_TitleTooLong(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	longTitle := strings.Repeat("a", 256) // exceeds the 128-char cap
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
@@ -208,6 +217,7 @@ func TestOpenAgent_Validate_TitleTooLong(t *testing.T) {
 func TestOpenAgent_Validate_TitleStripsControlChars(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId: "ws-1",
@@ -232,6 +242,7 @@ func TestOpenAgent_Validate_TitleStripsControlChars(t *testing.T) {
 func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId:    "ws-1",
@@ -248,6 +259,7 @@ func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 func TestOpenTerminal_Validate_BranchNameSyntax(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkspaceId:    "ws-1",
@@ -264,6 +276,7 @@ func TestOpenTerminal_Validate_BranchNameSyntax(t *testing.T) {
 func TestOpenTerminal_Validate_WorkingDirNotGitRepo(t *testing.T) {
 	notARepo := t.TempDir()
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkspaceId:    "ws-1",
@@ -282,6 +295,7 @@ func TestOpenTerminal_Validate_BranchAlreadyExists(t *testing.T) {
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkspaceId:    "ws-1",
@@ -301,6 +315,7 @@ func TestOpenTerminal_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 	require.NoError(t, os.MkdirAll(worktreePath, 0o755))
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkspaceId:    "ws-1",
@@ -317,6 +332,7 @@ func TestOpenTerminal_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 func TestOpenTerminal_Validate_CheckoutBranchMissing(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t, "ws-1")
+	defer drainStartups(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkspaceId:    "ws-1",
