@@ -495,3 +495,62 @@ describe('startupMessage handling in agent statusChange', () => {
     })
   })
 })
+
+// Regression tests for the "new terminal tab shows 'Starting terminal…'
+// instead of 'Starting <shell>…'" bug: the client subscribes to
+// WatchEvents only after the OpenTerminal response, so the sync-path
+// STARTING broadcast lands with no watcher attached. The fix surfaces
+// the phase label via catch-up replay — these tests lock in the
+// frontend half of that contract.
+describe('startupMessage handling in terminal statusChange', () => {
+  // Mirrors the switch in useWorkspaceConnection.handleTerminalEvent's
+  // STARTING branch: on a STARTING event for a tab that is not
+  // already running/starting, store both status and message; on a
+  // same-status STARTING update with a fresh message, patch just the
+  // label so a later phase broadcast refreshes the overlay text.
+  function applyStarting(
+    tabStore: ReturnType<typeof createTabStore>,
+    terminalId: string,
+    msg: string | undefined,
+  ) {
+    const existing = tabStore.state.tabs.find(
+      t => t.type === TabType.TERMINAL && t.id === terminalId,
+    )
+    if (existing && existing.status !== 'running' && existing.status !== 'starting') {
+      tabStore.updateTab(TabType.TERMINAL, terminalId, {
+        status: 'starting',
+        startupMessage: msg || undefined,
+      })
+    }
+    else if (existing?.status === 'starting' && msg && msg !== existing.startupMessage) {
+      tabStore.updateTab(TabType.TERMINAL, terminalId, { startupMessage: msg })
+    }
+  }
+
+  it('stores startupMessage on the initial STARTING event so the overlay renders the backend phase label', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1' })
+
+      applyStarting(tabStore, 'term-1', 'Starting zsh…')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.status).toBe('starting')
+      expect(tab?.startupMessage).toBe('Starting zsh…')
+      dispose()
+    })
+  })
+
+  it('updates startupMessage on a same-status STARTING event so later phase broadcasts refresh the overlay label', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', status: 'starting', startupMessage: 'Starting zsh…' })
+
+      applyStarting(tabStore, 'term-1', 'Starting fish…')
+
+      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      expect(tab?.startupMessage).toBe('Starting fish…')
+      dispose()
+    })
+  })
+})

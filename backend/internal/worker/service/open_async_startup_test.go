@@ -14,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 // TestOpenAgent_SyncPrologueReturnsFast asserts that even when startAgent
@@ -135,6 +136,167 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	assert.Nil(t, resp.GetAgent().GetGitStatus(),
 		"OpenAgent response must not carry gitStatus — it's deferred to the async startup broadcast")
+}
+
+// TestOpenTerminal_CatchUpReplaySurfacesStartupMessage regression-tests
+// the bug where a newly-opened terminal tab showed a generic "Starting
+// terminal…" label instead of the backend-provided "Starting <shell>…".
+//
+// The client subscribes to WatchEvents only AFTER receiving the
+// OpenTerminal response, so the sync-path STARTING broadcast lands with
+// no watchers registered. The fix stores the phase label in the
+// TerminalStartup registry so deriveTerminalStatus → the WatchEvents
+// catch-up replay can surface it to the just-arriving subscriber.
+func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
+	svc, d, w := setupTestService(t, "ws-1")
+	// Block the PTY spawn indefinitely so the terminal stays in STARTING
+	// long enough for the WatchEvents catch-up replay to read the
+	// registry.
+	blocked := make(chan struct{})
+	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+		<-blocked
+		return nil
+	}
+	defer close(blocked)
+
+	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+		WorkspaceId: "ws-1",
+		WorkingDir:  t.TempDir(),
+		Shell:       "/bin/zsh",
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenTerminalResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	terminalID := openResp.GetTerminalId()
+	require.NotEmpty(t, terminalID)
+
+	wWatch := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		TerminalIds: []string{terminalID},
+	}, wWatch)
+
+	// Catch-up replay fires synchronously during the WatchEvents handler,
+	// so the streams slice is already populated when dispatch returns.
+	var sawStartingWithMsg bool
+	for _, s := range wWatch.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		sc := resp.GetTerminalEvent().GetStatusChange()
+		if sc == nil {
+			continue
+		}
+		if sc.GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING {
+			assert.Equal(t, "Starting zsh…", sc.GetStartupMessage(),
+				"catch-up replay must surface the phase label the OpenTerminal sync prologue registered")
+			sawStartingWithMsg = true
+		}
+	}
+	assert.True(t, sawStartingWithMsg,
+		"expected a STARTING statusChange in the catch-up replay")
+}
+
+// TestListTerminals_SurfacesRegistryStartupMessage verifies that the
+// ListTerminals handler includes startup_message on the TerminalInfo
+// for terminals that are currently STARTING in the registry. Without
+// this, a client refreshing mid-startup (e.g. hard reload during PTY
+// spawn) falls back to the generic "Starting terminal…" label.
+func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
+	svc, d, w := setupTestService(t, "ws-1")
+	blocked := make(chan struct{})
+	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+		<-blocked
+		return nil
+	}
+	defer close(blocked)
+
+	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+		WorkspaceId: "ws-1",
+		WorkingDir:  t.TempDir(),
+		Shell:       "/usr/bin/fish",
+	}, w)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenTerminalResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	terminalID := openResp.GetTerminalId()
+
+	wList := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+		TabIds: []string{terminalID},
+	}, wList)
+	require.Empty(t, wList.errors)
+	require.Len(t, wList.responses, 1)
+
+	var listResp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(wList.responses[0].GetPayload(), &listResp))
+	require.Len(t, listResp.GetTerminals(), 1)
+	ti := listResp.GetTerminals()[0]
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, ti.GetStatus())
+	assert.Equal(t, "Starting fish…", ti.GetStartupMessage())
+}
+
+// TestOpenAgent_CatchUpReplaySurfacesStartupMessage mirrors the
+// terminal regression test for agents: a WatchEvents subscriber that
+// attaches after the initial STARTING broadcast should see the current
+// phase label via catch-up replay, not an empty string.
+func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+	// Block startAgent so the goroutine settles after setting phase 2
+	// ("Starting Claude Code…") and waits there — the registry entry
+	// then holds that phase label for replay.
+	blocked := make(chan struct{})
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		select {
+		case <-blocked:
+		case <-ctx.Done():
+		}
+		return &leapmuxv1.AgentSettings{}, nil
+	}
+	defer close(blocked)
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    initRepo(t),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	agentID := openResp.GetAgent().GetId()
+
+	// Wait until the goroutine has progressed past phase 2 so the
+	// registry holds "Starting Claude Code…" (the last registered
+	// message before startAgent blocks).
+	require.Eventually(t, func() bool {
+		_, _, msg, ok := svc.AgentStartup.status(agentID)
+		return ok && msg == "Starting Claude Code…"
+	}, 5*time.Second, 20*time.Millisecond,
+		"expected runAgentStartup to reach phase 2 before startAgent blocks")
+
+	wWatch := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
+	}, wWatch)
+
+	var sawStartingWithMsg bool
+	for _, s := range wWatch.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		sc := resp.GetAgentEvent().GetStatusChange()
+		if sc == nil || sc.GetStatus() != leapmuxv1.AgentStatus_AGENT_STATUS_STARTING {
+			continue
+		}
+		assert.Equal(t, "Starting Claude Code…", sc.GetStartupMessage(),
+			"catch-up replay must surface the phase label stored in the registry")
+		sawStartingWithMsg = true
+	}
+	assert.True(t, sawStartingWithMsg,
+		"expected a STARTING statusChange in the catch-up replay")
 }
 
 // TestOpenAgent_ActiveBroadcastCarriesGitStatus asserts that the final
@@ -378,7 +540,7 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 
 	// Startup registry should report STARTUP_FAILED with the error.
 	require.Eventually(t, func() bool {
-		status, errStr, ok := svc.AgentStartup.status(agentID)
+		status, errStr, _, ok := svc.AgentStartup.status(agentID)
 		return ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED && errStr != ""
 	}, 5*time.Second, 20*time.Millisecond, "expected Startup registry to retain STARTUP_FAILED")
 

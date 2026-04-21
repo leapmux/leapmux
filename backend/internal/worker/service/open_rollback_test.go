@@ -27,10 +27,10 @@ import (
 func waitForStartupFailure(t *testing.T, svc *Context, id string) {
 	t.Helper()
 	testutil.RequireEventually(t, func() bool {
-		if status, _, ok := svc.AgentStartup.status(id); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+		if status, _, _, ok := svc.AgentStartup.status(id); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
 			return true
 		}
-		if status, _, ok := svc.TerminalStartup.status(id); ok && status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED {
+		if status, _, _, ok := svc.TerminalStartup.status(id); ok && status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED {
 			return true
 		}
 		return false

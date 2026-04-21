@@ -156,12 +156,15 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// xterm mount and show a loader in the interim).
 		svc.TerminalStartup.begin(terminalID, func() {})
 
-		// Broadcast STARTING so the frontend watcher sees the initial
-		// state. Include the resolved shell name as the startup-panel
-		// label so users see "Starting zsh…" rather than a generic
-		// "Starting terminal…".
+		// Record the phase label in the registry *before* broadcasting.
+		// The client only subscribes to WatchEvents after receiving the
+		// OpenTerminal response, so this broadcast's live delivery set
+		// is empty — the client retrieves the label via WatchEvents
+		// catch-up replay, which reads the registry.
+		startupMessage := "Starting " + shellDisplayName(shell) + "…"
+		svc.TerminalStartup.setMessage(terminalID, startupMessage)
 		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
-			startupMessage: "Starting " + shellDisplayName(shell) + "…",
+			startupMessage: startupMessage,
 		})
 
 		resp := &leapmuxv1.OpenTerminalResponse{
@@ -359,9 +362,10 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				Title:         e.Meta.Title,
 				Status:        leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 			}
-			if sup, errStr, ok := svc.TerminalStartup.status(e.ID); ok {
+			if sup, errStr, msg, ok := svc.TerminalStartup.status(e.ID); ok {
 				ti.Status = sup
 				ti.StartupError = errStr
+				ti.StartupMessage = msg
 			}
 			terminals = append(terminals, ti)
 			gitDirs = append(gitDirs, resolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
@@ -378,18 +382,19 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				if accessibleWsIDs != nil && !accessibleWsIDs[ts.WorkspaceID] {
 					continue
 				}
-				status, startupError := svc.deriveTerminalStatus(&ts)
+				status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)
 				ti := &leapmuxv1.TerminalInfo{
-					TerminalId:    ts.ID,
-					Cols:          uint32(ts.Cols),
-					Rows:          uint32(ts.Rows),
-					Screen:        ts.Screen,
-					Exited:        !svc.Terminals.HasTerminal(ts.ID),
-					WorkingDir:    ts.WorkingDir,
-					ShellStartDir: ts.ShellStartDir,
-					Title:         ts.Title,
-					Status:        status,
-					StartupError:  startupError,
+					TerminalId:     ts.ID,
+					Cols:           uint32(ts.Cols),
+					Rows:           uint32(ts.Rows),
+					Screen:         ts.Screen,
+					Exited:         !svc.Terminals.HasTerminal(ts.ID),
+					WorkingDir:     ts.WorkingDir,
+					ShellStartDir:  ts.ShellStartDir,
+					Title:          ts.Title,
+					Status:         status,
+					StartupError:   startupError,
+					StartupMessage: startupMessage,
 				}
 				terminals = append(terminals, ti)
 				gitDirs = append(gitDirs, resolveGitDir(ts.ShellStartDir, ts.WorkingDir))
@@ -489,22 +494,24 @@ func buildTerminalStatusChange(terminalID string, status leapmuxv1.TerminalStatu
 	}
 }
 
-// deriveTerminalStatus computes (status, startupError) for a terminal, in
-// priority order:
+// deriveTerminalStatus computes (status, startupError, startupMessage)
+// for a terminal, in priority order:
 //  1. in-memory startup registry — STARTING / STARTUP_FAILED while a
-//     startup is in flight or has just failed.
+//     startup is in flight or has just failed. The current phase
+//     message is surfaced so a WatchEvents subscriber that arrived
+//     after the initial STARTING broadcast still sees the right label.
 //  2. persisted startup_error column — surfaces a prior failure across
 //     worker restarts (the in-memory registry is wiped on restart).
 //  3. READY otherwise (the caller uses `Exited` to distinguish a
 //     running terminal from an exited one).
-func (svc *Context) deriveTerminalStatus(t *db.Terminal) (leapmuxv1.TerminalStatus, string) {
-	if sup, errStr, ok := svc.TerminalStartup.status(t.ID); ok {
-		return sup, errStr
+func (svc *Context) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
+	if sup, errStr, msg, ok := svc.TerminalStartup.status(t.ID); ok {
+		return sup, errStr, msg
 	}
 	if t.StartupError != "" {
-		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, t.StartupError
+		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, t.StartupError, ""
 	}
-	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, ""
+	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "", ""
 }
 
 // broadcastTerminalStartupStatus fans out a TerminalStatusChange event

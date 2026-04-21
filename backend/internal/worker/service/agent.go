@@ -222,7 +222,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// subprocesses on demand. Also reject when the persisted
 		// startup_error is set (covers worker restart: the in-memory
 		// registry was wiped but the DB remembers the failure).
-		if status, _, ok := svc.AgentStartup.status(agentID); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+		if status, _, _, ok := svc.AgentStartup.status(agentID); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
 			sendFailedPrecondition(sender, "agent failed to start; open a new agent")
 			return
 		}
@@ -976,15 +976,16 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 						unmarshalAvailableOptionGroups(dbAgent.AvailableOptionGroups),
 					)
 				}
-				status, startupError := svc.deriveAgentStatus(&dbAgent, svc.Agents.HasAgent(agentID))
+				status, startupError, startupMessage := svc.deriveAgentStatus(&dbAgent, svc.Agents.HasAgent(agentID))
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
 						AgentEvent: &leapmuxv1.AgentEvent{
 							AgentId: agentID,
 							Event: &leapmuxv1.AgentEvent_StatusChange{
 								StatusChange: svc.buildAgentStatusChange(&dbAgent, status, agentStatusDetails{
-									gitStatus:    state.gitStatus,
-									startupError: startupError,
+									gitStatus:      state.gitStatus,
+									startupError:   startupError,
+									startupMessage: startupMessage,
 								}),
 							},
 						},
@@ -1054,19 +1055,23 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			// DB row so a failure that predates a worker restart still
 			// surfaces via the persisted startup_error column.
 			status := leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY
-			var startupError string
+			var startupError, startupMessage string
 			if termRow, err := svc.Queries.GetTerminal(bgCtx(), termID); err == nil {
-				status, startupError = svc.deriveTerminalStatus(&termRow)
-			} else if sup, errStr, ok := svc.TerminalStartup.status(termID); ok {
+				status, startupError, startupMessage = svc.deriveTerminalStatus(&termRow)
+			} else if sup, errStr, msg, ok := svc.TerminalStartup.status(termID); ok {
 				status = sup
 				startupError = errStr
+				startupMessage = msg
 			}
 			broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 				Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
 					TerminalEvent: &leapmuxv1.TerminalEvent{
 						TerminalId: termID,
 						Event: &leapmuxv1.TerminalEvent_StatusChange{
-							StatusChange: buildTerminalStatusChange(termID, status, terminalStatusDetails{startupError: startupError}),
+							StatusChange: buildTerminalStatusChange(termID, status, terminalStatusDetails{
+								startupError:   startupError,
+								startupMessage: startupMessage,
+							}),
 						},
 					},
 				},
@@ -1078,31 +1083,33 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 }
 
-// deriveAgentStatus computes (status, startupError) for an agent, in
-// priority order:
+// deriveAgentStatus computes (status, startupError, startupMessage) for
+// an agent, in priority order:
 //  1. runtime Manager — if the agent is currently running, ACTIVE wins.
 //  2. in-memory startup registry — STARTING / STARTUP_FAILED while a
-//     startup is in flight or has just failed.
+//     startup is in flight or has just failed. The current phase
+//     message is surfaced so a WatchEvents subscriber that arrived
+//     after the initial STARTING broadcast still sees the right label.
 //  3. persisted startup_error column — surfaces a prior failure across
 //     worker restarts (the in-memory registry is wiped on restart).
 //  4. INACTIVE otherwise.
-func (svc *Context) deriveAgentStatus(a *db.Agent, isRunning bool) (leapmuxv1.AgentStatus, string) {
+func (svc *Context) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapmuxv1.AgentStatus, startupError, startupMessage string) {
 	if isRunning {
-		return leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, ""
+		return leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "", ""
 	}
-	if sup, errStr, ok := svc.AgentStartup.status(a.ID); ok {
-		return sup, errStr
+	if sup, errStr, msg, ok := svc.AgentStartup.status(a.ID); ok {
+		return sup, errStr, msg
 	}
 	if a.StartupError != "" {
-		return leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, a.StartupError
+		return leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, a.StartupError, ""
 	}
-	return leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, ""
+	return leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, "", ""
 }
 
-// agentToProto converts a DB Agent to a proto AgentInfo. Status and
-// startup_error are derived via deriveAgentStatus.
+// agentToProto converts a DB Agent to a proto AgentInfo. Status,
+// startup_error, and startup_message are derived via deriveAgentStatus.
 func (svc *Context) agentToProto(a *db.Agent, permissionMode string, isRunning bool, gs *leapmuxv1.AgentGitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
-	status, startupError := svc.deriveAgentStatus(a, isRunning)
+	status, startupError, startupMessage := svc.deriveAgentStatus(a, isRunning)
 	info := &leapmuxv1.AgentInfo{
 		Id:                    a.ID,
 		WorkspaceId:           a.WorkspaceID,
@@ -1122,6 +1129,7 @@ func (svc *Context) agentToProto(a *db.Agent, permissionMode string, isRunning b
 		AvailableOptionGroups: availableOptionGroups,
 		ExtraSettings:         loadExtraSettings(a.ExtraSettings, a.AgentProvider),
 		StartupError:          startupError,
+		StartupMessage:        startupMessage,
 	}
 
 	if a.ClosedAt.Valid {
@@ -1149,16 +1157,23 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, gm gi
 	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)
 
 	// Phase 1: compute gitStatus here rather than in the sync prologue —
-	// the git shell-out would otherwise block the OpenAgent RPC.
+	// the git shell-out would otherwise block the OpenAgent RPC. Record
+	// each phase label in the registry *before* broadcasting so a
+	// WatchEvents subscriber that attaches mid-phase reads the current
+	// label via catch-up replay rather than seeing a generic fallback.
+	phase1Msg := "Checking Git status…"
+	svc.AgentStartup.setMessage(agentID, phase1Msg)
 	svc.broadcastAgentStartupStatus(&dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{
-		startupMessage: "Checking Git status…",
+		startupMessage: phase1Msg,
 	})
 	gitStatus := gitutil.GetGitStatus(agentOpts.WorkingDir)
 
 	// Phase 2: spawn the subprocess and run the init handshake.
+	phase2Msg := "Starting " + agent.DisplayName(agentOpts.AgentProvider) + "…"
+	svc.AgentStartup.setMessage(agentID, phase2Msg)
 	svc.broadcastAgentStartupStatus(&dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{
 		gitStatus:      gitStatus,
-		startupMessage: "Starting " + agent.DisplayName(agentOpts.AgentProvider) + "…",
+		startupMessage: phase2Msg,
 	})
 	agent.TraceStartupPhase(agentID, "before_start_agent")
 	confirmedSettings, startErr := svc.startAgent(ctx, agentOpts, sink)
