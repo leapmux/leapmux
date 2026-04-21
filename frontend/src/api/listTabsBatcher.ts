@@ -1,6 +1,5 @@
-import type { Client } from '@connectrpc/connect'
-import type { WorkspaceService, WorkspaceTab } from '~/generated/leapmux/v1/workspace_pb'
-import { workspaceClient as defaultWorkspaceClient } from './clients'
+import type { WorkspaceTab } from '~/generated/leapmux/v1/workspace_pb'
+import { workspaceClient } from './clients'
 
 interface Batch {
   orgId: string
@@ -12,14 +11,6 @@ interface Batch {
 }
 
 const pendingBatches = new Map<string, Batch>()
-
-let workspaceClient: Client<typeof WorkspaceService> = defaultWorkspaceClient
-
-// Exposed for tests; production always uses the real client.
-export function __setListTabsClientForTesting(client: Client<typeof WorkspaceService> | null): void {
-  workspaceClient = client ?? defaultWorkspaceClient
-  pendingBatches.clear()
-}
 
 /**
  * Fetches the tabs for a single workspace, coalescing concurrent calls into
@@ -54,12 +45,12 @@ async function flushBatch(batch: Batch): Promise<void> {
       workspaceIds: Array.from(batch.ids),
     })
     const byWorkspace = new Map<string, WorkspaceTab[]>()
-    for (const id of batch.ids)
-      byWorkspace.set(id, [])
     for (const tab of resp.tabs) {
       const list = byWorkspace.get(tab.workspaceId)
       if (list)
         list.push(tab)
+      else
+        byWorkspace.set(tab.workspaceId, [tab])
     }
     for (const [wsId, waiters] of batch.waiters) {
       const tabs = byWorkspace.get(wsId) ?? []
