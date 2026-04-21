@@ -47,7 +47,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		rows := r.GetRows()
 		if rows == 0 {
-			rows = 24
+			rows = 25
 		}
 
 		// Resolve the default shell here (not inside terminal.Start) so

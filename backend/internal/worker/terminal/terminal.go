@@ -128,7 +128,7 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal
 		cols = 80
 	}
 	if rows == 0 {
-		rows = 24
+		rows = 25
 	}
 	if err := ptmx.Resize(int(cols), int(rows)); err != nil {
 		_ = ptmx.Close()

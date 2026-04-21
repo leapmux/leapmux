@@ -73,7 +73,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
         orgId: state.org.orgId(),
         workspaceId: props.workspaceId,
         cols: 80,
-        rows: 24,
+        rows: 25,
         workingDir: state.workingDir(),
         shell: shell(),
         workerId: state.workerId(),
