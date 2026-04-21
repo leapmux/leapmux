@@ -140,51 +140,53 @@ func (r *startupCore) snapshot(id string) (failed bool, startupError, startupMes
 	return entry.failed, entry.startupError, entry.startupMessage, true
 }
 
-// agentStartupRegistry and terminalStartupRegistry are intentionally
-// separate wrappers around startupCore even though their status()
-// methods look structurally similar — each returns a distinct proto
-// enum type (AgentStatus vs TerminalStatus). A generic collapse would
-// force callers to pass the enum values in, which is noisier than the
-// typed wrapper at every call site.
+// startupRegistry wraps startupCore with typed status accessors for a
+// specific proto enum (AgentStatus, TerminalStatus). Callers supply the
+// three enum values at construction time so each registry instance
+// returns values in its own proto namespace.
+type startupRegistry[S ~int32] struct {
+	startupCore
+	unspecifiedStatus S
+	startingStatus    S
+	failedStatus      S
+}
 
-// agentStartupRegistry tracks in-flight / recently-failed agent startups.
-type agentStartupRegistry struct{ startupCore }
-
-func newAgentStartupRegistry() *agentStartupRegistry {
-	return &agentStartupRegistry{startupCore: newStartupCore()}
+func newStartupRegistry[S ~int32](unspec, starting, failed S) *startupRegistry[S] {
+	return &startupRegistry[S]{
+		startupCore:       newStartupCore(),
+		unspecifiedStatus: unspec,
+		startingStatus:    starting,
+		failedStatus:      failed,
+	}
 }
 
 // status returns the status override, startup_error, and the current
-// phase message for an agent, if one is currently tracked. ok=false
-// means the agent is not in the registry and the caller should derive
-// status from the runtime Manager.
-func (r *agentStartupRegistry) status(agentID string) (status leapmuxv1.AgentStatus, startupError, startupMessage string, ok bool) {
-	failed, errStr, msg, found := r.snapshot(agentID)
+// phase message for an id, if one is currently tracked. ok=false means
+// the id is not in the registry and the caller should derive status
+// from the runtime Manager (agents) or default to READY (terminals).
+func (r *startupRegistry[S]) status(id string) (status S, startupError, startupMessage string, ok bool) {
+	failed, errStr, msg, found := r.snapshot(id)
 	if !found {
-		return leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED, "", "", false
+		return r.unspecifiedStatus, "", "", false
 	}
 	if failed {
-		return leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, errStr, "", true
+		return r.failedStatus, errStr, "", true
 	}
-	return leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, "", msg, true
+	return r.startingStatus, "", msg, true
 }
 
-// terminalStartupRegistry tracks in-flight / recently-failed terminal startups.
-type terminalStartupRegistry struct{ startupCore }
-
-func newTerminalStartupRegistry() *terminalStartupRegistry {
-	return &terminalStartupRegistry{startupCore: newStartupCore()}
+func newAgentStartupRegistry() *startupRegistry[leapmuxv1.AgentStatus] {
+	return newStartupRegistry(
+		leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
+		leapmuxv1.AgentStatus_AGENT_STATUS_STARTING,
+		leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED,
+	)
 }
 
-// status returns the status override, startup_error, and the current
-// phase message for a terminal.
-func (r *terminalStartupRegistry) status(terminalID string) (status leapmuxv1.TerminalStatus, startupError, startupMessage string, ok bool) {
-	failed, errStr, msg, found := r.snapshot(terminalID)
-	if !found {
-		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED, "", "", false
-	}
-	if failed {
-		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, errStr, "", true
-	}
-	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, "", msg, true
+func newTerminalStartupRegistry() *startupRegistry[leapmuxv1.TerminalStatus] {
+	return newStartupRegistry(
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED,
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,
+	)
 }

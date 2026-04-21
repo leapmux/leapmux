@@ -16,13 +16,19 @@ import (
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
+// batchGetGitStatusMaxConcurrent caps the number of concurrent `git status`
+// shell-outs BatchGetGitStatus launches. A WatchEvents replay across many
+// unique repos would otherwise fork one git subprocess per repo in parallel.
+const batchGetGitStatusMaxConcurrent = 8
+
 // BatchGetGitStatus returns one AgentGitStatus per input directory,
 // deduplicating identical paths so a request listing many tabs rooted at
 // the same repo only runs a single `git status` shell-out. Unique paths
-// are fanned out concurrently; results are mapped back to every position
-// that asked for that path. Empty-string entries yield nil. The supplied
-// context is threaded into every shell-out so a caller cancelling mid-fan
-// kills in-flight git processes.
+// are fanned out concurrently (capped at batchGetGitStatusMaxConcurrent);
+// results are mapped back to every position that asked for that path.
+// Empty-string entries yield nil. The supplied context is threaded into
+// every shell-out so a caller cancelling mid-fan kills in-flight git
+// processes.
 func BatchGetGitStatus(ctx context.Context, dirs []string) []*leapmuxv1.AgentGitStatus {
 	results := make([]*leapmuxv1.AgentGitStatus, len(dirs))
 	unique := make(map[string][]int, len(dirs))
@@ -32,11 +38,14 @@ func BatchGetGitStatus(ctx context.Context, dirs []string) []*leapmuxv1.AgentGit
 		}
 		unique[d] = append(unique[d], i)
 	}
+	sem := make(chan struct{}, batchGetGitStatusMaxConcurrent)
 	var wg sync.WaitGroup
 	for dir, indexes := range unique {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(dir string, indexes []int) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			gs := GetGitStatus(ctx, dir)
 			for _, idx := range indexes {
 				results[idx] = gs

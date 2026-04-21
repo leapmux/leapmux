@@ -114,24 +114,11 @@ func (p gitModePlan) PhaseLabel() string {
 	}
 }
 
-// RollbackLabel returns the user-visible "now rolling back X" label for
-// this plan's mode. Only createWorktree and createBranch mutate state that
-// we roll back on failure; the other modes return an empty label so the
-// startup goroutine can skip the pre-failure broadcast.
-func (p gitModePlan) RollbackLabel() string {
-	switch p.Mode {
-	case gitModeCreateWorktree:
-		return fmt.Sprintf("Rolling back worktree %q…", p.BranchName)
-	case gitModeCreateBranch:
-		return fmt.Sprintf("Rolling back branch %q…", p.BranchName)
-	default:
-		return ""
-	}
-}
-
-// rollbackLabelFromRollback mirrors gitModePlan.RollbackLabel but works
-// from the gitModeResult.Rollback metadata — used when the plan has been
-// consumed (subprocess-start failure) and we only have the rollback info.
+// rollbackLabelFromRollback returns the user-visible "now rolling back X"
+// label for a partial git-mode mutation, derived from the rollback metadata
+// on a gitModeResult. Only createWorktree and createBranch mutate state
+// that we roll back on failure; the other modes return an empty label so
+// the startup goroutine can skip the pre-failure broadcast.
 func rollbackLabelFromRollback(r gitModeRollback) string {
 	if r.CreatedWorktree != nil && r.CreatedWorktree.BranchName != "" {
 		return fmt.Sprintf("Rolling back worktree %q…", r.CreatedWorktree.BranchName)
@@ -211,6 +198,13 @@ func (svc *Context) validateCreateWorktree(ctx context.Context, workingDir, bran
 
 	// The worktree path follows a stable formula (<repo-parent>/<repo>-worktrees/<branch>),
 	// so we can plan it now and reject collisions before any mutation runs.
+	// This os.Stat is not about TOCTOU safety — `git worktree add` itself
+	// refuses to overwrite an existing path. It exists so a collision
+	// surfaces during the synchronous validation phase with a clean,
+	// worktree-specific error *before* OpenAgent returns and the tab row
+	// is created. Without it, the collision would instead surface
+	// asynchronously in phase 0, wrapped in git's message, after the
+	// frontend has already rendered a partially-initialized tab.
 	worktreePath := filepath.Join(filepath.Dir(repoRoot), filepath.Base(repoRoot)+"-worktrees", branch)
 	if _, err := os.Stat(worktreePath); err == nil {
 		return gitModePlan{}, fmt.Errorf("worktree path %q already exists on disk", worktreePath)

@@ -24,6 +24,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -59,8 +60,8 @@ type Context struct {
 	// AgentStartup / TerminalStartup track in-flight startups — the
 	// window between OpenAgent/OpenTerminal returning and the subprocess
 	// being ready. See startupstate.go.
-	AgentStartup    *agentStartupRegistry
-	TerminalStartup *terminalStartupRegistry
+	AgentStartup    *startupRegistry[leapmuxv1.AgentStatus]
+	TerminalStartup *startupRegistry[leapmuxv1.TerminalStatus]
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -337,7 +338,7 @@ func sendProtoResponse(sender *channel.Sender, msg proto.Message) {
 	data, err := proto.Marshal(msg)
 	if err != nil {
 		slog.Error("failed to marshal response", "error", err)
-		_ = sender.SendError(13, "internal: marshal response") // INTERNAL
+		_ = sender.SendError(int32(codes.Internal), "internal: marshal response")
 		return
 	}
 	_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{
@@ -357,32 +358,32 @@ func unmarshalRequest(req *leapmuxv1.InnerRpcRequest, msg proto.Message) error {
 	return nil
 }
 
-// sendInternalError sends an INTERNAL (13) error response.
+// sendInternalError sends an Internal error response.
 func sendInternalError(sender *channel.Sender, msg string) {
-	_ = sender.SendError(13, msg)
+	_ = sender.SendError(int32(codes.Internal), msg)
 }
 
-// sendNotFoundError sends a NOT_FOUND (5) error response.
+// sendNotFoundError sends a NotFound error response.
 func sendNotFoundError(sender *channel.Sender, msg string) {
-	_ = sender.SendError(5, msg)
+	_ = sender.SendError(int32(codes.NotFound), msg)
 }
 
-// sendPermissionDenied sends a PERMISSION_DENIED (7) error response.
+// sendPermissionDenied sends a PermissionDenied error response.
 func sendPermissionDenied(sender *channel.Sender, msg string) {
-	_ = sender.SendError(7, msg)
+	_ = sender.SendError(int32(codes.PermissionDenied), msg)
 }
 
-// sendInvalidArgument sends an INVALID_ARGUMENT (3) error response.
+// sendInvalidArgument sends an InvalidArgument error response.
 func sendInvalidArgument(sender *channel.Sender, msg string) {
-	_ = sender.SendError(3, msg)
+	_ = sender.SendError(int32(codes.InvalidArgument), msg)
 }
 
-// sendFailedPrecondition sends a FAILED_PRECONDITION (9) error response.
+// sendFailedPrecondition sends a FailedPrecondition error response.
 // Used when the request is valid but the target is not in a state that
 // permits the operation (e.g. sending a message to an agent that is
 // still starting up).
 func sendFailedPrecondition(sender *channel.Sender, msg string) {
-	_ = sender.SendError(9, msg)
+	_ = sender.SendError(int32(codes.FailedPrecondition), msg)
 }
 
 // requireAccessibleWorkspace verifies the workspace_id is accessible on the

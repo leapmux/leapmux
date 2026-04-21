@@ -14,6 +14,13 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
+// terminalStartingLabel returns the "Starting <shell>…" label used for the
+// sync prologue broadcast and the phase-1 re-broadcast once git status is
+// in hand. Kept in one place so both call sites stay in lockstep.
+func terminalStartingLabel(shell string) string {
+	return "Starting " + filepath.Base(shell) + "…"
+}
+
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	// OpenTerminal starts a new PTY terminal session.
@@ -156,11 +163,9 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// Seed a STARTING broadcast with the provider label. Phase 0
 		// will overwrite the message with a mode-specific label (e.g.
 		// `Creating worktree "feature/x"…`) before mutation begins.
-		startupMessage := "Starting " + filepath.Base(shell) + "…"
+		startupMessage := terminalStartingLabel(shell)
 		svc.TerminalStartup.setMessage(terminalID, startupMessage)
-		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
-			startupMessage: startupMessage,
-		})
+		svc.broadcastTerminalStarting(terminalID, startupMessage, "", "")
 
 		sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 			TerminalId: terminalID,
@@ -446,13 +451,9 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 		gitBranch = gs.Branch
 		gitOriginURL = gs.OriginUrl
 	}
-	shellMsg := "Starting " + filepath.Base(opts.Shell) + "…"
+	shellMsg := terminalStartingLabel(opts.Shell)
 	svc.TerminalStartup.setMessage(terminalID, shellMsg)
-	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
-		startupMessage: shellMsg,
-		gitBranch:      gitBranch,
-		gitOriginURL:   gitOriginURL,
-	})
+	svc.broadcastTerminalStarting(terminalID, shellMsg, gitBranch, gitOriginURL)
 
 	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
 
@@ -460,7 +461,7 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// during the PTY spawn: if closed_at is set, the user already asked
 	// to close the tab and runTerminalStartup must neither broadcast
 	// READY nor leave a running PTY behind. Mirror of the post-spawn
-	// close-detection in runAgentStartup (agent.go:1179-1193).
+	// close-detection in runAgentStartup.
 	if dbTerm, fetchErr := svc.Queries.GetTerminal(bgCtx(), terminalID); fetchErr == nil && dbTerm.ClosedAt.Valid {
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
@@ -476,7 +477,7 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 		return
 	}
 	svc.persistTerminalStartupError(terminalID, "")
-	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, terminalStatusDetails{})
+	svc.broadcastTerminalReady(terminalID)
 	svc.TerminalStartup.succeed(terminalID)
 }
 
@@ -485,9 +486,7 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 func (svc *Context) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan) (gitModeResult, error) {
 	if label := plan.PhaseLabel(); label != "" {
 		svc.TerminalStartup.setMessage(terminalID, label)
-		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
-			startupMessage: label,
-		})
+		svc.broadcastTerminalStarting(terminalID, label, "", "")
 	}
 	return svc.executeGitMode(ctx, plan)
 }
@@ -500,17 +499,13 @@ func (svc *Context) failTerminalStartup(terminalID string, gm gitModeResult, cau
 	if gm.Rollback.HasPartialMutation() {
 		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
 			svc.TerminalStartup.setMessage(terminalID, label)
-			svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
-				startupMessage: label,
-			})
+			svc.broadcastTerminalStarting(terminalID, label, "", "")
 		}
 		svc.rollbackGitMode(gm)
 	}
 	errMsg := cause.Error()
 	svc.persistTerminalStartupError(terminalID, errMsg)
-	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, terminalStatusDetails{
-		startupError: errMsg,
-	})
+	svc.broadcastTerminalFailed(terminalID, errMsg)
 	svc.TerminalStartup.fail(terminalID, errMsg)
 }
 
@@ -530,27 +525,35 @@ func (svc *Context) persistTerminalStartupError(terminalID, errMsg string) {
 	}
 }
 
-// terminalStatusDetails carries the optional, per-call fields of a
-// TerminalStatusChange — startupError (only on STARTUP_FAILED),
-// startupMessage (only on STARTING, e.g. "Starting zsh…"), and the
-// git branch/origin populated once git-mode execution finishes.
-type terminalStatusDetails struct {
-	startupError   string
-	startupMessage string
-	gitBranch      string
-	gitOriginURL   string
-}
-
-// buildTerminalStatusChange constructs a TerminalStatusChange proto.
-// Shared by the WatchEvents catch-up replay and the broadcast path.
-func buildTerminalStatusChange(terminalID string, status leapmuxv1.TerminalStatus, details terminalStatusDetails) *leapmuxv1.TerminalStatusChange {
+// buildTerminalStartingStatus builds a STARTING TerminalStatusChange
+// carrying the current phase label. gitBranch and gitOriginURL are
+// populated once phase 1 finishes computing them; earlier phases pass
+// empty strings.
+func buildTerminalStartingStatus(terminalID, message, gitBranch, gitOriginURL string) *leapmuxv1.TerminalStatusChange {
 	return &leapmuxv1.TerminalStatusChange{
 		TerminalId:     terminalID,
-		Status:         status,
-		StartupError:   details.startupError,
-		StartupMessage: details.startupMessage,
-		GitBranch:      details.gitBranch,
-		GitOriginUrl:   details.gitOriginURL,
+		Status:         leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
+		StartupMessage: message,
+		GitBranch:      gitBranch,
+		GitOriginUrl:   gitOriginURL,
+	}
+}
+
+// buildTerminalFailedStatus builds a STARTUP_FAILED TerminalStatusChange
+// carrying the error message.
+func buildTerminalFailedStatus(terminalID, errMsg string) *leapmuxv1.TerminalStatusChange {
+	return &leapmuxv1.TerminalStatusChange{
+		TerminalId:   terminalID,
+		Status:       leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,
+		StartupError: errMsg,
+	}
+}
+
+// buildTerminalReadyStatus builds a READY TerminalStatusChange.
+func buildTerminalReadyStatus(terminalID string) *leapmuxv1.TerminalStatusChange {
+	return &leapmuxv1.TerminalStatusChange{
+		TerminalId: terminalID,
+		Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 	}
 }
 
@@ -574,13 +577,34 @@ func (svc *Context) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.Termi
 	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "", ""
 }
 
-// broadcastTerminalStartupStatus fans out a TerminalStatusChange event
-// to all subscribers.
-func (svc *Context) broadcastTerminalStartupStatus(terminalID string, status leapmuxv1.TerminalStatus, details terminalStatusDetails) {
+// broadcastTerminalStarting fans out a STARTING TerminalStatusChange.
+// Used by runTerminalStartup for each phase label transition; gitBranch
+// and gitOriginURL are passed once phase 1 has computed them.
+func (svc *Context) broadcastTerminalStarting(terminalID, message, gitBranch, gitOriginURL string) {
 	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
-			StatusChange: buildTerminalStatusChange(terminalID, status, details),
+			StatusChange: buildTerminalStartingStatus(terminalID, message, gitBranch, gitOriginURL),
+		},
+	})
+}
+
+// broadcastTerminalFailed fans out a STARTUP_FAILED TerminalStatusChange.
+func (svc *Context) broadcastTerminalFailed(terminalID, errMsg string) {
+	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+		TerminalId: terminalID,
+		Event: &leapmuxv1.TerminalEvent_StatusChange{
+			StatusChange: buildTerminalFailedStatus(terminalID, errMsg),
+		},
+	})
+}
+
+// broadcastTerminalReady fans out a READY TerminalStatusChange.
+func (svc *Context) broadcastTerminalReady(terminalID string) {
+	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+		TerminalId: terminalID,
+		Event: &leapmuxv1.TerminalEvent_StatusChange{
+			StatusChange: buildTerminalReadyStatus(terminalID),
 		},
 	})
 }

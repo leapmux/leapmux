@@ -4,6 +4,7 @@ import type { WorkspaceTab } from '~/generated/leapmux/v1/workspace_pb'
 import { listAgents, listTerminals } from '~/api/workerRpc'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
+import { tabKey } from '~/stores/tab.store'
 
 const log = createLogger('tabHydrate')
 
@@ -33,7 +34,7 @@ export async function fanOutTabsToWorkers(tabs: WorkspaceTab[]): Promise<WorkerF
 
   for (const t of tabs) {
     if (t.tileId)
-      tabTileMap.set(`${t.tabType}:${t.tabId}`, t.tileId)
+      tabTileMap.set(tabKey({ type: t.tabType, id: t.tabId }), t.tileId)
     if (!t.workerId)
       continue
     if (t.tabType === TabType.AGENT) {

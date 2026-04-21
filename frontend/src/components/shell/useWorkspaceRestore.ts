@@ -152,13 +152,10 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       .catch(() => null)
 
     // Kick off lazy loads for sibling workspaces whose sidebar rows the user
-    // had expanded. WorkspaceSectionContent has its own createEffect that
-    // fires onExpandWorkspace for every expanded non-active workspace, but
-    // it only runs once the sidebar component mounts — which is ~50 ms after
-    // the active workspace's ListTabs fires on a fresh load, far too late
-    // for the microtask-scoped batcher to coalesce them. Firing here, in
-    // the same tick as listTabsForWorkspace(activeId) above, keeps both
-    // calls in the same batch so they merge into a single RPC.
+    // had expanded. Must fire in the same tick as listTabsForWorkspace(activeId)
+    // above so the microtask-scoped batcher coalesces them into one RPC; the
+    // sibling fire from WorkspaceSectionContent's own mount-time effect runs
+    // too late to join the batch.
     if (opts.onExpandWorkspace) {
       for (const siblingId of readExpandedWorkspaceIds()) {
         if (siblingId !== activeId)
@@ -223,7 +220,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       const addedTabKeys = new Set<string>()
 
       for (const a of agentStore.state.agents) {
-        const key = `${TabType.AGENT}:${a.id}`
+        const key = tabKey({ type: TabType.AGENT, id: a.id })
         let tileId = tabTileMap.get(key) ?? defaultTileId
         if (!validTileIds.has(tileId))
           tileId = defaultTileId
@@ -245,7 +242,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         if (terms === null)
           continue
         for (const term of terms) {
-          const key = `${TabType.TERMINAL}:${term.terminalId}`
+          const key = tabKey({ type: TabType.TERMINAL, id: term.terminalId })
           let tileId = tabTileMap.get(key) ?? defaultTileId
           if (!validTileIds.has(tileId))
             tileId = defaultTileId
@@ -258,7 +255,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       // agent inactive after restart) so they remain visible in the UI.
       if (tabsResp?.tabs) {
         for (const t of tabsResp.tabs) {
-          const key = `${t.tabType}:${t.tabId}`
+          const key = tabKey({ type: t.tabType, id: t.tabId })
           if (addedTabKeys.has(key))
             continue
           const cachedTab = cached?.tabs.find(tab => tabKey(tab) === key)
@@ -293,7 +290,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       if (tabsResp && tabsResp.tabs.length > 0) {
         const posMap = new Map<string, string>()
         for (const t of tabsResp.tabs) {
-          posMap.set(`${t.tabType}:${t.tabId}`, t.position)
+          posMap.set(tabKey({ type: t.tabType, id: t.tabId }), t.position)
         }
         tabStore.sortByPositions(posMap)
       }

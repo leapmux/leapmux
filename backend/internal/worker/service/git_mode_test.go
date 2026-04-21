@@ -173,22 +173,10 @@ func TestGitModePlan_PhaseLabelPerMode(t *testing.T) {
 	}
 }
 
-func TestGitModePlan_RollbackLabelOnlyForMutatingModes(t *testing.T) {
+func TestRollbackLabelFromRollback_OnlyForMutatingModes(t *testing.T) {
 	// Only createWorktree / createBranch mutate state that the user cares
-	// about rolling back; the other modes return an empty label so the
+	// about rolling back; the other modes produce an empty label so the
 	// startup goroutine skips the pre-failure broadcast.
-	assert.Equal(t, `Rolling back worktree "feature/x"…`, gitModePlan{Mode: gitModeCreateWorktree, BranchName: "feature/x"}.RollbackLabel())
-	assert.Equal(t, `Rolling back branch "feature/y"…`, gitModePlan{Mode: gitModeCreateBranch, BranchName: "feature/y"}.RollbackLabel())
-	assert.Empty(t, gitModePlan{Mode: gitModeCheckoutBranch, CheckoutTarget: "main"}.RollbackLabel())
-	assert.Empty(t, gitModePlan{Mode: gitModeUseWorktreePath, WorktreePath: "/tmp/x"}.RollbackLabel())
-	assert.Empty(t, gitModePlan{Mode: gitModeUseCurrent}.RollbackLabel())
-}
-
-func TestRollbackLabelFromRollback_MatchesPlanLabels(t *testing.T) {
-	// When phase 2 (subprocess start) fails after phase 0 already
-	// succeeded, the caller has the rollback metadata but not the plan.
-	// rollbackLabelFromRollback must produce the same string as
-	// gitModePlan.RollbackLabel() did for the original plan.
 	wtLabel := rollbackLabelFromRollback(gitModeRollback{CreatedWorktree: &rollbackWorktree{BranchName: "feature/x"}})
 	assert.Equal(t, `Rolling back worktree "feature/x"…`, wtLabel)
 	brLabel := rollbackLabelFromRollback(gitModeRollback{CreatedBranch: &rollbackBranch{CreatedBranch: "feature/y"}})

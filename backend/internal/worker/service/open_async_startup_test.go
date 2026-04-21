@@ -385,11 +385,9 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast with gitStatus")
 }
 
-// TestBuildAgentStatusChange covers how the agentStatusDetails fields
-// flow into the AgentStatusChange proto. This is the race-free
-// companion to TestOpenAgent_ActiveBroadcastCarriesGitStatus: it locks
-// in the (gitStatus, startupError, startupMessage) mapping without
-// routing through the broadcast fan-out.
+// TestBuildAgentStatusChange covers the per-status AgentStatusChange
+// constructors. Race-free companion to TestOpenAgent_ActiveBroadcastCarriesGitStatus:
+// locks in the field mapping without routing through the broadcast fan-out.
 func TestBuildAgentStatusChange(t *testing.T) {
 	svc, _, _ := setupTestService(t, "ws-1")
 	dbAgent := &db.Agent{
@@ -403,10 +401,7 @@ func TestBuildAgentStatusChange(t *testing.T) {
 
 	t.Run("STARTING carries startupMessage and gitStatus, no AvailableModels", func(t *testing.T) {
 		gs := &leapmuxv1.AgentGitStatus{Branch: "main", OriginUrl: "https://example.com/repo.git"}
-		sc := svc.buildAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{
-			gitStatus:      gs,
-			startupMessage: "Checking Git status…",
-		})
+		sc := buildAgentStartingStatus(dbAgent, "Checking Git status…", gs)
 		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, sc.GetStatus())
 		assert.Equal(t, "Checking Git status…", sc.GetStartupMessage())
 		assert.Empty(t, sc.GetStartupError())
@@ -420,48 +415,50 @@ func TestBuildAgentStatusChange(t *testing.T) {
 
 	t.Run("STARTUP_FAILED carries startupError and gitStatus", func(t *testing.T) {
 		gs := &leapmuxv1.AgentGitStatus{Branch: "main"}
-		sc := svc.buildAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, agentStatusDetails{
-			gitStatus:    gs,
-			startupError: "exec: claude: not found",
-		})
+		sc := buildAgentFailedStatus(dbAgent, "exec: claude: not found", gs)
 		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, sc.GetStatus())
 		assert.Equal(t, "exec: claude: not found", sc.GetStartupError())
 		assert.Empty(t, sc.GetStartupMessage())
 		assert.Same(t, gs, sc.GetGitStatus())
 	})
 
-	t.Run("empty details produce nil gitStatus and blank message/error", func(t *testing.T) {
-		sc := svc.buildAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{})
+	t.Run("STARTING with empty message and nil gitStatus", func(t *testing.T) {
+		sc := buildAgentStartingStatus(dbAgent, "", nil)
 		assert.Nil(t, sc.GetGitStatus(), "nil gitStatus must flow through unchanged (no auto-fetch)")
 		assert.Empty(t, sc.GetStartupMessage())
 		assert.Empty(t, sc.GetStartupError())
 	})
+
+	t.Run("ACTIVE attaches available models and option groups", func(t *testing.T) {
+		sc := svc.buildAgentActiveStatus(dbAgent, nil)
+		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, sc.GetStatus())
+		// Catalogs are populated from the Agent Manager, which is empty in
+		// this test — but the important invariant is that ACTIVE is the
+		// only status that even looks at the Manager for catalogs.
+		assert.Empty(t, sc.GetStartupError())
+		assert.Empty(t, sc.GetStartupMessage())
+	})
 }
 
-// TestBuildTerminalStatusChange covers the terminalStatusDetails
-// mapping, mirroring TestBuildAgentStatusChange. Locks in the
-// (startupError, startupMessage) mapping for the race-free path.
+// TestBuildTerminalStatusChange covers the per-status TerminalStatusChange
+// constructors, mirroring TestBuildAgentStatusChange.
 func TestBuildTerminalStatusChange(t *testing.T) {
 	t.Run("STARTING carries startupMessage, empty error", func(t *testing.T) {
-		sc := buildTerminalStatusChange("term-1", leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
-			startupMessage: "Starting zsh…",
-		})
+		sc := buildTerminalStartingStatus("term-1", "Starting zsh…", "", "")
 		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
 		assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
 		assert.Empty(t, sc.GetStartupError())
 	})
 
 	t.Run("STARTUP_FAILED carries startupError, empty message", func(t *testing.T) {
-		sc := buildTerminalStatusChange("term-1", leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, terminalStatusDetails{
-			startupError: "fork: permission denied",
-		})
+		sc := buildTerminalFailedStatus("term-1", "fork: permission denied")
 		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, sc.GetStatus())
 		assert.Equal(t, "fork: permission denied", sc.GetStartupError())
 		assert.Empty(t, sc.GetStartupMessage())
 	})
 
 	t.Run("READY produces blank message and error", func(t *testing.T) {
-		sc := buildTerminalStatusChange("term-1", leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, terminalStatusDetails{})
+		sc := buildTerminalReadyStatus("term-1")
 		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, sc.GetStatus())
 		assert.Empty(t, sc.GetStartupError())
 		assert.Empty(t, sc.GetStartupMessage())
@@ -686,15 +683,11 @@ func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
 // TestBuildTerminalStatusChange_CarriesGitInfo locks in the wire contract
 // that replaced the dropped OpenTerminalResponse.git_branch /
 // git_origin_url fields: runTerminalStartup's phase-1 STARTING broadcast
-// now populates these via terminalStatusDetails, and the frontend reads
+// populates these on the TerminalStatusChange, and the frontend reads
 // them into the tab. A regression here (e.g. someone re-pointing the
 // proto fields) would be caught without depending on goroutine timing.
 func TestBuildTerminalStatusChange_CarriesGitInfo(t *testing.T) {
-	sc := buildTerminalStatusChange("term-1", leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
-		startupMessage: "Starting zsh…",
-		gitBranch:      "feature/x",
-		gitOriginURL:   "git@example.com:org/repo.git",
-	})
+	sc := buildTerminalStartingStatus("term-1", "Starting zsh…", "feature/x", "git@example.com:org/repo.git")
 	assert.Equal(t, "term-1", sc.GetTerminalId())
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
 	assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
