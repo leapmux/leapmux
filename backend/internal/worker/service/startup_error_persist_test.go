@@ -165,10 +165,14 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 	}
 
 	svc.AgentStartup.begin(agentID, func() {})
-	svc.runAgentStartup(ctx, agentID, gitModeResult{}, agent.Options{
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	svc.runAgentStartup(ctx, dbAgent, gitModeResult{}, agent.Options{
 		AgentID:       agentID,
+		Model:         "sonnet",
+		Effort:        "high",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, "sonnet", "high", nil)
+	})
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)

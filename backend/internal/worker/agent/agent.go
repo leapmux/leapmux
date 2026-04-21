@@ -169,6 +169,34 @@ func DefaultEffortForModel(provider leapmuxv1.AgentProvider, modelID string) str
 	return lookup(DefaultModel(provider))
 }
 
+// DisplayName returns a human-readable label for an AgentProvider (e.g.
+// "Claude Code", "Gemini CLI"). Used in user-facing strings like startup
+// progress messages. Kept in lockstep with the frontend's
+// agentProviderLabel via TestProviderDisplayName; add a new case here
+// and in the frontend when a provider is added.
+func DisplayName(provider leapmuxv1.AgentProvider) string {
+	switch provider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:
+		return "Claude Code"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
+		return "Codex"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
+		return "Gemini CLI"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
+		return "OpenCode"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
+		return "GitHub Copilot"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
+		return "Cursor"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:
+		return "Goose"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:
+		return "Kilo"
+	default:
+		return "agent"
+	}
+}
+
 // filterEnv returns a copy of environ with entries matching any of the
 // given key names removed. Keys are matched case-insensitively by the
 // portion before the first '='.

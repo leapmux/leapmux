@@ -51,6 +51,8 @@ export interface Tab {
   rows?: number
   /** Error string from TerminalStatusChange when status is 'startup-failed'. */
   startupError?: string
+  /** Phase label from TerminalStatusChange.startup_message while status is 'starting' (e.g. "Starting zsh…"). */
+  startupMessage?: string
   /**
    * True once the terminal has emitted any non-whitespace output to the
    * xterm buffer. Drives the "Starting terminal…" overlay — kept visible
@@ -93,6 +95,7 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     gitOriginUrl: term.gitOriginUrl || undefined,
     status,
     startupError: term.startupError || undefined,
+    startupMessage: term.startupMessage || undefined,
     // Any persisted screen → the shell already painted content; skip the
     // "Starting…" overlay on reconnect to avoid a flash.
     contentReady: term.screen.length > 0 ? true : undefined,

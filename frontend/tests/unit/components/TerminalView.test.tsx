@@ -100,6 +100,68 @@ describe('terminalView', () => {
     expect(onBell).not.toHaveBeenCalled()
   })
 
+  // The overlay covers an xterm that hasn't painted content yet. The
+  // label comes from the backend's TerminalStatusChange.startup_message
+  // (e.g. "Starting zsh…") so users see the resolved shell name, and
+  // falls back to "Starting terminal…" when the message is missing
+  // (pre-statusChange, legacy callers, etc.).
+  it('renders startupMessage in the terminal startup overlay when provided', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+
+    const { findByTestId, findByText } = render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{
+            id: 'term-1',
+            workspaceId: 'ws-1',
+            status: 'starting',
+            startupMessage: 'Starting zsh…',
+            screen: new Uint8Array(),
+          }]}
+          activeTerminalId="term-1"
+          visible
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    await findByTestId('terminal-startup-overlay')
+    await findByText('Starting zsh…')
+  })
+
+  it('falls back to the default label when startupMessage is missing', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+
+    const { findByTestId, findByText } = render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{
+            id: 'term-1',
+            workspaceId: 'ws-1',
+            status: 'starting',
+            screen: new Uint8Array(),
+          }]}
+          activeTerminalId="term-1"
+          visible
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    await findByTestId('terminal-startup-overlay')
+    await findByText('Starting terminal…')
+  })
+
   it('scrolls the active terminal by one page', async () => {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)

@@ -62,6 +62,7 @@ const TerminalContainer: Component<{
   fontSize: number
   theme: ITheme
   contentReady: boolean
+  startupMessage?: string
   onInput: (id: string, data: Uint8Array) => void
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
@@ -182,7 +183,7 @@ const TerminalContainer: Component<{
       <div ref={ref} class={styles.xtermHost} />
       <Show when={!props.contentReady}>
         <div class={styles.startupOverlay} data-testid="terminal-startup-overlay">
-          <StartupSpinner label="Starting terminal…" />
+          <StartupSpinner label={props.startupMessage || 'Starting terminal…'} />
         </div>
       </Show>
     </div>
@@ -258,6 +259,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                   fontSize={13}
                   theme={terminalTheme()}
                   contentReady={terminal.contentReady ?? false}
+                  startupMessage={terminal.startupMessage}
                   onInput={props.onInput}
                   onResize={props.onResize}
                   onTitleChange={props.onTitleChange}

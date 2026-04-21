@@ -517,7 +517,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         switch (sc.status) {
           case TerminalStatusEnum.STARTING:
             if (existingTab && existingTab.status !== 'running' && existingTab.status !== 'starting') {
-              tabStore.updateTab(TabType.TERMINAL, terminalId, { status: 'starting' })
+              tabStore.updateTab(TabType.TERMINAL, terminalId, {
+                status: 'starting',
+                startupMessage: sc.startupMessage || undefined,
+              })
+            }
+            else if (existingTab?.status === 'starting' && sc.startupMessage && sc.startupMessage !== existingTab.startupMessage) {
+              // Same-status STARTING event with an updated phase label —
+              // refresh the overlay text without re-triggering the
+              // status-change observers.
+              tabStore.updateTab(TabType.TERMINAL, terminalId, { startupMessage: sc.startupMessage })
             }
             break
           case TerminalStatusEnum.READY:
@@ -525,13 +534,18 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             // terminal whose worker reconnected should not be dragged
             // back to 'running'.
             if (existingTab?.status === 'starting' || existingTab?.status === undefined) {
-              tabStore.updateTab(TabType.TERMINAL, terminalId, { status: 'running', startupError: undefined })
+              tabStore.updateTab(TabType.TERMINAL, terminalId, {
+                status: 'running',
+                startupError: undefined,
+                startupMessage: undefined,
+              })
             }
             break
           case TerminalStatusEnum.STARTUP_FAILED:
             tabStore.updateTab(TabType.TERMINAL, terminalId, {
               status: 'startup-failed',
               startupError: sc.startupError || undefined,
+              startupMessage: undefined,
             })
             break
         }

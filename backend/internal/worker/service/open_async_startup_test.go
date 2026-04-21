@@ -241,6 +241,56 @@ func TestBuildAgentStatusChange(t *testing.T) {
 	})
 }
 
+// TestBuildTerminalStatusChange covers the terminalStatusDetails
+// mapping, mirroring TestBuildAgentStatusChange. Locks in the
+// (startupError, startupMessage) mapping for the race-free path.
+func TestBuildTerminalStatusChange(t *testing.T) {
+	t.Run("STARTING carries startupMessage, empty error", func(t *testing.T) {
+		sc := buildTerminalStatusChange("term-1", leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
+			startupMessage: "Starting zsh…",
+		})
+		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
+		assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
+		assert.Empty(t, sc.GetStartupError())
+	})
+
+	t.Run("STARTUP_FAILED carries startupError, empty message", func(t *testing.T) {
+		sc := buildTerminalStatusChange("term-1", leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, terminalStatusDetails{
+			startupError: "fork: permission denied",
+		})
+		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, sc.GetStatus())
+		assert.Equal(t, "fork: permission denied", sc.GetStartupError())
+		assert.Empty(t, sc.GetStartupMessage())
+	})
+
+	t.Run("READY produces blank message and error", func(t *testing.T) {
+		sc := buildTerminalStatusChange("term-1", leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, terminalStatusDetails{})
+		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, sc.GetStatus())
+		assert.Empty(t, sc.GetStartupError())
+		assert.Empty(t, sc.GetStartupMessage())
+	})
+}
+
+// TestShellDisplayName covers the label that feeds the terminal
+// startup-panel's "Starting <shell>…" message.
+func TestShellDisplayName(t *testing.T) {
+	cases := []struct {
+		shell string
+		want  string
+	}{
+		{"/bin/zsh", "zsh"},
+		{"/usr/bin/fish", "fish"},
+		{"zsh", "zsh"},
+		{"/bin/bash", "bash"},
+		{"", "terminal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.shell, func(t *testing.T) {
+			assert.Equal(t, tc.want, shellDisplayName(tc.shell))
+		})
+	}
+}
+
 // TestOpenAgent_StartupFailurePhaseCarriesGitStatus asserts that when
 // startAgent fails, the STARTUP_FAILED broadcast still carries the
 // gitStatus computed during the pre-startAgent phase, so the frontend

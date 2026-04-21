@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -155,8 +156,13 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// xterm mount and show a loader in the interim).
 		svc.TerminalStartup.begin(terminalID, func() {})
 
-		// Broadcast STARTING so the frontend watcher sees the initial state.
-		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, "")
+		// Broadcast STARTING so the frontend watcher sees the initial
+		// state. Include the resolved shell name as the startup-panel
+		// label so users see "Starting zsh…" rather than a generic
+		// "Starting terminal…".
+		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, terminalStatusDetails{
+			startupMessage: "Starting " + shellDisplayName(shell) + "…",
+		})
 
 		resp := &leapmuxv1.OpenTerminalResponse{
 			TerminalId: terminalID,
@@ -323,13 +329,20 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			accessibleWsIDs = svc.Channels.AccessibleWorkspaceIDs(chID)
 		}
 
-		// Collect running/exited terminals from the in-memory manager and
-		// any DB-only rows, then compute git info for all of them in
-		// parallel to keep ListTerminals from serializing N git shell-outs.
+		// Collect from the in-memory manager and DB-only rows, recording
+		// each terminal's resolved git directory (ShellStartDir, falling
+		// back to WorkingDir) so BatchGetGitStatus can dedupe across
+		// terminals that share a repo.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
 		var gitDirs []string
+		resolveGitDir := func(shellStartDir, workingDir string) string {
+			if shellStartDir != "" {
+				return shellStartDir
+			}
+			return workingDir
+		}
 		for _, e := range entries {
 			if accessibleWsIDs != nil && !accessibleWsIDs[e.Meta.WorkspaceID] {
 				continue
@@ -351,11 +364,9 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				ti.StartupError = errStr
 			}
 			terminals = append(terminals, ti)
-			gitDirs = append(gitDirs, e.Meta.ShellStartDir)
+			gitDirs = append(gitDirs, resolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
 		}
 
-		// Also include terminals from the DB that have been removed from
-		// the manager (e.g. exited + cleaned up) but still have saved data.
 		dbTerminals, err := svc.Queries.ListTerminalsByIDs(bgCtx(), tabIDs)
 		if err != nil {
 			slog.Error("failed to list terminals from DB", "error", err)
@@ -381,22 +392,11 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					StartupError:  startupError,
 				}
 				terminals = append(terminals, ti)
-				gitDirs = append(gitDirs, ts.ShellStartDir)
+				gitDirs = append(gitDirs, resolveGitDir(ts.ShellStartDir, ts.WorkingDir))
 			}
 		}
 
-		// Dedupe + fan out git status shell-outs: resolve the same empty
-		// ShellStartDir → WorkingDir fallback here so BatchGetGitStatus
-		// can dedupe across terminals that share a repo.
-		resolvedDirs := make([]string, len(terminals))
-		for i, ti := range terminals {
-			dir := gitDirs[i]
-			if dir == "" {
-				dir = ti.GetWorkingDir()
-			}
-			resolvedDirs[i] = dir
-		}
-		gitStatuses := gitutil.BatchGetGitStatus(resolvedDirs)
+		gitStatuses := gitutil.BatchGetGitStatus(gitDirs)
 		for i, gs := range gitStatuses {
 			if gs != nil {
 				terminals[i].GitBranch = gs.Branch
@@ -440,7 +440,9 @@ func (svc *Context) runTerminalStartup(opts terminal.Options, gm gitModeResult, 
 		// changes immediately though (worktree creation can be expensive).
 		svc.rollbackGitMode(gm)
 		svc.persistTerminalStartupError(terminalID, errMsg)
-		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, errMsg)
+		svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, terminalStatusDetails{
+			startupError: errMsg,
+		})
 		// Mark the registry last: rollback, DB persistence, and the
 		// STARTUP_FAILED broadcast must be durable before any observer
 		// sees the terminal state.
@@ -448,7 +450,7 @@ func (svc *Context) runTerminalStartup(opts terminal.Options, gm gitModeResult, 
 		return
 	}
 	svc.persistTerminalStartupError(terminalID, "")
-	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "")
+	svc.broadcastTerminalStartupStatus(terminalID, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, terminalStatusDetails{})
 	svc.TerminalStartup.succeed(terminalID)
 }
 
@@ -468,13 +470,22 @@ func (svc *Context) persistTerminalStartupError(terminalID, errMsg string) {
 	}
 }
 
+// terminalStatusDetails carries the optional, per-call fields of a
+// TerminalStatusChange — startupError (only on STARTUP_FAILED) and
+// startupMessage (only on STARTING, e.g. "Starting zsh…").
+type terminalStatusDetails struct {
+	startupError   string
+	startupMessage string
+}
+
 // buildTerminalStatusChange constructs a TerminalStatusChange proto.
 // Shared by the WatchEvents catch-up replay and the broadcast path.
-func buildTerminalStatusChange(terminalID string, status leapmuxv1.TerminalStatus, startupError string) *leapmuxv1.TerminalStatusChange {
+func buildTerminalStatusChange(terminalID string, status leapmuxv1.TerminalStatus, details terminalStatusDetails) *leapmuxv1.TerminalStatusChange {
 	return &leapmuxv1.TerminalStatusChange{
-		TerminalId:   terminalID,
-		Status:       status,
-		StartupError: startupError,
+		TerminalId:     terminalID,
+		Status:         status,
+		StartupError:   details.startupError,
+		StartupMessage: details.startupMessage,
 	}
 }
 
@@ -498,11 +509,20 @@ func (svc *Context) deriveTerminalStatus(t *db.Terminal) (leapmuxv1.TerminalStat
 
 // broadcastTerminalStartupStatus fans out a TerminalStatusChange event
 // to all subscribers.
-func (svc *Context) broadcastTerminalStartupStatus(terminalID string, status leapmuxv1.TerminalStatus, startupError string) {
+func (svc *Context) broadcastTerminalStartupStatus(terminalID string, status leapmuxv1.TerminalStatus, details terminalStatusDetails) {
 	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
-			StatusChange: buildTerminalStatusChange(terminalID, status, startupError),
+			StatusChange: buildTerminalStatusChange(terminalID, status, details),
 		},
 	})
+}
+
+// shellDisplayName returns a short label for a shell path or command.
+// Used to render the "Starting <shell>…" startup-panel message.
+func shellDisplayName(shell string) string {
+	if shell == "" {
+		return "terminal"
+	}
+	return filepath.Base(shell)
 }

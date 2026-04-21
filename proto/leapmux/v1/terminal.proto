@@ -97,6 +97,7 @@ message TerminalInfo {
   string title = 10;            // User-visible tab title
   TerminalStatus status = 11;   // Lifecycle state (starting/ready/failed)
   string startup_error = 12;    // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
+  string startup_message = 13;  // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
 }
 
 message TerminalData {
@@ -114,7 +115,8 @@ message TerminalClosed {
 message TerminalStatusChange {
   string terminal_id = 1;
   TerminalStatus status = 2;
-  string startup_error = 3; // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
+  string startup_error = 3;   // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
+  string startup_message = 4; // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
 }
 
 message ListAvailableShellsRequest {
