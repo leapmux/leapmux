@@ -14,6 +14,7 @@ import { spinner } from '~/styles/animations.css'
 import { DiffStatsBadge } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
+import { EXPANDED_WORKSPACES_KEY, readExpandedWorkspaceIds } from './expandedWorkspaces'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
@@ -73,17 +74,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
 
   // Track which workspaces have their tab tree expanded (independent of selection).
   // Restore from sessionStorage so expanded state survives page refresh.
-  const EXPANDED_KEY = 'leapmux:expandedWorkspaces'
-  function loadExpandedIds(): Set<string> {
-    try {
-      const stored = sessionStorage.getItem(EXPANDED_KEY)
-      return stored ? new Set(JSON.parse(stored) as string[]) : new Set()
-    }
-    catch {
-      return new Set()
-    }
-  }
-  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(loadExpandedIds())
+  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(readExpandedWorkspaceIds())
 
   function isExpanded(id: string): boolean {
     return expandedIds().has(id)
@@ -104,7 +95,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   createEffect(() => {
     const ids = expandedIds()
     try {
-      sessionStorage.setItem(EXPANDED_KEY, JSON.stringify([...ids]))
+      sessionStorage.setItem(EXPANDED_WORKSPACES_KEY, JSON.stringify([...ids]))
     }
     catch { /* ignore quota errors */ }
   })

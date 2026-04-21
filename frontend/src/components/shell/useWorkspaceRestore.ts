@@ -8,7 +8,9 @@ import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { batch, createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
+import { listTabsForWorkspace } from '~/api/listTabsBatcher'
 import * as workerRpc from '~/api/workerRpc'
+import { readExpandedWorkspaceIds } from '~/components/workspace/expandedWorkspaces'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
 import { protoToTerminalTab, protoToTerminalTabFields, tabKey } from '~/stores/tab.store'
@@ -27,6 +29,12 @@ interface UseWorkspaceRestoreOpts {
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
   registry: WorkspaceStoreRegistryType
   setWorkspaceLoading: (v: boolean) => void
+  /**
+   * Kicks off tab loading for a non-active workspace. Invoked alongside the
+   * active workspace's ListTabs on fresh loads so sibling workspaces that
+   * were expanded in the sidebar get their tabs fetched in the same batch.
+   */
+  onExpandWorkspace?: (workspaceId: string) => void
 }
 
 export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
@@ -137,8 +145,18 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     tabStore.clear()
 
     // Fetch tabs and layout from hub (single call, no worker needed).
-    const tabsLoaded = workspaceClient.listTabs({ orgId: currentOrgId, workspaceIds: [activeId] })
+    const tabsLoaded = listTabsForWorkspace(currentOrgId, activeId)
       .catch(() => null)
+
+    // Kick off lazy loads for sibling workspaces whose sidebar rows the user
+    // had expanded. Firing them in the same microtask as the active workspace
+    // lets the listTabs batcher coalesce everything into a single RPC.
+    if (opts.onExpandWorkspace) {
+      for (const siblingId of readExpandedWorkspaceIds()) {
+        if (siblingId !== activeId)
+          opts.onExpandWorkspace(siblingId)
+      }
+    }
 
     const layoutLoaded = workspaceClient.getLayout({ orgId: currentOrgId, workspaceId: activeId })
       .catch(() => null)

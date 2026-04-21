@@ -6,7 +6,8 @@ import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Tab } from '~/stores/tab.store'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
-import { workerClient, workspaceClient } from '~/api/clients'
+import { workerClient } from '~/api/clients'
+import { listTabsForWorkspace } from '~/api/listTabsBatcher'
 import { agentLoadingTimeoutMs } from '~/api/transport'
 import { channelManager, listAgents, listTerminals, moveTabWorkspace, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
@@ -510,6 +511,116 @@ export const AppShell: ParentComponent = (props) => {
   isAgentClosing = (agentId: string) =>
     tabOps.closingTabKeys().has(tabKey({ type: TabType.AGENT, id: agentId }))
 
+  // Tracks workspaces currently being lazy-loaded so two sidebar instances
+  // (left + right) firing the same expand effect don't issue duplicate
+  // ListTabs + downstream listAgents/listTerminals fan-outs.
+  const expandingWorkspaces = new Set<string>()
+
+  // Lazy-load tabs for a non-active workspace when its tree is expanded.
+  // Declared before useWorkspaceRestore so the restore path can fire it for
+  // sibling workspaces in the same microtask as the active workspace's
+  // ListTabs — the batcher then coalesces them into one RPC.
+  const handleExpandWorkspace = (workspaceId: string) => {
+    const snap = registry.get(workspaceId)
+    if (snap?.tabsLoaded)
+      return
+    if (expandingWorkspaces.has(workspaceId))
+      return
+    const currentOrgId = org.orgId()
+    if (!currentOrgId)
+      return
+
+    expandingWorkspaces.add(workspaceId)
+    listTabsForWorkspace(currentOrgId, workspaceId).then(async (tabsResp) => {
+      // Group tab IDs by worker and type.
+      const agentIdsByWorker = new Map<string, string[]>()
+      const terminalIdsByWorker = new Map<string, string[]>()
+      for (const t of tabsResp.tabs) {
+        if (!t.workerId)
+          continue
+        if (t.tabType === TabType.AGENT) {
+          const ids = agentIdsByWorker.get(t.workerId) ?? []
+          ids.push(t.tabId)
+          agentIdsByWorker.set(t.workerId, ids)
+        }
+        else if (t.tabType === TabType.TERMINAL) {
+          const ids = terminalIdsByWorker.get(t.workerId) ?? []
+          ids.push(t.tabId)
+          terminalIdsByWorker.set(t.workerId, ids)
+        }
+      }
+
+      const [agentResults, terminalResults] = await Promise.all([
+        Promise.all(Array.from(agentIdsByWorker.entries(), async ([wid, tabIds]) => {
+          try {
+            return (await listAgents(wid, { tabIds })).agents
+          }
+          catch (err) {
+            log.warn('failed to list agents from worker', { workerId: wid, tabIds, err })
+            return []
+          }
+        })),
+        Promise.all(Array.from(terminalIdsByWorker.entries(), async ([wid, tabIds]) => {
+          try {
+            return { workerId: wid, terminals: (await listTerminals(wid, { tabIds })).terminals }
+          }
+          catch (err) {
+            log.warn('failed to list terminals from worker', { workerId: wid, tabIds, err })
+            return { workerId: wid, terminals: null }
+          }
+        })),
+      ])
+
+      const allAgents = agentResults.flat()
+      const anyTerminalFetchFailed = terminalResults.some(r => r.terminals === null)
+      const tabs: Tab[] = []
+
+      for (const a of allAgents) {
+        tabs.push({
+          type: TabType.AGENT,
+          id: a.id,
+          title: a.title || undefined,
+          workerId: a.workerId,
+          workingDir: a.workingDir,
+          agentProvider: a.agentProvider,
+          gitBranch: a.gitStatus?.branch || undefined,
+          gitOriginUrl: a.gitStatus?.originUrl || undefined,
+        })
+      }
+
+      for (const { workerId, terminals } of terminalResults) {
+        if (terminals === null)
+          continue
+        for (const t of terminals) {
+          tabs.push(protoToTerminalTab(workerId, t))
+        }
+      }
+
+      const existing = registry.get(workspaceId)
+      // When a terminal fetch fails, preserve the previous terminal tabs (if any)
+      // so they don't disappear from the sidebar on a transient error. An empty
+      // successful result means the worker truly has no terminals.
+      if (anyTerminalFetchFailed && existing) {
+        const existingTerminalIds = new Set(tabs.filter(t => t.type === TabType.TERMINAL).map(t => t.id))
+        for (const t of existing.tabs) {
+          if (t.type === TabType.TERMINAL && !existingTerminalIds.has(t.id))
+            tabs.push(t)
+        }
+      }
+      registry.set(workspaceId, {
+        workspaceId,
+        tabs,
+        activeTabKey: existing?.activeTabKey ?? null,
+        layout: existing?.layout ?? { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
+        agents: allAgents,
+        restored: false,
+        tabsLoaded: true,
+      })
+    }).catch(() => {}).finally(() => {
+      expandingWorkspaces.delete(workspaceId)
+    })
+  }
+
   // Workspace restore (load agents/terminals/tabs/layout on workspace change)
   useWorkspaceRestore({
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
@@ -523,6 +634,7 @@ export const AppShell: ParentComponent = (props) => {
     agentSessionStore,
     registry,
     setWorkspaceLoading,
+    onExpandWorkspace: handleExpandWorkspace,
   })
 
   // Tile drag-and-drop
@@ -768,10 +880,7 @@ export const AppShell: ParentComponent = (props) => {
       const targetSnap = registry.get(resolvedTargetWsId)
       if (currentOrgId && targetSnap && !targetSnap.tabsLoaded) {
         try {
-          const resp = await workspaceClient.listTabs({
-            orgId: currentOrgId,
-            workspaceIds: [resolvedTargetWsId],
-          })
+          const resp = await listTabsForWorkspace(currentOrgId, resolvedTargetWsId)
           const existingKeys = new Set(targetSnap.tabs.map(t => tabKey(t)))
           const extraTabs: Tab[] = []
           for (const t of resp.tabs) {
@@ -826,103 +935,6 @@ export const AppShell: ParentComponent = (props) => {
 
       showWarnToast('Failed to move tab', err)
     })
-  }
-
-  // Lazy-load tabs for a non-active workspace when its tree is expanded.
-  const handleExpandWorkspace = (workspaceId: string) => {
-    const snap = registry.get(workspaceId)
-    if (snap?.tabsLoaded)
-      return
-    const currentOrgId = org.orgId()
-    if (!currentOrgId)
-      return
-
-    workspaceClient.listTabs({ orgId: currentOrgId, workspaceIds: [workspaceId] }).then(async (tabsResp) => {
-      // Group tab IDs by worker and type.
-      const agentIdsByWorker = new Map<string, string[]>()
-      const terminalIdsByWorker = new Map<string, string[]>()
-      for (const t of tabsResp.tabs) {
-        if (!t.workerId)
-          continue
-        if (t.tabType === TabType.AGENT) {
-          const ids = agentIdsByWorker.get(t.workerId) ?? []
-          ids.push(t.tabId)
-          agentIdsByWorker.set(t.workerId, ids)
-        }
-        else if (t.tabType === TabType.TERMINAL) {
-          const ids = terminalIdsByWorker.get(t.workerId) ?? []
-          ids.push(t.tabId)
-          terminalIdsByWorker.set(t.workerId, ids)
-        }
-      }
-
-      const [agentResults, terminalResults] = await Promise.all([
-        Promise.all(Array.from(agentIdsByWorker.entries(), async ([wid, tabIds]) => {
-          try {
-            return (await listAgents(wid, { tabIds })).agents
-          }
-          catch (err) {
-            log.warn('failed to list agents from worker', { workerId: wid, tabIds, err })
-            return []
-          }
-        })),
-        Promise.all(Array.from(terminalIdsByWorker.entries(), async ([wid, tabIds]) => {
-          try {
-            return { workerId: wid, terminals: (await listTerminals(wid, { tabIds })).terminals }
-          }
-          catch (err) {
-            log.warn('failed to list terminals from worker', { workerId: wid, tabIds, err })
-            return { workerId: wid, terminals: null }
-          }
-        })),
-      ])
-
-      const allAgents = agentResults.flat()
-      const anyTerminalFetchFailed = terminalResults.some(r => r.terminals === null)
-      const tabs: Tab[] = []
-
-      for (const a of allAgents) {
-        tabs.push({
-          type: TabType.AGENT,
-          id: a.id,
-          title: a.title || undefined,
-          workerId: a.workerId,
-          workingDir: a.workingDir,
-          agentProvider: a.agentProvider,
-          gitBranch: a.gitStatus?.branch || undefined,
-          gitOriginUrl: a.gitStatus?.originUrl || undefined,
-        })
-      }
-
-      for (const { workerId, terminals } of terminalResults) {
-        if (terminals === null)
-          continue
-        for (const t of terminals) {
-          tabs.push(protoToTerminalTab(workerId, t))
-        }
-      }
-
-      const existing = registry.get(workspaceId)
-      // When a terminal fetch fails, preserve the previous terminal tabs (if any)
-      // so they don't disappear from the sidebar on a transient error. An empty
-      // successful result means the worker truly has no terminals.
-      if (anyTerminalFetchFailed && existing) {
-        const existingTerminalIds = new Set(tabs.filter(t => t.type === TabType.TERMINAL).map(t => t.id))
-        for (const t of existing.tabs) {
-          if (t.type === TabType.TERMINAL && !existingTerminalIds.has(t.id))
-            tabs.push(t)
-        }
-      }
-      registry.set(workspaceId, {
-        workspaceId,
-        tabs,
-        activeTabKey: existing?.activeTabKey ?? null,
-        layout: existing?.layout ?? { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
-        agents: allAgents,
-        restored: false,
-        tabsLoaded: true,
-      })
-    }).catch(() => {})
   }
 
   // Active agent todos (for right sidebar To-dos pane)
