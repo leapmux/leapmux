@@ -144,7 +144,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		agent.TraceStartupPhase(agentID, "before_response")
 		sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{
-			Agent: svc.agentToProto(&dbAgent, dbAgent.PermissionMode, false, nil, svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(agentID, dbAgent.AgentProvider)),
+			Agent: svc.agentToProto(&dbAgent, false, nil, svc.Agents.AvailableModels(agentID, dbAgent.AgentProvider), svc.Agents.AvailableOptionGroups(agentID, dbAgent.AgentProvider)),
 		})
 		agent.TraceStartupPhase(agentID, "response_sent")
 
@@ -452,7 +452,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					unmarshalAvailableOptionGroups(agents[i].AvailableOptionGroups),
 				)
 			}
-			protoAgents = append(protoAgents, svc.agentToProto(&agents[i], agents[i].PermissionMode, hasAgent, gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].ID, agents[i].AgentProvider)))
+			protoAgents = append(protoAgents, svc.agentToProto(&agents[i], hasAgent, gitStatuses[i], svc.Agents.AvailableModels(agents[i].ID, agents[i].AgentProvider), svc.Agents.AvailableOptionGroups(agents[i].ID, agents[i].AgentProvider)))
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{
@@ -840,29 +840,58 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// Filter agents by access control and register watchers FIRST
 		// so no broadcasts are missed during the replay phase. Retain
 		// the fetched rows so the replay loop below doesn't have to
-		// re-fetch them.
+		// re-fetch them. A single batched SELECT replaces N GetAgentByID
+		// round trips on page refresh; ListAgentsByIDs filters closed_at
+		// IS NULL, so closed rows fall into the "not returned" branch and
+		// land in rejectedAgentIDs with the same semantics as before.
+		requestedAgentIDs := make([]string, 0, len(r.GetAgents()))
+		for _, agentEntry := range r.GetAgents() {
+			requestedAgentIDs = append(requestedAgentIDs, agentEntry.GetAgentId())
+		}
+		agentRowsByID := make(map[string]db.Agent, len(requestedAgentIDs))
+		if len(requestedAgentIDs) > 0 {
+			rows, err := svc.Queries.ListAgentsByIDs(bgCtx(), requestedAgentIDs)
+			if err != nil {
+				slog.Warn("WatchEvents: ListAgentsByIDs failed", "error", err)
+			}
+			for _, row := range rows {
+				agentRowsByID[row.ID] = row
+			}
+		}
 		var verifiedAgents []*leapmuxv1.WatchAgentEntry
 		var verifiedAgentRows []db.Agent
 		var rejectedAgentIDs []string
 		for _, agentEntry := range r.GetAgents() {
-			agentRow, err := svc.Queries.GetAgentByID(bgCtx(), agentEntry.GetAgentId())
-			if err != nil || !allowedWorkspaces[agentRow.WorkspaceID] || agentRow.ClosedAt.Valid {
-				rejectedAgentIDs = append(rejectedAgentIDs, agentEntry.GetAgentId())
+			agentID := agentEntry.GetAgentId()
+			agentRow, ok := agentRowsByID[agentID]
+			if !ok || !allowedWorkspaces[agentRow.WorkspaceID] {
+				rejectedAgentIDs = append(rejectedAgentIDs, agentID)
 				continue
 			}
-			svc.Watchers.WatchAgent(agentEntry.GetAgentId(), watcher)
+			svc.Watchers.WatchAgent(agentID, watcher)
 			verifiedAgents = append(verifiedAgents, agentEntry)
 			verifiedAgentRows = append(verifiedAgentRows, agentRow)
 		}
 
-		// Filter terminals by access control and register watchers.
-		// Retain the fetched rows for the snapshot loop below.
+		// Filter terminals by access control and register watchers. Same
+		// batched-lookup rationale as the agent loop above.
+		requestedTerminalIDs := r.GetTerminalIds()
+		termRowsByID := make(map[string]db.Terminal, len(requestedTerminalIDs))
+		if len(requestedTerminalIDs) > 0 {
+			rows, err := svc.Queries.ListTerminalsByIDs(bgCtx(), requestedTerminalIDs)
+			if err != nil {
+				slog.Warn("WatchEvents: ListTerminalsByIDs failed", "error", err)
+			}
+			for _, row := range rows {
+				termRowsByID[row.ID] = row
+			}
+		}
 		var verifiedTerminalIDs []string
 		var verifiedTerminalRows []db.Terminal
 		var rejectedTerminalIDs []string
-		for _, termID := range r.GetTerminalIds() {
-			termRow, err := svc.Queries.GetTerminal(bgCtx(), termID)
-			if err != nil || !allowedWorkspaces[termRow.WorkspaceID] || termRow.ClosedAt.Valid {
+		for _, termID := range requestedTerminalIDs {
+			termRow, ok := termRowsByID[termID]
+			if !ok || !allowedWorkspaces[termRow.WorkspaceID] {
 				rejectedTerminalIDs = append(rejectedTerminalIDs, termID)
 				continue
 			}
@@ -1079,7 +1108,7 @@ func (svc *Context) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapm
 
 // agentToProto converts a DB Agent to a proto AgentInfo. Status,
 // startup_error, and startup_message are derived via deriveAgentStatus.
-func (svc *Context) agentToProto(a *db.Agent, permissionMode string, isRunning bool, gs *leapmuxv1.AgentGitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
+func (svc *Context) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.AgentGitStatus, availableModels []*leapmuxv1.AvailableModel, availableOptionGroups []*leapmuxv1.AvailableOptionGroup) *leapmuxv1.AgentInfo {
 	status, startupError, startupMessage := svc.deriveAgentStatus(a, isRunning)
 	info := &leapmuxv1.AgentInfo{
 		Id:                    a.ID,
@@ -1088,7 +1117,7 @@ func (svc *Context) agentToProto(a *db.Agent, permissionMode string, isRunning b
 		Model:                 modelOrDefault(a.Model, a.AgentProvider),
 		Status:                status,
 		WorkingDir:            a.WorkingDir,
-		PermissionMode:        permissionMode,
+		PermissionMode:        a.PermissionMode,
 		Effort:                a.Effort,
 		AgentSessionId:        a.AgentSessionID,
 		HomeDir:               a.HomeDir,
@@ -2060,7 +2089,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 		} `json:"request"`
 	}
 	if err := json.Unmarshal(cr.Payload, &crBody); err != nil {
-		slog.Warn("codex cancel request unmarshal failed", "agent_id", agentID, "error", err)
+		slog.Warn("control request payload unmarshal failed", "agent_id", agentID, "error", err)
 		return false
 	}
 	toolName := crBody.Request.ToolName

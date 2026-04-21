@@ -5,8 +5,6 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { after, first, mid } from '~/lib/lexorank'
 
-export { TabType, TerminalStatus }
-
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'

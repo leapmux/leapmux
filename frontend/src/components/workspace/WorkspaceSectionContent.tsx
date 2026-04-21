@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
-import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
-import type { Tab, TabItemOps, TabType } from '~/stores/tab.store'
+import type { TabType, Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { Tab, TabItemOps } from '~/stores/tab.store'
 
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'

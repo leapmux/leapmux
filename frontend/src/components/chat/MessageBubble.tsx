@@ -20,11 +20,11 @@ import { resolveStack } from '~/lib/resolveStack'
 import { formatUnifiedDiffText, rawDiffToHunks } from './diffUtils'
 import * as styles from './MessageBubble.css'
 import { buildClassificationInput, classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
-import { renderMessageContent, ToolHeaderActions } from './messageRenderers'
+import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { getAssistantContent, isObject } from './messageUtils'
 import { renderNotificationThread } from './notificationRenderers'
-import { COLLAPSED_RESULT_ROWS } from './toolRenderers'
+import { COLLAPSED_RESULT_ROWS, ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 

@@ -41,9 +41,6 @@ import { getProviderPlugin } from './providers/registry'
 import {
   taskNotificationRenderer,
 } from './taskRenderers'
-import {
-  ToolHeaderActions,
-} from './toolRenderers'
 
 import {
   toolInputText,
@@ -52,8 +49,6 @@ import {
   toolUseIcon,
 } from './toolStyles.css'
 import './providers'
-
-export { ToolHeaderActions }
 
 const logger = createLogger('messageRenderers')
 

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { TabType } from '~/stores/tab.store'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { WorkspaceTabTree } from './WorkspaceTabTree'
 
 vi.mock('@thisbeyond/solid-dnd', () => ({

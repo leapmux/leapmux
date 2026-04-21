@@ -1,12 +1,14 @@
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
-import { createTabStore, TabType, TerminalStatus } from '~/stores/tab.store'
+import { createTabStore } from '~/stores/tab.store'
 
 /**
  * These tests verify the control-request guard in useWorkspaceConnection's
