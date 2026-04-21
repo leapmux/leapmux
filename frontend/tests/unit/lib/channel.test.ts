@@ -75,12 +75,14 @@ function makeMockSession(): Session {
 
 function makeMockTransport(onCreateWs: () => MockWebSocket): ChannelTransport {
   return {
-    getWorkerEncryptionMode: vi.fn().mockResolvedValue(EncryptionMode.CLASSIC),
-    getWorkerPublicKey: vi.fn().mockResolvedValue({
-      x25519PublicKey: new Uint8Array(32),
-      mlkemPublicKey: new Uint8Array(0),
-      slhdsaPublicKey: new Uint8Array(0),
-    } satisfies WorkerKeyBundle),
+    getWorkerHandshakeParams: vi.fn().mockResolvedValue({
+      keys: {
+        x25519PublicKey: new Uint8Array(32),
+        mlkemPublicKey: new Uint8Array(0),
+        slhdsaPublicKey: new Uint8Array(0),
+      } satisfies WorkerKeyBundle,
+      encryptionMode: EncryptionMode.CLASSIC,
+    }),
     openChannel: vi.fn().mockResolvedValue({
       channelId: 'ch-1',
       handshakePayload: new Uint8Array(48),

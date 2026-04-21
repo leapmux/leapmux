@@ -2,7 +2,7 @@
  * Encrypted channel manager for E2EE communication with Workers.
  *
  * Manages the lifecycle of encrypted channels:
- *   1. Fetch Worker's public key via ChannelTransport.getWorkerPublicKey
+ *   1. Fetch Worker's handshake params (keys + encryption mode) via ChannelTransport.getWorkerHandshakeParams
  *   2. Check key pinning (TOFU model) — prompt user on mismatch
  *   3. Perform Noise_NK handshake via ChannelTransport.openChannel
  *   4. Send UserIdClaim as first encrypted message, wait for verification
@@ -69,8 +69,11 @@ export interface WorkerKeyBundle {
 
 /** Transport interface for platform-specific RPC and WebSocket creation. */
 export interface ChannelTransport {
-  getWorkerPublicKey: (workerId: string) => Promise<WorkerKeyBundle>
-  getWorkerEncryptionMode: (workerId: string) => Promise<EncryptionMode>
+  /**
+   * Fetches the public key material and live encryption mode in one round
+   * trip. Both are needed before every OpenChannel, so they travel together.
+   */
+  getWorkerHandshakeParams: (workerId: string) => Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }>
   openChannel: (workerId: string, handshakePayload: Uint8Array) => Promise<{ channelId: string, handshakePayload: Uint8Array }>
   closeChannel: (channelId: string) => Promise<void>
   createWebSocket: () => WebSocket
@@ -219,9 +222,8 @@ export class ChannelManager {
    * and connects the shared WebSocket relay.
    */
   async openChannel(workerId: string): Promise<string> {
-    // 1. Get Worker's encryption mode from live connection, then fetch keys.
-    const mode = await this.transport.getWorkerEncryptionMode(workerId)
-    const keyBundle = await this.transport.getWorkerPublicKey(workerId)
+    // 1. Get Worker's handshake params (keys + live encryption mode) in one RPC.
+    const { keys: keyBundle, encryptionMode: mode } = await this.transport.getWorkerHandshakeParams(workerId)
 
     // 2. Key pinning (TOFU model) — pin composite key.
     const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)

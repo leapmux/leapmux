@@ -172,18 +172,16 @@ export function setGetUserId(fn: () => string): void {
 }
 
 class BrowserChannelTransport implements ChannelTransport {
-  async getWorkerPublicKey(workerId: string): Promise<WorkerKeyBundle> {
-    const resp = await channelRpcClient.getWorkerPublicKey({ workerId })
+  async getWorkerHandshakeParams(workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
+    const resp = await channelRpcClient.getWorkerHandshakeParams({ workerId })
     return {
-      x25519PublicKey: resp.publicKey,
-      mlkemPublicKey: resp.mlkemPublicKey,
-      slhdsaPublicKey: resp.slhdsaPublicKey,
+      keys: {
+        x25519PublicKey: resp.publicKey,
+        mlkemPublicKey: resp.mlkemPublicKey,
+        slhdsaPublicKey: resp.slhdsaPublicKey,
+      },
+      encryptionMode: resp.encryptionMode,
     }
-  }
-
-  async getWorkerEncryptionMode(workerId: string): Promise<EncryptionMode> {
-    const resp = await channelRpcClient.getWorkerEncryptionMode({ workerId })
-    return resp.encryptionMode
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array }> {

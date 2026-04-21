@@ -45,7 +45,7 @@ type chunkBuffer struct {
 
 // OpenChannelOptions configures how OpenChannel connects to the Hub.
 type OpenChannelOptions struct {
-	// HTTPClient is the HTTP client for ConnectRPC calls (GetWorkerPublicKey, etc.).
+	// HTTPClient is the HTTP client for ConnectRPC calls (GetWorkerHandshakeParams, etc.).
 	// When nil, a default client with 30s timeout is used.
 	HTTPClient *http.Client
 
@@ -67,36 +67,28 @@ func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *Ope
 	}
 	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL)
 
-	// 1. Get Worker's public key.
-	pubKeyResp, err := channelClient.GetWorkerPublicKey(ctx, connect.NewRequest(
-		&leapmuxv1.GetWorkerPublicKeyRequest{WorkerId: workerID},
+	// 1. Get Worker's public key and encryption mode in one round trip.
+	paramsResp, err := channelClient.GetWorkerHandshakeParams(ctx, connect.NewRequest(
+		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID},
 	))
 	if err != nil {
-		return nil, fmt.Errorf("get worker public key: %w", err)
+		return nil, fmt.Errorf("get worker handshake params: %w", err)
 	}
+	encMode := paramsResp.Msg.GetEncryptionMode()
 
-	// 2. Get Worker's encryption mode.
-	encModeResp, err := channelClient.GetWorkerEncryptionMode(ctx, connect.NewRequest(
-		&leapmuxv1.GetWorkerEncryptionModeRequest{WorkerId: workerID},
-	))
-	if err != nil {
-		return nil, fmt.Errorf("get worker encryption mode: %w", err)
-	}
-	encMode := encModeResp.Msg.GetEncryptionMode()
-
-	// 3. Perform Noise_NK handshake (message 1).
+	// 2. Perform Noise_NK handshake (message 1).
 	var hs *noiseutil.HandshakeState
 	var msg1 []byte
 	if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
-		hs, msg1, err = noiseutil.ClassicalInitiatorHandshake1(pubKeyResp.Msg.GetPublicKey())
+		hs, msg1, err = noiseutil.ClassicalInitiatorHandshake1(paramsResp.Msg.GetPublicKey())
 	} else {
-		hs, msg1, err = noiseutil.InitiatorHandshake1(pubKeyResp.Msg.GetPublicKey(), pubKeyResp.Msg.GetMlkemPublicKey())
+		hs, msg1, err = noiseutil.InitiatorHandshake1(paramsResp.Msg.GetPublicKey(), paramsResp.Msg.GetMlkemPublicKey())
 	}
 	if err != nil {
 		return nil, fmt.Errorf("handshake1: %w", err)
 	}
 
-	// 4. Open channel via Hub.
+	// 3. Open channel via Hub.
 	openResp, err := channelClient.OpenChannel(ctx, connect.NewRequest(
 		&leapmuxv1.OpenChannelRequest{
 			WorkerId:         workerID,
@@ -108,18 +100,18 @@ func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *Ope
 	}
 	channelID := openResp.Msg.GetChannelId()
 
-	// 5. Complete handshake (message 2).
+	// 4. Complete handshake (message 2).
 	var session *noiseutil.Session
 	if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		session, err = noiseutil.ClassicalInitiatorHandshake2(hs, openResp.Msg.GetHandshakePayload())
 	} else {
-		session, err = noiseutil.InitiatorHandshake2(hs, openResp.Msg.GetHandshakePayload(), pubKeyResp.Msg.GetSlhdsaPublicKey())
+		session, err = noiseutil.InitiatorHandshake2(hs, openResp.Msg.GetHandshakePayload(), paramsResp.Msg.GetSlhdsaPublicKey())
 	}
 	if err != nil {
 		return nil, fmt.Errorf("handshake2: %w", err)
 	}
 
-	// 6. Connect to Hub's WebSocket relay.
+	// 5. Connect to Hub's WebSocket relay.
 	wsURL := channelwire.HTTPToWS(hubURL) + "/ws/channel"
 
 	wsDialOpts := &websocket.DialOptions{
@@ -146,7 +138,7 @@ func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *Ope
 		reassembly: make(map[uint32]*chunkBuffer),
 	}
 
-	// 7. Send UserIdClaim.
+	// 6. Send UserIdClaim.
 	// Register the pending response handler before starting recvLoop and
 	// sending the claim to avoid a race where the response arrives before
 	// pending[0] is registered and gets silently dropped.

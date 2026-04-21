@@ -38,10 +38,14 @@ func NewChannelService(
 	}
 }
 
-func (s *ChannelService) GetWorkerPublicKey(
+// GetWorkerHandshakeParams returns the persisted public key material and the
+// live encryption mode a client needs to start a Noise_NK handshake. Both are
+// required by every OpenChannel caller, so they travel together to avoid an
+// unnecessary second round trip.
+func (s *ChannelService) GetWorkerHandshakeParams(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.GetWorkerPublicKeyRequest],
-) (*connect.Response[leapmuxv1.GetWorkerPublicKeyResponse], error) {
+	req *connect.Request[leapmuxv1.GetWorkerHandshakeParamsRequest],
+) (*connect.Response[leapmuxv1.GetWorkerHandshakeParamsResponse], error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -52,9 +56,13 @@ func (s *ChannelService) GetWorkerPublicKey(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
 	}
 
-	// Verify user has access to this worker (owns it or has a grant).
 	if _, err := s.verifyWorkerAccess(ctx, user, workerID); err != nil {
 		return nil, err
+	}
+
+	conn := s.workerMgr.Get(workerID)
+	if conn == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
 	}
 
 	keys, err := s.store.Workers().GetPublicKey(ctx, workerID)
@@ -69,45 +77,16 @@ func (s *ChannelService) GetWorkerPublicKey(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker has no public key"))
 	}
 
-	return connect.NewResponse(&leapmuxv1.GetWorkerPublicKeyResponse{
-		PublicKey:       keys.PublicKey,
-		MlkemPublicKey:  keys.MlkemPublicKey,
-		SlhdsaPublicKey: keys.SlhdsaPublicKey,
-	}), nil
-}
-
-func (s *ChannelService) GetWorkerEncryptionMode(
-	ctx context.Context,
-	req *connect.Request[leapmuxv1.GetWorkerEncryptionModeRequest],
-) (*connect.Response[leapmuxv1.GetWorkerEncryptionModeResponse], error) {
-	user, err := auth.MustGetUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	workerID := req.Msg.GetWorkerId()
-	if workerID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
-	}
-
-	// Verify user has access to this worker.
-	if _, err := s.verifyWorkerAccess(ctx, user, workerID); err != nil {
-		return nil, err
-	}
-
-	// Read encryption mode from the live connection (not DB).
-	conn := s.workerMgr.Get(workerID)
-	if conn == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("worker is offline"))
-	}
-
 	encMode := conn.EncryptionMode
 	if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
 		encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
 	}
 
-	return connect.NewResponse(&leapmuxv1.GetWorkerEncryptionModeResponse{
-		EncryptionMode: encMode,
+	return connect.NewResponse(&leapmuxv1.GetWorkerHandshakeParamsResponse{
+		PublicKey:       keys.PublicKey,
+		MlkemPublicKey:  keys.MlkemPublicKey,
+		SlhdsaPublicKey: keys.SlhdsaPublicKey,
+		EncryptionMode:  encMode,
 	}), nil
 }
 
