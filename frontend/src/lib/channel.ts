@@ -28,6 +28,7 @@ import {
   UserIdClaimSchema,
 } from '~/generated/leapmux/v1/channel_pb'
 import { KEY_KEY_PINS, safeGetJson, safeRemoveItem, safeSetJson } from './browserStorage'
+import { createInflightCache } from './inflightCache'
 import { createLogger } from './logger'
 import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, concatBytes } from './noise'
 import { initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
@@ -148,7 +149,7 @@ export class ChannelManager {
   private transport: ChannelTransport
   private channels = new Map<string, ActiveChannel>()
   /** In-flight openChannel promises per worker, for deduplication. */
-  private openingChannels = new Map<string, Promise<string>>()
+  private openingChannels = createInflightCache<string, string>()
   private ws: WebSocket | null = null
   private wsPromise: Promise<void> | null = null
   private handshake1: typeof initiatorHandshake1
@@ -456,16 +457,7 @@ export class ChannelManager {
       }
     }
 
-    // Deduplicate concurrent openChannel calls for the same worker.
-    const inflight = this.openingChannels.get(workerId)
-    if (inflight)
-      return inflight
-
-    const promise = this.openChannel(workerId).finally(() => {
-      this.openingChannels.delete(workerId)
-    })
-    this.openingChannels.set(workerId, promise)
-    return promise
+    return this.openingChannels.run(workerId, () => this.openChannel(workerId))
   }
 
   /** Check if a channel is open. */

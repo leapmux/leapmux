@@ -12,8 +12,10 @@ import { listTabsForWorkspace } from '~/api/listTabsBatcher'
 import * as workerRpc from '~/api/workerRpc'
 import { readExpandedWorkspaceIds } from '~/components/workspace/expandedWorkspaces'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
 import { protoToTerminalTab, protoToTerminalTabFields, tabKey } from '~/stores/tab.store'
+import { fanOutTabsToWorkers } from './workspaceTabHydration'
 
 const log = createLogger('restore')
 
@@ -51,7 +53,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
   let loadGeneration = 0
   let previousWorkspaceId: string | null = null
   const [terminalHydrationTick, setTerminalHydrationTick] = createSignal(0)
-  const terminalHydrationInflight = new Set<string>()
+  const terminalHydrationInflight = createInflightCache<string, void>()
   const terminalHydrationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const terminalHydrationRetryDelayMs = new Map<string, number>()
 
@@ -149,8 +151,13 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       .catch(() => null)
 
     // Kick off lazy loads for sibling workspaces whose sidebar rows the user
-    // had expanded. Firing them in the same microtask as the active workspace
-    // lets the listTabs batcher coalesce everything into a single RPC.
+    // had expanded. WorkspaceSectionContent has its own createEffect that
+    // fires onExpandWorkspace for every expanded non-active workspace, but
+    // it only runs once the sidebar component mounts — which is ~50 ms after
+    // the active workspace's ListTabs fires on a fresh load, far too late
+    // for the microtask-scoped batcher to coalesce them. Firing here, in
+    // the same tick as listTabsForWorkspace(activeId) above, keeps both
+    // calls in the same batch so they merge into a single RPC.
     if (opts.onExpandWorkspace) {
       for (const siblingId of readExpandedWorkspaceIds()) {
         if (siblingId !== activeId)
@@ -172,62 +179,14 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       if (gen !== loadGeneration)
         return
 
-      // Group agent/terminal tab IDs by worker from the hub's tab list.
-      const agentIdsByWorker = new Map<string, string[]>()
-      const terminalIdsByWorker = new Map<string, string[]>()
-      const tabTileMap = new Map<string, string>()
-      if (tabsResp?.tabs) {
-        for (const t of tabsResp.tabs) {
-          if (t.tileId) {
-            tabTileMap.set(`${t.tabType}:${t.tabId}`, t.tileId)
-          }
-          if (!t.workerId)
-            continue
-          if (t.tabType === TabType.AGENT) {
-            const ids = agentIdsByWorker.get(t.workerId) ?? []
-            ids.push(t.tabId)
-            agentIdsByWorker.set(t.workerId, ids)
-          }
-          else if (t.tabType === TabType.TERMINAL) {
-            const ids = terminalIdsByWorker.get(t.workerId) ?? []
-            ids.push(t.tabId)
-            terminalIdsByWorker.set(t.workerId, ids)
-          }
-        }
-      }
-
-      // Fetch agents and terminals from each worker by tab IDs.
-      const agentResults = await Promise.all(
-        Array.from(agentIdsByWorker.entries(), async ([workerId, tabIds]) => {
-          try {
-            const resp = await workerRpc.listAgents(workerId, { tabIds })
-            return resp.agents
-          }
-          catch (err) {
-            log.warn('failed to list agents from worker', { workerId, tabIds, err })
-            return []
-          }
-        }),
-      )
-
-      const terminalResults = await Promise.all(
-        Array.from(terminalIdsByWorker.entries(), async ([workerId, tabIds]) => {
-          try {
-            const resp = await workerRpc.listTerminals(workerId, { tabIds })
-            return { workerId, terminals: resp.terminals }
-          }
-          catch (err) {
-            log.warn('failed to list terminals from worker', { workerId, tabIds, err })
-            return { workerId, terminals: [] as Awaited<ReturnType<typeof workerRpc.listTerminals>>['terminals'] }
-          }
-        }),
-      )
+      const { agents: fetchedAgents, terminalsByWorker: terminalResults, tabTileMap }
+        = await fanOutTabsToWorkers(tabsResp?.tabs ?? [])
 
       if (gen !== loadGeneration)
         return
 
       // Populate agent store.
-      const filteredAgents = agentResults.flat()
+      const filteredAgents = [...fetchedAgents]
       // Merge locally-moved agents from the registry snapshot that the
       // worker hasn't returned yet (cross-workspace move may still be
       // in flight on the worker side).
@@ -282,6 +241,8 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       }
 
       for (const { workerId, terminals: terms } of terminalResults) {
+        if (terms === null)
+          continue
         for (const term of terms) {
           const key = `${TabType.TERMINAL}:${term.terminalId}`
           let tileId = tabTileMap.get(key) ?? defaultTileId
@@ -467,29 +428,30 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       if (terminalHydrationInflight.has(workerId))
         continue
 
-      terminalHydrationInflight.add(workerId)
       const targetWorkspaceId = activeId
-      void workerRpc.listTerminals(workerId, { tabIds }).then((resp) => {
-        if (getActiveWorkspaceId() !== targetWorkspaceId)
-          return
-        const resolvedIDs = new Set(resp.terminals.map(term => term.terminalId))
-        batch(() => {
-          for (const term of resp.terminals) {
-            hydrateTerminalRecord(workerId, term)
+      void terminalHydrationInflight.run(workerId, async () => {
+        try {
+          const resp = await workerRpc.listTerminals(workerId, { tabIds })
+          if (getActiveWorkspaceId() !== targetWorkspaceId)
+            return
+          const resolvedIDs = new Set(resp.terminals.map(term => term.terminalId))
+          batch(() => {
+            for (const term of resp.terminals) {
+              hydrateTerminalRecord(workerId, term)
+            }
+          })
+          if (tabIds.some(id => !resolvedIDs.has(id))) {
+            scheduleTerminalHydrationRetry(workerId)
           }
-        })
-        if (tabIds.some(id => !resolvedIDs.has(id))) {
+          else {
+            clearTerminalHydrationRetry(workerId)
+            terminalHydrationRetryDelayMs.delete(workerId)
+          }
+        }
+        catch (err) {
+          log.warn('failed to hydrate terminal metadata after restore', { workerId, tabIds, err })
           scheduleTerminalHydrationRetry(workerId)
         }
-        else {
-          clearTerminalHydrationRetry(workerId)
-          terminalHydrationRetryDelayMs.delete(workerId)
-        }
-      }).catch((err) => {
-        log.warn('failed to hydrate terminal metadata after restore', { workerId, tabIds, err })
-        scheduleTerminalHydrationRetry(workerId)
-      }).finally(() => {
-        terminalHydrationInflight.delete(workerId)
       })
     }
   })
