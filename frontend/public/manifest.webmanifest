@@ -8,17 +8,17 @@
   "theme_color": "#F7F5F2",
   "icons": [
     {
-      "src": "/icons/leapmux-icon-corners-192.png",
+      "src": "/icons/leapmux-icon-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/icons/leapmux-icon-corners-512.png",
+      "src": "/icons/leapmux-icon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     },
     {
-      "src": "/icons/leapmux-icon-corners-maskable-512.png",
+      "src": "/icons/leapmux-icon-maskable-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

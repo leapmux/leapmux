@@ -7,11 +7,11 @@ export default createHandler(() => (
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <link rel="icon" href="/icons/leapmux-icon-corners.ico" sizes="48x48" />
-          <link rel="icon" href="/icons/leapmux-icon-corners.svg" type="image/svg+xml" />
+          <link rel="icon" href="/icons/leapmux-icon.ico" sizes="48x48" />
+          <link rel="icon" href="/icons/leapmux-icon.svg" type="image/svg+xml" />
           <link rel="manifest" href="/manifest.webmanifest" />
           <meta name="theme-color" content="#F7F5F2" />
-          <link rel="apple-touch-icon" href="/icons/leapmux-icon-apple-touch.png" />
+          <link rel="apple-touch-icon" href="/icons/leapmux-icon-square-apple-touch.png" />
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
           {assets}

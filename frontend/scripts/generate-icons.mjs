@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 // Converts LeapMux SVG icons to web icon assets:
-//   - leapmux-icon-corners.ico (48x48 ICO, from rounded SVG)
-//   - leapmux-icon-corners.svg (copy of rounded SVG for modern browsers)
-//   - leapmux-icon-corners-192.png (192x192 PNG, from rounded SVG)
-//   - leapmux-icon-corners-512.png (512x512 PNG, from rounded SVG)
-//   - leapmux-icon-corners-maskable-512.png (512x512 PNG, from rounded SVG)
-//   - leapmux-icon-apple-touch.png (180x180 PNG, from square SVG)
+//   - leapmux-icon.ico (48x48 ICO, from rounded SVG)
+//   - leapmux-icon.svg (copy of rounded SVG for modern browsers)
+//   - leapmux-icon-192.png (192x192 PNG, from rounded SVG)
+//   - leapmux-icon-512.png (512x512 PNG, from rounded SVG)
+//   - leapmux-icon-maskable-512.png (512x512 PNG, from rounded SVG)
+//   - leapmux-icon-square-apple-touch.png (180x180 PNG, from square SVG)
 //
 // Usage: node generate-icons.mjs <rounded-svg> <square-svg> <public-dir>
 //
@@ -48,19 +48,19 @@ function assertCornerAlpha(pixels, width, height, shouldBeOpaque) {
 }
 
 // Copy the rounded SVG to public dir for modern browsers.
-copyFileSync(roundedSvgPath, join(publicDir, 'icons', 'leapmux-icon-corners.svg'))
+copyFileSync(roundedSvgPath, join(publicDir, 'icons', 'leapmux-icon.svg'))
 
 // Generate a favicon ICO from the rounded SVG.
 const ico48Png = renderPng(roundedSvg, 48)
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners.ico'), buildIco(ico48Png, 48))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon.ico'), buildIco(ico48Png, 48))
 
 // Ensure the icons output directory exists.
 mkdirSync(join(publicDir, 'icons'), { recursive: true })
 
 // Generate rounded web icons and square Apple touch icon.
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-192.png'), renderPng(roundedSvg, 192, { opaqueCorners: false }))
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-512.png'), renderPng(roundedSvg, 512, { opaqueCorners: false }))
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-corners-maskable-512.png'), renderPng(roundedSvg, 512, { opaqueCorners: false }))
-writeFileSync(join(publicDir, 'icons', 'leapmux-icon-apple-touch.png'), renderPng(squareSvg, 180, { opaqueCorners: true }))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-192.png'), renderPng(roundedSvg, 192, { opaqueCorners: false }))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-512.png'), renderPng(roundedSvg, 512, { opaqueCorners: false }))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-maskable-512.png'), renderPng(roundedSvg, 512, { opaqueCorners: false }))
+writeFileSync(join(publicDir, 'icons', 'leapmux-icon-square-apple-touch.png'), renderPng(squareSvg, 180, { opaqueCorners: true }))
 
-console.log('Generated web icons: leapmux-icon-corners.ico, leapmux-icon-corners.svg, leapmux-icon-corners-192.png, leapmux-icon-corners-512.png, leapmux-icon-corners-maskable-512.png, leapmux-icon-apple-touch.png')
+console.log('Generated web icons: leapmux-icon.ico, leapmux-icon.svg, leapmux-icon-192.png, leapmux-icon-512.png, leapmux-icon-maskable-512.png, leapmux-icon-square-apple-touch.png')

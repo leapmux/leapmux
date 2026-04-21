@@ -124,8 +124,8 @@ tasks:
       - buf.gen.yaml
       - buf.yaml
       - NOTICE.html
-      - icons/leapmux-icon-corners.svg
       - icons/leapmux-icon.svg
+      - icons/leapmux-icon-square.svg
       - frontend/package.json
       - frontend/bun.lock
       - frontend/scripts/**/*
@@ -134,18 +134,18 @@ tasks:
     generates:
       - frontend/node_modules/**/*
       - frontend/public/NOTICE.html
-      - frontend/public/leapmux-icon-corners.ico
-      - frontend/public/leapmux-icon-corners.svg
-      - frontend/public/icons/leapmux-icon-corners-192.png
-      - frontend/public/icons/leapmux-icon-corners-512.png
-      - frontend/public/icons/leapmux-icon-corners-maskable-512.png
-      - frontend/public/icons/leapmux-icon-apple-touch.png
+      - frontend/public/leapmux-icon.ico
+      - frontend/public/leapmux-icon.svg
+      - frontend/public/icons/leapmux-icon-192.png
+      - frontend/public/icons/leapmux-icon-512.png
+      - frontend/public/icons/leapmux-icon-maskable-512.png
+      - frontend/public/icons/leapmux-icon-square-apple-touch.png
     cmds:
       - task: generate-proto
       - task: generate-spinners
       - cd frontend && bun install
       - mkdir -p frontend/public/icons
-      - NODE_PATH=frontend/node_modules bun frontend/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon.svg frontend/public
+      - NODE_PATH=frontend/node_modules bun frontend/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-square.svg frontend/public
       - "[ -a NOTICE.html ] && cp NOTICE.html frontend/public/NOTICE.html || true"
 
   prepare-backend:
@@ -180,23 +180,23 @@ tasks:
       - proto/**/*
       - buf.gen.yaml
       - buf.yaml
+      - icons/leapmux-icon-square.svg
       - icons/leapmux-icon.svg
-      - icons/leapmux-icon-corners.svg
       - desktop/rust/scripts/**/*
       - scripts/build-ico.mjs
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
     generates:
-      - desktop/rust/icons/icon.png
+      - desktop/rust/icons/icon@2x.png
       - desktop/rust/icons/icon.ico
     cmds:
       - task: generate-proto
       - task: build-frontend
       - task: prepare-backend
       - mkdir -p desktop/rust/icons
-      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-corners.svg desktop/rust/icons/icon.png desktop/rust/icons/icon.ico opaque
+      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-square.svg icons/leapmux-icon.svg desktop/rust/icons/icon@2x.png desktop/rust/icons/icon.ico opaque
         if: '[ "{{OS}}" = "darwin" ]'
-      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-corners.svg icons/leapmux-icon-corners.svg desktop/rust/icons/icon.png desktop/rust/icons/icon.ico transparent
+      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon.svg desktop/rust/icons/icon@2x.png desktop/rust/icons/icon.ico transparent
         if: '[ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
 
   # --- Build ---
@@ -289,7 +289,7 @@ tasks:
       - desktop/rust/Cargo.*
       - desktop/rust/capabilities/**/*
       - desktop/rust/tauri.conf.json
-      - desktop/rust/icons/icon.png
+      - desktop/rust/icons/icon@2x.png
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
@@ -340,7 +340,7 @@ tasks:
       - desktop/rust/tauri.conf.json
       - desktop/rust/tauri.linux.conf.json
       - desktop/rust/desktop-template.desktop
-      - desktop/rust/icons/icon.png
+      - desktop/rust/icons/icon@2x.png
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*

@@ -19,7 +19,7 @@ const pngSvg = readFileSync(pngSvgPath)
 const icoSvg = readFileSync(icoSvgPath)
 
 // Render 1024x1024 PNG for appicon.
-const appIcon = new Resvg(pngSvg, { fitTo: { mode: 'width', value: 1023 } })
+const appIcon = new Resvg(pngSvg, { fitTo: { mode: 'width', value: 1024 } })
 const appIconRendered = appIcon.render()
 if (appiconCorners) {
   const shouldBeOpaque = appiconCorners === 'opaque'
