@@ -1,6 +1,7 @@
 package gitutil
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +35,7 @@ func TestGetOriginURL(t *testing.T) {
 		cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", expected)
 		require.NoError(t, cmd.Run())
 
-		got := GetOriginURL(dir)
+		got := GetOriginURL(context.Background(), dir)
 		assert.Equal(t, expected, got)
 	})
 
@@ -44,24 +45,24 @@ func TestGetOriginURL(t *testing.T) {
 		cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", expected)
 		require.NoError(t, cmd.Run())
 
-		got := GetOriginURL(dir)
+		got := GetOriginURL(context.Background(), dir)
 		assert.Equal(t, expected, got)
 	})
 
 	t.Run("returns empty string when no origin", func(t *testing.T) {
 		dir := initRepo(t)
-		got := GetOriginURL(dir)
+		got := GetOriginURL(context.Background(), dir)
 		assert.Empty(t, got)
 	})
 
 	t.Run("returns empty string for non-git directory", func(t *testing.T) {
 		dir := t.TempDir()
-		got := GetOriginURL(dir)
+		got := GetOriginURL(context.Background(), dir)
 		assert.Empty(t, got)
 	})
 
 	t.Run("returns empty string for nonexistent directory", func(t *testing.T) {
-		got := GetOriginURL(filepath.Join(t.TempDir(), "nonexistent"))
+		got := GetOriginURL(context.Background(), filepath.Join(t.TempDir(), "nonexistent"))
 		assert.Empty(t, got)
 	})
 }
@@ -73,7 +74,7 @@ func TestGetGitStatus_OriginURL(t *testing.T) {
 		cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", expected)
 		require.NoError(t, cmd.Run())
 
-		status := GetGitStatus(dir)
+		status := GetGitStatus(context.Background(), dir)
 		require.NotNil(t, status)
 		assert.Equal(t, expected, status.OriginUrl)
 	})
@@ -81,7 +82,7 @@ func TestGetGitStatus_OriginURL(t *testing.T) {
 	t.Run("origin URL is empty when no remote", func(t *testing.T) {
 		dir := initRepo(t)
 
-		status := GetGitStatus(dir)
+		status := GetGitStatus(context.Background(), dir)
 		require.NotNil(t, status)
 		assert.Empty(t, status.OriginUrl)
 	})
@@ -89,7 +90,7 @@ func TestGetGitStatus_OriginURL(t *testing.T) {
 
 func TestGetGitStatus_Branch(t *testing.T) {
 	dir := initRepo(t)
-	status := GetGitStatus(dir)
+	status := GetGitStatus(context.Background(), dir)
 	require.NotNil(t, status)
 	assert.NotEmpty(t, status.Branch)
 }
@@ -106,7 +107,7 @@ func TestGetGitStatus_Modified(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(filePath, []byte("world"), 0o644))
 
-	status := GetGitStatus(dir)
+	status := GetGitStatus(context.Background(), dir)
 	require.NotNil(t, status)
 	assert.True(t, status.Modified)
 }
@@ -115,14 +116,14 @@ func TestGetGitStatus_Untracked(t *testing.T) {
 	dir := initRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new"), 0o644))
 
-	status := GetGitStatus(dir)
+	status := GetGitStatus(context.Background(), dir)
 	require.NotNil(t, status)
 	assert.True(t, status.Untracked)
 }
 
 func TestGetGitStatus_NonGitDir(t *testing.T) {
 	dir := t.TempDir()
-	status := GetGitStatus(dir)
+	status := GetGitStatus(context.Background(), dir)
 	assert.Nil(t, status)
 }
 
@@ -139,7 +140,7 @@ func TestGetGitStatus_DetachedHEAD(t *testing.T) {
 	cmd = exec.Command("git", "-C", dir, "checkout", "--detach", "HEAD")
 	require.NoError(t, cmd.Run())
 
-	status := GetGitStatus(dir)
+	status := GetGitStatus(context.Background(), dir)
 	require.NotNil(t, status)
 	// Should show short SHA, not empty string or "HEAD".
 	assert.Equal(t, expectedSHA, status.Branch)
@@ -162,7 +163,7 @@ func TestBatchGetGitStatus_HappyPath(t *testing.T) {
 		require.NoError(t, cmd.Run())
 	}
 
-	results := BatchGetGitStatus([]string{dir1, dir2, dir3})
+	results := BatchGetGitStatus(context.Background(), []string{dir1, dir2, dir3})
 	require.Len(t, results, 3)
 	assert.Equal(t, "https://example.com/one.git", results[0].GetOriginUrl())
 	assert.Equal(t, "https://example.com/two.git", results[1].GetOriginUrl())
@@ -179,7 +180,7 @@ func TestBatchGetGitStatus_DeduplicatesIdenticalPaths(t *testing.T) {
 	cmd := exec.Command("git", "-C", dir, "remote", "add", "origin", "https://example.com/shared.git")
 	require.NoError(t, cmd.Run())
 
-	results := BatchGetGitStatus([]string{dir, dir, dir, dir})
+	results := BatchGetGitStatus(context.Background(), []string{dir, dir, dir, dir})
 	require.Len(t, results, 4)
 	// All slots must share the identical pointer — proof that the
 	// shell-out ran once and the result was fan-out to every slot.
@@ -201,7 +202,7 @@ func TestBatchGetGitStatus_MixedDirsAndEmptyPaths(t *testing.T) {
 	require.NoError(t, exec.Command("git", "-C", repoA, "remote", "add", "origin", "https://example.com/a.git").Run())
 	require.NoError(t, exec.Command("git", "-C", repoB, "remote", "add", "origin", "https://example.com/b.git").Run())
 
-	results := BatchGetGitStatus([]string{repoA, "", repoA, repoB, ""})
+	results := BatchGetGitStatus(context.Background(), []string{repoA, "", repoA, repoB, ""})
 	require.Len(t, results, 5)
 
 	assert.NotNil(t, results[0])
@@ -223,7 +224,7 @@ func TestBatchGetGitStatus_NonGitDirsYieldNil(t *testing.T) {
 	repo := initRepo(t)
 	notGit := t.TempDir()
 
-	results := BatchGetGitStatus([]string{repo, notGit})
+	results := BatchGetGitStatus(context.Background(), []string{repo, notGit})
 	require.Len(t, results, 2)
 	assert.NotNil(t, results[0])
 	assert.Nil(t, results[1], "non-git directory should map to nil")
@@ -233,10 +234,10 @@ func TestBatchGetGitStatus_NonGitDirsYieldNil(t *testing.T) {
 // that would otherwise panic or hang if the fan-out logic assumes ≥1
 // entry.
 func TestBatchGetGitStatus_EmptyInput(t *testing.T) {
-	results := BatchGetGitStatus(nil)
+	results := BatchGetGitStatus(context.Background(), nil)
 	assert.Empty(t, results)
 
-	results = BatchGetGitStatus([]string{})
+	results = BatchGetGitStatus(context.Background(), []string{})
 	assert.Empty(t, results)
 }
 
@@ -244,9 +245,24 @@ func TestBatchGetGitStatus_EmptyInput(t *testing.T) {
 // batch of only empty-string inputs produces a slice of the correct
 // length, fully populated with nil — no git shell-outs run.
 func TestBatchGetGitStatus_AllEmptyPathsYieldNilSlice(t *testing.T) {
-	results := BatchGetGitStatus([]string{"", "", ""})
+	results := BatchGetGitStatus(context.Background(), []string{"", "", ""})
 	require.Len(t, results, 3)
 	for i, r := range results {
 		assert.Nil(t, r, "slot %d should be nil for empty-path input", i)
 	}
+}
+
+// TestGetGitStatus_HonorsCtxCancellation pins the cancellation contract
+// runAgentStartup depends on: when CloseAgent lands during the phase-1
+// "Checking Git status…" shell-out, the startup context cancels and the
+// in-flight `git` processes must not continue — GetGitStatus returns nil
+// (the failure path) and does not block past the cancel.
+func TestGetGitStatus_HonorsCtxCancellation(t *testing.T) {
+	dir := initRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before call
+
+	status := GetGitStatus(ctx, dir)
+	assert.Nil(t, status,
+		"GetGitStatus must surface cancellation as a nil result, not silently run git to completion")
 }

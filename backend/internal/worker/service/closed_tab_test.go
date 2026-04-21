@@ -323,7 +323,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	workingDir := t.TempDir()
 
 	// Start a real terminal.
-	require.NoError(t, svc.Terminals.StartTerminal(terminal.Options{
+	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
 		ID:            "term-1",
 		WorkspaceID:   "ws-1",
 		Shell:         testutil.TestShell(),

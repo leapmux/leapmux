@@ -139,7 +139,7 @@ func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("forced start failure")
 	}
 
@@ -170,7 +170,7 @@ func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	branchName := "feature/terminal-branch"
 
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("forced start failure")
 	}
 
@@ -278,7 +278,7 @@ func TestOpenTerminal_DoesNotRollBackSwitchBranchOnStartFailure(t *testing.T) {
 	run(t, repoDir, "git", "checkout", "-")
 
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("forced start failure")
 	}
 

@@ -596,7 +596,7 @@ func (s *agentOutputSink) buildStatusChange(
 		PermissionMode:        permissionMode,
 		Model:                 modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:                dbAgent.Effort,
-		GitStatus:             gitutil.GetGitStatus(dbAgent.WorkingDir),
+		GitStatus:             gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
 		AgentProvider:         s.agentProvider,
 		ExtraSettings:         loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider),
 		AvailableModels:       s.h.agents.AvailableModels(s.agentID, dbAgent.AgentProvider),

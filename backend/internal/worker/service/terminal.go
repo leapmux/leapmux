@@ -386,7 +386,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 		}
 
-		gitStatuses := gitutil.BatchGetGitStatus(gitDirs)
+		gitStatuses := gitutil.BatchGetGitStatus(bgCtx(), gitDirs)
 		for i, gs := range gitStatuses {
 			if gs != nil {
 				terminals[i].GitBranch = gs.Branch
@@ -442,7 +442,7 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 		gitDir = opts.WorkingDir
 	}
 	var gitBranch, gitOriginURL string
-	if gs := gitutil.GetGitStatus(gitDir); gs != nil {
+	if gs := gitutil.GetGitStatus(ctx, gitDir); gs != nil {
 		gitBranch = gs.Branch
 		gitOriginURL = gs.OriginUrl
 	}
@@ -454,9 +454,25 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 		gitOriginURL:   gitOriginURL,
 	})
 
-	if err := svc.startTerminal(opts, outputFn, exitFn); err != nil {
-		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", err)
-		svc.failTerminalStartup(terminalID, gm, err)
+	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
+
+	// Re-read the row so we can detect whether CloseTerminal landed
+	// during the PTY spawn: if closed_at is set, the user already asked
+	// to close the tab and runTerminalStartup must neither broadcast
+	// READY nor leave a running PTY behind. Mirror of the post-spawn
+	// close-detection in runAgentStartup (agent.go:1179-1193).
+	if dbTerm, fetchErr := svc.Queries.GetTerminal(bgCtx(), terminalID); fetchErr == nil && dbTerm.ClosedAt.Valid {
+		if startErr == nil {
+			svc.Terminals.RemoveTerminal(terminalID)
+		}
+		svc.TerminalStartup.succeed(terminalID)
+		svc.rollbackGitMode(gm)
+		return
+	}
+
+	if startErr != nil {
+		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", startErr)
+		svc.failTerminalStartup(terminalID, gm, startErr)
 		return
 	}
 	svc.persistTerminalStartupError(terminalID, "")

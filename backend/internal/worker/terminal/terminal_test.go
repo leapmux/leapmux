@@ -20,7 +20,7 @@ func TestTerminal_StartAndStop(t *testing.T) {
 	var mu sync.Mutex
 	var output []byte
 
-	term, err := Start(Options{
+	term, err := Start(context.Background(), Options{
 		ID:         "test-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -53,7 +53,7 @@ func TestTerminal_StartAndStop(t *testing.T) {
 }
 
 func TestTerminal_Resize(t *testing.T) {
-	term, err := Start(Options{
+	term, err := Start(context.Background(), Options{
 		ID:         "test-resize",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -70,7 +70,7 @@ func TestTerminal_Resize(t *testing.T) {
 }
 
 func TestTerminal_SendInputAfterStop(t *testing.T) {
-	term, err := Start(Options{
+	term, err := Start(context.Background(), Options{
 		ID:         "test-stopped",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -84,7 +84,7 @@ func TestTerminal_SendInputAfterStop(t *testing.T) {
 }
 
 func TestTerminal_IsExited(t *testing.T) {
-	term, err := Start(Options{
+	term, err := Start(context.Background(), Options{
 		ID:         "test-exited",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -102,7 +102,7 @@ func TestTerminal_IsExited(t *testing.T) {
 func TestManager_StartAndRemove(t *testing.T) {
 	m := NewManager()
 
-	err := m.StartTerminal(Options{
+	err := m.StartTerminal(context.Background(), Options{
 		ID:         "tm-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -112,7 +112,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 	assert.True(t, m.HasTerminal("tm-1"), "expected HasTerminal = true")
 
 	// Duplicate should fail.
-	err = m.StartTerminal(Options{
+	err = m.StartTerminal(context.Background(), Options{
 		ID:         "tm-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -136,7 +136,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
 	m := NewManager()
 
-	err := m.StartTerminal(Options{
+	err := m.StartTerminal(context.Background(), Options{
 		ID:         "tm-exit",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -164,7 +164,7 @@ func TestManager_ExitNotification(t *testing.T) {
 	var gotID string
 	var gotCode int
 
-	err := m.StartTerminal(Options{
+	err := m.StartTerminal(context.Background(), Options{
 		ID:         "tm-notify",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -194,7 +194,7 @@ func TestManager_StopAll(t *testing.T) {
 	m := NewManager()
 
 	for _, id := range []string{"a", "b"} {
-		err := m.StartTerminal(Options{
+		err := m.StartTerminal(context.Background(), Options{
 			ID:         id,
 			Shell:      testutil.TestShell(),
 			WorkingDir: t.TempDir(),
@@ -235,7 +235,7 @@ func TestManager_Resize_UnknownTerminal(t *testing.T) {
 
 func TestManager_Resize_SameDimensions(t *testing.T) {
 	m := NewManager()
-	err := m.StartTerminal(Options{
+	err := m.StartTerminal(context.Background(), Options{
 		ID:         "tm-resize-noop",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -260,7 +260,7 @@ func TestManager_ScreenSnapshot(t *testing.T) {
 	var mu sync.Mutex
 	var output []byte
 
-	err := m.StartTerminal(Options{
+	err := m.StartTerminal(context.Background(), Options{
 		ID:         "tm-snap",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -329,7 +329,7 @@ func TestSnapshotTerminal(t *testing.T) {
 	termID := "tm-snap-single"
 	wsID := "ws-1"
 
-	err := m.StartTerminal(Options{
+	err := m.StartTerminal(context.Background(), Options{
 		ID:          termID,
 		WorkspaceID: wsID,
 		Shell:       testutil.TestShell(),
@@ -406,7 +406,7 @@ func TestUpdateTitle(t *testing.T) {
 	wsID := "ws-title"
 
 	termID := "tm-title"
-	err := m.StartTerminal(Options{
+	err := m.StartTerminal(context.Background(), Options{
 		ID:          termID,
 		WorkspaceID: wsID,
 		Shell:       testutil.TestShell(),

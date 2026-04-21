@@ -318,7 +318,7 @@ func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 func TestOpenTerminal_PersistsStartupErrorOnFailure(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("terminal boom")
 	}
 
@@ -350,7 +350,7 @@ func TestOpenTerminal_PersistsStartupErrorOnFailure(t *testing.T) {
 // failed), so this hits the DB-only branch of ListTerminals.
 func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		return errors.New("pty no")
 	}
 

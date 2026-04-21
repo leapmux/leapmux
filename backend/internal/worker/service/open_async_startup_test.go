@@ -155,7 +155,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	// long enough for the WatchEvents catch-up replay to read the
 	// registry.
 	blocked := make(chan struct{})
-	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		<-blocked
 		return nil
 	}
@@ -209,7 +209,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	blocked := make(chan struct{})
-	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		<-blocked
 		return nil
 	}
@@ -241,7 +241,7 @@ func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	blocked := make(chan struct{})
-	svc.startTerminalFn = func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
+	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		<-blocked
 		return nil
 	}

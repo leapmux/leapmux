@@ -436,7 +436,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		for i := range agents {
 			workingDirs[i] = agents[i].WorkingDir
 		}
-		gitStatuses := gitutil.BatchGetGitStatus(workingDirs)
+		gitStatuses := gitutil.BatchGetGitStatus(bgCtx(), workingDirs)
 
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
@@ -918,7 +918,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				replayDirs[i] = s.dbAgent.WorkingDir
 			}
 		}
-		replayGitStatuses := gitutil.BatchGetGitStatus(replayDirs)
+		replayGitStatuses := gitutil.BatchGetGitStatus(bgCtx(), replayDirs)
 		for i := range replayStates {
 			replayStates[i].gitStatus = replayGitStatuses[i]
 		}
@@ -1163,7 +1163,7 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	svc.broadcastAgentStartupStatus(&dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, agentStatusDetails{
 		startupMessage: phase1Msg,
 	})
-	gitStatus := gitutil.GetGitStatus(agentOpts.WorkingDir)
+	gitStatus := gitutil.GetGitStatus(ctx, agentOpts.WorkingDir)
 
 	// Phase 2: spawn the subprocess and run the init handshake.
 	phase2Msg := "Starting " + agent.DisplayName(agentOpts.AgentProvider) + "…"
@@ -1561,7 +1561,7 @@ func (svc *Context) broadcastSettingsStatusChange(dbAgent db.Agent, extras map[s
 		PermissionMode: dbAgent.PermissionMode,
 		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:         dbAgent.Effort,
-		GitStatus:      gitutil.GetGitStatus(dbAgent.WorkingDir),
+		GitStatus:      gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
 		AgentProvider:  dbAgent.AgentProvider,
 		ExtraSettings:  extras,
 	}

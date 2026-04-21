@@ -20,8 +20,10 @@ import (
 // deduplicating identical paths so a request listing many tabs rooted at
 // the same repo only runs a single `git status` shell-out. Unique paths
 // are fanned out concurrently; results are mapped back to every position
-// that asked for that path. Empty-string entries yield nil.
-func BatchGetGitStatus(dirs []string) []*leapmuxv1.AgentGitStatus {
+// that asked for that path. Empty-string entries yield nil. The supplied
+// context is threaded into every shell-out so a caller cancelling mid-fan
+// kills in-flight git processes.
+func BatchGetGitStatus(ctx context.Context, dirs []string) []*leapmuxv1.AgentGitStatus {
 	results := make([]*leapmuxv1.AgentGitStatus, len(dirs))
 	unique := make(map[string][]int, len(dirs))
 	for i, d := range dirs {
@@ -35,7 +37,7 @@ func BatchGetGitStatus(dirs []string) []*leapmuxv1.AgentGitStatus {
 		wg.Add(1)
 		go func(dir string, indexes []int) {
 			defer wg.Done()
-			gs := GetGitStatus(dir)
+			gs := GetGitStatus(ctx, dir)
 			for _, idx := range indexes {
 				results[idx] = gs
 			}
@@ -65,28 +67,32 @@ func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
 // Best-effort: returns nil if git is not available or the path is not a git repo.
 // Failures are logged at debug level so operators can diagnose unexpected misses
 // (e.g. permission errors) without the nil return silently losing context.
-func GetGitStatus(dir string) *leapmuxv1.AgentGitStatus {
+// The supplied context is threaded into every shell-out so a caller that
+// cancels mid-call (e.g. CloseAgent landing during the async startup
+// "Checking Git status…" phase) terminates the in-flight `git status`
+// subprocess instead of waiting for it to finish.
+func GetGitStatus(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
 	status := &leapmuxv1.AgentGitStatus{}
 
 	// Try porcelain v2 first (git 2.13.2+).
-	cmd := NewGitCmd(context.Background(), "-C", dir, "status", "--porcelain=v2", "--branch")
+	cmd := NewGitCmd(ctx, "-C", dir, "status", "--porcelain=v2", "--branch")
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Debug("git status --porcelain=v2 failed, falling back to v1", "dir", dir, "error", err)
-		return getGitStatusV1(dir)
+		return getGitStatusV1(ctx, dir)
 	}
 	parseStatusV2(output, status)
 
 	// If detached, resolve to short SHA.
 	if status.Branch == "" {
-		status.Branch = getShortHEAD(dir)
+		status.Branch = getShortHEAD(ctx, dir)
 	}
 
 	// Check for stashes (separate command, not included in status output).
-	checkStash(dir, status)
+	checkStash(ctx, dir, status)
 
 	// Get the remote origin URL.
-	status.OriginUrl = GetOriginURL(dir)
+	status.OriginUrl = GetOriginURL(ctx, dir)
 
 	return status
 }
@@ -156,8 +162,8 @@ func parseXY(x, y byte, status *leapmuxv1.AgentGitStatus) {
 }
 
 // getGitStatusV1 is the fallback for git versions that don't support --porcelain=v2.
-func getGitStatusV1(dir string) *leapmuxv1.AgentGitStatus {
-	cmd := NewGitCmd(context.Background(), "-C", dir, "status", "--porcelain", "--branch")
+func getGitStatusV1(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
+	cmd := NewGitCmd(ctx, "-C", dir, "status", "--porcelain", "--branch")
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Debug("git status --porcelain failed", "dir", dir, "error", err)
@@ -220,29 +226,29 @@ func getGitStatusV1(dir string) *leapmuxv1.AgentGitStatus {
 
 	// If detached, resolve to short SHA.
 	if status.Branch == "" || status.Branch == "HEAD (no branch)" {
-		status.Branch = getShortHEAD(dir)
+		status.Branch = getShortHEAD(ctx, dir)
 	}
 
 	// Check for stashes.
-	checkStash(dir, status)
+	checkStash(ctx, dir, status)
 
 	// Get the remote origin URL.
-	status.OriginUrl = GetOriginURL(dir)
+	status.OriginUrl = GetOriginURL(ctx, dir)
 
 	return status
 }
 
 // checkStash checks if the repository has any stashed changes.
-func checkStash(dir string, status *leapmuxv1.AgentGitStatus) {
-	cmd := NewGitCmd(context.Background(), "-C", dir, "rev-parse", "--verify", "refs/stash")
+func checkStash(ctx context.Context, dir string, status *leapmuxv1.AgentGitStatus) {
+	cmd := NewGitCmd(ctx, "-C", dir, "rev-parse", "--verify", "refs/stash")
 	if err := cmd.Run(); err == nil {
 		status.Stashed = true
 	}
 }
 
 // getShortHEAD returns the short commit SHA for HEAD, or empty string on failure.
-func getShortHEAD(dir string) string {
-	cmd := NewGitCmd(context.Background(), "-C", dir, "rev-parse", "--short", "HEAD")
+func getShortHEAD(ctx context.Context, dir string) string {
+	cmd := NewGitCmd(ctx, "-C", dir, "rev-parse", "--short", "HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -252,8 +258,8 @@ func getShortHEAD(dir string) string {
 
 // GetOriginURL returns the remote origin URL for the given directory.
 // Returns an empty string if the directory is not a git repo or has no origin remote.
-func GetOriginURL(dir string) string {
-	cmd := NewGitCmd(context.Background(), "-C", dir, "config", "--get", "remote.origin.url")
+func GetOriginURL(ctx context.Context, dir string) string {
+	cmd := NewGitCmd(ctx, "-C", dir, "config", "--get", "remote.origin.url")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""

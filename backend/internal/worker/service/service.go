@@ -52,7 +52,7 @@ type Context struct {
 	RegisteredBy        string                    // User ID who registered this worker (for tunnel authorization)
 
 	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error)
-	startTerminalFn     func(terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
+	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
 
@@ -113,11 +113,11 @@ func (svc *Context) startAgent(ctx context.Context, opts agent.Options, sink age
 	return svc.Agents.StartAgent(ctx, opts, sink)
 }
 
-func (svc *Context) startTerminal(opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
+func (svc *Context) startTerminal(ctx context.Context, opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
 	if svc.startTerminalFn != nil {
-		return svc.startTerminalFn(opts, outputFn, exitFn)
+		return svc.startTerminalFn(ctx, opts, outputFn, exitFn)
 	}
-	return svc.Terminals.StartTerminal(opts, outputFn, exitFn)
+	return svc.Terminals.StartTerminal(ctx, opts, outputFn, exitFn)
 }
 
 func (svc *Context) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {

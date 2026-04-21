@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -39,8 +40,13 @@ func NewManager() *Manager {
 // ExitHandler is called when a terminal process exits.
 type ExitHandler func(terminalID string, exitCode int)
 
-// StartTerminal creates a new PTY terminal.
-func (m *Manager) StartTerminal(opts Options, outputFn OutputHandler, exitFn ExitHandler) error {
+// StartTerminal creates a new PTY terminal. The supplied context
+// governs only the spawn — once StartTerminal returns successfully,
+// the terminal's lifetime is managed by RemoveTerminal / Stop.
+// Cancelling ctx mid-spawn aborts the PTY fork (returning ctx.Err())
+// so a CloseTerminal that lands during the sync-path phase of
+// runTerminalStartup tears the nascent child down instead of leaking it.
+func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn OutputHandler, exitFn ExitHandler) error {
 	m.mu.Lock()
 	if _, exists := m.terminals[opts.ID]; exists {
 		m.mu.Unlock()
@@ -48,7 +54,7 @@ func (m *Manager) StartTerminal(opts Options, outputFn OutputHandler, exitFn Exi
 	}
 	m.mu.Unlock()
 
-	t, err := Start(opts, outputFn)
+	t, err := Start(ctx, opts, outputFn)
 	if err != nil {
 		return err
 	}
