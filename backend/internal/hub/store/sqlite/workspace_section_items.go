@@ -78,7 +78,7 @@ func (s *workspaceSectionItemStore) HasItemsBySection(ctx context.Context, secti
 	if err != nil {
 		return false, mapErr(err)
 	}
-	return n > 0, nil
+	return n, nil
 }
 
 func (s *workspaceSectionItemStore) IsInArchivedSection(ctx context.Context, p store.IsWorkspaceInArchivedSectionParams) (bool, error) {

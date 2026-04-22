@@ -1474,7 +1474,7 @@ func (svc *Context) resolveResumeSessionID(agentID, currentSessionID string, res
 		return currentSessionID
 	}
 	hasMessages, err := svc.Queries.HasUserMessages(bgCtx(), agentID)
-	if err == nil && hasMessages != 0 {
+	if err == nil && hasMessages {
 		return currentSessionID
 	}
 	return ""

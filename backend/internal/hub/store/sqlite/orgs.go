@@ -68,7 +68,7 @@ func (s *orgStore) HasAny(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, mapErr(err)
 	}
-	return ptrconv.Int64ToBool(n), nil
+	return n, nil
 }
 
 func (s *orgStore) ListAll(ctx context.Context, p store.ListAllOrgsParams) ([]store.Org, error) {

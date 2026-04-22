@@ -86,5 +86,5 @@ func (s *workspaceSectionStore) Delete(ctx context.Context, p store.DeleteWorksp
 
 func (s *workspaceSectionStore) HasDefaultForUser(ctx context.Context, userID string) (bool, error) {
 	n, err := s.conn.q.HasDefaultSectionsForUser(ctx, userID)
-	return n != 0, mapErr(err)
+	return n, mapErr(err)
 }

@@ -94,7 +94,7 @@ func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool
 	if err != nil {
 		return false, mapErr(err)
 	}
-	return v != 0, nil
+	return v, nil
 }
 
 func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error) {
@@ -105,7 +105,7 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 	if err != nil {
 		return false, mapErr(err)
 	}
-	return v != 0, nil
+	return v, nil
 }
 
 func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
@@ -127,7 +127,7 @@ func (s *userStore) HasAny(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, mapErr(err)
 	}
-	return ptrconv.Int64ToBool(n), nil
+	return n, nil
 }
 
 func (s *userStore) Count(ctx context.Context) (int64, error) {

@@ -220,7 +220,7 @@ func (h *OutputHandler) fireAutoContinue(key autoContinueKey, dueAt time.Time) {
 		slog.Error("auto-continue fire open-check failed", "agent_id", key.AgentID, "reason", key.Reason, "error", err)
 		return
 	}
-	if isOpen == 0 {
+	if !isOpen {
 		_ = h.queries.CancelAutoContinueSchedule(bgCtx(), db.CancelAutoContinueScheduleParams{
 			AgentID: key.AgentID,
 			Reason:  string(key.Reason),
