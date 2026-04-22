@@ -15,6 +15,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
@@ -604,6 +605,24 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 		return nil, errors.New("forced start failure")
 	}
 
+	// Subscribe synchronously inside the OpenAgent sync prologue — before
+	// runAgentStartup is spawned — so every phase broadcast lands on the
+	// watcher. Catch-up replay alone is racy: it only surfaces the current
+	// registry message, so if the goroutine advances to phase 1 before a
+	// post-OpenAgent WatchEvents dispatch reads the registry, the phase-0
+	// "Creating worktree" label is lost (observed on Windows CI).
+	wWatch := &testResponseWriter{channelID: "test-ch"}
+	svc.createAgentRecordFn = func(ctx context.Context, params db.CreateAgentParams) error {
+		if err := svc.Queries.CreateAgent(ctx, params); err != nil {
+			return err
+		}
+		svc.Watchers.WatchAgent(params.ID, &EventWatcher{
+			ChannelID: wWatch.channelID,
+			Sender:    channel.NewSender(wWatch),
+		})
+		return nil
+	}
+
 	repoDir := initRepo(t)
 	branchName := "feature/rollback-label"
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
@@ -619,11 +638,6 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	agentID := openResp.GetAgent().GetId()
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
-	}, wWatch)
-
 	// Drain STATUS_CHANGE broadcasts until we see the final STARTUP_FAILED.
 	require.Eventually(t, func() bool {
 		for _, s := range wWatch.streamsSnapshot() {
@@ -638,10 +652,10 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 		return false
 	}, 5*time.Second, 20*time.Millisecond, "expected STARTUP_FAILED after start failure")
 
-	// Walk the full sequence. The exact ordering is: any number of
-	// STARTING events (the UI may see phase labels in any order relative
-	// to WatchEvents catch-up) — we only require that the phase-0 label
-	// AND the rollback label both appear before the STARTUP_FAILED.
+	// Walk the full sequence. Because the watcher is subscribed before
+	// runAgentStartup spawns, every STARTING broadcast lands live; we
+	// require the phase-0 label AND the rollback label to both appear
+	// before the STARTUP_FAILED.
 	var sawPhase0, sawRollback, sawFailed bool
 	var failedError string
 	for _, s := range wWatch.streamsSnapshot() {
