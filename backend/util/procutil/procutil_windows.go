@@ -80,7 +80,7 @@ func AssignPID(pid int) (*JobObject, error) {
 		_ = windows.CloseHandle(h)
 		return nil, fmt.Errorf("OpenProcess: %w", err)
 	}
-	defer windows.CloseHandle(procHandle)
+	defer func() { _ = windows.CloseHandle(procHandle) }()
 
 	if err := windows.AssignProcessToJobObject(h, procHandle); err != nil {
 		_ = windows.CloseHandle(h)

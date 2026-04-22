@@ -54,7 +54,7 @@ func TestListen_NpipeBindsAcceptsAndRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	accepted := make(chan []byte, 1)
 	acceptErr := make(chan error, 1)
@@ -64,7 +64,7 @@ func TestListen_NpipeBindsAcceptsAndRoundTrips(t *testing.T) {
 			acceptErr <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 5)
 		if _, err := io.ReadFull(conn, buf); err != nil {
 			acceptErr <- err
@@ -77,7 +77,7 @@ func TestListen_NpipeBindsAcceptsAndRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.Write([]byte("hello")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestDialer_NpipeReachesListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	acceptDone := runAcceptLoop(t, ln)
 
 	dial, err := Dialer("npipe:" + name)
@@ -234,7 +234,7 @@ func TestDialer_NpipeAcceptsFullNTPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	acceptDone := runAcceptLoop(t, ln)
 
 	dial, err := Dialer("npipe:" + fullPipePath(name))
