@@ -33,7 +33,6 @@ jobs:
       - name: Read tool versions
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
           echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
           echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
@@ -131,11 +130,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin
-          key: go-tools-${{ runner.os }}-${{ runner.arch }}-sqlc${{ env.SQLC_VERSION }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-sqlc-${{ hashFiles('backend/go.mod') }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
 
       - name: Install tools
         run: |
-          test -x "$(go env GOPATH)/bin/sqlc" || go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${{ env.SQLC_VERSION }}
+          # sqlc is declared as a tool dep in backend/go.mod; installing from
+          # inside the module avoids the `@version`-form error caused by
+          # sqlc's own replace directives.
+          test -x "$(go env GOPATH)/bin/sqlc" || (cd backend && go install github.com/sqlc-dev/sqlc/cmd/sqlc)
           test -x "$(go env GOPATH)/bin/golangci-lint" || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v${{ env.GOLANGCI_LINT_VERSION }}
 
       - name: Generate code (proto + sqlc)
@@ -184,7 +186,6 @@ jobs:
       - name: Read tool versions
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
           echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
           echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
@@ -253,11 +254,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin
-          key: go-tools-${{ runner.os }}-${{ runner.arch }}-sqlc${{ env.SQLC_VERSION }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-sqlc-${{ hashFiles('backend/go.mod') }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
 
       - name: Install tools
         run: |
-          test -x "$(go env GOPATH)/bin/sqlc" || go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${{ env.SQLC_VERSION }}
+          # sqlc is declared as a tool dep in backend/go.mod; installing from
+          # inside the module avoids the `@version`-form error caused by
+          # sqlc's own replace directives.
+          test -x "$(go env GOPATH)/bin/sqlc" || (cd backend && go install github.com/sqlc-dev/sqlc/cmd/sqlc)
           test -x "$(go env GOPATH)/bin/golangci-lint" || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v${{ env.GOLANGCI_LINT_VERSION }}
 
       - name: Generate code (proto + sqlc)
@@ -358,7 +362,6 @@ jobs:
         shell: bash
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
           echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
           echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
@@ -438,12 +441,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin
-          key: go-tools-${{ runner.os }}-sqlc${{ env.SQLC_VERSION }}
+          key: go-tools-${{ runner.os }}-sqlc-${{ hashFiles('backend/go.mod') }}
 
       - name: Install tools
         shell: bash
         run: |
-          test -x "$(go env GOPATH)/bin/sqlc" || test -x "$(go env GOPATH)/bin/sqlc.exe" || go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${{ env.SQLC_VERSION }}
+          # sqlc is declared as a tool dep in backend/go.mod; installing from
+          # inside the module avoids the `@version`-form error caused by
+          # sqlc's own replace directives.
+          test -x "$(go env GOPATH)/bin/sqlc" || test -x "$(go env GOPATH)/bin/sqlc.exe" || (cd backend && go install github.com/sqlc-dev/sqlc/cmd/sqlc)
 
       - name: Prepare backend (generate proto + sqlc, build frontend embed)
         # Use pwsh so Git Bash's /usr/bin isn't prepended to PATH; see the
@@ -525,7 +531,6 @@ jobs:
       - name: Read tool versions and git metadata
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
           echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
           echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
           echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
@@ -549,7 +554,6 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ env.ALPINE_IMAGE }}
             BUF_VERSION=${{ env.BUF_VERSION }}
-            SQLC_VERSION=${{ env.SQLC_VERSION }}
             TASK_VERSION=${{ env.TASK_VERSION }}
             S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
             BUN_VERSION=${{ env.BUN_VERSION }}

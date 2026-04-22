@@ -31,7 +31,6 @@ jobs:
       - name: Read tool versions and git metadata
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
           echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
           echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
           echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
@@ -65,7 +64,6 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ matrix.variant == 'alpine' && env.ALPINE_IMAGE || env.UBUNTU_IMAGE }}
             BUF_VERSION=${{ env.BUF_VERSION }}
-            SQLC_VERSION=${{ env.SQLC_VERSION }}
             TASK_VERSION=${{ env.TASK_VERSION }}
             S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
             BUN_VERSION=${{ env.BUN_VERSION }}
