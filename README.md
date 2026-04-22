@@ -1,4 +1,3 @@
-[![CI](https://img.shields.io/github/actions/workflow/status/leapmux/leapmux/ci.yaml?branch=main&label=CI)](https://github.com/leapmux/leapmux/actions/workflows/ci.yaml)
 [![Release](https://img.shields.io/github/v/release/leapmux/leapmux?include_prereleases&label=release)](https://github.com/leapmux/leapmux/releases)
 [![Container](https://img.shields.io/badge/container-ghcr.io%2Fleapmux%2Fleapmux-2496ED?logo=docker&logoColor=white)](https://github.com/leapmux/leapmux/pkgs/container/leapmux)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE.md)
