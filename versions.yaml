@@ -4,8 +4,8 @@ alpine-image: alpine:3.23
 ubuntu-image: ubuntu:24.04
 ubuntu-desktop-image: ubuntu:22.04
 
-bun-version: 1.3.12
-buf-version: 1.68.1
+bun-version: 1.3.13
+buf-version: 1.68.3
 golang-version: 1.26.2
 golangci-lint-version: 2.11.4
 node-version: 24.15.0
