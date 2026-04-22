@@ -346,6 +346,17 @@ Each `dev` target generates code and builds prerequisites, then launches `mprocs
 | `task dev-solo` | Go backend (`leapmux` solo) + Bun frontend dev server | Localhost-only, no login, single-user |
 | `task dev-desktop` | Bun frontend dev server + Tauri desktop app | Desktop app development (builds sidecar first) |
 
+### Default login
+
+`task dev` requires login and bootstraps a default admin user on first launch:
+
+- **Username:** `admin`
+- **Password:** `admin123`
+
+After signing in, open the user menu (top left) → **Profile…** → **Password**, enter the current and new passwords, and click **Change Password**.
+
+`task dev-solo` runs in solo mode and does not require login. `task dev-desktop` is no-login only inside the native Tauri window.
+
 ## Development
 
 ### Building
