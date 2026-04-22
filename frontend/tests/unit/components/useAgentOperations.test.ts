@@ -6,6 +6,7 @@ import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentInfoSchema, AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -13,7 +14,7 @@ import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 
-const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string }) => Promise<CloseAgentResponse>>()
+const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
 const mockOpenAgent = vi.fn()
 const mockSendAgentRawMessage = vi.fn()
 const mockSendAgentMessage = vi.fn()
@@ -22,7 +23,7 @@ const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
-  closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string }]),
+  closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
   openAgent: (...args: unknown[]) => mockOpenAgent(...args),
   sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
   sendAgentRawMessage: (...args: unknown[]) => mockSendAgentRawMessage(...args),
@@ -417,7 +418,7 @@ describe('useAgentOperations', () => {
   })
 
   describe('handleCloseAgent', () => {
-    it('should call closeAgent RPC when workerId is available', async () => {
+    it('removes agent/tab synchronously BEFORE the close RPC resolves', async () => {
       await createRoot(async (dispose) => {
         try {
           const { agentStore, tabStore, ops } = setup()
@@ -425,12 +426,16 @@ describe('useAgentOperations', () => {
           agentStore.addAgent(agent)
           tabStore.addTab({ type: TabType.AGENT, id: 'a-1', title: 'Agent 1', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
 
-          mockCloseAgent.mockResolvedValueOnce({ worktreeCleanupPending: false, worktreeId: '' } as CloseAgentResponse)
+          // Never-resolving RPC to prove the UI mutation is synchronous.
+          mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
 
-          await ops.handleCloseAgent('a-1')
+          ops.handleCloseAgent('a-1')
 
-          expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1' })
+          // Store mutations happened synchronously.
           expect(agentStore.state.agents.find(a => a.id === 'a-1')).toBeUndefined()
+          expect(tabStore.state.tabs.find(t => t.id === 'a-1')).toBeUndefined()
+          // RPC was dispatched with KEEP as the default worktree action.
+          expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
         }
         finally {
           dispose()
@@ -438,18 +443,98 @@ describe('useAgentOperations', () => {
       })
     })
 
-    it('should skip RPC and still remove tab when workerId is missing', async () => {
+    it('passes through the worktreeAction argument', async () => {
       await createRoot(async (dispose) => {
         try {
           const { agentStore, tabStore, ops } = setup()
-          // Agent with no workerId (e.g. worker gone after restart)
+          const agent = create(AgentInfoSchema, { id: 'a-remove', workerId: 'w-1' })
+          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: 'a-remove', title: 'Agent Remove', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
+
+          mockCloseAgent.mockResolvedValueOnce({
+            result: {
+              worktreePath: '',
+              worktreeId: '',
+              failureMessage: '',
+              failureDetail: '',
+            },
+          } as CloseAgentResponse)
+
+          ops.handleCloseAgent('a-remove', WorktreeAction.REMOVE)
+          await flushMicrotasks()
+
+          expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-remove', worktreeAction: WorktreeAction.REMOVE })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('surfaces failure_message + failure_detail via toast when the RPC reports a partial failure', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, tabStore, ops } = setup()
+          const agent = create(AgentInfoSchema, { id: 'a-fail', workerId: 'w-1' })
+          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: 'a-fail', title: 'Agent Fail', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
+
+          mockCloseAgent.mockResolvedValueOnce({
+            result: {
+              worktreeId: 'wt-1',
+              worktreePath: '/some/wt',
+              failureMessage: 'Failed to remove worktree',
+              failureDetail: 'git worktree remove /some/wt: exit 128',
+            },
+          } as CloseAgentResponse)
+
+          ops.handleCloseAgent('a-fail', WorktreeAction.REMOVE)
+          await flushMicrotasks()
+
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to remove worktree: git worktree remove /some/wt: exit 128')
+          // Tab was removed synchronously — failure doesn't roll back UI.
+          expect(tabStore.state.tabs.find(t => t.id === 'a-fail')).toBeUndefined()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('surfaces a generic toast when the RPC rejects', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, tabStore, ops } = setup()
+          const agent = create(AgentInfoSchema, { id: 'a-reject', workerId: 'w-1' })
+          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: 'a-reject', title: 'Agent Reject', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
+
+          const err = new Error('network down')
+          mockCloseAgent.mockRejectedValueOnce(err)
+
+          ops.handleCloseAgent('a-reject')
+          await flushMicrotasks()
+
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to close agent', err)
+          expect(tabStore.state.tabs.find(t => t.id === 'a-reject')).toBeUndefined()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('skips RPC and still removes tab when workerId is missing', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentStore, tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-2', workerId: '' })
           agentStore.addAgent(agent)
           tabStore.addTab({ type: TabType.AGENT, id: 'a-2', title: 'Agent 2', tileId: 'tile-1', workerId: '', workingDir: '' })
 
           mockCloseAgent.mockClear()
 
-          await ops.handleCloseAgent('a-2')
+          ops.handleCloseAgent('a-2')
 
           expect(mockCloseAgent).not.toHaveBeenCalled()
           expect(agentStore.state.agents.find(a => a.id === 'a-2')).toBeUndefined()
@@ -461,14 +546,14 @@ describe('useAgentOperations', () => {
       })
     })
 
-    it('should skip RPC when agent is not found in store', async () => {
+    it('skips RPC when agent is not found in store', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
 
           mockCloseAgent.mockClear()
 
-          await ops.handleCloseAgent('nonexistent')
+          ops.handleCloseAgent('nonexistent')
 
           expect(mockCloseAgent).not.toHaveBeenCalled()
         }

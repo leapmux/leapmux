@@ -3,111 +3,35 @@
  * Measures the end-to-end latency of opening a new Claude Code agent tab
  * and produces a phase-by-phase timeline breakdown.
  *
- * Why its own fixture: we need
- *   (a) `LEAPMUX_TRACE_AGENT_STARTUP=1` so the worker emits phase markers
- *   (b) the backend stderr captured (the shared fixture drains it)
- * so we reimplement the small bits of fixtures.ts that we need.
+ * Backend stderr capture + JSON parse and the ASCII timeline renderer
+ * live in ./helpers/timingFixture.ts; this file supplies the spec-
+ * specific env (LEAPMUX_TRACE_AGENT_STARTUP) and the per-iteration DOM
+ * observation logic.
  */
-import type { Buffer } from 'node:buffer'
-import type { DevServerHandle } from './helpers/devServer'
+import type { LogLine, PhaseMark, TimingServer } from './helpers/timingFixture'
+
 import { expect, test } from '@playwright/test'
 import {
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
   openAgentViaAPI,
 } from './helpers/api'
-import { startDevServer, stopDevServer } from './helpers/devServer'
+import { stopDevServer } from './helpers/devServer'
+import { extractWorkerMarks, installRpcListeners, renderTimeline, startTimingServer } from './helpers/timingFixture'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
-
-// ──────────────────────────────────────────────
-// Phase enum & helpers
-// ──────────────────────────────────────────────
-
-interface PhaseMark { name: string, tMs: number }
-
-/**
- * Parse a single JSON log line. Returns null on non-JSON or parse error.
- * slog's JSONHandler emits one JSON object per line on stderr when not
- * attached to a TTY (which is how child_process pipes work).
- */
-function parseJsonLine(line: string): Record<string, unknown> | null {
-  const trimmed = line.trim()
-  if (!trimmed.startsWith('{'))
-    return null
-  try {
-    return JSON.parse(trimmed) as Record<string, unknown>
-  }
-  catch {
-    return null
-  }
-}
 
 /**
  * Return the agent_id of the first handler_begin marker logged after
  * the given log offset. Used by the timing test to identify the agent
  * opened by a specific click in a multi-iteration loop.
  */
-function findNewAgentId(logLines: Array<{ json: Record<string, unknown> | null }>, offset: number): string | null {
+function findNewAgentId(logLines: LogLine[], offset: number): string | null {
   for (let i = offset; i < logLines.length; i++) {
     const j = logLines[i]?.json
     if (j && j.marker === 'agent_startup_timing' && j.phase === 'handler_begin' && typeof j.agent_id === 'string')
       return j.agent_id
   }
   return null
-}
-
-// ──────────────────────────────────────────────
-// Local fixture: dev server with stderr capture + timing env var
-// ──────────────────────────────────────────────
-
-interface TimingServer extends DevServerHandle {
-  /** All backend log lines emitted since server start, parsed if JSON. */
-  logLines: Array<{ raw: string, json: Record<string, unknown> | null, rxAt: number }>
-}
-
-async function startTimingServer(): Promise<TimingServer> {
-  const logLines: TimingServer['logLines'] = []
-  const handleChunk = (chunk: Buffer) => {
-    const text = chunk.toString('utf8')
-    const now = performance.now()
-    for (const line of text.split(/\r?\n/)) {
-      if (!line)
-        continue
-      logLines.push({ raw: line, json: parseJsonLine(line), rxAt: now })
-    }
-  }
-  const handle = await startDevServer({
-    dataDirPrefix: 'leapmux-timing-e2e',
-    env: {
-      LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet',
-      LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low',
-      LEAPMUX_WORKER_NAME: 'Local',
-      LEAPMUX_TRACE_AGENT_STARTUP: '1',
-    },
-    onStdio: handleChunk,
-  })
-  return { ...handle, logLines }
-}
-
-// ──────────────────────────────────────────────
-// Timeline formatter
-// ──────────────────────────────────────────────
-
-function renderTimeline(marks: PhaseMark[]): string {
-  if (marks.length === 0)
-    return '(no marks captured)'
-  const t0 = marks[0]!.tMs
-  const nameWidth = Math.max(...marks.map(m => m.name.length))
-  const lines: string[] = []
-  lines.push(`${'phase'.padEnd(nameWidth)}  abs (ms)     Δ (ms)`)
-  lines.push(`${'-'.repeat(nameWidth)}  --------   --------`)
-  for (let i = 0; i < marks.length; i++) {
-    const m = marks[i]!
-    const abs = m.tMs - t0
-    const delta = i === 0 ? 0 : m.tMs - marks[i - 1]!.tMs
-    lines.push(`${m.name.padEnd(nameWidth)}  ${abs.toFixed(1).padStart(8)}   ${delta.toFixed(1).padStart(8)}`)
-  }
-  return lines.join('\n')
 }
 
 // ──────────────────────────────────────────────
@@ -121,7 +45,15 @@ test.describe('Claude Code agent open timing', () => {
   let srv: TimingServer
 
   test.beforeAll(async () => {
-    srv = await startTimingServer()
+    srv = await startTimingServer({
+      dataDirPrefix: 'leapmux-timing-e2e',
+      env: {
+        LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet',
+        LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low',
+        LEAPMUX_WORKER_NAME: 'Local',
+        LEAPMUX_TRACE_AGENT_STARTUP: '1',
+      },
+    })
   })
 
   test.afterAll(async () => {
@@ -154,19 +86,7 @@ test.describe('Claude Code agent open timing', () => {
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
 
-    await page.evaluate(() => {
-      interface RpcMark { type: 'rpc-send' | 'rpc-recv', method: string, at: number, ok?: boolean }
-      const w = window as unknown as { __rpcMarks?: RpcMark[] }
-      w.__rpcMarks = []
-      window.addEventListener('leapmux:rpc-send', (ev) => {
-        const d = (ev as CustomEvent<{ method: string, at: number }>).detail
-        w.__rpcMarks!.push({ type: 'rpc-send', method: d.method, at: d.at })
-      })
-      window.addEventListener('leapmux:rpc-recv', (ev) => {
-        const d = (ev as CustomEvent<{ method: string, at: number, ok: boolean }>).detail
-        w.__rpcMarks!.push({ type: 'rpc-recv', method: d.method, at: d.at, ok: d.ok })
-      })
-    })
+    await installRpcListeners(page)
 
     const runs: PhaseMark[][] = []
 
@@ -262,17 +182,17 @@ test.describe('Claude Code agent open timing', () => {
       const openSend = rpcMarks.find(m => m.type === 'rpc-send' && m.method === 'OpenAgent')
       const openRecv = rpcMarks.find(m => m.type === 'rpc-recv' && m.method === 'OpenAgent')
 
-      const newLogs = srv.logLines.slice(logsBefore)
-      const timingRows = newLogs
-        .map(l => l.json)
-        .filter((j): j is Record<string, unknown> => !!j && j.marker === 'agent_startup_timing')
-      const backendPhases = timingRows
-        .filter(r => r.agent_id === iterAgentId)
-        .map(r => ({ phase: String(r.phase), wallMs: new Date(String(r.time ?? '')).getTime() }))
-      const backendMarks: PhaseMark[] = backendPhases.map(p => ({
-        name: `worker:${p.phase}`,
-        tMs: tClickMs + (p.wallMs - clockAnchorWallMs),
-      }))
+      const backendMarks = extractWorkerMarks(
+        srv.logLines,
+        logsBefore,
+        { perf: tClickMs, wall: clockAnchorWallMs },
+        {
+          marker: 'agent_startup_timing',
+          idField: 'agent_id',
+          idValue: iterAgentId,
+          name: row => `worker:${String(row.phase)}`,
+        },
+      )
 
       const marks: PhaseMark[] = []
       marks.push({ name: 'ui:click', tMs: tClickMs })
@@ -302,7 +222,7 @@ test.describe('Claude Code agent open timing', () => {
 
       // Sanity: every expected backend phase present on iter 0.
       if (iter === 0) {
-        const seen = new Set(backendPhases.map(p => p.phase))
+        const seen = new Set(backendMarks.map(m => m.name.replace(/^worker:/, '')))
         for (const expected of [
           'handler_begin',
           'gitmode_validated',

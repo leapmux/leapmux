@@ -8,6 +8,7 @@ import {
   ListAgentsRequestSchema,
   ListAgentsResponseSchema,
 } from '../../../src/generated/leapmux/v1/agent_pb'
+import { WorktreeAction } from '../../../src/generated/leapmux/v1/common_pb'
 import {
   ForceRemoveWorktreeRequestSchema,
   ForceRemoveWorktreeResponseSchema,
@@ -17,8 +18,6 @@ import {
   KeepWorktreeResponseSchema,
   PushBranchForCloseRequestSchema,
   PushBranchForCloseResponseSchema,
-  ScheduleWorktreeDeletionRequestSchema,
-  ScheduleWorktreeDeletionResponseSchema,
 } from '../../../src/generated/leapmux/v1/git_pb'
 import {
   CloseTerminalRequestSchema,
@@ -121,8 +120,8 @@ export async function createWorkspaceWithWorktreeViaAPI(
 }
 
 /**
- * Close a terminal via E2EE channel.
- * Returns the response including worktree cleanup info.
+ * Close a terminal via E2EE channel. Pass `worktreeAction` to atomically
+ * remove the worktree after the PTY/DB cleanup (REMOVE) or keep it (KEEP).
  */
 export async function closeTerminalViaAPI(
   hubUrl: string,
@@ -131,44 +130,51 @@ export async function closeTerminalViaAPI(
   workspaceId: string,
   orgId: string,
   terminalId: string,
-): Promise<{ worktreeCleanupPending: boolean, worktreePath: string, worktreeId: string }> {
+  worktreeAction: WorktreeAction = WorktreeAction.KEEP,
+): Promise<{ worktreePath: string, worktreeId: string, failureMessage: string, failureDetail: string }> {
   const channel = await getTestChannel(hubUrl, token)
   const resp = await channel.callWorker(
     workerId,
     'CloseTerminal',
     CloseTerminalRequestSchema,
     CloseTerminalResponseSchema,
-    { workspaceId, orgId, terminalId },
+    { workspaceId, orgId, terminalId, worktreeAction },
   )
+  const result = resp.result
   return {
-    worktreeCleanupPending: resp.worktreeCleanupPending,
-    worktreePath: resp.worktreePath,
-    worktreeId: resp.worktreeId,
+    worktreePath: result?.worktreePath ?? '',
+    worktreeId: result?.worktreeId ?? '',
+    failureMessage: result?.failureMessage ?? '',
+    failureDetail: result?.failureDetail ?? '',
   }
 }
 
 /**
- * Close an agent via E2EE channel.
- * Returns the response including worktree cleanup info.
+ * Close an agent via E2EE channel. Pass `worktreeAction` to atomically
+ * remove the worktree after the process/DB cleanup (REMOVE) or keep it
+ * (KEEP).
  */
 export async function closeAgentViaAPI(
   hubUrl: string,
   token: string,
   workerId: string,
   agentId: string,
-): Promise<{ worktreeCleanupPending: boolean, worktreePath: string, worktreeId: string }> {
+  worktreeAction: WorktreeAction = WorktreeAction.KEEP,
+): Promise<{ worktreePath: string, worktreeId: string, failureMessage: string, failureDetail: string }> {
   const channel = await getTestChannel(hubUrl, token)
   const resp = await channel.callWorker(
     workerId,
     'CloseAgent',
     CloseAgentRequestSchema,
     CloseAgentResponseSchema,
-    { agentId },
+    { agentId, worktreeAction },
   )
+  const result = resp.result
   return {
-    worktreeCleanupPending: resp.worktreeCleanupPending,
-    worktreePath: resp.worktreePath,
-    worktreeId: resp.worktreeId,
+    worktreePath: result?.worktreePath ?? '',
+    worktreeId: result?.worktreeId ?? '',
+    failureMessage: result?.failureMessage ?? '',
+    failureDetail: result?.failureDetail ?? '',
   }
 }
 
@@ -306,25 +312,6 @@ export async function inspectLastTabCloseViaAPI(
     unpushedCommitCount: resp.unpushedCommitCount,
     remoteBranchMissing: resp.remoteBranchMissing,
   }
-}
-
-/**
- * Schedule worktree deletion via E2EE channel.
- */
-export async function scheduleWorktreeDeletionViaAPI(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  worktreeId: string,
-): Promise<void> {
-  const channel = await getTestChannel(hubUrl, token)
-  await channel.callWorker(
-    workerId,
-    'ScheduleWorktreeDeletion',
-    ScheduleWorktreeDeletionRequestSchema,
-    ScheduleWorktreeDeletionResponseSchema,
-    { worktreeId },
-  )
 }
 
 /**

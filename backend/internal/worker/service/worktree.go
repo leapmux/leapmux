@@ -507,18 +507,26 @@ func (svc *Context) ensureTrackedWorktree(ctx context.Context, worktreePath stri
 	return wtID, nil
 }
 
-// removeWorktreeFromDisk force-removes a worktree and deletes its branch when
-// it is no longer used by any remaining worktree.
-func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) {
+// removeWorktreeFromDisk force-removes a worktree from disk, deletes its
+// branch if no other worktree still uses it, and soft-deletes the DB row.
+//
+// The DB row is always soft-deleted so a stale entry does not block future
+// reuse of the working directory. Returns a non-nil error when the git
+// worktree-remove command failed AND the path is still on disk — callers
+// surface this so the user can clean up manually. Branch deletion
+// failures are logged but never bubbled (a retained branch is
+// recoverable; a lost DB row is not).
+func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 	ctx := bgCtx()
 	args := []string{"worktree", "remove"}
 	if force {
 		args = append(args, "--force")
 	}
 	args = append(args, wt.WorktreePath)
-	if err := gitCommand(ctx, wt.RepoRoot, args...); err != nil {
+	removeErr := gitCommand(ctx, wt.RepoRoot, args...)
+	if removeErr != nil {
 		slog.Warn("failed to remove worktree",
-			"worktree_path", wt.WorktreePath, "force", force, "error", err)
+			"worktree_path", wt.WorktreePath, "force", force, "error", removeErr)
 	}
 	if wt.BranchName != "" {
 		if inUse, err := gitutil.IsBranchInUse(wt.RepoRoot, wt.BranchName); err == nil && !inUse {
@@ -534,6 +542,16 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) {
 		slog.Warn("failed to delete worktree record",
 			"worktree_id", wt.ID, "error", err)
 	}
+	if removeErr == nil {
+		return nil
+	}
+	// git worktree-remove failed. If the path is gone anyway (user
+	// pre-deleted it, or git cleaned up partially), treat as success —
+	// nothing for the user to clean up.
+	if _, statErr := os.Stat(wt.WorktreePath); os.IsNotExist(statErr) {
+		return nil
+	}
+	return fmt.Errorf("git worktree remove %q: %w", wt.WorktreePath, removeErr)
 }
 
 func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBranch, error) {
@@ -615,28 +633,37 @@ func (svc *Context) rollbackCreatedBranch(r rollbackBranch) {
 	}
 }
 
-// unregisterTabAndCleanup removes a tab's worktree association but does not
-// delete the worktree. Deletion now requires an explicit schedule RPC.
-func (svc *Context) unregisterTabAndCleanup(tabType leapmuxv1.TabType, tabID string) {
-	ctx := bgCtx()
-
-	// Find the worktree for this tab.
-	wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+// unregisterTab drops a tab's worktree association row. Worktree
+// deletion itself is driven by the close handler when the caller
+// passed WorktreeAction_REMOVE and no other tabs remain.
+//
+// The REMOVE-close path in closeTabCommon still uses removeTabFromWorktree
+// so it can guard the delete by worktree_id (defense-in-depth against a
+// stale association). Other callers don't have the worktree in hand and
+// would pay for a GetWorktreeForTab round-trip; the bare (tab_type, tab_id)
+// delete is enough, because (tab_type, tab_id) is unique in practice.
+func (svc *Context) unregisterTab(tabType leapmuxv1.TabType, tabID string) {
+	if err := svc.Queries.DeleteWorktreeTabsByTabID(bgCtx(), db.DeleteWorktreeTabsByTabIDParams{
 		TabType: tabType,
 		TabID:   tabID,
-	})
-	if err != nil {
-		return
+	}); err != nil {
+		slog.Warn("failed to remove worktree tab",
+			"tab_type", tabType, "tab_id", tabID, "error", err)
 	}
+}
 
-	// Remove the tab association.
-	if err := svc.Queries.RemoveWorktreeTab(ctx, db.RemoveWorktreeTabParams{
-		WorktreeID: wt.ID,
+// removeTabFromWorktree drops the tab→worktree association row for a
+// caller that already holds the worktree row. Used by the REMOVE-close
+// path to avoid a second GetWorktreeForTab lookup AND to guard the
+// delete by worktree_id against a stale association.
+func (svc *Context) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, worktreeID string) {
+	if err := svc.Queries.RemoveWorktreeTab(bgCtx(), db.RemoveWorktreeTabParams{
+		WorktreeID: worktreeID,
 		TabType:    tabType,
 		TabID:      tabID,
 	}); err != nil {
 		slog.Warn("failed to remove worktree tab",
-			"worktree_id", wt.ID, "tab_id", tabID, "error", err)
+			"worktree_id", worktreeID, "tab_id", tabID, "error", err)
 	}
 }
 

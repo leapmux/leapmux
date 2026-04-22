@@ -38,7 +38,6 @@ import type {
   ListGitWorktreesResponse,
   PushBranchForCloseResponse,
   ReadGitFileResponse,
-  ScheduleWorktreeDeletionResponse,
 } from '~/generated/leapmux/v1/git_pb'
 import type {
   CloseTerminalResponse,
@@ -116,8 +115,6 @@ import {
   PushBranchForCloseResponseSchema,
   ReadGitFileRequestSchema,
   ReadGitFileResponseSchema,
-  ScheduleWorktreeDeletionRequestSchema,
-  ScheduleWorktreeDeletionResponseSchema,
 } from '~/generated/leapmux/v1/git_pb'
 import {
   CloseTerminalRequestSchema,
@@ -505,10 +502,6 @@ export function inspectLastTabClose(workerId: string, req: MessageInitShape<type
 
 export function pushBranchForClose(workerId: string, req: MessageInitShape<typeof PushBranchForCloseRequestSchema>): Promise<PushBranchForCloseResponse> {
   return callWorker(workerId, 'PushBranchForClose', PushBranchForCloseRequestSchema, PushBranchForCloseResponseSchema, req)
-}
-
-export function scheduleWorktreeDeletion(workerId: string, req: MessageInitShape<typeof ScheduleWorktreeDeletionRequestSchema>): Promise<ScheduleWorktreeDeletionResponse> {
-  return callWorker(workerId, 'ScheduleWorktreeDeletion', ScheduleWorktreeDeletionRequestSchema, ScheduleWorktreeDeletionResponseSchema, req)
 }
 
 export function forceRemoveWorktree(workerId: string, req: MessageInitShape<typeof ForceRemoveWorktreeRequestSchema>): Promise<ForceRemoveWorktreeResponse> {

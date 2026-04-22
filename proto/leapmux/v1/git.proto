@@ -70,12 +70,6 @@ message PushBranchForCloseRequest {
 
 message PushBranchForCloseResponse {}
 
-message ScheduleWorktreeDeletionRequest {
-  string worktree_id = 1;
-}
-
-message ScheduleWorktreeDeletionResponse {}
-
 message CheckWorktreeStatusResponse {
   bool has_worktree = 1;             // True if this tab is associated with a managed worktree
   bool is_last_tab = 2;             // True if this is the last tab referencing the worktree

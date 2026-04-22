@@ -25,7 +25,7 @@ import (
 // within ~200 ms — the whole point of the OpenAgent split.
 func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	released := make(chan struct{})
@@ -64,7 +64,7 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 // emits ACTIVE once startAgent eventually returns.
 func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	releaseAfter := 150 * time.Millisecond
@@ -117,7 +117,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 // the RPC returns without forking `git status`.
 func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	blocked := make(chan struct{})
@@ -155,7 +155,7 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 // catch-up replay can surface it to the just-arriving subscriber.
 func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	// Block the PTY spawn indefinitely so the terminal stays in STARTING
 	// long enough for the WatchEvents catch-up replay to read the
 	// registry.
@@ -213,7 +213,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 // label was computed from r.GetShell() before resolution.
 func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	blocked := make(chan struct{})
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		<-blocked
@@ -246,7 +246,7 @@ func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 // spawn) falls back to the generic "Starting terminal…" label.
 func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	blocked := make(chan struct{})
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
 		<-blocked
@@ -285,7 +285,7 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 // phase label via catch-up replay, not an empty string.
 func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	// Block startAgent so the goroutine settles after setting phase 2
 	// ("Starting Claude Code…") and waits there — the registry entry
@@ -352,7 +352,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 // mapping directly, race-free.
 func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	// Block startAgent briefly so the test can subscribe before ACTIVE lands.
@@ -480,7 +480,7 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 // can render branch info alongside the error.
 func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced startup failure")
@@ -528,7 +528,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	var startCalls sync.WaitGroup
@@ -599,7 +599,7 @@ func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
 // "Rolling back worktree …" then STARTUP_FAILED with the injected error.
 func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	defer drainStartups(svc)
+	defer drainAllInFlight(svc)
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced start failure")

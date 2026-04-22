@@ -164,25 +164,25 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Cancel any in-flight startup so the goroutine aborts the
-		// subprocess handshake cleanly.
-		svc.AgentStartup.cancelAndClear(agentID)
-
-		// Stop the agent process.
-		svc.Agents.StopAgent(agentID)
-
-		// Clean up per-agent output handler state.
-		svc.Output.CleanupAgent(agentID)
-
-		// Mark the agent as closed in the database.
-		if err := svc.Queries.CloseAgent(bgCtx(), agentID); err != nil {
-			slog.Error("failed to close agent in DB", "agent_id", agentID, "error", err)
-			sendInternalError(sender, "failed to close agent")
-			return
-		}
-
-		svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
-		sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{})
+		// The frontend fires this RPC as fire-and-forget after removing
+		// the tab from the UI. closeTabCommon tracks the handler on
+		// svc.Cleanup so a concurrent Shutdown can drain it, then runs
+		// the shared close-tab flow (stop → DB close → unregister →
+		// optional worktree remove). The AgentStartup goroutine's
+		// trailing rollback work is tracked separately by
+		// AgentStartup.WaitForInFlight and drained in Shutdown.
+		result := svc.closeTabCommon(
+			leapmuxv1.TabType_TAB_TYPE_AGENT,
+			agentID,
+			r.GetWorktreeAction(),
+			func() {
+				svc.AgentStartup.cancelAndClear(agentID)
+				svc.Agents.StopAgent(agentID)
+				svc.Output.CleanupAgent(agentID)
+			},
+			func() error { return svc.Queries.CloseAgent(bgCtx(), agentID) },
+		)
+		sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{Result: result})
 	})
 
 	d.Register("SendAgentMessage", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {

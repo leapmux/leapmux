@@ -124,17 +124,19 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 	return svc, d, w
 }
 
-// drainStartups joins any runAgentStartup / runTerminalStartup goroutines
-// spawned during the test. Call via `defer` immediately after
+// drainAllInFlight joins any runAgentStartup / runTerminalStartup
+// goroutines spawned during the test and waits for any in-flight close
+// handlers tracked on svc.Cleanup. Call via `defer` immediately after
 // setupTestService so it fires ahead of t.Cleanup-registered TempDir
 // removal (test-body t.TempDir cleanups run first in LIFO order, and a
 // `defer` runs even earlier — before any t.Cleanup). Without this, the
-// goroutine's trailing DB writes, git rollback, or broadcast work can
-// race the cleanup, surfacing as "sql: database is closed" warnings or
-// "directory not empty" TempDir removal failures.
-func drainStartups(svc *Context) {
+// background goroutines' trailing DB writes, git rollback, or broadcast
+// work can race the cleanup, surfacing as "sql: database is closed"
+// warnings or "directory not empty" TempDir removal failures.
+func drainAllInFlight(svc *Context) {
 	svc.AgentStartup.WaitForInFlight()
 	svc.TerminalStartup.WaitForInFlight()
+	svc.Cleanup.Wait()
 }
 
 // dispatch is a helper that marshals a request proto and dispatches it.

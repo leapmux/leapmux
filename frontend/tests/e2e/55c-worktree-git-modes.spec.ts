@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import { existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { WorktreeAction } from '../../src/generated/leapmux/v1/common_pb'
 import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
@@ -12,7 +13,6 @@ import {
   createWorkspaceWithWorktreeViaAPI,
   inspectLastTabCloseViaAPI,
   openNewWorkspaceDialog,
-  scheduleWorktreeDeletionViaAPI,
   setWorkingDir,
   waitForAgentsViaAPI,
   waitForOrgPageReady,
@@ -298,15 +298,13 @@ test.describe('Worktree Git Modes', () => {
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     const firstAgent = agents.find(a => a.id !== secondAgentId)!
     expect(firstAgent).toBeTruthy()
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
-    expect(resp.worktreeCleanupPending).toBeFalsy()
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
     expect(existsSync(worktreeDir)).toBe(true)
 
-    // Schedule deletion for the last tab, then close the second agent — worktree should be deleted.
+    // Close the last tab with WORKTREE_ACTION_REMOVE — worktree should be deleted.
     const inspect2 = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, secondAgentId)
-    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect2.worktreeId)
-    const resp2 = await closeAgentViaAPI(hubUrl, adminToken, workerId, secondAgentId)
-    expect(resp2.worktreeCleanupPending).toBeFalsy()
+    expect(inspect2.shouldPrompt).toBe(true)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, secondAgentId, WorktreeAction.REMOVE)
     await waitForPathDeleted(worktreeDir)
   })
 
@@ -330,10 +328,9 @@ test.describe('Worktree Git Modes', () => {
 
     // Close the agent.
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // Unmanaged worktree should NOT be cleaned up.
-    expect(resp.worktreeCleanupPending).toBeFalsy()
     expect(existsSync(worktreeDir)).toBe(true)
     expect(branchExists(repoDir, 'ext-branch')).toBe(true)
   })
@@ -411,15 +408,13 @@ test.describe('Worktree Git Modes', () => {
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     const firstAgent = agents.find(a => a.id !== secondAgentId)!
     expect(firstAgent).toBeTruthy()
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
-    expect(resp.worktreeCleanupPending).toBeFalsy()
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, firstAgent.id)
     expect(existsSync(worktreeDir)).toBe(true)
 
-    // Schedule deletion for the last tab, then close the second agent — worktree should be deleted.
+    // Close the last tab with WORKTREE_ACTION_REMOVE — worktree should be deleted.
     const inspect2 = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, secondAgentId)
-    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect2.worktreeId)
-    const resp2 = await closeAgentViaAPI(hubUrl, adminToken, workerId, secondAgentId)
-    expect(resp2.worktreeCleanupPending).toBeFalsy()
+    expect(inspect2.shouldPrompt).toBe(true)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, secondAgentId, WorktreeAction.REMOVE)
     await waitForPathDeleted(worktreeDir)
   })
 
@@ -441,10 +436,9 @@ test.describe('Worktree Git Modes', () => {
 
     // Close the agent.
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
-    const resp = await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     // No cleanup — unmanaged worktree should still exist.
-    expect(resp.worktreeCleanupPending).toBeFalsy()
     expect(existsSync(worktreeDir)).toBe(true)
     expect(branchExists(repoDir, 'ext-branch')).toBe(true)
   })

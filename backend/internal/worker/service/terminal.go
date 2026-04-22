@@ -197,16 +197,24 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Clear any in-flight startup entry.
-		svc.TerminalStartup.cancelAndClear(terminalID)
-
-		svc.Terminals.RemoveTerminal(terminalID)
-
-		// Soft-delete the terminal record.
-		_ = svc.Queries.CloseTerminal(bgCtx(), terminalID)
-
-		svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
-		sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{})
+		// The frontend fires this RPC as fire-and-forget after removing
+		// the tab from the UI. closeTabCommon tracks the handler on
+		// svc.Cleanup so a concurrent Shutdown can drain it, then runs
+		// the shared close-tab flow (stop → DB close → unregister →
+		// optional worktree remove). The TerminalStartup goroutine's
+		// trailing rollback work is tracked separately by
+		// TerminalStartup.WaitForInFlight and drained in Shutdown.
+		result := svc.closeTabCommon(
+			leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+			terminalID,
+			r.GetWorktreeAction(),
+			func() {
+				svc.TerminalStartup.cancelAndClear(terminalID)
+				svc.Terminals.RemoveTerminal(terminalID)
+			},
+			func() error { return svc.Queries.CloseTerminal(bgCtx(), terminalID) },
+		)
+		sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{Result: result})
 	})
 
 	// SendInput sends input data to a terminal.

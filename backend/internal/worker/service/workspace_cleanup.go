@@ -48,7 +48,7 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 			svc.Output.CleanupAgent(row)
 			_ = svc.Queries.CloseAgent(bgCtx(), row)
 
-			svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_AGENT, row)
+			svc.unregisterTab(leapmuxv1.TabType_TAB_TYPE_AGENT, row)
 		}
 
 		// 2. Close all agents (including already-closed ones) for consistency.
@@ -64,11 +64,8 @@ func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
 				"workspace_id", workspaceID, "error", err)
 		}
 		for _, ts := range terminals {
-			if svc.Terminals.HasTerminal(ts.ID) {
-				svc.Terminals.RemoveTerminal(ts.ID)
-			}
-
-			svc.unregisterTabAndCleanup(leapmuxv1.TabType_TAB_TYPE_TERMINAL, ts.ID)
+			svc.Terminals.RemoveTerminal(ts.ID)
+			svc.unregisterTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, ts.ID)
 		}
 
 		// 4. Soft-delete active terminals for the workspace.
