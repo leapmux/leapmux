@@ -157,6 +157,29 @@ jobs:
       - name: Build
         run: task build
 
+      - name: Diagnose linuxdeploy (on failure)
+        # Tauri captures linuxdeploy's stdout/stderr and silently discards
+        # them on failure, leaving only "failed to run linuxdeploy" in the
+        # log. Re-run the wrapper and the extracted AppRun directly so
+        # their real output surfaces in the CI log. Runs only if a
+        # preceding step failed, so the success path stays quiet.
+        if: failure()
+        run: |
+          set +e
+          echo "=== ~/.cache/tauri contents ==="
+          ls -la ~/.cache/tauri/
+          echo
+          echo "=== Tauri's AppImage bundle dir ==="
+          ls -la desktop/rust/target/release/bundle/appimage/ 2>/dev/null
+          echo
+          echo "=== linuxdeploy wrapper --version (exit=?) ==="
+          ~/.cache/tauri/linuxdeploy-$(uname -m).AppImage --version
+          echo "wrapper exit=$?"
+          echo
+          echo "=== extracted AppRun --list-plugins (exit=?) ==="
+          ~/.cache/tauri/linuxdeploy-extracted/AppRun --list-plugins
+          echo "AppRun exit=$?"
+
       - name: Test
         run: task test
 
