@@ -195,6 +195,36 @@ jobs:
           else
             echo "No AppDir found — Tauri didn't reach the linuxdeploy step."
           fi
+          echo
+          echo "=== Go sidecar linkage (source copy) ==="
+          src_sidecar="$(ls desktop/go/bin/leapmux-desktop-service-* 2>/dev/null | head -1)"
+          if [ -n "$src_sidecar" ]; then
+            echo "path=$src_sidecar"
+            file "$src_sidecar"
+            echo "--- readelf -l | grep INTERP ---"
+            readelf -l "$src_sidecar" 2>&1 | grep -E 'INTERP|interpreter' || echo "(no INTERP segment — static binary)"
+            echo "--- ldd output ---"
+            ldd "$src_sidecar" 2>&1
+            echo "ldd exit=$?"
+          else
+            echo "No sidecar found under desktop/go/bin/"
+          fi
+          echo
+          echo "=== Go sidecar linkage (AppDir copy) ==="
+          ad_sidecar="$(find "$appdir" -name 'leapmux-desktop-service-*' 2>/dev/null | head -1)"
+          if [ -n "$ad_sidecar" ]; then
+            echo "path=$ad_sidecar"
+            file "$ad_sidecar"
+            ldd "$ad_sidecar" 2>&1
+            echo "ldd exit=$?"
+          else
+            echo "No sidecar found inside AppDir."
+          fi
+          echo
+          echo "=== Toolchain sanity ==="
+          echo "gcc: $(command -v gcc) $(gcc --version 2>/dev/null | head -1)"
+          echo "CGO_ENABLED (go env): $(go env CGO_ENABLED)"
+          echo "/lib/ld-linux-aarch64.so.1: $(ls -la /lib/ld-linux-aarch64.so.1 2>&1 || true)"
 
       - name: Test
         run: task test
