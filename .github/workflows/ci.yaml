@@ -628,7 +628,10 @@ jobs:
           DATE=$(date -u +%Y-%m-%d)
           SHORT_SHA=${GITHUB_SHA::7}
           VERSION=$(yq '.version' versions.yaml)
-          echo "tag=prerelease-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          TAG="prerelease-${DATE}-${SHORT_SHA}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          RELEASE_URL="${REPO_URL}/releases/download/${TAG}"
 
           # Find the most recent auto-generated pre-release tag to bound
           # the changelog. Match the same strict regex the prune step
@@ -638,48 +641,52 @@ jobs:
             --jq '[.[] | select(.isPrerelease) | select(.tagName | test("^prerelease-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{7}$"))] | sort_by(.createdAt) | reverse | .[0].tagName // empty')
 
           # Write the static part of the release notes. Unquoted heredoc
-          # expands ${VERSION}/${GITHUB_SHA}; backticks are escaped so they
-          # stay literal in the markdown instead of being re-parsed.
+          # expands ${VERSION}/${GITHUB_SHA}/${REPO_URL}/${RELEASE_URL};
+          # backticks are escaped so they stay literal in the markdown
+          # instead of being re-parsed. Each filename is wrapped in a
+          # markdown link to its download URL on this release.
           cat > release-notes.md <<EOF
-          Pre-release from commit ${GITHUB_SHA}.
+          Pre-release from commit [${GITHUB_SHA}](${REPO_URL}/commit/${GITHUB_SHA}).
 
           ## Artifacts
 
           - LeapMux Desktop
             - macOS
-              - \`LeapMuxDesktop_${VERSION}_arm64.dmg\`
+              - [\`LeapMuxDesktop_${VERSION}_arm64.dmg\`](${RELEASE_URL}/LeapMuxDesktop_${VERSION}_arm64.dmg)
             - Windows
-              - \`LeapMuxDesktop_${VERSION}_x64.msi\`
+              - [\`LeapMuxDesktop_${VERSION}_x64.msi\`](${RELEASE_URL}/LeapMuxDesktop_${VERSION}_x64.msi)
             - Linux
-              - \`leapmux-desktop_${VERSION}_amd64.AppImage\`
-              - \`leapmux-desktop_${VERSION}_aarch64.AppImage\`
-              - \`leapmux-desktop_${VERSION}_amd64.deb\`
-              - \`leapmux-desktop_${VERSION}_arm64.deb\`
+              - [\`leapmux-desktop_${VERSION}_amd64.AppImage\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_amd64.AppImage)
+              - [\`leapmux-desktop_${VERSION}_aarch64.AppImage\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_aarch64.AppImage)
+              - [\`leapmux-desktop_${VERSION}_amd64.deb\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_amd64.deb)
+              - [\`leapmux-desktop_${VERSION}_arm64.deb\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_arm64.deb)
           - LeapMux Server
             - macOS
-              - \`leapmux_${VERSION}_darwin_arm64.tar.gz\`
+              - [\`leapmux_${VERSION}_darwin_arm64.tar.gz\`](${RELEASE_URL}/leapmux_${VERSION}_darwin_arm64.tar.gz)
             - Windows
-              - \`leapmux_${VERSION}_windows_amd64.zip\`
+              - [\`leapmux_${VERSION}_windows_amd64.zip\`](${RELEASE_URL}/leapmux_${VERSION}_windows_amd64.zip)
             - Linux
-              - \`leapmux_${VERSION}_linux_amd64.tar.gz\`
-              - \`leapmux_${VERSION}_linux_arm64.tar.gz\`
+              - [\`leapmux_${VERSION}_linux_amd64.tar.gz\`](${RELEASE_URL}/leapmux_${VERSION}_linux_amd64.tar.gz)
+              - [\`leapmux_${VERSION}_linux_arm64.tar.gz\`](${RELEASE_URL}/leapmux_${VERSION}_linux_arm64.tar.gz)
           EOF
 
           # Append the changelog. Write the commit list via `git log` output
           # appended raw — avoids running commit subjects through another
           # round of shell parsing, so subjects containing backticks or
-          # dollar signs stay intact in the rendered markdown.
+          # dollar signs stay intact in the rendered markdown. Each
+          # abbreviated hash is wrapped in a markdown link to the commit
+          # on this repo (using the full %H SHA in the URL).
           {
             echo
             if [ -n "$PREV_TAG" ] && git rev-parse --verify "$PREV_TAG" >/dev/null 2>&1; then
               echo "## Changes since \`${PREV_TAG}\`"
               echo
-              git log --pretty=format:'- %s (%h)' "${PREV_TAG}..HEAD"
+              git log --pretty=format:"- [\`%h\`](${REPO_URL}/commit/%H) %s" "${PREV_TAG}..HEAD"
               echo
             else
               echo "## Recent changes"
               echo
-              git log --pretty=format:'- %s (%h)' -20
+              git log --pretty=format:"- [\`%h\`](${REPO_URL}/commit/%H) %s" -20
               echo
             fi
           } >> release-notes.md
