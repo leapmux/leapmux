@@ -506,8 +506,13 @@ func TestScheduleWorktreeDeletion_ExternalTrackedWorktreeDeletes(t *testing.T) {
 	require.NoError(t, err)
 	waitForPathToDisappear(t, wtDir)
 
-	_, err = gitOutput(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/external-tracked")
-	require.Error(t, err)
+	// removeWorktreeFromDisk deletes the branch after removing the worktree
+	// directory, so the directory can be gone before `git branch -D` runs.
+	// Poll for the branch deletion rather than asserting immediately.
+	require.Eventually(t, func() bool {
+		_, err := gitOutput(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/external-tracked")
+		return err != nil
+	}, 5*time.Second, 100*time.Millisecond)
 }
 
 func TestScheduleWorktreeDeletion_RejectsMultipleOpenTabs(t *testing.T) {
