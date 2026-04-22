@@ -11,8 +11,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
+  linux:
+    # UBUNTU VERSION: the `ubuntu-24.04` literal below is the single source of
+    # truth for the Linux CI base image. Bump it here when moving to a newer
+    # Ubuntu release; no other occurrence exists in this workflow.
+    runs-on: ubuntu-24.04${{ matrix.runner_suffix }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner_suffix: ''
+          - arch: arm64
+            runner_suffix: '-arm'
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +45,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .apt-cache
-          key: apt-${{ runner.os }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/workflows/ci.yaml') }}
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/workflows/ci.yaml') }}
 
       - name: Configure APT cache directories
         run: |
@@ -87,8 +98,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('frontend/bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Cargo dependencies
         uses: actions/cache@v4
@@ -97,14 +108,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             desktop/rust/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Tauri downloads
         uses: actions/cache@v4
         with:
           path: ~/.cache/tauri
-          key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
+          key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
 
       - name: Setup buf
         uses: bufbuild/buf-setup-action@v1
@@ -120,7 +131,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin
-          key: go-tools-${{ runner.os }}-sqlc${{ env.SQLC_VERSION }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-sqlc${{ env.SQLC_VERSION }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
 
       - name: Install tools
         run: |
@@ -142,7 +153,184 @@ jobs:
       - name: Test
         run: task test
 
-  ci-windows:
+      - name: Package CLI server tarball
+        run: |
+          VERSION=$(yq '.version' versions.yaml)
+          DIR="leapmux_${VERSION}_linux_${{ matrix.arch }}"
+          mkdir -p "dist/${DIR}"
+          cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
+          tar -czf "${DIR}.tar.gz" -C dist "${DIR}"
+
+      - name: Upload release artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-${{ matrix.arch }}
+          path: |
+            leapmux_*_linux_${{ matrix.arch }}.tar.gz
+            leapmux-desktop*.AppImage
+            leapmux-desktop*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive cache epoch
+        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+
+      - name: Read tool versions
+        run: |
+          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
+          echo "SQLC_VERSION=$(yq '.sqlc-version' versions.yaml)" >> $GITHUB_ENV
+          echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
+          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
+          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
+          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
+          echo "RUST_VERSION=$(yq '.rust-version' versions.yaml)" >> $GITHUB_ENV
+          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache-dependency-path: |
+            backend/go.sum
+            desktop/go/go.sum
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/rust/target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache Tauri downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/tauri
+          key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+
+      - name: Setup buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: ${{ env.TASK_VERSION }}
+
+      - name: Cache Go tool binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-sqlc${{ env.SQLC_VERSION }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: Install tools
+        run: |
+          test -x "$(go env GOPATH)/bin/sqlc" || go install github.com/sqlc-dev/sqlc/cmd/sqlc@v${{ env.SQLC_VERSION }}
+          test -x "$(go env GOPATH)/bin/golangci-lint" || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: Generate code (proto + sqlc)
+        run: task generate
+
+      - name: Install frontend dependencies
+        run: task prepare-frontend
+
+      - name: Lint
+        run: task lint
+
+      - name: Backend tests (Docker-free subset)
+        working-directory: backend
+        run: |
+          # Mirrors the Windows job's scope: excludes
+          # hub/store/{cockroachdb,mysql,postgres,tidb,yugabytedb} which require
+          # Docker (testcontainers) and are not part of the macOS desktop
+          # runtime.
+          go test -tags integration -timeout 10m \
+            ./cmd/... \
+            ./channelwire/... \
+            ./hub/... \
+            ./internal/config/... \
+            ./internal/hub/auth/... \
+            ./internal/hub/bootstrap/... \
+            ./internal/hub/channelmgr/... \
+            ./internal/hub/cleanup/... \
+            ./internal/hub/config/... \
+            ./internal/hub/keystore/... \
+            ./internal/hub/layout/... \
+            ./internal/hub/oauth/... \
+            ./internal/hub/password/... \
+            ./internal/hub/service/... \
+            ./internal/hub/store/sqlite/... \
+            ./internal/hub/store/sqlutil/... \
+            ./internal/hub/workermgr/... \
+            ./internal/logging/... \
+            ./internal/metrics/... \
+            ./internal/noise/... \
+            ./internal/util/... \
+            ./internal/worker/... \
+            ./locallisten/... \
+            ./solo/... \
+            ./spautil/... \
+            ./tunnel/... \
+            ./worker/...
+
+      - name: Build
+        # MACOS_CODESIGN_IDENTITY is intentionally left unset; the Taskfile
+        # falls back to ad-hoc signing (Taskfile.yaml:308-314). Real notarized
+        # signing for public release is a separate follow-up.
+        run: task build
+
+      - name: Package CLI server tarball
+        run: |
+          VERSION=$(yq '.version' versions.yaml)
+          DIR="leapmux_${VERSION}_darwin_arm64"
+          mkdir -p "dist/${DIR}"
+          cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
+          tar -czf "${DIR}.tar.gz" -C dist "${DIR}"
+
+      - name: Upload release artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: |
+            leapmux_*_darwin_arm64.tar.gz
+            LeapMuxDesktop_*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -308,6 +496,26 @@ jobs:
         shell: pwsh
         run: task build
 
+      - name: Package CLI server zip
+        shell: pwsh
+        run: |
+          $version = (yq '.version' versions.yaml)
+          $dir = "leapmux_${version}_windows_amd64"
+          New-Item -ItemType Directory -Path "dist/$dir" -Force | Out-Null
+          Copy-Item leapmux.exe,LICENSE.md,NOTICE.md "dist/$dir"
+          Compress-Archive -Path "dist/$dir" -DestinationPath "${dir}.zip" -Force
+
+      - name: Upload release artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: |
+            leapmux_*_windows_amd64.zip
+            LeapMuxDesktop_*.msi
+          if-no-files-found: error
+          retention-days: 7
+
   docker:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -352,3 +560,79 @@ jobs:
             COMMIT_TIME=${{ env.COMMIT_TIME }}
           cache-from: type=gha,scope=alpine
           cache-to: type=gha,mode=max,scope=ci-docker
+
+  prerelease:
+    needs: [linux, macos, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: Compute tag and write release notes
+        id: meta
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          SHORT_SHA=${GITHUB_SHA::7}
+          VERSION=$(yq '.version' versions.yaml)
+          echo "tag=${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          # Write notes to a file rather than a GITHUB_OUTPUT value so backticks
+          # in the markdown aren't re-parsed as command substitution when the
+          # notes string is later interpolated into a shell command.
+          cat > release-notes.md <<EOF
+          Pre-release from commit ${GITHUB_SHA}.
+
+          ## Artifacts
+
+          - \`leapmux_${VERSION}_linux_amd64.tar.gz\` — LeapMux server binary for Linux (x86_64), with LICENSE.md and NOTICE.md.
+          - \`leapmux_${VERSION}_linux_arm64.tar.gz\` — LeapMux server binary for Linux (ARM64), with LICENSE.md and NOTICE.md.
+          - \`leapmux_${VERSION}_darwin_arm64.tar.gz\` — LeapMux server binary for macOS (Apple Silicon), with LICENSE.md and NOTICE.md.
+          - \`leapmux_${VERSION}_windows_amd64.zip\` — LeapMux server binary for Windows (x86_64), with LICENSE.md and NOTICE.md.
+          - \`leapmux-desktop_*_amd64.AppImage\` — LeapMux Desktop portable AppImage for Linux (x86_64).
+          - \`leapmux-desktop_*_arm64.AppImage\` — LeapMux Desktop portable AppImage for Linux (ARM64).
+          - \`leapmux-desktop_*_amd64.deb\` — LeapMux Desktop .deb package for Debian/Ubuntu (x86_64).
+          - \`leapmux-desktop_*_arm64.deb\` — LeapMux Desktop .deb package for Debian/Ubuntu (ARM64).
+          - \`LeapMuxDesktop_*_aarch64.dmg\` — LeapMux Desktop disk image for macOS (Apple Silicon).
+          - \`LeapMuxDesktop_*_x64_en-US.msi\` — LeapMux Desktop MSI installer for Windows (x86_64).
+          EOF
+
+      - name: Create pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "${{ steps.meta.outputs.tag }}" \
+            --notes-file release-notes.md \
+            artifacts/*.tar.gz \
+            artifacts/*.zip \
+            artifacts/*.AppImage \
+            artifacts/*.deb \
+            artifacts/*.dmg \
+            artifacts/*.msi
+
+      - name: Prune old pre-releases (keep latest 3)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Filter to auto-generated prereleases (isPrerelease=true AND tag
+          # matches YYYY-MM-DD-<7hexsha>), so manual releases from the
+          # `Release` workflow (tags like `v1.2.3`) are never touched. Sort
+          # newest first, drop the first 3, delete the rest (tag + release).
+          gh release list --limit 100 \
+            --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease) | select(.tagName | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{7}$"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
+            | while read -r tag; do
+                [ -n "$tag" ] || continue
+                echo "Deleting old pre-release: $tag"
+                gh release delete "$tag" --yes --cleanup-tag
+              done
