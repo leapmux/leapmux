@@ -85,7 +85,23 @@ node "${SCRIPT_DIR}/generate-dsstore.mjs" \
 # -- 4. Finalize: unmount and convert to compressed. --
 chmod -Rf go-w "${MOUNT_POINT}" 2>/dev/null || true
 sync
-hdiutil detach "${DEVICE}" -quiet
+
+# Retry detach: mds/Spotlight briefly holds the volume after the .DS_Store
+# write, causing `hdiutil detach` to exit 16 ("Resource busy"). Wait and
+# retry a few times, then fall back to -force so we don't block the build
+# on a transient lock — we've already sync'd, so forced detach is safe.
+for attempt in 1 2 3 4 5; do
+  if hdiutil detach "${DEVICE}" -quiet; then
+    break
+  fi
+  if [ "${attempt}" -eq 5 ]; then
+    echo "create-dmg: detach still busy after ${attempt} attempts; forcing." >&2
+    hdiutil detach "${DEVICE}" -force -quiet
+    break
+  fi
+  echo "create-dmg: detach attempt ${attempt} busy; retrying in ${attempt}s..." >&2
+  sleep "${attempt}"
+done
 sleep 1
 
 rm -f "${OUTPUT_DMG}"

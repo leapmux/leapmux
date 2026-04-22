@@ -584,7 +584,13 @@ tasks:
         BIN="./bin/leapmux-desktop-service-${TARGET}{{if eq OS "windows"}}.exe{{end}}"
         # -H=windowsgui links the sidecar for the Windows GUI subsystem so
         # spawning it from the Tauri shell doesn't pop up a console window.
-        cd desktop/go && go build -ldflags "{{.VERSION_LDFLAGS}}{{if eq OS "windows"}} -H=windowsgui{{end}}" -o "${BIN}" .
+        # -buildmode=pie on Linux produces a shared-object-style ELF whose
+        # layout patchelf (run by linuxdeploy against every ELF in the
+        # AppDir) can rewrite without corruption. Non-PIE Go binaries get
+        # subtly mangled on aarch64 — the .note.go.buildid section gets
+        # dropped and ldd then exits 1 silently, which linuxdeploy treats
+        # as a hard failure ("Failed to run ldd: exited with code 1").
+        cd desktop/go && go build {{if eq OS "linux"}}-buildmode=pie {{end}}-ldflags "{{.VERSION_LDFLAGS}}{{if eq OS "windows"}} -H=windowsgui{{end}}" -o "${BIN}" .
 
   # --- Docker ---
 
