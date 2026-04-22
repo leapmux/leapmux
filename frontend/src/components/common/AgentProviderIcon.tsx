@@ -1,3 +1,7 @@
+// The agent brand-mark SVG paths below (Claude Code, Codex, Gemini CLI,
+// OpenCode, GitHub Copilot, Goose, Kilo, Cursor) are derived from the
+// @lobehub/icons collection (https://github.com/lobehub/lobe-icons), MIT-
+// licensed. See NOTICE.md for the full license text.
 import type { JSX } from 'solid-js'
 import Bot from 'lucide-solid/icons/bot'
 import { createUniqueId, Match, Switch } from 'solid-js'

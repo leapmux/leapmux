@@ -8,6 +8,7 @@
 //   - Go modules (via go.work workspace: backend + desktop/go)
 //   - Rust crates (desktop/rust/Cargo.lock)
 //   - JavaScript runtime dependencies (frontend/node_modules)
+//   - Manually vendored assets/code listed under scripts/license-overrides/extra/
 
 import process from 'node:process'
 import { execSync } from 'node:child_process'
@@ -20,6 +21,7 @@ const DESKTOP_RUST = join(ROOT, 'desktop/rust')
 const LICENSE_OVERRIDES_GO = join(ROOT, 'scripts/license-overrides/go')
 const LICENSE_OVERRIDES_RUST = join(ROOT, 'scripts/license-overrides/rust')
 const LICENSE_OVERRIDES_JS = join(ROOT, 'scripts/license-overrides/js')
+const LICENSE_EXTRAS = join(ROOT, 'scripts/license-overrides/extra')
 const CARGO_REGISTRY = join(process.env.HOME ?? '', '.cargo/registry/src/index.crates.io-1949cf8c6b5b557f')
 const RUST_SPDX_LICENSE_FILES = {
   'Apache-2.0': join(CARGO_REGISTRY, 'anyhow-1.0.102/LICENSE-APACHE'),
@@ -89,6 +91,12 @@ function jsHeading(dep) {
 /** Format a Rust dependency heading with license name. */
 function rustHeading(dep) {
   return dep.license ? `${dep.name} ${dep.version} (${dep.license})` : `${dep.name} ${dep.version}`
+}
+
+/** Format an extra-entry heading. Version is optional. */
+function extraHeading(dep) {
+  const base = dep.version ? `${dep.name} ${dep.version}` : dep.name
+  return dep.license ? `${base} (${dep.license})` : base
 }
 
 function collectRustSpdxTexts(licenseExpression) {
@@ -366,10 +374,81 @@ function collectJsDeps() {
 }
 
 // ---------------------------------------------------------------------------
+// Vendored / manually listed dependencies
+// ---------------------------------------------------------------------------
+//
+// Each subdirectory of scripts/license-overrides/extra/ describes one
+// third-party item that is not tracked by any package manager — typically
+// because its source was copy-pasted or vendored into the repo (e.g. SVG
+// path data adapted from an icon pack, or JSON assets fetched via a bespoke
+// download step).
+//
+// Layout:
+//   scripts/license-overrides/extra/<slug>/
+//     metadata.json   — { "name", "license", "version"?, "url"? }
+//     LICENSE         — full license text (or any file matching LICENSE_NAMES_RE)
+
+function collectExtraDeps() {
+  /** @type {Array<{name: string, version: string | null, license: string | null, url: string | null, licenseText: string}>} */
+  const deps = []
+  const warnings = []
+  const errors = []
+
+  if (!existsSync(LICENSE_EXTRAS)) {
+    return { deps, warnings, errors }
+  }
+
+  for (const entry of readdirSync(LICENSE_EXTRAS, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    const dir = join(LICENSE_EXTRAS, entry.name)
+    const metaPath = join(dir, 'metadata.json')
+
+    if (!existsSync(metaPath)) {
+      errors.push(`Extra: ${entry.name} — missing metadata.json`)
+      continue
+    }
+
+    let meta
+    try {
+      meta = JSON.parse(readFileSync(metaPath, 'utf-8'))
+    } catch (err) {
+      errors.push(`Extra: ${entry.name} — invalid metadata.json: ${err.message}`)
+      continue
+    }
+
+    if (typeof meta.name !== 'string' || meta.name.length === 0) {
+      errors.push(`Extra: ${entry.name} — metadata.json is missing required field "name"`)
+      continue
+    }
+    if (typeof meta.license !== 'string' || meta.license.length === 0) {
+      errors.push(`Extra: ${entry.name} — metadata.json is missing required field "license"`)
+      continue
+    }
+
+    const licFile = findLicenseFile(dir, dir)
+    if (!licFile) {
+      errors.push(`Extra: ${entry.name} — no license file found in ${dir}`)
+      continue
+    }
+
+    deps.push({
+      name: meta.name,
+      version: typeof meta.version === 'string' && meta.version.length > 0 ? meta.version : null,
+      license: meta.license,
+      url: typeof meta.url === 'string' && meta.url.length > 0 ? meta.url : null,
+      licenseText: normalizeLicenseText(readFileSync(licFile, 'utf-8')),
+    })
+  }
+
+  deps.sort((a, b) => a.name.localeCompare(b.name))
+  return { deps, warnings, errors }
+}
+
+// ---------------------------------------------------------------------------
 // Generate NOTICE.md
 // ---------------------------------------------------------------------------
 
-function buildMarkdown(goDeps, rustDeps, jsDeps) {
+function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
   const lines = []
 
   lines.push('# Third-Party Licenses')
@@ -405,6 +484,15 @@ function buildMarkdown(goDeps, rustDeps, jsDeps) {
     lines.push('')
     for (const dep of jsDeps) {
       const heading = jsHeading(dep)
+      lines.push(`- [${heading}](#${toAnchor(heading)})`)
+    }
+    lines.push('')
+  }
+  if (extraDeps.length > 0) {
+    lines.push('### Other Third-Party Notices')
+    lines.push('')
+    for (const dep of extraDeps) {
+      const heading = extraHeading(dep)
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
@@ -451,6 +539,30 @@ function buildMarkdown(goDeps, rustDeps, jsDeps) {
     for (const dep of jsDeps) {
       lines.push(`### ${jsHeading(dep)}`)
       lines.push('')
+      lines.push('```')
+      lines.push(dep.licenseText)
+      lines.push('```')
+      lines.push('')
+    }
+  }
+
+  // Other third-party notices (vendored / manually listed)
+  if (extraDeps.length > 0) {
+    lines.push('---')
+    lines.push('')
+    lines.push('## Other Third-Party Notices')
+    lines.push('')
+    lines.push('The following items are not tracked by any package manager — their')
+    lines.push('sources were copied or adapted into this repository. They are listed')
+    lines.push('separately to make their provenance explicit.')
+    lines.push('')
+    for (const dep of extraDeps) {
+      lines.push(`### ${extraHeading(dep)}`)
+      lines.push('')
+      if (dep.url) {
+        lines.push(`Source: <${dep.url}>`)
+        lines.push('')
+      }
       lines.push('```')
       lines.push(dep.licenseText)
       lines.push('```')
@@ -571,8 +683,9 @@ async function generateNotice() {
   const go = collectGoDeps()
   const rust = collectRustDeps()
   const js = collectJsDeps()
-  const allWarnings = [...go.warnings, ...rust.warnings, ...js.warnings]
-  const allErrors = [...go.errors, ...rust.errors, ...js.errors]
+  const extra = collectExtraDeps()
+  const allWarnings = [...go.warnings, ...rust.warnings, ...js.warnings, ...extra.warnings]
+  const allErrors = [...go.errors, ...rust.errors, ...js.errors, ...extra.errors]
 
   if (allWarnings.length > 0) {
     console.warn('\nWarnings:')
@@ -587,7 +700,7 @@ async function generateNotice() {
     process.exit(1)
   }
 
-  const markdown = buildMarkdown(go.deps, rust.deps, js.deps)
+  const markdown = buildMarkdown(go.deps, rust.deps, js.deps, extra.deps)
 
   const mdPath = join(ROOT, 'NOTICE.md')
   writeFileSync(mdPath, markdown, 'utf-8')
@@ -599,7 +712,7 @@ async function generateNotice() {
   writeFileSync(htmlPath, html, 'utf-8')
   console.log(`✓ Written ${htmlPath}`)
 
-  console.log(`  (${go.deps.length} Go + ${rust.deps.length} Rust + ${js.deps.length} JS dependencies)`)
+  console.log(`  (${go.deps.length} Go + ${rust.deps.length} Rust + ${js.deps.length} JS + ${extra.deps.length} extra dependencies)`)
 }
 
 await generateNotice()
