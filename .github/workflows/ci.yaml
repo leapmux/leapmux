@@ -245,6 +245,13 @@ jobs:
         with:
           version: ${{ env.BUF_VERSION }}
 
+      - name: Setup protoc
+        # Tauri/Rust's prost-build invokes protoc directly; the Linux job
+        # gets it from `apt install protobuf-compiler`.
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Task
         uses: arduino/setup-task@v2
         with:
@@ -587,7 +594,7 @@ jobs:
           DATE=$(date -u +%Y-%m-%d)
           SHORT_SHA=${GITHUB_SHA::7}
           VERSION=$(yq '.version' versions.yaml)
-          echo "tag=${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=prerelease-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           # Write notes to a file rather than a GITHUB_OUTPUT value so backticks
           # in the markdown aren't re-parsed as command substitution when the
           # notes string is later interpolated into a shell command.
@@ -629,12 +636,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Filter to auto-generated prereleases (isPrerelease=true AND tag
-          # matches YYYY-MM-DD-<7hexsha>), so manual releases from the
-          # `Release` workflow (tags like `v1.2.3`) are never touched. Sort
-          # newest first, drop the first 3, delete the rest (tag + release).
+          # matches prerelease-YYYY-MM-DD-<7hexsha>), so manual releases from
+          # the `Release` workflow (tags like `v1.2.3`) are never touched.
+          # Sort newest first, drop the first 3, delete the rest
+          # (tag + release).
           gh release list --limit 100 \
             --json tagName,isPrerelease,createdAt \
-            --jq '[.[] | select(.isPrerelease) | select(.tagName | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{7}$"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
+            --jq '[.[] | select(.isPrerelease) | select(.tagName | test("^prerelease-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{7}$"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
             | while read -r tag; do
                 [ -n "$tag" ] || continue
                 echo "Deleting old pre-release: $tag"

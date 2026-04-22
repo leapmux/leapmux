@@ -12,12 +12,17 @@
 #
 set -euo pipefail
 
+# linuxdeploy ships arch-specific AppImages. `uname -m` returns `x86_64` on
+# Intel/AMD hosts and `aarch64` on 64-bit ARM — matching the asset naming on
+# tauri-apps/binary-releases.
+ARCH="$(uname -m)"
+
 CACHE_DIR="${HOME}/.cache/tauri"
-APPIMAGE="${CACHE_DIR}/linuxdeploy-x86_64.AppImage"
+APPIMAGE="${CACHE_DIR}/linuxdeploy-${ARCH}.AppImage"
 EXTRACTED="${CACHE_DIR}/linuxdeploy-extracted"
 GTK_PLUGIN="${CACHE_DIR}/linuxdeploy-plugin-gtk.sh"
 
-LINUXDEPLOY_URL="https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage"
+LINUXDEPLOY_URL="https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-${ARCH}.AppImage"
 GTK_PLUGIN_URL="https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh"
 
 # Download linuxdeploy if not cached yet.
