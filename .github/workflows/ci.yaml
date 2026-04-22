@@ -646,7 +646,7 @@ jobs:
           # instead of being re-parsed. Each filename is wrapped in a
           # markdown link to its download URL on this release.
           cat > release-notes.md <<EOF
-          Pre-release from commit [${GITHUB_SHA}](${REPO_URL}/commit/${GITHUB_SHA}).
+          Pre-release from commit [\`${SHORT_SHA}\`](${REPO_URL}/commit/${GITHUB_SHA}).
 
           ## Artifacts
 
