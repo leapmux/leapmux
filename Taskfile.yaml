@@ -391,16 +391,26 @@ tasks:
       # ("LeapMux Desktop" — with a space), regardless of our mainBinaryName
       # override. Copy with a space-stripping rename so we ship spaceless
       # filenames. The WiX bundler additionally appends "_en-US"; strip
-      # that too. We cd into the bundle dir first so the glob expands to
-      # bare filenames: on Windows, mvdan/sh expands globs with directory
-      # segments to native backslash paths, and the resulting behavior of
-      # `${##*/}` varies with the parent shell (bash vs PowerShell).
+      # that too. Both bundlers also embed whatever version we passed to
+      # `tauri build` — which is {{.VERSION}} with "-dev" stripped, since
+      # WiX's ProductVersion rejects semver prerelease tags — so re-insert
+      # the full {{.VERSION}} in the output filename to match the other
+      # desktop bundles. The MSI's internal ProductVersion and the NSIS
+      # installer's internal version string stay at the stripped form;
+      # that's a Windows Installer / NSIS limitation we can't work around,
+      # but the filename is what users download. We cd into the bundle
+      # dir first so the glob expands to bare filenames: on Windows,
+      # mvdan/sh expands globs with directory segments to native backslash
+      # paths, and the resulting behavior of `${##*/}` varies with the
+      # parent shell (bash vs PowerShell).
       - |
         repo_root="$(pwd)"
         cd desktop/rust/target/release/bundle/nsis
         for src in LeapMux*-setup.exe; do
           [ -e "$src" ] || continue
-          cp -f "$src" "$repo_root/${src// /}"
+          dest="${src// /}"
+          dest="${dest/_{{.VERSION | replace "-dev" ""}}_/_{{.VERSION}}_}"
+          cp -f "$src" "$repo_root/$dest"
         done
       - |
         repo_root="$(pwd)"
@@ -409,6 +419,7 @@ tasks:
           [ -e "$src" ] || continue
           dest="${src// /}"
           dest="${dest/_en-US/}"
+          dest="${dest/_{{.VERSION | replace "-dev" ""}}_/_{{.VERSION}}_}"
           cp -f "$src" "$repo_root/$dest"
         done
 

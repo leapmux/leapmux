@@ -645,12 +645,12 @@ jobs:
 
           ## Artifacts
 
-          - \`LeapMuxDesktop_*_aarch64.dmg\` — LeapMux Desktop disk image for macOS (Apple Silicon)
-          - \`LeapMuxDesktop_*_x64_en-US.msi\` — LeapMux Desktop MSI installer for Windows (x86_64)
-          - \`leapmux-desktop_*_amd64.AppImage\` — LeapMux Desktop portable AppImage for Linux (x86_64)
-          - \`leapmux-desktop_*_arm64.AppImage\` — LeapMux Desktop portable AppImage for Linux (ARM64)
-          - \`leapmux-desktop_*_amd64.deb\` — LeapMux Desktop .deb package for Debian/Ubuntu (x86_64)
-          - \`leapmux-desktop_*_arm64.deb\` — LeapMux Desktop .deb package for Debian/Ubuntu (ARM64)
+          - \`LeapMuxDesktop_${VERSION}_arm64.dmg\` — LeapMux Desktop disk image for macOS (Apple Silicon)
+          - \`LeapMuxDesktop_${VERSION}_x64.msi\` — LeapMux Desktop MSI installer for Windows (x86_64)
+          - \`leapmux-desktop_${VERSION}_amd64.AppImage\` — LeapMux Desktop portable AppImage for Linux (x86_64)
+          - \`leapmux-desktop_${VERSION}_aarch64.AppImage\` — LeapMux Desktop portable AppImage for Linux (ARM64)
+          - \`leapmux-desktop_${VERSION}_amd64.deb\` — LeapMux Desktop .deb package for Debian/Ubuntu (x86_64)
+          - \`leapmux-desktop_${VERSION}_arm64.deb\` — LeapMux Desktop .deb package for Debian/Ubuntu (ARM64)
           - \`leapmux_${VERSION}_darwin_arm64.tar.gz\` — LeapMux Server binary for macOS (Apple Silicon)
           - \`leapmux_${VERSION}_windows_amd64.zip\` — LeapMux Server binary for Windows (x86_64)
           - \`leapmux_${VERSION}_linux_amd64.tar.gz\` — LeapMux Server binary for Linux (x86_64)
