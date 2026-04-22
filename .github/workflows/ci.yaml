@@ -67,7 +67,8 @@ jobs:
             librsvg2-dev \
             libssl-dev \
             libsoup-3.0-dev \
-            protobuf-compiler
+            protobuf-compiler \
+            xdg-utils
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -120,6 +121,10 @@ jobs:
         uses: bufbuild/buf-setup-action@v1
         with:
           version: ${{ env.BUF_VERSION }}
+          # Authenticate the action's GitHub API calls (listing releases,
+          # downloading assets) so it doesn't hit the 60/hr unauthenticated
+          # rate limit on shared-IP macOS runners.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Task
         uses: arduino/setup-task@v2
@@ -244,6 +249,10 @@ jobs:
         uses: bufbuild/buf-setup-action@v1
         with:
           version: ${{ env.BUF_VERSION }}
+          # Authenticate the action's GitHub API calls (listing releases,
+          # downloading assets) so it doesn't hit the 60/hr unauthenticated
+          # rate limit on shared-IP macOS runners.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup protoc
         # Tauri/Rust's prost-build invokes protoc directly; the Linux job
@@ -431,6 +440,10 @@ jobs:
         uses: bufbuild/buf-setup-action@v1
         with:
           version: ${{ env.BUF_VERSION }}
+          # Authenticate the action's GitHub API calls (listing releases,
+          # downloading assets) so it doesn't hit the 60/hr unauthenticated
+          # rate limit on shared-IP macOS runners.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup protoc
         # Tauri/Rust's prost-build invokes protoc directly; the Linux job
