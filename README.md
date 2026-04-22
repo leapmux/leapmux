@@ -1,3 +1,6 @@
+[![CI](https://img.shields.io/github/actions/workflow/status/leapmux/leapmux/ci.yaml?branch=main&label=CI)](https://github.com/leapmux/leapmux/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/leapmux/leapmux?include_prereleases&label=release)](https://github.com/leapmux/leapmux/releases)
+[![Container](https://img.shields.io/badge/container-ghcr.io%2Fleapmux%2Fleapmux-2496ED?logo=docker&logoColor=white)](https://github.com/leapmux/leapmux/pkgs/container/leapmux)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE.md)
 
 <p align="center">
@@ -6,7 +9,9 @@
 
 # LeapMux
 
-LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances in parallel from a single workspace, in the browser or as a native desktop app. Connect local and remote development backends (even behind NATs), organize work across tiling workspaces, interact with terminals, browse and diff files with full git awareness, and collaborate with your team, all with end-to-end encrypted communication.
+A terminal works fine for one or two coding agents side-by-side. At three or four — one refactoring, one on tests, one chasing a failing build — shell tabs stop helping: you lose track of which one owns which branch, the agents clobber each other's working tree, and a stray tmux crash or dev-box reboot means re-launching each agent with `--resume` and rebuilding the layout by hand.
+
+LeapMux is a workspace for running several coding agents and shell terminals at once, each in a git worktree and branch you pick, tiled or floating, on a local or remote machine. Sessions stay attached across restarts, and Frontend↔Worker traffic is end-to-end encrypted. Runs in the browser or as a native desktop app.
 
 ## Supported Agents
 
@@ -23,32 +28,24 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 
 ## Key Features
 
-- **Multi-Agent Workspaces**
-  - Run multiple local or remote coding agent instances simultaneously
-- **Tiling Layout**
-  - Split the workspace into resizable horizontal/vertical panes — run chats and terminals side by side
-- **Desktop App**
-  - Native macOS, Linux, and Windows desktop application (optional)
-- **Git-Aware File Browser**
-  - Browse files on remote backends with real-time git status, change/staged/unstaged filters, and inline diffs
-- **Git Worktree & Branch Management**
-  - Create new worktrees, use existing ones, switch branches, or create new branches when opening agents and terminals, with dirty-worktree protection on close
-- **End-to-End Encryption**
-  - All Frontend-Worker traffic is encrypted via hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 + SLH-DSA) over multiplexed WebSocket channels
-- **Multi-Organization Support**
-  - Create teams with role-based access control (Owner/Admin/Member)
-- **Workspace Sharing**
-  - Collaborate by sharing workspaces with specific users or organization members
-- **NAT Traversal**
-  - Workers initiate outbound connections, so they run behind firewalls without port forwarding
+Beyond the basics in the pitch above:
+
+- **Git worktree management** — Open each agent or terminal in a new or existing worktree; switch or create branches at open time, with dirty-worktree protection on close.
+- **Git-aware file browser** — Real-time git status with staged / unstaged / change filters and inline diffs, even on a remote worker.
+- **Integrated terminals** — PTY sessions alongside your agents, in the same tiling or floating layout, on the same worker.
+- **NAT-friendly workers** — Workers initiate outbound connections; they can run behind firewalls without inbound port access.
+- **Multi-org with RBAC** — Organizations with Owner / Admin / Member roles; workspaces shared per user or per org member.
+- **Pluggable Hub storage** — SQLite (default), PostgreSQL, MySQL, CockroachDB, YugabyteDB, or TiDB.
 
 ## Table of Contents
 
 - [Architecture](#architecture)
+- [Communication and Threat Model](#communication-and-threat-model)
+- [Supported Platforms](#supported-platforms)
+- [Docker](#docker)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Development](#development)
-- [Docker](#docker)
 - [Technology Stack](#technology-stack)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
@@ -57,7 +54,7 @@ LeapMux is a **multiplexer for AI coding agents**. Run multiple agent instances 
 
 ## Architecture
 
-LeapMux is built as a Go binary (`leapmux`) that runs in two deployment modes. A native desktop app is also available as an alternative way to run solo mode.
+LeapMux is built as a Go binary (`leapmux`) that runs in two deployment modes. A native desktop app is also available — it can run solo mode locally or connect to a remote hub.
 
 ### Solo Mode (default)
 
@@ -128,51 +125,128 @@ LeapMux is a single binary with these subcommands:
 
 ### Components
 
-**Frontend (SolidJS)**
-- Web application providing the user interface
-- Communicates with Hub via ConnectRPC (for auth and workspace management)
-- Establishes end-to-end encrypted channels to Workers (hybrid post-quantum Noise_NK handshake, multiplexed WebSocket relay)
-- Key pinning with TOFU (Trust On First Use) model for Worker identity verification
-- Manages UI state for workspaces, agents, terminals, and file browsing
+- **Frontend** — a SolidJS web app that renders the workspace UI (tiling layout, agents, terminals, file browser).
+- **Hub** — a Go service that handles login, workspace management, and worker registration, and relays encrypted Frontend↔Worker traffic. Storage is pluggable (see [Distributed Mode](#distributed-mode)).
+- **Worker** — a Go process that runs agent instances, PTYs, file browsing, and git operations. Keeps its own SQLite database and auto-reconnects to the Hub on disconnection.
 
-**Hub (Go)**
-- Authentication, workspace management, and worker registration service
-- Relays encrypted Frontend-Worker traffic without decrypting it
-- Pluggable storage backend: SQLite (default), PostgreSQL, MySQL, CockroachDB, YugabyteDB, or TiDB
-- No access to channel plaintext — acts as an authenticated relay
+Protocol details and the Hub's visibility into channel traffic are covered in [Communication and Threat Model](#communication-and-threat-model).
 
-**Worker (Go)**
-- Wraps coding agent instances and provides system access
-- Handles agent lifecycle, terminal sessions, file browsing, and git operations
-- Maintains its own SQLite database for agent and terminal state
-- Communicates with Hub via gRPC (over TCP or Unix domain socket)
-- Terminates E2EE channels from the Frontend (Noise_NK responder)
-- Auto-reconnects to Hub on disconnection
+## Communication and Threat Model
 
-### Communication
+LeapMux treats the Hub as an **authenticated relay, not a trusted peer** — it sees who is talking to whom, but never what they say. This is load-bearing in Distributed Mode, where the Hub may be operated by a teammate or platform team. In Solo Mode the distinction collapses (see below).
 
-- **Frontend → Hub**: ConnectRPC (gRPC-compatible) for authentication, workspace management, and worker registration
-- **Frontend → Worker (via Hub relay)**: End-to-end encrypted channels using hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 for key exchange, SLH-DSA for static key authentication, ChaChaPoly + BLAKE2b for transport), multiplexed over a single WebSocket connection through the Hub
-- **Worker → Hub**: Standard gRPC with bidirectional streaming (over TCP or Unix domain socket).
-  - Workers initiate outbound connections to the Hub, so they can run behind NATs, without requiring inbound port access.
-  - For local workers on the same machine, connect via Unix domain socket using `unix:<socket-path>` as the Hub URL.
-- **Message Format**: Protocol Buffers (defined in `/proto/leapmux/v1/`)
+### Protocols
+
+- **Frontend → Hub** — ConnectRPC (gRPC-compatible), for login, workspace management, and worker registration.
+- **Frontend → Worker** — hybrid post-quantum Noise_NK (X25519 + ML-KEM-1024 for key exchange, SLH-DSA-SHAKE-256f for static-key authentication, ChaCha20-Poly1305 + BLAKE2b for transport), multiplexed over a single WebSocket relayed through the Hub.
+- **Worker → Hub** — standard gRPC with bidirectional streaming. The Worker always initiates the connection, so it can live behind a NAT without inbound ports. Local workers can use a Unix domain socket (`unix:<path>`) or a Windows named pipe (`npipe:<name>`) in place of TCP.
+- **Wire format** — Protocol Buffers defined in `/proto/leapmux/v1/`.
+
+### Trust boundaries
+
+**The Hub can see:**
+
+- Account metadata: user names, emails, password hashes, OAuth tokens, session tokens.
+- Organization, workspace, and membership records.
+- Workspace **titles**, tab positions, and tiling layout geometry.
+- Worker registration data: worker ID, composite public keys, online status, last-seen time.
+- Per-message transport metadata: channel ID, correlation ID, ciphertext size, timing. Traffic analysis is in scope.
+
+**The Hub cannot see:**
+
+- Agent chat transcripts, tool-call arguments, or tool outputs.
+- Terminal I/O, shell history, or PTY state.
+- File contents, diffs, or git status.
+- Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel).
+- Any plaintext of Frontend↔Worker traffic.
+
+Agent and terminal state live only in the Worker's local SQLite database. Sharing a workspace grants the invited user routing permission via the Hub; reading content still requires opening their own encrypted channel to the Worker.
+
+### Worker identity
+
+Worker identity is pinned **TOFU** on first connection: the Frontend records the Worker's composite static key and rejects any later handshake whose key doesn't match. A compromised Hub therefore cannot silently swap a Worker underneath a user.
+
+### Solo Mode
+
+Solo Mode runs the Hub and Worker in the same process on `127.0.0.1:4327` with no authentication. Any local process that can reach the port can drive the Worker, so the threat model reduces to local trust — the protocol-level separation above is still in effect but offers no protection against a local attacker.
+
+## Supported Platforms
+
+LeapMux is developed and tested natively on macOS, Linux, and Windows. CI builds and tests the full stack — including the Tauri desktop app — on every commit:
+
+| Platform | Architectures       | Desktop app artifact       |
+|----------|---------------------|----------------------------|
+| macOS    | arm64               | `.dmg`                     |
+| Linux    | amd64, arm64        | `.AppImage`, `.deb`        |
+| Windows  | amd64               | `.msi`                     |
+
+Download desktop app artifacts and standalone server binaries from the [Releases page](https://github.com/leapmux/leapmux/releases).
+
+Pre-built Docker images target `linux/amd64` and `linux/arm64` — see [Docker](#docker) below.
+
+## Docker
+
+Pre-built images are published to [GHCR](https://github.com/leapmux/leapmux/pkgs/container/leapmux) in two variants:
+
+| Variant          | Tags                                     | Example                             |
+|------------------|------------------------------------------|-------------------------------------|
+| Alpine (default) | `:<version>`, `:<major>`, `:latest`, `:dev` | `ghcr.io/leapmux/leapmux:1.0.0` |
+| Ubuntu           | `:<version>-ubuntu`, `:<major>-ubuntu`, `:latest-ubuntu`, `:dev-ubuntu` | `ghcr.io/leapmux/leapmux:1.0.0-ubuntu` |
+
+Release tags (`:latest`, `:<version>`, `:<major>`) are published by the release workflow. The `:dev` tag is updated on every push to `main`.
+
+The image runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The `LEAPMUX_MODE` environment variable selects the subcommand (`hub`, `worker`, `dev`, etc.) and is required. Data and configuration are stored under `/data/<mode>/` (e.g. `/data/hub/`) in the `/data` volume.
+
+```bash
+# Run as a hub (central service only)
+docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
+
+# Run as hub + worker together (dev mode)
+docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
+```
+
+### Building images yourself
+
+Build Docker images containing the full LeapMux stack:
+
+```bash
+# Build both Alpine and Ubuntu images
+task docker-build
+
+# Build only Alpine
+task docker-build-alpine
+
+# Build only Ubuntu
+task docker-build-ubuntu
+```
+
+By default this builds for `linux/amd64` and `linux/arm64`. You can override the platform and tag:
+
+```bash
+task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
+```
+
+The image uses a multi-stage build (buf, Bun, Go). Tool and base image versions are centralized in `versions.yaml` at the repository root.
 
 ## Prerequisites
+
+The rest of this section is for people building LeapMux from source or hacking on it. If you just want to run LeapMux, the pre-built Docker images and desktop app artifacts above are enough.
 
 Before you begin, ensure you have the following installed:
 
 - **Go** 1.26.1 or later
+- **Node.js** 24 or later
 - **Bun** (latest version) - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
+- **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)
 - **sqlc** - Type-safe SQL code generation
 - **golangci-lint** - Go linter
 - **yq** - YAML processor (used to read `versions.yaml`)
 - **SQLite** (usually pre-installed on most systems)
 - **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
-- **mprocs** (optional, for easier multi-process development)
-- **Rust toolchain** - Required for building the Tauri desktop app
+- **mprocs** - Multi-process runner (required for `task dev`, `task dev-solo`, and `task dev-desktop`)
+- **Rust toolchain** - For the Tauri desktop app (built by `task build`)
 - **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
 
 ### macOS
@@ -182,15 +256,17 @@ Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install buf go go-task golangci-lint mprocs protobuf rust sqlc yq
+brew install buf go go-task golangci-lint mprocs node protobuf rust sqlc yq
 ```
+
+For building Docker images, install [Rancher Desktop](https://rancherdesktop.io/) (or any Docker-compatible runtime such as Docker Desktop or OrbStack) separately.
 
 ### Arch Linux
 
 Install the official repository packages with [pacman](https://wiki.archlinux.org/title/Pacman):
 
 ```bash
-sudo pacman -S buf bun go go-task go-yq golangci-lint protobuf rust sqlc
+sudo pacman -S buf bun go go-task go-yq golangci-lint nodejs npm protobuf rust sqlc
 ```
 
 The Arch `go-task` package installs the binary as `go-task`. Add a shell alias so that `task` works:
@@ -209,12 +285,38 @@ yay -S mprocs-bin
 For desktop app builds, install the [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux):
 
 ```bash
-sudo pacman -S webkit2gtk-4.1 libappindicator-gtk3 librsvg patchelf
+sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg patchelf
 ```
 
-### Operating System
+### Windows
 
-LeapMux is developed and tested on macOS and Linux. Windows support may require WSL.
+Install dependencies with [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
+
+```powershell
+winget install --id Microsoft.PowerShell
+winget install --id GoLang.Go
+winget install --id OpenJS.NodeJS.LTS  # or OpenJS.NodeJS for the current (non-LTS) release
+winget install --id Oven-sh.Bun
+winget install --id Task.Task
+winget install --id bufbuild.buf
+winget install --id GolangCI.golangci-lint
+winget install --id MikeFarah.yq
+winget install --id pvolok.mprocs
+winget install --id SUSE.RancherDesktop  # or any other Docker-compatible runtime (e.g. Docker.DockerDesktop, Podman.Podman)
+winget install --id Rustlang.Rust.MSVC
+winget install --id Google.Protobuf
+winget install --id Microsoft.VisualStudio.BuildTools  # or Microsoft.VisualStudio.2022.Community if you prefer the full IDE
+```
+
+After `Microsoft.VisualStudio.BuildTools` installs, open the Visual Studio Installer and modify the installation to enable the **"Desktop development with C++"** workload — winget installs the bootstrapper but does not select any workloads automatically.
+
+`sqlc` is not available via winget. After Go is installed, install the version pinned in `backend/go.mod` from inside the backend module (matches what CI does):
+
+```powershell
+cd backend; go install github.com/sqlc-dev/sqlc/cmd/sqlc
+```
+
+For the remaining Tauri Windows prerequisites (WebView2, etc.), see the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows).
 
 ## Quick Start
 
@@ -225,7 +327,7 @@ Get LeapMux running locally:
 git clone https://github.com/leapmux/leapmux.git
 cd leapmux
 
-# 2. Generate code (protobuf and sqlc — not checked into git)
+# 2. Generate code and download assets (protobuf, sqlc, and spinner JSON — not checked into git)
 task generate
 
 # 3. Start all services (requires mprocs)
@@ -261,7 +363,7 @@ task build-frontend   # Build frontend assets
 task build-desktop    # Build desktop app for current platform (Tauri v2 + Rust)
 ```
 
-The `leapmux` binary is output to the repository root. The Tauri desktop bundle is emitted under `desktop/rust/target/`.
+The `leapmux` binary is output to the repository root. Tauri emits the desktop bundles under `desktop/rust/target/`, and the final artifacts (`.dmg` on macOS, `.AppImage`/`.deb` on Linux, `.msi`/`.exe` on Windows) are also copied to the repository root.
 
 ### Testing
 
@@ -274,7 +376,7 @@ Run specific test suites:
 ```bash
 task test-backend       # Backend tests
 task test-frontend      # Frontend tests (Vitest)
-task test-desktop       # Desktop sidecar tests
+task test-desktop       # Desktop Go sidecar + Tauri Rust shell tests
 task test-e2e           # End-to-end tests (Playwright)
 ```
 
@@ -302,8 +404,8 @@ Run specific linters:
 ```bash
 task lint-proto      # Lint Protocol Buffer definitions
 task lint-backend    # Lint Go code (hub + worker)
-task lint-frontend   # Lint frontend code (ESLint)
-task lint-desktop    # Lint desktop Go sidecar + Tauri Rust shell (clippy)
+task lint-frontend   # Lint frontend code (TypeScript typecheck + ESLint)
+task lint-desktop    # Lint desktop Go sidecar (golangci-lint) + Tauri Rust shell (clippy)
 ```
 
 Auto-fix lint violations:
@@ -314,28 +416,25 @@ task lint-fix-frontend   # Fix frontend code (ESLint --fix)
 task lint-fix-desktop    # Fix desktop Go code + Tauri Rust code (clippy --fix)
 ```
 
-### Desktop and Mobile Prerequisites
+### Desktop Prerequisites
 
 Desktop builds use [Tauri v2](https://v2.tauri.app/start/prerequisites/):
 - macOS: Xcode Command Line Tools, Rust, WebKit (system)
 - Linux: Rust plus the WebKitGTK/Tauri native dependencies for your distro (see [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux))
 - Windows: Rust MSVC toolchain plus WebView2
 
-Future mobile builds use Tauri mobile tooling:
-- iOS: Xcode, CocoaPods, Rust iOS targets
-- Android: Android Studio, Android SDK/NDK, Java, Rust Android targets
-
 ### Code Generation
 
-Regenerate all generated code (Protocol Buffers and sqlc):
+Regenerate all generated code and downloaded assets (Protocol Buffers, sqlc, and spinner JSON):
 ```bash
 task generate
 ```
 
 You can also run each generator individually:
 ```bash
-task generate-proto   # Generate Protocol Buffer code (Go and TypeScript)
-task generate-sqlc    # Generate type-safe SQL code (hub and worker)
+task generate-proto      # Generate Protocol Buffer code (Go and TypeScript)
+task generate-sqlc       # Generate type-safe SQL code (hub and worker)
+task generate-spinners   # Download spinner verb JSON files from awesome-claude-spinners
 ```
 
 Task uses checksums to skip generation when source files haven't changed. To force regeneration, use `task --force generate`.
@@ -345,15 +444,16 @@ Always run `task generate-sqlc` after modifying `.sql` files in `/backend/intern
 
 ### Preparation
 
-Prepare all dependencies (code generation + frontend install):
+Prepare every module for builds (code generation, frontend install, asset generation, icon generation, and embedding the frontend into the backend):
 ```bash
 task prepare
 ```
 
 You can also run each step individually:
 ```bash
-task prepare-backend    # Generate protobuf and sqlc code
-task prepare-frontend   # Install frontend dependencies (bun install)
+task prepare-frontend   # Generate proto/spinners, run bun install, generate icons, copy NOTICE.html
+task prepare-backend    # Generate proto/sqlc, build the frontend, and embed it into the backend
+task prepare-desktop    # Generate proto, build the frontend, prepare the backend, and generate desktop icons
 ```
 
 Note: Build targets automatically run their required preparation steps, so `task build` works without running `task prepare` first.
@@ -365,7 +465,7 @@ Generate `NOTICE.md` and `NOTICE.html` with all third-party dependency licenses:
 task generate-notice
 ```
 
-The build pipeline runs this automatically before building the frontend. The task fails if any dependency is missing a license file or if a vendored override's license identifier no longer matches the upstream package.
+Run this manually after changing dependencies; regular build targets do not trigger it. The task fails if any dependency is missing a license file or if a vendored override's license identifier no longer matches the upstream package.
 
 ### Cleaning
 
@@ -374,47 +474,12 @@ Remove all build artifacts and generated code:
 task clean
 ```
 
-## Docker
-
-Build Docker images containing the full LeapMux stack:
-
+Clean a specific module:
 ```bash
-# Build both Alpine and Ubuntu images
-task docker-build
-
-# Build only Alpine
-task docker-build-alpine
-
-# Build only Ubuntu
-task docker-build-ubuntu
+task clean-backend    # Remove leapmux binaries and generated/ directories
+task clean-frontend   # Remove .output, .vinxi, node_modules, and generated/ directories
+task clean-desktop    # Remove desktop binaries, bundles, and Rust target/
 ```
-
-By default this builds for `linux/amd64` and `linux/arm64`. You can override the platform and tag:
-
-```bash
-task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
-```
-
-The image uses a multi-stage build (buf, Bun, Go) and runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The `LEAPMUX_MODE` environment variable selects the subcommand (`hub`, `worker`, `dev`, etc.) and is required. Data and configuration are stored under `/data/<mode>/` (e.g. `/data/hub/`) in the `/data` volume.
-
-```bash
-# Run as a hub (central service only)
-docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data leapmux:latest
-
-# Run as hub + worker together (dev mode)
-docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data leapmux:latest
-```
-
-Pre-built images are published to GHCR in two variants:
-
-| Variant          | Tags                                     | Example                             |
-|------------------|------------------------------------------|-------------------------------------|
-| Alpine (default) | `:<version>`, `:<major>`, `:latest`, `:dev` | `ghcr.io/leapmux/leapmux:1.0.0` |
-| Ubuntu           | `:<version>-ubuntu`, `:<major>-ubuntu`, `:latest-ubuntu`, `:dev-ubuntu` | `ghcr.io/leapmux/leapmux:1.0.0-ubuntu` |
-
-Release tags (`:latest`, `:<version>`, `:<major>`) are published by the release workflow. The `:dev` tag is updated on every push to `main`.
-
-Tool and base image versions are centralized in the `versions.yaml` file at the repository root.
 
 ## Technology Stack
 
@@ -443,7 +508,7 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 - **[Goose](https://pressly.github.io/goose/)** - Database migrations
 - **[gRPC](https://grpc.io/)** - Standard gRPC (Worker communication)
 - **[Protocol Buffers](https://protobuf.dev/)** - Service and message definitions
-- **Pluggable database** - SQLite (default), PostgreSQL, MySQL, CockroachDB, YugabyteDB, or TiDB
+- **Pluggable database** - see [Distributed Mode](#distributed-mode) for the supported backends
 - **[sqlc](https://sqlc.dev/)** - Type-safe SQL code generation (per-backend: SQLite, PostgreSQL, MySQL)
 
 ### Worker (Agent Wrapper)
@@ -454,7 +519,7 @@ Tool and base image versions are centralized in the `versions.yaml` file at the 
 - **[gRPC](https://grpc.io/)** - Communication with Hub
 - **[SQLite](https://sqlite.org/)** - Embedded database for agent and terminal state
 
-### Desktop (optional)
+### Desktop
 
 - **[Tauri v2](https://v2.tauri.app/)** - Desktop application framework (Rust + native WebView)
 - **Go desktop sidecar** - Desktop-only service for Solo startup, local proxying, tunnels, and OS integrations
@@ -534,6 +599,7 @@ leapmux/
 │   │       ├── terminal/    # PTY session management
 │   │       └── wakelock/    # System wake lock management
 │   │
+│   ├── locallisten/         # Local-socket listeners (Unix domain sockets and Windows named pipes)
 │   ├── solo/                # Shared solo mode startup logic
 │   ├── spautil/             # SPA HTTP handler utilities
 │   ├── tunnel/              # Tunnel channel and connection management
@@ -603,7 +669,7 @@ LeapMux is licensed under the **Functional Source License, Version 1.1, Apache 2
 This means:
 - You can use, modify, and distribute the software
 - There are certain limitations on competitive use
-- The license will automatically convert to Apache 2.0 after a specified period
+- The license automatically converts to Apache 2.0 two years after each release is first made available
 
 See the [LICENSE](LICENSE.md) file for full details.
 
