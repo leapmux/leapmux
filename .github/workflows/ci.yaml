@@ -645,16 +645,24 @@ jobs:
 
           ## Artifacts
 
-          - \`LeapMuxDesktop_${VERSION}_arm64.dmg\` — LeapMux Desktop disk image for macOS (Apple Silicon)
-          - \`LeapMuxDesktop_${VERSION}_x64.msi\` — LeapMux Desktop MSI installer for Windows (x86_64)
-          - \`leapmux-desktop_${VERSION}_amd64.AppImage\` — LeapMux Desktop portable AppImage for Linux (x86_64)
-          - \`leapmux-desktop_${VERSION}_aarch64.AppImage\` — LeapMux Desktop portable AppImage for Linux (ARM64)
-          - \`leapmux-desktop_${VERSION}_amd64.deb\` — LeapMux Desktop .deb package for Debian/Ubuntu (x86_64)
-          - \`leapmux-desktop_${VERSION}_arm64.deb\` — LeapMux Desktop .deb package for Debian/Ubuntu (ARM64)
-          - \`leapmux_${VERSION}_darwin_arm64.tar.gz\` — LeapMux Server binary for macOS (Apple Silicon)
-          - \`leapmux_${VERSION}_windows_amd64.zip\` — LeapMux Server binary for Windows (x86_64)
-          - \`leapmux_${VERSION}_linux_amd64.tar.gz\` — LeapMux Server binary for Linux (x86_64)
-          - \`leapmux_${VERSION}_linux_arm64.tar.gz\` — LeapMux Server binary for Linux (ARM64)
+          - LeapMux Desktop
+            - macOS
+              - \`LeapMuxDesktop_${VERSION}_arm64.dmg\`
+            - Windows
+              - \`LeapMuxDesktop_${VERSION}_x64.msi\`
+            - Linux
+              - \`leapmux-desktop_${VERSION}_amd64.AppImage\`
+              - \`leapmux-desktop_${VERSION}_aarch64.AppImage\`
+              - \`leapmux-desktop_${VERSION}_amd64.deb\`
+              - \`leapmux-desktop_${VERSION}_arm64.deb\`
+          - LeapMux Server
+            - macOS
+              - \`leapmux_${VERSION}_darwin_arm64.tar.gz\`
+            - Windows
+              - \`leapmux_${VERSION}_windows_amd64.zip\`
+            - Linux
+              - \`leapmux_${VERSION}_linux_amd64.tar.gz\`
+              - \`leapmux_${VERSION}_linux_arm64.tar.gz\`
           EOF
 
           # Append the changelog. Write the commit list via `git log` output
