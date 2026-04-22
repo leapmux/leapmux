@@ -179,6 +179,22 @@ jobs:
           echo "=== extracted AppRun --list-plugins (exit=?) ==="
           ~/.cache/tauri/linuxdeploy-extracted/AppRun --list-plugins
           echo "AppRun exit=$?"
+          echo
+          echo "=== Re-run linuxdeploy against Tauri's partial AppDir ==="
+          # Tauri suppresses linuxdeploy's stdout/stderr on failure; invoking
+          # it directly against the AppDir it already populated surfaces the
+          # actual error.
+          appdir="$(ls -d desktop/rust/target/release/bundle/appimage/*.AppDir 2>/dev/null | head -1)"
+          if [ -n "$appdir" ]; then
+            echo "appdir=$appdir"
+            ~/.cache/tauri/linuxdeploy-$(uname -m).AppImage \
+              --appdir "$appdir" \
+              --output appimage \
+              --plugin gtk 2>&1 | tail -80
+            echo "direct linuxdeploy exit=${PIPESTATUS[0]}"
+          else
+            echo "No AppDir found — Tauri didn't reach the linuxdeploy step."
+          fi
 
       - name: Test
         run: task test
