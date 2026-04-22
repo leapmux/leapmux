@@ -295,7 +295,7 @@ tasks:
       - backend/internal/hub/generated/frontend/public/**/*
     generates:
       - "LeapMux Desktop.app/**/*"
-      - "LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg"
+      - "LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
     cmds:
       - task: prepare-desktop
       - task: build-desktop-sidecar
@@ -320,8 +320,8 @@ tasks:
         desktop/rust/scripts/create-dmg.sh
         "{{.VERSION}}"
         "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
-        "desktop/rust/target/release/bundle/dmg/LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg"
-      - cp -f "desktop/rust/target/release/bundle/dmg/LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg" "LeapMux Desktop {{.VERSION}} ({{ARCH}}).dmg"
+        "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
+      - cp -f "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg" "LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
 
   build-desktop-linux:
     desc: Build desktop for Linux
