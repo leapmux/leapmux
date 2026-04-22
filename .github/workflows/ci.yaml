@@ -151,9 +151,6 @@ jobs:
       - name: Install frontend dependencies
         run: task prepare-frontend
 
-      - name: Lint
-        run: task lint
-
       - name: Build
         run: task build
 
@@ -226,8 +223,20 @@ jobs:
           echo "CGO_ENABLED (go env): $(go env CGO_ENABLED)"
           echo "/lib/ld-linux-aarch64.so.1: $(ls -la /lib/ld-linux-aarch64.so.1 2>&1 || true)"
 
-      - name: Test
+      - name: Test (full)
+        if: matrix.arch == 'amd64'
+        # `task test` lints and tests every module — amd64 is the canonical
+        # runner, so it exercises the full suite including the Docker-backed
+        # storage backends (postgres/mysql/cockroachdb/tidb/yugabytedb).
         run: task test
+
+      - name: Test (no Docker-backed storage)
+        if: matrix.arch == 'arm64'
+        # testcontainers-backed tests for postgres/mysql/cockroachdb/tidb/
+        # yugabytedb exercise SQL-dialect glue, not the runner arch. Skip
+        # them on arm64 (and macOS/Windows) to save minutes and reduce
+        # flake surface; amd64 still runs the full suite every commit.
+        run: task test-no-docker
 
       - name: Package CLI server tarball
         run: |
@@ -355,44 +364,11 @@ jobs:
       - name: Install frontend dependencies
         run: task prepare-frontend
 
-      - name: Lint
-        run: task lint
-
-      - name: Backend tests (Docker-free subset)
-        working-directory: backend
-        run: |
-          # Mirrors the Windows job's scope: excludes
-          # hub/store/{cockroachdb,mysql,postgres,tidb,yugabytedb} which require
-          # Docker (testcontainers) and are not part of the macOS desktop
-          # runtime.
-          go test -tags integration -timeout 10m \
-            ./cmd/... \
-            ./channelwire/... \
-            ./hub/... \
-            ./internal/config/... \
-            ./internal/hub/auth/... \
-            ./internal/hub/bootstrap/... \
-            ./internal/hub/channelmgr/... \
-            ./internal/hub/cleanup/... \
-            ./internal/hub/config/... \
-            ./internal/hub/keystore/... \
-            ./internal/hub/layout/... \
-            ./internal/hub/oauth/... \
-            ./internal/hub/password/... \
-            ./internal/hub/service/... \
-            ./internal/hub/store/sqlite/... \
-            ./internal/hub/store/sqlutil/... \
-            ./internal/hub/workermgr/... \
-            ./internal/logging/... \
-            ./internal/metrics/... \
-            ./internal/noise/... \
-            ./internal/util/... \
-            ./internal/worker/... \
-            ./locallisten/... \
-            ./solo/... \
-            ./spautil/... \
-            ./tunnel/... \
-            ./worker/...
+      - name: Test (no Docker-backed storage)
+        # `task test-no-docker` lints and tests frontend/backend/desktop
+        # with the Docker-backed storage backends excluded — amd64 Linux
+        # still runs the full suite on every commit.
+        run: task test-no-docker
 
       - name: Build
         # MACOS_CODESIGN_IDENTITY is intentionally left unset; the Taskfile
@@ -447,6 +423,7 @@ jobs:
         shell: bash
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
+          echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
           echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
           echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
@@ -476,6 +453,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
 
       - name: Cache Cargo dependencies
         uses: actions/cache@v4
@@ -530,7 +508,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin
-          key: go-tools-${{ runner.os }}-sqlc-${{ hashFiles('backend/go.mod') }}
+          key: go-tools-${{ runner.os }}-sqlc-${{ hashFiles('backend/go.mod') }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
 
       - name: Install tools
         shell: bash
@@ -539,49 +517,17 @@ jobs:
           # inside the module avoids the `@version`-form error caused by
           # sqlc's own replace directives.
           test -x "$(go env GOPATH)/bin/sqlc" || test -x "$(go env GOPATH)/bin/sqlc.exe" || (cd backend && go install github.com/sqlc-dev/sqlc/cmd/sqlc)
+          # golangci-lint is needed because `task test-no-docker` runs
+          # lint-backend/lint-desktop as deps on every platform.
+          test -x "$(go env GOPATH)/bin/golangci-lint" || test -x "$(go env GOPATH)/bin/golangci-lint.exe" || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ env.GOLANGCI_LINT_VERSION }}"
 
-      - name: Prepare backend (generate proto + sqlc, build frontend embed)
-        # Use pwsh so Git Bash's /usr/bin isn't prepended to PATH; see the
-        # "Build all modules" step for details. Task has a portable shell,
-        # so the Taskfile commands still execute correctly.
+      - name: Test (no Docker-backed storage)
+        # Run under pwsh (not bash) for the same reason `task build` does:
+        # Git Bash prepends /usr/bin to PATH, and /usr/bin/link.exe
+        # shadows MSVC's link.exe, which breaks `cargo test` (invoked by
+        # `task test-desktop`). pwsh inherits MSVC's PATH cleanly.
         shell: pwsh
-        run: task prepare-backend
-
-      - name: Backend tests (Windows-relevant packages)
-        shell: bash
-        working-directory: backend
-        run: |
-          # Excludes hub/store/{cockroachdb,mysql,postgres,tidb,yugabytedb}
-          # which require Docker (testcontainers) and are not part of the
-          # Windows worker/desktop runtime.
-          go test -tags integration -timeout 10m \
-            ./cmd/... \
-            ./channelwire/... \
-            ./hub/... \
-            ./internal/config/... \
-            ./internal/hub/auth/... \
-            ./internal/hub/bootstrap/... \
-            ./internal/hub/channelmgr/... \
-            ./internal/hub/cleanup/... \
-            ./internal/hub/config/... \
-            ./internal/hub/keystore/... \
-            ./internal/hub/layout/... \
-            ./internal/hub/oauth/... \
-            ./internal/hub/password/... \
-            ./internal/hub/service/... \
-            ./internal/hub/store/sqlite/... \
-            ./internal/hub/store/sqlutil/... \
-            ./internal/hub/workermgr/... \
-            ./internal/logging/... \
-            ./internal/metrics/... \
-            ./internal/noise/... \
-            ./internal/util/... \
-            ./internal/worker/... \
-            ./locallisten/... \
-            ./solo/... \
-            ./spautil/... \
-            ./tunnel/... \
-            ./worker/...
+        run: task test-no-docker
 
       - name: Build all modules
         # Run under pwsh rather than bash: Git Bash prepends /usr/bin to

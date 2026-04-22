@@ -435,6 +435,13 @@ tasks:
       - task: lint-backend
       - cd backend && go test -tags integration {{.CLI_ARGS | default "./..."}}
 
+  test-backend-no-docker:
+    desc: Run backend tests, excluding Docker-backed storage backends
+    cmds:
+      - task: prepare-backend
+      - task: lint-backend
+      - cd backend && go test -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
+
   test-desktop:
     desc: Run desktop tests
     cmds:
@@ -442,6 +449,13 @@ tasks:
       - task: lint-desktop
       - cd desktop/go && go test -tags integration {{.CLI_ARGS | default "./..."}}
       - cd desktop/rust && cargo test
+
+  test-no-docker:
+    desc: Run all tests except Docker-backed storage backends
+    cmds:
+      - task: test-frontend
+      - task: test-backend-no-docker
+      - task: test-desktop
 
   test-e2e:
     desc: Run end-to-end tests
