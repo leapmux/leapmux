@@ -30,7 +30,7 @@ jobs:
 
       - name: Load tool versions and git metadata
         run: |
-          grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
+          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
           echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
 

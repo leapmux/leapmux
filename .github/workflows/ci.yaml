@@ -31,7 +31,7 @@ jobs:
         run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
 
       - name: Load tool versions
-        run: grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
+        run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
 
       - name: Cache APT packages
         uses: actions/cache@v4
@@ -256,7 +256,7 @@ jobs:
         run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
 
       - name: Load tool versions
-        run: grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
+        run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -376,7 +376,7 @@ jobs:
       - name: Load tool versions
         shell: bash
         run: |
-          grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
+          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
           echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
 
       - name: Setup MSVC dev environment
@@ -501,7 +501,7 @@ jobs:
 
       - name: Load tool versions and git metadata
         run: |
-          grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
+          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
           echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
 
