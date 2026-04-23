@@ -1,24 +1,24 @@
-import type { Component } from 'solid-js'
-import { createEffect, createSignal, For, onCleanup } from 'solid-js'
+import type { Component, JSX } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup } from 'solid-js'
 import { createCompassSimulation } from './compassPhysics'
 import { getRandomVerb } from './spinnerVerbs'
 import * as styles from './ThinkingIndicator.css'
 
-function charElevation(index: number, total: number, highlightPos: number): number {
-  const dist = Math.abs(index - highlightPos)
-  const wrappedDist = Math.min(dist, total - dist)
-  const falloff = Math.max(0, 1 - wrappedDist / 1.5)
-  return -4 * falloff
-}
-
 export interface ThinkingIndicatorProps {
   visible: boolean
+  /**
+   * When true, the compass simulation is suspended (no setInterval, no DOM
+   * writes). Used to skip animation work for ChatViews that are mounted but
+   * not the active tab in their tile. Visibility/expand state is unaffected
+   * so the indicator remains correctly expanded when the user switches in.
+   */
+  paused?: boolean
   onExpandTick?: () => void
 }
 
 export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   const [verb, setVerb] = createSignal(getRandomVerb())
-  const chars = () => `${verb()}...`.split('')
+  const chars = createMemo(() => `${verb()}...`.split(''))
   const [angleDeg, setAngleDeg] = createSignal(0)
   const [highlightPos, setHighlightPos] = createSignal(0)
   const [expanded, setExpanded] = createSignal(false)
@@ -35,31 +35,37 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   let wasVisible = false
 
   createEffect(() => {
-    if (props.visible) {
-      if (wasVisible)
-        return
-      wasVisible = true
-      setVerb(getRandomVerb())
-      expandRafId = requestAnimationFrame(() => setExpanded(true))
-      sim.start()
-      // Notify parent on each frame during the height transition so it can
-      // keep the scroll position pinned to the bottom.
-      const start = performance.now()
-      const tick = () => {
-        props.onExpandTick?.()
-        if (performance.now() - start < 700) {
-          tickRafId = requestAnimationFrame(tick)
+    const visible = props.visible
+    const paused = props.paused ?? false
+
+    if (visible) {
+      if (!wasVisible) {
+        wasVisible = true
+        setVerb(getRandomVerb())
+        expandRafId = requestAnimationFrame(() => setExpanded(true))
+        // Notify parent on each frame during the height transition so it can
+        // keep the scroll position pinned to the bottom.
+        const start = performance.now()
+        const tick = () => {
+          props.onExpandTick?.()
+          if (performance.now() - start < 700) {
+            tickRafId = requestAnimationFrame(tick)
+          }
         }
+        tickRafId = requestAnimationFrame(tick)
       }
-      tickRafId = requestAnimationFrame(tick)
     }
     else {
       wasVisible = false
       cancelAnimationFrame(expandRafId)
       cancelAnimationFrame(tickRafId)
       setExpanded(false)
-      sim.stop()
     }
+
+    if (visible && !paused)
+      sim.start()
+    else
+      sim.stop()
   })
 
   onCleanup(() => {
@@ -132,10 +138,19 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
               </g>
             </g>
           </svg>
-          <span class={styles.verb}>
+          <span
+            class={styles.verb}
+            style={{
+              '--highlight-pos': String(highlightPos()),
+              '--char-total': String(chars().length),
+            } as JSX.CSSProperties}
+          >
             <For each={chars()}>
               {(char, i) => (
-                <span class={styles.char} style={{ transform: `translateY(${charElevation(i(), chars().length, highlightPos())}px)` }}>
+                <span
+                  class={styles.char}
+                  style={{ '--char-i': String(i()) } as JSX.CSSProperties}
+                >
                   {char}
                 </span>
               )}

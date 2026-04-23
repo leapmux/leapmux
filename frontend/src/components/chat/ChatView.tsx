@@ -29,6 +29,12 @@ interface ChatViewProps {
   streamingText: string
   /** Whether the agent is actively working (for showing the thinking indicator). */
   agentWorking?: boolean
+  /**
+   * Whether this ChatView is the active tab in its tile. Forwarded to the
+   * thinking indicator so it can suspend its compass simulation when the
+   * user can't see it (every agent tab is mounted, including hidden ones).
+   */
+  tabActive?: boolean
   messageErrors?: Record<string, string>
   /** Per-message non-error sublabels (e.g. "Queued — agent is starting…"). */
   messagePendingLabels?: Record<string, string>
@@ -709,6 +715,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                 </Show>
                 <ThinkingIndicator
                   visible={props.agentWorking ?? false}
+                  paused={props.tabActive === false}
                   onExpandTick={() => {
                     if (isAtBottom())
                       messageListRef!.scrollTop = messageListRef!.scrollHeight
