@@ -237,4 +237,5 @@ message GetWorkerSystemInfoResponse {
   string version = 5;
   string commit_hash = 6; // Optional short git commit ID injected at build time
   string build_time = 7;  // Optional build timestamp injected at build time
+  string branch = 8;      // Optional git ref (branch or tag) injected at build time; empty for detached HEAD
 }

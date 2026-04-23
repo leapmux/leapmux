@@ -22,7 +22,6 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/locallisten"
-	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/worker"
 )
 
@@ -158,7 +157,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	}
 
 	if !cfg.SkipBanner {
-		logging.PrintBanner(modeName, logging.VersionInfo{Version: version.Value, CommitHash: version.CommitHash, CommitTime: version.CommitTime, BuildTime: version.BuildTime})
+		logging.PrintBanner(modeName)
 		logging.PrintAccessURL(hubCfg.Addr)
 	}
 

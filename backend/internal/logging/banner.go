@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/util/version"
 	"github.com/mattn/go-isatty"
 )
 
@@ -64,43 +65,20 @@ func init() {
 	// Replace ASCII spaces with figure space (U+2007) so the art
 	// aligns correctly in proportional fonts.
 	for i := range logoLines {
-		logoLines[i] = strings.ReplaceAll(logoLines[i], " ", "\u2007")
+		logoLines[i] = strings.ReplaceAll(logoLines[i], " ", " ")
 	}
 	for _, art := range []*[3]string{&hubArt, &workerArt, &soloArt, &devArt} {
 		for i := range art {
-			art[i] = strings.ReplaceAll(art[i], " ", "\u2007")
+			art[i] = strings.ReplaceAll(art[i], " ", " ")
 		}
 	}
 }
 
-// VersionInfo holds the fields displayed below the banner art.
-type VersionInfo struct {
-	Version    string
-	CommitHash string
-	CommitTime string
-	BuildTime  string
-}
-
-func formatLocalTimestamp(iso string) string {
-	if iso == "" {
-		return ""
-	}
-	t, err := time.Parse(time.RFC3339, iso)
-	if err != nil {
-		return iso
-	}
-	local := t.Local()
-	zone, _ := local.Zone()
-	if zone == "" {
-		zone = local.Format("-07:00")
-	}
-	return local.Format("Mon, 1/2/2006, 3:04:05 PM") + " " + zone
-}
-
 // PrintBanner prints the LeapMux ASCII art logo with mode-specific
-// art appended to the right. Below the art it prints version info
-// and copyright. Colors are used only when stderr is a TTY.
-func PrintBanner(mode string, vi VersionInfo) {
+// art appended to the right. Below the art it prints the canonical
+// version identity (see version.Format) and copyright. Colors are
+// used only when stderr is a TTY.
+func PrintBanner(mode string) {
 	color := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
 
 	var modeArt *[3]string
@@ -133,24 +111,16 @@ func PrintBanner(mode string, vi VersionInfo) {
 		}
 	}
 
-	// Build the version info line: "0.0.1-dev (deadbeef) · Fri, 4/3/2026, 2:00:00 AM"
-	info := vi.Version
-	if vi.CommitHash != "" {
-		info += " (" + vi.CommitHash + ")"
-	}
-	if vi.BuildTime != "" {
-		display := formatLocalTimestamp(vi.BuildTime)
-		info += " \u00b7 " + display
-	}
+	info := version.Format()
 
-	// Info lines below the art.
+	// Copyright year prefers CommitTime; fall back to the current year.
 	year := time.Now().Format("2006")
-	if vi.CommitTime != "" {
-		if t, err := time.Parse(time.RFC3339, vi.CommitTime); err == nil {
+	if version.CommitTime != "" {
+		if t, err := time.Parse(time.RFC3339, version.CommitTime); err == nil {
 			year = t.Format("2006")
 		}
 	}
-	copyright := fmt.Sprintf("Copyright \u00a9 %s Event Loop, Inc.", year)
+	copyright := fmt.Sprintf("Copyright © %s Event Loop, Inc.", year)
 	if color {
 		fmt.Fprintf(os.Stderr, "  %s%s%s\n", dim, info, reset)
 		fmt.Fprintf(os.Stderr, "  %s%s%s\n\n", dim, copyright, reset)

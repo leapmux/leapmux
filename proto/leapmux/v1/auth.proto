@@ -96,6 +96,7 @@ message GetSystemInfoResponse {
   string build_time = 6;
   bool oauth_enabled = 7; // true if at least one OAuth provider is configured and enabled
   bool setup_required = 8; // true when no users exist (first-time setup needed)
+  string branch = 9; // Optional git ref (branch or tag) injected at build time; empty for detached HEAD
 }
 
 message GetOAuthProvidersRequest {}

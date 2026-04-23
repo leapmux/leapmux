@@ -178,6 +178,7 @@ message BuildInfo {
   string commit_hash = 2;
   string commit_time = 3;
   string build_time = 4;
+  string branch = 5; // Optional git ref (branch or tag) injected at build time; empty for detached HEAD
 }
 
 message TunnelConfig {

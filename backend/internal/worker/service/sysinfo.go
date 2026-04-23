@@ -20,6 +20,7 @@ func registerSysInfoHandlers(d *channel.Dispatcher, svc *Context) {
 			Version:    version.Value,
 			CommitHash: version.CommitHash,
 			BuildTime:  version.BuildTime,
+			Branch:     version.Branch,
 		})
 	})
 }

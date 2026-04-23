@@ -125,6 +125,7 @@ type BuildInfo struct {
 	CommitHash string `json:"commit_hash"`
 	CommitTime string `json:"commit_time"`
 	BuildTime  string `json:"build_time"`
+	Branch     string `json:"branch"`
 }
 
 func (a *App) GetBuildInfo() BuildInfo {
@@ -133,6 +134,7 @@ func (a *App) GetBuildInfo() BuildInfo {
 		CommitHash: version.CommitHash,
 		CommitTime: version.CommitTime,
 		BuildTime:  version.BuildTime,
+		Branch:     version.Branch,
 	}
 }
 

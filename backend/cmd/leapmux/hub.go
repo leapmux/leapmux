@@ -19,7 +19,7 @@ func runHub(args []string) error {
 	}
 
 	if showVersion {
-		fmt.Println(version.Value)
+		fmt.Println(version.Format())
 		return nil
 	}
 
@@ -29,7 +29,7 @@ func runHub(args []string) error {
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner("hub", logging.VersionInfo{Version: version.Value, CommitHash: version.CommitHash, CommitTime: version.CommitTime, BuildTime: version.BuildTime})
+	logging.PrintBanner("hub")
 	logging.PrintAccessURL(cfg.Addr)
 
 	server, err := hub.NewServer(cfg)

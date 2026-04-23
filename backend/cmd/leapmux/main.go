@@ -48,7 +48,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "version":
-		fmt.Println(version.Value)
+		fmt.Println(version.Format())
 	default:
 		// If the first arg starts with '-', treat as solo flags.
 		if len(os.Args[1]) > 0 && os.Args[1][0] == '-' {

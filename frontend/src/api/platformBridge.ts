@@ -37,6 +37,7 @@ interface StartupInfoWire {
     commit_hash: string
     commit_time: string
     build_time: string
+    branch: string
   }
 }
 
@@ -427,6 +428,7 @@ export const platformBridge = {
         commitHash: wire.build_info.commit_hash,
         commitTime: wire.build_info.commit_time,
         buildTime: wire.build_info.build_time,
+        branch: wire.build_info.branch,
       },
     }
   },

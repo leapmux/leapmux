@@ -301,6 +301,7 @@ func buildInfoToProto(info BuildInfo) *desktoppb.BuildInfo {
 		CommitHash: info.CommitHash,
 		CommitTime: info.CommitTime,
 		BuildTime:  info.BuildTime,
+		Branch:     info.Branch,
 	}
 }
 

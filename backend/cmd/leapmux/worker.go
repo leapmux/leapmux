@@ -26,7 +26,7 @@ func runWorker(args []string) error {
 	}
 
 	if showVersion {
-		fmt.Println(version.Value)
+		fmt.Println(version.Format())
 		return nil
 	}
 
@@ -36,7 +36,7 @@ func runWorker(args []string) error {
 	}
 	logging.SetLevel(level)
 
-	logging.PrintBanner("worker", logging.VersionInfo{Version: version.Value, CommitHash: version.CommitHash, CommitTime: version.CommitTime, BuildTime: version.BuildTime})
+	logging.PrintBanner("worker")
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate config: %w", err)

@@ -332,6 +332,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		CommitHash:    version.CommitHash,
 		CommitTime:    version.CommitTime,
 		BuildTime:     version.BuildTime,
+		Branch:        version.Branch,
 		OauthEnabled:  len(providers) > 0,
 	}), nil
 }

@@ -179,6 +179,7 @@ struct BuildInfoResponse {
     commit_hash: String,
     commit_time: String,
     build_time: String,
+    branch: String,
 }
 
 #[derive(Serialize)]
@@ -1357,6 +1358,7 @@ async fn get_startup_info(
                     commit_hash: build.commit_hash,
                     commit_time: build.commit_time,
                     build_time: build.build_time,
+                    branch: build.branch,
                 },
             })
         }

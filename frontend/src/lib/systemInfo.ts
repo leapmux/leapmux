@@ -8,6 +8,7 @@ export interface BuildInfo {
   commitHash: string
   commitTime: string
   buildTime: string
+  branch: string
 }
 
 let soloMode = false
@@ -15,13 +16,14 @@ let signupEnabled = false
 let setupRequired = false
 let loaded = false
 
-let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '' }
+let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' }
 
 const frontendBuildInfo: BuildInfo = {
   version: import.meta.env.LEAPMUX_VERSION || '',
   commitHash: import.meta.env.LEAPMUX_COMMIT_HASH || '',
   commitTime: import.meta.env.LEAPMUX_COMMIT_TIME || '',
   buildTime: import.meta.env.LEAPMUX_BUILD_TIME || '',
+  branch: import.meta.env.LEAPMUX_BRANCH || '',
 }
 
 export async function loadSystemInfo(force = false): Promise<void> {
@@ -37,6 +39,7 @@ export async function loadSystemInfo(force = false): Promise<void> {
       commitHash: resp.commitHash,
       commitTime: resp.commitTime,
       buildTime: resp.buildTime,
+      branch: resp.branch,
     }
     loaded = true
   }
@@ -92,7 +95,7 @@ const logoArt = [
   '█   █▀▀ █▀█ █▀█ █▄ ▄█ █ █ █ █',
   '█   █▀  █▀█ █▀▀ █ ▀ █ █ █ ▄▀▄',
   '▀▀▀ ▀▀▀ ▀ ▀ ▀   ▀   ▀ ▀▀▀ ▀ ▀',
-].map(l => l.replaceAll(' ', '\u2007'))
+].map(l => l.replaceAll(' ', ' '))
 
 export function formatBuildTime(iso: string): string {
   if (!iso)
@@ -103,14 +106,31 @@ export function formatBuildTime(iso: string): string {
   return formatLocalDateTime(d)
 }
 
+// Display rule for the branch slot, mirroring backend/util/version.Format:
+//   - 'main' -> hide (common release / CI path, no visual noise)
+//   - empty but commitHash present -> '<detached>' (tag / ad-hoc builds)
+//   - otherwise -> show verbatim (branch or tag name)
+function branchDisplay(info: BuildInfo): string {
+  if (info.branch === 'main')
+    return ''
+  if (info.branch === '')
+    return info.commitHash ? '<detached>' : ''
+  return info.branch
+}
+
+// Canonical single-line identity string, matching backend/util/version.Format:
+//   '0.0.1-dev · 9c81b87 · feature/foo · Thu, 4/23/2026, 11:45:00 PM KST'
 export function formatVersionLine(info: BuildInfo): string {
-  let line = info.version || 'dev'
+  const parts: string[] = [info.version || 'dev']
   if (info.commitHash)
-    line += ` (${info.commitHash})`
+    parts.push(info.commitHash)
+  const branch = branchDisplay(info)
+  if (branch)
+    parts.push(branch)
   const time = formatBuildTime(info.buildTime)
   if (time)
-    line += ` \u00B7 ${time}`
-  return line
+    parts.push(time)
+  return parts.join(' · ')
 }
 
 let bannerPrinted = false
@@ -138,7 +158,7 @@ export function printConsoleBanner(): void {
     lines.push(`Frontend: ${formatVersionLine(frontend)}`)
   }
   const year = backend.commitTime ? new Date(backend.commitTime).getFullYear() : new Date().getFullYear()
-  lines.push(`Copyright \u00A9 ${year} Event Loop, Inc.`)
+  lines.push(`Copyright © ${year} Event Loop, Inc.`)
 
   // eslint-disable-next-line no-console
   console.log(lines.join('\n'), ...styles)

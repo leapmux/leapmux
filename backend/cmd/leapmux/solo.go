@@ -16,7 +16,7 @@ import (
 func runSolo(args []string, soloMode bool) error {
 	for _, a := range args {
 		if a == "-version" || a == "--version" {
-			fmt.Println(version.Value)
+			fmt.Println(version.Format())
 			return nil
 		}
 	}
