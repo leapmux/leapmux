@@ -44,8 +44,8 @@ jobs:
 
       - name: Set release version
         run: |
-          yq -i '.version = "${{ inputs.version }}"' versions.yaml
-          git add versions.yaml
+          sed -i -E 's|^VERSION=.*|VERSION=${{ inputs.version }}|' versions.env
+          git add versions.env
           git commit -m "chore: release v${{ inputs.version }}"
 
       - name: Create tag
@@ -64,8 +64,8 @@ jobs:
 
       - name: Bump to next development version
         run: |
-          yq -i '.version = "${{ steps.next.outputs.dev_version }}"' versions.yaml
-          git add versions.yaml
+          sed -i -E 's|^VERSION=.*|VERSION=${{ steps.next.outputs.dev_version }}|' versions.env
+          git add versions.env
           git commit -m "chore: bump version to ${{ steps.next.outputs.dev_version }}"
           git push origin HEAD
 
@@ -87,18 +87,11 @@ jobs:
         with:
           ref: v${{ inputs.version }}
 
-      - name: Read tool versions and git metadata
+      - name: Load tool versions and git metadata
         run: |
-          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
-          echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
-          echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
-          echo "UBUNTU_IMAGE=$(yq '.ubuntu-image' versions.yaml)" >> $GITHUB_ENV
-          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
-          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
-          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
-          echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> $GITHUB_ENV
+          grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
+          echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3

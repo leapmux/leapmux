@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Global ARGs — versions are defined in versions.yaml (no defaults here).
+# Global ARGs — versions are defined in versions.env (no defaults here).
 ARG BASE_IMAGE
 ARG GOLANG_VERSION
 ARG NODE_VERSION
@@ -32,7 +32,7 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 # Install build tools. Go tools (sqlc, golangci-lint, gotestsum) are
 # declared as `tool` deps in backend/go.mod and desktop/go/go.mod, and
 # invoked via `go tool <name>` — no `go install` step needed.
-RUN apk add --no-cache bash curl libgcc libstdc++ rsync yq && \
+RUN apk add --no-cache bash curl libgcc libstdc++ rsync && \
     wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
     wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf
 

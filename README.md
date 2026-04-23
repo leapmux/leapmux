@@ -225,7 +225,7 @@ By default this builds for `linux/amd64` and `linux/arm64`. You can override the
 task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
 ```
 
-The image uses a multi-stage build (buf, Bun, Go). Tool and base image versions are centralized in `versions.yaml` at the repository root.
+The image uses a multi-stage build (buf, Bun, Go). Tool and base image versions are centralized in `versions.env` at the repository root.
 
 ## Prerequisites
 
@@ -239,7 +239,6 @@ Before you begin, ensure you have the following installed:
 - **Task** - Task runner (replaces Make)
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)
-- **yq** - YAML processor (used to read `versions.yaml`)
 - **SQLite** (usually pre-installed on most systems)
 - **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
 - **mprocs** - Multi-process runner (required for `task dev`, `task dev-solo`, and `task dev-desktop`)
@@ -255,7 +254,7 @@ Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install buf go go-task mprocs node protobuf rust yq
+brew install buf go go-task mprocs node protobuf rust
 ```
 
 For building Docker images, install [Rancher Desktop](https://rancherdesktop.io/) (or any Docker-compatible runtime such as Docker Desktop or OrbStack) separately.
@@ -265,7 +264,7 @@ For building Docker images, install [Rancher Desktop](https://rancherdesktop.io/
 Install the official repository packages with [pacman](https://wiki.archlinux.org/title/Pacman):
 
 ```bash
-sudo pacman -S buf bun go go-task go-yq nodejs npm protobuf rust
+sudo pacman -S buf bun go go-task nodejs npm protobuf rust
 ```
 
 The Arch `go-task` package installs the binary as `go-task`. Add a shell alias so that `task` works:
@@ -647,7 +646,7 @@ leapmux/
 ├── NOTICE.md                # Third-party dependency licenses (generated)
 ├── README.md                # This file
 ├── Taskfile.yaml            # Build orchestration (go-task.dev)
-└── versions.yaml            # Version string and tool/image versions
+└── versions.env             # Version string and tool/image versions
 ```
 
 ## Contributing

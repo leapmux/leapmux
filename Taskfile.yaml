@@ -2,9 +2,21 @@ version: '3'
 
 run: once
 
+# Tool and image versions are centralized in versions.env. Task's dotenv
+# support exposes each KEY=VALUE both as a template variable ({{.KEY}})
+# and as a shell environment variable ($KEY). Existing environment
+# variables take precedence over the file, so e.g. `VERSION=1.2.3 task
+# build` still overrides the pinned release version.
+dotenv: ['versions.env']
+
 vars:
+  # Respect VERSION from the environment when set (for CI overrides),
+  # otherwise fall back to the value loaded from versions.env. Task's
+  # dotenv only propagates into command shells, so we have to bounce
+  # through a shell here and let {{.VERSION}} expand to the dotenv
+  # default before the parameter expansion runs.
   VERSION:
-    sh: echo "${VERSION:-$(yq '.version' versions.yaml)}"
+    sh: echo "${VERSION:-{{.VERSION}}}"
   COMMIT_HASH:
     sh: echo "${COMMIT_HASH:-$(git rev-parse --short HEAD 2>/dev/null)}"
   COMMIT_TIME:
@@ -16,22 +28,6 @@ vars:
     -X github.com/leapmux/leapmux/util/version.CommitHash={{.COMMIT_HASH}}
     -X github.com/leapmux/leapmux/util/version.CommitTime={{.COMMIT_TIME}}
     -X github.com/leapmux/leapmux/util/version.BuildTime={{.BUILD_TIME}}
-  ALPINE_IMAGE:
-    sh: yq '.alpine-image' versions.yaml
-  UBUNTU_IMAGE:
-    sh: yq '.ubuntu-image' versions.yaml
-  BUF_VERSION:
-    sh: yq '.buf-version' versions.yaml
-  S6_OVERLAY_VERSION:
-    sh: yq '.s6-overlay-version' versions.yaml
-  TASK_VERSION:
-    sh: yq '.task-version' versions.yaml
-  BUN_VERSION:
-    sh: yq '.bun-version' versions.yaml
-  NODE_VERSION:
-    sh: yq '.node-version' versions.yaml
-  GOLANG_VERSION:
-    sh: yq '.golang-version' versions.yaml
 
 # --- Code Generation ---
 

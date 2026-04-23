@@ -30,14 +30,8 @@ jobs:
       - name: Derive cache epoch
         run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
 
-      - name: Read tool versions
-        run: |
-          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
-          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
-          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
-          echo "RUST_VERSION=$(yq '.rust-version' versions.yaml)" >> $GITHUB_ENV
-          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
+      - name: Load tool versions
+        run: grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
 
       - name: Cache APT packages
         uses: actions/cache@v4
@@ -225,7 +219,6 @@ jobs:
 
       - name: Package CLI server tarball
         run: |
-          VERSION=$(yq '.version' versions.yaml)
           DIR="leapmux_${VERSION}_linux_${{ matrix.arch }}"
           mkdir -p "dist/${DIR}"
           cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
@@ -251,14 +244,8 @@ jobs:
       - name: Derive cache epoch
         run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
 
-      - name: Read tool versions
-        run: |
-          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
-          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
-          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
-          echo "RUST_VERSION=$(yq '.rust-version' versions.yaml)" >> $GITHUB_ENV
-          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
+      - name: Load tool versions
+        run: grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -348,7 +335,6 @@ jobs:
 
       - name: Package CLI server tarball
         run: |
-          VERSION=$(yq '.version' versions.yaml)
           DIR="leapmux_${VERSION}_darwin_arm64"
           mkdir -p "dist/${DIR}"
           cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
@@ -370,34 +356,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install yq
-        # windows-latest does not ship mikefarah/yq; without it the
-        # `Read tool versions` step below silently produces empty values
-        # because bash command substitution swallows the missing-binary
-        # failure inside `echo "FOO=$(yq ...)"`.
-        shell: pwsh
-        run: |
-          winget install --id MikeFarah.yq -e `
-            --source winget `
-            --silent `
-            --accept-package-agreements `
-            --accept-source-agreements `
-            --disable-interactivity
-          # winget drops a yq.exe shim into %LOCALAPPDATA%\Microsoft\WinGet\Links,
-          # but its PATH update only applies to new shells — the subsequent CI
-          # steps inherit the job's original PATH, so yq wouldn't be found.
-          # Surface the Links dir explicitly via GITHUB_PATH.
-          "$env:LOCALAPPDATA\Microsoft\WinGet\Links" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-      - name: Read tool versions
+      - name: Load tool versions
         shell: bash
-        run: |
-          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
-          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
-          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
-          echo "RUST_VERSION=$(yq '.rust-version' versions.yaml)" >> $GITHUB_ENV
-          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
+        run: grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
           echo "CACHE_WEEK=$(date -u +%G-W%V)" >> $GITHUB_ENV
 
       - name: Setup MSVC dev environment
@@ -492,8 +453,7 @@ jobs:
       - name: Package CLI server zip
         shell: pwsh
         run: |
-          $version = (yq '.version' versions.yaml)
-          $dir = "leapmux_${version}_windows_amd64"
+          $dir = "leapmux_${env:VERSION}_windows_amd64"
           New-Item -ItemType Directory -Path "dist/$dir" -Force | Out-Null
           Copy-Item leapmux.exe,LICENSE.md,NOTICE.md "dist/$dir"
           Compress-Archive -Path "dist/$dir" -DestinationPath "${dir}.zip" -Force
@@ -515,18 +475,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read tool versions and git metadata
+      - name: Load tool versions and git metadata
         run: |
-          echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "TASK_VERSION=$(yq '.task-version' versions.yaml)" >> $GITHUB_ENV
-          echo "S6_OVERLAY_VERSION=$(yq '.s6-overlay-version' versions.yaml)" >> $GITHUB_ENV
-          echo "ALPINE_IMAGE=$(yq '.alpine-image' versions.yaml)" >> $GITHUB_ENV
-          echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
-          echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
-          echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
-          echo "VERSION=$(yq '.version' versions.yaml)" >> $GITHUB_ENV
-          echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> $GITHUB_ENV
+          grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
+          echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -579,7 +532,7 @@ jobs:
         run: |
           DATE=$(date -u +%Y-%m-%d)
           SHORT_SHA=${GITHUB_SHA::7}
-          VERSION=$(yq '.version' versions.yaml)
+          . ./versions.env
           TAG="prerelease-${DATE}-${SHORT_SHA}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
