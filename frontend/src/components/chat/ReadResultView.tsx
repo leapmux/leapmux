@@ -24,6 +24,10 @@ const CAT_N_LINE_RE = /^\s*(\d+)[→\t](.*)$/
 /** Metadata suffix appended by Claude Code to tool results, e.g. [result-id: r7]. */
 const RESULT_ID_RE = /^\[result-id: [^\]]+\]$/
 
+/** Tags that delimit reminder blocks Claude Code may append to tool results. */
+const SYSTEM_REMINDER_OPEN = '<system-reminder>'
+const SYSTEM_REMINDER_CLOSE = '</system-reminder>'
+
 /** Skip syntax highlighting for files above this many lines. */
 const HIGHLIGHT_LINE_LIMIT = 1000
 
@@ -36,9 +40,29 @@ export function parseCatNContent(content: string): ParsedCatLine[] | null {
   if (!content)
     return null
   const rawLines = content.split('\n')
-  // Strip trailing empty lines and [result-id: ...] metadata suffix.
-  while (rawLines.length > 0 && (rawLines.at(-1) === '' || RESULT_ID_RE.test(rawLines.at(-1)!)))
-    rawLines.pop()
+  // Strip trailing empty lines, [result-id: ...] metadata, and
+  // <system-reminder>...</system-reminder> blocks Claude Code may append.
+  while (rawLines.length > 0) {
+    const last = rawLines.at(-1)!
+    if (last === '' || RESULT_ID_RE.test(last)) {
+      rawLines.pop()
+      continue
+    }
+    if (last === SYSTEM_REMINDER_CLOSE) {
+      let openIdx = -1
+      for (let i = rawLines.length - 2; i >= 0; i--) {
+        if (rawLines[i] === SYSTEM_REMINDER_OPEN) {
+          openIdx = i
+          break
+        }
+      }
+      if (openIdx === -1)
+        break
+      rawLines.length = openIdx
+      continue
+    }
+    break
+  }
   if (rawLines.length === 0)
     return null
 

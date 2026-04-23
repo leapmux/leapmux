@@ -67,4 +67,46 @@ describe('parseCatNContent', () => {
       { num: 1, text: 'foo' },
     ])
   })
+
+  it('strips trailing <system-reminder> block', () => {
+    const result = parseCatNContent(
+      '1\tfoo\n2\tbar\n\n<system-reminder>\nWhenever you read a file...\n</system-reminder>\n',
+    )
+    expect(result).toEqual([
+      { num: 1, text: 'foo' },
+      { num: 2, text: 'bar' },
+    ])
+  })
+
+  it('strips multi-line <system-reminder> block with multiple body lines', () => {
+    const result = parseCatNContent(
+      '1\tfoo\n<system-reminder>\nline one\nline two\nline three\n</system-reminder>',
+    )
+    expect(result).toEqual([
+      { num: 1, text: 'foo' },
+    ])
+  })
+
+  it('strips <system-reminder> block followed by [result-id: ...]', () => {
+    const result = parseCatNContent(
+      '1\tfoo\n<system-reminder>\nreminder body\n</system-reminder>\n[result-id: r7]\n',
+    )
+    expect(result).toEqual([
+      { num: 1, text: 'foo' },
+    ])
+  })
+
+  it('strips multiple consecutive <system-reminder> blocks', () => {
+    const result = parseCatNContent(
+      '1\tfoo\n<system-reminder>\nfirst\n</system-reminder>\n<system-reminder>\nsecond\n</system-reminder>\n',
+    )
+    expect(result).toEqual([
+      { num: 1, text: 'foo' },
+    ])
+  })
+
+  it('returns null when </system-reminder> has no matching opening tag', () => {
+    const result = parseCatNContent('1\tfoo\nstray text\n</system-reminder>\n')
+    expect(result).toBeNull()
+  })
 })
