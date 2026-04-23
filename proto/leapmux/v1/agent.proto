@@ -241,6 +241,7 @@ message AgentGitStatus {
   bool added = 10;          // Has staged additions
   bool untracked = 11;      // Has untracked files
   string origin_url = 12;   // Remote origin URL
+  string toplevel = 13;     // Working-tree root (`git rev-parse --show-toplevel`)
 }
 
 // --- Message History ---

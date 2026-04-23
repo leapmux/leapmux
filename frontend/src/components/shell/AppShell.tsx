@@ -41,7 +41,7 @@ import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { createTabStore, protoToTerminalTab, tabKey } from '~/stores/tab.store'
+import { createTabStore, preserveNonEmptyGitFields, protoToTerminalTab, tabKey } from '~/stores/tab.store'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
@@ -553,9 +553,20 @@ export const AppShell: ParentComponent = (props) => {
         const { agents, terminalsByWorker } = await fanOutTabsToWorkers(tabsResp.tabs)
         const anyTerminalFetchFailed = terminalsByWorker.some(r => r.terminals === null)
 
+        // Index the previous snapshot's tabs so we can preserve
+        // gitBranch/gitOriginUrl across a transient BatchGetGitStatus
+        // miss. Matches the hydration behaviour in useWorkspaceRestore.
+        const existing = registry.get(workspaceId)
+        const previousTabsByKey = new Map<string, Tab>()
+        if (existing) {
+          for (const t of existing.tabs) {
+            previousTabsByKey.set(tabKey(t), t)
+          }
+        }
+
         const tabs: Tab[] = []
         for (const a of agents) {
-          tabs.push({
+          const fresh: Tab = {
             type: TabType.AGENT,
             id: a.id,
             title: a.title || undefined,
@@ -564,17 +575,21 @@ export const AppShell: ParentComponent = (props) => {
             agentProvider: a.agentProvider,
             gitBranch: a.gitStatus?.branch || undefined,
             gitOriginUrl: a.gitStatus?.originUrl || undefined,
-          })
+            gitToplevel: a.gitStatus?.toplevel || undefined,
+          }
+          const previous = previousTabsByKey.get(tabKey(fresh))
+          tabs.push({ ...fresh, ...preserveNonEmptyGitFields(fresh, previous) })
         }
         for (const { workerId, terminals } of terminalsByWorker) {
           if (terminals === null)
             continue
           for (const t of terminals) {
-            tabs.push(protoToTerminalTab(workerId, t))
+            const fresh = protoToTerminalTab(workerId, t)
+            const previous = previousTabsByKey.get(tabKey(fresh))
+            tabs.push({ ...fresh, ...preserveNonEmptyGitFields(fresh, previous) })
           }
         }
 
-        const existing = registry.get(workspaceId)
         // When a terminal fetch fails, preserve the previous terminal tabs (if any)
         // so they don't disappear from the sidebar on a transient error. An empty
         // successful result means the worker truly has no terminals.

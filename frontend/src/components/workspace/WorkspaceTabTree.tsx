@@ -11,6 +11,7 @@ import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { basename } from '~/lib/paths'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
 import { canCloseTab, tabKey } from '~/stores/tab.store'
 import { terminalStatusClassList } from '../shell/terminalStatus'
@@ -338,6 +339,23 @@ const PROTOCOL_PREFIX_RE = /^https?:\/\//
 const TRAILING_DOT_GIT_RE = /\.git$/
 const TRAILING_SLASH_RE = /\/$/
 
+/**
+ * Prefix for the synthetic repo key used for origin-less local repos. The
+ * full key is `LOCAL_REPO_KEY_PREFIX + toplevel`, so two distinct local
+ * repos sharing a workspace sort under separate groups. Chosen so it
+ * can't collide with any real origin URL — git origin URLs cannot begin
+ * with a null byte.
+ */
+export const LOCAL_REPO_KEY_PREFIX = '\x00local:'
+
+/**
+ * Fallback key when a tab has a branch but no toplevel (older data or a
+ * legitimate worker that didn't surface the toplevel). All such tabs
+ * collapse into a single bucket — the best we can do without a toplevel.
+ */
+export const LOCAL_REPO_KEY = '\x00local'
+const LOCAL_REPO_LABEL = '(local repo)'
+
 export function formatGitOriginUrl(url: string): string {
   if (!url)
     return ''
@@ -355,35 +373,72 @@ export function formatGitOriginUrl(url: string): string {
   return result
 }
 
+/**
+ * Computes the grouping key and display label for a tab's repository. Order
+ * of precedence:
+ *   1. gitOriginUrl — a remote we can format nicely.
+ *   2. gitToplevel — an origin-less local repo; the toplevel path makes
+ *      distinct repos distinct.
+ *   3. LOCAL_REPO_KEY fallback — a branch is known but no toplevel was
+ *      surfaced (older server, transient failure); all such tabs collapse
+ *      into one bucket labelled "(local repo)".
+ */
+function repoKeyAndLabel(tab: Tab): { key: string, label: string } | null {
+  if (tab.gitOriginUrl)
+    return { key: tab.gitOriginUrl, label: formatGitOriginUrl(tab.gitOriginUrl) }
+  if (tab.gitToplevel) {
+    const label = basename(tab.gitToplevel) || tab.gitToplevel
+    return { key: `${LOCAL_REPO_KEY_PREFIX}${tab.gitToplevel}`, label }
+  }
+  if (tab.gitBranch)
+    return { key: LOCAL_REPO_KEY, label: LOCAL_REPO_LABEL }
+  return null
+}
+
 export function buildTree(tabs: Tab[]): TabTree {
-  const grouped: Tab[] = []
   const ungrouped: Tab[] = []
+  // Group by repo-key -> branch, preserving a stable display label per key.
+  const repoMap = new Map<string, { label: string, branches: Map<string, Tab[]> }>()
 
+  // A tab belongs under Repo → Branch when we can compute a repo key from
+  // its git info (origin URL, toplevel, or as a last resort just a branch).
+  // Tabs with none of those (non-git dirs) stay ungrouped.
   for (const tab of tabs) {
-    if (tab.gitOriginUrl) {
-      grouped.push(tab)
-    }
-    else {
+    const rk = repoKeyAndLabel(tab)
+    if (!rk) {
       ungrouped.push(tab)
+      continue
     }
-  }
-
-  // Group by origin URL -> branch
-  const repoMap = new Map<string, Map<string, Tab[]>>()
-  for (const tab of grouped) {
-    const url = tab.gitOriginUrl!
-    if (!repoMap.has(url))
-      repoMap.set(url, new Map())
-    const branchMap = repoMap.get(url)!
+    let entry = repoMap.get(rk.key)
+    if (!entry) {
+      entry = { label: rk.label, branches: new Map() }
+      repoMap.set(rk.key, entry)
+    }
     const branch = tab.gitBranch || '(no branch)'
-    if (!branchMap.has(branch))
-      branchMap.set(branch, [])
-    branchMap.get(branch)!.push(tab)
+    if (!entry.branches.has(branch))
+      entry.branches.set(branch, [])
+    entry.branches.get(branch)!.push(tab)
   }
 
-  // Sort and build tree
-  const groups: RepoGroup[] = [...repoMap.entries()].toSorted(([a], [b]) => formatGitOriginUrl(a).localeCompare(formatGitOriginUrl(b))).map(([url, branchMap]) => {
-    const branches = [...branchMap.entries()].toSorted(([a], [b]) => a.localeCompare(b)).map(([branchName, branchTabs]) => {
+  // Sort rule: real remotes first (alphabetical by formatted label), then
+  // per-toplevel local repos (alphabetical by basename), then the
+  // `(local repo)` fallback bucket last.
+  const localRank = (key: string): number => {
+    if (key === LOCAL_REPO_KEY)
+      return 2
+    if (key.startsWith(LOCAL_REPO_KEY_PREFIX))
+      return 1
+    return 0
+  }
+
+  const groups: RepoGroup[] = [...repoMap.entries()].toSorted(([aKey, a], [bKey, b]) => {
+    const aRank = localRank(aKey)
+    const bRank = localRank(bKey)
+    if (aRank !== bRank)
+      return aRank - bRank
+    return a.label.localeCompare(b.label)
+  }).map(([key, entry]) => {
+    const branches = [...entry.branches.entries()].toSorted(([a], [b]) => a.localeCompare(b)).map(([branchName, branchTabs]) => {
       // All tabs on the same branch share the same git state, so use
       // the first tab that has diff stats rather than summing.
       let diffAdded = 0
@@ -400,8 +455,8 @@ export function buildTree(tabs: Tab[]): TabTree {
       return { branchName, tabs: sortTabs(branchTabs), diffAdded, diffDeleted, diffUntracked }
     })
     return {
-      repoKey: url,
-      repoLabel: formatGitOriginUrl(url),
+      repoKey: key,
+      repoLabel: entry.label,
       branches,
       diffAdded: branches.reduce((sum, b) => sum + b.diffAdded, 0),
       diffDeleted: branches.reduce((sum, b) => sum + b.diffDeleted, 0),

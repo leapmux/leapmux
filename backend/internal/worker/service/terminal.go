@@ -166,7 +166,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// `Creating worktree "feature/x"…`) before mutation begins.
 		startupMessage := terminalStartingLabel(shell)
 		svc.TerminalStartup.setMessage(terminalID, startupMessage)
-		svc.broadcastTerminalStarting(terminalID, startupMessage, "", "")
+		svc.broadcastTerminalStarting(terminalID, startupMessage, nil)
 
 		sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 			TerminalId: terminalID,
@@ -350,19 +350,12 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// Collect from the in-memory manager and DB-only rows, recording
-		// each terminal's resolved git directory (ShellStartDir, falling
-		// back to WorkingDir) so BatchGetGitStatus can dedupe across
-		// terminals that share a repo.
+		// each terminal's resolved git directory (see gitutil.ResolveGitDir)
+		// so BatchGetGitStatus can dedupe across terminals that share a repo.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
 		var gitDirs []string
-		resolveGitDir := func(shellStartDir, workingDir string) string {
-			if shellStartDir != "" {
-				return shellStartDir
-			}
-			return workingDir
-		}
 		for _, e := range entries {
 			if accessibleWsIDs != nil && !accessibleWsIDs[e.Meta.WorkspaceID] {
 				continue
@@ -385,7 +378,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				ti.StartupMessage = msg
 			}
 			terminals = append(terminals, ti)
-			gitDirs = append(gitDirs, resolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
+			gitDirs = append(gitDirs, gitutil.ResolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
 		}
 
 		dbTerminals, err := svc.Queries.ListTerminalsByIDs(bgCtx(), tabIDs)
@@ -414,7 +407,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					StartupMessage: startupMessage,
 				}
 				terminals = append(terminals, ti)
-				gitDirs = append(gitDirs, resolveGitDir(ts.ShellStartDir, ts.WorkingDir))
+				gitDirs = append(gitDirs, gitutil.ResolveGitDir(ts.ShellStartDir, ts.WorkingDir))
 			}
 		}
 
@@ -423,6 +416,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			if gs != nil {
 				terminals[i].GitBranch = gs.Branch
 				terminals[i].GitOriginUrl = gs.OriginUrl
+				terminals[i].GitToplevel = gs.Toplevel
 			}
 		}
 
@@ -467,21 +461,13 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 	}
 
 	// Phase 1: compute git status from the final working dir (may be a
-	// freshly-created worktree). The resulting branch/origin travels on
-	// the "Starting <shell>…" broadcast so the frontend can populate the
-	// tab's gitBranch / gitOriginUrl without an extra round-trip.
-	gitDir := opts.ShellStartDir
-	if gitDir == "" {
-		gitDir = opts.WorkingDir
-	}
-	var gitBranch, gitOriginURL string
-	if gs := gitutil.GetGitStatus(ctx, gitDir); gs != nil {
-		gitBranch = gs.Branch
-		gitOriginURL = gs.OriginUrl
-	}
+	// freshly-created worktree). The resulting branch/origin/toplevel travel
+	// on the "Starting <shell>…" broadcast so the frontend can populate the
+	// tab's gitBranch / gitOriginUrl / gitToplevel without an extra round-trip.
+	gs := gitutil.GetGitStatus(ctx, gitutil.ResolveGitDir(opts.ShellStartDir, opts.WorkingDir))
 	shellMsg := terminalStartingLabel(opts.Shell)
 	svc.TerminalStartup.setMessage(terminalID, shellMsg)
-	svc.broadcastTerminalStarting(terminalID, shellMsg, gitBranch, gitOriginURL)
+	svc.broadcastTerminalStarting(terminalID, shellMsg, gs)
 
 	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
 
@@ -526,7 +512,7 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 func (svc *Context) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan) (gitModeResult, error) {
 	if label := plan.PhaseLabel(); label != "" {
 		svc.TerminalStartup.setMessage(terminalID, label)
-		svc.broadcastTerminalStarting(terminalID, label, "", "")
+		svc.broadcastTerminalStarting(terminalID, label, nil)
 	}
 	return svc.executeGitMode(ctx, plan)
 }
@@ -539,7 +525,7 @@ func (svc *Context) failTerminalStartup(terminalID string, gm gitModeResult, cau
 	if gm.Rollback.HasPartialMutation() {
 		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
 			svc.TerminalStartup.setMessage(terminalID, label)
-			svc.broadcastTerminalStarting(terminalID, label, "", "")
+			svc.broadcastTerminalStarting(terminalID, label, nil)
 		}
 		svc.rollbackGitMode(gm)
 	}
@@ -566,17 +552,22 @@ func (svc *Context) persistTerminalStartupError(terminalID, errMsg string) {
 }
 
 // buildTerminalStartingStatus builds a STARTING TerminalStatusChange
-// carrying the current phase label. gitBranch and gitOriginURL are
-// populated once phase 1 finishes computing them; earlier phases pass
-// empty strings.
-func buildTerminalStartingStatus(terminalID, message, gitBranch, gitOriginURL string) *leapmuxv1.TerminalStatusChange {
-	return &leapmuxv1.TerminalStatusChange{
+// carrying the current phase label. gs is nil for phases before git
+// status has been computed (phase 0 mode labels, rollback labels, the
+// seed broadcast from registerTerminalHandlers) and non-nil once
+// runTerminalStartup's phase 1 has run `git status` on the final dir.
+func buildTerminalStartingStatus(terminalID, message string, gs *leapmuxv1.AgentGitStatus) *leapmuxv1.TerminalStatusChange {
+	sc := &leapmuxv1.TerminalStatusChange{
 		TerminalId:     terminalID,
 		Status:         leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
 		StartupMessage: message,
-		GitBranch:      gitBranch,
-		GitOriginUrl:   gitOriginURL,
 	}
+	if gs != nil {
+		sc.GitBranch = gs.GetBranch()
+		sc.GitOriginUrl = gs.GetOriginUrl()
+		sc.GitToplevel = gs.GetToplevel()
+	}
+	return sc
 }
 
 // buildTerminalFailedStatus builds a STARTUP_FAILED TerminalStatusChange
@@ -618,13 +609,13 @@ func (svc *Context) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.Termi
 }
 
 // broadcastTerminalStarting fans out a STARTING TerminalStatusChange.
-// Used by runTerminalStartup for each phase label transition; gitBranch
-// and gitOriginURL are passed once phase 1 has computed them.
-func (svc *Context) broadcastTerminalStarting(terminalID, message, gitBranch, gitOriginURL string) {
+// Used by runTerminalStartup for each phase label transition; gs is
+// non-nil only once phase 1 has computed git status.
+func (svc *Context) broadcastTerminalStarting(terminalID, message string, gs *leapmuxv1.AgentGitStatus) {
 	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
-			StatusChange: buildTerminalStartingStatus(terminalID, message, gitBranch, gitOriginURL),
+			StatusChange: buildTerminalStartingStatus(terminalID, message, gs),
 		},
 	})
 }

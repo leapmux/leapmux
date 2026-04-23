@@ -11,7 +11,7 @@ import { toastCloseFailure } from '~/components/shell/closeFailureToast'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { tabKey } from '~/stores/tab.store'
+import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.store'
 
 import { nextTabNumber } from './useAgentOperations'
 
@@ -87,9 +87,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      // git branch / origin arrive later via TerminalStatusChange (phase 1
-      // of the async startup reports the post-mutation gitStatus).
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, status: TerminalStatus.STARTING }, { afterKey })
+      // The real git branch / origin arrive later via TerminalStatusChange
+      // (phase 1 of the async startup reports the post-mutation gitStatus).
+      // Seed optimistically from the active tab so the sidebar doesn't flash
+      // the new tab under the workspace before phase 1 completes.
+      const newTab = { type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, status: TerminalStatus.STARTING }
+      const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), newTab)
+      props.tabStore.addTab({ ...newTab, ...seed }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.
@@ -139,7 +143,9 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      props.tabStore.addTab({ type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, status: TerminalStatus.STARTING }, { afterKey })
+      const newTab = { type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, status: TerminalStatus.STARTING }
+      const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), newTab)
+      props.tabStore.addTab({ ...newTab, ...seed }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
       props.persistLayout?.()
       // Register tab with hub.

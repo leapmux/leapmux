@@ -67,6 +67,70 @@ func TestGetOriginURL(t *testing.T) {
 	})
 }
 
+func TestGetToplevel(t *testing.T) {
+	t.Run("returns absolute repo root for repo root", func(t *testing.T) {
+		dir := initRepo(t)
+		got := GetToplevel(context.Background(), dir)
+		require.NotEmpty(t, got)
+		expected, err := filepath.EvalSymlinks(dir)
+		require.NoError(t, err)
+		gotResolved, err := filepath.EvalSymlinks(got)
+		require.NoError(t, err)
+		assert.Equal(t, expected, gotResolved)
+	})
+
+	t.Run("returns repo root when called from a subdirectory", func(t *testing.T) {
+		dir := initRepo(t)
+		sub := filepath.Join(dir, "src", "nested")
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+
+		got := GetToplevel(context.Background(), sub)
+		require.NotEmpty(t, got)
+		expected, err := filepath.EvalSymlinks(dir)
+		require.NoError(t, err)
+		gotResolved, err := filepath.EvalSymlinks(got)
+		require.NoError(t, err)
+		assert.Equal(t, expected, gotResolved)
+	})
+
+	t.Run("returns empty string for non-git directory", func(t *testing.T) {
+		dir := t.TempDir()
+		got := GetToplevel(context.Background(), dir)
+		assert.Empty(t, got)
+	})
+
+	t.Run("returns empty string for nonexistent directory", func(t *testing.T) {
+		got := GetToplevel(context.Background(), filepath.Join(t.TempDir(), "nope"))
+		assert.Empty(t, got)
+	})
+}
+
+func TestGetGitStatus_Toplevel(t *testing.T) {
+	t.Run("populates toplevel for a regular repo", func(t *testing.T) {
+		dir := initRepo(t)
+		status := GetGitStatus(context.Background(), dir)
+		require.NotNil(t, status)
+		require.NotEmpty(t, status.Toplevel)
+		expected, err := filepath.EvalSymlinks(dir)
+		require.NoError(t, err)
+		got, err := filepath.EvalSymlinks(status.Toplevel)
+		require.NoError(t, err)
+		assert.Equal(t, expected, got)
+	})
+
+	t.Run("distinct repos yield distinct toplevels", func(t *testing.T) {
+		repoA := initRepo(t)
+		repoB := initRepo(t)
+		sa := GetGitStatus(context.Background(), repoA)
+		sb := GetGitStatus(context.Background(), repoB)
+		require.NotNil(t, sa)
+		require.NotNil(t, sb)
+		assert.NotEmpty(t, sa.Toplevel)
+		assert.NotEmpty(t, sb.Toplevel)
+		assert.NotEqual(t, sa.Toplevel, sb.Toplevel)
+	})
+}
+
 func TestGetGitStatus_OriginURL(t *testing.T) {
 	t.Run("includes origin URL in status", func(t *testing.T) {
 		dir := initRepo(t)

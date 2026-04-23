@@ -26,6 +26,13 @@ export interface Tab {
   agentProvider?: AgentProvider
   gitBranch?: string
   gitOriginUrl?: string
+  /**
+   * Absolute working-tree root of the tab's enclosing git repository
+   * (from `git rev-parse --show-toplevel`). Used to group origin-less
+   * repos ("local" repos) in the sidebar tree; the same toplevel means
+   * the same repo, different toplevels mean different repos.
+   */
+  gitToplevel?: string
   gitDiffAdded?: number
   gitDiffDeleted?: number
   gitDiffUntracked?: number
@@ -83,6 +90,7 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     rows: term.rows || undefined,
     gitBranch: term.gitBranch || undefined,
     gitOriginUrl: term.gitOriginUrl || undefined,
+    gitToplevel: term.gitToplevel || undefined,
     status,
     startupError: term.startupError || undefined,
     startupMessage: term.startupMessage || undefined,
@@ -98,6 +106,106 @@ export function protoToTerminalTab(workerId: string, term: ProtoTerminal): Tab {
     type: TabType.TERMINAL,
     id: term.terminalId,
     ...protoToTerminalTabFields(workerId, term),
+  }
+}
+
+/** The three tab fields derived from git status. */
+export type GitTabFields = Pick<Tab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel'>
+
+/**
+ * Normalize a git-info triple (from AgentGitStatus or a flat
+ * TerminalStatusChange) into the tab shape, mapping empty strings to
+ * undefined so comparisons stay sane.
+ */
+export function toGitTabFields(branch: string, originUrl: string, toplevel: string): GitTabFields {
+  return {
+    gitBranch: branch || undefined,
+    gitOriginUrl: originUrl || undefined,
+    gitToplevel: toplevel || undefined,
+  }
+}
+
+/** True when `next` would change any of the three git fields on `tab`. */
+export function gitTabFieldsDiffer(tab: GitTabFields, next: GitTabFields): boolean {
+  return tab.gitBranch !== next.gitBranch
+    || tab.gitOriginUrl !== next.gitOriginUrl
+    || tab.gitToplevel !== next.gitToplevel
+}
+
+/**
+ * Directory whose git status determines a tab's branch/origin. Mirror of
+ * `gitutil.ResolveGitDir` on the backend — both sides must resolve the
+ * same way so `resolveOptimisticGitInfo`'s dir-match guard stays correct.
+ * Agent tabs never carry a shellStartDir so this collapses to workingDir
+ * for them.
+ */
+function effectiveGitDir(tab: Pick<Tab, 'shellStartDir' | 'workingDir'>): string {
+  return tab.shellStartDir || tab.workingDir || ''
+}
+
+/**
+ * Fills in empty gitBranch / gitOriginUrl on a fresh server-provided fields
+ * record from the previous tab's values. Guards against a transient
+ * git-status failure on the worker (nil gs from BatchGetGitStatus) wiping
+ * out authoritative values the tab already had, which would drop the tab
+ * out of its sidebar group until the next workspace reload. Per-field so
+ * one legitimately-cleared field (e.g. user removed `origin` remote) still
+ * updates instead of being masked by the preserved branch.
+ *
+ * Callers: the hydration/refresh paths that rebuild tabs from ListTerminals
+ * / ListAgents responses. The TerminalStatusChange / statusChange handlers
+ * already guard on `(branch || origin)` so they intentionally skip empty
+ * broadcasts without needing this helper.
+ */
+export function preserveNonEmptyGitFields(
+  fresh: Partial<Tab>,
+  previous: Pick<Tab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel'> | null | undefined,
+): Partial<Tab> {
+  if (!previous)
+    return fresh
+  const next: Partial<Tab> = { ...fresh }
+  if (!next.gitBranch && previous.gitBranch)
+    next.gitBranch = previous.gitBranch
+  if (!next.gitOriginUrl && previous.gitOriginUrl)
+    next.gitOriginUrl = previous.gitOriginUrl
+  if (!next.gitToplevel && previous.gitToplevel)
+    next.gitToplevel = previous.gitToplevel
+  return next
+}
+
+/**
+ * Optimistic git branch/origin to seed on a freshly-opened agent or terminal
+ * tab. A new tab starts with empty gitBranch/gitOriginUrl and only learns
+ * them once the async phase-1 startup broadcasts TerminalStatusChange; in
+ * that window the sidebar renders the tab under the workspace instead of
+ * nested under its branch (WorkspaceTabTree.buildTree groups solely on
+ * gitOriginUrl). Seeding avoids that flash.
+ *
+ * Only safe to seed when the active tab and the new tab resolve to the same
+ * git directory — otherwise the seeded values would be wrong for the new
+ * tab's repo. File tabs have no authoritative git info so they never seed.
+ */
+export function resolveOptimisticGitInfo(
+  activeTab: Tab | null | undefined,
+  newTab: Pick<Tab, 'shellStartDir' | 'workingDir'>,
+): { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string } {
+  if (!activeTab)
+    return {}
+  if (activeTab.type !== TabType.AGENT && activeTab.type !== TabType.TERMINAL)
+    return {}
+  // Needs at least an origin or a toplevel — otherwise there is no grouping
+  // value to seed, and the sidebar would still fall through to ungrouped
+  // until the authoritative broadcast arrives.
+  if (!activeTab.gitOriginUrl && !activeTab.gitToplevel)
+    return {}
+  const activeDir = effectiveGitDir(activeTab)
+  const newDir = effectiveGitDir(newTab)
+  if (!activeDir || activeDir !== newDir)
+    return {}
+  return {
+    gitBranch: activeTab.gitBranch || undefined,
+    gitOriginUrl: activeTab.gitOriginUrl || undefined,
+    gitToplevel: activeTab.gitToplevel || undefined,
   }
 }
 

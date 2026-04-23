@@ -107,6 +107,7 @@ message TerminalInfo {
   TerminalStatus status = 11;   // Lifecycle state (starting/ready/failed)
   string startup_error = 12;    // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
   string startup_message = 13;  // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
+  string git_toplevel = 14;     // Working-tree root of the enclosing git repo, if any
 }
 
 message TerminalData {
@@ -132,6 +133,7 @@ message TerminalStatusChange {
   // that used to live on OpenTerminalResponse).
   string git_branch = 5;
   string git_origin_url = 6;
+  string git_toplevel = 7;
 }
 
 message ListAvailableShellsRequest {

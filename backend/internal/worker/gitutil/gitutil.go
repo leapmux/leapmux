@@ -62,6 +62,21 @@ func IsLinkedWorktreeGitDir(gitDir string) bool {
 	return strings.Contains(filepath.ToSlash(gitDir), ".git/worktrees")
 }
 
+// ResolveGitDir returns the directory whose git status represents a
+// terminal/agent tab's repo state: shellStartDir when set, otherwise
+// workingDir. The frontend `effectiveGitDir` helper in tab.store.ts
+// mirrors this rule, and the two must stay in sync — the optimistic-
+// seed guard (`resolveOptimisticGitInfo`) compares the active tab's
+// resolved dir against the new tab's resolved dir to decide whether
+// it's safe to reuse git info, which only works if both sides resolve
+// the same way.
+func ResolveGitDir(shellStartDir, workingDir string) string {
+	if shellStartDir != "" {
+		return shellStartDir
+	}
+	return workingDir
+}
+
 // NewGitCmd creates an exec.Cmd for git with terminal interaction disabled
 // and no console window on Windows.
 func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
@@ -102,6 +117,10 @@ func GetGitStatus(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
 
 	// Get the remote origin URL.
 	status.OriginUrl = GetOriginURL(ctx, dir)
+
+	// Working-tree root so the frontend can distinguish local repos that
+	// share the same (missing) origin URL.
+	status.Toplevel = GetToplevel(ctx, dir)
 
 	return status
 }
@@ -244,6 +263,10 @@ func getGitStatusV1(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
 	// Get the remote origin URL.
 	status.OriginUrl = GetOriginURL(ctx, dir)
 
+	// Working-tree root so the frontend can distinguish local repos that
+	// share the same (missing) origin URL.
+	status.Toplevel = GetToplevel(ctx, dir)
+
 	return status
 }
 
@@ -269,6 +292,19 @@ func getShortHEAD(ctx context.Context, dir string) string {
 // Returns an empty string if the directory is not a git repo or has no origin remote.
 func GetOriginURL(ctx context.Context, dir string) string {
 	cmd := NewGitCmd(ctx, "-C", dir, "config", "--get", "remote.origin.url")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// GetToplevel returns the absolute path of the git working-tree root for the
+// given directory. Returns an empty string when the path is not inside a git
+// repository. Used by the sidebar grouping to distinguish origin-less local
+// repos that would otherwise collapse under a single "(local repo)" bucket.
+func GetToplevel(ctx context.Context, dir string) string {
+	cmd := NewGitCmd(ctx, "-C", dir, "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""

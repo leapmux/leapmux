@@ -2,7 +2,7 @@ import type { Tab } from '~/stores/tab.store'
 import { describe, expect, it } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { buildTree, formatGitOriginUrl } from './WorkspaceTabTree'
+import { buildTree, formatGitOriginUrl, LOCAL_REPO_KEY, LOCAL_REPO_KEY_PREFIX } from './WorkspaceTabTree'
 
 describe('formatGitOriginUrl', () => {
   it('strips https protocol', () => {
@@ -156,6 +156,94 @@ describe('buildTree', () => {
     const tree = buildTree(tabs)
     expect(tree.groups[0].branches[0].diffAdded).toBe(0)
     expect(tree.groups[0].branches[0].diffDeleted).toBe(0)
+  })
+
+  it('groups tabs with a branch but no origin under the local-repo bucket', () => {
+    // A fresh `git init` project with no remote still has a branch. The tab
+    // should nest under its branch, not flatten under the workspace.
+    const tabs = [
+      makeTab({ id: 'a1', gitBranch: 'main' }),
+      makeTab({ id: 'a2', gitBranch: 'main', type: TabType.TERMINAL }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(1)
+    expect(tree.groups[0].repoKey).toBe(LOCAL_REPO_KEY)
+    expect(tree.groups[0].repoLabel).toBe('(local repo)')
+    expect(tree.groups[0].branches).toHaveLength(1)
+    expect(tree.groups[0].branches[0].branchName).toBe('main')
+    expect(tree.groups[0].branches[0].tabs).toHaveLength(2)
+    expect(tree.ungrouped).toHaveLength(0)
+  })
+
+  it('keeps tabs with neither origin nor branch in ungrouped', () => {
+    const tabs = [makeTab({ id: 'a1' })]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(0)
+    expect(tree.ungrouped).toHaveLength(1)
+  })
+
+  it('sorts the local-repo bucket last regardless of label', () => {
+    const tabs = [
+      makeTab({ id: 'a1', gitBranch: 'main' }),
+      makeTab({ id: 'a2', gitOriginUrl: 'https://github.com/org/zeta.git', gitBranch: 'main' }),
+      makeTab({ id: 'a3', gitOriginUrl: 'https://github.com/org/alpha.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups.map(g => g.repoLabel)).toEqual([
+      'github.com/org/alpha',
+      'github.com/org/zeta',
+      '(local repo)',
+    ])
+  })
+
+  it('separates distinct local repos by toplevel path', () => {
+    // Two `git init` projects in the same workspace should show up as two
+    // groups, each labelled by its toplevel's basename, not collapse into
+    // a single "(local repo)" bucket.
+    const tabs = [
+      makeTab({ id: 't1', type: TabType.TERMINAL, gitBranch: 'main', gitToplevel: '/home/me/projects/alpha' }),
+      makeTab({ id: 't2', type: TabType.TERMINAL, gitBranch: 'main', gitToplevel: '/home/me/projects/beta' }),
+      makeTab({ id: 'a1', type: TabType.AGENT, gitBranch: 'feature', gitToplevel: '/home/me/projects/alpha' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(2)
+    expect(tree.groups.map(g => g.repoLabel)).toEqual(['alpha', 'beta'])
+    expect(tree.groups[0].repoKey).toBe(`${LOCAL_REPO_KEY_PREFIX}/home/me/projects/alpha`)
+    expect(tree.groups[1].repoKey).toBe(`${LOCAL_REPO_KEY_PREFIX}/home/me/projects/beta`)
+    // alpha has both branches (main + feature); beta just main.
+    expect(tree.groups[0].branches.map(b => b.branchName)).toEqual(['feature', 'main'])
+    expect(tree.groups[1].branches.map(b => b.branchName)).toEqual(['main'])
+  })
+
+  it('orders remotes, per-toplevel locals, then the fallback bucket', () => {
+    // Mixed set: one remote, two distinct local-with-toplevel repos, and
+    // one legacy branch-only tab (no toplevel) that lands in the fallback.
+    const tabs = [
+      makeTab({ id: 'r1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'l1', gitBranch: 'main', gitToplevel: '/home/me/zulu' }),
+      makeTab({ id: 'l2', gitBranch: 'main', gitToplevel: '/home/me/alpha' }),
+      makeTab({ id: 'f1', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(4)
+    expect(tree.groups.map(g => g.repoLabel)).toEqual([
+      'github.com/org/repo',
+      'alpha',
+      'zulu',
+      '(local repo)',
+    ])
+    expect(tree.groups[3].repoKey).toBe(LOCAL_REPO_KEY)
+  })
+
+  it('falls back to the toplevel path when basename would be empty', () => {
+    // Edge case: a toplevel like "/" has no basename. We fall back to the
+    // raw path rather than rendering an empty label.
+    const tabs = [
+      makeTab({ id: 't1', gitBranch: 'main', gitToplevel: '/' }),
+    ]
+    const tree = buildTree(tabs)
+    expect(tree.groups).toHaveLength(1)
+    expect(tree.groups[0].repoLabel).toBe('/')
   })
 })
 

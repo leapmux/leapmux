@@ -1074,7 +1074,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			var termStatusChange *leapmuxv1.TerminalStatusChange
 			switch status {
 			case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:
-				termStatusChange = buildTerminalStartingStatus(termID, startupMessage, "", "")
+				termStatusChange = buildTerminalStartingStatus(termID, startupMessage, nil)
 			case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
 				termStatusChange = buildTerminalFailedStatus(termID, startupError)
 			default:

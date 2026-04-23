@@ -453,7 +453,7 @@ func TestBuildAgentStatusChange(t *testing.T) {
 // constructors, mirroring TestBuildAgentStatusChange.
 func TestBuildTerminalStatusChange(t *testing.T) {
 	t.Run("STARTING carries startupMessage, empty error", func(t *testing.T) {
-		sc := buildTerminalStartingStatus("term-1", "Starting zsh…", "", "")
+		sc := buildTerminalStartingStatus("term-1", "Starting zsh…", nil)
 		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
 		assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
 		assert.Empty(t, sc.GetStartupError())
@@ -707,15 +707,21 @@ func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
 
 // TestBuildTerminalStatusChange_CarriesGitInfo locks in the wire contract
 // that replaced the dropped OpenTerminalResponse.git_branch /
-// git_origin_url fields: runTerminalStartup's phase-1 STARTING broadcast
-// populates these on the TerminalStatusChange, and the frontend reads
-// them into the tab. A regression here (e.g. someone re-pointing the
-// proto fields) would be caught without depending on goroutine timing.
+// git_origin_url / git_toplevel fields: runTerminalStartup's phase-1
+// STARTING broadcast populates these on the TerminalStatusChange, and the
+// frontend reads them into the tab. A regression here (e.g. someone
+// re-pointing the proto fields) would be caught without depending on
+// goroutine timing.
 func TestBuildTerminalStatusChange_CarriesGitInfo(t *testing.T) {
-	sc := buildTerminalStartingStatus("term-1", "Starting zsh…", "feature/x", "git@example.com:org/repo.git")
+	sc := buildTerminalStartingStatus("term-1", "Starting zsh…", &leapmuxv1.AgentGitStatus{
+		Branch:    "feature/x",
+		OriginUrl: "git@example.com:org/repo.git",
+		Toplevel:  "/home/u/repo",
+	})
 	assert.Equal(t, "term-1", sc.GetTerminalId())
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
 	assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
 	assert.Equal(t, "feature/x", sc.GetGitBranch())
 	assert.Equal(t, "git@example.com:org/repo.git", sc.GetGitOriginUrl())
+	assert.Equal(t, "/home/u/repo", sc.GetGitToplevel())
 }

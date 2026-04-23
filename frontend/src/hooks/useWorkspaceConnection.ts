@@ -19,7 +19,7 @@ import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, ext
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { bufferHasVisibleContent } from '~/lib/terminal'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { tabKey } from '~/stores/tab.store'
+import { gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.store'
 
 const log = createLogger('workspace')
 
@@ -89,12 +89,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             }
             let tabs = snap.tabs
             if (sc.gitStatus) {
-              const branch = sc.gitStatus.branch || undefined
-              const originUrl = sc.gitStatus.originUrl || undefined
+              const next = toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel)
               const i = snap.tabs.findIndex(t => t.type === TabType.AGENT && t.id === agentId)
-              if (i >= 0 && (snap.tabs[i].gitBranch !== branch || snap.tabs[i].gitOriginUrl !== originUrl)) {
+              if (i >= 0 && gitTabFieldsDiffer(snap.tabs[i], next)) {
                 tabs = snap.tabs.slice()
-                tabs[i] = { ...tabs[i], gitBranch: branch, gitOriginUrl: originUrl }
+                tabs[i] = { ...tabs[i], ...next }
               }
             }
             if (agents === snap.agents && tabs === snap.tabs)
@@ -392,11 +391,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           gitStatus: sc.gitStatus,
         })
         if (sc.gitStatus) {
-          const gs = sc.gitStatus
-          tabStore.updateTab(TabType.AGENT, sc.agentId, {
-            gitBranch: gs.branch || undefined,
-            gitOriginUrl: gs.originUrl || undefined,
-          })
+          tabStore.updateTab(
+            TabType.AGENT,
+            sc.agentId,
+            toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel),
+          )
         }
         if (!pendingSettings) {
           settingsLoading.stop()
@@ -493,18 +492,17 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
       else if (termEvent.event.case === 'statusChange') {
         const sc = termEvent.event.value
-        if (sc.gitBranch || sc.gitOriginUrl) {
+        if (sc.gitBranch || sc.gitOriginUrl || sc.gitToplevel) {
           const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
           const owningWsId = params.registry.findContaining(s => s.tabs.some(t => tabKey(t) === key))?.workspaceId
           if (owningWsId) {
-            const nextBranch = sc.gitBranch || undefined
-            const nextOrigin = sc.gitOriginUrl || undefined
+            const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel)
             params.registry.update(owningWsId, (snap) => {
               const i = snap.tabs.findIndex(t => tabKey(t) === key)
-              if (i < 0 || (snap.tabs[i].gitBranch === nextBranch && snap.tabs[i].gitOriginUrl === nextOrigin))
+              if (i < 0 || !gitTabFieldsDiffer(snap.tabs[i], next))
                 return snap
               const tabs = snap.tabs.slice()
-              tabs[i] = { ...tabs[i], gitBranch: nextBranch, gitOriginUrl: nextOrigin }
+              tabs[i] = { ...tabs[i], ...next }
               return { ...snap, tabs }
             })
           }
@@ -555,18 +553,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const existingTab = tabStore.state.tabs.find(
           t => t.type === TabType.TERMINAL && t.id === terminalId,
         )
-        // Git branch / origin are carried on every post-phase-0 STARTING
-        // broadcast. Update the tab whenever a non-empty value arrives so
-        // a reconnect or a late worktree-creation refreshes the badge.
-        if (existingTab && (sc.gitBranch || sc.gitOriginUrl)) {
-          const nextBranch = sc.gitBranch || undefined
-          const nextOrigin = sc.gitOriginUrl || undefined
-          if (existingTab.gitBranch !== nextBranch || existingTab.gitOriginUrl !== nextOrigin) {
-            tabStore.updateTab(TabType.TERMINAL, terminalId, {
-              gitBranch: nextBranch,
-              gitOriginUrl: nextOrigin,
-            })
-          }
+        // Git branch / origin / toplevel are carried on every post-phase-0
+        // STARTING broadcast. Update the tab whenever a non-empty value
+        // arrives so a reconnect or a late worktree-creation refreshes the
+        // badge.
+        if (existingTab && (sc.gitBranch || sc.gitOriginUrl || sc.gitToplevel)) {
+          const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel)
+          if (gitTabFieldsDiffer(existingTab, next))
+            tabStore.updateTab(TabType.TERMINAL, terminalId, next)
         }
         switch (sc.status) {
           case TerminalStatus.STARTING:

@@ -15,7 +15,7 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
-import { protoToTerminalTab, protoToTerminalTabFields, tabKey } from '~/stores/tab.store'
+import { preserveNonEmptyGitFields, protoToTerminalTab, protoToTerminalTabFields, tabKey } from '~/stores/tab.store'
 import { fanOutTabsToWorkers } from './workspaceTabHydration'
 
 const log = createLogger('restore')
@@ -81,7 +81,14 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
   const hydrateTerminalRecord = (workerId: string, term: Awaited<ReturnType<typeof workerRpc.listTerminals>>['terminals'][number]) => {
     // Hydration only refreshes worker-provided fields; layout fields
     // (tileId, position) on the existing tab are preserved.
-    tabStore.updateTab(TabType.TERMINAL, term.terminalId, protoToTerminalTabFields(workerId, term))
+    const fields = protoToTerminalTabFields(workerId, term)
+    // A transient BatchGetGitStatus failure on the worker surfaces as empty
+    // gitBranch/gitOriginUrl. Keep the tab's previous values in that case so
+    // the sidebar grouping doesn't flicker out until the next reload.
+    const previous = tabStore.state.tabs.find(
+      t => t.type === TabType.TERMINAL && t.id === term.terminalId,
+    )
+    tabStore.updateTab(TabType.TERMINAL, term.terminalId, preserveNonEmptyGitFields(fields, previous))
   }
 
   onCleanup(() => {
@@ -234,6 +241,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           agentProvider: a.agentProvider,
           gitBranch: a.gitStatus?.branch || undefined,
           gitOriginUrl: a.gitStatus?.originUrl || undefined,
+          gitToplevel: a.gitStatus?.toplevel || undefined,
         }, { activate: false })
         addedTabKeys.add(key)
       }

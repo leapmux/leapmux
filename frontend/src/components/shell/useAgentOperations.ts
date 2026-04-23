@@ -23,6 +23,7 @@ import { base64ToUint8Array } from '~/lib/base64'
 import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
+import { resolveOptimisticGitInfo } from '~/stores/tab.store'
 import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
 import '~/components/chat/providers'
 
@@ -135,7 +136,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         const tileId = props.layoutStore.focusedTileId()
         const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
         props.agentStore.addAgent(resp.agent)
-        props.tabStore.addTab({
+        // Seed git branch / origin from the active tab when both resolve to
+        // the same directory; the authoritative values arrive later on the
+        // agent's first status update.
+        const newTab = {
           type: TabType.AGENT,
           id: resp.agent.id,
           title,
@@ -143,7 +147,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
           workerId: resp.agent.workerId,
           workingDir: resp.agent.workingDir,
           agentProvider: resp.agent.agentProvider,
-        }, { afterKey })
+        }
+        const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), newTab)
+        props.tabStore.addTab({ ...newTab, ...seed }, { afterKey })
         props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
         props.agentStore.setActiveAgent(resp.agent.id)
         props.persistLayout?.()
