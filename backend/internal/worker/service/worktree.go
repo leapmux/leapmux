@@ -551,7 +551,11 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 	if _, statErr := os.Stat(wt.WorktreePath); os.IsNotExist(statErr) {
 		return nil
 	}
-	return fmt.Errorf("git worktree remove %q: %w", wt.WorktreePath, removeErr)
+	// Use %s + literal quotes rather than %q so Windows paths stay in
+	// their native backslash form. %q would render C:\Users\foo as
+	// "C:\\Users\\foo", which is both ugly in the UI (failure_detail
+	// is shown to end users) and breaks substring assertions in tests.
+	return fmt.Errorf(`git worktree remove "%s": %w`, wt.WorktreePath, removeErr)
 }
 
 func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBranch, error) {
