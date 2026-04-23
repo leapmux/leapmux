@@ -29,7 +29,9 @@ WORKDIR /src
 # Copy the pinned Node.js runtime from the node stage
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
-# Install build tools (sqlc is installed later, from backend/go.mod)
+# Install build tools. Go tools (sqlc, golangci-lint, gotestsum) are
+# declared as `tool` deps in backend/go.mod and desktop/go/go.mod, and
+# invoked via `go tool <name>` — no `go install` step needed.
 RUN apk add --no-cache bash curl libgcc libstdc++ rsync yq && \
     wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
     wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf
@@ -43,12 +45,6 @@ COPY backend/go.mod backend/go.sum backend/
 COPY desktop/go/go.mod desktop/go/go.sum desktop/go/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
-
-# Install sqlc via backend/go.mod's `tool` directive (version pinned there).
-# Running `go install` from inside the module bypasses sqlc's own replace
-# directives, which a bare `go install ...@vX` would choke on.
-RUN --mount=type=cache,target=/go/pkg/mod \
-    cd backend && go install github.com/sqlc-dev/sqlc/cmd/sqlc
 
 # Install frontend dependencies (cache layer)
 # scripts/only-bun.mjs is needed by the preinstall hook in package.json.

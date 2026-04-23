@@ -239,14 +239,14 @@ Before you begin, ensure you have the following installed:
 - **Task** - Task runner (replaces Make)
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)
-- **sqlc** - Type-safe SQL code generation
-- **golangci-lint** - Go linter
 - **yq** - YAML processor (used to read `versions.yaml`)
 - **SQLite** (usually pre-installed on most systems)
 - **Docker** - Required for building Docker images (on macOS, [Rancher Desktop](https://rancherdesktop.io/) is recommended)
 - **mprocs** - Multi-process runner (required for `task dev`, `task dev-solo`, and `task dev-desktop`)
 - **Rust toolchain** - For the Tauri desktop app (built by `task build`)
 - **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
+
+Go-based build tools — `sqlc`, `golangci-lint`, and `gotestsum` — are declared as `tool` dependencies in `backend/go.mod` and `desktop/go/go.mod`, and invoked automatically via `go tool <name>`. You don't need to install them separately.
 
 ### macOS
 
@@ -255,7 +255,7 @@ Install [Bun](https://bun.sh/) by following the instructions at https://bun.sh/.
 Install the remaining dependencies with [Homebrew](https://brew.sh/):
 
 ```bash
-brew install buf go go-task golangci-lint mprocs node protobuf rust sqlc yq
+brew install buf go go-task mprocs node protobuf rust yq
 ```
 
 For building Docker images, install [Rancher Desktop](https://rancherdesktop.io/) (or any Docker-compatible runtime such as Docker Desktop or OrbStack) separately.
@@ -265,7 +265,7 @@ For building Docker images, install [Rancher Desktop](https://rancherdesktop.io/
 Install the official repository packages with [pacman](https://wiki.archlinux.org/title/Pacman):
 
 ```bash
-sudo pacman -S buf bun go go-task go-yq golangci-lint nodejs npm protobuf rust sqlc
+sudo pacman -S buf bun go go-task go-yq nodejs npm protobuf rust
 ```
 
 The Arch `go-task` package installs the binary as `go-task`. Add a shell alias so that `task` works:
@@ -298,7 +298,6 @@ winget install --id OpenJS.NodeJS.LTS  # or OpenJS.NodeJS for the current (non-L
 winget install --id Oven-sh.Bun
 winget install --id Task.Task
 winget install --id bufbuild.buf
-winget install --id GolangCI.golangci-lint
 winget install --id MikeFarah.yq
 winget install --id pvolok.mprocs
 winget install --id SUSE.RancherDesktop  # or any other Docker-compatible runtime (e.g. Docker.DockerDesktop, Podman.Podman)
@@ -308,12 +307,6 @@ winget install --id Microsoft.VisualStudio.BuildTools  # or Microsoft.VisualStud
 ```
 
 After `Microsoft.VisualStudio.BuildTools` installs, open the Visual Studio Installer and modify the installation to enable the **"Desktop development with C++"** workload — winget installs the bootstrapper but does not select any workloads automatically.
-
-`sqlc` is not available via winget. After Go is installed, install the version pinned in `backend/go.mod` from inside the backend module (matches what CI does):
-
-```powershell
-cd backend; go install github.com/sqlc-dev/sqlc/cmd/sqlc
-```
 
 For the remaining Tauri Windows prerequisites (WebView2, etc.), see the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows).
 

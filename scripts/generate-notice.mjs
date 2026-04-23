@@ -137,30 +137,102 @@ function toAnchor(heading) {
 // Go dependencies
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse a stream of concatenated top-level JSON objects (the format
+ * emitted by `go list -json`) into an array. Brace-balance walk —
+ * safe for strings containing `{`/`}` since we stay at depth 0 outside
+ * of JSON strings.
+ */
+function parseGoListJson(raw) {
+  const objs = []
+  let depth = 0
+  let start = -1
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; continue }
+    if (c === '{') {
+      if (depth === 0) start = i
+      depth++
+    } else if (c === '}') {
+      depth--
+      if (depth === 0 && start >= 0) {
+        objs.push(JSON.parse(raw.slice(start, i + 1)))
+        start = -1
+      }
+    }
+  }
+  return objs
+}
+
+/**
+ * Collect the set of `path@version` module keys reachable from
+ * non-tool packages across every workspace module, enumerated for
+ * each supported build target so platform-specific deps (e.g.
+ * go-winio on Windows) are included.
+ *
+ * Tool-only deps (declared via `tool` directives in go.mod and
+ * reachable only from tool main packages) are deliberately excluded —
+ * their binaries are built and run separately via `go tool <name>`
+ * and are never linked into a shipped LeapMux binary.
+ */
+function collectGoRuntimeModuleKeys() {
+  // Workspace directories listed in go.work `use (…)` block.
+  const workText = readFileSync(join(ROOT, 'go.work'), 'utf-8')
+  const useMatch = workText.match(/use\s*\(([^)]*)\)/)
+  const workDirs = useMatch
+    ? useMatch[1].split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//'))
+    : []
+  if (workDirs.length === 0) {
+    throw new Error('generate-notice: no `use (…)` directories found in go.work')
+  }
+
+  // Build targets LeapMux ships for. GOARCH rarely changes the dep
+  // graph relative to GOOS, so sticking to amd64 per-OS is enough.
+  const targets = [
+    { GOOS: 'linux', GOARCH: 'amd64' },
+    { GOOS: 'darwin', GOARCH: 'amd64' },
+    { GOOS: 'windows', GOARCH: 'amd64' },
+  ]
+
+  const keys = new Set()
+  for (const dir of workDirs) {
+    const cwd = join(ROOT, dir)
+    for (const t of targets) {
+      console.log(`  listing runtime packages: ${dir} (${t.GOOS}/${t.GOARCH}) …`)
+      const raw = execSync('go list -deps -test -json -tags integration ./...', {
+        cwd,
+        encoding: 'utf-8',
+        env: { ...process.env, GOOS: t.GOOS, GOARCH: t.GOARCH },
+        maxBuffer: 128 * 1024 * 1024,
+      })
+      for (const pkg of parseGoListJson(raw)) {
+        const m = pkg.Module
+        if (m && !m.Main) keys.add(`${m.Path}@${m.Version}`)
+      }
+    }
+  }
+  return keys
+}
+
 function collectGoDeps() {
   // Ensure all modules are downloaded so Dir fields are populated.
   console.log('Downloading Go modules …')
   execSync('go mod download', { cwd: ROOT, stdio: 'inherit' })
 
+  console.log('Listing Go runtime dependency closure …')
+  const runtimeKeys = collectGoRuntimeModuleKeys()
+
   console.log('Listing Go modules …')
   const raw = execSync('go list -m -json all', { cwd: ROOT, encoding: 'utf-8' })
-
-  // Parse the concatenated JSON objects.
-  const modules = []
-  let depth = 0
-  let start = -1
-  for (let i = 0; i < raw.length; i++) {
-    if (raw[i] === '{') {
-      if (depth === 0) start = i
-      depth++
-    } else if (raw[i] === '}') {
-      depth--
-      if (depth === 0 && start >= 0) {
-        modules.push(JSON.parse(raw.slice(start, i + 1)))
-        start = -1
-      }
-    }
-  }
+  const modules = parseGoListJson(raw)
 
   /** @type {Map<string, {name: string, version: string, licenseText: string}>} */
   const deps = new Map()
@@ -174,6 +246,7 @@ function collectGoDeps() {
     if (mod.Main) continue
     const key = `${mod.Path}@${mod.Version}`
     if (deps.has(key)) continue
+    if (!runtimeKeys.has(key)) continue // skip tool-only deps
 
     let dir = mod.Dir
     if (!dir) {

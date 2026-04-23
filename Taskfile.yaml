@@ -73,7 +73,7 @@ tasks:
       - backend/internal/hub/store/*/generated/db/**/*
     cmds:
       - for: { var: BACKENDS }
-        cmd: rm -rf backend/internal/hub/store/{{.ITEM}}/generated/db/ && cd backend/internal/hub/store/{{.ITEM}} && sqlc generate
+        cmd: rm -rf backend/internal/hub/store/{{.ITEM}}/generated/db/ && cd backend/internal/hub/store/{{.ITEM}} && go tool sqlc generate
 
   generate-sqlc-worker:
     desc: Generate type-safe SQL code for Worker
@@ -86,7 +86,7 @@ tasks:
       - backend/internal/worker/generated/db/**/*
     cmds:
       - rm -rf backend/internal/worker/generated/db/
-      - cd backend/internal/worker && sqlc generate
+      - cd backend/internal/worker && go tool sqlc generate
 
   generate-spinners:
     desc: Download spinner verb JSON files from awesome-claude-spinners
@@ -444,21 +444,21 @@ tasks:
     cmds:
       - task: prepare-backend
       - task: lint-backend
-      - cd backend && go test -tags integration {{.CLI_ARGS | default "./..."}}
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -tags integration {{.CLI_ARGS | default "./..."}}
 
   test-backend-no-docker:
     desc: Run backend tests, excluding Docker-backed storage backends
     cmds:
       - task: prepare-backend
       - task: lint-backend
-      - cd backend && go test -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
 
   test-desktop:
     desc: Run desktop tests
     cmds:
       - task: prepare-desktop
       - task: lint-desktop
-      - cd desktop/go && go test -tags integration {{.CLI_ARGS | default "./..."}}
+      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -tags integration {{.CLI_ARGS | default "./..."}}
       - cd desktop/rust && cargo test
 
   test-no-docker:
@@ -518,7 +518,7 @@ tasks:
       - backend/go.sum
       - backend/**/*.go
     cmds:
-      - cd backend && golangci-lint run ./...
+      - cd backend && go tool golangci-lint run ./...
 
   lint-desktop:
     desc: Lint desktop sidecar and Tauri shell code
@@ -536,7 +536,7 @@ tasks:
     cmds:
       - task: prepare-desktop
       - task: build-desktop-sidecar
-      - cd desktop/go && golangci-lint run ./...
+      - cd desktop/go && go tool golangci-lint run ./...
       - cd desktop/rust && cargo clippy --all-targets -- -D warnings
 
   lint-fix:
@@ -556,13 +556,13 @@ tasks:
     desc: Auto-fix backend lint violations
     cmds:
       - task: prepare-backend
-      - cd backend && golangci-lint run --fix ./...
+      - cd backend && go tool golangci-lint run --fix ./...
 
   lint-fix-desktop:
     desc: Auto-fix desktop lint violations
     cmds:
       - task: prepare-desktop
-      - cd desktop/go && golangci-lint run --fix ./...
+      - cd desktop/go && go tool golangci-lint run --fix ./...
       - cd desktop/rust && cargo clippy --fix --all-targets
 
   # --- Development ---

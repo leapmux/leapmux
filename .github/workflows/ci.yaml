@@ -33,7 +33,6 @@ jobs:
       - name: Read tool versions
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
           echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
           echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
@@ -130,20 +129,6 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: ${{ env.TASK_VERSION }}
-
-      - name: Cache Go tool binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/go/bin
-          key: go-tools-${{ runner.os }}-${{ runner.arch }}-sqlc-${{ hashFiles('backend/go.mod') }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
-
-      - name: Install tools
-        run: |
-          # sqlc is declared as a tool dep in backend/go.mod; installing from
-          # inside the module avoids the `@version`-form error caused by
-          # sqlc's own replace directives.
-          test -x "$(go env GOPATH)/bin/sqlc" || (cd backend && go install github.com/sqlc-dev/sqlc/cmd/sqlc)
-          test -x "$(go env GOPATH)/bin/golangci-lint" || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v${{ env.GOLANGCI_LINT_VERSION }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -269,7 +254,6 @@ jobs:
       - name: Read tool versions
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
           echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
           echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
@@ -344,20 +328,6 @@ jobs:
         with:
           version: ${{ env.TASK_VERSION }}
 
-      - name: Cache Go tool binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/go/bin
-          key: go-tools-${{ runner.os }}-${{ runner.arch }}-sqlc-${{ hashFiles('backend/go.mod') }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
-
-      - name: Install tools
-        run: |
-          # sqlc is declared as a tool dep in backend/go.mod; installing from
-          # inside the module avoids the `@version`-form error caused by
-          # sqlc's own replace directives.
-          test -x "$(go env GOPATH)/bin/sqlc" || (cd backend && go install github.com/sqlc-dev/sqlc/cmd/sqlc)
-          test -x "$(go env GOPATH)/bin/golangci-lint" || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v${{ env.GOLANGCI_LINT_VERSION }}
-
       - name: Generate code (proto + sqlc)
         run: task generate
 
@@ -423,7 +393,6 @@ jobs:
         shell: bash
         run: |
           echo "BUF_VERSION=$(yq '.buf-version' versions.yaml)" >> $GITHUB_ENV
-          echo "GOLANGCI_LINT_VERSION=$(yq '.golangci-lint-version' versions.yaml)" >> $GITHUB_ENV
           echo "BUN_VERSION=$(yq '.bun-version' versions.yaml)" >> $GITHUB_ENV
           echo "NODE_VERSION=$(yq '.node-version' versions.yaml)" >> $GITHUB_ENV
           echo "GOLANG_VERSION=$(yq '.golang-version' versions.yaml)" >> $GITHUB_ENV
@@ -503,23 +472,6 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: ${{ env.TASK_VERSION }}
-
-      - name: Cache Go tool binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/go/bin
-          key: go-tools-${{ runner.os }}-sqlc-${{ hashFiles('backend/go.mod') }}-golangci${{ env.GOLANGCI_LINT_VERSION }}
-
-      - name: Install tools
-        shell: bash
-        run: |
-          # sqlc is declared as a tool dep in backend/go.mod; installing from
-          # inside the module avoids the `@version`-form error caused by
-          # sqlc's own replace directives.
-          test -x "$(go env GOPATH)/bin/sqlc" || test -x "$(go env GOPATH)/bin/sqlc.exe" || (cd backend && go install github.com/sqlc-dev/sqlc/cmd/sqlc)
-          # golangci-lint is needed because `task test-no-docker` runs
-          # lint-backend/lint-desktop as deps on every platform.
-          test -x "$(go env GOPATH)/bin/golangci-lint" || test -x "$(go env GOPATH)/bin/golangci-lint.exe" || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ env.GOLANGCI_LINT_VERSION }}"
 
       - name: Test (no Docker-backed storage)
         # Run under pwsh (not bash) for the same reason `task build` does:
