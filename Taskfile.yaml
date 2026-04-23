@@ -423,6 +423,20 @@ tasks:
           cp -f "$src" "$repo_root/$dest"
         done
 
+  run-desktop:
+    desc: Build and run the desktop app
+    preconditions:
+      - sh: '[ "{{OS}}" = "darwin" ] || [ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
+        msg: "Unsupported OS: {{OS}}. Desktop runs require macOS, Linux, or Windows."
+    cmds:
+      - task: build-desktop
+      - cmd: '"./LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop" {{.CLI_ARGS}}'
+        if: '[ "{{OS}}" = "darwin" ]'
+      - cmd: ./leapmux-desktop {{.CLI_ARGS}}
+        if: '[ "{{OS}}" = "linux" ]'
+      - cmd: ./LeapMuxDesktop.exe {{.CLI_ARGS}}
+        if: '[ "{{OS}}" = "windows" ]'
+
   # --- Testing ---
 
   test:
