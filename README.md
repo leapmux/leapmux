@@ -297,7 +297,6 @@ winget install --id OpenJS.NodeJS.LTS  # or OpenJS.NodeJS for the current (non-L
 winget install --id Oven-sh.Bun
 winget install --id Task.Task
 winget install --id bufbuild.buf
-winget install --id MikeFarah.yq
 winget install --id pvolok.mprocs
 winget install --id SUSE.RancherDesktop  # or any other Docker-compatible runtime (e.g. Docker.DockerDesktop, Podman.Podman)
 winget install --id Rustlang.Rust.MSVC
