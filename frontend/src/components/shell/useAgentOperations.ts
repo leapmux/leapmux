@@ -71,8 +71,13 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       .then((resp) => {
         setAvailableProviders([...resp.providers])
       })
-      .catch(() => {
-        setAvailableProviders(undefined)
+      .catch((err) => {
+        // Keep the previous list — a transient refresh failure shouldn't
+        // erase a correct list the user was relying on, and conflating
+        // failure with "backend said none" would masquerade as an empty
+        // provider list once the backend stops forcing a CLAUDE_CODE
+        // fallback.
+        showWarnToast('Failed to load available agent providers', err)
       })
   }
 

@@ -258,10 +258,6 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 			result = append(result, c.provider)
 		}
 	}
-	// Always return at least one provider so the UI has something to show.
-	if len(result) == 0 {
-		result = append(result, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result
 }
