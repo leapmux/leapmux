@@ -110,6 +110,17 @@ jobs:
           path: ~/.cache/tauri
           key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
 
+      - name: Cache awesome-claude-spinners
+        # Spinner JSON files are fetched by `task generate-spinners` with
+        # a fresh git clone every run. Caching the generated directory
+        # keyed on CACHE_WEEK lets us skip the clone on subsequent runs
+        # within the same ISO week while still refreshing weekly (matching
+        # the Tauri cache policy above).
+        uses: actions/cache@v4
+        with:
+          path: frontend/src/spinners
+          key: spinners-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+
       - name: Setup buf
         uses: bufbuild/buf-setup-action@v1
         with:
@@ -294,6 +305,12 @@ jobs:
           path: ~/Library/Caches/tauri
           key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
 
+      - name: Cache awesome-claude-spinners
+        uses: actions/cache@v4
+        with:
+          path: frontend/src/spinners
+          key: spinners-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+
       - name: Setup buf
         uses: bufbuild/buf-setup-action@v1
         with:
@@ -401,6 +418,12 @@ jobs:
         with:
           path: ~/AppData/Local/tauri
           key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
+
+      - name: Cache awesome-claude-spinners
+        uses: actions/cache@v4
+        with:
+          path: frontend/src/spinners
+          key: spinners-${{ runner.os }}-${{ env.CACHE_WEEK }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
