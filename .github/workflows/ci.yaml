@@ -358,8 +358,9 @@ jobs:
 
       - name: Load tool versions
         shell: bash
-        run: grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
-          echo "CACHE_WEEK=$(date -u +%G-W%V)" >> $GITHUB_ENV
+        run: |
+          grep -E '^[A-Z_]+=' versions.env >> "$GITHUB_ENV"
+          echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
 
       - name: Setup MSVC dev environment
         # Puts link.exe, cl.exe, and the Windows SDK on PATH so Tauri's
