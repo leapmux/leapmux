@@ -7,6 +7,8 @@ import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { toastCloseFailure } from '~/components/shell/closeFailureToast'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { tabKey } from '~/stores/tab.store'
@@ -241,23 +243,35 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
-  const handleTerminalClose = async (terminalId: string) => {
+  // Close a terminal.
+  //
+  // Symmetric to handleCloseAgent: store mutations run synchronously;
+  // the worker close RPC and Hub unregister are fire-and-forget with
+  // failure surfaced via toast.
+  const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP) => {
+    const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
     const ws = props.activeWorkspace()
-    try {
-      if (!ws)
-        return
-      const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
-      await workerRpc.closeTerminal(workerId, { orgId: props.org.orgId(), workspaceId: ws.id, terminalId })
+
+    // Synchronous: tab disappears immediately.
+    props.tabStore.removeTab(TabType.TERMINAL, terminalId)
+
+    // Background: PTY close, DB close, optional worktree removal.
+    if (workerId && ws) {
+      workerRpc.closeTerminal(workerId, {
+        orgId: props.org.orgId(),
+        workspaceId: ws.id,
+        terminalId,
+        worktreeAction,
+      })
+        .then(resp => toastCloseFailure(resp.result))
+        .catch((err) => {
+          showWarnToast('Failed to close terminal', err)
+        })
     }
-    catch {
-      // Ignore errors (e.g. terminal already exited or not tracked by worker)
-    }
-    finally {
-      props.tabStore.removeTab(TabType.TERMINAL, terminalId)
-      // Unregister tab from hub.
-      if (ws) {
-        workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.TERMINAL, tabId: terminalId }).catch(() => {})
-      }
+
+    // Hub unregister (parallel with worker close).
+    if (ws) {
+      workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.TERMINAL, tabId: terminalId }).catch(() => {})
     }
   }
 

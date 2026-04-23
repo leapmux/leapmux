@@ -10,6 +10,7 @@ import { batch, createEffect, createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -160,6 +161,12 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       return
     addClosingTabKey(key)
 
+    // Decide phase: the tab stays visible (with a spinner) while we
+    // await the worker's last-tab inspection and, if needed, the user's
+    // dialog choice. This is the only phase that awaits; the commit
+    // phase below mutates stores synchronously and fires the worker
+    // close + hub unregister RPCs as fire-and-forget.
+    let worktreeAction: WorktreeAction = WorktreeAction.KEEP
     try {
       const tabType = tab.type === TabType.AGENT ? TabType.AGENT : TabType.TERMINAL
       const workerId = tab.workerId ?? ''
@@ -170,28 +177,34 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
           return
         }
         if (choice === 'schedule-delete') {
-          await workerRpc.scheduleWorktreeDeletion(workerId, { worktreeId: status.worktreeId })
-          showInfoToast('Worktree deletion scheduled')
+          worktreeAction = WorktreeAction.REMOVE
+          showInfoToast('Worktree will be removed')
         }
       }
-      if (tab.type === TabType.AGENT) {
-        await agentOps.handleCloseAgent(tab.id)
-      }
-      else {
-        const instance = getTerminalInstance(tab.id)
-        if (instance) {
-          instance.dispose()
-        }
-        await termOps.handleTerminalClose(tab.id)
-      }
-      removeEmptyFloatingWindow(tab.tileId)
     }
     catch (err) {
       showWarnToast('Failed to prepare tab close', err)
+      return
     }
     finally {
       removeClosingTabKey(key)
     }
+
+    // Commit phase: synchronous UI mutations first so the tab
+    // disappears immediately, then fire-and-forget worker cleanup and
+    // hub unregister. handleCloseAgent/handleTerminalClose own both
+    // halves (sync + fire-and-forget).
+    if (tab.type === TabType.AGENT) {
+      agentOps.handleCloseAgent(tab.id, worktreeAction)
+    }
+    else {
+      const instance = getTerminalInstance(tab.id)
+      if (instance) {
+        instance.dispose()
+      }
+      termOps.handleTerminalClose(tab.id, worktreeAction)
+    }
+    removeEmptyFloatingWindow(tab.tileId)
   }
 
   let fileTabCounter = 0

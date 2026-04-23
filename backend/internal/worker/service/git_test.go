@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,18 +23,65 @@ import (
 func initRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	cmds := [][]string{
-		{"git", "-C", dir, "init"},
-		{"git", "-C", dir, "config", "user.email", "test@test.com"},
-		{"git", "-C", dir, "config", "user.name", "Test"},
-		{"git", "-C", dir, "commit", "--allow-empty", "-m", "init"},
-	}
-	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		require.NoError(t, cmd.Run(), "command failed: %v", args)
+	if err := gitInitRepo(dir); err != nil {
+		t.Fatalf("init repo: %v", err)
 	}
 	return dir
 }
+
+// gitInitRepo runs `git init` + user config + an empty initial commit in
+// the given directory. Returns the first failure, or nil.
+func gitInitRepo(dir string) error {
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("git %v: %w", args, err)
+		}
+	}
+	return nil
+}
+
+// sharedCloseTabRepo returns a package-scoped git repo with a single
+// initial commit, created on first use. Tests that only add a worktree
+// on a unique branch can reuse it rather than paying ~4 git execs per
+// call to initRepo. The repo is created under os.MkdirTemp and cleaned
+// up by TestMain when the test binary exits.
+//
+// Safe to use when every caller passes a unique branch name to
+// `git worktree add -b <branch>` — branch refs and `.git/worktrees/`
+// entries are scoped per worktree path, so serialized callers don't
+// collide. Do NOT use for tests that mutate the base repo (commits,
+// branch deletes, tag creation, etc.) — those still need initRepo.
+func sharedCloseTabRepo(t *testing.T) string {
+	t.Helper()
+	sharedCloseTabRepoOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "leapmux-close-tab-shared-repo-*")
+		if err != nil {
+			sharedCloseTabRepoErr = err
+			return
+		}
+		if err := gitInitRepo(dir); err != nil {
+			sharedCloseTabRepoErr = err
+			return
+		}
+		sharedCloseTabRepoDir = dir
+	})
+	if sharedCloseTabRepoErr != nil {
+		t.Fatalf("shared repo init: %v", sharedCloseTabRepoErr)
+	}
+	return sharedCloseTabRepoDir
+}
+
+var (
+	sharedCloseTabRepoOnce sync.Once
+	sharedCloseTabRepoDir  string
+	sharedCloseTabRepoErr  error
+)
 
 // run executes a command in the given directory.
 func run(t *testing.T, dir string, name string, args ...string) {
@@ -40,6 +89,14 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	require.NoError(t, cmd.Run(), "command failed: %s %v", name, args)
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedCloseTabRepoDir != "" {
+		_ = os.RemoveAll(sharedCloseTabRepoDir)
+	}
+	os.Exit(code)
 }
 
 func TestGetGitFileStatusEntries_UntrackedFile(t *testing.T) {
@@ -443,6 +500,66 @@ func TestInspectLastTabClose_BranchMissingRemotePrompts(t *testing.T) {
 	assert.True(t, resp.GetCanPush())
 }
 
+// Fast path: a worktree with more than one tab must not prompt, and
+// must not pay for diffStatsForPath / pushStatusForPath. We can't
+// observe the skipped subprocesses directly from a test, but we can
+// assert that the diff_* and push_* fields are left zero — those are
+// only populated when the full inspect path runs.
+func TestInspectLastTabClose_WorktreeMultiTabFastPath(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "multi-tab-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "multi-tab", wtDir)
+
+	// Make the worktree dirty and unpushed — the slow path would surface
+	// hasUncommittedChanges=true. The fast path must skip the diff/push
+	// calls and leave those fields zero.
+	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	createAgentForPath(t, svc, "agent-mt-1", wtDir)
+	createAgentForPath(t, svc, "agent-mt-2", wtDir)
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mt-1")
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mt-2")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mt-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE, resp.GetTarget())
+	assert.False(t, resp.GetShouldPrompt(), "multi-tab worktree must not prompt")
+	// Fast-path-specific: diff/push fields must NOT have been populated.
+	assert.False(t, resp.GetHasUncommittedChanges(), "fast path skips diff stats")
+	assert.Equal(t, int32(0), resp.GetDiffAdded())
+	assert.Equal(t, int32(0), resp.GetDiffUntracked())
+	assert.Equal(t, int32(0), resp.GetUnpushedCommitCount())
+	// Worktree identity fields must come from the DB row, though.
+	assert.Equal(t, wtID, resp.GetWorktreeId())
+	expectedWtPath, err := filepath.EvalSymlinks(wtDir)
+	require.NoError(t, err)
+	assert.True(t, pathutil.SamePath(expectedWtPath, resp.GetWorktreePath()),
+		"expected same path; got expected=%q actual=%q", expectedWtPath, resp.GetWorktreePath())
+	assert.Equal(t, "multi-tab", resp.GetBranchName())
+}
+
+// Fast path: a non-worktree tab with other non-worktree tabs on the
+// same branch must not prompt, and must not pay for diff/push.
+func TestInspectLastTabClose_BranchMultiTabFastPath(t *testing.T) {
+	svc, _, _ := setupTestService(t, "ws-1")
+	repoDir := initRepo(t)
+	// Dirty the branch — the slow path would set hasUncommittedChanges=true.
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createAgentForPath(t, svc, "agent-branch-mt-1", repoDir)
+	createAgentForPath(t, svc, "agent-branch-mt-2", repoDir)
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-mt-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
+	assert.False(t, resp.GetShouldPrompt())
+	assert.False(t, resp.GetHasUncommittedChanges(), "fast path skips diff stats")
+	assert.Equal(t, int32(0), resp.GetDiffAdded())
+	assert.Equal(t, int32(0), resp.GetUnpushedCommitCount())
+}
+
 func TestPushBranchForClose_CreatesWIPCommitAndPushes(t *testing.T) {
 	svc, _, _ := setupTestService(t, "ws-1")
 	bareDir := filepath.Join(t.TempDir(), "push-dirty.git")
@@ -491,42 +608,4 @@ func TestPushBranchForClose_RecreatesUpstream(t *testing.T) {
 	upstream, err := gitOutput(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "recreate-upstream@{upstream}")
 	require.NoError(t, err)
 	assert.Equal(t, "origin/recreate-upstream", strings.TrimSpace(upstream))
-}
-
-func TestScheduleWorktreeDeletion_ExternalTrackedWorktreeDeletes(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
-	repoDir := initRepo(t)
-	wtDir := filepath.Join(t.TempDir(), "external-tracked")
-	run(t, repoDir, "git", "worktree", "add", "-b", "external-tracked", wtDir)
-
-	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
-	require.NoError(t, err)
-
-	err = svc.scheduleWorktreeDeletion(context.Background(), wtID)
-	require.NoError(t, err)
-	waitForPathToDisappear(t, wtDir)
-
-	// removeWorktreeFromDisk deletes the branch after removing the worktree
-	// directory, so the directory can be gone before `git branch -D` runs.
-	// Poll for the branch deletion rather than asserting immediately.
-	require.Eventually(t, func() bool {
-		_, err := gitOutput(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/external-tracked")
-		return err != nil
-	}, 5*time.Second, 100*time.Millisecond)
-}
-
-func TestScheduleWorktreeDeletion_RejectsMultipleOpenTabs(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
-	repoDir := initRepo(t)
-	wtDir := filepath.Join(t.TempDir(), "reject-open-tabs")
-	run(t, repoDir, "git", "worktree", "add", "-b", "reject-open-tabs", wtDir)
-
-	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
-	require.NoError(t, err)
-	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "a-1")
-	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, "t-1")
-
-	err = svc.scheduleWorktreeDeletion(context.Background(), wtID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "tabs are still open")
 }

@@ -29,6 +29,26 @@ enum WorktreeAction {
   WORKTREE_ACTION_REMOVE = 2;       // User chose Remove
 }
 
+// CloseTabResult carries the outcome shared by CloseAgentResponse and
+// CloseTerminalResponse.
+//
+// Partial failures (DB close failed, worktree directory couldn't be
+// removed) are returned as success-plus-failure-fields rather than as
+// an RPC error. This is intentional: the close RPCs are fire-and-forget
+// dispatches issued *after* the frontend has already committed the UI
+// tab removal synchronously, so there is nothing to "roll back" if the
+// backend hits a hiccup. Structured failure fields let the UI surface a
+// warn toast (with the worktree path, if relevant) while still honoring
+// the already-visible close. An RPC error would collapse the structured
+// info into a single string and imply the close didn't happen, neither
+// of which matches the async-close contract.
+message CloseTabResult {
+  string worktree_path = 1;   // Populated on worktree-remove failure so the user can clean up manually
+  string worktree_id = 2;     // Populated on worktree-remove failure alongside worktree_path
+  string failure_message = 3; // Short human title of a partial failure (empty = success)
+  string failure_detail = 4;  // Longer context (path, stderr, stack) for the failure
+}
+
 // --- Per-file git status ---
 
 // GitFileStatusCode describes the status of a file in the index or working tree.

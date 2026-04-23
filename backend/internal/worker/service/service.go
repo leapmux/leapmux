@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -62,6 +63,12 @@ type Context struct {
 	// being ready. See startupstate.go.
 	AgentStartup    *startupRegistry[leapmuxv1.AgentStatus]
 	TerminalStartup *startupRegistry[leapmuxv1.TerminalStatus]
+
+	// Cleanup tracks in-flight close handlers so Shutdown() can wait for
+	// them to finish before DB/data-dir teardown. Close handlers must
+	// Add(1) at entry and defer Done() so Wait() in Shutdown observes
+	// them even if a handler panics.
+	Cleanup sync.WaitGroup
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -161,14 +168,18 @@ func (svc *Context) Init() {
 // Shutdown persists in-memory terminal state to the database so it
 // survives a worker restart. Call this before stopping the terminal
 // manager (which clears in-memory state). Callers must have already
-// stopped dispatching new OpenAgent/OpenTerminal requests; otherwise
-// WaitForInFlight can race with a fresh begin().
+// stopped dispatching new OpenAgent/OpenTerminal/CloseAgent/CloseTerminal
+// requests; otherwise the Wait calls below can race with a fresh Add.
 func (svc *Context) Shutdown() {
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller
 	// closes the DB or removes data directories.
 	svc.AgentStartup.WaitForInFlight()
 	svc.TerminalStartup.WaitForInFlight()
+	// Also drain in-flight close handlers. The frontend fires close RPCs
+	// as fire-and-forget, so a close can still be running on the
+	// dispatcher goroutine while the worker receives a deregister/SIGTERM.
+	svc.Cleanup.Wait()
 
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
 		svc.appendTerminalDisconnectNotice(tid)

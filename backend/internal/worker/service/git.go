@@ -9,13 +9,14 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/pathutil"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
+	"golang.org/x/sync/errgroup"
 )
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
@@ -270,12 +271,21 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		// Track on Cleanup so a concurrent Shutdown waits for the
+		// errgroup in inspectLastTabClose to finish instead of tearing
+		// down the DB mid-query.
+		svc.Cleanup.Add(1)
+		defer svc.Cleanup.Done()
+
+		traceTabClosePhase("inspect", r.GetTabId(), "handler_begin")
 		resp, err := svc.inspectLastTabClose(bgCtx(), r.GetTabType(), r.GetTabId())
 		if err != nil {
 			slog.Error("inspect last tab close failed", "tab_type", r.GetTabType(), "tab_id", r.GetTabId(), "error", err)
+			traceTabClosePhase("inspect", r.GetTabId(), "handler_error")
 			sendInternalError(sender, err.Error())
 			return
 		}
+		traceTabClosePhase("inspect", r.GetTabId(), "handler_end")
 		sendProtoResponse(sender, resp)
 	})
 
@@ -291,20 +301,6 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 		sendProtoResponse(sender, &leapmuxv1.PushBranchForCloseResponse{})
-	})
-
-	d.Register("ScheduleWorktreeDeletion", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.ScheduleWorktreeDeletionRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
-		if err := svc.scheduleWorktreeDeletion(bgCtx(), r.GetWorktreeId()); err != nil {
-			sendInternalError(sender, err.Error())
-			return
-		}
-		sendProtoResponse(sender, &leapmuxv1.ScheduleWorktreeDeletionResponse{})
 	})
 
 	d.Register("CheckWorktreeStatus", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
@@ -352,24 +348,11 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Remove worktree from disk.
-		if err := gitCommand(ctx, wt.RepoRoot, "worktree", "remove", "--force", wt.WorktreePath); err != nil {
-			slog.Warn("failed to remove worktree from disk", "path", wt.WorktreePath, "error", err)
-			// Continue anyway; the worktree may already be gone.
-		}
-
-		// Try to delete the branch.
-		if wt.BranchName != "" {
-			if err := gitCommand(ctx, wt.RepoRoot, "branch", "-D", wt.BranchName); err != nil {
-				slog.Debug("failed to delete branch", "branch", wt.BranchName, "error", err)
-				// Non-fatal: branch may have been merged or already deleted.
-			}
-		}
-
-		// Delete from DB.
-		if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
-			slog.Error("failed to delete worktree from DB", "id", wt.ID, "error", err)
-			sendInternalError(sender, "failed to delete worktree record")
+		// Remove worktree from disk + branch + DB row. Reports an error
+		// when the git worktree-remove failed AND the directory is still
+		// on disk, so the caller knows manual cleanup is needed.
+		if err := svc.removeWorktreeFromDisk(wt, true); err != nil {
+			sendInternalError(sender, err.Error())
 			return
 		}
 
@@ -425,13 +408,68 @@ func (t *tabGitContext) commitDir() string {
 }
 
 func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
-	tabCtx, err := svc.loadTabGitContext(ctx, tabType, tabID)
-	if err != nil {
-		// If the tab's working directory is not (or no longer) a git repository,
-		// there is nothing to prompt about — allow the tab to close normally.
-		return &leapmuxv1.InspectLastTabCloseResponse{
-			Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
-		}, nil
+	trace := func(phase string) { traceTabClosePhase("inspect", tabID, phase) }
+
+	// Fast path: the only reason to run the expensive git subprocesses
+	// (diffStatsForPath, pushStatusForPath) is to populate the dialog.
+	// If the tab count already tells us no dialog will be shown, we can
+	// answer from DB alone and skip every git call below.
+	//
+	// - Worktree tab with siblings (CountWorktreeTabs > 1) → no prompt.
+	//   Answer entirely from the worktree DB row; don't touch git.
+	// - Non-worktree tab with other tabs on the same branch (otherTabs
+	//   > 0) → no prompt. We still need the branch name to do the
+	//   sibling count, so loadTabGitContext still runs; but diff/push
+	//   are skipped.
+	//
+	// When shouldPrompt is false, the frontend ignores diff_* / push_*
+	// fields, so leaving them zero is safe.
+	var tabCtx *tabGitContext
+	if wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+		TabType: tabType,
+		TabID:   tabID,
+	}); err == nil {
+		count, countErr := svc.Queries.CountWorktreeTabs(ctx, wt.ID)
+		trace("worktree_count_done")
+		if countErr == nil && count > 1 {
+			trace("fast_path_taken")
+			return &leapmuxv1.InspectLastTabCloseResponse{
+				Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+				ShouldPrompt: false,
+				RepoRoot:     wt.RepoRoot,
+				WorktreePath: wt.WorktreePath,
+				WorktreeId:   wt.ID,
+				BranchName:   wt.BranchName,
+			}, nil
+		}
+		// The worktree DB row already carries RepoRoot / BranchName /
+		// WorktreePath, so we can skip getTabWorkingDir (DB),
+		// queryGitPathInfo (rev-parse), branchOrShortSHA (possibly
+		// another rev-parse), and GetWorktreeByPath (DB) — all work
+		// that loadTabGitContext would otherwise repeat on the
+		// dialog-latency path.
+		tabCtx = &tabGitContext{
+			workingDir:   wt.WorktreePath,
+			repoRoot:     wt.RepoRoot,
+			branchName:   wt.BranchName,
+			worktreeRoot: wt.WorktreePath,
+			worktreeID:   wt.ID,
+			isWorktree:   true,
+		}
+		trace("git_ctx_synth")
+	}
+
+	if tabCtx == nil {
+		loaded, err := svc.loadTabGitContext(ctx, tabType, tabID)
+		trace("git_ctx_done")
+		if err != nil {
+			// If the tab's working directory is not (or no longer) a git repository,
+			// there is nothing to prompt about — allow the tab to close normally.
+			return &leapmuxv1.InspectLastTabCloseResponse{
+				Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
+			}, nil
+		}
+		tabCtx = loaded
 	}
 
 	resp := &leapmuxv1.InspectLastTabCloseResponse{
@@ -440,20 +478,57 @@ func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		BranchName: tabCtx.branchName,
 	}
 
-	statsPath := tabCtx.commitDir()
-	added, deleted, untracked, hasChanges, err := diffStatsForPath(ctx, statsPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to inspect diff stats: %w", err)
+	// Non-worktree fast path: if there are sibling tabs on the same
+	// branch, we'll never prompt regardless of git state — skip diff
+	// and push.
+	if !tabCtx.isWorktree {
+		hasOther, err := svc.hasOtherNonWorktreeTabOnBranch(ctx, tabType, tabID, tabCtx.repoRoot, tabCtx.branchName)
+		trace("branch_count_done")
+		if err != nil {
+			return nil, err
+		}
+		if hasOther {
+			trace("fast_path_taken")
+			return resp, nil
+		}
 	}
+
+	// diffStatsForPath and pushStatusForPath are independent git
+	// subprocesses on the same working directory; run them concurrently
+	// so the dialog-latency path pays the max of the two, not the sum.
+	statsPath := tabCtx.commitDir()
+	var (
+		added, deleted, untracked int32
+		hasChanges                bool
+		push                      pushStatus
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		a, d, u, hc, err := diffStatsForPath(gctx, statsPath)
+		if err != nil {
+			return fmt.Errorf("failed to inspect diff stats: %w", err)
+		}
+		added, deleted, untracked, hasChanges = a, d, u, hc
+		return nil
+	})
+	g.Go(func() error {
+		ps, err := pushStatusForPath(gctx, statsPath, tabCtx.branchName)
+		if err != nil {
+			return fmt.Errorf("failed to inspect push status: %w", err)
+		}
+		push = ps
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	// Single emission covers both parallel calls completing — their
+	// individual timestamps are no longer meaningful once they race.
+	trace("diff_and_push_done")
 	resp.DiffAdded = added
 	resp.DiffDeleted = deleted
 	resp.DiffUntracked = untracked
 	resp.HasUncommittedChanges = hasChanges
-
-	push, err := pushStatusForPath(ctx, tabCtx.commitDir(), tabCtx.branchName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to inspect push status: %w", err)
-	}
 	resp.UnpushedCommitCount = push.Unpushed
 	resp.UpstreamExists = push.UpstreamExists
 	resp.RemoteBranchMissing = push.RemoteMissing
@@ -461,22 +536,20 @@ func (svc *Context) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	resp.CanPush = push.CanPush(tabCtx.branchName)
 
 	if tabCtx.isWorktree {
-		tabCount, err := svc.Queries.CountWorktreeTabs(ctx, tabCtx.worktreeID)
-		if err != nil {
-			return nil, err
-		}
+		// If we reached here, the worktree fast path didn't apply
+		// (GetWorktreeForTab miss or count <= 1). The last-tab case is
+		// the only reason we still need worktree details in the
+		// response.
 		resp.Target = leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE
-		resp.ShouldPrompt = tabCount <= 1
+		resp.ShouldPrompt = true
 		resp.WorktreePath = tabCtx.worktreeRoot
 		resp.WorktreeId = tabCtx.worktreeID
 		return resp, nil
 	}
 
-	otherTabs, err := svc.countOtherNonWorktreeTabsOnBranch(ctx, tabType, tabID, tabCtx.repoRoot, tabCtx.branchName)
-	if err != nil {
-		return nil, err
-	}
-	if otherTabs == 0 && (hasChanges || push.Unpushed > 0 || push.RemoteMissing) {
+	// Non-worktree, last tab on branch: prompt only if the branch has
+	// state the user might lose.
+	if hasChanges || push.Unpushed > 0 || push.RemoteMissing {
 		resp.Target = leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH
 		resp.ShouldPrompt = true
 	}
@@ -531,41 +604,6 @@ func (svc *Context) pushBranchForClose(ctx context.Context, tabType leapmuxv1.Ta
 		}
 		return fmt.Errorf("git push failed: %w", err)
 	}
-	return nil
-}
-
-func (svc *Context) scheduleWorktreeDeletion(ctx context.Context, worktreeID string) error {
-	wt, err := svc.Queries.GetWorktreeByID(ctx, worktreeID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New("worktree not found")
-		}
-		return err
-	}
-
-	count, err := svc.Queries.CountWorktreeTabs(ctx, wt.ID)
-	if err != nil {
-		return err
-	}
-	if count > 1 {
-		return errors.New("cannot delete worktree while tabs are still open")
-	}
-
-	go func() {
-		for i := 0; i < 50; i++ {
-			remaining, err := svc.Queries.CountWorktreeTabs(bgCtx(), wt.ID)
-			if err != nil {
-				slog.Warn("scheduled worktree deletion count failed", "worktree_id", wt.ID, "error", err)
-				return
-			}
-			if remaining == 0 {
-				svc.removeWorktreeFromDisk(wt, true)
-				return
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		slog.Warn("scheduled worktree deletion timed out waiting for tabs to close", "worktree_id", wt.ID)
-	}()
 	return nil
 }
 
@@ -630,46 +668,40 @@ func (svc *Context) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabT
 	}
 }
 
-func (svc *Context) countOtherNonWorktreeTabsOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, repoRoot, branchName string) (int, error) {
+func (svc *Context) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, repoRoot, branchName string) (bool, error) {
 	// Two terminals in the same repo share a workingDir; cache so each unique
 	// dir costs one rev-parse.
 	infoCache := map[string]*gitPathInfo{}
 
-	countMatching := func(query string, skipType leapmuxv1.TabType) (int, error) {
+	scan := func(query string, skipType leapmuxv1.TabType) (bool, error) {
 		rows, err := svc.DB.QueryContext(ctx, query)
 		if err != nil {
-			return 0, err
+			return false, err
 		}
 		defer func() {
 			if closeErr := rows.Close(); closeErr != nil {
 				slog.Warn("failed to close row iterator", "error", closeErr)
 			}
 		}()
-		n := 0
 		for rows.Next() {
 			var id, workingDir string
 			if err := rows.Scan(&id, &workingDir); err != nil {
-				return 0, err
+				return false, err
 			}
 			if tabType == skipType && id == tabID {
 				continue
 			}
 			if matches, err := tabMatchesBranch(ctx, workingDir, repoRoot, branchName, infoCache); err == nil && matches {
-				n++
+				return true, nil
 			}
 		}
-		return n, nil
+		return false, nil
 	}
 
-	agents, err := countMatching(`SELECT id, working_dir FROM agents WHERE closed_at IS NULL`, leapmuxv1.TabType_TAB_TYPE_AGENT)
-	if err != nil {
-		return 0, err
+	if hit, err := scan(`SELECT id, working_dir FROM agents WHERE closed_at IS NULL`, leapmuxv1.TabType_TAB_TYPE_AGENT); err != nil || hit {
+		return hit, err
 	}
-	terminals, err := countMatching(`SELECT id, working_dir FROM terminals WHERE closed_at IS NULL`, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
-	if err != nil {
-		return 0, err
-	}
-	return agents + terminals, nil
+	return scan(`SELECT id, working_dir FROM terminals WHERE closed_at IS NULL`, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 }
 
 // tabMatchesBranch reports whether a tab's workingDir resolves to repoRoot
@@ -786,9 +818,9 @@ func remoteRefExists(ctx context.Context, dir, remoteName, branchName string) bo
 //   - git diff --numstat --staged -z (staged diff stats)
 //
 // Returns nil for non-git directories.
-func getGitFileStatusEntries(_ context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
+func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitFileStatusEntry, error) {
 	// 1. Get file status via porcelain v2.
-	cmd := gitutil.NewGitCmd(context.Background(), "-C", repoRoot, "status", "--porcelain=v2", "-z")
+	cmd := gitutil.NewGitCmd(ctx, "-C", repoRoot, "status", "--porcelain=v2", "-z")
 	statusOut, err := cmd.Output()
 	if err != nil {
 		return nil, nil // Not a git repo or git unavailable.
@@ -806,13 +838,13 @@ func getGitFileStatusEntries(_ context.Context, repoRoot string) ([]*leapmuxv1.G
 	}
 
 	// 2. Get unstaged diff stats.
-	cmd2 := gitutil.NewGitCmd(context.Background(), "-C", repoRoot, "diff", "--numstat", "-z")
+	cmd2 := gitutil.NewGitCmd(ctx, "-C", repoRoot, "diff", "--numstat", "-z")
 	if numstatOut, err := cmd2.Output(); err == nil {
 		applyNumstat(numstatOut, fileMap, false)
 	}
 
 	// 3. Get staged diff stats.
-	cmd3 := gitutil.NewGitCmd(context.Background(), "-C", repoRoot, "diff", "--numstat", "--staged", "-z")
+	cmd3 := gitutil.NewGitCmd(ctx, "-C", repoRoot, "diff", "--numstat", "--staged", "-z")
 	if numstatOut, err := cmd3.Output(); err == nil {
 		applyNumstat(numstatOut, fileMap, true)
 	}

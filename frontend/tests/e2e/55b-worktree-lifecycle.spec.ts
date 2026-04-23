@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { WorktreeAction } from '../../src/generated/leapmux/v1/common_pb'
 import {
   OpenTerminalRequestSchema,
   OpenTerminalResponseSchema,
@@ -18,7 +19,6 @@ import {
   inspectLastTabCloseViaAPI,
   openNewWorkspaceDialog,
   pushBranchForCloseViaAPI,
-  scheduleWorktreeDeletionViaAPI,
   setWorkingDir,
   waitForAgentsViaAPI,
   waitForOrgPageReady,
@@ -100,8 +100,7 @@ test.describe('Worktree Lifecycle', () => {
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.worktreePath).toContain('test-repo-autoclean-worktrees/autoclean-branch')
-    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect.worktreeId)
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id, WorktreeAction.REMOVE)
 
     await waitForPathDeleted(worktreeDir)
     await waitForPathDeleted(join(repoDir, '.git', 'refs', 'heads', 'autoclean-branch'))
@@ -147,8 +146,7 @@ test.describe('Worktree Lifecycle', () => {
     const agents = await waitForAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId, adminOrgId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     expect(inspect.shouldPrompt).toBe(true)
-    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect.worktreeId)
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id, WorktreeAction.REMOVE)
 
     await waitForPathDeleted(worktreeDir)
     await waitForPathDeleted(join(repoDir, '.git', 'refs', 'heads', 'shared-branch'))
@@ -183,8 +181,7 @@ test.describe('Worktree Lifecycle', () => {
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.branchName).toBe('manual-branch')
 
-    await scheduleWorktreeDeletionViaAPI(hubUrl, adminToken, workerId, inspect.worktreeId)
-    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
+    await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id, WorktreeAction.REMOVE)
 
     await waitForPathDeleted(manualWorktreeDir)
     expect(branchExists(repoDir, 'manual-branch')).toBe(false)

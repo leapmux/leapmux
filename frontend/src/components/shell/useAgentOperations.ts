@@ -15,7 +15,9 @@ import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from
 import { getProviderPlugin } from '~/components/chat/providers/registry'
 import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
 import { showWarnToast } from '~/components/common/Toast'
+import { toastCloseFailure } from '~/components/shell/closeFailureToast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { createLogger } from '~/lib/logger'
@@ -390,25 +392,36 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Close an agent
-  const handleCloseAgent = async (agentId: string) => {
-    try {
-      const workerId = getAgentWorkerId(agentId)
-      props.controlStore.clearAgent(agentId)
-      clearAttachments(agentId)
-      if (workerId) {
-        await workerRpc.closeAgent(workerId, { agentId })
-      }
-      props.agentStore.removeAgent(agentId)
-      props.tabStore.removeTab(TabType.AGENT, agentId)
-      // Unregister tab from hub.
-      const ws = props.activeWorkspace()
-      if (ws) {
-        workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.AGENT, tabId: agentId }).catch(() => {})
-      }
+  // Close an agent.
+  //
+  // All store mutations run synchronously so the UI updates the moment
+  // the caller returns. The worker close RPC and Hub unregister are
+  // fire-and-forget; failures are surfaced via toast without blocking
+  // the UI or rolling back the local state — the tab is already gone.
+  const handleCloseAgent = (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP) => {
+    const workerId = getAgentWorkerId(agentId)
+
+    // Synchronous local cleanup: the tab disappears immediately.
+    props.controlStore.clearAgent(agentId)
+    clearAttachments(agentId)
+    props.agentStore.removeAgent(agentId)
+    props.tabStore.removeTab(TabType.AGENT, agentId)
+
+    // Background: kill the subprocess, DB-close the agent, optionally
+    // remove the worktree. Partial failures come back as a non-empty
+    // failure_message on the response.
+    if (workerId) {
+      workerRpc.closeAgent(workerId, { agentId, worktreeAction })
+        .then(resp => toastCloseFailure(resp.result))
+        .catch((err) => {
+          showWarnToast('Failed to close agent', err)
+        })
     }
-    catch (err) {
-      showWarnToast('Failed to close agent', err)
+
+    // Unregister tab from hub (runs in parallel with the worker close).
+    const ws = props.activeWorkspace()
+    if (ws) {
+      workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.AGENT, tabId: agentId }).catch(() => {})
     }
   }
 

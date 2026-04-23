@@ -73,10 +73,10 @@ message CloseAgentRequest {
   WorktreeAction worktree_action = 2;
 }
 
+// CloseAgentResponse reports the outcome of CloseAgent. See CloseTabResult
+// for why partial failures are returned in-band rather than as RPC errors.
 message CloseAgentResponse {
-  bool worktree_cleanup_pending = 1;  // True if worktree is dirty and needs confirmation
-  string worktree_path = 2;           // Path of the dirty worktree
-  string worktree_id = 3;             // ID for ForceRemoveWorktree/KeepWorktree
+  CloseTabResult result = 1;
 }
 
 message ListAgentsRequest {
