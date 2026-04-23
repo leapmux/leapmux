@@ -46,7 +46,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	cfg := testConfig()
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
 	orgSvc := service.NewOrgService(st, false)

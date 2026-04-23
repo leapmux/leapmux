@@ -11,7 +11,14 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
-import { getAdminOrgId, getWorkerId, loginViaAPI } from './api'
+import {
+  getAdminOrgId,
+  getWorkerId,
+  signUpViaAPI,
+  TEST_ADMIN_DISPLAY_NAME,
+  TEST_ADMIN_PASSWORD,
+  TEST_ADMIN_USERNAME,
+} from './api'
 import { findFreePort, getGlobalState, waitForServer } from './server'
 
 export interface DevServerHandle {
@@ -19,6 +26,12 @@ export interface DevServerHandle {
   adminToken: string
   adminOrgId: string
   workerId: string
+  proc: ChildProcess
+  dataDir: string
+}
+
+export interface UnseededDevServerHandle {
+  hubUrl: string
   proc: ChildProcess
   dataDir: string
 }
@@ -33,6 +46,19 @@ export interface StartDevServerOptions {
 }
 
 export async function startDevServer(opts: StartDevServerOptions = {}): Promise<DevServerHandle> {
+  const unseeded = await startUnseededDevServer(opts)
+  // Register the first admin via setup mode (dev mode no longer auto-bootstraps).
+  const adminToken = await signUpViaAPI(unseeded.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
+  const adminOrgId = await getAdminOrgId(unseeded.hubUrl, adminToken)
+  const workerId = await getWorkerId(unseeded.hubUrl, adminToken)
+  return { ...unseeded, adminToken, adminOrgId, workerId }
+}
+
+/**
+ * Like startDevServer, but does not register the initial admin. Use this for
+ * specs that need to exercise the /setup flow directly.
+ */
+export async function startUnseededDevServer(opts: StartDevServerOptions = {}): Promise<UnseededDevServerHandle> {
   const { binaryPath } = getGlobalState()
   const dataDir = mkdtempSync(join(tmpdir(), `${opts.dataDirPrefix ?? 'leapmux-e2e-'}-`))
   const port = await findFreePort()
@@ -53,13 +79,10 @@ export async function startDevServer(opts: StartDevServerOptions = {}): Promise<
   }
 
   await waitForServer(hubUrl)
-  const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin123')
-  const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
-  const workerId = await getWorkerId(hubUrl, adminToken)
-  return { hubUrl, adminToken, adminOrgId, workerId, proc, dataDir }
+  return { hubUrl, proc, dataDir }
 }
 
-export async function stopDevServer(handle: DevServerHandle, extraPaths: string[] = []): Promise<void> {
+export async function stopDevServer(handle: DevServerHandle | UnseededDevServerHandle, extraPaths: string[] = []): Promise<void> {
   handle.proc.kill('SIGTERM')
   await new Promise(r => setTimeout(r, 1000))
   try {

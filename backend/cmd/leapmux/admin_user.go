@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/validate"
 )
@@ -141,6 +142,10 @@ func runUserCreate(args []string) error {
 		slug, err := validate.SanitizeSlug("username", *username)
 		if err != nil {
 			return err
+		}
+
+		if usernames.IsReservedSystem(slug) {
+			return fmt.Errorf("%q is a reserved username", slug)
 		}
 
 		if err := validate.ValidatePassword(pwValue); err != nil {

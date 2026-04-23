@@ -72,6 +72,50 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
+	t.Run("get first admin", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "admin-org", true)
+
+		// No users: ErrNotFound.
+		_, err := st.Users().GetFirstAdmin(ctx)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+
+		// Non-admin user only: still ErrNotFound.
+		SeedUser(t, st, orgID, "regular")
+		_, err = st.Users().GetFirstAdmin(ctx)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+
+		// Sleep between creates so created_at ordering is deterministic
+		// (some backends only have millisecond precision).
+		time.Sleep(5 * time.Millisecond)
+		older := SeedUser(t, st, orgID, "older-admin")
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID:      older.ID,
+			IsAdmin: true,
+		}))
+		time.Sleep(5 * time.Millisecond)
+		newer := SeedUser(t, st, orgID, "newer-admin")
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
+			ID:      newer.ID,
+			IsAdmin: true,
+		}))
+
+		// With two admins, returns the one with the oldest created_at.
+		found, err := st.Users().GetFirstAdmin(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, older.ID, found.ID)
+
+		// Soft-deleted admins are ignored.
+		require.NoError(t, st.Users().Delete(ctx, older.ID))
+		found, err = st.Users().GetFirstAdmin(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, newer.ID, found.ID)
+
+		require.NoError(t, st.Users().Delete(ctx, newer.ID))
+		_, err = st.Users().GetFirstAdmin(ctx)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
 	t.Run("has any", func(t *testing.T) {
 		st := s.NewStore(t)
 

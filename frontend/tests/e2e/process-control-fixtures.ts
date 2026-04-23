@@ -16,6 +16,9 @@ import {
   loginViaAPI,
   openAgentViaAPI,
   signUpViaAPI,
+  TEST_ADMIN_DISPLAY_NAME,
+  TEST_ADMIN_PASSWORD,
+  TEST_ADMIN_USERNAME,
 } from './helpers/api'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
@@ -214,7 +217,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   // Verify the hub is fully operational by testing login
   for (let i = 0; i < 10; i++) {
     try {
-      await loginViaAPI(serverInfo.hubUrl, 'admin', 'admin123')
+      await loginViaAPI(serverInfo.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
       break
     }
     catch {
@@ -275,7 +278,7 @@ export const processTest = base.extend<
     console.log(`[e2e] Hub ready on port ${hubPort}`)
 
     // Create admin via setup mode (first signup becomes admin)
-    const adminToken = await signUpViaAPI(hubUrl, 'admin', 'admin123', 'Admin')
+    const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
     const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
 
     // Start worker in its own process group so stray signals from the test

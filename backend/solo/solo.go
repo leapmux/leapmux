@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
@@ -23,6 +25,11 @@ import (
 	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/worker"
 )
+
+// workerSetupPollInterval is how often dev mode re-checks whether the first
+// admin user has completed the /setup flow so the auto-registered local
+// worker can come online.
+const workerSetupPollInterval = 2 * time.Second
 
 // Config configures the solo launcher.
 type Config struct {
@@ -215,83 +222,25 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		return nil, errors.New("hub serve exited before listener became ready")
 	}
 
-	// Auto-register worker.
+	// In dev mode the first admin may not exist yet; defer worker bringup
+	// until /setup completes.
 	statePath := filepath.Join(workerDataDir, "state.json")
-	state, err := loadOrCreateWorkerState(soloCtx, server, statePath, workerDataDir)
-	if err != nil {
+	setupWorker := func(ctx context.Context) error {
+		return bringUpLocalWorker(ctx, &inst.wg, server, statePath, workerDataDir, hubCfg, listenURL, modeName)
+	}
+	err = setupWorker(soloCtx)
+	switch {
+	case err == nil:
+		// Worker is up.
+	case errors.Is(err, store.ErrNotFound) && cfg.DevMode:
+		slog.Info("dev mode: deferring worker auto-registration until first admin signs up via /setup")
+		inst.wg.Add(1)
+		go pollForDeferredWorkerSetup(soloCtx, &inst.wg, setupWorker)
+	default:
 		cancel()
 		inst.wg.Wait()
 		return nil, fmt.Errorf("auto-register worker: %w", err)
 	}
-
-	// Ensure composite keypair for E2EE.
-	if state.PublicKey == "" || state.PrivateKey == "" ||
-		state.MlkemPublicKey == "" || state.MlkemPrivateKey == "" ||
-		state.SlhdsaPublicKey == "" || state.SlhdsaPrivateKey == "" {
-		ck, kpErr := noiseutil.GenerateCompositeKeypair()
-		if kpErr != nil {
-			cancel()
-			inst.wg.Wait()
-			return nil, fmt.Errorf("generate composite keypair: %w", kpErr)
-		}
-		slhdsaPub, _ := ck.SlhdsaPublicKeyBytes()
-		slhdsaPriv, _ := ck.SlhdsaPrivateKey.MarshalBinary()
-		state.PublicKey = base64.StdEncoding.EncodeToString(ck.X25519Public)
-		state.PrivateKey = base64.StdEncoding.EncodeToString(ck.X25519Private)
-		state.MlkemPublicKey = base64.StdEncoding.EncodeToString(ck.MlkemPublicKeyBytes())
-		state.MlkemPrivateKey = base64.StdEncoding.EncodeToString(ck.MlkemDecapsulationKey.Bytes())
-		state.SlhdsaPublicKey = base64.StdEncoding.EncodeToString(slhdsaPub)
-		state.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(slhdsaPriv)
-		stateData, err := json.MarshalIndent(state, "", "  ")
-		if err != nil {
-			slog.Warn("failed to marshal state", "error", err)
-		} else if writeErr := os.WriteFile(statePath, stateData, 0o600); writeErr != nil {
-			slog.Warn("failed to save keypair", "error", writeErr)
-		}
-	}
-
-	compositeKey, ckErr := noiseutil.RestoreCompositeKeypair(
-		mustDecode64(state.PublicKey),
-		mustDecode64(state.PrivateKey),
-		mustDecode64(state.MlkemPrivateKey),
-		mustDecode64(state.SlhdsaPublicKey),
-		mustDecode64(state.SlhdsaPrivateKey),
-	)
-	if ckErr != nil {
-		cancel()
-		inst.wg.Wait()
-		return nil, fmt.Errorf("restore composite keypair: %w", ckErr)
-	}
-
-	slog.Info(modeName+" worker registered",
-		"worker_id", state.WorkerID,
-		"local", listenURL,
-	)
-
-	// Start Worker.
-	inst.wg.Add(1)
-	go func() {
-		defer inst.wg.Done()
-		if wErr := worker.Run(soloCtx, worker.RunConfig{
-			HubURL:               listenURL,
-			DataDir:              workerDataDir,
-			AuthToken:            state.AuthToken,
-			CompositeKey:         compositeKey,
-			WorkerID:             state.WorkerID,
-			DBMaxConns:           hubCfg.Storage.SQLite.MaxConns,
-			DBCacheSize:          hubCfg.Storage.SQLite.CacheSize,
-			DBMmapSize:           hubCfg.Storage.SQLite.MmapSize,
-			MaxMessageSize:       hubCfg.MaxMessageSize,
-			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
-			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
-			APITimeout:           hubCfg.APITimeout(),
-			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
-			UseLoginShell:        parseBool(hubCfg.Extras["use_login_shell"], true),
-			RegisteredBy:         state.RegisteredBy,
-		}); wErr != nil {
-			slog.Error("worker error", "error", wErr)
-		}
-	}()
 
 	slog.Info("leapmux "+modeName+" listening", "addr", hubCfg.Addr)
 
@@ -322,6 +271,117 @@ type soloState struct {
 	MlkemPrivateKey  string `json:"mlkem_private_key,omitempty"`
 	SlhdsaPublicKey  string `json:"slhdsa_public_key,omitempty"`
 	SlhdsaPrivateKey string `json:"slhdsa_private_key,omitempty"`
+}
+
+// pollForDeferredWorkerSetup retries setupWorker on a ticker until it succeeds,
+// the context is cancelled, or a non-ErrNotFound error occurs. Must be invoked
+// as `go pollForDeferredWorkerSetup(...)` with wg.Add(1) already called — this
+// function calls wg.Done on exit.
+func pollForDeferredWorkerSetup(ctx context.Context, wg *sync.WaitGroup, setupWorker func(context.Context) error) {
+	defer wg.Done()
+	ticker := time.NewTicker(workerSetupPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		err := setupWorker(ctx)
+		if err == nil {
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		slog.Error("deferred worker setup failed", "error", err)
+		return
+	}
+}
+
+// bringUpLocalWorker loads (or creates, then persists) the local worker's
+// registration state, ensures the composite E2EE keypair is present, and
+// launches the worker goroutine under wg. It returns store.ErrNotFound if no
+// admin user exists yet; the caller is expected to retry after the first
+// /setup signup completes.
+func bringUpLocalWorker(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	server *hub.Server,
+	statePath, workerDataDir string,
+	hubCfg *hubconfig.Config,
+	listenURL, modeName string,
+) error {
+	state, err := loadOrCreateWorkerState(ctx, server, statePath, workerDataDir)
+	if err != nil {
+		return err
+	}
+
+	// Ensure composite keypair for E2EE.
+	if state.PublicKey == "" || state.PrivateKey == "" ||
+		state.MlkemPublicKey == "" || state.MlkemPrivateKey == "" ||
+		state.SlhdsaPublicKey == "" || state.SlhdsaPrivateKey == "" {
+		ck, kpErr := noiseutil.GenerateCompositeKeypair()
+		if kpErr != nil {
+			return fmt.Errorf("generate composite keypair: %w", kpErr)
+		}
+		slhdsaPub, _ := ck.SlhdsaPublicKeyBytes()
+		slhdsaPriv, _ := ck.SlhdsaPrivateKey.MarshalBinary()
+		state.PublicKey = base64.StdEncoding.EncodeToString(ck.X25519Public)
+		state.PrivateKey = base64.StdEncoding.EncodeToString(ck.X25519Private)
+		state.MlkemPublicKey = base64.StdEncoding.EncodeToString(ck.MlkemPublicKeyBytes())
+		state.MlkemPrivateKey = base64.StdEncoding.EncodeToString(ck.MlkemDecapsulationKey.Bytes())
+		state.SlhdsaPublicKey = base64.StdEncoding.EncodeToString(slhdsaPub)
+		state.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(slhdsaPriv)
+		stateData, err := json.MarshalIndent(state, "", "  ")
+		if err != nil {
+			slog.Warn("failed to marshal state", "error", err)
+		} else if writeErr := os.WriteFile(statePath, stateData, 0o600); writeErr != nil {
+			slog.Warn("failed to save keypair", "error", writeErr)
+		}
+	}
+
+	compositeKey, ckErr := noiseutil.RestoreCompositeKeypair(
+		mustDecode64(state.PublicKey),
+		mustDecode64(state.PrivateKey),
+		mustDecode64(state.MlkemPrivateKey),
+		mustDecode64(state.SlhdsaPublicKey),
+		mustDecode64(state.SlhdsaPrivateKey),
+	)
+	if ckErr != nil {
+		return fmt.Errorf("restore composite keypair: %w", ckErr)
+	}
+
+	slog.Info(modeName+" worker registered",
+		"worker_id", state.WorkerID,
+		"local", listenURL,
+	)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if wErr := worker.Run(ctx, worker.RunConfig{
+			HubURL:               listenURL,
+			DataDir:              workerDataDir,
+			AuthToken:            state.AuthToken,
+			CompositeKey:         compositeKey,
+			WorkerID:             state.WorkerID,
+			DBMaxConns:           hubCfg.Storage.SQLite.MaxConns,
+			DBCacheSize:          hubCfg.Storage.SQLite.CacheSize,
+			DBMmapSize:           hubCfg.Storage.SQLite.MmapSize,
+			MaxMessageSize:       hubCfg.MaxMessageSize,
+			MaxIncompleteChunked: hubCfg.MaxIncompleteChunked,
+			AgentStartupTimeout:  hubCfg.AgentStartupTimeout(),
+			APITimeout:           hubCfg.APITimeout(),
+			EncryptionMode:       workerconfig.ParseEncryptionMode(hubCfg.Extras["encryption_mode"]),
+			UseLoginShell:        parseBool(hubCfg.Extras["use_login_shell"], true),
+			RegisteredBy:         state.RegisteredBy,
+		}); wErr != nil {
+			slog.Error("worker error", "error", wErr)
+		}
+	}()
+
+	return nil
 }
 
 func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath, workerDataDir string) (*soloState, error) {

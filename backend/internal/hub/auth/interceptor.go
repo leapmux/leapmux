@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -50,7 +50,6 @@ type cachedSession struct {
 // on both unary and streaming RPCs.
 type authInterceptor struct {
 	store                     store.Store
-	soloMode                  bool
 	secureCookie              bool
 	emailVerificationRequired bool
 	soloUser                  *UserInfo
@@ -61,23 +60,18 @@ type authInterceptor struct {
 
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
 // and attaches user info to the context. Public procedures (login, worker
-// registration) are exempt from auth checks. In solo mode, all requests are
-// automatically authenticated as the admin user.
+// registration) are exempt from auth checks. Pass a non-nil soloUser to enable
+// solo mode, in which all requests are automatically authenticated as that
+// user; pass nil for normal multi-user auth.
 //
 // The returned SessionCache can be used to evict entries from the in-memory
 // touch throttle (e.g., on logout).
-func NewInterceptor(st store.Store, soloMode bool, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *SessionCache) {
-	a := &authInterceptor{store: st, soloMode: soloMode, secureCookie: secureCookie, emailVerificationRequired: emailVerificationRequired}
-	if soloMode {
-		user, err := st.Users().GetByUsername(context.Background(), bootstrap.Username(soloMode))
-		if err == nil {
-			a.soloUser = &UserInfo{
-				ID:       user.ID,
-				OrgID:    user.OrgID,
-				Username: user.Username,
-				IsAdmin:  user.IsAdmin,
-			}
-		}
+func NewInterceptor(st store.Store, soloUser *UserInfo, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *SessionCache) {
+	a := &authInterceptor{
+		store:                     st,
+		secureCookie:              secureCookie,
+		emailVerificationRequired: emailVerificationRequired,
+		soloUser:                  soloUser,
 	}
 	sc := &SessionCache{touch: &a.lastTouch, sessions: &a.sessionCache, userSessions: &a.userSessions, stop: make(chan struct{})}
 	go a.sweepCaches(sc.stop)
@@ -167,16 +161,13 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 // requests are checked for email verification when required.
 func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader string) (context.Context, error) {
 	if publicProcedures[procedure] {
-		if a.soloMode && a.soloUser != nil {
+		if a.soloUser != nil {
 			ctx = WithUser(ctx, a.soloUser)
 		}
 		return ctx, nil
 	}
 
-	if a.soloMode {
-		if a.soloUser == nil {
-			return ctx, connect.NewError(connect.CodeInternal, fmt.Errorf("solo mode admin user not found"))
-		}
+	if a.soloUser != nil {
 		return WithUser(ctx, a.soloUser), nil
 	}
 

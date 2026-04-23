@@ -8,7 +8,7 @@ import { Icon } from '~/components/common/Icon'
 import * as styles from '~/components/common/LoginPage.css'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
-import { sanitizeDisplayName, sanitizeSlug } from '~/lib/validate'
+import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 
@@ -53,6 +53,13 @@ const OAuthCompleteSignupPage: Component = () => {
     const [slug, slugErr] = sanitizeSlug('Username', username())
     if (slugErr) {
       setError(slugErr)
+      return
+    }
+    // OAuth completion is a post-authentication flow; always treat it as
+    // public signup (admin is reserved, setup uses the /setup page instead).
+    const reservedErr = validateReservedUsername(slug, false)
+    if (reservedErr) {
+      setError(reservedErr)
       return
     }
     const { value: sanitizedDisplayName, error: dnErr } = sanitizeDisplayName(displayName(), slug)

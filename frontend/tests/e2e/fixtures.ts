@@ -11,9 +11,11 @@ import {
   deleteWorkspaceViaAPI,
   getAdminOrgId,
   getWorkerId,
-  loginViaAPI,
   openAgentViaAPI,
   signUpViaAPI,
+  TEST_ADMIN_DISPLAY_NAME,
+  TEST_ADMIN_PASSWORD,
+  TEST_ADMIN_USERNAME,
 } from './helpers/api'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
@@ -72,8 +74,10 @@ export const test = base.extend<
     await waitForServer(hubUrl)
     console.log(`[e2e] Dev instance ready on port ${port}`)
 
-    // Login as admin (bootstrap creates admin/admin123 in dev mode)
-    const adminToken = await loginViaAPI(hubUrl, 'admin', 'admin123')
+    // Register the first admin via setup mode. The /setup flow allows `admin`
+    // as a username only when no users exist yet; after this, `admin` is
+    // reserved for public signup.
+    const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
     const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
     const workerId = await getWorkerId(hubUrl, adminToken)
 
