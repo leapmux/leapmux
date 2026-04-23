@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -50,6 +51,22 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("not authenticated"))
 	}
 	return u, nil
+}
+
+// LoadSoloUser looks up the bootstrapped solo user and maps it into a
+// UserInfo suitable for synthetic authentication in solo mode. Returns
+// store.ErrNotFound if the solo user has not been created yet.
+func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
+	user, err := st.Users().GetByUsername(ctx, usernames.Solo)
+	if err != nil {
+		return nil, err
+	}
+	return &UserInfo{
+		ID:       user.ID,
+		OrgID:    user.OrgID,
+		Username: user.Username,
+		IsAdmin:  user.IsAdmin,
+	}, nil
 }
 
 // Login validates credentials and creates a new session token.

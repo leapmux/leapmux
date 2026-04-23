@@ -30,6 +30,7 @@ export const SetupPage: Component = () => {
             submitLabel="Create account"
             submittingLabel="Creating account..."
             errorPrefix="Setup failed"
+            allowAdminUsername
             header={<p>Create the first administrator account to get started.</p>}
             onSuccess={(resp, slug) => {
               loadSystemInfo(true)

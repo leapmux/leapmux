@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/validate"
 	"github.com/leapmux/leapmux/util/version"
 )
@@ -144,6 +145,16 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	// `solo` is rejected in every mode: if a non-solo data-dir ever gets opened
+	// in solo mode, the interceptor auto-authenticates every request as that
+	// user. `admin` is allowed in setup mode so the first operator can
+	// legitimately claim it; in public signup it's squat-protected.
+	if usernames.IsReservedSystem(username) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
+	}
+	if !isSetupMode && usernames.IsReservedPublic(username) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
 	}
 	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), username)
 	if err != nil {
@@ -305,7 +316,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	providers, _ := s.store.OAuthProviders().ListEnabled(ctx)
 
 	var setupRequired bool
-	if !s.cfg.SoloMode && !s.cfg.DevMode {
+	if !s.cfg.SoloMode {
 		hasUser, err := s.checkHasAnyUser(ctx)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
@@ -397,6 +408,11 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	// OAuth completion is always treated as public signup — the first-admin
+	// flow lives at /setup, so both reserved rules apply.
+	if usernames.IsReservedForPublicSignup(username) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
 	}
 
 	if err := checkUsernameAvailable(ctx, s.store, username); err != nil {

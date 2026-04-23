@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -50,7 +50,6 @@ type cachedSession struct {
 // on both unary and streaming RPCs.
 type authInterceptor struct {
 	store                     store.Store
-	soloMode                  bool
 	secureCookie              bool
 	emailVerificationRequired bool
 	soloUser                  *UserInfo
@@ -61,23 +60,18 @@ type authInterceptor struct {
 
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
 // and attaches user info to the context. Public procedures (login, worker
-// registration) are exempt from auth checks. In solo mode, all requests are
-// automatically authenticated as the admin user.
+// registration) are exempt from auth checks. Pass a non-nil soloUser to enable
+// solo mode, in which all requests are automatically authenticated as that
+// user; pass nil for normal multi-user auth.
 //
 // The returned SessionCache can be used to evict entries from the in-memory
 // touch throttle (e.g., on logout).
-func NewInterceptor(st store.Store, soloMode bool, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *SessionCache) {
-	a := &authInterceptor{store: st, soloMode: soloMode, secureCookie: secureCookie, emailVerificationRequired: emailVerificationRequired}
-	if soloMode {
-		user, err := st.Users().GetByUsername(context.Background(), bootstrap.Username(soloMode))
-		if err == nil {
-			a.soloUser = &UserInfo{
-				ID:       user.ID,
-				OrgID:    user.OrgID,
-				Username: user.Username,
-				IsAdmin:  user.IsAdmin,
-			}
-		}
+func NewInterceptor(st store.Store, soloUser *UserInfo, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *SessionCache) {
+	a := &authInterceptor{
+		store:                     st,
+		secureCookie:              secureCookie,
+		emailVerificationRequired: emailVerificationRequired,
+		soloUser:                  soloUser,
 	}
 	sc := &SessionCache{touch: &a.lastTouch, sessions: &a.sessionCache, userSessions: &a.userSessions, stop: make(chan struct{})}
 	go a.sweepCaches(sc.stop)
@@ -100,14 +94,32 @@ func (c *SessionCache) Evict(sessionID string) {
 	if c == nil {
 		return
 	}
-	if v, ok := c.sessions.Load(sessionID); ok {
-		cached := v.(cachedSession)
-		if idx, ok := c.userSessions.Load(cached.user.ID); ok {
-			idx.(*sync.Map).Delete(sessionID)
-		}
+	if v, ok := c.sessions.LoadAndDelete(sessionID); ok {
+		unindexSession(c.userSessions, v.(cachedSession).user.ID, sessionID)
 	}
 	c.touch.Delete(sessionID)
-	c.sessions.Delete(sessionID)
+}
+
+// unindexSession removes sessionID from the user's inner sessions map, and
+// deletes the outer userSessions entry if the inner map becomes empty.
+func unindexSession(userSessions *sync.Map, userID, sessionID string) {
+	idx, ok := userSessions.Load(userID)
+	if !ok {
+		return
+	}
+	inner := idx.(*sync.Map)
+	inner.Delete(sessionID)
+	if isSyncMapEmpty(inner) {
+		userSessions.Delete(userID)
+	}
+}
+
+// isSyncMapEmpty reports whether m has no entries. sync.Map has no Len(), so
+// we probe with Range and break on the first element.
+func isSyncMapEmpty(m *sync.Map) bool {
+	empty := true
+	m.Range(func(_, _ any) bool { empty = false; return false })
+	return empty
 }
 
 // EvictByUserID removes all cached sessions for a user. Call this after
@@ -167,16 +179,13 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 // requests are checked for email verification when required.
 func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader string) (context.Context, error) {
 	if publicProcedures[procedure] {
-		if a.soloMode && a.soloUser != nil {
+		if a.soloUser != nil {
 			ctx = WithUser(ctx, a.soloUser)
 		}
 		return ctx, nil
 	}
 
-	if a.soloMode {
-		if a.soloUser == nil {
-			return ctx, connect.NewError(connect.CodeInternal, fmt.Errorf("solo mode admin user not found"))
-		}
+	if a.soloUser != nil {
 		return WithUser(ctx, a.soloUser), nil
 	}
 
@@ -282,16 +291,7 @@ func (a *authInterceptor) sweepCaches(stop <-chan struct{}) {
 				cached := value.(cachedSession)
 				if now.Sub(cached.cachedAt) > sessionCacheTTL {
 					a.sessionCache.Delete(key)
-					if idx, ok := a.userSessions.Load(cached.user.ID); ok {
-						inner := idx.(*sync.Map)
-						inner.Delete(key)
-						// Remove the outer entry if the inner map is now empty.
-						empty := true
-						inner.Range(func(_, _ any) bool { empty = false; return false })
-						if empty {
-							a.userSessions.Delete(cached.user.ID)
-						}
-					}
+					unindexSession(&a.userSessions, cached.user.ID, key.(string))
 				}
 				return true
 			})

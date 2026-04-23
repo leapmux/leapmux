@@ -89,6 +89,15 @@ func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, 
 	return &out, nil
 }
 
+func (s *userStore) GetFirstAdmin(ctx context.Context) (*store.User, error) {
+	u, err := s.conn.q.GetFirstAdmin(ctx)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := fromDBUser(u)
+	return &out, nil
+}
+
 func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
 	v, err := s.conn.q.ExistsByUsername(ctx, store.NormalizeUsername(username))
 	if err != nil {

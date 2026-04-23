@@ -45,7 +45,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	userSvc := service.NewUserService(st, testConfig(), nil)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -102,7 +102,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	userSvc := service.NewUserService(st, testConfig(), nil)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
@@ -460,7 +460,7 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, true)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, true)
 	opts := connect.WithInterceptors(interceptor)
 
 	cfg := testConfig()

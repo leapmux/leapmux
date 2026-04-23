@@ -23,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
@@ -105,10 +106,26 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
 
-	if err := bootstrap.Run(context.Background(), st, cfg.SoloMode, cfg.DevMode); err != nil {
+	if err := bootstrap.Run(context.Background(), st, cfg.SoloMode); err != nil {
 		_ = st.Close()
 		closeTCP()
 		return nil, fmt.Errorf("bootstrap: %w", err)
+	}
+
+	// In solo mode, bootstrap just created the solo user; load it once so
+	// the auth interceptor and channel relay can synthesize auth without
+	// repeating the lookup. A failure here indicates a broken bootstrap or
+	// a DB fault — fail startup rather than letting every subsequent request
+	// fail with an opaque 500.
+	var soloUser *auth.UserInfo
+	if cfg.SoloMode {
+		u, loadErr := auth.LoadSoloUser(context.Background(), st)
+		if loadErr != nil {
+			_ = st.Close()
+			closeTCP()
+			return nil, fmt.Errorf("load solo user: %w", loadErr)
+		}
+		soloUser = u
 	}
 
 	shutdownCh := make(chan struct{})
@@ -124,7 +141,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	cMgr := channelmgr.New(cMgrOpts...)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
-	authInterceptor, sessionCache := auth.NewInterceptor(st, cfg.SoloMode, cfg.SecureCookies, cfg.EmailVerificationRequired)
+	authInterceptor, sessionCache := auth.NewInterceptor(st, soloUser, cfg.SecureCookies, cfg.EmailVerificationRequired)
 	connectOpts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
@@ -153,18 +170,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle(channelPath, channelHandler)
 
 	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
-	var soloUser *auth.UserInfo
-	if cfg.SoloMode {
-		username := bootstrap.Username(cfg.SoloMode)
-		if u, lookupErr := st.Users().GetByUsername(context.Background(), username); lookupErr == nil {
-			soloUser = &auth.UserInfo{
-				ID:       u.ID,
-				OrgID:    u.OrgID,
-				Username: u.Username,
-				IsAdmin:  u.IsAdmin,
-			}
-		}
-	}
 	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, soloUser, cfg.SecureCookies)
 	mux.Handle("/ws/channel", channelRelay)
 
@@ -271,12 +276,23 @@ func (s *Server) GetWorkerByID(ctx context.Context, workerID string) error {
 	return err
 }
 
-// GetAdminUser returns the admin user's ID and org ID.
+// GetAdminUser returns the ID and org ID of the user to attribute
+// auto-registered local workers to. In solo mode this is the bootstrapped
+// solo user. In dev/hub mode this is the first admin user registered via the
+// /setup flow; the caller gets store.ErrNotFound when no admin exists yet and
+// is expected to retry once one does.
 func (s *Server) GetAdminUser(ctx context.Context) (userID, orgID string, err error) {
-	username := bootstrap.Username(s.cfg.SoloMode)
-	user, err := s.store.Users().GetByUsername(ctx, username)
+	if s.cfg.SoloMode {
+		user, err := s.store.Users().GetByUsername(ctx, usernames.Solo)
+		if err != nil {
+			return "", "", fmt.Errorf("get solo user: %w", err)
+		}
+		return user.ID, user.OrgID, nil
+	}
+
+	user, err := s.store.Users().GetFirstAdmin(ctx)
 	if err != nil {
-		return "", "", fmt.Errorf("get admin user: %w", err)
+		return "", "", fmt.Errorf("get first admin: %w", err)
 	}
 	return user.ID, user.OrgID, nil
 }

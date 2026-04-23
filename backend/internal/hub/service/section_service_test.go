@@ -43,7 +43,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	sectionSvc := service.NewSectionService(st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
 	mux.Handle(path, handler)

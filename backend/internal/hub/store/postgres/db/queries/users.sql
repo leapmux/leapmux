@@ -11,6 +11,9 @@ SELECT * FROM users WHERE id = $1;
 -- name: GetUserByUsername :one
 SELECT * FROM users WHERE username = $1 AND deleted_at IS NULL;
 
+-- name: GetFirstAdmin :one
+SELECT * FROM users WHERE is_admin = TRUE AND deleted_at IS NULL ORDER BY created_at LIMIT 1;
+
 -- name: ExistsByUsername :one
 SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND deleted_at IS NULL);
 

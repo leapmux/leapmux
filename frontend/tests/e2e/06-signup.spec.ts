@@ -11,9 +11,15 @@ test.describe('Sign Up', () => {
     await expect(page).toHaveURL(new RegExp(`/o/${username}`))
   })
 
-  test('should show error for duplicate username', async ({ page }) => {
+  test('should show error for reserved username', async ({ page }) => {
     await signUpViaUI(page, 'admin', 'password123')
-    // Should show an error (username taken)
+    // Public signup rejects "admin" before the server is even hit.
+    await expect(page.getByText(/reserved username/i)).toBeVisible()
+  })
+
+  test('should show error for duplicate username', async ({ page }) => {
+    // newuser is seeded by the worker-scoped fixture.
+    await signUpViaUI(page, 'newuser', 'password123')
     await expect(page.getByText('username already taken')).toBeVisible()
   })
 

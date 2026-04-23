@@ -155,3 +155,31 @@ export function sanitizeSlug(fieldName: string, value: string): [string, string 
   }
   return [slug, null]
 }
+
+/**
+ * Usernames reserved across every creation path (public signup, setup,
+ * OAuth signup, admin CLI). Mirrors backend `usernames.IsReservedSystem`.
+ */
+const SYSTEM_RESERVED_USERNAMES: ReadonlySet<string> = new Set(['solo'])
+
+/**
+ * Usernames reserved only for anonymous post-setup signup. Mirrors backend
+ * `usernames.IsReservedPublic`.
+ */
+const PUBLIC_RESERVED_USERNAMES: ReadonlySet<string> = new Set(['admin'])
+
+/**
+ * Returns an error message if the username is reserved for the given context,
+ * or null otherwise. Pass `allowAdmin=true` for first-admin setup forms; use
+ * the default (`false`) for public signup and OAuth-completion paths.
+ */
+export function validateReservedUsername(slug: string, allowAdmin: boolean): string | null {
+  const normalized = slug.trim().toLowerCase()
+  if (SYSTEM_RESERVED_USERNAMES.has(normalized)) {
+    return `"${normalized}" is a reserved username`
+  }
+  if (!allowAdmin && PUBLIC_RESERVED_USERNAMES.has(normalized)) {
+    return `"${normalized}" is a reserved username`
+  }
+  return null
+}

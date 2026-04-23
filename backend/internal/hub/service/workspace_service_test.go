@@ -50,7 +50,7 @@ func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
 	workspaceSvc := service.NewWorkspaceService(st, false)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
 	mux.Handle(path, handler)

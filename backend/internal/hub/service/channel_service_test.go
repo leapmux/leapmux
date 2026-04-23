@@ -56,7 +56,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(st, cfg, nil, nil), opts)

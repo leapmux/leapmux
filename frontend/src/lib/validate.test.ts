@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { sanitizeName, validateEmail, validatePassword } from './validate'
+import { sanitizeName, validateEmail, validatePassword, validateReservedUsername } from './validate'
 
 describe('sanitizeName', () => {
   it('returns sanitized value for valid names', () => {
@@ -133,5 +133,26 @@ describe('validatePassword', () => {
 
   it('rejects password exceeding 128 characters', () => {
     expect(validatePassword('a'.repeat(129))).not.toBeNull()
+  })
+})
+
+describe('validateReservedUsername', () => {
+  it('rejects "solo" in every context', () => {
+    expect(validateReservedUsername('solo', false)).not.toBeNull()
+    expect(validateReservedUsername('solo', true)).not.toBeNull()
+    expect(validateReservedUsername('SOLO', true)).not.toBeNull()
+    expect(validateReservedUsername('  solo  ', true)).not.toBeNull()
+  })
+
+  it('rejects "admin" only when allowAdmin is false', () => {
+    expect(validateReservedUsername('admin', false)).not.toBeNull()
+    expect(validateReservedUsername('ADMIN', false)).not.toBeNull()
+    expect(validateReservedUsername('admin', true)).toBeNull()
+  })
+
+  it('accepts ordinary usernames in both contexts', () => {
+    expect(validateReservedUsername('alice', false)).toBeNull()
+    expect(validateReservedUsername('alice', true)).toBeNull()
+    expect(validateReservedUsername('admin-dev', false)).toBeNull()
   })
 })

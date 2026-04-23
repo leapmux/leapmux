@@ -312,7 +312,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	oauthHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, nil, ks)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
@@ -546,6 +546,40 @@ func TestCompleteOAuthSignup_InvalidUsername(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestCompleteOAuthSignup_RejectsSoloAlways(t *testing.T) {
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
+	signupToken := id.Generate()
+
+	insertPendingSignup(t, st, ks, providerID, signupToken, "new@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
+
+	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "solo",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "reserved")
+}
+
+func TestCompleteOAuthSignup_RejectsAdminInPublicSignup(t *testing.T) {
+	// setupOAuthTestServerWithAuthService seeds the admin fixture, so this is
+	// a non-setup-mode OAuth signup and the public reservation applies.
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+
+	providerID := createTestProvider(t, st, ks)
+	signupToken := id.Generate()
+	insertPendingSignup(t, st, ks, providerID, signupToken, "new@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
+
+	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "admin",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "reserved")
 }
 
 func TestCompleteOAuthSignup_TokenConsumedOnSuccess(t *testing.T) {

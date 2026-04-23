@@ -33,6 +33,14 @@ async function getTestChannel(hubUrl: string, cookie: string): Promise<ChannelMa
 
 export { getTestChannel }
 
+// ---- Test admin fixture credentials ----
+// The first-admin user seeded by e2e fixtures via /setup mode. Mirrors the
+// backend's testutil.TestAdminUsername / TestAdminPassword.
+
+export const TEST_ADMIN_USERNAME = 'admin'
+export const TEST_ADMIN_PASSWORD = 'admin123'
+export const TEST_ADMIN_DISPLAY_NAME = 'Admin'
+
 // ---- Cookie helpers ----
 
 const SESSION_COOKIE_NAME = 'leapmux-session'
@@ -83,20 +91,37 @@ export async function loginViaAPI(hubUrl: string, username: string, password: st
   return extractSessionCookie(res.headers.get('set-cookie'))
 }
 
+export interface ApiUser {
+  id: string
+  username: string
+  displayName: string
+  isAdmin: boolean
+  email: string
+  orgId: string
+  orgName: string
+}
+
 /**
- * Get the current user's ID via the Connect API.
+ * Get the full current-user payload via the Connect API.
  */
-export async function getUserId(hubUrl: string, cookie: string): Promise<string> {
+export async function getCurrentUser(hubUrl: string, cookie: string): Promise<ApiUser> {
   const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetCurrentUser`, {
     method: 'POST',
     headers: authedHeaders(cookie),
     body: JSON.stringify({}),
   })
   if (!res.ok) {
-    throw new Error(`getUserId failed: ${res.status}`)
+    throw new Error(`getCurrentUser failed: ${res.status}`)
   }
-  const data = await res.json() as { user: { id: string } }
-  return data.user.id
+  const data = await res.json() as { user: ApiUser }
+  return data.user
+}
+
+/**
+ * Get the current user's ID via the Connect API.
+ */
+export async function getUserId(hubUrl: string, cookie: string): Promise<string> {
+  return (await getCurrentUser(hubUrl, cookie)).id
 }
 
 /**

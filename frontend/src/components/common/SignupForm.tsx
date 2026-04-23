@@ -4,7 +4,7 @@ import type { SignUpResponse } from '~/generated/leapmux/v1/auth_pb'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
-import { sanitizeDisplayName, sanitizeSlug, validateEmail } from '~/lib/validate'
+import { sanitizeDisplayName, sanitizeSlug, validateEmail, validateReservedUsername } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { errorText } from '~/styles/shared.css'
 import { Icon } from './Icon'
@@ -16,6 +16,11 @@ interface SignupFormProps {
   submittingLabel: string
   errorPrefix?: string
   header?: JSX.Element
+  /**
+   * When true, the username field accepts `admin`. Used by the first-admin
+   * setup flow. Defaults to false for public signup paths.
+   */
+  allowAdminUsername?: boolean
   onSuccess: (resp: SignUpResponse, username: string) => void
 }
 
@@ -37,6 +42,11 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
     const [slug, slugErr] = sanitizeSlug('Username', username())
     if (slugErr) {
       setError(slugErr)
+      return
+    }
+    const reservedErr = validateReservedUsername(slug, props.allowAdminUsername ?? false)
+    if (reservedErr) {
+      setError(reservedErr)
       return
     }
     const { value: sanitizedDisplayName, error: dnErr } = sanitizeDisplayName(displayName(), slug)

@@ -4,14 +4,18 @@ package testutil
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
@@ -25,11 +29,67 @@ func OpenTestStore(t *testing.T) store.Store {
 	return st
 }
 
-// CreateTestAdmin bootstraps a default admin user ("admin"/"admin123") with
-// a personal org and OWNER membership, using dev-mode bootstrap.
+// TestAdminUsername and TestAdminPassword are the credentials created by
+// CreateTestAdmin. Exported so service and e2e tests that log in as the
+// fixture don't hardcode the strings in multiple places.
+const (
+	TestAdminUsername = usernames.Admin
+	TestAdminPassword = "admin123"
+)
+
+// Argon2id is intentionally slow. Hash the fixture password once per process
+// so tests that seed the admin user don't each pay ~200ms.
+var (
+	testAdminHashOnce sync.Once
+	testAdminHash     string
+	testAdminHashErr  error
+)
+
+func cachedTestAdminHash() (string, error) {
+	testAdminHashOnce.Do(func() {
+		testAdminHash, testAdminHashErr = password.Hash(TestAdminPassword)
+	})
+	return testAdminHash, testAdminHashErr
+}
+
+// CreateTestAdmin creates the default admin fixture directly via the store,
+// bypassing the SignUp RPC (and therefore its reserved-username check).
 func CreateTestAdmin(t *testing.T, st store.Store) {
 	t.Helper()
-	require.NoError(t, bootstrap.Run(context.Background(), st, false, true))
+	ctx := context.Background()
+
+	hash, err := cachedTestAdminHash()
+	require.NoError(t, err)
+
+	orgID := id.Generate()
+	userID := id.Generate()
+
+	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
+			ID:         orgID,
+			Name:       TestAdminUsername,
+			IsPersonal: true,
+		}); err != nil {
+			return err
+		}
+		if err := tx.Users().Create(ctx, store.CreateUserParams{
+			ID:           userID,
+			OrgID:        orgID,
+			Username:     TestAdminUsername,
+			PasswordHash: hash,
+			DisplayName:  "Admin",
+			Email:        "",
+			PasswordSet:  true,
+			IsAdmin:      true,
+		}); err != nil {
+			return err
+		}
+		return tx.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
+			OrgID:  orgID,
+			UserID: userID,
+			Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
+		})
+	}))
 }
 
 // SessionFromCookie extracts the session ID from a Set-Cookie header value.

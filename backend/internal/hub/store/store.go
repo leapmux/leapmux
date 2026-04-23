@@ -80,6 +80,7 @@ type UserStore interface {
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*User, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
+	GetFirstAdmin(ctx context.Context) (*User, error)
 	ExistsByUsername(ctx context.Context, username string) (bool, error)
 	ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error)
 	GetByPendingEmailToken(ctx context.Context, token string) (*User, error)

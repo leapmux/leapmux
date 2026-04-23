@@ -31,7 +31,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
@@ -97,11 +97,14 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 
 	// Bootstrap in solo mode creates a user named "solo".
-	err := bootstrap.Run(context.Background(), st, true, false)
+	err := bootstrap.Run(context.Background(), st, true)
+	require.NoError(t, err)
+
+	soloUser, err := auth.LoadSoloUser(context.Background(), st)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, true, false, false)
+	interceptor, _ := auth.NewInterceptor(st, soloUser, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{SoloMode: true}, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
@@ -156,7 +159,7 @@ func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthSer
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(st, false, false, false)
+	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{}, sc, nil)

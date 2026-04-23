@@ -31,7 +31,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect
 	st := hubtestutil.OpenTestStore(t)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(st, false, false, false)
+	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, sc, nil)
@@ -200,7 +200,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	userSvc := service.NewUserService(st, testConfig(), nil)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
@@ -403,7 +403,7 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, emailVerificationRequired)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, emailVerificationRequired)
 	opts := connect.WithInterceptors(interceptor)
 
 	cfg := testConfig()
@@ -550,7 +550,7 @@ func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, false, false, false)
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, nil, nil)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
@@ -854,8 +854,10 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
+	// No solo user is seeded — the test asserts that AuthService rejects setup
+	// signup in solo mode at the service layer, independent of the interceptor.
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(st, true, false, false)
+	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, sc, nil)
@@ -964,4 +966,71 @@ func TestSetupSignUp_ValidatesInputs(t *testing.T) {
 			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 		})
 	}
+}
+
+func TestGetSystemInfo_DevModeReportsSetupRequired(t *testing.T) {
+	cfg := testConfig()
+	cfg.DevMode = true
+
+	client, _ := setupEmptyAuthTestServer(t, cfg)
+
+	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetSetupRequired(), "dev mode with empty DB should require setup")
+}
+
+func TestSignUp_RejectsSoloAlways(t *testing.T) {
+	t.Run("setup mode", func(t *testing.T) {
+		client, _ := setupEmptyAuthTestServer(t, testConfig())
+
+		for _, input := range []string{"solo", "SOLO", "  solo  "} {
+			_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+				Username:    input,
+				Password:    "strongpass1",
+				DisplayName: "First",
+			}))
+			require.Errorf(t, err, "setup mode must reject %q", input)
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		}
+	})
+
+	t.Run("public signup", func(t *testing.T) {
+		client, _ := setupAuthTestServer(t, testConfigWithSignup())
+
+		for _, input := range []string{"solo", "SOLO"} {
+			_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+				Username:    input,
+				Password:    "strongpass1",
+				DisplayName: "Someone",
+			}))
+			require.Errorf(t, err, "public signup must reject %q", input)
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		}
+	})
+}
+
+func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
+	client, _ := setupEmptyAuthTestServer(t, testConfig())
+
+	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "admin",
+		Password:    "strongpass1",
+		DisplayName: "First Admin",
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+}
+
+func TestSignUp_RejectsAdminInPublicSignup(t *testing.T) {
+	// A seeded user exists, so isSetupMode=false and the public reservation applies.
+	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+
+	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		Username:    "admin",
+		Password:    "strongpass1",
+		DisplayName: "Squatter",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
