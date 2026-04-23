@@ -99,10 +99,10 @@ func TestListDirectory_TruncationKeepsDirsFirst(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create enough directories and files to exceed the limit.
-	// 100 directories + 100 files = 200 > 128.
-	// After truncation, all 100 dirs should be kept, plus 28 files.
-	numDirs := 100
-	numFiles := 100
+	// 200 directories + 200 files = 400 > 256.
+	// After truncation, all 200 dirs should be kept, plus 56 files.
+	numDirs := 200
+	numFiles := 200
 	for i := 0; i < numDirs; i++ {
 		if err := os.Mkdir(filepath.Join(dir, fmt.Sprintf("dir%03d", i)), 0o755); err != nil {
 			t.Fatal(err)

@@ -299,10 +299,10 @@ test.describe('DirectoryTree', () => {
 
   test('large directory shows truncation indicator', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId, adminOrgId } = leapmuxServer
-    // Create a temp directory with more than 128 entries
+    // Create a temp directory with more than 256 entries
     const largeDir = join(tmpdir(), `leapmux-e2e-largedir-${Date.now()}`)
     mkdirSync(largeDir)
-    const totalFiles = 150
+    const totalFiles = 300
     for (let i = 0; i < totalFiles; i++) {
       writeFileSync(join(largeDir, `file${String(i).padStart(3, '0')}.txt`), '')
     }

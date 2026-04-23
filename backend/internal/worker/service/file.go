@@ -19,7 +19,7 @@ import (
 
 // maxDirEntries is the maximum number of entries returned by ListDirectory.
 // Larger directories are truncated to avoid slow transfers and unusable UIs.
-const maxDirEntries = 128
+const maxDirEntries = 256
 
 // defaultReadLimit is the max bytes returned by ReadFile in a single response.
 // Kept under 60KB to fit within the Noise spec 65,535-byte transport message limit
