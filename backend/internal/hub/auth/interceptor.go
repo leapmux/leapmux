@@ -94,14 +94,32 @@ func (c *SessionCache) Evict(sessionID string) {
 	if c == nil {
 		return
 	}
-	if v, ok := c.sessions.Load(sessionID); ok {
-		cached := v.(cachedSession)
-		if idx, ok := c.userSessions.Load(cached.user.ID); ok {
-			idx.(*sync.Map).Delete(sessionID)
-		}
+	if v, ok := c.sessions.LoadAndDelete(sessionID); ok {
+		unindexSession(c.userSessions, v.(cachedSession).user.ID, sessionID)
 	}
 	c.touch.Delete(sessionID)
-	c.sessions.Delete(sessionID)
+}
+
+// unindexSession removes sessionID from the user's inner sessions map, and
+// deletes the outer userSessions entry if the inner map becomes empty.
+func unindexSession(userSessions *sync.Map, userID, sessionID string) {
+	idx, ok := userSessions.Load(userID)
+	if !ok {
+		return
+	}
+	inner := idx.(*sync.Map)
+	inner.Delete(sessionID)
+	if isSyncMapEmpty(inner) {
+		userSessions.Delete(userID)
+	}
+}
+
+// isSyncMapEmpty reports whether m has no entries. sync.Map has no Len(), so
+// we probe with Range and break on the first element.
+func isSyncMapEmpty(m *sync.Map) bool {
+	empty := true
+	m.Range(func(_, _ any) bool { empty = false; return false })
+	return empty
 }
 
 // EvictByUserID removes all cached sessions for a user. Call this after
@@ -273,16 +291,7 @@ func (a *authInterceptor) sweepCaches(stop <-chan struct{}) {
 				cached := value.(cachedSession)
 				if now.Sub(cached.cachedAt) > sessionCacheTTL {
 					a.sessionCache.Delete(key)
-					if idx, ok := a.userSessions.Load(cached.user.ID); ok {
-						inner := idx.(*sync.Map)
-						inner.Delete(key)
-						// Remove the outer entry if the inner map is now empty.
-						empty := true
-						inner.Range(func(_, _ any) bool { empty = false; return false })
-						if empty {
-							a.userSessions.Delete(cached.user.ID)
-						}
-					}
+					unindexSession(&a.userSessions, cached.user.ID, key.(string))
 				}
 				return true
 			})
