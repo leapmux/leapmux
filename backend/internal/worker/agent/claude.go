@@ -702,7 +702,19 @@ func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody st
 	msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":%s}`, requestID, requestBody)
 	if err := a.SendRawInput([]byte(msg)); err != nil {
 		a.unregisterPendingControl(requestID)
-		return claudeCodeControlResult{}, err
+		// A write failure almost always means the child closed its stdin —
+		// i.e. it exited before we could hand off the request. Wait briefly
+		// for the wait goroutine to finalize so callers see "agent process
+		// exited with code N" (with captured stderr) instead of a raw
+		// "broken pipe" symptom. This also removes a race in
+		// TestAgent_EarlyExitDetected where, on fast Linux runners, the
+		// subprocess exits before the initialize write reaches the pipe.
+		select {
+		case <-a.processDone:
+			return claudeCodeControlResult{}, a.processExitError()
+		case <-time.After(1 * time.Second):
+			return claudeCodeControlResult{}, err
+		}
 	}
 	TraceStartupPhase(a.agentID, "control_stdin_write")
 
