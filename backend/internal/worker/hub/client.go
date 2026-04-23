@@ -291,10 +291,10 @@ func resolveWorkingDir(path string) (string, error) {
 	// Validate directory exists.
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return "", fmt.Errorf("stat working directory %q: %w", resolved, err)
+		return "", fmt.Errorf(`stat working directory "%s": %w`, resolved, err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("working directory %q is not a directory", resolved)
+		return "", fmt.Errorf(`working directory "%s" is not a directory`, resolved)
 	}
 
 	return resolved, nil

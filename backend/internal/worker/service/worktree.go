@@ -207,9 +207,9 @@ func (svc *Context) validateCreateWorktree(ctx context.Context, workingDir, bran
 	// frontend has already rendered a partially-initialized tab.
 	worktreePath := filepath.Join(filepath.Dir(repoRoot), filepath.Base(repoRoot)+"-worktrees", branch)
 	if _, err := os.Stat(worktreePath); err == nil {
-		return gitModePlan{}, fmt.Errorf("worktree path %q already exists on disk", worktreePath)
+		return gitModePlan{}, fmt.Errorf(`worktree path "%s" already exists on disk`, worktreePath)
 	} else if !os.IsNotExist(err) {
-		return gitModePlan{}, fmt.Errorf("worktree path %q: %w", worktreePath, err)
+		return gitModePlan{}, fmt.Errorf(`worktree path "%s": %w`, worktreePath, err)
 	}
 
 	return gitModePlan{
@@ -234,7 +234,7 @@ func (svc *Context) validateUseWorktreePath(ctx context.Context, workingDir, wor
 	// already knows about — prevents jumping to arbitrary dirs.
 	canonSanitized, err := filepath.EvalSymlinks(sanitized)
 	if err != nil {
-		return gitModePlan{}, fmt.Errorf("path %q does not exist", sanitized)
+		return gitModePlan{}, fmt.Errorf(`path "%s" does not exist`, sanitized)
 	}
 	worktrees, err := listGitWorktrees(ctx, workingDir)
 	if err != nil {
@@ -248,7 +248,7 @@ func (svc *Context) validateUseWorktreePath(ctx context.Context, workingDir, wor
 		}
 	}
 	if !found {
-		return gitModePlan{}, fmt.Errorf("path %q is not a known worktree", sanitized)
+		return gitModePlan{}, fmt.Errorf(`path "%s" is not a known worktree`, sanitized)
 	}
 
 	return gitModePlan{

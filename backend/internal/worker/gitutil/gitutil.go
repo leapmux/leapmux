@@ -358,7 +358,7 @@ func CreateWorktree(repoRoot, worktreePath, branchName, startPoint string) error
 	// Fail fast: verify this is a git repo.
 	info, err := os.Stat(filepath.Join(repoRoot, ".git"))
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("%q is not a git repository", repoRoot)
+		return fmt.Errorf(`"%s" is not a git repository`, repoRoot)
 	}
 
 	// Create parent directory if needed.
@@ -392,7 +392,7 @@ func IsWorktreeClean(worktreePath string) (bool, error) {
 	// Fail fast: verify this path is inside a git repo.
 	dotGit := filepath.Join(worktreePath, ".git")
 	if _, err := os.Lstat(dotGit); err != nil {
-		return false, fmt.Errorf("%q is not a git working tree", worktreePath)
+		return false, fmt.Errorf(`"%s" is not a git working tree`, worktreePath)
 	}
 
 	// Check for uncommitted changes.
@@ -444,7 +444,7 @@ func RemoveWorktree(repoRoot, worktreePath string) error {
 	// Fail fast: verify this is a git repo.
 	info, err := os.Stat(filepath.Join(repoRoot, ".git"))
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("%q is not a git repository", repoRoot)
+		return fmt.Errorf(`"%s" is not a git repository`, repoRoot)
 	}
 
 	cmd := NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "remove", worktreePath, "--force")
