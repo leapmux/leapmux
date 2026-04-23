@@ -308,6 +308,35 @@ func TestUpdateSettings_EffortChange(t *testing.T) {
 	assert.Equal(t, "low", a.effort, "effort should be updated from get_settings response")
 }
 
+// TestUpdateSettings_AutoRequiresRestart verifies that switching effort to
+// "auto" mid-session signals the caller to restart the agent. The CLI
+// doesn't accept "auto" as an effortLevel via apply_flag_settings; the
+// only way to hand control back to the CLI's own default is to re-spawn
+// without --effort.
+func TestUpdateSettings_AutoRequiresRestart(t *testing.T) {
+	a := newTestAgentWithControlProtocol(t)
+	defer stopTestAgent(a)
+
+	require.Equal(t, "high", a.effort, "precondition")
+
+	result := a.UpdateSettings(&leapmuxv1.AgentSettings{Effort: "auto"})
+	assert.False(t, result, "switching to \"auto\" should request a restart")
+	assert.Equal(t, "high", a.effort, "live effort must stay untouched until restart")
+}
+
+// TestUpdateSettings_AutoNoOpWhenAlreadyAuto verifies that a redundant
+// "auto"→"auto" update doesn't request a restart.
+func TestUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
+	a := newTestAgentWithControlProtocol(t)
+	defer stopTestAgent(a)
+
+	a.effort = "auto"
+
+	result := a.UpdateSettings(&leapmuxv1.AgentSettings{Effort: "auto"})
+	assert.True(t, result, "a no-op \"auto\"→\"auto\" should not request a restart")
+	assert.Equal(t, "auto", a.effort)
+}
+
 func TestUpdateSettings_OutputStyleChange(t *testing.T) {
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)

@@ -227,3 +227,98 @@ func TestCodexUpdateSettingsCallsRefresh(t *testing.T) {
 	assert.Equal(t, "low", refresh.Effort)
 	assert.Equal(t, "never", refresh.PermissionMode)
 }
+
+// TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault verifies
+// that when config/read returns null for model_reasoning_effort and the
+// agent is in "auto" mode, the refresh falls back to the current model's
+// preset default from the model catalog. This mirrors Codex's own
+// inference-time behavior, where the CLI uses ModelInfo.default_reasoning_level
+// when nothing is explicitly set in config.
+func TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault(t *testing.T) {
+	agent, sink, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
+		if method == "config/read" {
+			return json.RawMessage(`{
+				"config": {
+					"model": null,
+					"model_reasoning_effort": null
+				},
+				"origins": {}
+			}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+
+	agent.effort = "auto"
+	agent.model = "gpt-5.4"
+	agent.availableModels = []*leapmuxv1.AvailableModel{
+		{Id: "gpt-5.4", DefaultEffort: "high"},
+		{Id: "gpt-5.2", DefaultEffort: "medium"},
+	}
+
+	agent.refreshSettingsFromAgent()
+
+	assert.Equal(t, "high", agent.effort,
+		"auto should fall back to the current model's default from the catalog")
+
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, "high", sink.LastSettingsRefresh().Effort,
+		"broadcast should carry the resolved effort so the UI updates")
+}
+
+// TestCodexRefreshSettingsFromAgent_AutoNoModelCatalogStaysAuto verifies
+// the safe fallback: if the model catalog hasn't been populated yet (e.g.
+// queryAvailableModels failed), the refresh leaves effort at "auto" rather
+// than clobbering it with an empty string.
+func TestCodexRefreshSettingsFromAgent_AutoNoModelCatalogStaysAuto(t *testing.T) {
+	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
+		if method == "config/read" {
+			return json.RawMessage(`{"config": {"model_reasoning_effort": null}, "origins": {}}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+
+	agent.effort = "auto"
+	agent.model = "gpt-5.4"
+	agent.availableModels = nil
+
+	agent.refreshSettingsFromAgent()
+
+	assert.Equal(t, "auto", agent.effort, "with no catalog, auto stays auto")
+}
+
+// TestCodexUpdateSettings_AutoRequiresRestart verifies that switching
+// effort to "auto" mid-session signals the caller to restart the agent
+// (returns false) rather than writing "auto" into Codex's live session
+// config. Codex has no way to clear reasoning_effort at runtime, so a
+// fresh process is the only path back to CLI-default behavior.
+func TestCodexUpdateSettings_AutoRequiresRestart(t *testing.T) {
+	agent, _, requests := newCodexAgentForRPC(t, func(_ string) json.RawMessage {
+		return json.RawMessage(`{}`)
+	})
+
+	require.Equal(t, "high", agent.effort, "precondition")
+
+	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{Effort: "auto"})
+	require.False(t, updated, "switching to \"auto\" should request a restart")
+
+	assert.Equal(t, "high", agent.effort, "live effort must stay untouched until restart")
+	assert.Empty(t, requests(), "no config/read should be issued when restart is requested")
+}
+
+// TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto verifies that when the
+// agent is already in "auto", a redundant "auto" update does not trigger
+// a restart.
+func TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
+	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
+		if method == "config/read" {
+			return json.RawMessage(`{"config": {}, "origins": {}}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+
+	agent.effort = "auto"
+
+	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{Effort: "auto"})
+	require.True(t, updated, "a no-op \"auto\"→\"auto\" should not request a restart")
+	assert.Equal(t, "auto", agent.effort)
+}

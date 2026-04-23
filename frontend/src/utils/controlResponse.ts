@@ -74,7 +74,16 @@ export function defaultModelForProvider(provider: AgentProvider): string {
   return getProviderPlugin(provider)?.defaultModel ?? 'opus'
 }
 
+/**
+ * Leapmux-side sentinel meaning "let the CLI pick its own default reasoning
+ * effort". The backend omits --effort (Claude) / reasoning_effort (Codex)
+ * when an agent carries this value, so older CLIs that don't recognize
+ * newer effort names (e.g. "xhigh") still work. Mirrors `agent.EffortAuto`
+ * in the Go worker.
+ */
+export const EFFORT_AUTO = 'auto'
+
 /** Returns the default effort for the given agent provider. */
 export function defaultEffortForProvider(provider: AgentProvider): string {
-  return getProviderPlugin(provider)?.defaultEffort ?? 'high'
+  return getProviderPlugin(provider)?.defaultEffort ?? EFFORT_AUTO
 }

@@ -209,6 +209,13 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, e
 	// 5. Query available models (best-effort; don't fail startup if this fails).
 	a.availableModels = a.queryAvailableModels(timeout)
 
+	// 6. Refresh from the CLI so the persisted effort reflects the value
+	// Codex actually applied — especially important when Leapmux resolved
+	// Options.Effort to "auto" and sent thread/start without the field.
+	// The readback broadcasts through the sink, which writes back to the
+	// agents table.
+	a.refreshSettingsFromAgent()
+
 	return a, nil
 }
 
@@ -414,7 +421,9 @@ func (a *CodexAgent) sendTurnStart(
 	if s.model != "" {
 		params["model"] = s.model
 	}
-	if s.effort != "" {
+	// Skip EffortAuto to let Codex pick its own default effort (see
+	// codexCollaborationModeObject for the matching treatment).
+	if s.effort != "" && s.effort != EffortAuto {
 		params["effort"] = s.effort
 	}
 	if s.approvalPolicy != "" {
@@ -508,8 +517,11 @@ func codexCollaborationModeObject(mode, model, effort string) map[string]interfa
 	default:
 		return nil
 	}
+	// EffortAuto means "let Codex pick its own default effort"; we send
+	// null (matching the empty case) so the CLI is free to apply whatever
+	// default its version supports.
 	reasoningEffort := interface{}(nil)
-	if effort != "" {
+	if effort != "" && effort != EffortAuto {
 		reasoningEffort = effort
 	}
 	return map[string]interface{}{
@@ -567,6 +579,16 @@ func (a *CodexAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 // then refreshes from the Codex server to confirm the effective state.
 func (a *CodexAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	a.mu.Lock()
+	curEffort := a.effort
+	// Switching to EffortAuto can't be done live: Codex's session config
+	// remembers the last reasoning_effort across turns, so simply
+	// omitting the field on the next turn keeps the prior effort
+	// applied. A restart is the only way to hand control back to the
+	// CLI's own default.
+	if IsEffortAutoTransition(s.GetEffort(), curEffort) {
+		a.mu.Unlock()
+		return false
+	}
 	if s.GetModel() != "" {
 		a.model = s.GetModel()
 	}
@@ -625,6 +647,16 @@ func (a *CodexAgent) refreshSettingsFromAgent() {
 	}
 	if s := jsonString(result.Config.ModelReasoningEffort); s != "" {
 		a.effort = s
+	} else if a.effort == EffortAuto {
+		// Codex only populates config.model_reasoning_effort when the user
+		// has explicitly set it (config.toml, per-session override, etc.).
+		// When unset, the CLI falls back to the model preset's
+		// default_reasoning_level at inference time — not reflected in
+		// config/read. Mirror that fallback here so the UI shows the
+		// effort Codex will actually use instead of staying at EffortAuto.
+		if m := FindAvailableModel(a.availableModels, a.model); m != nil && m.DefaultEffort != "" {
+			a.effort = m.DefaultEffort
+		}
 	}
 	// approval_policy can be a string ("on-request") or an object ({"granular":...}).
 	// Only update for the simple string case that LeapMux models.
@@ -718,15 +750,23 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.Av
 			id = m.ID
 		}
 		// Reverse effort order so highest appears first, and split
-		// the server description into a short label + tooltip.
+		// the server description into a short label + tooltip. Prepend
+		// the Leapmux-side "auto" sentinel so users can pick it from
+		// the UI even though the CLI never reports it.
 		raw := m.SupportedReasoningEfforts
-		efforts := make([]*leapmuxv1.AvailableEffort, len(raw))
-		for i, e := range raw {
-			efforts[len(raw)-1-i] = &leapmuxv1.AvailableEffort{
+		efforts := make([]*leapmuxv1.AvailableEffort, 0, len(raw)+1)
+		efforts = append(efforts, &leapmuxv1.AvailableEffort{
+			Id:          EffortAuto,
+			Name:        "Auto",
+			Description: "Let Codex decide the appropriate effort",
+		})
+		for i := len(raw) - 1; i >= 0; i-- {
+			e := raw[i]
+			efforts = append(efforts, &leapmuxv1.AvailableEffort{
 				Id:          e.ReasoningEffort,
 				Name:        codexEffortName(e.ReasoningEffort),
 				Description: e.Description,
-			}
+			})
 		}
 
 		// Prefer our curated metadata over the API's, which often
@@ -759,8 +799,12 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.Av
 	return models
 }
 
-// Default Codex efforts (high to low) used as static fallback.
+// Default Codex efforts (auto first, then strongest → weakest) used as
+// static fallback. "auto" is a Leapmux-side sentinel: the CLI never reports
+// or accepts it, but selecting it causes Leapmux to omit reasoning_effort
+// so Codex applies its own default.
 var codexDefaultEfforts = []*leapmuxv1.AvailableEffort{
+	{Id: EffortAuto, Name: "Auto", Description: "Let Codex decide the appropriate effort"},
 	{Id: "xhigh", Name: "Extra High"},
 	{Id: "high", Name: "High"},
 	{Id: "medium", Name: "Medium"},

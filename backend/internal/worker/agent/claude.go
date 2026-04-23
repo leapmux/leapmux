@@ -240,10 +240,14 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		})
 		if _, err := a.sendControlAndWait(ctx, string(body), timeout); err != nil {
 			slog.Warn("apply_flag_settings at startup failed", "agent_id", a.agentID, "error", err)
-		} else {
-			a.refreshSettingsFromAgent(timeout)
 		}
 	}
+	// Refresh from the CLI once startup completes so the persisted effort
+	// reflects the value the CLI actually picked (e.g. when we launched
+	// with --effort omitted because Leapmux resolved Options.Effort to
+	// "auto"). Run even if apply_flag_settings failed so the DB mirrors
+	// the CLI's actual state rather than what we tried to set.
+	a.refreshSettingsFromAgent(timeout)
 
 	return a, nil
 }
@@ -471,12 +475,20 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	availStyles := a.availableOutputStyles
 	a.mu.Unlock()
 
+	// Switching to EffortAuto can't be done live: the CLI doesn't accept
+	// effortLevel="auto" for apply_flag_settings, and the only way to go
+	// back to "let Claude pick" is to re-launch without --effort. Signal
+	// the caller to restart instead.
+	if IsEffortAutoTransition(s.Effort, curEffort) {
+		return false
+	}
+
 	flagSettings := map[string]interface{}{}
 
 	if s.Model != "" && s.Model != curModel {
 		flagSettings["model"] = s.Model
 	}
-	if s.Effort != "" && s.Effort != curEffort {
+	if s.Effort != "" && s.Effort != EffortAuto && s.Effort != curEffort {
 		flagSettings["effortLevel"] = s.Effort
 	}
 
@@ -883,12 +895,13 @@ func generateRequestID() string {
 }
 
 // buildModelEffortArgs constructs the --model and --effort CLI arguments for
-// Claude Code. Haiku does not support --effort at all. Other models each
-// expose a subset of effort levels via claudeCodeAvailableModels; any effort
-// not in the subset is downgraded to "high" as a universal safe fallback.
+// Claude Code. Haiku does not support --effort at all. EffortAuto also omits
+// --effort so the CLI picks its own default. Other models each expose a
+// subset of effort levels via claudeCodeAvailableModels; any effort not in
+// the subset is downgraded to "high" as a universal safe fallback.
 func buildModelEffortArgs(model, effort string) []string {
 	args := []string{"--model", model}
-	if effort == "" || model == "haiku" {
+	if effort == "" || effort == EffortAuto || model == "haiku" {
 		return args
 	}
 	if !effortSupported(model, effort) {

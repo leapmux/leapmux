@@ -270,14 +270,19 @@ func modelOrDefault(model string, provider leapmuxv1.AgentProvider) string {
 	return agent.DefaultModel(provider)
 }
 
-// effortOrDefault returns the effort if non-empty, otherwise the default
-// effort for the given model (falling back to the provider's default model
-// if the given model has no configured default).
-func effortOrDefault(effort, model string, provider leapmuxv1.AgentProvider) string {
+// effortOrDefault returns the effort if non-empty, otherwise the provider's
+// LEAPMUX_*_DEFAULT_EFFORT env var override, otherwise agent.EffortAuto.
+// The sentinel tells the CLI layer to omit the --effort flag (Claude) or
+// the reasoning_effort field (Codex) so the agent binary picks its own
+// default.
+func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
 	if effort != "" {
 		return effort
 	}
-	return agent.DefaultEffortForModel(provider, model)
+	if env := agent.EffortEnvOverride(provider); env != "" {
+		return env
+	}
+	return agent.EffortAuto
 }
 
 // settingsDisplayLabels returns lookup functions for model and effort display

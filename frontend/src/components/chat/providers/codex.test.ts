@@ -21,6 +21,10 @@ describe('codex classify', () => {
     })
   })
 
+  it('defaults to the "auto" effort sentinel so Codex picks its own default', () => {
+    expect(plugin.defaultEffort).toBe('auto')
+  })
+
   it('hides thread/started notifications', () => {
     const parent = {
       method: 'thread/started',

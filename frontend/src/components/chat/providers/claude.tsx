@@ -12,7 +12,7 @@ import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { getToolName } from '~/utils/controlResponse'
+import { EFFORT_AUTO, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ChatView.css'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
@@ -194,7 +194,9 @@ function classifyClaudeCodeMessage(
 }
 
 const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'opus[1m]'
-const DEFAULT_CLAUDE_EFFORT = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_EFFORT || 'high'
+// LEAPMUX_CLAUDE_DEFAULT_EFFORT still exists as a backend escape hatch;
+// it's no longer plumbed through the frontend build.
+const DEFAULT_CLAUDE_EFFORT = EFFORT_AUTO
 
 /** Claude Code settings panel (two-column: left = thinking/effort/model, right = fast mode/output style/permission mode). */
 function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element {
@@ -253,18 +255,7 @@ function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element
             testIdPrefix="model"
             name={`${menuId}-model`}
             current={currentModel()}
-            onChange={(v) => {
-              props.onModelChange?.(v)
-              // If the new model doesn't support the current effort, fall
-              // back to its default so the UI doesn't show a selection that
-              // the backend will silently downgrade.
-              const next = props.availableModels?.find(m => m.id === v)
-              if (next && currentEffort()) {
-                const ok = next.supportedEfforts.some(e => e.id === currentEffort())
-                if (!ok)
-                  props.onEffortChange?.(next.defaultEffort || 'high')
-              }
-            }}
+            onChange={v => props.onModelChange?.(v)}
           />
         </Show>
       </div>

@@ -637,22 +637,46 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 }
 
 func (s *agentOutputSink) BroadcastSettingsRefreshed(model, effort, permissionMode string, extraSettings map[string]string) {
-	// Persist the refreshed settings to the DB.
-	_ = s.h.queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
-		Model:          model,
-		Effort:         effort,
-		PermissionMode: permissionMode,
-		ExtraSettings:  marshalExtraSettings(extraSettings),
-		ID:             s.agentID,
-	})
-
-	// Broadcast a StatusChange so connected frontends see the new values.
 	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
 		slog.Error("failed to fetch agent for settings broadcast",
 			"agent_id", s.agentID, "error", err)
 		return
 	}
+
+	// Skip the DB write and the watcher broadcast when the refresh is a
+	// no-op. Refresh fires after UpdateSettings (which has already
+	// persisted the same values) and after startup-time readbacks that
+	// often just confirm the stored row, so avoiding redundant
+	// UpdateAgentAllSettings calls and StatusChange events spares
+	// pointless DB churn and frontend reactivity ticks.
+	newExtras := marshalExtraSettings(extraSettings)
+	if dbAgent.Model == model &&
+		dbAgent.Effort == effort &&
+		dbAgent.PermissionMode == permissionMode &&
+		dbAgent.ExtraSettings == newExtras {
+		return
+	}
+
+	if err := s.h.queries.UpdateAgentAllSettings(bgCtx(), db.UpdateAgentAllSettingsParams{
+		Model:          model,
+		Effort:         effort,
+		PermissionMode: permissionMode,
+		ExtraSettings:  newExtras,
+		ID:             s.agentID,
+	}); err != nil {
+		slog.Error("failed to persist refreshed settings",
+			"agent_id", s.agentID, "error", err)
+		return
+	}
+
+	// Patch the fetched row in-memory to reflect the values we just
+	// persisted, avoiding a second GetAgentByID round-trip before we build
+	// the status-change event below.
+	dbAgent.Model = model
+	dbAgent.Effort = effort
+	dbAgent.ExtraSettings = newExtras
+
 	sc := s.buildStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, dbAgent.AgentSessionID, permissionMode)
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,

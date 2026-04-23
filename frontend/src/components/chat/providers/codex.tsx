@@ -6,11 +6,13 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import ChevronsDown from 'lucide-solid/icons/chevrons-down'
 import ChevronsUp from 'lucide-solid/icons/chevrons-up'
 import Dot from 'lucide-solid/icons/dot'
+import Sparkles from 'lucide-solid/icons/sparkles'
 import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { EFFORT_AUTO } from '~/utils/controlResponse'
 import * as styles from '../ChatView.css'
 import { CodexControlActions, CodexControlContent } from '../controls/CodexControlRequest'
 import { isNotificationThreadWrapper, isObject } from '../messageUtils'
@@ -31,7 +33,7 @@ import { registerProvider } from './registry'
 
 /** Default model for Codex agents. */
 const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_CODEX_DEFAULT_MODEL || 'gpt-5.4'
-const DEFAULT_CODEX_EFFORT = 'high'
+const DEFAULT_CODEX_EFFORT = EFFORT_AUTO
 export const DEFAULT_CODEX_COLLABORATION_MODE = 'default'
 export const DEFAULT_CODEX_SANDBOX_POLICY = 'workspace-write'
 export const DEFAULT_CODEX_NETWORK_ACCESS = 'restricted'
@@ -294,6 +296,7 @@ function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
 
   const effortIcon = () => {
     switch (currentEffort()) {
+      case 'auto': return <Icon icon={Sparkles} size="xs" />
       case 'xhigh': return <Icon icon={Zap} size="xs" />
       case 'high': return <Icon icon={ChevronsUp} size="xs" />
       case 'low': return <Icon icon={ChevronsDown} size="xs" />

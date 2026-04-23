@@ -43,6 +43,12 @@ const OptionGroupKeyPrimaryAgent = "primaryAgent"
 // agent process, used when no configured value is provided.
 const DefaultAPITimeout = time.Duration(config.DefaultAPITimeoutSeconds) * time.Second
 
+// EffortAuto is the Leapmux-side sentinel meaning "let the CLI pick its own
+// default reasoning effort". When an agent's Effort is this value, the
+// provider layer omits the CLI flag / wire field entirely so older CLIs
+// that don't recognize newer effort names (e.g. "xhigh") still work.
+const EffortAuto = "auto"
+
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
 // and err is non-nil if the process exited with an error.
@@ -139,34 +145,38 @@ func DefaultModel(provider leapmuxv1.AgentProvider) string {
 	return ""
 }
 
-// DefaultEffortForModel returns the default effort ID for the given model
-// within a provider. It checks the provider's environment variable first,
-// then the model's DefaultEffort from the registry. If modelID is empty
-// or unknown, it falls back to the default model's DefaultEffort.
-func DefaultEffortForModel(provider leapmuxv1.AgentProvider, modelID string) string {
+// EffortEnvOverride returns the value of the provider's
+// LEAPMUX_*_DEFAULT_EFFORT environment variable, or "" if unset. This is the
+// only way Leapmux injects a concrete effort level at agent-open time; when
+// the env var is unset, effort defaults to EffortAuto and the agent binary
+// picks its own level. This avoids pinning users on newer effort names
+// (e.g. "xhigh") that an older CLI binary may not recognize.
+func EffortEnvOverride(provider leapmuxv1.AgentProvider) string {
 	reg, ok := providerRegistry[provider]
-	if !ok {
+	if !ok || reg.envEffortKey == "" {
 		return ""
 	}
-	if reg.envEffortKey != "" {
-		if env := os.Getenv(reg.envEffortKey); env != "" {
-			return env
+	return os.Getenv(reg.envEffortKey)
+}
+
+// FindAvailableModel returns the AvailableModel with the given ID, or nil if
+// none matches. Callers typically use this to resolve per-model metadata
+// (e.g. DefaultEffort) from a catalog returned by the CLI.
+func FindAvailableModel(models []*leapmuxv1.AvailableModel, id string) *leapmuxv1.AvailableModel {
+	for _, m := range models {
+		if m.Id == id {
+			return m
 		}
 	}
-	lookup := func(id string) string {
-		for _, m := range reg.defaultModels {
-			if m.Id == id && m.DefaultEffort != "" {
-				return m.DefaultEffort
-			}
-		}
-		return ""
-	}
-	if modelID != "" {
-		if e := lookup(modelID); e != "" {
-			return e
-		}
-	}
-	return lookup(DefaultModel(provider))
+	return nil
+}
+
+// IsEffortAutoTransition reports whether a settings update is switching
+// effort from a concrete value to EffortAuto. Both providers' UpdateSettings
+// must handle this by requesting a restart, since apply-in-place paths do
+// not accept "auto" as a live effortLevel / reasoning_effort value.
+func IsEffortAutoTransition(newEffort, curEffort string) bool {
+	return newEffort == EffortAuto && curEffort != EffortAuto
 }
 
 // DisplayName returns a human-readable label for an AgentProvider (e.g.

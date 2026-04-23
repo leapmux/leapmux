@@ -388,10 +388,22 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			expected: []string{"--model", "sonnet"},
 		},
 		{
-			name:     "auto effort",
+			name:     "auto effort omits --effort so CLI picks its own default",
 			model:    "sonnet",
 			effort:   "auto",
-			expected: []string{"--model", "sonnet", "--effort", "auto"},
+			expected: []string{"--model", "sonnet"},
+		},
+		{
+			name:     "auto effort on opus[1m] omits --effort too",
+			model:    "opus[1m]",
+			effort:   "auto",
+			expected: []string{"--model", "opus[1m]"},
+		},
+		{
+			name:     "auto effort on unknown model still omits --effort",
+			model:    "claude-future-preview",
+			effort:   "auto",
+			expected: []string{"--model", "claude-future-preview"},
 		},
 		{
 			name:     "unknown model passes effort through",

@@ -18,6 +18,10 @@ describe('claude classify', () => {
     })
   })
 
+  it('defaults to the "auto" effort sentinel so Claude Code picks its own default', () => {
+    expect(plugin.defaultEffort).toBe('auto')
+  })
+
   it('classifies result divider', () => {
     const parent = {
       type: 'result',
