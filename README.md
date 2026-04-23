@@ -291,17 +291,17 @@ sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg patchelf
 Install dependencies with [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
 
 ```powershell
-winget install --id Microsoft.PowerShell
-winget install --id GoLang.Go
-winget install --id OpenJS.NodeJS.LTS  # or OpenJS.NodeJS for the current (non-LTS) release
-winget install --id Oven-sh.Bun
-winget install --id Task.Task
-winget install --id bufbuild.buf
-winget install --id pvolok.mprocs
-winget install --id SUSE.RancherDesktop  # or any other Docker-compatible runtime (e.g. Docker.DockerDesktop, Podman.Podman)
-winget install --id Rustlang.Rust.MSVC
-winget install --id Google.Protobuf
-winget install --id Microsoft.VisualStudio.BuildTools  # or Microsoft.VisualStudio.2022.Community if you prefer the full IDE
+winget install --id Microsoft.PowerShell --source winget
+winget install --id GoLang.Go --source winget
+winget install --id OpenJS.NodeJS.LTS --source winget  # or OpenJS.NodeJS for the current (non-LTS) release
+winget install --id Oven-sh.Bun --source winget
+winget install --id Task.Task --source winget
+winget install --id bufbuild.buf --source winget
+winget install --id pvolok.mprocs --source winget
+winget install --id SUSE.RancherDesktop --source winget  # or any other Docker-compatible runtime (e.g. Docker.DockerDesktop, Podman.Podman)
+winget install --id Rustlang.Rust.MSVC --source winget
+winget install --id Google.Protobuf --source winget
+winget install --id Microsoft.VisualStudio.BuildTools --source winget  # or Microsoft.VisualStudio.2022.Community if you prefer the full IDE
 ```
 
 After `Microsoft.VisualStudio.BuildTools` installs, open the Visual Studio Installer and modify the installation to enable the **"Desktop development with C++"** workload — winget installs the bootstrapper but does not select any workloads automatically.
