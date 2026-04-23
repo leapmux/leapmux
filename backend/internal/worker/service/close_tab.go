@@ -75,13 +75,14 @@ func (svc *Context) closeTabCommon(
 		slog.Warn("failed to count worktree tabs after close", "worktree_id", wtForRemoval.ID, "error", countErr)
 		return result
 	}
-	if remaining == 0 {
-		if err := svc.removeWorktreeFromDisk(*wtForRemoval, true); err != nil {
-			result.FailureMessage = "Failed to remove worktree"
-			result.FailureDetail = err.Error()
-			result.WorktreePath = wtForRemoval.WorktreePath
-			result.WorktreeId = wtForRemoval.ID
-		}
+	if remaining != 0 {
+		return result
+	}
+	if err := svc.removeWorktreeFromDisk(*wtForRemoval, true); err != nil {
+		result.FailureMessage = "Failed to remove worktree"
+		result.FailureDetail = err.Error()
+		result.WorktreePath = wtForRemoval.WorktreePath
+		result.WorktreeId = wtForRemoval.ID
 	}
 	return result
 }
