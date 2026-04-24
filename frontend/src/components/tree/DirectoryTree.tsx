@@ -210,7 +210,7 @@ const TreeContextMenu: Component<{
       trigger={triggerProps => (
         <IconButton
           icon={MoreHorizontal}
-          iconSize="xs"
+          iconSize="sm"
           size="sm"
           class={menuTrigger}
           onClick={(e: MouseEvent) => {
@@ -829,7 +829,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
         <div class={styles.pathInput}>
           <Tooltip text={props.selectedPath}>
             <input
-              class={styles.pathInputField}
               type="text"
               value={inputValue()}
               onInput={e => setInputValue(e.currentTarget.value)}

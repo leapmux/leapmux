@@ -50,6 +50,9 @@ globalStyle(`${header} > h2`, {
 })
 
 // Dialog body wrapper provides consistent padding for all dialog content.
+// The body has tabindex=-1 so it can absorb initial focus on dialog open
+// without routing focus to the close button or a form control. Suppress
+// its focus outline since it is only ever focused programmatically.
 export const body = style({
   display: 'flex',
   flexDirection: 'column',
@@ -58,6 +61,7 @@ export const body = style({
   overflow: 'hidden',
   padding: 'var(--space-6)',
   paddingBlockStart: 'var(--space-4)',
+  outline: 'none',
 })
 
 // Footer inside dialog body

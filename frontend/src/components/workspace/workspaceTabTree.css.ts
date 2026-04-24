@@ -40,7 +40,13 @@ export const tabLabel = style({
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-  flex: 1,
+  // Natural content width (capped by row via flex-shrink) — not flex: 1 —
+  // so getBoundingClientRect on this span reflects where the text actually
+  // is. The tooltip centers over the rect; flex: 1 would stretch this into
+  // the trailing empty space and place the tooltip far to the right. The
+  // close button in sidebarActions still sits flush-right via margin-left:
+  // auto, so no layout shift.
+  flex: '0 1 auto',
   minWidth: 0,
 })
 
@@ -48,8 +54,13 @@ export const leafActions = style({
   minWidth: 0,
 })
 
-export const groupLabel = style({
-  whiteSpace: 'nowrap',
+// Wraps a group's label + diff-stats-badge so a single Tooltip can cover
+// both as its hover target. Matches the outer `shared.node` flex gap so
+// spacing between the label and badge is unchanged when moved inside.
+export const groupLabelWithStats = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
 })
 
 export const tabRenameInput = style({

@@ -17,6 +17,7 @@ interface DialogProps {
 
 export const Dialog: Component<DialogProps> = (props) => {
   let dialogRef!: HTMLDialogElement
+  let bodyRef!: HTMLDivElement
   let unmounting = false
   let pointerDownOnBackdrop = false
 
@@ -52,11 +53,11 @@ export const Dialog: Component<DialogProps> = (props) => {
 
   onMount(() => {
     dialogRef.showModal()
-    const focusTarget = dialogRef.querySelector(
-      `.${styles.body} select, .${styles.body} input:not([type="hidden"]), .${styles.body} textarea, .${styles.body} button[type="submit"]`,
-    ) as HTMLElement | null
-    if (focusTarget)
-      focusTarget.focus()
+    // Absorb initial focus on the body container (tabindex=-1) so that
+    // neither the close button nor any form control gains focus on open.
+    // This prevents Enter from closing the dialog and avoids painting a
+    // focus ring / auto-scrolling to reveal a form field below the fold.
+    bodyRef.focus()
     dialogRef.addEventListener('keydown', handleKeyDown)
   })
   onCleanup(() => {
@@ -110,7 +111,7 @@ export const Dialog: Component<DialogProps> = (props) => {
           aria-label="Close"
         />
       </header>
-      <div class={styles.body}>
+      <div ref={bodyRef} class={styles.body} tabindex={-1}>
         {props.children}
       </div>
     </dialog>

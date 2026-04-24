@@ -50,3 +50,15 @@ export const DiffStatsBadge: Component<{ stats: DiffStats, class?: string }> = (
     </Show>
   )
 }
+
+/**
+ * Tooltip content pattern used by repo/branch group headers and workspace
+ * items: a plain-text label followed by the diff-stats badge. The badge
+ * self-hides when all counts are zero.
+ */
+export const LabelWithDiffStats: Component<{ label: string, stats: DiffStats }> = props => (
+  <span>
+    {props.label}
+    <DiffStatsBadge stats={props.stats} />
+  </span>
+)

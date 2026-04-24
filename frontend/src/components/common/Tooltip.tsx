@@ -13,8 +13,14 @@ const WHITESPACE_RE = /\s+/
 let activeHide: (() => void) | undefined
 
 export interface TooltipProps {
-  /** Tooltip text. When empty/undefined, the tooltip is disabled. */
-  text: string | undefined
+  /** Plain-text tooltip. When both `text` and `content` are empty, the tooltip is disabled. */
+  text?: string
+  /**
+   * Rich JSX content rendered inside the tooltip. Takes precedence over
+   * `text` for display; pass `text` alongside if you need an aria-label
+   * source (or if the plain-text form is preferable in some cases).
+   */
+  content?: JSX.Element
   /**
    * When set, applies an aria-label to the target element.
    * Use `true` to reuse `text`, or pass a string for an explicit label.
@@ -108,7 +114,7 @@ export function Tooltip(props: TooltipProps) {
   }
 
   const show = () => {
-    if (!props.text)
+    if (!props.text && !props.content)
       return
     clearTimers()
     showTimer = setTimeout(() => {
@@ -197,7 +203,7 @@ export function Tooltip(props: TooltipProps) {
       .filter(id => id !== `tooltip-${tooltipId}`)
 
     createEffect(() => {
-      const nextIds = visible() && props.text
+      const nextIds = visible() && (props.text || props.content)
         ? [...baseIds, `tooltip-${tooltipId}`]
         : baseIds
       if (nextIds.length > 0)
@@ -253,7 +259,7 @@ export function Tooltip(props: TooltipProps) {
       >
         {props.children}
       </span>
-      <Show when={visible() && props.text}>
+      <Show when={visible() && (props.text || props.content)}>
         <Portal>
           <div
             id={`tooltip-${tooltipId}`}
@@ -275,7 +281,7 @@ export function Tooltip(props: TooltipProps) {
               transform: 'translate(-50%, -100%)',
             }}
           >
-            {props.text}
+            {props.content ?? props.text}
           </div>
         </Portal>
       </Show>

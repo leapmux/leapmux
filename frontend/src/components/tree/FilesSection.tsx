@@ -81,7 +81,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
       <Show when={props.isFiltered?.()}>
         <IconButton
           icon={props.flatListMode?.() ? FolderTree : List}
-          iconSize="xs"
+          iconSize="sm"
           size="sm"
           title={props.flatListMode?.() ? 'Tree view' : 'Flat list'}
           state={props.flatListMode?.() ? IconButtonState.Active : IconButtonState.Enabled}
@@ -92,7 +92,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
       <Show when={props.hasActiveFileTab}>
         <IconButton
           icon={LocateFixed}
-          iconSize="xs"
+          iconSize="sm"
           size="sm"
           title="Locate active file"
           onClick={() => props.onLocateFile()}
@@ -101,7 +101,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
       </Show>
       <IconButton
         icon={ChevronsDownUp}
-        iconSize="xs"
+        iconSize="sm"
         size="sm"
         title="Collapse all"
         onClick={() => props.onCollapseAll()}
@@ -109,7 +109,7 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
       />
       <IconButton
         icon={showingHidden() ? Eye : EyeOff}
-        iconSize="xs"
+        iconSize="sm"
         size="sm"
         title={shortcutHint(showingHidden() ? 'Hide hidden files' : 'Show hidden files', 'app.toggleHiddenFiles')}
         state={showingHidden() ? IconButtonState.Enabled : IconButtonState.Active}
@@ -117,8 +117,6 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
         data-testid="files-show-hidden-toggle"
       />
       <RefreshButton
-        iconSize="xs"
-        size="sm"
         title={shortcutHint('Refresh', 'app.refreshDirectoryTree')}
         onClick={() => props.onRefresh()}
         data-testid="files-refresh"

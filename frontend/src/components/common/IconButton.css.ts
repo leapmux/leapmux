@@ -12,7 +12,6 @@ export const base = style({
   'textDecoration': 'none',
   'textTransform': 'inherit',
   'WebkitTapHighlightColor': 'transparent',
-  'outline': 'none',
   'margin': 0,
   'boxSizing': 'border-box',
   'display': 'inline-flex',
@@ -27,6 +26,12 @@ export const base = style({
   ':hover': {
     color: 'var(--foreground)',
     backgroundColor: 'var(--card)',
+  },
+  // Opt out of the global `button:focus-visible` inset box-shadow — small
+  // icon buttons don't have room for a double ring, and their transparent
+  // background already provides enough contrast against the teal outline.
+  ':focus-visible': {
+    boxShadow: 'none',
   },
   ':disabled': {
     opacity: 0.5,
@@ -43,8 +48,18 @@ export const base = style({
 export const active = style({
   backgroundColor: 'var(--card)',
   color: 'var(--foreground)',
-  outline: '1px solid var(--border)',
-  outlineOffset: '-1px',
+  // Inner 1px border indicates the toggled-on state. Uses inset box-shadow
+  // (not outline) so it doesn't compete with the global focus ring drawn
+  // by Oat's :focus-visible rule.
+  boxShadow: 'inset 0 0 0 1px var(--border)',
+  selectors: {
+    // When focused, drop the inner border so the outer ring renders
+    // identically to the non-active case. The --card background still
+    // distinguishes active from ordinary at a glance.
+    '&:focus-visible': {
+      boxShadow: 'none',
+    },
+  },
 })
 
 // Size variants

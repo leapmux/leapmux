@@ -12,7 +12,7 @@ interface RefreshButtonProps {
   'title'?: string
   /** Icon size token. Default: 'sm' */
   'iconSize'?: IconSizeName
-  /** Container size token. Default: none (intrinsic sizing). */
+  /** Container size token. Default: 'sm' */
   'size'?: IconButtonSize
   'data-testid'?: string
 }
@@ -30,7 +30,7 @@ export const RefreshButton: Component<RefreshButtonProps> = (props) => {
     <IconButton
       icon={RefreshCw}
       iconSize={local.iconSize ?? 'sm'}
-      size={local.size}
+      size={local.size ?? 'sm'}
       state={local.disabled ? IconButtonState.Disabled : IconButtonState.Enabled}
       onClick={handleClick}
       class={animating() ? styles.spinning : ''}

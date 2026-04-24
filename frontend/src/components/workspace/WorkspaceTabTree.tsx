@@ -9,13 +9,14 @@ import X from 'lucide-solid/icons/x'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { Tooltip } from '~/components/common/Tooltip'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
 import { canCloseTab, tabKey } from '~/stores/tab.store'
 import { terminalStatusClassList } from '../shell/terminalStatus'
-import { DiffStatsBadge } from '../tree/gitStatusUtils'
+import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
 import * as css from './workspaceTabTree.css'
@@ -103,18 +104,20 @@ const TabLeaf: Component<{
           />
         )}
       >
-        <span
-          class={css.tabLabel}
-          classList={terminalStatusClassList(props.tab.status)}
-        >
-          {props.tab.title || props.tab.id}
-        </span>
+        <Tooltip text={props.tab.title || props.tab.id}>
+          <span
+            class={css.tabLabel}
+            classList={terminalStatusClassList(props.tab.status)}
+          >
+            {props.tab.title || props.tab.id}
+          </span>
+        </Tooltip>
       </Show>
       <Show when={props.canClose}>
         <div class={`${sidebarActions} ${css.leafActions}`}>
           <IconButton
             icon={X}
-            iconSize="xs"
+            iconSize="sm"
             size="sm"
             class={menuTrigger}
             state={props.isClosing ? IconButtonState.Loading : IconButtonState.Enabled}
@@ -226,8 +229,12 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                   class={`${shared.chevron} ${!isCollapsed(group.repoKey) ? shared.chevronExpanded : ''}`}
                 />
                 <FolderGit size={14} class={css.groupIcon} />
-                <span class={css.groupLabel}>{group.repoLabel}</span>
-                <DiffStatsBadge stats={diffStatsFromTabFields(group)} />
+                <Tooltip content={<LabelWithDiffStats label={repoTooltip(group.repoKey)} stats={diffStatsFromTabFields(group)} />}>
+                  <span class={css.groupLabelWithStats}>
+                    {group.repoLabel}
+                    <DiffStatsBadge stats={diffStatsFromTabFields(group)} />
+                  </span>
+                </Tooltip>
               </div>
 
               <div class={`${shared.childrenWrapper} ${!isCollapsed(group.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
@@ -247,8 +254,12 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
                             class={`${shared.chevron} ${!isCollapsed(`${group.repoKey}:${branch.branchName}`) ? shared.chevronExpanded : ''}`}
                           />
                           <GitBranch size={14} class={css.groupIcon} />
-                          <span class={css.groupLabel}>{branch.branchName}</span>
-                          <DiffStatsBadge stats={diffStatsFromTabFields(branch)} />
+                          <Tooltip content={<LabelWithDiffStats label={branch.branchName} stats={diffStatsFromTabFields(branch)} />}>
+                            <span class={css.groupLabelWithStats}>
+                              {branch.branchName}
+                              <DiffStatsBadge stats={diffStatsFromTabFields(branch)} />
+                            </span>
+                          </Tooltip>
                         </div>
 
                         <div class={`${shared.childrenWrapper} ${!isCollapsed(`${group.repoKey}:${branch.branchName}`) ? shared.childrenWrapperExpanded : ''}`}>
@@ -349,12 +360,14 @@ const TRAILING_SLASH_RE = /\/$/
 export const LOCAL_REPO_KEY_PREFIX = '\x00local:'
 
 /**
- * Fallback key when a tab has a branch but no toplevel (older data or a
- * legitimate worker that didn't surface the toplevel). All such tabs
- * collapse into a single bucket — the best we can do without a toplevel.
+ * Tooltip text for a repo group header. Returns the full origin URL for
+ * remote repos, or the full toplevel path for origin-less local repos.
  */
-export const LOCAL_REPO_KEY = '\x00local'
-const LOCAL_REPO_LABEL = '(local repo)'
+function repoTooltip(repoKey: string): string {
+  if (repoKey.startsWith(LOCAL_REPO_KEY_PREFIX))
+    return repoKey.substring(LOCAL_REPO_KEY_PREFIX.length)
+  return repoKey
+}
 
 export function formatGitOriginUrl(url: string): string {
   if (!url)
@@ -379,9 +392,7 @@ export function formatGitOriginUrl(url: string): string {
  *   1. gitOriginUrl — a remote we can format nicely.
  *   2. gitToplevel — an origin-less local repo; the toplevel path makes
  *      distinct repos distinct.
- *   3. LOCAL_REPO_KEY fallback — a branch is known but no toplevel was
- *      surfaced (older server, transient failure); all such tabs collapse
- *      into one bucket labelled "(local repo)".
+ * Tabs that lack both fall through to the ungrouped bucket.
  */
 function repoKeyAndLabel(tab: Tab): { key: string, label: string } | null {
   if (tab.gitOriginUrl)
@@ -390,8 +401,6 @@ function repoKeyAndLabel(tab: Tab): { key: string, label: string } | null {
     const label = basename(tab.gitToplevel) || tab.gitToplevel
     return { key: `${LOCAL_REPO_KEY_PREFIX}${tab.gitToplevel}`, label }
   }
-  if (tab.gitBranch)
-    return { key: LOCAL_REPO_KEY, label: LOCAL_REPO_LABEL }
   return null
 }
 
@@ -421,15 +430,9 @@ export function buildTree(tabs: Tab[]): TabTree {
   }
 
   // Sort rule: real remotes first (alphabetical by formatted label), then
-  // per-toplevel local repos (alphabetical by basename), then the
-  // `(local repo)` fallback bucket last.
-  const localRank = (key: string): number => {
-    if (key === LOCAL_REPO_KEY)
-      return 2
-    if (key.startsWith(LOCAL_REPO_KEY_PREFIX))
-      return 1
-    return 0
-  }
+  // per-toplevel local repos (alphabetical by basename).
+  const localRank = (key: string): number =>
+    key.startsWith(LOCAL_REPO_KEY_PREFIX) ? 1 : 0
 
   const groups: RepoGroup[] = [...repoMap.entries()].toSorted(([aKey, a], [bKey, b]) => {
     const aRank = localRank(aKey)

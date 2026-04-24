@@ -8,10 +8,11 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
-import { DiffStatsBadge } from '../tree/gitStatusUtils'
+import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
 import { EXPANDED_WORKSPACES_KEY, readExpandedWorkspaceIds } from './expandedWorkspaces'
@@ -187,6 +188,10 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               const isOwner = () => workspace().createdBy === props.currentUserId
               const isRenaming = () => props.renamingWorkspaceId === id
               const isLoading = () => props.isWorkspaceLoading(id)
+              const title = () => workspace().title || 'Untitled'
+              // workspaceDiffStatsFor runs buildTree over the workspace's
+              // tabs; memoize so we don't rebuild on every access.
+              const stats = createMemo(() => workspaceDiffStatsFor(id))
 
               // Track whether the item was dragged so we can suppress the click
               // that fires on mouseup after a drag-and-drop operation.
@@ -259,20 +264,15 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         />
                       )}
                     >
-                      <span class={styles.itemTitle}>
-                        {workspace().title || 'Untitled'}
-                      </span>
-                      <Show when={workspace().shareMode !== ShareMode.PRIVATE && workspace().shareMode !== ShareMode.UNSPECIFIED}>
-                        <span class={styles.sharedBadge}>shared</span>
-                      </Show>
-                      {(() => {
-                        const stats = workspaceDiffStatsFor(id)
-                        return (
-                          <Show when={stats.added > 0 || stats.deleted > 0 || stats.untracked > 0}>
-                            <DiffStatsBadge stats={stats} />
+                      <Tooltip content={<LabelWithDiffStats label={title()} stats={stats()} />}>
+                        <span class={styles.itemLabel}>
+                          <span class={styles.itemTitle}>{title()}</span>
+                          <Show when={workspace().shareMode !== ShareMode.PRIVATE && workspace().shareMode !== ShareMode.UNSPECIFIED}>
+                            <span class={styles.sharedBadge}>shared</span>
                           </Show>
-                        )
-                      })()}
+                          <DiffStatsBadge stats={stats()} />
+                        </span>
+                      </Tooltip>
                     </Show>
 
                     <div class={sidebarActions}>

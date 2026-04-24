@@ -130,6 +130,19 @@ globalStyle(`${item}${itemActive}::after`, {
   flexShrink: 0,
 })
 
+// Wraps the workspace title, shared-badge, and diff-stats-badge together so
+// a single tooltip can cover the pair. flex: 0 1 auto keeps the wrapper
+// sized to its content (shrinking with ellipsis when the row is narrow)
+// so the tooltip centers over the visible label, not trailing empty space.
+export const itemLabel = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  flex: '0 1 auto',
+  minWidth: 0,
+  overflow: 'hidden',
+})
+
 export const itemTitle = style({
   fontSize: 'var(--text-7)',
   fontWeight: 400,

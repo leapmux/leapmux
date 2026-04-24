@@ -227,3 +227,23 @@ globalStyle('*::-webkit-scrollbar-corner', {
 globalStyle('input[type="radio"], input[type="checkbox"]', {
   flexShrink: 0,
 })
+
+// Render the focus ring inside the element so it is never clipped by an
+// ancestor with overflow: hidden. Outline color and thickness still come
+// from Oat's :focus-visible rule (2px solid var(--ring)); we only flip the
+// offset from +2px (outside) to -2px (inside).
+globalStyle(':focus-visible', {
+  outlineOffset: '-2px',
+})
+
+// Add a 1px --background-colored ring just inside the focus outline on
+// Oat-styled buttons so the teal outline stays distinguishable when the
+// button itself is filled with --primary / --secondary / --danger. Uses
+// var(--background) so the inner ring is invisible on surfaces that share
+// the page background (where no separator is needed).
+globalStyle(
+  'button:focus-visible, [type="submit"]:focus-visible, [type="reset"]:focus-visible, [type="button"]:focus-visible, a.button:focus-visible, ::file-selector-button:focus-visible',
+  {
+    boxShadow: 'inset 0 0 0 2px var(--background)',
+  },
+)

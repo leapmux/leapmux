@@ -38,7 +38,7 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
         Working Directory
         <IconButton
           icon={showHiddenFiles() ? Eye : EyeOff}
-          iconSize="xs"
+          iconSize="sm"
           size="sm"
           title={shortcutHint(showHiddenFiles() ? 'Hide hidden files' : 'Show hidden files', 'app.toggleHiddenFiles')}
           state={showHiddenFiles() ? IconButtonState.Enabled : IconButtonState.Active}

@@ -164,10 +164,10 @@ describe('dialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('focuses the first form control instead of the close button', () => {
+  it('absorbs initial focus on the body container instead of the close button', () => {
     const onClose = vi.fn()
 
-    render(() => (
+    const { container } = render(() => (
       <Dialog title="Test" onClose={onClose}>
         <form>
           <select data-testid="worker-select">
@@ -178,7 +178,10 @@ describe('dialog', () => {
       </Dialog>
     ))
 
-    expect(document.activeElement?.tagName).toBe('SELECT')
+    // The body <div> (tabindex=-1) owns initial focus so that neither the
+    // close button nor any form control gains focus on open.
+    const body = container.querySelector('dialog > div[tabindex="-1"]')!
+    expect(document.activeElement).toBe(body)
   })
 
   it('triggers submit button on Enter key', () => {
