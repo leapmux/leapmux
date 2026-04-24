@@ -257,12 +257,25 @@ message MoveTabWorkspaceResponse {}
 
 message WatchEventsRequest {
   repeated WatchAgentEntry agents = 1;
-  repeated string terminal_ids = 2;
+  repeated WatchTerminalEntry terminals = 2;
 }
 
 message WatchAgentEntry {
   string agent_id = 1;
   int64 after_seq = 2; // Resume from this sequence number (0 = from beginning, -1 = live only)
+}
+
+message WatchTerminalEntry {
+  string terminal_id = 1;
+  // Cumulative byte offset the client has already processed for this
+  // terminal's output stream. Backend replays bytes with offset >
+  // after_offset. A fresh subscription (or a client that has lost its
+  // state) sends 0; the backend responds with a full snapshot marked
+  // is_snapshot=true. A resubscribe with an up-to-date offset yields an
+  // empty catch-up (no TerminalData event). An offset that has fallen
+  // out of the backend's retention window, or is larger than the
+  // backend's counter (PTY recreated), is treated the same as 0.
+  int64 after_offset = 2;
 }
 
 message WatchEventsResponse {

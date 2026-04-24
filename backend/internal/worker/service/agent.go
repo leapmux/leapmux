@@ -887,7 +887,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		// Filter terminals by access control and register watchers. Same
 		// batched-lookup rationale as the agent loop above.
-		requestedTerminalIDs := r.GetTerminalIds()
+		requestedTerminals := r.GetTerminals()
+		requestedTerminalIDs := make([]string, 0, len(requestedTerminals))
+		afterOffsetByID := make(map[string]int64, len(requestedTerminals))
+		for _, entry := range requestedTerminals {
+			requestedTerminalIDs = append(requestedTerminalIDs, entry.GetTerminalId())
+			afterOffsetByID[entry.GetTerminalId()] = entry.GetAfterOffset()
+		}
 		termRowsByID := make(map[string]db.Terminal, len(requestedTerminalIDs))
 		if len(requestedTerminalIDs) > 0 {
 			rows, err := svc.Queries.ListTerminalsByIDs(bgCtx(), requestedTerminalIDs)
@@ -1044,17 +1050,26 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			})
 		}
 
-		// Send initial screen snapshot for each verified terminal.
+		// Send the minimum screen bytes each verified terminal needs to
+		// catch up to the current PTY state. The frontend's after_offset
+		// tells us how far it has already processed; SnapshotSince
+		// returns an incremental delta when the offset is inside the
+		// retained ring, or a full-state snapshot (with is_snapshot=true)
+		// when the subscriber has fallen behind or is cold-subscribing.
+		// Caller is-caught-up returns (nil, _, false) and no event is sent.
 		for i, termID := range verifiedTerminalIDs {
-			if screen := svc.Terminals.ScreenSnapshot(termID); len(screen) > 0 {
+			afterOffset := afterOffsetByID[termID]
+			data, endOffset, isSnapshot := svc.Terminals.ScreenSnapshotSince(termID, afterOffset)
+			if len(data) > 0 {
 				broadcastWatchEvent(sender, &leapmuxv1.WatchEventsResponse{
 					Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
 						TerminalEvent: &leapmuxv1.TerminalEvent{
 							TerminalId: termID,
 							Event: &leapmuxv1.TerminalEvent_Data{
 								Data: &leapmuxv1.TerminalData{
-									Data:       screen,
-									IsSnapshot: true,
+									Data:       data,
+									IsSnapshot: isSnapshot,
+									EndOffset:  endOffset,
 								},
 							},
 						},

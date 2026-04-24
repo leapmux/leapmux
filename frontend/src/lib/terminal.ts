@@ -18,8 +18,6 @@ export interface TerminalFontOptions {
 export interface TerminalInstance {
   terminal: Terminal
   fitAddon: FitAddon
-  /** True after a screen snapshot has been written (prevents duplicate writes). */
-  screenRestored: boolean
   /** When true, onData responses are suppressed (e.g. during snapshot replay). */
   suppressInput: boolean
   /** Send raw input data to the PTY backing this terminal. */
@@ -109,6 +107,43 @@ export function resolveTerminalTheme(pref: TerminalThemePreference): ITheme {
 }
 
 /**
+ * Apply a TerminalData event (or an initial snapshot from ListTerminals)
+ * to an xterm instance. Returns the new resume cursor — callers store
+ * this as the tab's `lastOffset` and echo it on the next resubscribe.
+ *
+ * - isSnapshot=true: backend is replacing the terminal's visible state
+ *   (client's after_offset was stale or outside the retained ring). The
+ *   xterm buffer is reset before the payload is written so the new bytes
+ *   don't append to stale content. The returned cursor is `endOffset`
+ *   unconditionally — even if smaller than `currentOffset`, since the
+ *   buffer now exactly reflects those `endOffset` bytes.
+ * - isSnapshot=false: payload is a strict incremental delta since
+ *   `currentOffset`; written without resetting. The returned cursor is
+ *   `max(currentOffset, endOffset)` so out-of-order duplicates can't
+ *   rewind it.
+ */
+export function applyTerminalData(
+  instance: TerminalInstance,
+  data: Uint8Array,
+  isSnapshot: boolean,
+  endOffset: number,
+  currentOffset: number,
+  onParsed?: () => void,
+): number {
+  if (isSnapshot) {
+    instance.terminal.reset()
+    instance.suppressInput = true
+    instance.terminal.write(data, () => {
+      instance.suppressInput = false
+      onParsed?.()
+    })
+    return endOffset
+  }
+  instance.terminal.write(data, onParsed)
+  return endOffset > currentOffset ? endOffset : currentOffset
+}
+
+/**
  * Returns true when any line in the active buffer contains at least one
  * non-whitespace character (after trimming trailing spaces, which xterm
  * pads unused cells with). Used to decide when to drop the "Starting
@@ -156,7 +191,6 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   return {
     terminal,
     fitAddon,
-    screenRestored: false,
     suppressInput: false,
     dispose() {
       terminal.dispose()

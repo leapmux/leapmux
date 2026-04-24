@@ -7,7 +7,7 @@ import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPan
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { isMac } from '~/lib/shortcuts/platform'
-import { bufferHasVisibleContent, createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
+import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
@@ -57,6 +57,7 @@ const TerminalContainer: Component<{
   active: boolean
   visible: boolean
   screen?: Uint8Array
+  lastOffset?: number
   cols?: number
   rows?: number
   fontFamily: string
@@ -120,20 +121,25 @@ const TerminalContainer: Component<{
 
     instance.terminal.open(ref)
 
-    // Write screen snapshot if available (restore on refresh).
-    // Suppress onData during replay to prevent xterm.js query responses
-    // (DECRPM, DA, DECRQSS, OSC) from being forwarded to the PTY,
-    // where the shell's echo would display them as visible text.
+    // Write screen snapshot if available (restore on refresh). Seed the
+    // resume cursor from lastOffset (from the backend, carried through
+    // the tab store) rather than screen.length — once the backend's ring
+    // has wrapped they differ, and the offset is what the backend uses
+    // to compute the catch-up delta on resubscribe.
     if (props.screen && props.screen.length > 0) {
       const termId = props.terminalId
       const reportReady = props.onContentReady
-      instance.suppressInput = true
-      instance.terminal.write(props.screen, () => {
-        instance!.suppressInput = false
-        if (bufferHasVisibleContent(instance!.terminal))
-          reportReady(termId)
-      })
-      instance.screenRestored = true
+      applyTerminalData(
+        instance,
+        props.screen,
+        true,
+        props.lastOffset ?? props.screen.length,
+        0,
+        () => {
+          if (bufferHasVisibleContent(instance!.terminal))
+            reportReady(termId)
+        },
+      )
     }
 
     // ResizeObserver on this terminal's container element.
@@ -178,8 +184,9 @@ const TerminalContainer: Component<{
   return (
     <div
       class={styles.terminalWrapper}
+      classList={{ [styles.terminalWrapperHidden]: !props.active }}
       data-terminal-id={props.terminalId}
-      style={{ display: props.active ? undefined : 'none' }}
+      data-active={props.active ? 'true' : 'false'}
     >
       <div ref={ref} class={styles.xtermHost} />
       <Show when={!props.contentReady}>
@@ -231,6 +238,22 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     props.writeRef?.(write)
   })
 
+  // Dispose per-terminal instances as tabs are closed. The `instances`
+  // map deliberately outlives TerminalContainer mount/unmount (status
+  // transitions like STARTING → STARTUP_FAILED → READY swap between the
+  // container and the error pane while keeping the xterm alive), so this
+  // is the authoritative place to release WebGL contexts and listener
+  // refs for removed terminals.
+  createEffect(() => {
+    const liveIds = new Set(props.terminals.map(t => t.id))
+    for (const id of [...instances.keys()]) {
+      if (!liveIds.has(id)) {
+        instances.get(id)?.dispose()
+        instances.delete(id)
+      }
+    }
+  })
+
   // Clean up instances when component unmounts
   onCleanup(() => {
     for (const [, instance] of instances) {
@@ -254,6 +277,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                   active={terminal.id === props.activeTerminalId}
                   visible={props.visible}
                   screen={terminal.screen}
+                  lastOffset={terminal.lastOffset}
                   cols={terminal.cols}
                   rows={terminal.rows}
                   fontFamily={preferences.monoFontFamily()}
@@ -272,8 +296,8 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
               <Match when={terminal.status === TerminalStatus.STARTUP_FAILED}>
                 <div
                   class={styles.startupErrorPane}
+                  classList={{ [styles.terminalWrapperHidden]: terminal.id !== props.activeTerminalId }}
                   data-testid="terminal-startup-error"
-                  style={{ display: terminal.id === props.activeTerminalId ? 'flex' : 'none' }}
                 >
                   <StartupErrorBody
                     title="Terminal failed to start"

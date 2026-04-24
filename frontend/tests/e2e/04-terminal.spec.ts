@@ -12,7 +12,7 @@ async function getTerminalText(page: Page): Promise<string> {
     // Fallback: DOM-based reading
     const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
     for (const container of containers) {
-      if (container.style.display !== 'none') {
+      if (container.dataset.active === 'true') {
         const rows = container.querySelector('.xterm-rows')
         if (rows)
           return rows.textContent ?? ''
@@ -36,7 +36,7 @@ async function typeInTerminal(page: Page, command: string) {
   await page.evaluate(() => {
     const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
     for (const container of containers) {
-      if (container.style.display !== 'none') {
+      if (container.dataset.active === 'true') {
         const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
         if (textarea) {
           textarea.focus()
@@ -167,7 +167,7 @@ test.describe('Terminal', () => {
     await page.evaluate(() => {
       const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
       for (const container of containers) {
-        if (container.style.display !== 'none') {
+        if (container.dataset.active === 'true') {
           const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
           if (textarea) {
             textarea.focus()

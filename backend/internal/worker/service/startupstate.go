@@ -55,6 +55,12 @@ type startupEntry struct {
 	// takePendingResize after StartTerminal and applies the result.
 	pendingResize    [2]uint16
 	hasPendingResize bool
+	// resizeSignal notifies waitForPendingResize that a resize has been
+	// stashed. Buffered size 1 with non-blocking send so repeated
+	// setPendingResize calls don't block and a late wait still sees the
+	// most-recent signal — takePendingResize under the lock is the
+	// authoritative read.
+	resizeSignal chan struct{}
 }
 
 // startupCore is the shared state-machine for tracking a set of in-flight
@@ -84,7 +90,7 @@ func newStartupCore() startupCore {
 func (r *startupCore) begin(id string, cancel context.CancelFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries[id] = &startupEntry{cancel: cancel}
+	r.entries[id] = &startupEntry{cancel: cancel, resizeSignal: make(chan struct{}, 1)}
 	r.wg.Add(1)
 }
 
@@ -184,6 +190,15 @@ func (r *startupCore) setPendingResize(id string, cols, rows uint16) bool {
 	}
 	entry.pendingResize = [2]uint16{cols, rows}
 	entry.hasPendingResize = true
+	// Non-blocking send keeps the lock-hold trivially short. Signal goes
+	// to the entry's own channel, so even if this entry is cleared and
+	// recreated later the new channel starts fresh.
+	if entry.resizeSignal != nil {
+		select {
+		case entry.resizeSignal <- struct{}{}:
+		default:
+		}
+	}
 	return true
 }
 
@@ -202,15 +217,58 @@ func (r *startupCore) takePendingResize(id string) (cols, rows uint16, ok bool) 
 	return cols, rows, true
 }
 
+// waitForPendingResize is takePendingResize with a bounded wait. Used
+// before the shell is spawned so the PTY can be sized correctly on the
+// first call to cmd.Start — otherwise the shell paints its first prompt
+// at the placeholder 80x24 and zsh's SIGWINCH handler leaves a
+// PROMPT_SP '%' in the buffer when the resize lands a moment later.
+// Returns false if the entry is cleared/failed or the timeout elapses
+// without a stashed resize.
+func (r *startupCore) waitForPendingResize(id string, timeout time.Duration) (cols, rows uint16, ok bool) {
+	r.mu.Lock()
+	entry, found := r.entries[id]
+	if !found || entry.failed {
+		r.mu.Unlock()
+		return 0, 0, false
+	}
+	if entry.hasPendingResize {
+		cols = entry.pendingResize[0]
+		rows = entry.pendingResize[1]
+		entry.hasPendingResize = false
+		r.mu.Unlock()
+		return cols, rows, true
+	}
+	ch := entry.resizeSignal
+	r.mu.Unlock()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ch:
+	case <-timer.C:
+	}
+	return r.takePendingResize(id)
+}
+
 // clearPendingResize drops any stashed dims for id. Called from the
 // ResizeTerminal handler when the PTY is already in the Manager so the
 // direct Resize call has already been applied; leaving a stale stash in
 // place would cause runTerminalStartup to overwrite the newer size.
+// Also drains the buffered resizeSignal so a later waitForPendingResize
+// on the same entry can't wake on a stash that no longer exists.
 func (r *startupCore) clearPendingResize(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if entry, ok := r.entries[id]; ok {
-		entry.hasPendingResize = false
+	entry, ok := r.entries[id]
+	if !ok {
+		return
+	}
+	entry.hasPendingResize = false
+	if entry.resizeSignal != nil {
+		select {
+		case <-entry.resizeSignal:
+		default:
+		}
 	}
 }
 

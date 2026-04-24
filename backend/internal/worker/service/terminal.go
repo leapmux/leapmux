@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -14,6 +15,12 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
+
+// pendingResizeWaitCap bounds how long runTerminalStartup blocks waiting
+// for the frontend's first ResizeTerminal before spawning the shell. A
+// typical wait returns in a few tens of ms; the cap is a safety valve
+// for a wedged or unusually slow frontend.
+const pendingResizeWaitCap = 500 * time.Millisecond
 
 // terminalStartingLabel returns the "Starting <shell>…" label used for the
 // sync prologue broadcast and the phase-1 re-broadcast once git status is
@@ -75,7 +82,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 
 		terminalID := id.Generate()
 
-		outputFn := func(data []byte) {
+		outputFn := func(data []byte, endOffset int64) {
 			if svc.WakeLock != nil {
 				svc.WakeLock.RecordActivity()
 			}
@@ -83,7 +90,8 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				TerminalId: terminalID,
 				Event: &leapmuxv1.TerminalEvent_Data{
 					Data: &leapmuxv1.TerminalData{
-						Data: data,
+						Data:      data,
+						EndOffset: endOffset,
 					},
 				},
 			})
@@ -362,15 +370,16 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 			seen[e.ID] = true
 			ti := &leapmuxv1.TerminalInfo{
-				TerminalId:    e.ID,
-				Cols:          e.Meta.Cols,
-				Rows:          e.Meta.Rows,
-				Screen:        e.Screen,
-				Exited:        e.Exited,
-				WorkingDir:    e.Meta.WorkingDir,
-				ShellStartDir: e.Meta.ShellStartDir,
-				Title:         e.Meta.Title,
-				Status:        leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
+				TerminalId:      e.ID,
+				Cols:            e.Meta.Cols,
+				Rows:            e.Meta.Rows,
+				Screen:          e.Screen,
+				ScreenEndOffset: e.ScreenEndOffset,
+				Exited:          e.Exited,
+				WorkingDir:      e.Meta.WorkingDir,
+				ShellStartDir:   e.Meta.ShellStartDir,
+				Title:           e.Meta.Title,
+				Status:          leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 			}
 			if sup, errStr, msg, ok := svc.TerminalStartup.status(e.ID); ok {
 				ti.Status = sup
@@ -393,18 +402,25 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 					continue
 				}
 				status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)
+				// DB-persisted screen is just the bytes; the backend has no
+				// live ring for this terminal (PTY exited or worker
+				// restarted), so the "end offset" equals the screen
+				// length. The client's after_offset will be the same
+				// value, and WatchEvents will return nothing for a dead
+				// terminal — correct, since there are no new bytes.
 				ti := &leapmuxv1.TerminalInfo{
-					TerminalId:     ts.ID,
-					Cols:           uint32(ts.Cols),
-					Rows:           uint32(ts.Rows),
-					Screen:         ts.Screen,
-					Exited:         !svc.Terminals.HasTerminal(ts.ID),
-					WorkingDir:     ts.WorkingDir,
-					ShellStartDir:  ts.ShellStartDir,
-					Title:          ts.Title,
-					Status:         status,
-					StartupError:   startupError,
-					StartupMessage: startupMessage,
+					TerminalId:      ts.ID,
+					Cols:            uint32(ts.Cols),
+					Rows:            uint32(ts.Rows),
+					Screen:          ts.Screen,
+					ScreenEndOffset: int64(len(ts.Screen)),
+					Exited:          !svc.Terminals.HasTerminal(ts.ID),
+					WorkingDir:      ts.WorkingDir,
+					ShellStartDir:   ts.ShellStartDir,
+					Title:           ts.Title,
+					Status:          status,
+					StartupError:    startupError,
+					StartupMessage:  startupMessage,
 				}
 				terminals = append(terminals, ti)
 				gitDirs = append(gitDirs, gitutil.ResolveGitDir(ts.ShellStartDir, ts.WorkingDir))
@@ -469,6 +485,16 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 	svc.TerminalStartup.setMessage(terminalID, shellMsg)
 	svc.broadcastTerminalStarting(terminalID, shellMsg, gs)
 
+	// Wait for the frontend's first ResizeTerminal to arrive so the shell
+	// is spawned at the final size rather than being SIGWINCH'd to it
+	// after StartTerminal returns — some shells emit artifacts on a
+	// mid-startup resize. If the cap elapses, the post-spawn apply below
+	// still lands the dims on the running PTY.
+	if cols, rows, ok := svc.TerminalStartup.waitForPendingResize(terminalID, pendingResizeWaitCap); ok {
+		opts.Cols = cols
+		opts.Rows = rows
+	}
+
 	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
 
 	// Re-read the row so we can detect whether CloseTerminal landed
@@ -491,11 +517,10 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 		return
 	}
 
-	// Apply any ResizeTerminal that arrived during the PTY-spawn window.
-	// The PTY was created with the placeholder cols/rows from the
-	// OpenTerminal request; the frontend's first fit() fires long before
-	// the Manager holds the terminal, so its RPC is stashed in the
-	// startup registry and drained here.
+	// Apply any ResizeTerminal that arrived after the pre-spawn wait
+	// above (e.g. the frontend's fit() was unusually slow, or a second
+	// resize has since landed). The PTY is already the correct size for
+	// the pre-wait case; this handler covers the rare late-arriving dims.
 	if cols, rows, ok := svc.TerminalStartup.takePendingResize(terminalID); ok {
 		if err := svc.Terminals.Resize(terminalID, cols, rows); err != nil {
 			slog.Warn("apply pending resize after startup", "terminal_id", terminalID, "error", err)

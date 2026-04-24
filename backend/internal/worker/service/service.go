@@ -241,8 +241,7 @@ func appendTerminalDisconnectNotice(screen []byte) []byte {
 }
 
 func (svc *Context) appendTerminalDisconnectNotice(terminalID string) {
-	screen := svc.Terminals.ScreenSnapshot(terminalID)
-	if bytes.HasSuffix(screen, terminalDisconnectNotice) {
+	if svc.Terminals.ScreenHasSuffix(terminalID, terminalDisconnectNotice) {
 		return
 	}
 	_ = svc.Terminals.AppendOutput(terminalID, terminalDisconnectNotice)

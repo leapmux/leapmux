@@ -26,7 +26,7 @@ func TestTerminal_StartAndStop(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte) {
+	}, func(data []byte, _ int64) {
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -59,7 +59,7 @@ func TestTerminal_Resize(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte) {})
+	}, func([]byte, int64) {})
 	require.NoError(t, err, "Start")
 	defer func() {
 		term.Stop()
@@ -74,7 +74,7 @@ func TestTerminal_SendInputAfterStop(t *testing.T) {
 		ID:         "test-stopped",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {})
+	}, func([]byte, int64) {})
 	require.NoError(t, err, "Start")
 
 	term.Stop()
@@ -88,7 +88,7 @@ func TestTerminal_IsExited(t *testing.T) {
 		ID:         "test-exited",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {})
+	}, func([]byte, int64) {})
 	require.NoError(t, err, "Start")
 
 	assert.False(t, term.IsExited(), "expected IsExited = false before stop")
@@ -106,7 +106,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 		ID:         "tm-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, nil)
+	}, func([]byte, int64) {}, nil)
 	require.NoError(t, err, "StartTerminal")
 
 	assert.True(t, m.HasTerminal("tm-1"), "expected HasTerminal = true")
@@ -116,7 +116,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 		ID:         "tm-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, nil)
+	}, func([]byte, int64) {}, nil)
 	assert.Error(t, err, "expected error for duplicate terminal")
 
 	// StopTerminal keeps it in the map (exited but not removed).
@@ -140,7 +140,7 @@ func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
 		ID:         "tm-exit",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, nil)
+	}, func([]byte, int64) {}, nil)
 	require.NoError(t, err, "StartTerminal")
 
 	// Stop and wait for exit.
@@ -168,7 +168,7 @@ func TestManager_ExitNotification(t *testing.T) {
 		ID:         "tm-notify",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte) {}, func(id string, code int) {
+	}, func([]byte, int64) {}, func(id string, code int) {
 		gotID = id
 		gotCode = code
 		close(exitCh)
@@ -198,7 +198,7 @@ func TestManager_StopAll(t *testing.T) {
 			ID:         id,
 			Shell:      testutil.TestShell(),
 			WorkingDir: t.TempDir(),
-		}, func([]byte) {}, nil)
+		}, func([]byte, int64) {}, nil)
 		require.NoError(t, err, "StartTerminal(%s)", id)
 	}
 
@@ -241,7 +241,7 @@ func TestManager_Resize_SameDimensions(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte) {}, nil)
+	}, func([]byte, int64) {}, nil)
 	require.NoError(t, err)
 	defer m.StopAll()
 
@@ -255,7 +255,7 @@ func TestManager_Resize_SameDimensions(t *testing.T) {
 	assert.NoError(t, m.Resize("tm-resize-noop", 120, 40))
 }
 
-func TestManager_ScreenSnapshot(t *testing.T) {
+func TestManager_ScreenSnapshotSince(t *testing.T) {
 	m := NewManager()
 	var mu sync.Mutex
 	var output []byte
@@ -266,7 +266,7 @@ func TestManager_ScreenSnapshot(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte) {
+	}, func(data []byte, _ int64) {
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -283,10 +283,12 @@ func TestManager_ScreenSnapshot(t *testing.T) {
 		return strings.Contains(string(output), "snapshot_test")
 	}, "expected output to contain 'snapshot_test'")
 
-	// Verify ScreenSnapshot returns non-empty data.
-	snap := m.ScreenSnapshot("tm-snap")
+	// Verify a cold subscribe (afterOffset=0) returns the retained
+	// bytes and a matching offset.
+	snap, offset, _ := m.ScreenSnapshotSince("tm-snap", 0)
 	assert.NotEmpty(t, snap, "expected non-empty screen snapshot")
 	assert.Contains(t, string(snap), "snapshot_test", "snapshot should contain the echoed text")
+	assert.Equal(t, int64(len(snap)), offset, "first snapshot's offset should equal its length before the ring wraps")
 
 	m.StopTerminal("tm-snap")
 	testutil.AssertEventually(t, func() bool {
@@ -295,10 +297,110 @@ func TestManager_ScreenSnapshot(t *testing.T) {
 	m.RemoveTerminal("tm-snap")
 }
 
-func TestManager_ScreenSnapshot_UnknownTerminal(t *testing.T) {
+func TestManager_ScreenSnapshotSince_UnknownTerminal(t *testing.T) {
 	m := NewManager()
-	snap := m.ScreenSnapshot("nonexistent")
+	snap, offset, isSnap := m.ScreenSnapshotSince("nonexistent", 0)
 	assert.Nil(t, snap, "expected nil snapshot for unknown terminal")
+	assert.Zero(t, offset, "expected zero offset for unknown terminal")
+	assert.False(t, isSnap)
+}
+
+// TestManager_SnapshotAfterExit: after the shell exits, the Terminal
+// stays in the Manager until RemoveTerminal is called, so snapshots must
+// continue to return the final screen state + offset. The disconnect
+// notice is appended to the buffer on exit (via appendTerminalDisconnectNotice
+// in the service layer), and subscribers that reconnect need those bytes.
+func TestManager_SnapshotAfterExit(t *testing.T) {
+	m := NewManager()
+	var mu sync.Mutex
+	var output []byte
+	err := m.StartTerminal(context.Background(), Options{
+		ID:         "tm-exit",
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
+	}, func(data []byte, _ int64) {
+		mu.Lock()
+		output = append(output, data...)
+		mu.Unlock()
+	}, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, m.SendInput("tm-exit", []byte("echo before_exit"+testutil.TestShellEnter())))
+	testutil.AssertEventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Contains(string(output), "before_exit")
+	}, "expected output before exit")
+
+	m.StopTerminal("tm-exit")
+	testutil.AssertEventually(t, func() bool {
+		return m.IsExited("tm-exit")
+	}, "expected terminal to exit")
+
+	// Snapshot must still work between exit and RemoveTerminal; this is
+	// the window where a reconnecting client asks for the final screen.
+	snap, offset, _ := m.ScreenSnapshotSince("tm-exit", 0)
+	assert.NotEmpty(t, snap, "post-exit snapshot must be retained until RemoveTerminal")
+	assert.Contains(t, string(snap), "before_exit")
+	assert.Equal(t, int64(len(snap)), offset)
+
+	// SnapshotSince(offset) must also return empty (caught up) even after exit.
+	data, endOffset, isSnap := m.ScreenSnapshotSince("tm-exit", offset)
+	assert.Empty(t, data)
+	assert.Equal(t, offset, endOffset)
+	assert.False(t, isSnap)
+
+	m.RemoveTerminal("tm-exit")
+
+	// After removal, the entry is gone and snapshots return zero-value.
+	gone, goneOffset, _ := m.ScreenSnapshotSince("tm-exit", 0)
+	assert.Nil(t, gone)
+	assert.Zero(t, goneOffset)
+}
+
+// TestManager_AppendOutput_AdvancesOffset: synthetic output injected via
+// AppendOutput (used for the "terminal disconnected" notice when the
+// shell exits) must advance the cumulative byte counter so subscribers
+// deltaing past the exit see the notice in their incremental catch-up.
+func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
+	m := NewManager()
+	err := m.StartTerminal(context.Background(), Options{
+		ID:         "tm-append",
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
+	}, func(data []byte, _ int64) {}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		m.StopTerminal("tm-append")
+		testutil.AssertEventually(t, func() bool { return m.IsExited("tm-append") }, "exit")
+		m.RemoveTerminal("tm-append")
+	})
+
+	// Wait for the shell's initial prompt bytes so we have a stable baseline.
+	testutil.AssertEventually(t, func() bool {
+		_, off, _ := m.ScreenSnapshotSince("tm-append", 0)
+		return off > 0
+	}, "initial shell output")
+	_, baseline, _ := m.ScreenSnapshotSince("tm-append", 0)
+
+	notice := []byte("\r\n[terminal disconnected]\r\n")
+	require.True(t, m.AppendOutput("tm-append", notice))
+
+	_, afterAppend, _ := m.ScreenSnapshotSince("tm-append", 0)
+	assert.Equal(t, baseline+int64(len(notice)), afterAppend,
+		"AppendOutput must advance the cumulative byte counter by len(data)")
+
+	// A subscriber at `baseline` must receive exactly the appended bytes
+	// as an incremental delta — the catch-up contract for the disconnect
+	// notice.
+	data, endOffset, isSnap := m.ScreenSnapshotSince("tm-append", baseline)
+	assert.Equal(t, notice, data)
+	assert.Equal(t, afterAppend, endOffset)
+	assert.False(t, isSnap)
 }
 
 func TestManager_IsExited_UnknownTerminal(t *testing.T) {
@@ -336,7 +438,7 @@ func TestSnapshotTerminal(t *testing.T) {
 		WorkingDir:  t.TempDir(),
 		Cols:        80,
 		Rows:        24,
-	}, func(data []byte) {
+	}, func(data []byte, _ int64) {
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -413,7 +515,7 @@ func TestUpdateTitle(t *testing.T) {
 		WorkingDir:  t.TempDir(),
 		Cols:        80,
 		Rows:        24,
-	}, func([]byte) {}, nil)
+	}, func([]byte, int64) {}, nil)
 	require.NoError(t, err)
 
 	// Initially empty title via ListByWorkspace.

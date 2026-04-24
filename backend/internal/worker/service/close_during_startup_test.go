@@ -222,7 +222,7 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 			require.True(t, localBranchExists(t, repoDir, branchName))
 
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-				TerminalIds: []string{opts.ID},
+				Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: opts.ID}},
 			}, wWatch)
 
 			wClose := &testResponseWriter{channelID: "test-ch"}

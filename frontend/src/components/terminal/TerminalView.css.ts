@@ -3,8 +3,12 @@ import { globalStyle, style } from '@vanilla-extract/css'
 export const terminalInner = style({
   flex: 1,
   overflow: 'hidden',
-  display: 'flex',
-  flexDirection: 'column',
+  // Positioning context for the absolutely-positioned terminal wrappers
+  // below. All terminals share this single stacking slot; only the active
+  // one is visible. Keeping inactive wrappers in layout (rather than
+  // display:none) preserves their xterm.js dimensions so switching tabs
+  // doesn't trigger a rewrap/refit/SIGWINCH cycle.
+  position: 'relative',
 })
 
 export const container = style({
@@ -15,11 +19,21 @@ export const container = style({
 })
 
 export const terminalWrapper = style({
-  flex: 1,
+  position: 'absolute',
+  inset: 0,
   overflow: 'hidden',
   backgroundColor: 'var(--background)',
   fontVariantLigatures: 'none',
-  position: 'relative',
+})
+
+/**
+ * Applied to inactive terminal wrappers. `visibility: hidden` keeps the
+ * element in layout (so its dimensions stay valid for xterm.js / FitAddon)
+ * while hiding it visually and suppressing pointer events.
+ */
+export const terminalWrapperHidden = style({
+  visibility: 'hidden',
+  pointerEvents: 'none',
 })
 
 /** Container that xterm.open() attaches to. Fills the wrapper. */
@@ -54,8 +68,10 @@ export const startupOverlay = style({
  * active terminal id.
  */
 export const startupErrorPane = style({
-  flex: 1,
+  position: 'absolute',
+  inset: 0,
   overflow: 'hidden',
+  display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
