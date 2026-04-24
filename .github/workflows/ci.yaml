@@ -554,10 +554,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DATE=$(date -u +%Y-%m-%d)
+          # UTC timestamp (YYYYMMDD-HHMMSS) sorts lexicographically the same
+          # as chronologically, so GitHub's name-descending release list
+          # surfaces the newest pre-release at the top.
+          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
           SHORT_SHA=${GITHUB_SHA::7}
           . ./versions.env
-          TAG="prerelease-${DATE}-${SHORT_SHA}"
+          TAG="prerelease-${TIMESTAMP}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           RELEASE_URL="${REPO_URL}/releases/download/${TAG}"
@@ -567,7 +570,7 @@ jobs:
           # uses so stable `vX.Y.Z` releases are ignored.
           PREV_TAG=$(gh release list --limit 100 \
             --json tagName,isPrerelease,createdAt \
-            --jq '[.[] | select(.isPrerelease) | select(.tagName | test("^prerelease-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{7}$"))] | sort_by(.createdAt) | reverse | .[0].tagName // empty')
+            --jq '[.[] | select(.isPrerelease) | select(.tagName | startswith("prerelease-"))] | sort_by(.createdAt) | reverse | .[0].tagName // empty')
 
           # Write the static part of the release notes. Unquoted heredoc
           # expands ${VERSION}/${GITHUB_SHA}/${REPO_URL}/${RELEASE_URL};
@@ -641,13 +644,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Filter to auto-generated prereleases (isPrerelease=true AND tag
-          # matches prerelease-YYYY-MM-DD-<7hexsha>), so manual releases from
-          # the `Release` workflow (tags like `v1.2.3`) are never touched.
+          # starts with `prerelease-`), so manual releases from the
+          # `Release` workflow (tags like `v1.2.3`) are never touched.
           # Sort newest first, drop the first 3, delete the rest
           # (tag + release).
           gh release list --limit 100 \
             --json tagName,isPrerelease,createdAt \
-            --jq '[.[] | select(.isPrerelease) | select(.tagName | test("^prerelease-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{7}$"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
+            --jq '[.[] | select(.isPrerelease) | select(.tagName | startswith("prerelease-"))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
             | while read -r tag; do
                 [ -n "$tag" ] || continue
                 echo "Deleting old pre-release: $tag"
