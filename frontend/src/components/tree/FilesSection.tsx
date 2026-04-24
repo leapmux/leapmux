@@ -20,7 +20,7 @@ import { shortcutHint } from '~/lib/shortcuts/display'
 import { fileEntryToDiffStats } from '~/stores/gitFileStatus.store'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
-import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
+import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
 
 export interface FilesSectionHandle {
   collapseAll: () => void
@@ -239,14 +239,14 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
           <For each={changedFiles()}>
             {(entry) => {
               const gitIcon = getGitFileIconClass(entry)
+              const stats = fileEntryToDiffStats(entry)
               return (
                 <div
                   class={styles.flatListItem}
                   onClick={() => handleFlatFileOpen(entry)}
                 >
                   <Icon icon={FileIcon} size="sm" class={gitIcon.class} data-testid={gitIcon.testId} />
-                  <span>{entry.path}</span>
-                  <DiffStatsBadge stats={fileEntryToDiffStats(entry)} />
+                  <RowLabelWithStats label={entry.path} stats={stats} />
                 </div>
               )
             }}

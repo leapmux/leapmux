@@ -7,6 +7,8 @@ const SHOW_DELAY_MS = 700
 const HIDE_DELAY_MS = 100
 /** Extra margin around trigger rect for the pointermove hit-test. */
 const HOVER_MARGIN_PX = 4
+/** Sub-pixel slack when comparing rects/scroll sizes for clip detection. */
+const CLIP_TOLERANCE_PX = 1
 const WHITESPACE_RE = /\s+/
 
 /** Dismiss callback of the currently visible tooltip (at most one). */
@@ -26,6 +28,20 @@ export interface TooltipProps {
    * Use `true` to reuse `text`, or pass a string for an explicit label.
    */
   ariaLabel?: string | true
+  /**
+   * Controls when the tooltip appears.
+   * - `'always'` (default): show on hover/focus regardless of target visibility.
+   * - `'clipped'`: only show when the target's content is truncated (e.g.
+   *   `text-overflow: ellipsis`) or its bounding rect extends beyond an
+   *   overflow-hidden/scrollable ancestor or the viewport. Useful for
+   *   ellipsized labels where the tooltip is redundant when the full text
+   *   already fits.
+   *
+   * Note: clip-detection is visual. Screen-reader users won't get the tooltip
+   * text when `'clipped'` suppresses it, so reserve this mode for cases
+   * where the tooltip text duplicates the on-screen label.
+   */
+  showWhen?: 'always' | 'clipped'
   children: JSX.Element
 }
 
@@ -36,6 +52,76 @@ type TooltipTarget = Element & {
   getAttribute: Element['getAttribute']
   setAttribute: Element['setAttribute']
   removeAttribute: Element['removeAttribute']
+}
+
+/** True if the element's computed overflow on either axis clips its content. */
+function clipsOverflow(el: Element): boolean {
+  const cs = getComputedStyle(el)
+  return cs.overflowX !== 'visible' || cs.overflowY !== 'visible'
+}
+
+/**
+ * Detects whether the target is visually clipped — either by its own
+ * overflow (truncated text) or by an ancestor / viewport.
+ *
+ * Auto-detect strategy:
+ * 1. If the target itself has non-visible overflow on an axis where its
+ *    scroll size exceeds its client size, it's truncating its own content.
+ * 2. Otherwise, walk parent elements; for each one whose computed overflow
+ *    isn't `visible`, check whether the target's rect extends past it.
+ * 3. Finally, treat the viewport edges as a clipping boundary.
+ *
+ * Limitation: this walks `parentElement`, not containing-block ancestors,
+ * so it can over-report for `position: fixed` targets nested inside an
+ * overflow-hidden container that doesn't actually clip them.
+ */
+function isTargetClipped(target: Element): boolean {
+  // `<input>` and `<textarea>` always clip overflowing value/text regardless
+  // of their computed overflow (which browsers typically report as `visible`).
+  const intrinsicallyClips = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+  const csTarget = intrinsicallyClips ? null : getComputedStyle(target)
+  const clipsSelfX = intrinsicallyClips || csTarget!.overflowX !== 'visible'
+  const clipsSelfY = intrinsicallyClips || csTarget!.overflowY !== 'visible'
+  if (clipsSelfX && target.scrollWidth - target.clientWidth > CLIP_TOLERANCE_PX)
+    return true
+  if (clipsSelfY && target.scrollHeight - target.clientHeight > CLIP_TOLERANCE_PX)
+    return true
+
+  const rect = target.getBoundingClientRect()
+  // Stop at <body>; the viewport check below covers <html> and the visual viewport.
+  for (let ancestor = target.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+    if (!clipsOverflow(ancestor))
+      continue
+    // Use the client box (border-inside, scrollbar-excluded) instead of the
+    // bounding rect, so a target hidden behind the ancestor's scrollbar
+    // still counts as clipped.
+    const ar = ancestor.getBoundingClientRect()
+    const visibleLeft = ar.left + ancestor.clientLeft
+    const visibleTop = ar.top + ancestor.clientTop
+    const visibleRight = visibleLeft + ancestor.clientWidth
+    const visibleBottom = visibleTop + ancestor.clientHeight
+    if (
+      rect.left < visibleLeft - CLIP_TOLERANCE_PX
+      || rect.top < visibleTop - CLIP_TOLERANCE_PX
+      || rect.right > visibleRight + CLIP_TOLERANCE_PX
+      || rect.bottom > visibleBottom + CLIP_TOLERANCE_PX
+    ) {
+      return true
+    }
+  }
+
+  // documentElement.clientWidth/Height excludes the page scrollbar, unlike
+  // window.innerWidth/Height — the latter would over-include the scrollbar
+  // and miss targets clipped by it at the viewport edge. Fall back to
+  // innerWidth/Height when documentElement reports 0 (e.g. jsdom).
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight
+  return (
+    rect.left < -CLIP_TOLERANCE_PX
+    || rect.top < -CLIP_TOLERANCE_PX
+    || rect.right > viewportWidth + CLIP_TOLERANCE_PX
+    || rect.bottom > viewportHeight + CLIP_TOLERANCE_PX
+  )
 }
 
 /**
@@ -118,8 +204,12 @@ export function Tooltip(props: TooltipProps) {
       return
     clearTimers()
     showTimer = setTimeout(() => {
-      const rect = getTriggerRect()
-      if (!rect)
+      const target = targetEl()
+      const rect = target?.getBoundingClientRect()
+      if (!target || !rect)
+        return
+
+      if (props.showWhen === 'clipped' && !isTargetClipped(target))
         return
 
       // Dismiss any other visible tooltip first.

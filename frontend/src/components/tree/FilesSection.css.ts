@@ -62,7 +62,7 @@ export const flatList = style({
 export const flatListItem = style({
   'display': 'flex',
   'alignItems': 'center',
-  'gap': '4px',
+  'gap': 'var(--space-1)',
   'padding': '2px var(--space-2) 2px var(--space-3)',
   'cursor': 'pointer',
   'fontSize': 'var(--text-7)',

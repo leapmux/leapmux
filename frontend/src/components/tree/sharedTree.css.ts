@@ -3,7 +3,7 @@ import { style } from '@vanilla-extract/css'
 export const node = style({
   'display': 'flex',
   'alignItems': 'center',
-  'gap': '4px',
+  'gap': 'var(--space-1)',
   'padding': '2px var(--space-2)',
   'cursor': 'pointer',
   'fontSize': 'var(--text-7)',
@@ -64,4 +64,12 @@ export const childrenWrapperExpanded = style({
 export const childrenInner = style({
   overflow: 'clip',
   minHeight: 0,
+})
+
+// Wraps a row's label + diff-stats badge so a single Tooltip target covers
+// both. Inner gap matches `node`'s flex gap.
+export const labelWithStats = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
 })

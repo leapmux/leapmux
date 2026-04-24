@@ -21,7 +21,7 @@ export const quoteButton = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  gap: '4px',
+  gap: 'var(--space-1)',
   height: '28px',
   paddingInline: 'var(--space-2)',
   cursor: 'pointer',

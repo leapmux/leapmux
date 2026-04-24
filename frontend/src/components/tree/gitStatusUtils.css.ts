@@ -4,7 +4,7 @@ export const diffStats = style({
   fontSize: 'var(--text-8)',
   marginTop: '1px',
   color: 'var(--muted-foreground)',
-  marginLeft: '4px',
+  marginLeft: 'var(--space-1)',
   paddingRight: 'var(--space-1)',
   flexShrink: 0,
   whiteSpace: 'nowrap',

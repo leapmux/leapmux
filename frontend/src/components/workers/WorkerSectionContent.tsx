@@ -6,8 +6,9 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import ArrowBigRightDash from 'lucide-solid/icons/arrow-big-right-dash'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ChevronsLeftRightEllipsis from 'lucide-solid/icons/chevrons-left-right-ellipsis'
-import { createSignal, For, Show } from 'solid-js'
+import { createMemo, createSignal, For, Show } from 'solid-js'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
+import { Tooltip } from '~/components/common/Tooltip'
 import * as shared from '~/components/tree/sharedTree.css'
 import { sidebarActions } from '~/components/tree/sidebarActions.css'
 import * as listStyles from '~/components/workspace/workspaceList.css'
@@ -66,6 +67,8 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
         <For each={props.workers}>
           {(worker) => {
             const workerTunnels = () => tunnel?.tunnelsForWorker(worker.id) ?? []
+            const workerName = createMemo(() => props.workerInfo(worker.id)?.name ?? '\u2014')
+            const status = () => props.channelStatus(worker.id)
             return (
               <>
                 <div
@@ -76,12 +79,14 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                     size={14}
                     class={`${shared.chevron} ${isExpanded(worker.id) ? shared.chevronExpanded : ''}`}
                   />
-                  <span class={listStyles.itemTitle}>
-                    {props.workerInfo(worker.id)?.name ?? '\u2014'}
-                  </span>
+                  <Tooltip text={workerName()} showWhen="clipped">
+                    <span class={listStyles.itemTitle}>
+                      {workerName()}
+                    </span>
+                  </Tooltip>
                   <div
-                    class={`${styles.statusDot} ${statusClass[props.channelStatus(worker.id)]}`}
-                    data-status={props.channelStatus(worker.id)}
+                    class={`${styles.statusDot} ${statusClass[status()]}`}
+                    data-status={status()}
                   />
                   <div class={sidebarActions}>
                     <WorkerContextMenu
@@ -98,19 +103,24 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                   <div class={`${shared.childrenWrapper} ${isExpanded(worker.id) ? shared.childrenWrapperExpanded : ''}`}>
                     <div class={shared.childrenInner}>
                       <For each={workerTunnels()}>
-                        {t => (
-                          <div class={`${shared.node} ${styles.tunnelItem}`}>
-                            {t.type === 'socks5'
-                              ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
-                              : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
-                            <span class={listStyles.itemTitle}>
-                              {tunnelLabel(t)}
-                            </span>
-                            <div class={sidebarActions}>
-                              <TunnelContextMenu onDelete={() => setDeleteTunnelTarget(t)} />
+                        {(t) => {
+                          const label = tunnelLabel(t)
+                          return (
+                            <div class={`${shared.node} ${styles.tunnelItem}`}>
+                              {t.type === 'socks5'
+                                ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
+                                : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
+                              <Tooltip text={label} showWhen="clipped">
+                                <span class={listStyles.itemTitle}>
+                                  {label}
+                                </span>
+                              </Tooltip>
+                              <div class={sidebarActions}>
+                                <TunnelContextMenu onDelete={() => setDeleteTunnelTarget(t)} />
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )
+                        }}
                       </For>
                     </div>
                   </div>

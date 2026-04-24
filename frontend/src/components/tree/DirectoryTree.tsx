@@ -21,7 +21,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, relativizePath, tildify, untildify } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
-import { DiffStatsBadge, getGitFileIconClass } from './gitStatusUtils'
+import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
 import { menuTrigger, sidebarActions } from './sidebarActions.css'
 
 export interface DirectoryTreeHandle {
@@ -491,10 +491,11 @@ const TreeNode: Component<{
             <Icon icon={FolderOpen} size="sm" class={gitIcon().class || styles.folderIcon} data-testid={gitIcon().testId} />
           </Show>
         </Show>
-        <span class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>
-        <Show when={diffStats()}>
-          {s => <DiffStatsBadge stats={s()} />}
-        </Show>
+        <RowLabelWithStats
+          label={<span class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>}
+          tooltipLabel={props.node.displayName}
+          stats={diffStats()}
+        />
         <div class={sidebarActions}>
           <TreeContextMenu
             path={props.node.path}
@@ -827,7 +828,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     <TreeContext.Provider value={treeContextValue}>
       <div class={styles.container}>
         <div class={styles.pathInput}>
-          <Tooltip text={props.selectedPath}>
+          <Tooltip text={props.selectedPath} showWhen="clipped">
             <input
               type="text"
               value={inputValue()}
@@ -862,10 +863,11 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                 onClick={() => props.onSelect(rootPath())}
               >
                 <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
-                <span class={styles.nodeName}>{rootDisplayName()}</span>
-                <Show when={rootDiffStats()}>
-                  {s => <DiffStatsBadge stats={s()} />}
-                </Show>
+                <RowLabelWithStats
+                  label={<span class={styles.nodeName}>{rootDisplayName()}</span>}
+                  tooltipLabel={rootDisplayName()}
+                  stats={rootDiffStats()}
+                />
                 <div class={sidebarActions}>
                   <TreeContextMenu
                     path={rootPath()}

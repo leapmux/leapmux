@@ -264,7 +264,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         />
                       )}
                     >
-                      <Tooltip content={<LabelWithDiffStats label={title()} stats={stats()} />}>
+                      <Tooltip content={<LabelWithDiffStats label={title()} stats={stats()} />} showWhen="clipped">
                         <span class={styles.itemLabel}>
                           <span class={styles.itemTitle}>{title()}</span>
                           <Show when={workspace().shareMode !== ShareMode.PRIVATE && workspace().shareMode !== ShareMode.UNSPECIFIED}>

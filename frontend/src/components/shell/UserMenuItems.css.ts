@@ -34,6 +34,6 @@ export const orgItem = style({
 
 export const personalTag = style({
   fontSize: 'var(--text-8)',
-  marginLeft: '4px',
+  marginLeft: 'var(--space-1)',
   color: 'var(--faint-foreground)',
 })

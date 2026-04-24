@@ -86,6 +86,136 @@ describe('tooltip', () => {
     expect(screen.getByRole('button', { name: 'Visible label' })).not.toHaveAttribute('aria-label')
   })
 
+  describe('showWhen=clipped', () => {
+    const stubRect = (el: Element, rect: Partial<DOMRect>) => {
+      const full: DOMRect = {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => '',
+        ...rect,
+      } as DOMRect
+      Object.defineProperty(el, 'getBoundingClientRect', {
+        value: () => full,
+        configurable: true,
+      })
+    }
+
+    it('suppresses the tooltip when the target fits without clipping', () => {
+      render(() => (
+        <Tooltip text="Tooltip text" showWhen="clipped">
+          <button type="button">Trigger</button>
+        </Tooltip>
+      ))
+
+      const button = screen.getByRole('button', { name: 'Trigger' })
+      // Inside viewport, no overflow ancestors, scrollWidth==clientWidth==0.
+      stubRect(button, { left: 10, top: 10, right: 60, bottom: 30, width: 50, height: 20 })
+
+      fireEvent.mouseEnter(button)
+      vi.advanceTimersByTime(700)
+
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+      expect(button).not.toHaveAttribute('aria-describedby')
+    })
+
+    it('shows the tooltip when the target truncates its own text', () => {
+      render(() => (
+        <Tooltip text="Tooltip text" showWhen="clipped">
+          {/* jsdom doesn't expand the `overflow` shorthand, so set the longhand. */}
+          <button type="button" style={{ 'overflow-x': 'hidden', 'overflow-y': 'hidden' }}>
+            A very long label that gets cut off
+          </button>
+        </Tooltip>
+      ))
+
+      const button = screen.getByRole('button')
+      stubRect(button, { left: 10, top: 10, right: 60, bottom: 30, width: 50, height: 20 })
+      Object.defineProperty(button, 'scrollWidth', { value: 200, configurable: true })
+      Object.defineProperty(button, 'clientWidth', { value: 50, configurable: true })
+
+      fireEvent.mouseEnter(button)
+      vi.advanceTimersByTime(700)
+
+      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    })
+
+    it('shows the tooltip when an <input> value overflows its width', () => {
+      // <input> always clips its value internally, even though browsers
+      // typically report overflow as `visible`. The clip-detector should
+      // still catch this case.
+      render(() => (
+        <Tooltip text="long path" showWhen="clipped">
+          <input type="text" value="long path" />
+        </Tooltip>
+      ))
+
+      const input = screen.getByRole('textbox')
+      stubRect(input, { left: 0, top: 0, right: 50, bottom: 20, width: 50, height: 20 })
+      Object.defineProperty(input, 'scrollWidth', { value: 200, configurable: true })
+      Object.defineProperty(input, 'clientWidth', { value: 50, configurable: true })
+
+      fireEvent.mouseEnter(input)
+      vi.advanceTimersByTime(700)
+
+      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    })
+
+    it('shows the tooltip when an overflow ancestor clips the target', () => {
+      render(() => (
+        <div style={{ 'overflow-x': 'hidden', 'overflow-y': 'hidden', 'width': '100px' }}>
+          <Tooltip text="Tooltip text" showWhen="clipped">
+            <button type="button">Trigger</button>
+          </Tooltip>
+        </div>
+      ))
+
+      const button = screen.getByRole('button')
+      const container = button.closest('div')!
+      // Button rect extends past the container's right edge.
+      stubRect(button, { left: 0, top: 0, right: 200, bottom: 30, width: 200, height: 30 })
+      stubRect(container, { left: 0, top: 0, right: 100, bottom: 30, width: 100, height: 30 })
+
+      fireEvent.mouseEnter(button)
+      vi.advanceTimersByTime(700)
+
+      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    })
+
+    it('shows the tooltip when the target is hidden behind a scrollbar', () => {
+      // Container's bounding rect right edge is 100, but its client area
+      // (excluding the 15px scrollbar) ends at 85. Target's right edge
+      // sits at 95 — visible inside the bounding rect, but covered by
+      // the scrollbar. Should still report as clipped.
+      render(() => (
+        <div style={{ 'overflow-x': 'auto', 'overflow-y': 'auto', 'width': '100px' }}>
+          <Tooltip text="Tooltip text" showWhen="clipped">
+            <button type="button">Trigger</button>
+          </Tooltip>
+        </div>
+      ))
+
+      const button = screen.getByRole('button')
+      const container = button.closest('div')!
+      stubRect(button, { left: 0, top: 0, right: 95, bottom: 30, width: 95, height: 30 })
+      stubRect(container, { left: 0, top: 0, right: 100, bottom: 30, width: 100, height: 30 })
+      Object.defineProperty(container, 'clientLeft', { value: 0, configurable: true })
+      Object.defineProperty(container, 'clientTop', { value: 0, configurable: true })
+      Object.defineProperty(container, 'clientWidth', { value: 85, configurable: true })
+      Object.defineProperty(container, 'clientHeight', { value: 30, configurable: true })
+
+      fireEvent.mouseEnter(button)
+      vi.advanceTimersByTime(700)
+
+      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    })
+  })
+
   it('warns and leaves invalid children unchanged', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { container } = render(() => (

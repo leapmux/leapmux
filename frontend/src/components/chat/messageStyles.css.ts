@@ -167,7 +167,7 @@ export const controlResponseMessage = style({
 const messageRowBase = {
   display: 'flex',
   alignItems: 'flex-start',
-  gap: '4px',
+  gap: 'var(--space-1)',
   alignSelf: 'stretch',
   maxWidth: '100%',
 } as const

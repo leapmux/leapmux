@@ -41,7 +41,7 @@ export const titleText = style({
 
 export const titleCloseButton = style({
   flexShrink: 0,
-  marginLeft: '4px',
+  marginLeft: 'var(--space-1)',
 })
 
 export const windowContent = style({

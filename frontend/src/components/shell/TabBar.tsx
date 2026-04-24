@@ -51,7 +51,7 @@ const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipPro
 
 const TabTextWithTooltip: Component<{ label: string, status?: TerminalStatus }> = (props) => {
   return (
-    <Tooltip text={props.label}>
+    <Tooltip text={props.label} showWhen="clipped">
       <span
         class={styles.tabText}
         classList={terminalStatusClassList(props.status)}

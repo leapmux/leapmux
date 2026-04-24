@@ -16,7 +16,7 @@ import { basename } from '~/lib/paths'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
 import { canCloseTab, tabKey } from '~/stores/tab.store'
 import { terminalStatusClassList } from '../shell/terminalStatus'
-import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
+import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
 import * as css from './workspaceTabTree.css'
@@ -104,7 +104,7 @@ const TabLeaf: Component<{
           />
         )}
       >
-        <Tooltip text={props.tab.title || props.tab.id}>
+        <Tooltip text={props.tab.title || props.tab.id} showWhen="clipped">
           <span
             class={css.tabLabel}
             classList={terminalStatusClassList(props.tab.status)}
@@ -215,84 +215,87 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     <div class={css.treeWrapper} data-testid="workspace-tab-tree">
       <Show when={tree().groups.length > 0}>
         <For each={tree().groups}>
-          {group => (
-            <>
-              {/* Repo group header */}
-              <div
-                class={shared.node}
-                style={{ 'padding-left': '20px' }}
-                onClick={() => toggleCollapsed(group.repoKey)}
-                data-testid="tab-tree-repo-group"
-              >
-                <ChevronRight
-                  size={14}
-                  class={`${shared.chevron} ${!isCollapsed(group.repoKey) ? shared.chevronExpanded : ''}`}
-                />
-                <FolderGit size={14} class={css.groupIcon} />
-                <Tooltip content={<LabelWithDiffStats label={repoTooltip(group.repoKey)} stats={diffStatsFromTabFields(group)} />}>
-                  <span class={css.groupLabelWithStats}>
-                    {group.repoLabel}
-                    <DiffStatsBadge stats={diffStatsFromTabFields(group)} />
-                  </span>
-                </Tooltip>
-              </div>
-
-              <div class={`${shared.childrenWrapper} ${!isCollapsed(group.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
-                <div class={shared.childrenInner}>
-                  <For each={group.branches}>
-                    {branch => (
-                      <>
-                        {/* Branch group header */}
-                        <div
-                          class={shared.node}
-                          style={{ 'padding-left': '36px' }}
-                          onClick={() => toggleCollapsed(`${group.repoKey}:${branch.branchName}`)}
-                          data-testid="tab-tree-branch-group"
-                        >
-                          <ChevronRight
-                            size={14}
-                            class={`${shared.chevron} ${!isCollapsed(`${group.repoKey}:${branch.branchName}`) ? shared.chevronExpanded : ''}`}
-                          />
-                          <GitBranch size={14} class={css.groupIcon} />
-                          <Tooltip content={<LabelWithDiffStats label={branch.branchName} stats={diffStatsFromTabFields(branch)} />}>
-                            <span class={css.groupLabelWithStats}>
-                              {branch.branchName}
-                              <DiffStatsBadge stats={diffStatsFromTabFields(branch)} />
-                            </span>
-                          </Tooltip>
-                        </div>
-
-                        <div class={`${shared.childrenWrapper} ${!isCollapsed(`${group.repoKey}:${branch.branchName}`) ? shared.childrenWrapperExpanded : ''}`}>
-                          <div class={shared.childrenInner}>
-                            <For each={branch.tabs}>
-                              {tab => (
-                                <TabLeaf
-                                  tab={tab}
-                                  workspaceId={props.workspaceId}
-                                  depth={3}
-                                  isActive={tabKey(tab) === props.activeTabKey}
-                                  isEditing={editingTabKey() === tabKey(tab)}
-                                  editingValue={editingValue()}
-                                  onClick={() => props.onTabClick(tab.type, tab.id)}
-                                  onDblClick={() => startEditing(tab)}
-                                  onClose={() => props.tabItemOps?.onClose?.(tab)}
-                                  isClosing={props.tabItemOps?.closingKeys?.has(tabKey(tab))}
-                                  canClose={canClose(tab)}
-                                  onEditInput={v => setEditingValue(v)}
-                                  onEditCommit={() => commitEdit(tab)}
-                                  onEditCancel={cancelEdit}
-                                />
-                              )}
-                            </For>
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </For>
+          {(group) => {
+            const groupStats = diffStatsFromTabFields(group)
+            return (
+              <>
+                {/* Repo group header */}
+                <div
+                  class={shared.node}
+                  style={{ 'padding-left': '20px' }}
+                  onClick={() => toggleCollapsed(group.repoKey)}
+                  data-testid="tab-tree-repo-group"
+                >
+                  <ChevronRight
+                    size={14}
+                    class={`${shared.chevron} ${!isCollapsed(group.repoKey) ? shared.chevronExpanded : ''}`}
+                  />
+                  <FolderGit size={14} class={css.groupIcon} />
+                  <RowLabelWithStats
+                    label={group.repoLabel}
+                    tooltipLabel={repoTooltip(group.repoKey)}
+                    stats={groupStats}
+                  />
                 </div>
-              </div>
-            </>
-          )}
+
+                <div class={`${shared.childrenWrapper} ${!isCollapsed(group.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
+                  <div class={shared.childrenInner}>
+                    <For each={group.branches}>
+                      {(branch) => {
+                        const branchStats = diffStatsFromTabFields(branch)
+                        return (
+                          <>
+                            {/* Branch group header */}
+                            <div
+                              class={shared.node}
+                              style={{ 'padding-left': '36px' }}
+                              onClick={() => toggleCollapsed(`${group.repoKey}:${branch.branchName}`)}
+                              data-testid="tab-tree-branch-group"
+                            >
+                              <ChevronRight
+                                size={14}
+                                class={`${shared.chevron} ${!isCollapsed(`${group.repoKey}:${branch.branchName}`) ? shared.chevronExpanded : ''}`}
+                              />
+                              <GitBranch size={14} class={css.groupIcon} />
+                              <RowLabelWithStats
+                                label={branch.branchName}
+                                stats={branchStats}
+                              />
+                            </div>
+
+                            <div class={`${shared.childrenWrapper} ${!isCollapsed(`${group.repoKey}:${branch.branchName}`) ? shared.childrenWrapperExpanded : ''}`}>
+                              <div class={shared.childrenInner}>
+                                <For each={branch.tabs}>
+                                  {tab => (
+                                    <TabLeaf
+                                      tab={tab}
+                                      workspaceId={props.workspaceId}
+                                      depth={3}
+                                      isActive={tabKey(tab) === props.activeTabKey}
+                                      isEditing={editingTabKey() === tabKey(tab)}
+                                      editingValue={editingValue()}
+                                      onClick={() => props.onTabClick(tab.type, tab.id)}
+                                      onDblClick={() => startEditing(tab)}
+                                      onClose={() => props.tabItemOps?.onClose?.(tab)}
+                                      isClosing={props.tabItemOps?.closingKeys?.has(tabKey(tab))}
+                                      canClose={canClose(tab)}
+                                      onEditInput={v => setEditingValue(v)}
+                                      onEditCommit={() => commitEdit(tab)}
+                                      onEditCancel={cancelEdit}
+                                    />
+                                  )}
+                                </For>
+                              </div>
+                            </div>
+                          </>
+                        )
+                      }}
+                    </For>
+                  </div>
+                </div>
+              </>
+            )
+          }}
         </For>
       </Show>
 

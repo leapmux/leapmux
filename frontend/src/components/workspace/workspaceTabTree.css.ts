@@ -54,15 +54,6 @@ export const leafActions = style({
   minWidth: 0,
 })
 
-// Wraps a group's label + diff-stats-badge so a single Tooltip can cover
-// both as its hover target. Matches the outer `shared.node` flex gap so
-// spacing between the label and badge is unchanged when moved inside.
-export const groupLabelWithStats = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 'var(--space-1)',
-})
-
 export const tabRenameInput = style({
   'flex': 1,
   'fontSize': 'var(--text-7)',

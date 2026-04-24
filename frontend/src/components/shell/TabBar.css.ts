@@ -229,7 +229,7 @@ globalStyle(`[data-tile-size="compact"] ${tabBar}`, {
 })
 
 globalStyle(`[data-tile-size="compact"] ${tab}`, {
-  gap: '4px',
+  gap: 'var(--space-1)',
   padding: 'var(--space-1)',
   maxWidth: 'unset',
 })
@@ -261,7 +261,7 @@ globalStyle(`[data-tile-size="minimal"] ${tabBar}`, {
 })
 
 globalStyle(`[data-tile-size="minimal"] ${tab}`, {
-  gap: '4px',
+  gap: 'var(--space-1)',
   padding: 'var(--space-1)',
   maxWidth: 'unset',
 })
@@ -293,7 +293,7 @@ globalStyle(`[data-tile-size="micro"] ${tabBar}`, {
 })
 
 globalStyle(`[data-tile-size="micro"] ${tab}`, {
-  gap: '4px',
+  gap: 'var(--space-1)',
   padding: 'var(--space-1) 2px',
   maxWidth: 'unset',
 })
