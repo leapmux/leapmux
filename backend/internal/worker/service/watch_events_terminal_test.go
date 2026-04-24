@@ -90,29 +90,26 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 // subscribes, captures the offset, more output arrives, client
 // resubscribes. The second subscribe's catch-up must contain EXACTLY
 // the newly-written bytes (is_snapshot=false), not the whole buffer.
+//
+// Uses AppendOutput for deterministic bytes: SendInput + AssertEventually
+// was racy because AssertEventually fires on the first byte the shell
+// emits, leaving firstOffset mid-echo. AppendOutput writes synchronously
+// under the ring mutex, so the marker is fully committed before we read
+// the offset. Concurrent shell prompt bytes are fine — they're nameless
+// and can't collide with the markers we assert on.
 func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t, "ws-1")
 	startTestTerminal(t, svc, ctx, "t-delta", "ws-1")
 
-	// Drive some initial output.
-	require.NoError(t, svc.Terminals.SendInput("t-delta", []byte("echo first_chunk"+testutil.TestShellEnter())))
-	testutil.AssertEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince("t-delta", 0)
-		return len(screen) > 0
-	}, "first chunk")
+	firstMarker := []byte("FIRST_CHUNK_MARKER_BYTES\r\n")
+	require.True(t, svc.Terminals.AppendOutput("t-delta", firstMarker))
 
-	// Capture the current offset — this is what a frontend would have
-	// after the first subscribe.
 	_, firstOffset, _ := svc.Terminals.ScreenSnapshotSince("t-delta", 0)
-	require.Greater(t, firstOffset, int64(0))
+	require.GreaterOrEqual(t, firstOffset, int64(len(firstMarker)))
 
-	// Drive more output the "absent" client will miss.
-	require.NoError(t, svc.Terminals.SendInput("t-delta", []byte("echo second_chunk"+testutil.TestShellEnter())))
-	testutil.AssertEventually(t, func() bool {
-		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-delta", 0)
-		return off > firstOffset
-	}, "second chunk")
+	secondMarker := []byte("SECOND_CHUNK_MARKER_BYTES\r\n")
+	require.True(t, svc.Terminals.AppendOutput("t-delta", secondMarker))
 
 	// Resubscribe at firstOffset. Must receive an incremental delta with
 	// is_snapshot=false containing only the new bytes.
@@ -132,9 +129,9 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	require.NotNil(t, delta)
 	assert.False(t, delta.GetIsSnapshot(),
 		"in-window resume must NOT be flagged as snapshot — frontend would reset unnecessarily")
-	assert.Contains(t, string(delta.GetData()), "second_chunk",
+	assert.Contains(t, string(delta.GetData()), string(secondMarker),
 		"delta must contain the bytes the absent client missed")
-	assert.NotContains(t, string(delta.GetData()), "first_chunk",
+	assert.NotContains(t, string(delta.GetData()), string(firstMarker),
 		"delta must NOT re-send bytes the client already has")
 }
 

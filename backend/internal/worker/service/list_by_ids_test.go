@@ -11,7 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -268,21 +267,22 @@ func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
 }
 
 // TestListTerminals_ScreenEndOffset_LiveTerminal: terminals with a live
-// PTY in the Manager must report screen_end_offset = cumulative bytes
-// written, which equals len(screen) until the ring wraps but can diverge
-// afterwards. Sanity-check: the returned offset matches Manager.ScreenSnapshot
-// (Manager is the authoritative source).
+// PTY in the Manager must report screen_end_offset sourced from the
+// Manager (cumulative bytes written), not from len(db_row.screen) which
+// is empty until Shutdown persists. Proves the path by injecting a
+// unique marker via AppendOutput and confirming the response carries
+// it — the DB row for this terminal has Screen=[]byte{}, so a
+// non-empty response can only have come from the Manager. Driving the
+// shell with SendInput was previously racy: PTY output continues
+// streaming asynchronously, so ti.ScreenEndOffset and a subsequent
+// ScreenSnapshotSince read at different moments diverged.
 func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-A")
 	startTestTerminal(t, svc, ctx, "t-live", "ws-A")
 
-	// Drive some output so the screen buffer is non-empty.
-	require.NoError(t, svc.Terminals.SendInput("t-live", []byte("echo live_offset_test"+testutil.TestShellEnter())))
-	testutil.AssertEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince("t-live", 0)
-		return len(screen) > 0
-	}, "expected live output")
+	marker := []byte("live_offset_test_marker")
+	require.True(t, svc.Terminals.AppendOutput("t-live", marker))
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t-live"},
@@ -294,13 +294,13 @@ func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 	require.Len(t, resp.GetTerminals(), 1)
 	ti := resp.GetTerminals()[0]
 
-	// The authoritative offset is whatever the Manager's ScreenBuffer
-	// holds at the time ListTerminals ran. Read the current value and
-	// assert the response matches — both should equal len(screen) before
-	// the ring wraps, and both should drift in lockstep after.
-	_, managerOffset, _ := svc.Terminals.ScreenSnapshotSince("t-live", 0)
-	assert.Equal(t, managerOffset, ti.GetScreenEndOffset(),
-		"live terminal: screen_end_offset must match the Manager's offset")
+	// Screen and ScreenEndOffset are sampled atomically inside
+	// buildEntryLocked (single Terminal.ScreenSnapshot call), so the
+	// len(screen) == offset invariant holds regardless of concurrent
+	// shell output. The marker presence confirms we got the Manager's
+	// buffer, not the DB row's empty Screen.
+	assert.Contains(t, string(ti.GetScreen()), string(marker),
+		"live terminal must return Manager's screen (DB row has Screen=[]byte{})")
 	assert.Equal(t, int64(len(ti.GetScreen())), ti.GetScreenEndOffset(),
 		"before ring wrap: screen_end_offset equals len(screen)")
 }
