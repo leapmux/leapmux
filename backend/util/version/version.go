@@ -35,36 +35,23 @@ var Branch string
 //
 //   - Value is always present (falls back to "dev").
 //   - CommitHash is included when set.
-//   - Branch is omitted on "main" (the common CI/release case), rendered
-//     as "<detached>" when empty but a commit hash is present, and
-//     shown verbatim otherwise.
+//   - Branch is omitted on "main" or when empty (detached HEAD, tag
+//     builds, ad-hoc checkouts). When present and non-main it's
+//     shown verbatim so dev builds advertise their feature branch.
+//     Release vs. unreleased is encoded by Value's "-dev" suffix.
 //   - BuildTime is formatted in the local timezone when set.
 func Format() string {
 	parts := []string{Value}
 	if CommitHash != "" {
 		parts = append(parts, CommitHash)
 	}
-	if b := branchDisplay(); b != "" {
-		parts = append(parts, b)
+	if Branch != "" && Branch != "main" {
+		parts = append(parts, Branch)
 	}
 	if BuildTime != "" {
 		parts = append(parts, FormatLocalTimestamp(BuildTime))
 	}
 	return strings.Join(parts, " · ")
-}
-
-func branchDisplay() string {
-	switch Branch {
-	case "main":
-		return ""
-	case "":
-		if CommitHash != "" {
-			return "<detached>"
-		}
-		return ""
-	default:
-		return Branch
-	}
 }
 
 // FormatLocalTimestamp converts an RFC3339 timestamp to the

@@ -106,27 +106,18 @@ export function formatBuildTime(iso: string): string {
   return formatLocalDateTime(d)
 }
 
-// Display rule for the branch slot, mirroring backend/util/version.Format:
-//   - 'main' -> hide (common release / CI path, no visual noise)
-//   - empty but commitHash present -> '<detached>' (tag / ad-hoc builds)
-//   - otherwise -> show verbatim (branch or tag name)
-function branchDisplay(info: BuildInfo): string {
-  if (info.branch === 'main')
-    return ''
-  if (info.branch === '')
-    return info.commitHash ? '<detached>' : ''
-  return info.branch
-}
-
 // Canonical single-line identity string, matching backend/util/version.Format:
 //   '0.0.1-dev · 9c81b87 · feature/foo · Thu, 4/23/2026, 11:45:00 PM KST'
+// Branch is shown verbatim when present and non-main. Detached HEAD
+// (tag / ad-hoc checkouts) and 'main' both render as empty so the
+// banner stays clean; the '-dev' suffix on version is what
+// distinguishes a dev build from a release.
 export function formatVersionLine(info: BuildInfo): string {
   const parts: string[] = [info.version || 'dev']
   if (info.commitHash)
     parts.push(info.commitHash)
-  const branch = branchDisplay(info)
-  if (branch)
-    parts.push(branch)
+  if (info.branch && info.branch !== 'main')
+    parts.push(info.branch)
   const time = formatBuildTime(info.buildTime)
   if (time)
     parts.push(time)

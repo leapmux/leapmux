@@ -23,13 +23,14 @@ vars:
     sh: echo "${COMMIT_TIME:-$(git log -1 --format=%cI 2>/dev/null)}"
   BUILD_TIME:
     sh: echo "${BUILD_TIME:-{{dateInZone `2006-01-02T15:04:05Z` now `UTC`}}}"
-  # BRANCH is the git ref (branch name, or tag name when HEAD is on a
-  # tag) embedded in the binary so the version banner / AboutDialog can
-  # show which build this is. Prefer an environment override (CI can
-  # pass github.head_ref, etc.); fall back to the current branch, then
-  # to the tag at HEAD; leave empty for detached HEAD outside any ref.
+  # BRANCH is the git branch name embedded in the binary so the version
+  # banner / AboutDialog can show which dev build is running. Prefer an
+  # environment override (CI can pass github.head_ref, etc.); fall back
+  # to the current branch; leave empty for detached HEAD (tag builds,
+  # ad-hoc SHA checkouts). The version package hides an empty branch,
+  # so detached / release builds get a clean banner.
   BRANCH:
-    sh: echo "${BRANCH:-$(git symbolic-ref --short HEAD 2>/dev/null || git describe --exact-match --tags HEAD 2>/dev/null)}"
+    sh: echo "${BRANCH:-$(git symbolic-ref --short HEAD 2>/dev/null)}"
   VERSION_LDFLAGS: >-
     -X github.com/leapmux/leapmux/util/version.Value={{.VERSION}}
     -X github.com/leapmux/leapmux/util/version.CommitHash={{.COMMIT_HASH}}
