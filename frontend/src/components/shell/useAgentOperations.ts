@@ -94,7 +94,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   /** Look up the workerId for a given agent from the agent store. */
   const getAgentWorkerId = (agentId: string): string => {
-    return props.agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
+    return props.agentStore.getById(agentId)?.workerId ?? ''
   }
 
   const resolvePreferredProvider = (): AgentProvider | null => {
@@ -221,7 +221,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   // Change model or effort for the given agent (requires agent restart)
   const handleModelOrEffortChange = async (agentId: string, field: 'model' | 'effort', value: string) => {
-    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+    const agent = props.agentStore.getById(agentId)
     if (!agent)
       return
     if (!agent.availableModels || agent.availableModels.length === 0)
@@ -249,7 +249,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Interrupt the given agent's current turn
   const handleInterrupt = async (agentId: string) => {
     try {
-      const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+      const agent = props.agentStore.getById(agentId)
       const workerId = getAgentWorkerId(agentId)
       const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
       if (!plugin?.buildInterruptContent) {
@@ -274,7 +274,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Dispatches through the provider plugin — each provider handles this
   // differently (Claude Code: control_request, Codex: UpdateAgentSettings).
   const handlePermissionModeChange = async (agentId: string, mode: PermissionMode) => {
-    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+    const agent = props.agentStore.getById(agentId)
     if (!agent)
       return
     const previousMode = (agent.permissionMode || defaultPermissionModeForAgent(agent.agentProvider)) as PermissionMode
@@ -305,7 +305,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     defaultValue: string,
     errorLabel: string,
   ) => {
-    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+    const agent = props.agentStore.getById(agentId)
     if (!agent)
       return
     const previous = agent.extraSettings?.[field] || defaultValue
@@ -319,7 +319,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.settingsLoading.stop()
     }
     catch (err) {
-      const current = props.agentStore.state.agents.find(a => a.id === agentId)
+      const current = props.agentStore.getById(agentId)
       props.agentStore.updateAgent(agentId, { extraSettings: { ...(current?.extraSettings || {}), [field]: previous } })
       props.settingsLoading.stop()
       showWarnToast(`Failed to change ${errorLabel}`, err)
@@ -327,7 +327,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   const handleOptionGroupChange = (agentId: string, key: string, value: string) => {
-    const agent = props.agentStore.state.agents.find(a => a.id === agentId)
+    const agent = props.agentStore.getById(agentId)
     const defaultValue = optionGroupDefaultValue(agent?.availableOptionGroups, key) || value
     const label = optionGroupLabel(agent?.availableOptionGroups, key)
     handleOptionGroupSettingChange(agentId, key, value, defaultValue, label)

@@ -41,7 +41,7 @@ import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { createTabStore, preserveNonEmptyGitFields, protoToTerminalTab, tabKey } from '~/stores/tab.store'
+import { createTabStore, isTabReadyForGitStatus, preserveNonEmptyGitFields, protoToTerminalTab, tabKey } from '~/stores/tab.store'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
@@ -223,7 +223,7 @@ export const AppShell: ParentComponent = (props) => {
       if (!tab)
         return ''
       if (tab.type === TabType.AGENT) {
-        return agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+        return agentStore.getById(tab.id)?.workerId ?? ''
       }
       return tab.workerId ?? ''
     },
@@ -336,7 +336,7 @@ export const AppShell: ParentComponent = (props) => {
     if (!tab)
       return { workerId: '', workingDir: '', homeDir: '' }
     if (tab.type === TabType.AGENT) {
-      const agent = agentStore.state.agents.find(a => a.id === tab.id)
+      const agent = agentStore.getById(tab.id)
       const workerId = agent?.workerId || ''
       return { workerId, workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
     }
@@ -412,7 +412,7 @@ export const AppShell: ParentComponent = (props) => {
     const rootFlavor = detectFlavor(repoRoot)
     for (const tab of untrack(() => tabStore.state.tabs)) {
       if (tab.type === TabType.AGENT) {
-        const agent = untrack(() => agentStore.state.agents.find(a => a.id === tab.id))
+        const agent = untrack(() => agentStore.getById(tab.id))
         if (!agent?.workingDir)
           continue
         if (relativeUnder(agent.workingDir, repoRoot, rootFlavor) === null)
@@ -441,7 +441,7 @@ export const AppShell: ParentComponent = (props) => {
     if (!mruKey)
       return { workingDir: '', homeDir: '' }
     const agentId = mruKey.slice(agentPrefix.length)
-    const agent = agentStore.state.agents.find(a => a.id === agentId)
+    const agent = agentStore.getById(agentId)
     return { workingDir: agent?.workingDir ?? '', homeDir: agent?.homeDir ?? '' }
   }
 
@@ -761,7 +761,7 @@ export const AppShell: ParentComponent = (props) => {
     // Determine the worker for this tab
     let workerId = tab.workerId ?? ''
     if (!workerId && tab.type === TabType.AGENT) {
-      workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+      workerId = agentStore.getById(tab.id)?.workerId ?? ''
     }
 
     // Remove the tab from the source (optimistic UI update).
@@ -822,7 +822,7 @@ export const AppShell: ParentComponent = (props) => {
       const newTab = { ...tab, tileId: targetTileId }
       const key = tabKey(newTab)
       const movedAgent = tab.type === TabType.AGENT
-        ? agentStore.state.agents.find(a => a.id === tab.id)
+        ? agentStore.getById(tab.id)
         : undefined
       const nextAgents = movedAgent && !targetSnap.agents.some(a => a.id === tab.id)
         ? [...targetSnap.agents, movedAgent]
@@ -924,7 +924,7 @@ export const AppShell: ParentComponent = (props) => {
         registry.update(resolvedSourceWsId, (sourceSnap) => {
           let nextAgents = sourceSnap.agents
           if (tab!.type === TabType.AGENT) {
-            const agent = agentStore.state.agents.find(a => a.id === tab!.id)
+            const agent = agentStore.getById(tab!.id)
               ?? targetSnap?.agents.find(a => a.id === tab!.id)
             if (agent && !sourceSnap.agents.some(a => a.id === tab!.id)) {
               nextAgents = [...sourceSnap.agents, agent]
@@ -1116,7 +1116,7 @@ export const AppShell: ParentComponent = (props) => {
       onRename: (tab, title) => {
         tabStore.updateTabTitle(tab.type, tab.id, title)
         if (tab.type === TabType.AGENT) {
-          const workerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+          const workerId = agentStore.getById(tab.id)?.workerId ?? ''
           renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
             showWarnToast('Failed to rename agent', err)
           })
@@ -1128,13 +1128,30 @@ export const AppShell: ParentComponent = (props) => {
   })
 
   // Refresh git status only when workerId or workingDir actually changes
-  // (not on every tab switch within the same worker context).
+  // (not on every tab switch within the same worker context). The
+  // readiness signal is included so that a STARTING agent's or
+  // terminal's transition out of its phase-0 window re-fires this
+  // effect with fresh data — see isTabReadyForGitStatus for the
+  // rationale on why we defer.
+  const activeTabReady = createMemo(() => {
+    const tab = activeTab()
+    const agent = tab?.type === TabType.AGENT ? agentStore.getById(tab.id) : null
+    return isTabReadyForGitStatus(tab, agent)
+  })
+
   createEffect(on(
     () => {
       const ctx = getCurrentTabContext()
-      return `${ctx.workerId}\0${ctx.workingDir}`
+      return `${ctx.workerId}\0${ctx.workingDir}\0${activeTabReady() ? '1' : '0'}`
     },
     () => {
+      if (!activeTabReady()) {
+        // The dep above changed (e.g. workingDir flipped to a fresh
+        // STARTING tab) while phase 0 is still running. Skip the
+        // refresh until phase 0 completes — a mid-checkout `git
+        // status` would mark every in-index file as deleted.
+        return
+      }
       const ctx = getCurrentTabContext()
       if (ctx.workerId && ctx.workingDir) {
         gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)

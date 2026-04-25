@@ -1,7 +1,11 @@
+import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { Tab } from '~/stores/tab.store'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createTabStore, tabKey } from '~/stores/tab.store'
+import { createTabStore, isTabReadyForGitStatus, tabKey } from '~/stores/tab.store'
 
 describe('tabKey', () => {
   it('should create composite key from type and id', () => {
@@ -567,5 +571,109 @@ describe('createTabStore', () => {
 
       dispose()
     })
+  })
+})
+
+describe('isTabReadyForGitStatus', () => {
+  // Minimal agent fixture; only the three fields the helper reads matter.
+  function agent(p: Partial<Pick<AgentInfo, 'status' | 'startupMessage' | 'gitStatus'>>): AgentInfo {
+    return {
+      status: AgentStatus.STARTING,
+      startupMessage: '',
+      gitStatus: undefined,
+      ...p,
+    } as AgentInfo
+  }
+
+  const agentTab: Tab = { type: TabType.AGENT, id: 'a1' }
+
+  it('treats file tabs as always ready', () => {
+    const fileTab: Tab = { type: TabType.FILE, id: 'f1' }
+    expect(isTabReadyForGitStatus(fileTab, null)).toBe(true)
+  })
+
+  it('treats a non-STARTING terminal tab as ready', () => {
+    const ready: Tab = { type: TabType.TERMINAL, id: 't1', status: TerminalStatus.READY }
+    const exited: Tab = { type: TabType.TERMINAL, id: 't1', status: TerminalStatus.EXITED }
+    const failed: Tab = { type: TabType.TERMINAL, id: 't1', status: TerminalStatus.STARTUP_FAILED }
+    const undef: Tab = { type: TabType.TERMINAL, id: 't1' }
+    expect(isTabReadyForGitStatus(ready, null)).toBe(true)
+    expect(isTabReadyForGitStatus(exited, null)).toBe(true)
+    expect(isTabReadyForGitStatus(failed, null)).toBe(true)
+    expect(isTabReadyForGitStatus(undef, null)).toBe(true)
+  })
+
+  it('defers a fresh STARTING terminal tab with no startupMessage', () => {
+    // OpenTerminal's response leaves the tab in STARTING with no
+    // phase-0 broadcast yet — same race window as agents.
+    const tab: Tab = { type: TabType.TERMINAL, id: 't1', status: TerminalStatus.STARTING }
+    expect(isTabReadyForGitStatus(tab, null)).toBe(false)
+  })
+
+  it('treats a STARTING terminal tab as ready once startupMessage is set', () => {
+    const tab: Tab = {
+      type: TabType.TERMINAL,
+      id: 't1',
+      status: TerminalStatus.STARTING,
+      startupMessage: 'Creating worktree "feature"…',
+    }
+    expect(isTabReadyForGitStatus(tab, null)).toBe(true)
+  })
+
+  it('treats null/undefined tab as ready', () => {
+    expect(isTabReadyForGitStatus(null, null)).toBe(true)
+    expect(isTabReadyForGitStatus(undefined, null)).toBe(true)
+  })
+
+  it('treats an agent tab with no matching agent as ready', () => {
+    expect(isTabReadyForGitStatus(agentTab, null)).toBe(true)
+    expect(isTabReadyForGitStatus(agentTab, undefined)).toBe(true)
+  })
+
+  it('defers in the initial STARTING state — no startupMessage and no gitStatus', () => {
+    // This is the window between OpenAgent's response and the phase-1
+    // STARTING broadcast. `git worktree add` may be mid-checkout, so a
+    // status query would mark every in-index file as deleted.
+    expect(
+      isTabReadyForGitStatus(
+        agentTab,
+        agent({ status: AgentStatus.STARTING, startupMessage: '', gitStatus: undefined }),
+      ),
+    ).toBe(false)
+  })
+
+  it('is ready once a STARTING broadcast has set startupMessage', () => {
+    // Phase 1's first broadcast: status=STARTING, startupMessage="Checking
+    // Git status…", gitStatus=nil. Phase 0 has finished by this point.
+    expect(
+      isTabReadyForGitStatus(
+        agentTab,
+        agent({ status: AgentStatus.STARTING, startupMessage: 'Checking Git status…' }),
+      ),
+    ).toBe(true)
+  })
+
+  it('is ready once gitStatus has been broadcast', () => {
+    expect(
+      isTabReadyForGitStatus(
+        agentTab,
+        agent({
+          status: AgentStatus.STARTING,
+          startupMessage: 'Starting Claude Code…',
+          gitStatus: { branch: 'main' } as AgentInfo['gitStatus'],
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  it('is ready in any non-STARTING state regardless of message/gitStatus', () => {
+    for (const status of [AgentStatus.ACTIVE, AgentStatus.INACTIVE, AgentStatus.STARTUP_FAILED]) {
+      expect(
+        isTabReadyForGitStatus(
+          agentTab,
+          agent({ status, startupMessage: '', gitStatus: undefined }),
+        ),
+      ).toBe(true)
+    }
   })
 })

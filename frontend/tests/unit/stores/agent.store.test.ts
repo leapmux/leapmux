@@ -38,6 +38,18 @@ describe('createAgentStore', () => {
     })
   })
 
+  it('getById returns the matching agent or undefined', () => {
+    createRoot((dispose) => {
+      const store = createAgentStore()
+      store.addAgent(makeAgent('a1'))
+      store.addAgent(makeAgent('a2'))
+      expect(store.getById('a1')?.id).toBe('a1')
+      expect(store.getById('a2')?.id).toBe('a2')
+      expect(store.getById('missing')).toBeUndefined()
+      dispose()
+    })
+  })
+
   it('should remove agent and update active', () => {
     createRoot((dispose) => {
       const store = createAgentStore()

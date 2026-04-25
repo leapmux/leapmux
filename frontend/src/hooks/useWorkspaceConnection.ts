@@ -232,7 +232,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // Also extract contextWindow and total_cost_usd (rehydrates on reconnect).
         if (msg.role === MessageRole.RESULT) {
           try {
-            const modelId = agentStore.state.agents.find(a => a.id === agentId)?.model
+            const modelId = agentStore.getById(agentId)?.model
             const meta = extractResultMetadata(parseMessageContent(msg), modelId)
             if (meta) {
               if (msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed') {
@@ -304,7 +304,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (catchUpPhases.get(agentId) === 'catchingUp') {
             const replayEndSeq = chatStore.getLastSeq(agentId)
             if (replayEndSeq > 0n) {
-              const wid = agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
+              const wid = agentStore.getById(agentId)?.workerId ?? ''
               void chatStore.loadNewerMessages(wid, agentId, replayEndSeq, signal)
             }
           }
@@ -314,7 +314,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // Read the prior status before updateAgent overwrites it so
         // STARTING → ACTIVE / STARTUP_FAILED transitions can drain the
         // per-agent pending-message queue.
-        const prev = agentStore.state.agents.find(a => a.id === sc.agentId)
+        const prev = agentStore.getById(sc.agentId)
         if (prev?.status === AgentStatus.STARTING) {
           const queued = chatStore.takePendingOutbound(sc.agentId)
           if (queued.length > 0) {
@@ -420,7 +420,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         if (catchUpPhase === 'catchingUp') {
           const replayEndSeq = chatStore.getLastSeq(agentId)
           if (replayEndSeq > 0n) {
-            const wid = agentStore.state.agents.find(a => a.id === agentId)?.workerId ?? ''
+            const wid = agentStore.getById(agentId)?.workerId ?? ''
             void chatStore.loadNewerMessages(wid, agentId, replayEndSeq, signal)
           }
         }
@@ -431,7 +431,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // During catch-up, the INACTIVE statusChange may have already been
         // processed before this replayed controlRequest arrives. Skip adding
         // the request so the user isn't stuck on an unanswerable prompt.
-        const agentEntry = agentStore.state.agents.find(a => a.id === cr.agentId)
+        const agentEntry = agentStore.getById(cr.agentId)
         if (agentEntry?.status === AgentStatus.INACTIVE)
           break
         const payload = JSON.parse(new TextDecoder().decode(cr.payload))
@@ -614,7 +614,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         .filter(entry => !nonActiveAgentIds.has(entry.agentId))
         .map(async (entry) => {
           try {
-            const wid = agentStore.state.agents.find(a => a.id === entry.agentId)?.workerId ?? ''
+            const wid = agentStore.getById(entry.agentId)?.workerId ?? ''
             await chatStore.loadInitialMessages(wid, entry.agentId)
           }
           catch (err) {
@@ -856,7 +856,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     // Non-active workspace agents exist only in registry snapshots and
     // don't have a workerId in agentStore — attempting to load with an
     // empty workerId causes an "invalid_argument" error.
-    const agent = agentStore.state.agents.find(a => a.id === tabId)
+    const agent = agentStore.getById(tabId)
     if (!agent)
       return
     chatStore.loadInitialMessages(agent.workerId, tabId).catch((err) => {

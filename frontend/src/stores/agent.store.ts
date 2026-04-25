@@ -37,6 +37,8 @@ export function createAgentStore() {
     return { ...a, ...b }
   }
 
+  const getById = (id: string): AgentInfo | undefined => state.agents.find(a => a.id === id)
+
   return {
     state,
 
@@ -64,8 +66,11 @@ export function createAgentStore() {
       }
     },
 
+    /** Look up an agent by id. Reactively tracks the agents array. */
+    getById,
+
     updateAgent(id: string, updates: Partial<AgentInfo>) {
-      const existing = state.agents.find(a => a.id === id)
+      const existing = getById(id)
       if (!existing) {
         // Buffer the update: statusChange broadcasts can overtake a ListAgents
         // fetch, and losing them would strand the agent in STARTING state.

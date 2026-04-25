@@ -185,7 +185,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   }
 
   const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
-    agentStore.state.agents.find(a => a.id === agentId),
+    agentStore.getById(agentId),
     agentSessionStore.getInfo(agentId),
     chatStore.getMessages(agentId),
     chatStore.state.streamingText[agentId],
@@ -207,7 +207,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       onRename={(tab, title) => {
         tabStore.updateTabTitle(tab.type, tab.id, title)
         if (tab.type === TabType.AGENT) {
-          const renameWorkerId = agentStore.state.agents.find(a => a.id === tab.id)?.workerId ?? ''
+          const renameWorkerId = agentStore.getById(tab.id)?.workerId ?? ''
           workerRpc.renameAgent(renameWorkerId, { agentId: tab.id, title }).catch((err) => {
             showWarnToast('Failed to rename agent', err)
           })
@@ -331,7 +331,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         <For each={tileAgentTabs()}>
           {(at) => {
             const agentId = at.id
-            const agent = createMemo(() => agentStore.state.agents.find(a => a.id === agentId))
+            const agent = createMemo(() => agentStore.getById(agentId))
             onCleanup(() => {
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
@@ -553,14 +553,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return (
       <AgentEditorPanel
         agentId={agentId()}
-        agent={agentStore.state.agents.find(a => a.id === agentId())}
+        agent={agentStore.getById(agentId())}
         // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
         onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
           const id = focusedAgentId()
           if (!id)
             return
           forceScrollToBottomRef.current?.()
-          const sendAgent = agentStore.state.agents.find(a => a.id === id)
+          const sendAgent = agentStore.getById(id)
           const status = sendAgent?.status
 
           // Build optimistic message JSON with attachment data so retry can

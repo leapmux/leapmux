@@ -1,6 +1,7 @@
 import type { listTerminals } from '~/api/workerRpc'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
+import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { after, first, mid } from '~/lib/lexorank'
@@ -218,6 +219,41 @@ export function resolveOptimisticGitInfo(
     gitOriginUrl: activeTab.gitOriginUrl || undefined,
     gitToplevel: activeTab.gitToplevel || undefined,
   }
+}
+
+/**
+ * Whether the tab's working tree is in a stable state for `git status`.
+ *
+ * Returns false during the phase-0 window of a fresh worktree-creating
+ * agent or terminal: while `git worktree add` is mid-checkout,
+ * `git status` reports every still-unwritten in-index file as deleted,
+ * which would otherwise blast bogus diff stats onto the new tab. Phase
+ * 1's first STARTING broadcast sets `startupMessage` (and for agents
+ * phase 2 also fills `gitStatus`), so the arrival of either signals
+ * that phase 0 is done and the working tree is settled.
+ *
+ * File tabs are always treated as ready — they don't go through the
+ * worktree-creating startup pipeline.
+ */
+export function isTabReadyForGitStatus(
+  tab: Tab | null | undefined,
+  agent: Pick<AgentInfo, 'status' | 'startupMessage' | 'gitStatus'> | null | undefined,
+): boolean {
+  if (!tab)
+    return true
+  if (tab.type === TabType.AGENT) {
+    if (!agent)
+      return true
+    if (agent.status !== AgentStatus.STARTING)
+      return true
+    return Boolean(agent.startupMessage) || agent.gitStatus !== undefined
+  }
+  if (tab.type === TabType.TERMINAL) {
+    if (tab.status !== TerminalStatus.STARTING)
+      return true
+    return Boolean(tab.startupMessage)
+  }
+  return true
 }
 
 export interface TabItemOps {
