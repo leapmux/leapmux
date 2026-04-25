@@ -169,18 +169,90 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
-  const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
-    try {
-      const ws = props.activeWorkspace()
-      const tab = props.tabStore.getTerminalTab(terminalId)
-      if (!ws || tab?.status !== TerminalStatus.READY)
+  // Buffer keystrokes that arrive before the terminal reaches READY.
+  // The worker rejects SendInput while the PTY is not yet registered
+  // in its manager (the async runTerminalStartup window), so silently
+  // dropping meant fast-typing into a freshly-opened terminal lost
+  // characters. Per-terminal queues are drained sequentially: a single
+  // drainPending loop per terminal preserves byte order across the
+  // STARTING → READY transition.
+  const pendingInput = new Map<string, Uint8Array[]>()
+  const draining = new Set<string>()
+
+  const drainPending = async (terminalId: string) => {
+    while (true) {
+      const buf = pendingInput.get(terminalId)
+      if (!buf || buf.length === 0) {
+        pendingInput.delete(terminalId)
         return
-      await workerRpc.sendInput(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
-    }
-    catch {
-      // ignore input errors
+      }
+      const tab = props.tabStore.getTerminalTab(terminalId)
+      const ws = props.activeWorkspace()
+      if (!tab || !ws) {
+        pendingInput.delete(terminalId)
+        return
+      }
+      if (tab.status !== TerminalStatus.READY) {
+        // Drop the buffer on terminal/irrecoverable status; for STARTING,
+        // leave it and wait for the next status change.
+        if (tab.status === TerminalStatus.EXITED
+          || tab.status === TerminalStatus.STARTUP_FAILED
+          || tab.status === TerminalStatus.DISCONNECTED) {
+          pendingInput.delete(terminalId)
+        }
+        return
+      }
+      const chunk = buf.shift()!
+      try {
+        await workerRpc.sendInput(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data: chunk })
+      }
+      catch {
+        // ignore input errors
+      }
     }
   }
+
+  const scheduleFlush = (terminalId: string) => {
+    if (draining.has(terminalId))
+      return
+    draining.add(terminalId)
+    drainPending(terminalId).finally(() => draining.delete(terminalId))
+  }
+
+  const handleTerminalInput = (terminalId: string, data: Uint8Array) => {
+    let buf = pendingInput.get(terminalId)
+    if (!buf) {
+      buf = []
+      pendingInput.set(terminalId, buf)
+    }
+    buf.push(data)
+    scheduleFlush(terminalId)
+  }
+
+  // When any terminal transitions to READY with pending input, kick the
+  // drainer so the queued keystrokes get sent in order. The reactive
+  // reads of `state.tabs` and each `tab.status` re-run this on status
+  // changes; the buffer check guards against re-flushing tabs that have
+  // nothing queued. Also reaps orphan buffers for terminals that were
+  // removed via paths other than handleTerminalClose (e.g., a cross-
+  // workspace tab move in AppShell), since drainPending only deletes
+  // those orphans on the next flush — which never comes.
+  createEffect(() => {
+    if (pendingInput.size === 0)
+      return
+    const liveIds = new Set<string>()
+    for (const tab of props.tabStore.state.tabs) {
+      if (tab.type !== TabType.TERMINAL)
+        continue
+      liveIds.add(tab.id)
+      if (tab.status === TerminalStatus.READY && pendingInput.has(tab.id))
+        scheduleFlush(tab.id)
+    }
+    for (const id of pendingInput.keys()) {
+      if (!liveIds.has(id))
+        pendingInput.delete(id)
+    }
+  })
 
   // Throttle backend title updates: at most once per 500 ms per terminal.
   // Kept short so a title set right before a shell exit (Ctrl+D) reaches
@@ -261,6 +333,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP) => {
     const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
     const ws = props.activeWorkspace()
+
+    // Drop any keystrokes buffered before READY — they have no
+    // destination once the tab is gone.
+    pendingInput.delete(terminalId)
 
     // Synchronous: tab disappears immediately.
     props.tabStore.removeTab(TabType.TERMINAL, terminalId)

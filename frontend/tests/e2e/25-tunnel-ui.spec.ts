@@ -22,8 +22,17 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
     }> = []
     let nextId = 1
 
-    ;(window as any).__TAURI_INTERNALS__ = {}
-    ;(window as any).__TAURI_INVOKE__ = (cmd: string, args?: any) => {
+    // Per-command overrides set later via page.evaluate(). When present,
+    // the override runs instead of the default handler — this lets
+    // individual tests inject failure modes without redefining the
+    // entire mock.
+    const overrides: Record<string, (args?: any) => Promise<any>> = {}
+    ;(window as any).__TUNNEL_MOCK_OVERRIDES__ = overrides
+
+    const handleInvoke = (cmd: string, args?: any) => {
+      const override = overrides[cmd]
+      if (override)
+        return override(args)
       switch (cmd) {
         case 'create_tunnel': {
           const config = args.config
@@ -66,6 +75,12 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
           return Promise.reject(new Error(`unhandled Tauri invoke: ${cmd}`))
       }
     }
+
+    // Tauri 2's @tauri-apps/api/core invoke routes through
+    // __TAURI_INTERNALS__.invoke. The legacy __TAURI_INVOKE__ entry is
+    // kept for any code path that still references it.
+    ;(window as any).__TAURI_INTERNALS__ = { invoke: handleInvoke }
+    ;(window as any).__TAURI_INVOKE__ = handleInvoke
   })
 }
 
@@ -140,31 +155,8 @@ test.describe('Tunnel UI', () => {
   test('tunnel creation error is displayed in dialog', async ({ page, workspace }) => {
     // Override CreateTunnel to reject with an error.
     await page.evaluate(() => {
-      ;(window as any).__TAURI_INVOKE__ = (cmd: string) => {
-        if (cmd === 'create_tunnel')
-          return Promise.reject(new Error('bind 127.0.0.1:3000: address already in use'))
-        if (cmd === 'delete_tunnel')
-          return Promise.resolve()
-        if (cmd === 'list_tunnels')
-          return Promise.resolve([])
-        if (cmd === 'get_runtime_state') {
-          return Promise.resolve({
-            shellMode: 'distributed',
-            connected: true,
-            hubUrl: window.location.origin,
-            capabilities: {
-              mode: 'tauri-desktop-distributed',
-              hubTransport: 'direct',
-              tunnels: true,
-              appControl: true,
-              windowControl: true,
-              systemPermissions: true,
-              localSolo: false,
-            },
-          })
-        }
-        return Promise.reject(new Error(`unhandled Tauri invoke: ${cmd}`))
-      }
+      ;(window as any).__TUNNEL_MOCK_OVERRIDES__.create_tunnel = () =>
+        Promise.reject(new Error('bind 127.0.0.1:3000: address already in use'))
     })
 
     const { dialog } = await openAddTunnelDialog(page)

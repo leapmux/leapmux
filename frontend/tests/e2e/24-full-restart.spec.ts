@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, focusActiveTerminal, loginViaToken, waitForActiveTerminalText, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -139,18 +139,7 @@ test.describe('Full Hub+Worker Restart', () => {
     // Set the terminal title explicitly via an escape sequence.
     // This simulates what shells do automatically with precmd hooks.
     // Focus the terminal textarea and type the escape sequence.
-    await page.evaluate(() => {
-      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-      for (const container of containers) {
-        if (container.dataset.active === 'true') {
-          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (textarea) {
-            textarea.focus()
-            return
-          }
-        }
-      }
-    })
+    await focusActiveTerminal(page)
     await page.keyboard.type('printf "\\e]0;My Custom Title\\a"\n', { delay: 30 })
 
     // Wait for the title to update in the tab
@@ -191,38 +180,13 @@ test.describe('Full Hub+Worker Restart', () => {
     const terminalId = await terminalTab.getAttribute('data-tab-id')
     expect(terminalId).toBeTruthy()
 
-    await page.evaluate(() => {
-      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-      for (const container of containers) {
-        if (container.dataset.active === 'true') {
-          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (textarea) {
-            textarea.focus()
-            return
-          }
-        }
-      }
-    })
+    await focusActiveTerminal(page)
     await page.keyboard.type('printf "\\e]0;Recovered Title\\a"\n', { delay: 30 })
     await expect(terminalTab).toContainText('Recovered Title')
 
-    await page.evaluate(() => {
-      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-      for (const container of containers) {
-        if (container.dataset.active === 'true') {
-          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (textarea) {
-            textarea.focus()
-            return
-          }
-        }
-      }
-    })
+    await focusActiveTerminal(page)
     await page.keyboard.type('echo EXITEDRESTORE\n', { delay: 30 })
-    await page.waitForFunction(() => {
-      return typeof (window as any).__getActiveTerminalText === 'function'
-        && ((window as any).__getActiveTerminalText() as string).includes('EXITEDRESTORE')
-    })
+    await waitForActiveTerminalText(page, 'EXITEDRESTORE')
 
     await page.keyboard.press('Control+D')
     await page.waitForTimeout(2000)
@@ -241,10 +205,7 @@ test.describe('Full Hub+Worker Restart', () => {
 
     const restoredTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
     await expect(restoredTab).toContainText('Recovered Title')
-    await page.waitForFunction(() => {
-      return typeof (window as any).__getActiveTerminalText === 'function'
-        && ((window as any).__getActiveTerminalText() as string).includes('EXITEDRESTORE')
-    })
+    await waitForActiveTerminalText(page, 'EXITEDRESTORE')
 
     const restoredLeaf = page.locator(`[data-testid="tab-tree-leaf"][data-tab-id="${terminalId}"]`)
     await expect(restoredLeaf).toContainText('Recovered Title')

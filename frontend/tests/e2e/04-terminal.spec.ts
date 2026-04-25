@@ -1,58 +1,12 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { waitForLayoutSave } from './helpers/ui'
-
-/** Read terminal text content from the active xterm's buffer (WebGL renderer makes DOM rows empty). */
-async function getTerminalText(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    // Use xterm buffer API exposed by TerminalView component
-    if (typeof (window as any).__getActiveTerminalText === 'function') {
-      return (window as any).__getActiveTerminalText() as string
-    }
-    // Fallback: DOM-based reading
-    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-    for (const container of containers) {
-      if (container.dataset.active === 'true') {
-        const rows = container.querySelector('.xterm-rows')
-        if (rows)
-          return rows.textContent ?? ''
-      }
-    }
-    return document.querySelector('.xterm-rows')?.textContent ?? ''
-  })
-}
-
-/** Wait until terminal text contains the expected string. */
-async function waitForTerminalText(page: Page, text: string, timeout?: number) {
-  await expect(async () => {
-    const content = await getTerminalText(page)
-    expect(content).toContain(text)
-  }).toPass(timeout != null ? { timeout } : undefined)
-}
-
-/** Type a command into the active terminal and press Enter. */
-async function typeInTerminal(page: Page, command: string) {
-  // Focus the textarea inside the visible (active) terminal container
-  await page.evaluate(() => {
-    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-    for (const container of containers) {
-      if (container.dataset.active === 'true') {
-        const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-        if (textarea) {
-          textarea.focus()
-          return
-        }
-      }
-    }
-  })
-  await page.keyboard.type(command, { delay: 30 })
-  await page.keyboard.press('Enter')
-}
-
-/** Open a new terminal via the dedicated terminal button in the tab bar. */
-async function openTerminalViaUI(page: Page) {
-  await page.locator('[data-testid="new-terminal-button"]').click()
-}
+import {
+  focusActiveTerminal,
+  getActiveTerminalText,
+  openTerminalViaUI,
+  typeInActiveTerminal,
+  waitForActiveTerminalText,
+  waitForLayoutSave,
+} from './helpers/ui'
 
 test.describe('Terminal', () => {
   test('should open a terminal and render xterm', async ({ page, authenticatedWorkspace }) => {
@@ -71,29 +25,27 @@ test.describe('Terminal', () => {
     await openTerminalViaUI(page)
     await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
     await expect(page.locator('.xterm')).toBeVisible()
-    await typeInTerminal(page, 'echo TERM1MARKER')
-    await waitForTerminalText(page, 'TERM1MARKER')
+    await typeInActiveTerminal(page, 'echo TERM1MARKER')
+    await waitForActiveTerminalText(page, 'TERM1MARKER')
 
     // Open terminal 2 and type a marker
     await openTerminalViaUI(page)
     // Wait for the second terminal tab to appear
     await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]').nth(1)).toBeVisible()
-    // Wait for the new terminal to render
-    await page.waitForTimeout(500)
-    await typeInTerminal(page, 'echo TERM2MARKER')
-    await waitForTerminalText(page, 'TERM2MARKER')
+    await typeInActiveTerminal(page, 'echo TERM2MARKER')
+    await waitForActiveTerminalText(page, 'TERM2MARKER')
 
     // Switch back to terminal 1 tab (first terminal tab) using data-testid
     await page.locator('[data-testid="tab"][data-tab-type="terminal"]').first().click()
     await page.waitForTimeout(1000)
 
     // Terminal 1 content should be visible -- read from the active container
-    await waitForTerminalText(page, 'TERM1MARKER', 30_000)
+    await waitForActiveTerminalText(page, 'TERM1MARKER', 30_000)
 
     // Switch back to terminal 2 tab (second terminal tab)
     await page.locator('[data-testid="tab"][data-tab-type="terminal"]').nth(1).click()
     await page.waitForTimeout(1000)
-    await waitForTerminalText(page, 'TERM2MARKER', 30_000)
+    await waitForActiveTerminalText(page, 'TERM2MARKER', 30_000)
   })
 
   test('should keep xterm in alt-screen after page refresh once the ring has wrapped', async ({ page, authenticatedWorkspace }) => {
@@ -112,8 +64,8 @@ test.describe('Terminal', () => {
     // Toggle alt-screen, paint a sentinel, then push ~150 KB of
     // filler. `yes ... | head -c N` is portable across macOS and Linux
     // and emits printable bytes (no null pollution in xterm).
-    await typeInTerminal(page, 'printf \'\\033[?1049h\'; yes leapmux-altscreen-filler | head -c 150000; printf \'DONE_FILLING\\n\'')
-    await waitForTerminalText(page, 'DONE_FILLING', 30_000)
+    await typeInActiveTerminal(page, 'printf \'\\033[?1049h\'; yes leapmux-altscreen-filler | head -c 150000; printf \'DONE_FILLING\\n\'')
+    await waitForActiveTerminalText(page, 'DONE_FILLING', 30_000)
 
     const getBufferType = () =>
       page.evaluate(() => (window as any).__getActiveTerminalBufferType?.() ?? 'normal')
@@ -149,8 +101,8 @@ test.describe('Terminal', () => {
     await saved
 
     // Type a marker and wait for it to appear
-    await typeInTerminal(page, 'echo SCREENRESTORE')
-    await waitForTerminalText(page, 'SCREENRESTORE')
+    await typeInActiveTerminal(page, 'echo SCREENRESTORE')
+    await waitForActiveTerminalText(page, 'SCREENRESTORE')
 
     // Refresh the page
     await page.reload()
@@ -164,7 +116,7 @@ test.describe('Terminal', () => {
     await expect(page.locator('.xterm')).toBeVisible()
 
     // Verify screen content was restored
-    await waitForTerminalText(page, 'SCREENRESTORE')
+    await waitForActiveTerminalText(page, 'SCREENRESTORE')
   })
 
   test('should terminate shell in worker when terminal tab is closed', async ({ page, authenticatedWorkspace }) => {
@@ -192,7 +144,7 @@ test.describe('Terminal', () => {
     await expect(page.locator('.xterm')).toBeVisible()
 
     // Type "exit" to terminate the shell
-    await typeInTerminal(page, 'exit')
+    await typeInActiveTerminal(page, 'exit')
 
     // Wait a moment for the exit notification to arrive
     await page.waitForTimeout(2000)
@@ -205,22 +157,11 @@ test.describe('Terminal', () => {
 
     // Verify the terminal no longer accepts input: type something and
     // confirm it does NOT appear in the terminal output
-    await page.evaluate(() => {
-      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-      for (const container of containers) {
-        if (container.dataset.active === 'true') {
-          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (textarea) {
-            textarea.focus()
-            return
-          }
-        }
-      }
-    })
+    await focusActiveTerminal(page)
     await page.keyboard.type('echo SHOULD_NOT_APPEAR', { delay: 100 })
     await page.keyboard.press('Enter')
     await page.waitForTimeout(1000)
-    const textAfter = await getTerminalText(page)
+    const textAfter = await getActiveTerminalText(page)
     expect(textAfter).not.toContain('SHOULD_NOT_APPEAR')
 
     // Closing the tab manually should work.

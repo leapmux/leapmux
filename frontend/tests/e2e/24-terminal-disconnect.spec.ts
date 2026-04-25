@@ -1,25 +1,6 @@
-import type { Page } from '@playwright/test'
 import { authedHeaders, createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
+import { getActiveTerminalText, loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 import { ensureWorkerOnline, expect, stopWorker, processTest as test } from './process-control-fixtures'
-
-/** Read terminal text content from the active xterm's buffer. */
-async function getTerminalText(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    if (typeof (window as any).__getActiveTerminalText === 'function') {
-      return (window as any).__getActiveTerminalText() as string
-    }
-    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-    for (const container of containers) {
-      if (container.dataset.active === 'true') {
-        const rows = container.querySelector('.xterm-rows')
-        if (rows)
-          return rows.textContent ?? ''
-      }
-    }
-    return document.querySelector('.xterm-rows')?.textContent ?? ''
-  })
-}
 
 test.describe('Terminal Disconnection', () => {
   test('should mark terminal as disconnected when worker stops', async ({ separateHubWorker, page }) => {
@@ -59,7 +40,7 @@ test.describe('Terminal Disconnection', () => {
 
       // Wait for the disconnection message to appear in xterm buffer.
       await expect(async () => {
-        const text = await getTerminalText(page)
+        const text = await getActiveTerminalText(page)
         expect(text).toContain('Connection to the terminal was lost')
       }).toPass()
     }

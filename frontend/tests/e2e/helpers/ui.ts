@@ -208,6 +208,70 @@ export async function openTerminalViaUI(page: Page) {
 }
 
 /**
+ * Read text content from the active xterm's buffer.
+ * Falls back to DOM scraping when the buffer accessor is unavailable
+ * (the WebGL renderer leaves `.xterm-rows` empty in normal operation).
+ */
+export async function getActiveTerminalText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    if (typeof (window as any).__getActiveTerminalText === 'function') {
+      return (window as any).__getActiveTerminalText() as string
+    }
+    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
+    for (const container of containers) {
+      if (container.dataset.active === 'true') {
+        const rows = container.querySelector('.xterm-rows')
+        if (rows)
+          return rows.textContent ?? ''
+      }
+    }
+    return document.querySelector('.xterm-rows')?.textContent ?? ''
+  })
+}
+
+/** Wait until the active terminal's text contains `needle`. */
+export async function waitForActiveTerminalText(page: Page, needle: string, timeout?: number) {
+  await expect(async () => {
+    expect(await getActiveTerminalText(page)).toContain(needle)
+  }).toPass(timeout != null ? { timeout } : undefined)
+}
+
+/** Focus the helper textarea inside the active terminal container. */
+export async function focusActiveTerminal(page: Page) {
+  await page.evaluate(() => {
+    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
+    for (const container of containers) {
+      if (container.dataset.active === 'true') {
+        const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
+        if (textarea) {
+          textarea.focus()
+          return
+        }
+      }
+    }
+  })
+}
+
+/**
+ * Type a command into the active terminal and press Enter.
+ *
+ * Waits for the shell to print its first prompt before typing. Without
+ * this gate, fast-typed keystrokes can race the worker's PTY startup
+ * and either be queued by useTerminalOperations or — historically —
+ * dropped silently. Polling for non-empty terminal text is a reliable
+ * proxy for "the PTY is alive and the prompt has been painted", which
+ * is well after the READY status broadcast.
+ */
+export async function typeInActiveTerminal(page: Page, command: string) {
+  await expect(async () => {
+    expect((await getActiveTerminalText(page)).trim().length).toBeGreaterThan(0)
+  }).toPass({ timeout: 30_000 })
+  await focusActiveTerminal(page)
+  await page.keyboard.type(command, { delay: 30 })
+  await page.keyboard.press('Enter')
+}
+
+/**
  * Sign up a new user via the signup form.
  */
 export async function signUpViaUI(page: Page, username: string, password: string, displayName = '', email = '') {
