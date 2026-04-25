@@ -17,14 +17,18 @@
 // All trademarks remain the property of their respective owners. The marks
 // are reproduced here in a nominative-fair-use capacity to identify the
 // editor a user is launching.
-import type { JSX } from 'solid-js'
-import { createUniqueId, For, Match, Switch } from 'solid-js'
+import type { Component, JSX } from 'solid-js'
+import type { EditorId } from '~/lib/externalEditors'
+import { createUniqueId, For } from 'solid-js'
+import { Dynamic } from 'solid-js/web'
 
 interface EditorIconProps {
-  id: string
+  id?: string
   size?: number
   class?: string
 }
+
+type IconComponent = Component<{ size: number, class?: string }>
 
 function iconStyle(size: number): JSX.CSSProperties {
   return {
@@ -579,33 +583,42 @@ function GenericEditorIcon(props: { size: number, class?: string }): JSX.Element
   )
 }
 
+// Bind each JBIcon variant to its spec so all entries share the same
+// `(size, class) => JSX` signature.
+const jb = (spec: JBSpec): IconComponent => p => <JBIcon size={p.size} class={p.class} spec={spec} />
+
+// `satisfies Record<EditorId, IconComponent>` enforces at compile time that
+// every supported editor has an icon — adding an id to SUPPORTED_EDITOR_IDS
+// without an entry here is a type error.
+const EDITOR_ICONS = {
+  'vscode': VSCodeIcon,
+  'vscode-insiders': VSCodeInsidersIcon,
+  'vscodium': VSCodiumIcon,
+  'cursor': CursorIcon,
+  'windsurf': WindsurfIcon,
+  'sublime-text': SublimeTextIcon,
+  'zed': ZedIcon,
+  'intellij-idea-ultimate': jb(SPEC_INTELLIJ_IDEA),
+  'intellij-idea-community': jb(SPEC_INTELLIJ_IDEA_CE),
+  'webstorm': jb(SPEC_WEBSTORM),
+  'goland': jb(SPEC_GOLAND),
+  'rustrover': jb(SPEC_RUSTROVER),
+  'pycharm-professional': jb(SPEC_PYCHARM),
+  'pycharm-community': jb(SPEC_PYCHARM_CE),
+  'phpstorm': jb(SPEC_PHPSTORM),
+  'rubymine': jb(SPEC_RUBYMINE),
+  'clion': jb(SPEC_CLION),
+  'rider': jb(SPEC_RIDER),
+  'datagrip': jb(SPEC_DATAGRIP),
+  'android-studio': AndroidStudioIcon,
+  'fleet': FleetIcon,
+  'xcode': XcodeIcon,
+  'notepad-plus-plus': NotepadPlusPlusIcon,
+} satisfies Record<EditorId, IconComponent>
+
 export function EditorIcon(props: EditorIconProps): JSX.Element {
   const size = () => props.size ?? 16
-  return (
-    <Switch fallback={<GenericEditorIcon size={size()} class={props.class} />}>
-      <Match when={props.id === 'vscode'}><VSCodeIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'vscode-insiders'}><VSCodeInsidersIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'vscodium'}><VSCodiumIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'cursor'}><CursorIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'windsurf'}><WindsurfIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'sublime-text'}><SublimeTextIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'zed'}><ZedIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'intellij-idea-ultimate'}><JBIcon size={size()} class={props.class} spec={SPEC_INTELLIJ_IDEA} /></Match>
-      <Match when={props.id === 'intellij-idea-community'}><JBIcon size={size()} class={props.class} spec={SPEC_INTELLIJ_IDEA_CE} /></Match>
-      <Match when={props.id === 'webstorm'}><JBIcon size={size()} class={props.class} spec={SPEC_WEBSTORM} /></Match>
-      <Match when={props.id === 'goland'}><JBIcon size={size()} class={props.class} spec={SPEC_GOLAND} /></Match>
-      <Match when={props.id === 'rustrover'}><JBIcon size={size()} class={props.class} spec={SPEC_RUSTROVER} /></Match>
-      <Match when={props.id === 'pycharm-professional'}><JBIcon size={size()} class={props.class} spec={SPEC_PYCHARM} /></Match>
-      <Match when={props.id === 'pycharm-community'}><JBIcon size={size()} class={props.class} spec={SPEC_PYCHARM_CE} /></Match>
-      <Match when={props.id === 'phpstorm'}><JBIcon size={size()} class={props.class} spec={SPEC_PHPSTORM} /></Match>
-      <Match when={props.id === 'rubymine'}><JBIcon size={size()} class={props.class} spec={SPEC_RUBYMINE} /></Match>
-      <Match when={props.id === 'clion'}><JBIcon size={size()} class={props.class} spec={SPEC_CLION} /></Match>
-      <Match when={props.id === 'rider'}><JBIcon size={size()} class={props.class} spec={SPEC_RIDER} /></Match>
-      <Match when={props.id === 'datagrip'}><JBIcon size={size()} class={props.class} spec={SPEC_DATAGRIP} /></Match>
-      <Match when={props.id === 'android-studio'}><AndroidStudioIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'fleet'}><FleetIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'xcode'}><XcodeIcon size={size()} class={props.class} /></Match>
-      <Match when={props.id === 'notepad-plus-plus'}><NotepadPlusPlusIcon size={size()} class={props.class} /></Match>
-    </Switch>
-  )
+  const component = (): IconComponent =>
+    (props.id && EDITOR_ICONS[props.id as EditorId]) || GenericEditorIcon
+  return <Dynamic component={component()} size={size()} class={props.class} />
 }

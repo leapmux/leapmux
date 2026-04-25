@@ -2,6 +2,7 @@ import type { DetectedEditor } from '~/api/platformBridge'
 import { platformBridge } from '~/api/platformBridge'
 import { KEY_PREFERRED_EDITOR, safeGetJson, safeSetJson } from './browserStorage'
 import { createIdentityCache } from './identityCache'
+import { createInflightCache } from './inflightCache'
 
 /** Stable IDs the frontend has icons / display logic for. Must match Go-side spec table. */
 export const SUPPORTED_EDITOR_IDS = [
@@ -33,7 +34,7 @@ export const SUPPORTED_EDITOR_IDS = [
 export type EditorId = typeof SUPPORTED_EDITOR_IDS[number]
 
 let cached: DetectedEditor[] | null = null
-let pending: Promise<DetectedEditor[]> | null = null
+const inflight = createInflightCache<'editors', DetectedEditor[]>()
 
 // Reuse the previously-seen object reference for any editor whose id +
 // displayName are unchanged. Solid's `<For>` then only unmounts editors
@@ -56,28 +57,21 @@ const editorIdentity = createIdentityCache<DetectedEditor>({
 export async function loadDetectedEditors(refresh = false): Promise<DetectedEditor[]> {
   if (refresh) {
     cached = null
-    pending = null
+    inflight.clear()
   }
   if (cached !== null)
     return cached
-  if (pending !== null)
-    return pending
-  pending = platformBridge.listEditors(refresh).then((list) => {
+  return inflight.run('editors', async () => {
+    const list = await platformBridge.listEditors(refresh)
     cached = editorIdentity.stabilize(list)
-    pending = null
     return cached
-  }).catch((err) => {
-    // Reset so a later caller can retry; surface the error to the awaiter.
-    pending = null
-    throw err
   })
-  return pending
 }
 
 /** Reset the in-memory cache. Test-only helper; not exported via barrel. */
 export function _resetEditorCacheForTests(): void {
   cached = null
-  pending = null
+  inflight.clear()
   editorIdentity.clear()
 }
 

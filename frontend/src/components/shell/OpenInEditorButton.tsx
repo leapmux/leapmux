@@ -20,6 +20,10 @@ import * as styles from './OpenInEditorButton.css'
 
 const log = createLogger('open-in-editor')
 
+// Hoisted: Intl.Collator construction is non-trivial; reusing one across
+// every refresh keeps the sortedEditors memo cheap.
+const editorCollator = new Intl.Collator(undefined, { sensitivity: 'base' })
+
 interface OpenInEditorButtonProps {
   /** Active tab's working directory, reactively read. */
   workingDir: () => string | undefined
@@ -62,8 +66,7 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
   // re-sort on every render.
   const sortedEditors = createMemo<DetectedEditor[]>(() => {
     const list = editors().slice()
-    const collator = new Intl.Collator(undefined, { sensitivity: 'base' })
-    list.sort((a, b) => collator.compare(a.displayName, b.displayName))
+    list.sort((a, b) => editorCollator.compare(a.displayName, b.displayName))
     return list
   })
 
@@ -238,7 +241,7 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
               when={preferredEditor()}
               fallback={(
                 <>
-                  <EditorIcon id="" size={14} />
+                  <EditorIcon size={14} />
                   <span>Open in …</span>
                 </>
               )}
