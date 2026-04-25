@@ -51,6 +51,12 @@ jobs:
           EOF
 
       - name: Install Tauri system dependencies
+        # GStreamer dev + runtime plugins are required for AppImages built
+        # with `bundle.linux.appimage.bundleMediaFramework: true`. Without
+        # them the AppImage launches to a blank window and logs
+        # "GStreamer element autoaudiosink not found".
+        # See https://github.com/tauri-apps/tauri/issues/4642 and
+        # https://gstreamer.freedesktop.org/documentation/installing/on-linux.html.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -61,7 +67,21 @@ jobs:
             libssl-dev \
             libsoup-3.0-dev \
             protobuf-compiler \
-            xdg-utils
+            xdg-utils \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav \
+            gstreamer1.0-tools \
+            gstreamer1.0-x \
+            gstreamer1.0-alsa \
+            gstreamer1.0-gl \
+            gstreamer1.0-gtk3 \
+            gstreamer1.0-pulseaudio
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

@@ -280,10 +280,12 @@ Install the remaining dependencies from the [AUR](https://wiki.archlinux.org/tit
 yay -S mprocs-bin
 ```
 
-For desktop app builds, install the [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux):
+For desktop app builds, install the [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux) plus GStreamer (bundled into the AppImage by `bundleMediaFramework`):
 
 ```bash
-sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg patchelf
+sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg patchelf \
+  gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad \
+  gst-plugins-ugly gst-libav
 ```
 
 ### Windows
@@ -410,7 +412,7 @@ task lint-fix-desktop    # Fix desktop Go code + Tauri Rust code (clippy --fix)
 
 Desktop builds use [Tauri v2](https://v2.tauri.app/start/prerequisites/):
 - macOS: Xcode Command Line Tools, Rust, WebKit (system)
-- Linux: Rust plus the WebKitGTK/Tauri native dependencies for your distro (see [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux))
+- Linux: Rust plus the WebKitGTK/Tauri native dependencies for your distro (see [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux)) and GStreamer (see the Arch Linux section above)
 - Windows: Rust MSVC toolchain plus WebView2
 
 ### Code Generation

@@ -8,6 +8,9 @@
       "../go/bin/leapmux-desktop-service-*-unknown-linux-gnu": ""
     },
     "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
       "deb": {
         "desktopTemplate": "desktop-template.desktop"
       }
