@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { assistantBubbles, firstAssistantBubble } from './helpers/ui'
+import { assistantBubbles, firstAssistantBubble, waitForAgentIdle } from './helpers/ui'
 
 async function sendAndWaitForReply(page: Page, message: string) {
   const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
@@ -9,8 +9,12 @@ async function sendAndWaitForReply(page: Page, message: string) {
   await page.keyboard.type(message)
   await page.keyboard.press('Meta+Enter')
 
-  // Wait for at least one assistant bubble to appear
+  // Wait for the turn to fully settle before asserting on bubbles. Tests
+  // that hover over earlier messages otherwise race the streaming
+  // auto-scroll, which slides the user bubble out from under the cursor
+  // mid-transition and looks like a flaky :hover drop.
   await expect(firstAssistantBubble(page)).toBeVisible()
+  await waitForAgentIdle(page)
 }
 
 test.describe('Chat Message Rendering', () => {

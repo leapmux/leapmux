@@ -299,7 +299,9 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// UpdateTerminalTitle updates a terminal's title in both the in-memory
-	// manager and the database. The frontend debounces calls at 10s intervals.
+	// manager and the database. The frontend throttles calls at 500ms
+	// intervals (kept short so a title set right before shell exit reaches
+	// the worker before the close handler persists meta to DB).
 	d.Register("UpdateTerminalTitle", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.UpdateTerminalTitleRequest
 		if err := unmarshalRequest(req, &r); err != nil {

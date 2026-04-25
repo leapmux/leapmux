@@ -12,7 +12,7 @@ test.describe('Worker Management', () => {
       await workersSection.locator('> [role="button"]').click()
 
     // Should contain the worker named "Local" (dev mode sets LEAPMUX_WORKER_NAME=Local)
-    await expect(workersSection.getByText('Local')).toBeVisible()
+    await expect(workersSection.getByTestId('worker-name').filter({ hasText: 'Local' })).toBeVisible()
   })
 
   test('should show green status dot for online worker', async ({ page, authenticatedWorkspace }) => {

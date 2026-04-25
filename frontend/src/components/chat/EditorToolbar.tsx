@@ -477,6 +477,7 @@ export const EditorToolbar: Component<EditorToolbarProps> = (props) => {
           <button
             type="button"
             class="ghost small"
+            data-testid="enter-mode-toggle"
             onClick={() => {
               props.toggleEnterMode()
               props.setEnterTooltipOpen(true)

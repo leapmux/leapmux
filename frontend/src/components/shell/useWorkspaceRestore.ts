@@ -416,14 +416,17 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     if (!activeId)
       return
 
-    // A tab needs hydration when its worker-side data hasn't been fetched
-    // yet (status undefined) or when it was marked disconnected after a
-    // temporary worker outage.
+    // A tab needs hydration when its worker-side data is missing: status
+    // undefined, marked DISCONNECTED after a worker outage, or a status
+    // event arrived without the accompanying ListTerminals payload.
+    // `cols` is the discriminator (not `title`) because shells that
+    // don't emit OSC titles would otherwise loop forever.
     const missingByWorker = new Map<string, string[]>()
     for (const tab of tabStore.state.tabs) {
       if (tab.type !== TabType.TERMINAL || !tab.workerId)
         continue
-      if (tab.status !== undefined && tab.status !== TerminalStatus.DISCONNECTED)
+      const hasWorkerSideData = tab.cols !== undefined
+      if (tab.status !== undefined && tab.status !== TerminalStatus.DISCONNECTED && hasWorkerSideData)
         continue
       const ids = missingByWorker.get(tab.workerId) ?? []
       ids.push(tab.id)

@@ -1015,7 +1015,7 @@ test.describe('Enter Sends Message', () => {
 
   test('Enter sends message after toggling to Enter mode', async ({ page, authenticatedWorkspace }) => {
     // Toggle from default Cmd+Enter mode to Enter-sends mode
-    await page.locator('button:has-text("Enter sends")').click()
+    await page.getByTestId('enter-mode-toggle').click()
 
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
@@ -1038,8 +1038,8 @@ test.describe('Enter Sends Message', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // The toggle button always contains "Enter sends" text in both modes
-    const enterModeBtn = page.locator('button:has-text("Enter sends")')
+    // The toggle button label flips between modes ("Ctrl+⏎ sends" ↔ "Enter sends")
+    const enterModeBtn = page.getByTestId('enter-mode-toggle')
     await expect(enterModeBtn).toBeVisible()
 
     // Click to toggle from default Cmd+Enter mode to Enter-sends mode
@@ -1055,7 +1055,7 @@ test.describe('Enter Sends Message', () => {
     expect(textAfterFirstSend?.trim()).toBe('')
 
     // Click the same button again to toggle back to Cmd+Enter mode
-    await page.locator('button:has-text("Enter sends")').click()
+    await page.getByTestId('enter-mode-toggle').click()
 
     // Type text and verify Enter creates a newline (doesn't send)
     await editor.click()
