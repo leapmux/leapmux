@@ -96,6 +96,47 @@ test.describe('Terminal', () => {
     await waitForTerminalText(page, 'TERM2MARKER', 30_000)
   })
 
+  test('should keep xterm in alt-screen after page refresh once the ring has wrapped', async ({ page, authenticatedWorkspace }) => {
+    // Reproduces the rendering bug the modeTracker fix exists for:
+    // toggling alt-screen, then emitting >100 KB of output so the
+    // toggle falls out of the worker's retained ring, then refreshing
+    // the page. The frontend hydrates xterm via terminal.reset() +
+    // write(snapshot). Without the tracker prefix, xterm comes up in
+    // main screen and renders the alt-screen body bytes as garbage.
+
+    const saved = waitForLayoutSave(page)
+    await openTerminalViaUI(page)
+    await expect(page.locator('.xterm')).toBeVisible()
+    await saved
+
+    // Toggle alt-screen, paint a sentinel, then push ~150 KB of
+    // filler. `yes ... | head -c N` is portable across macOS and Linux
+    // and emits printable bytes (no null pollution in xterm).
+    await typeInTerminal(page, 'printf \'\\033[?1049h\'; yes leapmux-altscreen-filler | head -c 150000; printf \'DONE_FILLING\\n\'')
+    await waitForTerminalText(page, 'DONE_FILLING', 30_000)
+
+    const getBufferType = () =>
+      page.evaluate(() => (window as any).__getActiveTerminalBufferType?.() ?? 'normal')
+
+    // Sanity: the terminal is currently in alt screen. If this fails,
+    // the test setup is wrong and the post-refresh assertion below
+    // would be meaningless.
+    expect(await getBufferType()).toBe('alternate')
+
+    await page.reload()
+    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
+    await page.locator('[data-testid="tab"][data-tab-type="terminal"]').click()
+    await expect(page.locator('.xterm')).toBeVisible()
+
+    // The sentinel itself is gone — it fell out of the ring along with
+    // the alt-screen toggle. What we CAN verify is the buffer type:
+    // the tracker's snapshotPrefix must have set xterm back into
+    // alt-screen mode before replay.
+    await expect(async () => {
+      expect(await getBufferType()).toBe('alternate')
+    }).toPass({ timeout: 30_000 })
+  })
+
   test('should restore terminal screen content after page refresh', async ({ page, authenticatedWorkspace }) => {
     // Start listening for the layout save before opening the terminal
     const saved = waitForLayoutSave(page)

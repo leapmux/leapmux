@@ -22,25 +22,30 @@ const screenBufferSize = 100 * 1024 // 100KB ring buffer for screen restore
 // It also tracks a cumulative byte counter so callers can resume from a
 // known offset instead of re-reading the full buffer on every subscribe.
 //
-// Retention limit: the ring holds the most recent screenBufferSize bytes
-// of PTY output. Any terminal state established by escape sequences
-// emitted before that window — alt-screen toggles, cursor-visibility
-// changes, scrolling regions, character-set designations, SGR colors,
-// saved cursor position, cell content positioned by earlier writes — is
-// unrecoverable by byte-stream replay alone. A subscriber whose
-// after_offset has fallen out of the window receives a full snapshot
-// that reproduces the retained bytes correctly, but a TUI running
-// *before* that window (vim in alt screen, say) may render with missing
-// cells or misaligned cursor until the program repaints. This is the
-// ceiling of any byte-replay approach; reconstructing state beyond the
-// ring requires a parsed cell grid (tmux-style terminal emulation),
-// which is deliberately out of scope for this worker.
+// Snapshot replies (the bytes a fallen-behind or page-refreshing
+// subscriber needs to reset its xterm and replay) are prefixed with the
+// output of an internal modeTracker that observes a small set of sticky
+// xterm modes — alt-screen toggle, cursor visibility, autowrap, app
+// cursor keys, bracketed paste, mouse tracking/encoding, window title.
+// Programs that entered alt screen well before the retained window
+// still render correctly after a reconnect because the prefix
+// re-establishes the mode before the body bytes replay.
+//
+// What's still out of reach by byte-replay alone (and why the tracker
+// stops where it does): SGR colors / bold / italic, scrolling regions
+// (DECSTBM), saved cursor (DECSC/DECRC), character-set designations,
+// origin mode (DECOM), and the cell content of bytes that fell out of
+// the retained window. SGR self-heals on the next color change. The
+// cell content beyond the ring is irrecoverable in any byte-replay
+// design — only a parsed cell grid (tmux-style emulation) can
+// reconstruct it, which is deliberately out of scope.
 type ScreenBuffer struct {
-	mu    sync.Mutex
-	buf   []byte
-	pos   int
-	full  bool
-	total int64 // Total bytes ever written (monotonic within a PTY session).
+	mu      sync.Mutex
+	buf     []byte
+	pos     int
+	full    bool
+	total   int64 // Total bytes ever written (monotonic within a PTY session).
+	tracker modeTracker
 }
 
 // NewScreenBuffer creates a new screen buffer.
@@ -55,6 +60,12 @@ func (sb *ScreenBuffer) Write(data []byte) int64 {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
+	// Observe the bytes for sticky-mode tracking before the ring copy.
+	// Order is irrelevant for correctness (feed is a pure function of
+	// data), but feeding first reads naturally and keeps the tracker
+	// state consistent with what a fresh xterm receiving these same
+	// bytes would hold.
+	sb.tracker.feed(data)
 	sb.total += int64(len(data))
 	// Writes larger than the ring would overwrite themselves; only the
 	// final len(buf) bytes can survive, so skip ahead to them.
@@ -85,12 +96,28 @@ func (sb *ScreenBuffer) TotalBytes() int64 {
 }
 
 // Snapshot returns a copy of every retained byte in chronological order
-// and the cumulative offset at the end of that copy. Convenience for
-// callers that want the full buffer regardless of the ring's base offset.
+// (prefixed with the mode tracker's snapshotPrefix so xterm reset+replay
+// still lands the program in the right mode), and the cumulative offset
+// at the end of the body bytes. The prefix is synthesized — it does NOT
+// count toward the offset.
 func (sb *ScreenBuffer) Snapshot() ([]byte, int64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	return sb.tailBytesLocked(sb.retainedLocked()), sb.total
+	body := sb.tailBytesLocked(sb.retainedLocked())
+	return prependPrefix(sb.tracker.snapshotPrefix(), body), sb.total
+}
+
+// prependPrefix concatenates prefix and body. Returns body unchanged
+// when prefix is nil so the common case (default tracker state) avoids
+// the extra alloc + copy.
+func prependPrefix(prefix, body []byte) []byte {
+	if len(prefix) == 0 {
+		return body
+	}
+	out := make([]byte, 0, len(prefix)+len(body))
+	out = append(out, prefix...)
+	out = append(out, body...)
+	return out
 }
 
 // HasSuffix reports whether the retained bytes end with needle. Used by
@@ -179,8 +206,11 @@ func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset
 
 	// Cold subscribe, negative offset, stale offset > total, or caller
 	// has fallen behind the retained window: send everything we have
-	// with the snapshot flag.
-	return sb.tailBytesLocked(sb.retainedLocked()), total, true
+	// with the snapshot flag, prefixed with the tracker's mode-restore
+	// bytes so a TUI in alt screen still renders correctly after the
+	// xterm reset+replay.
+	body := sb.tailBytesLocked(sb.retainedLocked())
+	return prependPrefix(sb.tracker.snapshotPrefix(), body), total, true
 }
 
 // OutputHandler is called for each chunk of output from the PTY. The

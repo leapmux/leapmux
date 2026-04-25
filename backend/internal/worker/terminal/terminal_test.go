@@ -403,6 +403,79 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 	assert.False(t, isSnap)
 }
 
+// TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind: the manager
+// wrapper must propagate the mode-restore prefix produced inside the
+// ScreenBuffer when a subscriber has fallen out of the retained ring.
+// Tests the seam between Manager and Terminal — easy to break by
+// swapping the ScreenSnapshotSince implementation.
+func TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind(t *testing.T) {
+	m := newTestManagerWithTerminal(t, Options{
+		ID:         "tm-prefix",
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
+	})
+	pushAltScreenPastRing(t, m, "tm-prefix")
+
+	data, _, isSnap := m.ScreenSnapshotSince("tm-prefix", 0)
+	require.True(t, isSnap, "fallen-behind subscriber must get a snapshot")
+	require.GreaterOrEqual(t, len(data), len("\x1b[?1049h"))
+	assert.Equal(t, []byte("\x1b[?1049h"), data[:len("\x1b[?1049h")],
+		"manager.ScreenSnapshotSince must propagate the alt-screen restore prefix")
+}
+
+// TestManager_ScreenSnapshot_PrefixesPersistedScreen: ScreenSnapshot is
+// the entry point for the DB-persistence and ListTerminals paths. The
+// prefix MUST appear here too, otherwise alt-screen state is lost
+// across worker restarts even when the bug-fix landed for resubscribe.
+func TestManager_ScreenSnapshot_PrefixesPersistedScreen(t *testing.T) {
+	m := newTestManagerWithTerminal(t, Options{
+		ID:          "tm-snapshot",
+		WorkspaceID: "ws-snapshot",
+		Shell:       testutil.TestShell(),
+		WorkingDir:  t.TempDir(),
+		Cols:        80,
+		Rows:        24,
+	})
+	pushAltScreenPastRing(t, m, "tm-snapshot")
+
+	snap, ok := m.SnapshotTerminal("tm-snapshot")
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(snap.Screen), len("\x1b[?1049h"))
+	assert.Equal(t, []byte("\x1b[?1049h"), snap.Screen[:len("\x1b[?1049h")],
+		"SnapshotTerminal must include the mode-restore prefix so DB-persisted screens survive worker restarts")
+}
+
+// newTestManagerWithTerminal starts a Manager + one terminal and wires
+// up the standard cleanup so callers don't repeat the StartTerminal +
+// t.Cleanup boilerplate. The Options are passed through verbatim (so
+// callers can vary WorkspaceID / Cols / Rows).
+func newTestManagerWithTerminal(t *testing.T, opts Options) *Manager {
+	t.Helper()
+	id := opts.ID
+	m := NewManager()
+	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64) {}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		m.StopTerminal(id)
+		testutil.AssertEventually(t, func() bool { return m.IsExited(id) }, "exit")
+		m.RemoveTerminal(id)
+	})
+	return m
+}
+
+// pushAltScreenPastRing injects the alt-screen toggle and then enough
+// filler bytes to overwrite the retained ring, so a subsequent snapshot
+// must reach for the modeTracker prefix to recover alt-screen state.
+// AppendOutput goes through the same Write path as live PTY output, so
+// the tracker observes the toggle exactly as it would in production.
+func pushAltScreenPastRing(t *testing.T, m *Manager, id string) {
+	t.Helper()
+	require.True(t, m.AppendOutput(id, []byte("\x1b[?1049h")))
+	require.True(t, m.AppendOutput(id, ringOverflowFiller()))
+}
+
 func TestManager_IsExited_UnknownTerminal(t *testing.T) {
 	m := NewManager()
 	assert.False(t, m.IsExited("nonexistent"), "expected IsExited = false for unknown terminal")

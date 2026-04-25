@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -133,6 +134,68 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 		"delta must contain the bytes the absent client missed")
 	assert.NotContains(t, string(delta.GetData()), string(firstMarker),
 		"delta must NOT re-send bytes the client already has")
+}
+
+// TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap: the bug this
+// whole feature exists to fix. A subscriber that joins (or rejoins)
+// after the ring has wrapped past an alt-screen toggle must receive a
+// snapshot whose first bytes re-establish alt screen. Without the
+// prefix, xterm.reset() drops to main screen and replays bytes that
+// assume alt screen — vim/less/htop render as garbage until the
+// program repaints.
+func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t, "ws-1")
+	startTestTerminal(t, svc, ctx, "t-altrecover", "ws-1")
+	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrecover")
+
+	w := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-altrecover", AfterOffset: 0}},
+	}, w)
+
+	var snap *leapmuxv1.TerminalData
+	testutil.AssertEventually(t, func() bool {
+		for _, data := range collectTerminalData(t, w, "t-altrecover") {
+			snap = data
+			return true
+		}
+		return false
+	}, "cold subscribe delivered the snapshot")
+	require.NotNil(t, snap)
+	require.True(t, snap.GetIsSnapshot(),
+		"fell-behind cold subscribe must be a snapshot so the frontend resets first")
+	assert.True(t, bytes.HasPrefix(snap.GetData(), []byte("\x1b[?1049h")),
+		"snapshot must lead with the alt-screen restore — without it, vim/less render garbage after the frontend's terminal.reset()")
+
+	// The tracker prefix is synthesized; it must NOT inflate end_offset
+	// beyond the actual byte counter the client uses to resume.
+	currentTotal := int64(len("\x1b[?1049h") + fillerLen)
+	assert.GreaterOrEqual(t, snap.GetEndOffset(), currentTotal,
+		"end_offset reflects total bytes written, not prefix length")
+}
+
+// injectAltScreenAndFlushPastRing writes the alt-screen toggle followed
+// by enough plain bytes to overwrite the retained ring, then waits for
+// the manager's offset to confirm the bytes have landed. Returns the
+// filler length so callers can compute the expected end_offset. Shared
+// by service-layer tests that assert the modeTracker prefix appears on
+// a snapshot taken AFTER the toggle has fallen out of the ring.
+func injectAltScreenAndFlushPastRing(t *testing.T, svc *Context, terminalID string) int {
+	t.Helper()
+	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte("\x1b[?1049h")))
+	// 110 KB > screenBufferSize (100 KB), so the toggle is guaranteed
+	// out of the ring after this single write completes.
+	filler := make([]byte, 110*1024)
+	for i := range filler {
+		filler[i] = 'a'
+	}
+	require.True(t, svc.Terminals.AppendOutput(terminalID, filler))
+	testutil.AssertEventually(t, func() bool {
+		_, off, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
+		return off >= int64(len(filler))
+	}, "alt-screen + filler arrived")
+	return len(filler)
 }
 
 // TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap: when the backend's
