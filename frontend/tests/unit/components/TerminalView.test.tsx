@@ -1,6 +1,7 @@
 import type { TerminalInstance } from '~/lib/terminal'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
+import { createStore } from 'solid-js/store'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -246,5 +247,112 @@ describe('terminalView', () => {
 
     pageScroll(-1)
     expect(instance.terminal.scrollPages).toHaveBeenCalledWith(-1)
+  })
+
+  // Regression: the saved screen snapshot can arrive *after* the
+  // TerminalContainer has mounted, e.g. when ListTerminals is queued
+  // behind a worker reconnect on a full-restart restore. The component
+  // must apply the snapshot reactively when `screen` becomes non-empty,
+  // not just inside onMount, or the restored xterm stays blank.
+  //
+  // Uses a Solid store (mirroring tabStore.updateTab in production) so
+  // the terminal object reference stays stable across the screen update
+  // — `<For>` would otherwise unmount + remount on a replaced array
+  // entry and re-trigger onMount, masking the regression.
+  it('applies the screen snapshot when it becomes available after mount', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+
+    const initialPayload = new TextEncoder().encode('restored screen')
+    const [terminals, setTerminals] = createStore<Array<{
+      id: string
+      workspaceId: string
+      screen?: Uint8Array
+    }>>([{
+      id: 'term-late-screen',
+      workspaceId: 'ws-1',
+      // screen is undefined initially — ListTerminals hasn't returned yet.
+      screen: undefined,
+    }])
+
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={terminals}
+          activeTerminalId="term-late-screen"
+          visible
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    // Mount happens with an undefined screen — nothing is written yet.
+    await waitFor(() => {
+      expect(instance.terminal.open).toHaveBeenCalled()
+    })
+    expect(instance.terminal.write).not.toHaveBeenCalled()
+
+    // ListTerminals returns later. tabStore.updateTab mutates the existing
+    // tab's screen field in place — the For loop does NOT re-mount.
+    setTerminals(0, 'screen', initialPayload)
+
+    await waitFor(() => {
+      expect(instance.terminal.write).toHaveBeenCalled()
+    })
+    // The first write should carry the restored payload bytes.
+    const writtenArg = (instance.terminal.write as any).mock.calls[0][0]
+    expect(writtenArg).toBe(initialPayload)
+  })
+
+  // Counterpart: re-applying the snapshot every time props change would
+  // double-paint the restored state on top of any subsequent live data.
+  // The instance-level latch must keep the post-mount effect a one-shot.
+  it('does not re-apply the snapshot when an unrelated prop changes', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+
+    const screen = new TextEncoder().encode('once')
+    const [terminals, setTerminals] = createStore<Array<{
+      id: string
+      workspaceId: string
+      screen: Uint8Array
+      title?: string
+    }>>([{
+      id: 'term-no-double-write',
+      workspaceId: 'ws-1',
+      screen,
+      title: 'Initial',
+    }])
+
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={terminals}
+          activeTerminalId="term-no-double-write"
+          visible
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => {
+      expect(instance.terminal.write).toHaveBeenCalledTimes(1)
+    })
+
+    // Bump an unrelated field — screen reference is unchanged.
+    setTerminals(0, 'title', 'Updated')
+
+    // Flush any pending reactive re-runs (microtask + animation frame).
+    await Promise.resolve()
+    await new Promise(r => requestAnimationFrame(() => r(undefined)))
+    expect(instance.terminal.write).toHaveBeenCalledTimes(1)
   })
 })

@@ -73,6 +73,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
               <>
                 <div
                   class={listStyles.item}
+                  data-testid="worker-row"
                   onClick={() => toggleExpanded(worker.id)}
                 >
                   <ChevronRight
@@ -80,7 +81,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                     class={`${shared.chevron} ${isExpanded(worker.id) ? shared.chevronExpanded : ''}`}
                   />
                   <Tooltip text={workerName()} showWhen="clipped">
-                    <span class={listStyles.itemTitle}>
+                    <span class={listStyles.itemTitle} data-testid="worker-name">
                       {workerName()}
                     </span>
                   </Tooltip>

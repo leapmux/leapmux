@@ -130,21 +130,34 @@ const TerminalContainer: Component<{
     // the tab store) rather than screen.length — once the backend's ring
     // has wrapped they differ, and the offset is what the backend uses
     // to compute the catch-up delta on resubscribe.
-    if (props.screen && props.screen.length > 0) {
+    //
+    // The screen may also arrive *after* mount when ListTerminals is
+    // queued behind a worker reconnect, so a reactive effect applies it
+    // the first time it becomes non-empty. `applied` latches per
+    // instance so subsequent reactive prop changes don't re-apply the
+    // same snapshot on top of live data.
+    let applied = false
+    createEffect(() => {
+      if (applied)
+        return
+      const screen = props.screen
+      if (!screen || screen.length === 0)
+        return
+      applied = true
       const termId = props.terminalId
       const reportReady = props.onContentReady
       applyTerminalData(
         instance,
-        props.screen,
+        screen,
         true,
-        props.lastOffset ?? props.screen.length,
+        props.lastOffset ?? screen.length,
         0,
         () => {
-          if (bufferHasVisibleContent(instance!.terminal))
+          if (bufferHasVisibleContent(instance.terminal))
             reportReady(termId)
         },
       )
-    }
+    })
 
     // ResizeObserver on this terminal's container element.
     // Only send resize to worker when dimensions actually change to avoid

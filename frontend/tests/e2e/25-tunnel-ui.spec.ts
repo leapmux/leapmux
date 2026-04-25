@@ -77,7 +77,7 @@ async function openWorkerMenu(page: import('@playwright/test').Page) {
   if (!isOpen)
     await workersSection.locator('> [role="button"]').click()
 
-  await expect(workersSection.getByText('Local')).toBeVisible()
+  await expect(workersSection.getByTestId('worker-name').filter({ hasText: 'Local' })).toBeVisible()
 
   const menuButton = workersSection.locator('[aria-expanded]').first()
   await menuButton.click()

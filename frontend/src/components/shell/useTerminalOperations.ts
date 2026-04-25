@@ -182,7 +182,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
-  // Debounce backend title updates: at most once per 10 seconds per terminal.
+  // Throttle backend title updates: at most once per 500 ms per terminal.
+  // Kept short so a title set right before a shell exit (Ctrl+D) reaches
+  // the worker before the close handler persists meta to DB; otherwise
+  // the post-restart restore would show the stale pre-update title.
+  const TITLE_THROTTLE_MS = 500
   const titleTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const titleLastSent = new Map<string, number>()
 
@@ -210,7 +214,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
     const last = titleLastSent.get(terminalId) ?? 0
     const elapsed = Date.now() - last
-    const delay = Math.max(0, 10_000 - elapsed)
+    const delay = Math.max(0, TITLE_THROTTLE_MS - elapsed)
     if (delay === 0) {
       sendTitleToBackend(terminalId, title)
     }

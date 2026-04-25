@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -42,8 +43,12 @@ func runWorker(args []string) error {
 		return fmt.Errorf("validate config: %w", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// Use a manually-cancelled context (rather than signal.NotifyContext)
+	// so SIGTERM/SIGINT can run svcCtx.Shutdown() *before* the bidi stream
+	// is torn down. Otherwise the disconnect-notice broadcasts emitted by
+	// Shutdown race a closed connection and never reach watchers.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Check if we already have credentials from a previous registration.
 	state, err := cfg.LoadState()
@@ -153,9 +158,32 @@ func runWorker(args []string) error {
 	svcCtx.Send = client.Send
 	svcCtx.Channels = channelMgr
 	svcCtx.Init()
-	// Shutdown must run before client.Stop() so terminal screen snapshots
-	// are persisted while in-memory state is still available.
-	defer svcCtx.Shutdown()
+	// svcCtx.Shutdown persists terminal screen snapshots and broadcasts the
+	// "Connection to the terminal was lost" notice to live watchers. Wrap it
+	// in sync.Once so all exit paths (signal, OnDeregister, defer fallback)
+	// converge on a single invocation that runs *before* the bidi stream is
+	// torn down — otherwise the broadcast races a closed connection.
+	var shutdownOnce sync.Once
+	runShutdown := func() {
+		shutdownOnce.Do(func() {
+			slog.Info("draining worker state for graceful shutdown")
+			svcCtx.Shutdown()
+		})
+	}
+	defer runShutdown()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		select {
+		case <-sigCh:
+			slog.Info("shutdown signal received")
+			runShutdown()
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	dispatcher := channel.NewDispatcher()
 	service.RegisterAll(dispatcher, svcCtx)
@@ -173,7 +201,8 @@ func runWorker(args []string) error {
 	client.OnDeregister = func() {
 		slog.Info("worker deregistered by hub, clearing state and shutting down")
 		_ = cfg.ClearState()
-		stop()
+		runShutdown()
+		cancel()
 	}
 
 	client.ConnectWithReconnect(ctx, state.AuthToken)

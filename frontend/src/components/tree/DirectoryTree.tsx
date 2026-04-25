@@ -472,6 +472,7 @@ const TreeNode: Component<{
         class={styles.node}
         classList={{ [styles.nodeSelected]: isSelected() }}
         style={{ 'padding-left': indent() }}
+        data-testid="tree-row"
         onClick={toggle}
       >
         <Show
