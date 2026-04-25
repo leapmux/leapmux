@@ -11,6 +11,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import {
   getPreferredEditorId,
   loadDetectedEditors,
+  resolvePreferredEditor,
   setPreferredEditorId,
 } from '~/lib/externalEditors'
 import { createLogger } from '~/lib/logger'
@@ -23,6 +24,15 @@ const log = createLogger('open-in-editor')
 // Hoisted: Intl.Collator construction is non-trivial; reusing one across
 // every refresh keeps the sortedEditors memo cheap.
 const editorCollator = new Intl.Collator(undefined, { sensitivity: 'base' })
+
+// Selector used by the post-refresh scroll-restore guard to find active
+// chat scroll containers in the DOM.
+const CHAT_SCROLL_CONTAINER_SELECTOR = '[data-chat-scroll-container="true"]'
+
+// Skip the restore if the chat's scrollHeight changed by more than this
+// many pixels — that signals a real content reload, not the spurious
+// clamp we're trying to undo.
+const CHAT_SCROLL_RESTORE_HEIGHT_TOLERANCE_PX = 200
 
 interface OpenInEditorButtonProps {
   /** Active tab's working directory, reactively read. */
@@ -110,14 +120,6 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
     }
   }
 
-  // Selector used by the post-refresh scroll-restore guard below to find
-  // active chat scroll containers in the DOM.
-  const CHAT_SCROLL_CONTAINER_SELECTOR = '[data-chat-scroll-container="true"]'
-  // Skip the restore if the chat's scrollHeight changed by more than this
-  // many pixels — that signals a real content reload, not the spurious
-  // clamp we're trying to undo.
-  const CHAT_SCROLL_RESTORE_HEIGHT_TOLERANCE_PX = 200
-
   const runRefresh = async () => {
     if (refreshing())
       return
@@ -143,20 +145,14 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
           await refetchEditors()
       }
       // If the MRU points at an editor that's no longer detected, fall
-      // back to the first remaining one (mirrors the keyboard-shortcut
-      // handler's behavior). Empty list → clear in-memory MRU but leave
-      // localStorage alone, so the user's choice returns when they
-      // reinstall the editor.
+      // back to the first remaining one. Shared resolvePreferredEditor
+      // also persists the new MRU to localStorage so the keyboard
+      // shortcut and the menu agree on which editor "default launch"
+      // picks. Empty list → clear in-memory MRU only; leave localStorage
+      // alone so the user's choice returns when they reinstall it.
       const mru = preferredId()
-      if (mru && !fresh.some(ed => ed.id === mru)) {
-        if (fresh.length > 0) {
-          setPreferredId(fresh[0].id)
-          setPreferredEditorId(fresh[0].id)
-        }
-        else {
-          setPreferredId(undefined)
-        }
-      }
+      if (mru && !fresh.some(ed => ed.id === mru))
+        setPreferredId(resolvePreferredEditor(fresh)?.id)
     }
     catch (err) {
       log.warn('refresh editors failed', err)

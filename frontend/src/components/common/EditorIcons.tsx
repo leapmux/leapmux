@@ -21,6 +21,7 @@ import type { Component, JSX } from 'solid-js'
 import type { EditorId } from '~/lib/externalEditors'
 import { createUniqueId, For } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
+import { iconStyle } from './iconStyle'
 
 interface EditorIconProps {
   id?: string
@@ -29,15 +30,6 @@ interface EditorIconProps {
 }
 
 type IconComponent = Component<{ size: number, class?: string }>
-
-function iconStyle(size: number): JSX.CSSProperties {
-  return {
-    'flex-shrink': '0',
-    'min-width': `${size}px`,
-    'min-height': `${size}px`,
-    'vertical-align': 'middle',
-  }
-}
 
 // --- VS Code family ---
 

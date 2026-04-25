@@ -9,7 +9,7 @@ import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState, isTauriApp, openWebInspector, platformBridge, quitApp, resetWebviewZoom, setMenuItemAccelerator, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenuState'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { getPreferredEditorId, loadDetectedEditors, setPreferredEditorId } from '~/lib/externalEditors'
+import { loadDetectedEditors, resolvePreferredEditor } from '~/lib/externalEditors'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
 import { createLogger } from '~/lib/logger'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
@@ -166,16 +166,9 @@ export function useShortcuts(props: UseShortcutsProps): void {
     const state = await getRuntimeState()
     if (!state.capabilities.localSolo)
       return
-    const editors = await loadDetectedEditors()
-    if (editors.length === 0)
+    const target = resolvePreferredEditor(await loadDetectedEditors())
+    if (!target)
       return
-    // Prefer the user's MRU; if it points at an editor that's no longer
-    // detected (uninstalled), fall back to the first available and update
-    // the MRU so subsequent invocations are stable.
-    const mru = getPreferredEditorId()
-    const target = editors.find(e => e.id === mru) ?? editors[0]
-    if (target.id !== mru)
-      setPreferredEditorId(target.id)
     try {
       await platformBridge.openInEditor(target.id, dir)
     }

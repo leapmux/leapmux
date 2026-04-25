@@ -26,11 +26,29 @@ vi.mock('~/api/platformBridge', () => ({
   zoomOutWebview: vi.fn(),
 }))
 
-vi.mock('~/lib/externalEditors', () => ({
-  getPreferredEditorId: vi.fn(),
-  loadDetectedEditors: () => loadDetectedEditorsMock(),
-  setPreferredEditorId: vi.fn(),
-}))
+vi.mock('~/lib/externalEditors', () => {
+  // vi.mock replaces the module from importers' perspective, but does NOT
+  // rewrite intra-module references — so the real `resolvePreferredEditor`
+  // would call the real `getPreferredEditorId`, bypassing the test mocks.
+  // Mirror the (tiny) prod logic here against the mocked getters/setters.
+  // The real implementation is covered separately in `externalEditors.test.ts`.
+  const getPreferredEditorId = vi.fn<() => string | undefined>()
+  const setPreferredEditorId = vi.fn<(id: string) => void>()
+  return {
+    getPreferredEditorId,
+    setPreferredEditorId,
+    loadDetectedEditors: () => loadDetectedEditorsMock(),
+    resolvePreferredEditor: <T extends { id: string }>(editors: readonly T[]): T | undefined => {
+      if (editors.length === 0)
+        return undefined
+      const mru = getPreferredEditorId()
+      const target = editors.find(e => e.id === mru) ?? editors[0]
+      if (target.id !== mru)
+        setPreferredEditorId(target.id)
+      return target
+    },
+  }
+})
 
 vi.mock('~/components/shell/UserMenuState', () => ({
   setShowPreferencesDialog: vi.fn(),

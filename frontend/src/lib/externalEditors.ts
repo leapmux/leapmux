@@ -82,3 +82,23 @@ export function getPreferredEditorId(): string | undefined {
 export function setPreferredEditorId(id: string): void {
   safeSetJson(KEY_PREFERRED_EDITOR, id)
 }
+
+/**
+ * Pick the editor to launch from a fresh detection list: the user's MRU if
+ * still detected, otherwise the first available — and persist the new MRU
+ * so subsequent invocations are stable. Returns undefined when the list is
+ * empty (callers can decide whether to also clear in-memory MRU state).
+ *
+ * Used by both the keyboard-shortcut launch path and the post-refresh
+ * fallback inside the menu component. Centralized here so they cannot
+ * disagree about which editor a "default launch" picks.
+ */
+export function resolvePreferredEditor(editors: DetectedEditor[]): DetectedEditor | undefined {
+  if (editors.length === 0)
+    return undefined
+  const mru = getPreferredEditorId()
+  const target = editors.find(e => e.id === mru) ?? editors[0]
+  if (target.id !== mru)
+    setPreferredEditorId(target.id)
+  return target
+}

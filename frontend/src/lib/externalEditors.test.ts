@@ -6,6 +6,7 @@ import {
   _resetEditorCacheForTests,
   getPreferredEditorId,
   loadDetectedEditors,
+  resolvePreferredEditor,
   setPreferredEditorId,
 } from './externalEditors'
 
@@ -142,5 +143,41 @@ describe('loadDetectedEditors', () => {
     // Different displayName → must be a new reference so Solid re-renders.
     expect(second[0]).not.toBe(first[0])
     expect(second[0].displayName).toBe('Visual Studio Code')
+  })
+})
+
+describe('resolvePreferredEditor', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('returns undefined for an empty list', () => {
+    expect(resolvePreferredEditor([])).toBeUndefined()
+  })
+
+  it('returns the MRU when it is still detected', () => {
+    setPreferredEditorId('zed')
+    const list = [
+      { id: 'vscode', displayName: 'VS Code' },
+      { id: 'zed', displayName: 'Zed' },
+    ]
+    expect(resolvePreferredEditor(list)?.id).toBe('zed')
+    expect(getPreferredEditorId()).toBe('zed')
+  })
+
+  it('falls back to the first entry and persists when MRU is missing', () => {
+    setPreferredEditorId('idea')
+    const list = [
+      { id: 'vscode', displayName: 'VS Code' },
+      { id: 'zed', displayName: 'Zed' },
+    ]
+    expect(resolvePreferredEditor(list)?.id).toBe('vscode')
+    expect(getPreferredEditorId()).toBe('vscode')
+  })
+
+  it('falls back to the first entry when no MRU is set, and persists it', () => {
+    const list = [{ id: 'vscode', displayName: 'VS Code' }]
+    expect(resolvePreferredEditor(list)?.id).toBe('vscode')
+    expect(getPreferredEditorId()).toBe('vscode')
   })
 })
