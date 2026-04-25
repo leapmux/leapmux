@@ -116,8 +116,8 @@ describe('tabBar readOnly prop', () => {
 
   it('shows close button for all tab types when readOnly is false', () => {
     const tabs = [
-      makeTab(TabType.AGENT, 'a1', 'Agent 1'),
-      makeTab(TabType.TERMINAL, 't1', 'Terminal 1'),
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
       makeTab(TabType.FILE, 'f1', 'File 1'),
     ]
     render(() => (
@@ -135,7 +135,7 @@ describe('tabBar readOnly prop', () => {
 
   it('disables the close button while a persisted tab is closing', () => {
     const tabs = [
-      makeTab(TabType.AGENT, 'a1', 'Agent 1'),
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
     ]
     render(() => (
       <PreferencesProvider>
@@ -152,8 +152,8 @@ describe('tabBar readOnly prop', () => {
 
   it('hides close button for agent and terminal tabs when readOnly is true', () => {
     const tabs = [
-      makeTab(TabType.AGENT, 'a1', 'Agent 1'),
-      makeTab(TabType.TERMINAL, 't1', 'Terminal 1'),
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
     ]
     render(() => (
       <PreferencesProvider>
@@ -187,8 +187,8 @@ describe('tabBar readOnly prop', () => {
 
   it('shows close button for file tab but not agent/terminal when readOnly is true', () => {
     const tabs = [
-      makeTab(TabType.AGENT, 'a1', 'Agent 1'),
-      makeTab(TabType.TERMINAL, 't1', 'Terminal 1'),
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
       makeTab(TabType.FILE, 'f1', 'readme.md'),
     ]
     render(() => (
@@ -222,8 +222,8 @@ describe('tabBar readOnly prop', () => {
 
   it('scrolls the tab list horizontally on vertical wheel input when overflowing', () => {
     const tabs = [
-      makeTab(TabType.AGENT, 'a1', 'Agent 1'),
-      makeTab(TabType.TERMINAL, 't1', 'Terminal 1'),
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
       makeTab(TabType.FILE, 'f1', 'File 1'),
     ]
     render(() => (

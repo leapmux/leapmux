@@ -29,7 +29,7 @@ func TestOutputHandlerUpdatePlan_MaterializesPlanFileAndStoresCanonicalPath(t *t
 		WorkspaceID: "ws-1",
 		WorkingDir:  t.TempDir(),
 		HomeDir:     t.TempDir(),
-		Title:       "Agent 1",
+		Title:       "Agent Olivia",
 	}))
 
 	content := []byte("# Design: Rendering fixes\n\n- item\n")
@@ -61,7 +61,7 @@ func TestOutputHandlerUpdatePlan_CollisionAppendsCounterSuffix(t *testing.T) {
 		WorkspaceID: "ws-1",
 		WorkingDir:  t.TempDir(),
 		HomeDir:     t.TempDir(),
-		Title:       "Agent 1",
+		Title:       "Agent Olivia",
 	}))
 
 	dir := filepath.Join(dataDir, "plans", "2026", "04")
@@ -89,7 +89,7 @@ func TestOutputHandlerUpdatePlan_StoresUntitledFallback(t *testing.T) {
 		WorkspaceID: "ws-1",
 		WorkingDir:  t.TempDir(),
 		HomeDir:     t.TempDir(),
-		Title:       "Agent 1",
+		Title:       "Agent Olivia",
 	}))
 
 	compressed, compression := msgcodec.Compress([]byte("- item\n"))
@@ -130,7 +130,7 @@ func TestOutputHandlerUpdatePlan_PreservesCompressedContentInDB(t *testing.T) {
 		WorkspaceID: "ws-1",
 		WorkingDir:  t.TempDir(),
 		HomeDir:     t.TempDir(),
-		Title:       "Agent 1",
+		Title:       "Agent Olivia",
 	}))
 
 	content := []byte(fmt.Sprintf("# Plan: %s\n", "Canonical Plan"))

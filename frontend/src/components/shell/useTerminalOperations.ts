@@ -13,7 +13,7 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.store'
 
-import { nextTabNumber } from './useAgentOperations'
+import { pickTerminalTitle } from './tabNames'
 
 export interface UseTerminalOperationsProps {
   org: { orgId: () => string }
@@ -73,7 +73,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
     props.setNewTerminalLoading(true)
     try {
-      const title = `Terminal ${nextTabNumber(props.tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
+      const title = pickTerminalTitle(props.tabStore.state.tabs)
       const resp = await workerRpc.openTerminal(ctx.workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
@@ -130,7 +130,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
     props.setNewShellLoading(true)
     try {
-      const title = `Terminal ${nextTabNumber(props.tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
+      const title = pickTerminalTitle(props.tabStore.state.tabs)
       const resp = await workerRpc.openTerminal(ctx.workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,

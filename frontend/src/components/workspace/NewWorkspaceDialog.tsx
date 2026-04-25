@@ -14,6 +14,7 @@ import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
+import { pickAgentTitle } from '~/components/shell/tabNames'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -82,7 +83,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         workspaceId: wsResp.workspaceId,
         agentProvider: agentProvider(),
         model: '',
-        title: 'Agent 1',
+        title: pickAgentTitle([]),
         systemPrompt: '',
         workerId: wid,
         workingDir: state.workingDir(),

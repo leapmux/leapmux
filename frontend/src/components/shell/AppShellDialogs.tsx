@@ -26,7 +26,7 @@ import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
 import { spinner } from '~/styles/animations.css'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
-import { nextTabNumber } from './useAgentOperations'
+import { pickAgentTitle, pickTerminalTitle } from './tabNames'
 
 type LastTabCloseChoice = 'cancel' | 'schedule-delete' | 'close-anyway'
 
@@ -85,7 +85,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           workspaceId={props.activeWorkspace()?.id ?? ''}
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
-          defaultTitle={`Agent ${nextTabNumber(props.tabStore.state.tabs, TabType.AGENT, 'Agent')}`}
+          defaultTitle={pickAgentTitle(props.tabStore.state.tabs)}
           availableProviders={props.availableProviders}
           onRefreshProviders={props.onRefreshProviders}
           onCreated={(agent) => {
@@ -120,7 +120,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             const ws = props.activeWorkspace()
             if (!ws)
               return
-            const title = `Terminal ${nextTabNumber(props.tabStore.state.tabs, TabType.TERMINAL, 'Terminal')}`
+            const title = pickTerminalTitle(props.tabStore.state.tabs)
             const tileId = props.layoutStore.focusedTileId()
             const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
             props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir, status: TerminalStatus.READY }, { afterKey })

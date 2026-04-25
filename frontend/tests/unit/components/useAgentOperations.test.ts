@@ -424,7 +424,7 @@ describe('useAgentOperations', () => {
           const { agentStore, tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
           agentStore.addAgent(agent)
-          tabStore.addTab({ type: TabType.AGENT, id: 'a-1', title: 'Agent 1', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
+          tabStore.addTab({ type: TabType.AGENT, id: 'a-1', title: 'Agent Olivia', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
 
           // Never-resolving RPC to prove the UI mutation is synchronous.
           mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
@@ -530,7 +530,7 @@ describe('useAgentOperations', () => {
           const { agentStore, tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-2', workerId: '' })
           agentStore.addAgent(agent)
-          tabStore.addTab({ type: TabType.AGENT, id: 'a-2', title: 'Agent 2', tileId: 'tile-1', workerId: '', workingDir: '' })
+          tabStore.addTab({ type: TabType.AGENT, id: 'a-2', title: 'Agent Liam', tileId: 'tile-1', workerId: '', workingDir: '' })
 
           mockCloseAgent.mockClear()
 

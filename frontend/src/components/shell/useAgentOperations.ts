@@ -4,7 +4,7 @@ import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore } from '~/stores/tab.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 import { createEffect, createSignal, on } from 'solid-js'
@@ -25,25 +25,10 @@ import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { resolveOptimisticGitInfo } from '~/stores/tab.store'
 import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
+import { pickAgentTitle } from './tabNames'
 import '~/components/chat/providers'
 
 const logger = createLogger('useAgentOperations')
-
-/** Find the smallest unused number for auto-naming tabs (gap-filling). */
-export function nextTabNumber(tabs: Tab[], type: TabType, prefix: string): number {
-  const used = new Set<number>()
-  for (const tab of tabs) {
-    if (tab.type === type && tab.title) {
-      const match = tab.title.match(new RegExp(`^${prefix} (\\d+)$`))
-      if (match)
-        used.add(Number(match[1]))
-    }
-  }
-  let n = 1
-  while (used.has(n))
-    n++
-  return n
-}
 
 export interface UseAgentOperationsProps {
   agentStore: ReturnType<typeof createAgentStore>
@@ -120,7 +105,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Open a new agent in the given workspace
   const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE) => {
     try {
-      const title = `Agent ${nextTabNumber(props.tabStore.state.tabs, TabType.AGENT, 'Agent')}`
+      const title = pickAgentTitle(props.tabStore.state.tabs)
       const resp = await workerRpc.openAgent(workerId, {
         workspaceId,
         agentProvider,

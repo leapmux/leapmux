@@ -14,7 +14,7 @@ function makeAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
     $typeName: 'leapmux.v1.AgentInfo' as const,
     id: 'agent-1',
     workspaceId: 'ws-1',
-    title: 'Agent 1',
+    title: 'Agent Olivia',
     model: '',
     status: AgentStatus.ACTIVE,
     workingDir: '/tmp',

@@ -221,7 +221,7 @@ describe('cross-workspace tab move via registry', () => {
       registry.set('ws-source', makeSnapshot('ws-source', {
         tabs: {
           tabs: [
-            { type: TabType.AGENT, id: 'a1', title: 'Agent 1', position: 'a', tileId: 'tile-1', workerId: 'w1' } as any,
+            { type: TabType.AGENT, id: 'a1', title: 'Agent Olivia', position: 'a', tileId: 'tile-1', workerId: 'w1' } as any,
           ],
           activeTabKey: '1:a1',
           mruOrder: ['1:a1'],
