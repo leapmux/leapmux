@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -133,6 +134,58 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 		"delta must contain the bytes the absent client missed")
 	assert.NotContains(t, string(delta.GetData()), string(firstMarker),
 		"delta must NOT re-send bytes the client already has")
+}
+
+// TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap: the bug this
+// whole feature exists to fix. A subscriber that joins (or rejoins)
+// after the ring has wrapped past an alt-screen toggle must receive a
+// snapshot whose first bytes re-establish alt screen. Without the
+// prefix, xterm.reset() drops to main screen and replays bytes that
+// assume alt screen — vim/less/htop render as garbage until the
+// program repaints.
+func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t, "ws-1")
+	startTestTerminal(t, svc, ctx, "t-altrecover", "ws-1")
+
+	// Inject the alt-screen toggle, then push >100 KB so the toggle
+	// falls out of the retained ring.
+	require.True(t, svc.Terminals.AppendOutput("t-altrecover", []byte("\x1b[?1049h")))
+	big := make([]byte, 150*1024)
+	for i := range big {
+		big[i] = 'a'
+	}
+	require.True(t, svc.Terminals.AppendOutput("t-altrecover", big))
+
+	testutil.AssertEventually(t, func() bool {
+		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-altrecover", 0)
+		return off >= int64(len(big))
+	}, "alt-screen + filler arrived")
+
+	w := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-altrecover", AfterOffset: 0}},
+	}, w)
+
+	var snap *leapmuxv1.TerminalData
+	testutil.AssertEventually(t, func() bool {
+		for _, data := range collectTerminalData(t, w, "t-altrecover") {
+			snap = data
+			return true
+		}
+		return false
+	}, "cold subscribe delivered the snapshot")
+	require.NotNil(t, snap)
+	require.True(t, snap.GetIsSnapshot(),
+		"fell-behind cold subscribe must be a snapshot so the frontend resets first")
+	assert.True(t, bytes.HasPrefix(snap.GetData(), []byte("\x1b[?1049h")),
+		"snapshot must lead with the alt-screen restore — without it, vim/less render garbage after the frontend's terminal.reset()")
+
+	// The tracker prefix is synthesized; it must NOT inflate end_offset
+	// beyond the actual byte counter the client uses to resume.
+	currentTotal := int64(len("\x1b[?1049h") + len(big))
+	assert.GreaterOrEqual(t, snap.GetEndOffset(), currentTotal,
+		"end_offset reflects total bytes written, not prefix length")
 }
 
 // TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap: when the backend's

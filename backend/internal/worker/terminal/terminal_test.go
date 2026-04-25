@@ -403,6 +403,83 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 	assert.False(t, isSnap)
 }
 
+// TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind: the manager
+// wrapper must propagate the mode-restore prefix produced inside the
+// ScreenBuffer when a subscriber has fallen out of the retained ring.
+// Tests the seam between Manager and Terminal — easy to break by
+// swapping the ScreenSnapshotSince implementation.
+func TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind(t *testing.T) {
+	m := NewManager()
+	err := m.StartTerminal(context.Background(), Options{
+		ID:         "tm-prefix",
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
+	}, func(data []byte, _ int64) {}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		m.StopTerminal("tm-prefix")
+		testutil.AssertEventually(t, func() bool { return m.IsExited("tm-prefix") }, "exit")
+		m.RemoveTerminal("tm-prefix")
+	})
+
+	// Inject the alt-screen toggle, then push enough bytes to overwrite
+	// the ring. AppendOutput goes through the same write path so the
+	// tracker observes the toggle.
+	require.True(t, m.AppendOutput("tm-prefix", []byte("\x1b[?1049h")))
+	filler := make([]byte, 8*1024)
+	for i := range filler {
+		filler[i] = 'q'
+	}
+	for i := 0; i < 20; i++ {
+		require.True(t, m.AppendOutput("tm-prefix", filler))
+	}
+
+	data, _, isSnap := m.ScreenSnapshotSince("tm-prefix", 0)
+	require.True(t, isSnap, "fallen-behind subscriber must get a snapshot")
+	require.GreaterOrEqual(t, len(data), len("\x1b[?1049h"))
+	assert.Equal(t, []byte("\x1b[?1049h"), data[:len("\x1b[?1049h")],
+		"manager.ScreenSnapshotSince must propagate the alt-screen restore prefix")
+}
+
+// TestManager_ScreenSnapshot_PrefixesPersistedScreen: ScreenSnapshot is
+// the entry point for the DB-persistence and ListTerminals paths. The
+// prefix MUST appear here too, otherwise alt-screen state is lost
+// across worker restarts even when the bug-fix landed for resubscribe.
+func TestManager_ScreenSnapshot_PrefixesPersistedScreen(t *testing.T) {
+	m := NewManager()
+	err := m.StartTerminal(context.Background(), Options{
+		ID:          "tm-snapshot",
+		WorkspaceID: "ws-snapshot",
+		Shell:       testutil.TestShell(),
+		WorkingDir:  t.TempDir(),
+		Cols:        80,
+		Rows:        24,
+	}, func(data []byte, _ int64) {}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		m.StopTerminal("tm-snapshot")
+		testutil.AssertEventually(t, func() bool { return m.IsExited("tm-snapshot") }, "exit")
+		m.RemoveTerminal("tm-snapshot")
+	})
+
+	require.True(t, m.AppendOutput("tm-snapshot", []byte("\x1b[?1049h")))
+	filler := make([]byte, 8*1024)
+	for i := range filler {
+		filler[i] = 'r'
+	}
+	for i := 0; i < 20; i++ {
+		require.True(t, m.AppendOutput("tm-snapshot", filler))
+	}
+
+	snap, ok := m.SnapshotTerminal("tm-snapshot")
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(snap.Screen), len("\x1b[?1049h"))
+	assert.Equal(t, []byte("\x1b[?1049h"), snap.Screen[:len("\x1b[?1049h")],
+		"SnapshotTerminal must include the mode-restore prefix so DB-persisted screens survive worker restarts")
+}
+
 func TestManager_IsExited_UnknownTerminal(t *testing.T) {
 	m := NewManager()
 	assert.False(t, m.IsExited("nonexistent"), "expected IsExited = false for unknown terminal")

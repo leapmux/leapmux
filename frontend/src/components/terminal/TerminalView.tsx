@@ -49,6 +49,10 @@ if (typeof window !== 'undefined') {
   ;(window as any).__getActiveTerminalRows = () => {
     return (lastActiveTerminalId ? instances.get(lastActiveTerminalId)?.terminal.rows : 0) ?? 0
   }
+  ;(window as any).__getActiveTerminalBufferType = () => {
+    const instance = lastActiveTerminalId ? instances.get(lastActiveTerminalId) : undefined
+    return instance?.terminal.buffer.active.type ?? 'normal'
+  }
 }
 
 /** Per-terminal container that calls terminal.open() exactly once. */

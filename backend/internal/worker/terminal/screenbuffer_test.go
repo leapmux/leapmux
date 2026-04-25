@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"sync"
 	"testing"
 
@@ -273,6 +274,116 @@ func TestScreenBuffer_HasSuffix(t *testing.T) {
 	assert.True(t, sb.HasSuffix([]byte("ABC\nEND")),
 		"suffix that straddles the ring wrap must still match")
 	assert.False(t, sb.HasSuffix([]byte("WRONG")))
+}
+
+// TestScreenBuffer_SnapshotSince_FallenBehindIncludesModePrefix: when
+// the subscriber has fallen out of the retained window, the snapshot
+// reply must start with the mode-restore prefix synthesized from the
+// tracker's state. This is the whole reason the tracker exists: a TUI
+// that entered alt screen via bytes that have since been overwritten
+// in the ring still gets a working post-reset render.
+func TestScreenBuffer_SnapshotSince_FallenBehindIncludesModePrefix(t *testing.T) {
+	sb := NewScreenBuffer()
+	sb.Write([]byte("\x1b[?1049h")) // enter alt screen.
+
+	// Push enough bytes that the alt-screen toggle falls out of the ring.
+	chunk := bytes.Repeat([]byte{'x'}, 8*1024)
+	for i := 0; i < 20; i++ { // 160 KB total, ring overwrites by 60 KB.
+		sb.Write(chunk)
+	}
+
+	data, _, isSnap := sb.SnapshotSince(0)
+	require.True(t, isSnap, "fallen-behind subscriber must get a snapshot")
+	require.True(t, bytes.HasPrefix(data, []byte("\x1b[?1049h")),
+		"snapshot must lead with the mode-restore prefix; got first 16 bytes: %q",
+		string(data[:min(16, len(data))]))
+}
+
+// TestScreenBuffer_SnapshotSince_InWindowHasNoPrefix: a subscriber
+// resuming inside the retained window already received the mode bytes
+// during the live stream, so the incremental delta must NOT add another
+// prefix. Doing so would cause xterm to re-toggle modes and confuse the
+// running program.
+func TestScreenBuffer_SnapshotSince_InWindowHasNoPrefix(t *testing.T) {
+	sb := NewScreenBuffer()
+	sb.Write([]byte("\x1b[?1049h"))
+	mid := sb.TotalBytes()
+	sb.Write([]byte("more output"))
+
+	data, _, isSnap := sb.SnapshotSince(mid)
+	assert.False(t, isSnap, "in-window resume must not be flagged as snapshot")
+	assert.Equal(t, []byte("more output"), data,
+		"in-window delta must contain only the post-offset bytes — no prefix")
+}
+
+// TestScreenBuffer_SnapshotSince_PrefixDoesNotInflateOffset: the
+// returned endOffset must equal sb.total even when a prefix was added.
+// The prefix is synthesized; counting it would advance the resume
+// cursor past bytes the client never saw and break delta math on the
+// next subscribe.
+func TestScreenBuffer_SnapshotSince_PrefixDoesNotInflateOffset(t *testing.T) {
+	sb := NewScreenBuffer()
+	sb.Write([]byte("\x1b[?1049h"))
+	chunk := bytes.Repeat([]byte{'y'}, 8*1024)
+	for i := 0; i < 20; i++ {
+		sb.Write(chunk)
+	}
+	expectedTotal := sb.TotalBytes()
+
+	_, end, isSnap := sb.SnapshotSince(0)
+	require.True(t, isSnap)
+	assert.Equal(t, expectedTotal, end,
+		"snapshot endOffset must equal total bytes written, not total+len(prefix)")
+}
+
+// TestScreenBuffer_SnapshotSince_DefaultStateNoPrefix: a tracker at
+// default state (no escape sequences observed, or every set has been
+// reset) must produce a snapshot with no prefix at all. Otherwise we
+// emit unnecessary bytes on every resubscribe.
+func TestScreenBuffer_SnapshotSince_DefaultStateNoPrefix(t *testing.T) {
+	sb := NewScreenBuffer()
+	chunk := bytes.Repeat([]byte{'z'}, 8*1024)
+	for i := 0; i < 20; i++ {
+		sb.Write(chunk)
+	}
+
+	data, _, isSnap := sb.SnapshotSince(0)
+	require.True(t, isSnap)
+	assert.False(t, bytes.HasPrefix(data, []byte("\x1b[")),
+		"plain text ring must not produce a CSI prefix")
+}
+
+// TestScreenBuffer_Snapshot_PrefixesPersistedScreenPath: Snapshot() is
+// the path used by Manager.SnapshotTerminal (DB persistence on shutdown
+// / exit) and Manager.buildEntryLocked (ListTerminals). Worker restarts
+// reload these bytes and the frontend writes them after terminal.reset()
+// — so they MUST carry the mode prefix or alt-screen state is lost
+// across restarts.
+func TestScreenBuffer_Snapshot_PrefixesPersistedScreenPath(t *testing.T) {
+	sb := NewScreenBuffer()
+	sb.Write([]byte("\x1b[?1049h"))
+	chunk := bytes.Repeat([]byte{'p'}, 8*1024)
+	for i := 0; i < 20; i++ {
+		sb.Write(chunk)
+	}
+
+	data, end := sb.Snapshot()
+	assert.True(t, bytes.HasPrefix(data, []byte("\x1b[?1049h")),
+		"persisted-screen path must include the mode-restore prefix")
+	assert.Equal(t, sb.TotalBytes(), end,
+		"Snapshot() endOffset must not include synthesized prefix bytes")
+}
+
+// TestScreenBuffer_Snapshot_DefaultStateNoPrefix: the persisted-screen
+// path must also short-circuit when the tracker is at default state,
+// matching SnapshotSince's behavior.
+func TestScreenBuffer_Snapshot_DefaultStateNoPrefix(t *testing.T) {
+	sb := NewScreenBuffer()
+	sb.Write([]byte("plain shell output\r\n$ "))
+
+	data, _ := sb.Snapshot()
+	assert.Equal(t, []byte("plain shell output\r\n$ "), data,
+		"default-state Snapshot must return body bytes only")
 }
 
 // TestScreenBuffer_ConcurrentWriteAndSnapshot: Write and SnapshotSince

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -303,6 +304,50 @@ func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 		"live terminal must return Manager's screen (DB row has Screen=[]byte{})")
 	assert.Equal(t, int64(len(ti.GetScreen())), ti.GetScreenEndOffset(),
 		"before ring wrap: screen_end_offset equals len(screen)")
+}
+
+// TestListTerminals_AltScreenRecoveryAfterRingWrap: page-refresh is the
+// most common path that hits the alt-screen rendering bug. The frontend
+// seeds xterm from TerminalInfo.screen with isSnapshot=true (resets
+// xterm before writing), so the bytes here MUST start with the
+// mode-restore prefix when the alt-screen toggle has fallen out of the
+// retained ring.
+func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-A")
+	startTestTerminal(t, svc, ctx, "t-altrefresh", "ws-A")
+
+	require.True(t, svc.Terminals.AppendOutput("t-altrefresh", []byte("\x1b[?1049h")))
+	big := make([]byte, 150*1024)
+	for i := range big {
+		big[i] = 'b'
+	}
+	require.True(t, svc.Terminals.AppendOutput("t-altrefresh", big))
+
+	testutil.AssertEventually(t, func() bool {
+		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-altrefresh", 0)
+		return off >= int64(len(big))
+	}, "alt-screen + filler arrived")
+
+	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+		TabIds: []string{"t-altrefresh"},
+	}, w)
+
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.Len(t, resp.GetTerminals(), 1)
+	ti := resp.GetTerminals()[0]
+	require.GreaterOrEqual(t, len(ti.GetScreen()), len("\x1b[?1049h"))
+	assert.Equal(t, []byte("\x1b[?1049h"), ti.GetScreen()[:len("\x1b[?1049h")],
+		"ListTerminals must return the alt-screen restore prefix; without it, page-refresh leaves vim/less rendering as garbage")
+
+	// screen_end_offset must NOT include the synthesized prefix bytes.
+	// The frontend uses this offset to seed its WatchEvents resume
+	// cursor; counting prefix bytes would skip real PTY output the next
+	// time the backend computes a delta.
+	assert.Equal(t, int64(len("\x1b[?1049h")+len(big)), ti.GetScreenEndOffset(),
+		"screen_end_offset reflects total PTY bytes, not screen-payload length (which includes the synthesized prefix)")
 }
 
 func TestListTerminals_InaccessibleWorkspaceDenied(t *testing.T) {
