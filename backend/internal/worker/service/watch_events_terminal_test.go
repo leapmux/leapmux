@@ -147,20 +147,7 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t, "ws-1")
 	startTestTerminal(t, svc, ctx, "t-altrecover", "ws-1")
-
-	// Inject the alt-screen toggle, then push >100 KB so the toggle
-	// falls out of the retained ring.
-	require.True(t, svc.Terminals.AppendOutput("t-altrecover", []byte("\x1b[?1049h")))
-	big := make([]byte, 150*1024)
-	for i := range big {
-		big[i] = 'a'
-	}
-	require.True(t, svc.Terminals.AppendOutput("t-altrecover", big))
-
-	testutil.AssertEventually(t, func() bool {
-		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-altrecover", 0)
-		return off >= int64(len(big))
-	}, "alt-screen + filler arrived")
+	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrecover")
 
 	w := &testResponseWriter{channelID: "test-ch"}
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -183,9 +170,32 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 
 	// The tracker prefix is synthesized; it must NOT inflate end_offset
 	// beyond the actual byte counter the client uses to resume.
-	currentTotal := int64(len("\x1b[?1049h") + len(big))
+	currentTotal := int64(len("\x1b[?1049h") + fillerLen)
 	assert.GreaterOrEqual(t, snap.GetEndOffset(), currentTotal,
 		"end_offset reflects total bytes written, not prefix length")
+}
+
+// injectAltScreenAndFlushPastRing writes the alt-screen toggle followed
+// by enough plain bytes to overwrite the retained ring, then waits for
+// the manager's offset to confirm the bytes have landed. Returns the
+// filler length so callers can compute the expected end_offset. Used by
+// every test that asserts the modeTracker prefix appears on a snapshot
+// taken AFTER the toggle has fallen out of the ring.
+func injectAltScreenAndFlushPastRing(t *testing.T, svc *Context, terminalID string) int {
+	t.Helper()
+	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte("\x1b[?1049h")))
+	// 110 KB > screenBufferSize (100 KB), so the toggle is guaranteed
+	// out of the ring after this single write completes.
+	filler := make([]byte, 110*1024)
+	for i := range filler {
+		filler[i] = 'a'
+	}
+	require.True(t, svc.Terminals.AppendOutput(terminalID, filler))
+	testutil.AssertEventually(t, func() bool {
+		_, off, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
+		return off >= int64(len(filler))
+	}, "alt-screen + filler arrived")
+	return len(filler)
 }
 
 // TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap: when the backend's

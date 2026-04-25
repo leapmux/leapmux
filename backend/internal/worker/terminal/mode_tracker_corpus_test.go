@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -101,7 +102,7 @@ func TestCorpus_HtopTick(t *testing.T) {
 	for tick := 0; tick < 5; tick++ {
 		feedString(tr, "\x1b[1;1H\x1b[K\x1b[1;32mPID\x1b[m   USER  CPU%\r\n")
 		for row := 2; row <= 20; row++ {
-			feedString(tr, "\x1b["+itoa(row)+";1H\x1b[K"+strings.Repeat("data ", 12))
+			feedString(tr, "\x1b["+strconv.Itoa(row)+";1H\x1b[K"+strings.Repeat("data ", 12))
 		}
 	}
 
@@ -160,20 +161,4 @@ func TestCorpus_TmuxNested(t *testing.T) {
 	assert.True(t, tr.altScreen)
 	assert.Equal(t, []byte("\x1b[?1049h"), tr.snapshotPrefix(),
 		"emission must always normalize to 1049 regardless of which alias was used")
-}
-
-// itoa is a tiny inline integer→ASCII helper so the corpus tests don't
-// pull in strconv just for cursor-position numerals.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [4]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }

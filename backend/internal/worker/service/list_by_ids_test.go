@@ -11,7 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -316,18 +315,7 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-A")
 	startTestTerminal(t, svc, ctx, "t-altrefresh", "ws-A")
-
-	require.True(t, svc.Terminals.AppendOutput("t-altrefresh", []byte("\x1b[?1049h")))
-	big := make([]byte, 150*1024)
-	for i := range big {
-		big[i] = 'b'
-	}
-	require.True(t, svc.Terminals.AppendOutput("t-altrefresh", big))
-
-	testutil.AssertEventually(t, func() bool {
-		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-altrefresh", 0)
-		return off >= int64(len(big))
-	}, "alt-screen + filler arrived")
+	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrefresh")
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t-altrefresh"},
@@ -346,7 +334,7 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	// The frontend uses this offset to seed its WatchEvents resume
 	// cursor; counting prefix bytes would skip real PTY output the next
 	// time the backend computes a delta.
-	assert.Equal(t, int64(len("\x1b[?1049h")+len(big)), ti.GetScreenEndOffset(),
+	assert.Equal(t, int64(len("\x1b[?1049h")+fillerLen), ti.GetScreenEndOffset(),
 		"screen_end_offset reflects total PTY bytes, not screen-payload length (which includes the synthesized prefix)")
 }
 

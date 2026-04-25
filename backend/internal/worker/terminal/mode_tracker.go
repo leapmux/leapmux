@@ -217,35 +217,29 @@ func (t *modeTracker) applyMode(code int, set bool) {
 	case 2004:
 		t.bracketedPaste = set
 	case 1000:
-		if set {
-			t.mouseTrack = mouseTrackX10
-		} else if t.mouseTrack == mouseTrackX10 {
-			t.mouseTrack = mouseTrackOff
-		}
+		setOrClearSlot(&t.mouseTrack, mouseTrackX10, mouseTrackOff, set)
 	case 1002:
-		if set {
-			t.mouseTrack = mouseTrackBtnEvent
-		} else if t.mouseTrack == mouseTrackBtnEvent {
-			t.mouseTrack = mouseTrackOff
-		}
+		setOrClearSlot(&t.mouseTrack, mouseTrackBtnEvent, mouseTrackOff, set)
 	case 1003:
-		if set {
-			t.mouseTrack = mouseTrackAnyEvent
-		} else if t.mouseTrack == mouseTrackAnyEvent {
-			t.mouseTrack = mouseTrackOff
-		}
+		setOrClearSlot(&t.mouseTrack, mouseTrackAnyEvent, mouseTrackOff, set)
 	case 1006:
-		if set {
-			t.mouseEncoding = mouseEncSGR
-		} else if t.mouseEncoding == mouseEncSGR {
-			t.mouseEncoding = mouseEncOff
-		}
+		setOrClearSlot(&t.mouseEncoding, mouseEncSGR, mouseEncOff, set)
 	case 1015:
-		if set {
-			t.mouseEncoding = mouseEncURXVT
-		} else if t.mouseEncoding == mouseEncURXVT {
-			t.mouseEncoding = mouseEncOff
-		}
+		setOrClearSlot(&t.mouseEncoding, mouseEncURXVT, mouseEncOff, set)
+	}
+}
+
+// setOrClearSlot updates a single-slot mode (where multiple DEC codes
+// compete for the same field, last-write-wins): on `set==true` the slot
+// becomes `on`; on `set==false` it falls back to `off` only if the slot
+// was holding `on` — so resetting an inactive variant is a no-op and
+// can't accidentally clear a different variant of the same family.
+func setOrClearSlot[T comparable](slot *T, on, off T, set bool) {
+	switch {
+	case set:
+		*slot = on
+	case *slot == on:
+		*slot = off
 	}
 }
 

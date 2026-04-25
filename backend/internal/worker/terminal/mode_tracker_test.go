@@ -288,3 +288,19 @@ func TestModeTracker_NoAllocOnPlainText(t *testing.T) {
 	allocs := testing.AllocsPerRun(10, func() { tr.feed(plain) })
 	assert.Zero(t, allocs, "plain-text feed must not allocate")
 }
+
+// TestModeTracker_NoAllocOnTypicalShellOutput exercises a chunk shaped
+// like real shell output — OSC 0 title + SGR-coloured prompt + plain
+// text + CRLF — to catch regressions the plain-text test would miss
+// (e.g. a stray `[]byte(...)` conversion inside dispatchCSI, or an
+// OSC body path that stopped reusing t.title's backing array). The
+// initial feed is a warmup so the title slice reaches its steady-state
+// capacity; from there, repeated feeds of the same chunk must allocate
+// nothing.
+func TestModeTracker_NoAllocOnTypicalShellOutput(t *testing.T) {
+	tr := &modeTracker{}
+	chunk := []byte("\x1b]0;me@host\x07\x1b[1;32muser@host\x1b[m:~$ ls\r\n")
+	tr.feed(chunk)
+	allocs := testing.AllocsPerRun(10, func() { tr.feed(chunk) })
+	assert.Zero(t, allocs, "steady-state mixed-CSI+OSC feed must not allocate")
+}

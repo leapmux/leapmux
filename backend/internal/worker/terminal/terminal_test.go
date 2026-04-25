@@ -409,32 +409,14 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 // Tests the seam between Manager and Terminal — easy to break by
 // swapping the ScreenSnapshotSince implementation.
 func TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind(t *testing.T) {
-	m := NewManager()
-	err := m.StartTerminal(context.Background(), Options{
+	m := newTestManagerWithTerminal(t, "tm-prefix", Options{
 		ID:         "tm-prefix",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64) {}, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		m.StopTerminal("tm-prefix")
-		testutil.AssertEventually(t, func() bool { return m.IsExited("tm-prefix") }, "exit")
-		m.RemoveTerminal("tm-prefix")
 	})
-
-	// Inject the alt-screen toggle, then push enough bytes to overwrite
-	// the ring. AppendOutput goes through the same write path so the
-	// tracker observes the toggle.
-	require.True(t, m.AppendOutput("tm-prefix", []byte("\x1b[?1049h")))
-	filler := make([]byte, 8*1024)
-	for i := range filler {
-		filler[i] = 'q'
-	}
-	for i := 0; i < 20; i++ {
-		require.True(t, m.AppendOutput("tm-prefix", filler))
-	}
+	pushAltScreenPastRing(t, m, "tm-prefix")
 
 	data, _, isSnap := m.ScreenSnapshotSince("tm-prefix", 0)
 	require.True(t, isSnap, "fallen-behind subscriber must get a snapshot")
@@ -448,36 +430,64 @@ func TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind(t *testing.T) {
 // prefix MUST appear here too, otherwise alt-screen state is lost
 // across worker restarts even when the bug-fix landed for resubscribe.
 func TestManager_ScreenSnapshot_PrefixesPersistedScreen(t *testing.T) {
-	m := NewManager()
-	err := m.StartTerminal(context.Background(), Options{
+	m := newTestManagerWithTerminal(t, "tm-snapshot", Options{
 		ID:          "tm-snapshot",
 		WorkspaceID: "ws-snapshot",
 		Shell:       testutil.TestShell(),
 		WorkingDir:  t.TempDir(),
 		Cols:        80,
 		Rows:        24,
-	}, func(data []byte, _ int64) {}, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		m.StopTerminal("tm-snapshot")
-		testutil.AssertEventually(t, func() bool { return m.IsExited("tm-snapshot") }, "exit")
-		m.RemoveTerminal("tm-snapshot")
 	})
-
-	require.True(t, m.AppendOutput("tm-snapshot", []byte("\x1b[?1049h")))
-	filler := make([]byte, 8*1024)
-	for i := range filler {
-		filler[i] = 'r'
-	}
-	for i := 0; i < 20; i++ {
-		require.True(t, m.AppendOutput("tm-snapshot", filler))
-	}
+	pushAltScreenPastRing(t, m, "tm-snapshot")
 
 	snap, ok := m.SnapshotTerminal("tm-snapshot")
 	require.True(t, ok)
 	require.GreaterOrEqual(t, len(snap.Screen), len("\x1b[?1049h"))
 	assert.Equal(t, []byte("\x1b[?1049h"), snap.Screen[:len("\x1b[?1049h")],
 		"SnapshotTerminal must include the mode-restore prefix so DB-persisted screens survive worker restarts")
+}
+
+// newTestManagerWithTerminal starts a Manager + one terminal and wires
+// up the standard cleanup so callers don't repeat the StartTerminal +
+// t.Cleanup boilerplate. The Options are passed through verbatim (so
+// callers can vary WorkspaceID / Cols / Rows) and the terminal id is
+// expected to match Options.ID — splitting the parameter is purely for
+// the cleanup closure.
+func newTestManagerWithTerminal(t *testing.T, id string, opts Options) *Manager {
+	t.Helper()
+	m := NewManager()
+	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64) {}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		m.StopTerminal(id)
+		testutil.AssertEventually(t, func() bool { return m.IsExited(id) }, "exit")
+		m.RemoveTerminal(id)
+	})
+	return m
+}
+
+// pushAltScreenPastRing injects the alt-screen toggle and then enough
+// filler bytes to overwrite the retained ring, so a subsequent snapshot
+// must reach for the modeTracker prefix to recover alt-screen state.
+// AppendOutput goes through the same Write path as live PTY output, so
+// the tracker observes the toggle exactly as it would in production.
+func pushAltScreenPastRing(t *testing.T, m *Manager, id string) {
+	t.Helper()
+	require.True(t, m.AppendOutput(id, []byte("\x1b[?1049h")))
+	require.True(t, m.AppendOutput(id, ringOverflowFiller()))
+}
+
+// ringOverflowFiller returns plain-ASCII bytes sized just past the
+// retained ring, so writing them is guaranteed to overwrite anything
+// emitted earlier (including a leading mode toggle). 110% of the ring
+// is enough margin to stay correct even if screenBufferSize grows
+// modestly without making test runs gratuitously large.
+func ringOverflowFiller() []byte {
+	out := make([]byte, screenBufferSize+screenBufferSize/10)
+	for i := range out {
+		out[i] = 'x'
+	}
+	return out
 }
 
 func TestManager_IsExited_UnknownTerminal(t *testing.T) {

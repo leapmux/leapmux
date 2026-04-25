@@ -285,12 +285,7 @@ func TestScreenBuffer_HasSuffix(t *testing.T) {
 func TestScreenBuffer_SnapshotSince_FallenBehindIncludesModePrefix(t *testing.T) {
 	sb := NewScreenBuffer()
 	sb.Write([]byte("\x1b[?1049h")) // enter alt screen.
-
-	// Push enough bytes that the alt-screen toggle falls out of the ring.
-	chunk := bytes.Repeat([]byte{'x'}, 8*1024)
-	for i := 0; i < 20; i++ { // 160 KB total, ring overwrites by 60 KB.
-		sb.Write(chunk)
-	}
+	sb.Write(ringOverflowFiller())
 
 	data, _, isSnap := sb.SnapshotSince(0)
 	require.True(t, isSnap, "fallen-behind subscriber must get a snapshot")
@@ -324,10 +319,7 @@ func TestScreenBuffer_SnapshotSince_InWindowHasNoPrefix(t *testing.T) {
 func TestScreenBuffer_SnapshotSince_PrefixDoesNotInflateOffset(t *testing.T) {
 	sb := NewScreenBuffer()
 	sb.Write([]byte("\x1b[?1049h"))
-	chunk := bytes.Repeat([]byte{'y'}, 8*1024)
-	for i := 0; i < 20; i++ {
-		sb.Write(chunk)
-	}
+	sb.Write(ringOverflowFiller())
 	expectedTotal := sb.TotalBytes()
 
 	_, end, isSnap := sb.SnapshotSince(0)
@@ -342,10 +334,7 @@ func TestScreenBuffer_SnapshotSince_PrefixDoesNotInflateOffset(t *testing.T) {
 // emit unnecessary bytes on every resubscribe.
 func TestScreenBuffer_SnapshotSince_DefaultStateNoPrefix(t *testing.T) {
 	sb := NewScreenBuffer()
-	chunk := bytes.Repeat([]byte{'z'}, 8*1024)
-	for i := 0; i < 20; i++ {
-		sb.Write(chunk)
-	}
+	sb.Write(ringOverflowFiller())
 
 	data, _, isSnap := sb.SnapshotSince(0)
 	require.True(t, isSnap)
@@ -362,10 +351,7 @@ func TestScreenBuffer_SnapshotSince_DefaultStateNoPrefix(t *testing.T) {
 func TestScreenBuffer_Snapshot_PrefixesPersistedScreenPath(t *testing.T) {
 	sb := NewScreenBuffer()
 	sb.Write([]byte("\x1b[?1049h"))
-	chunk := bytes.Repeat([]byte{'p'}, 8*1024)
-	for i := 0; i < 20; i++ {
-		sb.Write(chunk)
-	}
+	sb.Write(ringOverflowFiller())
 
 	data, end := sb.Snapshot()
 	assert.True(t, bytes.HasPrefix(data, []byte("\x1b[?1049h")),
