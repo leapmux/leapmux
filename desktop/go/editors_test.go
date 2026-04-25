@@ -323,20 +323,28 @@ func TestRegistry_OpenWrapsLauncherError(t *testing.T) {
 
 func TestValidateOpenPath_RejectsEmpty(t *testing.T) {
 	t.Parallel()
-	require.Error(t, validateOpenPath(""))
+	_, err := validateOpenPath("")
+	require.Error(t, err)
 }
 
 func TestValidateOpenPath_RejectsRelative(t *testing.T) {
 	t.Parallel()
-	err := validateOpenPath("./relative")
+	_, err := validateOpenPath("./relative")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "absolute")
+}
+
+func TestValidateOpenPath_RejectsTraversal(t *testing.T) {
+	t.Parallel()
+	_, err := validateOpenPath("/etc/../etc/passwd")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "traversal")
 }
 
 func TestValidateOpenPath_RejectsMissing(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "definitely-not-here")
-	err := validateOpenPath(missing)
+	_, err := validateOpenPath(missing)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not accessible")
 }
@@ -346,14 +354,16 @@ func TestValidateOpenPath_RejectsFile(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "f.txt")
 	require.NoError(t, os.WriteFile(file, nil, 0o600))
-	err := validateOpenPath(file)
+	_, err := validateOpenPath(file)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a directory")
 }
 
 func TestValidateOpenPath_AcceptsDirectory(t *testing.T) {
 	t.Parallel()
-	require.NoError(t, validateOpenPath(t.TempDir()))
+	cleaned, err := validateOpenPath(t.TempDir())
+	require.NoError(t, err)
+	assert.True(t, filepath.IsAbs(cleaned))
 }
 
 // --- Spec table sanity (per OS, via the actual defaultEditorSpecs()) ---

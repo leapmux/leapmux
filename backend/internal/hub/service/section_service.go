@@ -12,7 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
-	"github.com/leapmux/leapmux/internal/util/validate"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // SectionService implements the SectionServiceHandler interface.

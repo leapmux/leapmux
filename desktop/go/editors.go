@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/util/procutil"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // DetectedEditor is what the Tauri shell ultimately surfaces to the frontend:
@@ -120,7 +120,8 @@ func (r *EditorRegistry) Refresh() []DetectedEditor {
 // path is validated server-side: a misbehaving frontend cannot trick us into
 // launching an editor against a relative path, a missing path, or a file.
 func (r *EditorRegistry) Open(id, path string) error {
-	if err := validateOpenPath(path); err != nil {
+	cleaned, err := validateOpenPath(path)
+	if err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -132,7 +133,7 @@ func (r *EditorRegistry) Open(id, path string) error {
 	if !ok || detected == nil {
 		return fmt.Errorf("editor %q is not available", id)
 	}
-	if err := r.launcher.Launch(detected, path); err != nil {
+	if err := r.launcher.Launch(detected, cleaned); err != nil {
 		return fmt.Errorf("launch %s: %w", r.displayName(id), err)
 	}
 	return nil
@@ -166,21 +167,24 @@ func (r *EditorRegistry) detectLocked() {
 	r.cached = true
 }
 
-func validateOpenPath(p string) error {
-	if p == "" {
-		return errors.New("path is empty")
-	}
-	if !filepath.IsAbs(p) {
-		return fmt.Errorf("path must be absolute: %q", p)
-	}
-	info, err := os.Stat(p)
+// validateOpenPath delegates the path-shape checks (non-empty, absolute,
+// no traversal, no Windows reserved names) to the shared validate package,
+// then layers the editor-launcher-specific requirement that the target
+// actually exists on disk and is a directory.
+func validateOpenPath(p string) (string, error) {
+	homeDir, _ := os.UserHomeDir()
+	cleaned, err := validate.SanitizePath(p, homeDir)
 	if err != nil {
-		return fmt.Errorf("path not accessible: %w", err)
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("path not accessible: %w", err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("path is not a directory: %q", p)
+		return "", fmt.Errorf("path is not a directory: %q", cleaned)
 	}
-	return nil
+	return cleaned, nil
 }
 
 // --- Detection helpers ---
