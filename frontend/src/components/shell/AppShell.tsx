@@ -1,6 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
+import type { TabContext } from './tabContext'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Tab } from '~/stores/tab.store'
@@ -29,6 +30,7 @@ import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useShortcuts } from '~/hooks/useShortcuts'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { createIdentityCache } from '~/lib/identityCache'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, parentDirectory, relativeUnder } from '~/lib/paths'
@@ -117,6 +119,12 @@ export const AppShell: ParentComponent = (props) => {
   const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
   const [addTunnelTarget, setAddTunnelTarget] = createSignal<Worker | null>(null)
   const tunnelStore = createTunnelStore()
+  // listWorkers() returns freshly-deserialized objects on every call.
+  // Stabilize identity by id so the sidebar's <For> doesn't unmount and
+  // remount every worker row on each refresh / WORKERS_CHANGED push.
+  const workerIdentity = createIdentityCache<Worker>({
+    keyOf: w => w.id,
+  })
 
   // Fetch workers list.
   async function fetchWorkers() {
@@ -124,8 +132,9 @@ export const AppShell: ParentComponent = (props) => {
       return
     try {
       const resp = await workerClient.listWorkers({})
-      setWorkers(resp.workers)
-      for (const w of resp.workers) {
+      const stable = workerIdentity.stabilize(resp.workers)
+      setWorkers(stable)
+      for (const w of stable) {
         if (w.online) {
           workerInfoStore.fetchWorkerInfo(w.id)
         }
@@ -331,7 +340,7 @@ export const AppShell: ParentComponent = (props) => {
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
   // Get worker, working directory, and home directory from the currently active tab
-  const getCurrentTabContext = (): { workerId: string, workingDir: string, homeDir: string } => {
+  const getCurrentTabContext = (): TabContext => {
     const tab = activeTab()
     if (!tab)
       return { workerId: '', workingDir: '', homeDir: '' }
@@ -435,7 +444,7 @@ export const AppShell: ParentComponent = (props) => {
   })
 
   // Get working directory and home directory from the MRU agent tab
-  const getMruAgentContext = (): { workingDir: string, homeDir: string } => {
+  const getMruAgentContext = (): Pick<TabContext, 'workingDir' | 'homeDir'> => {
     const agentPrefix = `${TabType.AGENT}:`
     const mruKey = tabStore.state.mruOrder.find(k => k.startsWith(agentPrefix))
     if (!mruKey)
@@ -1052,6 +1061,7 @@ export const AppShell: ParentComponent = (props) => {
     splitFocusedTile: tileRenderer.splitFocusedTile,
     scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
     writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
+    getCurrentTabContext,
     customKeybindings: preferences.customKeybindings,
   })
 
@@ -1203,6 +1213,7 @@ export const AppShell: ParentComponent = (props) => {
                 onToggleRightSidebar={() => toggleRightSidebarRef.current?.()}
                 leftSidebarVisible={leftSidebarVisible()}
                 rightSidebarVisible={rightSidebarVisible()}
+                activeWorkingDir={() => getCurrentTabContext().workingDir || undefined}
               />
               <div class={titlebarStyles.titlebarContent}>
                 <DesktopLayout

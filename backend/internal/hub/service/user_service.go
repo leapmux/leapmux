@@ -13,7 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
-	"github.com/leapmux/leapmux/internal/util/validate"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // storedPreferences maps to the JSON blob stored in user_preferences.prefs.

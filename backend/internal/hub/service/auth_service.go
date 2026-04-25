@@ -17,7 +17,7 @@ import (
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
-	"github.com/leapmux/leapmux/internal/util/validate"
+	"github.com/leapmux/leapmux/util/validate"
 	"github.com/leapmux/leapmux/util/version"
 )
 

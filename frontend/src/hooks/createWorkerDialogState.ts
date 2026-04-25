@@ -4,6 +4,7 @@ import { createEffect, createSignal, on, onMount } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { useOrg } from '~/context/OrgContext'
+import { createIdentityCache } from '~/lib/identityCache'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
 
 export type GitMode = 'current' | 'switch-branch' | 'create-branch' | 'create-worktree' | 'use-worktree'
@@ -18,6 +19,13 @@ interface WorkerDialogStateOptions {
 export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) {
   const org = useOrg()
   const workerInfoStore = createWorkerInfoStore()
+  // Workers come back as freshly-deserialized proto objects on every
+  // listWorkers() call, even when nothing has changed. Stabilize the
+  // object identity by id so the dialog's <For> doesn't unmount and
+  // remount every row on each refresh.
+  const workerIdentity = createIdentityCache<Worker>({
+    keyOf: w => w.id,
+  })
   const [workers, setWorkers] = createSignal<Worker[]>([])
   const [workerId, setWorkerId] = createSignal('')
   const [workingDir, setWorkingDir] = createSignal(options.defaultWorkingDir ?? '')
@@ -45,7 +53,7 @@ export function createWorkerDialogState(options: WorkerDialogStateOptions = {}) 
   const fetchWorkers = async () => {
     try {
       const resp = await workerClient.listWorkers({})
-      const online = resp.workers.filter(b => b.online)
+      const online = workerIdentity.stabilize(resp.workers.filter(b => b.online))
       setWorkers(online)
       if (online.length > 0 && !workerId()) {
         setWorkerId(online[0].id)

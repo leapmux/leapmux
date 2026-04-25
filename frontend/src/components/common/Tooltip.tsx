@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import { createEffect, createSignal, createUniqueId, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import * as styles from './Tooltip.css'
 
@@ -136,6 +136,15 @@ function isTargetClipped(target: Element): boolean {
  * via a SolidJS Portal and positioning it with getBoundingClientRect().
  */
 export function Tooltip(props: TooltipProps) {
+  // Capture the reactive owner at setup. Tooltip's show/hide handlers run
+  // from DOM event listeners (mouseenter, focusin, click), which are
+  // outside any Solid reactive scope. When `show()` reads `props.content`,
+  // the lazy JSX getter calls createComponent and the new computation has
+  // no parent — it leaks. Re-entering this owner inside the event handlers
+  // ensures any computations created during show/hide get parented to
+  // the Tooltip and disposed when it unmounts.
+  const tooltipOwner = getOwner()
+
   let triggerWrapperEl: HTMLSpanElement | undefined
   let tooltipEl: HTMLDivElement | undefined
   const tooltipId = createUniqueId()
@@ -259,12 +268,20 @@ export function Tooltip(props: TooltipProps) {
     if (!target)
       return
 
-    const handleShow = () => show()
-    const handleHide = () => hide()
+    // Re-establish the Tooltip's reactive owner inside the event listener
+    // callbacks. Without this, reading `props.content` (a lazy JSX getter)
+    // from inside `show()` calls createComponent without a parent owner —
+    // the resulting Solid computation never gets disposed and accumulates
+    // across every tooltip-show. See the corresponding comment near the
+    // owner capture at the top of this component.
+    const wrapInOwner = (fn: () => void): (() => void) =>
+      tooltipOwner ? () => { runWithOwner(tooltipOwner, fn) } : fn
+    const handleShow = wrapInOwner(show)
+    const handleHide = wrapInOwner(hide)
     // Clicking (or activating via Space/Enter) means the user is taking an
     // action — dismiss immediately so the tooltip doesn't linger over a
     // menu or state change. `click` fires for both mouse and keyboard.
-    const handleDismiss = () => dismiss()
+    const handleDismiss = wrapInOwner(dismiss)
 
     target.addEventListener('mouseenter', handleShow)
     target.addEventListener('mouseleave', handleHide)

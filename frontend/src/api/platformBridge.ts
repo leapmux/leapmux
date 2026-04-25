@@ -75,6 +75,11 @@ export interface TunnelInfo {
   targetPort: number
 }
 
+export interface DetectedEditor {
+  id: string
+  displayName: string
+}
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown
@@ -453,6 +458,14 @@ export const platformBridge = {
   },
   async listTunnels(): Promise<TunnelInfo[]> {
     return (await tauriInvoke<TunnelInfo[]>('list_tunnels')) ?? []
+  },
+  async listEditors(refresh = false): Promise<DetectedEditor[]> {
+    if (!isTauriApp())
+      return []
+    return (await tauriInvoke<DetectedEditor[]>('list_editors', { refresh })) ?? []
+  },
+  async openInEditor(editorId: string, path: string): Promise<void> {
+    await tauriInvoke('open_in_editor', { editorId, path })
   },
   async onEvent(event: string, callback: (...args: unknown[]) => void): Promise<() => void> {
     if (!isTauriApp())

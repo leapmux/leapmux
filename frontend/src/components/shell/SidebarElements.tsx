@@ -1,4 +1,5 @@
 import type { Accessor, JSX } from 'solid-js'
+import type { TabContext } from './tabContext'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
@@ -29,8 +30,8 @@ export interface SidebarElementsOpts {
   onConfirmDelete: (workspaceId: string) => Promise<boolean>
   onConfirmArchive: (workspaceId: string) => Promise<boolean>
   onPostArchiveWorkspace: (workspaceId: string) => void
-  getCurrentTabContext: () => { workerId: string, workingDir: string, homeDir: string }
-  getMruAgentContext: () => { workingDir: string, homeDir: string }
+  getCurrentTabContext: () => TabContext
+  getMruAgentContext: () => Pick<TabContext, 'workingDir' | 'homeDir'>
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen: (path: string, openSource?: GitFilterTab) => void

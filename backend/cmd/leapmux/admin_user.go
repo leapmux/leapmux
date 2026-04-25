@@ -13,7 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
-	"github.com/leapmux/leapmux/internal/util/validate"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 func runAdminUser(args []string) error {

@@ -7,9 +7,11 @@ import { CustomTitlebar } from './CustomTitlebar'
 
 // Hoisted so the vi.mock factories below can close over them — vi.mock
 // runs above any top-level `const` in the file.
-const { initialMaximized, setShowAboutDialog } = vi.hoisted(() => ({
+const { initialMaximized, setShowAboutDialog, runtimeLocalSolo, detectedEditors } = vi.hoisted(() => ({
   initialMaximized: { value: false },
   setShowAboutDialog: vi.fn(),
+  runtimeLocalSolo: { value: false },
+  detectedEditors: { value: [] as Array<{ id: string, displayName: string }> },
 }))
 
 vi.mock('~/lib/shortcuts/platform', () => ({
@@ -29,11 +31,30 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
   return {
     ...actual,
+    getRuntimeState: () => Promise.resolve({
+      shellMode: runtimeLocalSolo.value ? 'solo' : 'distributed',
+      connected: true,
+      hubUrl: '',
+      capabilities: {
+        mode: runtimeLocalSolo.value ? 'tauri-desktop-solo' : 'tauri-desktop-distributed',
+        hubTransport: runtimeLocalSolo.value ? 'proxy' : 'direct',
+        tunnels: true,
+        appControl: true,
+        windowControl: true,
+        systemPermissions: true,
+        localSolo: runtimeLocalSolo.value,
+      },
+    }),
     observeWindowMaximized: (onChange: (max: boolean) => void) => {
       onChange(initialMaximized.value)
       return () => {}
     },
     openWebInspector: vi.fn(),
+    platformBridge: {
+      ...actual.platformBridge,
+      listEditors: () => Promise.resolve(detectedEditors.value),
+      openInEditor: vi.fn(() => Promise.resolve()),
+    },
     quitApp: vi.fn(),
     windowClose: vi.fn(() => Promise.resolve()),
     windowMinimize: vi.fn(() => Promise.resolve()),
@@ -69,13 +90,14 @@ beforeAll(() => {
   }
 })
 
-function renderTitlebar() {
+function renderTitlebar(activeWorkingDir?: () => string | undefined) {
   return render(() => (
     <CustomTitlebar
       onToggleLeftSidebar={() => {}}
       onToggleRightSidebar={() => {}}
       leftSidebarVisible
       rightSidebarVisible
+      activeWorkingDir={activeWorkingDir}
     />
   ))
 }
@@ -161,5 +183,33 @@ describe('customTitlebar hamburger menu', () => {
     // The Linux window-controls cluster exposes the maximize/restore button via aria-label.
     expect(screen.getByLabelText('Restore')).toBeInTheDocument()
     expect(screen.queryByLabelText('Maximize')).toBeNull()
+  })
+})
+
+describe('customTitlebar open-in-editor slot', () => {
+  beforeEach(() => {
+    runtimeLocalSolo.value = false
+    detectedEditors.value = []
+    localStorage.clear()
+  })
+
+  it('hides the open-in-editor button when not in solo mode (e.g. web)', async () => {
+    runtimeLocalSolo.value = false
+    detectedEditors.value = [{ id: 'vscode', displayName: 'Visual Studio Code' }]
+    const { container } = renderTitlebar(() => '/home/u/proj')
+    await new Promise(r => setTimeout(r, 0))
+    expect(container.querySelector('[data-testid="open-in-editor"]')).toBeNull()
+  })
+
+  it('shows the open-in-editor button before the left-sidebar toggle in solo mode', async () => {
+    runtimeLocalSolo.value = true
+    detectedEditors.value = [{ id: 'vscode', displayName: 'Visual Studio Code' }]
+    const { container } = renderTitlebar(() => '/home/u/proj')
+    const button = await screen.findByTestId('open-in-editor')
+    const sidebarToggle = container.querySelector('button[aria-label^="Toggle left sidebar"]')
+    expect(sidebarToggle).not.toBeNull()
+    // Render order: open-in-editor first, then the left-sidebar toggle.
+    const cmp = button.compareDocumentPosition(sidebarToggle!)
+    expect(cmp & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })

@@ -8,14 +8,47 @@ import { useShortcuts } from './useShortcuts'
 const refreshFileTree = vi.fn()
 const toggleHiddenFiles = vi.fn()
 
+const openInEditorMock = vi.fn()
+const runtimeStateMock = vi.fn()
+const loadDetectedEditorsMock = vi.fn()
+
 vi.mock('~/api/platformBridge', () => ({
+  getRuntimeState: () => runtimeStateMock(),
   isTauriApp: () => false,
   openWebInspector: vi.fn(),
+  platformBridge: {
+    openInEditor: (...args: unknown[]) => openInEditorMock(...args),
+  },
   quitApp: vi.fn(),
   resetWebviewZoom: vi.fn(),
+  setMenuItemAccelerator: vi.fn(),
   zoomInWebview: vi.fn(),
   zoomOutWebview: vi.fn(),
 }))
+
+vi.mock('~/lib/externalEditors', () => {
+  // vi.mock replaces the module from importers' perspective, but does NOT
+  // rewrite intra-module references — so the real `resolvePreferredEditor`
+  // would call the real `getPreferredEditorId`, bypassing the test mocks.
+  // Mirror the (tiny) prod logic here against the mocked getters/setters.
+  // The real implementation is covered separately in `externalEditors.test.ts`.
+  const getPreferredEditorId = vi.fn<() => string | undefined>()
+  const setPreferredEditorId = vi.fn<(id: string) => void>()
+  return {
+    getPreferredEditorId,
+    setPreferredEditorId,
+    loadDetectedEditors: () => loadDetectedEditorsMock(),
+    resolvePreferredEditor: <T extends { id: string }>(editors: readonly T[]): T | undefined => {
+      if (editors.length === 0)
+        return undefined
+      const mru = getPreferredEditorId()
+      const target = editors.find(e => e.id === mru) ?? editors[0]
+      if (target.id !== mru)
+        setPreferredEditorId(target.id)
+      return target
+    },
+  }
+})
 
 vi.mock('~/components/shell/UserMenuState', () => ({
   setShowPreferencesDialog: vi.fn(),
@@ -52,6 +85,9 @@ afterEach(() => {
   resetCommands()
   refreshFileTree.mockReset()
   toggleHiddenFiles.mockReset()
+  openInEditorMock.mockReset()
+  runtimeStateMock.mockReset()
+  loadDetectedEditorsMock.mockReset()
 })
 
 afterAll(() => {
@@ -96,6 +132,7 @@ function makeProps() {
     splitFocusedTile: vi.fn(),
     scrollFocusedTabPage: vi.fn(),
     writeToFocusedTerminal: vi.fn(),
+    getCurrentTabContext: () => ({ workerId: '', workingDir: '', homeDir: '' }),
     customKeybindings: () => [],
   }
 }
@@ -246,6 +283,138 @@ describe('useShortcuts', () => {
       expect(props.termOps.handleOpenTerminal).not.toHaveBeenCalled()
       expect(props.setShowNewTerminalDialog).not.toHaveBeenCalled()
       expect(props.setShowNewWorkspace).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('app.openInExternalEditor', () => {
+    // Don't use a default parameter — JS treats `makeSoloProps(undefined)` as
+    // "no argument supplied" and substitutes the default, which is the
+    // opposite of what we want for the no-workingDir case.
+    function makeSoloProps(workingDir: string | undefined) {
+      const props = makeProps()
+      props.getCurrentTabContext = () => ({
+        workerId: '',
+        workingDir: workingDir ?? '',
+        homeDir: '',
+      })
+      return props
+    }
+
+    function soloRuntime(localSolo = true) {
+      return {
+        shellMode: localSolo ? 'solo' : 'distributed',
+        connected: true,
+        hubUrl: '',
+        capabilities: {
+          mode: 'tauri-desktop-solo',
+          hubTransport: 'proxy',
+          tunnels: true,
+          appControl: true,
+          windowControl: true,
+          systemPermissions: true,
+          localSolo,
+        },
+      }
+    }
+
+    it('does nothing when there is no active working dir', async () => {
+      const props = makeSoloProps(undefined)
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadDetectedEditorsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalEditor')!.handler()
+      expect(openInEditorMock).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when not in solo mode', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(false))
+      loadDetectedEditorsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalEditor')!.handler()
+      expect(openInEditorMock).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when no editors are detected', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadDetectedEditorsMock.mockResolvedValue([])
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalEditor')!.handler()
+      expect(openInEditorMock).not.toHaveBeenCalled()
+    })
+
+    it('opens the MRU editor when set', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadDetectedEditorsMock.mockResolvedValue([
+        { id: 'vscode', displayName: 'VS Code' },
+        { id: 'zed', displayName: 'Zed' },
+      ])
+      const editors = await import('~/lib/externalEditors')
+      vi.mocked(editors.getPreferredEditorId).mockReturnValue('zed')
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalEditor')!.handler()
+      expect(openInEditorMock).toHaveBeenCalledWith('zed', '/p')
+    })
+
+    it('falls back to first detected editor when MRU is unset', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadDetectedEditorsMock.mockResolvedValue([
+        { id: 'vscode', displayName: 'VS Code' },
+        { id: 'zed', displayName: 'Zed' },
+      ])
+      const editors = await import('~/lib/externalEditors')
+      vi.mocked(editors.getPreferredEditorId).mockReturnValue(undefined)
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalEditor')!.handler()
+      expect(openInEditorMock).toHaveBeenCalledWith('vscode', '/p')
+      expect(editors.setPreferredEditorId).toHaveBeenCalledWith('vscode')
+    })
+
+    it('falls back to first detected when MRU points at an uninstalled editor', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadDetectedEditorsMock.mockResolvedValue([
+        { id: 'vscode', displayName: 'VS Code' },
+      ])
+      const editors = await import('~/lib/externalEditors')
+      vi.mocked(editors.getPreferredEditorId).mockReturnValue('zed')
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalEditor')!.handler()
+      expect(openInEditorMock).toHaveBeenCalledWith('vscode', '/p')
+      expect(editors.setPreferredEditorId).toHaveBeenCalledWith('vscode')
     })
   })
 })

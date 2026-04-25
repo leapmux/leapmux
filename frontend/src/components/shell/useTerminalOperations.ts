@@ -1,4 +1,5 @@
 import type { Accessor } from 'solid-js'
+import type { TabContext } from './tabContext'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
@@ -21,7 +22,7 @@ export interface UseTerminalOperationsProps {
   layoutStore: ReturnType<typeof createLayoutStore>
   activeWorkspace: Accessor<Workspace | null>
   isActiveWorkspaceMutatable: Accessor<boolean>
-  getCurrentTabContext: () => { workerId: string, workingDir: string }
+  getCurrentTabContext: () => Pick<TabContext, 'workerId' | 'workingDir'>
   setShowNewTerminalDialog: (v: boolean) => void
   setNewTerminalLoading: (v: boolean) => void
   setNewShellLoading: (v: boolean) => void

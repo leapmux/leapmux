@@ -26,6 +26,7 @@ type App struct {
 	tunnels        *TunnelManager
 	proxy          *HubProxy
 	relay          *ChannelRelay
+	editors        *EditorRegistry
 	hubURL         string
 	binaryHash     string
 	eventSinkMu    sync.RWMutex
@@ -41,6 +42,7 @@ func NewApp(binaryHash string) *App {
 		ctx:        ctx,
 		cancel:     cancel,
 		tunnels:    NewTunnelManager(),
+		editors:    defaultEditorRegistry(),
 		binaryHash: binaryHash,
 	}
 	app.startup()
@@ -245,4 +247,15 @@ func (a *App) DeleteTunnel(tunnelID string) error {
 
 func (a *App) ListTunnels() []TunnelInfo {
 	return a.tunnels.ListTunnels()
+}
+
+func (a *App) ListEditors(refresh bool) []DetectedEditor {
+	if refresh {
+		return a.editors.Refresh()
+	}
+	return a.editors.List()
+}
+
+func (a *App) OpenInEditor(editorID, path string) error {
+	return a.editors.Open(editorID, path)
 }

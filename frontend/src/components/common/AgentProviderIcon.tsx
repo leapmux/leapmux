@@ -6,6 +6,7 @@ import type { JSX } from 'solid-js'
 import Bot from 'lucide-solid/icons/bot'
 import { createUniqueId, Match, Switch } from 'solid-js'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { iconStyle } from './iconStyle'
 
 // Keep in sync with backend/internal/worker/agent/agent.go DisplayName().
 export function agentProviderLabel(provider?: AgentProvider): string {
@@ -19,15 +20,6 @@ export function agentProviderLabel(provider?: AgentProvider): string {
     case AgentProvider.GOOSE: return 'Goose'
     case AgentProvider.KILO: return 'Kilo'
     default: return 'Unknown'
-  }
-}
-
-function iconStyle(size: number) {
-  return {
-    'flex-shrink': '0',
-    'min-width': `${size}px`,
-    'min-height': `${size}px`,
-    'vertical-align': 'middle',
   }
 }
 

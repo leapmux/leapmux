@@ -18,7 +18,7 @@ import (
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/validate"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 const (
