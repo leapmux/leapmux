@@ -1,3 +1,4 @@
+import type { TabContext } from './tabContext'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -40,7 +41,7 @@ export interface UseAgentOperationsProps {
   settingsLoading: { start: () => void, stop: () => void }
   isActiveWorkspaceMutatable: () => boolean
   activeWorkspace: () => Workspace | null
-  getCurrentTabContext: () => { workerId: string, workingDir: string }
+  getCurrentTabContext: () => Pick<TabContext, 'workerId' | 'workingDir'>
   setShowNewAgentDialog: (show: boolean) => void
   setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
   persistLayout?: () => void

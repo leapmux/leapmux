@@ -132,7 +132,7 @@ function makeProps() {
     splitFocusedTile: vi.fn(),
     scrollFocusedTabPage: vi.fn(),
     writeToFocusedTerminal: vi.fn(),
-    getActiveWorkingDir: () => undefined as string | undefined,
+    getCurrentTabContext: () => ({ workerId: '', workingDir: '', homeDir: '' }),
     customKeybindings: () => [],
   }
 }
@@ -292,7 +292,11 @@ describe('useShortcuts', () => {
     // opposite of what we want for the no-workingDir case.
     function makeSoloProps(workingDir: string | undefined) {
       const props = makeProps()
-      props.getActiveWorkingDir = () => workingDir
+      props.getCurrentTabContext = () => ({
+        workerId: '',
+        workingDir: workingDir ?? '',
+        homeDir: '',
+      })
       return props
     }
 

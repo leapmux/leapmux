@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
@@ -62,7 +63,7 @@ interface AppShellDialogsProps {
   keyPinConfirm: KeyPinConfirmState | null
   setKeyPinConfirm: (v: KeyPinConfirmState | null) => void
   activeWorkspace: () => { id: string } | null
-  getCurrentTabContext: () => { workerId: string, workingDir: string, homeDir: string }
+  getCurrentTabContext: () => TabContext
   agentOps: ReturnType<typeof useAgentOperations>
   agentStore: ReturnType<typeof createAgentStore>
   tabStore: ReturnType<typeof createTabStore>

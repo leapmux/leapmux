@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
@@ -52,7 +53,7 @@ interface TileRendererOpts {
   isActiveWorkspaceMutatable: () => boolean
   isActiveWorkspaceArchived: () => boolean
   activeWorkspace: () => { id: string } | null
-  getCurrentTabContext: () => { workerId: string, workingDir: string, homeDir: string }
+  getCurrentTabContext: () => TabContext
   getMruAgentContext: () => { workingDir: string, homeDir: string }
   handleTabSelect: (tab: Tab) => void
   handleTabClose: (tab: Tab) => Promise<void>

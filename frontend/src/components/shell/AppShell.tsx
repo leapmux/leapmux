@@ -1,6 +1,7 @@
 import type { ParentComponent } from 'solid-js'
 import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
+import type { TabContext } from './tabContext'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Tab } from '~/stores/tab.store'
@@ -339,7 +340,7 @@ export const AppShell: ParentComponent = (props) => {
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
   // Get worker, working directory, and home directory from the currently active tab
-  const getCurrentTabContext = (): { workerId: string, workingDir: string, homeDir: string } => {
+  const getCurrentTabContext = (): TabContext => {
     const tab = activeTab()
     if (!tab)
       return { workerId: '', workingDir: '', homeDir: '' }
@@ -1060,7 +1061,7 @@ export const AppShell: ParentComponent = (props) => {
     splitFocusedTile: tileRenderer.splitFocusedTile,
     scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
     writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
-    getActiveWorkingDir: () => getCurrentTabContext().workingDir || undefined,
+    getCurrentTabContext,
     customKeybindings: preferences.customKeybindings,
   })
 

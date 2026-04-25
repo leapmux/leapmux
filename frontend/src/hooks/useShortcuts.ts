@@ -1,4 +1,5 @@
 import type { Accessor } from 'solid-js'
+import type { TabContext } from '~/components/shell/tabContext'
 import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
@@ -40,11 +41,11 @@ interface UseShortcutsProps {
   scrollFocusedTabPage: (direction: -1 | 1) => void
   writeToFocusedTerminal: (data: string) => void
   /**
-   * Working directory of the active tab, used by `app.openInExternalEditor`.
-   * Returns `undefined` when there is no active tab or no working directory
-   * is associated with it.
+   * Active tab's working context (worker, dir, home). Same getter shape
+   * as the rest of the shell uses — so future shortcuts that need
+   * workerId/homeDir can read them without expanding this prop list.
    */
-  getActiveWorkingDir: () => string | undefined
+  getCurrentTabContext: () => TabContext
   customKeybindings: Accessor<UserKeybindingOverride[]>
 }
 
@@ -83,7 +84,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
     splitFocusedTile,
     scrollFocusedTabPage,
     writeToFocusedTerminal,
-    getActiveWorkingDir,
+    getCurrentTabContext,
     customKeybindings,
   } = props
 
@@ -158,7 +159,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.quit', 'Quit Application', () => quitApp(), 'App')
 
   cmd('app.openInExternalEditor', 'Open in External Editor', async () => {
-    const dir = getActiveWorkingDir()
+    const dir = getCurrentTabContext().workingDir || undefined
     if (!dir)
       return
     // Solo-mode gate: in distributed mode the working dir lives on the worker

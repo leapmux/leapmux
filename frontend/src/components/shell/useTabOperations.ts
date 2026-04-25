@@ -1,3 +1,4 @@
+import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
@@ -25,7 +26,7 @@ interface UseTabOperationsOpts {
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
   activeTab: () => Tab | undefined
-  getCurrentTabContext: () => { workerId: string, workingDir: string, homeDir: string }
+  getCurrentTabContext: () => TabContext
   focusEditor: () => void
   getScrollState: () => { distFromBottom: number, atBottom: boolean } | undefined
   setFileTreePath: (path: string) => void
