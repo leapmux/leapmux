@@ -409,7 +409,7 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 // Tests the seam between Manager and Terminal — easy to break by
 // swapping the ScreenSnapshotSince implementation.
 func TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind(t *testing.T) {
-	m := newTestManagerWithTerminal(t, "tm-prefix", Options{
+	m := newTestManagerWithTerminal(t, Options{
 		ID:         "tm-prefix",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
@@ -430,7 +430,7 @@ func TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind(t *testing.T) {
 // prefix MUST appear here too, otherwise alt-screen state is lost
 // across worker restarts even when the bug-fix landed for resubscribe.
 func TestManager_ScreenSnapshot_PrefixesPersistedScreen(t *testing.T) {
-	m := newTestManagerWithTerminal(t, "tm-snapshot", Options{
+	m := newTestManagerWithTerminal(t, Options{
 		ID:          "tm-snapshot",
 		WorkspaceID: "ws-snapshot",
 		Shell:       testutil.TestShell(),
@@ -450,11 +450,10 @@ func TestManager_ScreenSnapshot_PrefixesPersistedScreen(t *testing.T) {
 // newTestManagerWithTerminal starts a Manager + one terminal and wires
 // up the standard cleanup so callers don't repeat the StartTerminal +
 // t.Cleanup boilerplate. The Options are passed through verbatim (so
-// callers can vary WorkspaceID / Cols / Rows) and the terminal id is
-// expected to match Options.ID — splitting the parameter is purely for
-// the cleanup closure.
-func newTestManagerWithTerminal(t *testing.T, id string, opts Options) *Manager {
+// callers can vary WorkspaceID / Cols / Rows).
+func newTestManagerWithTerminal(t *testing.T, opts Options) *Manager {
 	t.Helper()
+	id := opts.ID
 	m := NewManager()
 	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64) {}, nil)
 	require.NoError(t, err)
@@ -475,19 +474,6 @@ func pushAltScreenPastRing(t *testing.T, m *Manager, id string) {
 	t.Helper()
 	require.True(t, m.AppendOutput(id, []byte("\x1b[?1049h")))
 	require.True(t, m.AppendOutput(id, ringOverflowFiller()))
-}
-
-// ringOverflowFiller returns plain-ASCII bytes sized just past the
-// retained ring, so writing them is guaranteed to overwrite anything
-// emitted earlier (including a leading mode toggle). 110% of the ring
-// is enough margin to stay correct even if screenBufferSize grows
-// modestly without making test runs gratuitously large.
-func ringOverflowFiller() []byte {
-	out := make([]byte, screenBufferSize+screenBufferSize/10)
-	for i := range out {
-		out[i] = 'x'
-	}
-	return out
 }
 
 func TestManager_IsExited_UnknownTerminal(t *testing.T) {

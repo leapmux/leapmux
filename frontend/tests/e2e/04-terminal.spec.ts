@@ -115,11 +115,13 @@ test.describe('Terminal', () => {
     await typeInTerminal(page, 'printf \'\\033[?1049h\'; yes leapmux-altscreen-filler | head -c 150000; printf \'DONE_FILLING\\n\'')
     await waitForTerminalText(page, 'DONE_FILLING', 30_000)
 
+    const getBufferType = () =>
+      page.evaluate(() => (window as any).__getActiveTerminalBufferType?.() ?? 'normal')
+
     // Sanity: the terminal is currently in alt screen. If this fails,
     // the test setup is wrong and the post-refresh assertion below
     // would be meaningless.
-    const before = await page.evaluate(() => (window as any).__getActiveTerminalBufferType?.() ?? 'normal')
-    expect(before).toBe('alternate')
+    expect(await getBufferType()).toBe('alternate')
 
     await page.reload()
     await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]')).toBeVisible()
@@ -131,8 +133,7 @@ test.describe('Terminal', () => {
     // the tracker's snapshotPrefix must have set xterm back into
     // alt-screen mode before replay.
     await expect(async () => {
-      const bufType = await page.evaluate(() => (window as any).__getActiveTerminalBufferType?.() ?? 'normal')
-      expect(bufType).toBe('alternate')
+      expect(await getBufferType()).toBe('alternate')
     }).toPass({ timeout: 30_000 })
   })
 

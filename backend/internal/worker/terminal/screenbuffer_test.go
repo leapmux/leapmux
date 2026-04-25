@@ -372,6 +372,19 @@ func TestScreenBuffer_Snapshot_DefaultStateNoPrefix(t *testing.T) {
 		"default-state Snapshot must return body bytes only")
 }
 
+// ringOverflowFiller returns plain-ASCII bytes sized just past the
+// retained ring, so writing them is guaranteed to overwrite anything
+// emitted earlier (including a leading mode toggle). 110% of the ring
+// is enough margin to stay correct even if screenBufferSize grows
+// modestly without making test runs gratuitously large.
+func ringOverflowFiller() []byte {
+	out := make([]byte, screenBufferSize+screenBufferSize/10)
+	for i := range out {
+		out[i] = 'x'
+	}
+	return out
+}
+
 // TestScreenBuffer_ConcurrentWriteAndSnapshot: Write and SnapshotSince
 // must not data-race under -race. No assertion on content — the goal is
 // just to exercise the locks. The race detector surfaces violations as

@@ -97,10 +97,13 @@ func (t *modeTracker) feed(data []byte) {
 				continue
 			}
 			if t.paramLen >= paramBufCap {
-				// Overflow: abort. Drop bytes until a final byte (or a
-				// fresh `\x1b`, handled above) ends the sequence. The
-				// final byte itself must not dispatch — track via
-				// paramLen sentinel + skipping the dispatch branch.
+				// Param buffer full — bail to ground state. Subsequent
+				// bytes (including the would-be final byte that ends
+				// this CSI) are read as plain text and ignored until a
+				// fresh `\x1b` starts a new escape. Dropping the entire
+				// sequence is the safe choice: a truncated DEC param
+				// list cannot be partially applied without risking
+				// silently flipping the wrong mode.
 				t.parseState = stateGround
 				continue
 			}

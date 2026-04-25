@@ -178,9 +178,9 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 // injectAltScreenAndFlushPastRing writes the alt-screen toggle followed
 // by enough plain bytes to overwrite the retained ring, then waits for
 // the manager's offset to confirm the bytes have landed. Returns the
-// filler length so callers can compute the expected end_offset. Used by
-// every test that asserts the modeTracker prefix appears on a snapshot
-// taken AFTER the toggle has fallen out of the ring.
+// filler length so callers can compute the expected end_offset. Shared
+// by service-layer tests that assert the modeTracker prefix appears on
+// a snapshot taken AFTER the toggle has fallen out of the ring.
 func injectAltScreenAndFlushPastRing(t *testing.T, svc *Context, terminalID string) int {
 	t.Helper()
 	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte("\x1b[?1049h")))
