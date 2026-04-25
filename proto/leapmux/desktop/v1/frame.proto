@@ -35,6 +35,8 @@ message Request {
     DeleteTunnelRequest delete_tunnel = 25;
     ListTunnelsRequest list_tunnels = 26;
     ShutdownRequest shutdown = 29;
+    ListEditorsRequest list_editors = 30;
+    OpenInEditorRequest open_in_editor = 31;
   }
 }
 
@@ -51,6 +53,12 @@ message CloseChannelRelayRequest {}
 message SwitchModeRequest {}
 message ListTunnelsRequest {}
 message ShutdownRequest {}
+
+message ListEditorsRequest {
+  // When true, bypass the cached detection result and re-probe the
+  // filesystem. Used by the "Refresh editor list" UI action.
+  bool refresh = 1;
+}
 
 // Parameterized requests
 message SetWindowSizeRequest {
@@ -82,6 +90,11 @@ message DeleteTunnelRequest {
   string tunnel_id = 1;
 }
 
+message OpenInEditorRequest {
+  string editor_id = 1;
+  string path = 2;
+}
+
 // --- Responses (Go → Rust) ---
 
 message Response {
@@ -98,6 +111,7 @@ message Response {
     ListTunnelsResponse list_tunnels = 18;
     StartupInfo startup_info = 19;
     SidecarInfo sidecar_info = 20;
+    ListEditorsResponse list_editors = 21;
   }
 }
 
@@ -117,6 +131,15 @@ message CreateTunnelResponse {
 
 message ListTunnelsResponse {
   repeated TunnelInfo tunnels = 1;
+}
+
+message ListEditorsResponse {
+  repeated DetectedEditor editors = 1;
+}
+
+message DetectedEditor {
+  string id = 1;
+  string display_name = 2;
 }
 
 message StartupInfo {

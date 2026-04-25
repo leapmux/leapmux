@@ -6,10 +6,12 @@ import type { Keybinding, UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
-import { isTauriApp, openWebInspector, quitApp, resetWebviewZoom, setMenuItemAccelerator, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
+import { getRuntimeState, isTauriApp, openWebInspector, platformBridge, quitApp, resetWebviewZoom, setMenuItemAccelerator, zoomInWebview, zoomOutWebview } from '~/api/platformBridge'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenuState'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { getPreferredEditorId, loadDetectedEditors, setPreferredEditorId } from '~/lib/externalEditors'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
+import { createLogger } from '~/lib/logger'
 import { registerCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/shortcuts/context'
 import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
@@ -37,6 +39,12 @@ interface UseShortcutsProps {
   splitFocusedTile: (direction: 'horizontal' | 'vertical') => void
   scrollFocusedTabPage: (direction: -1 | 1) => void
   writeToFocusedTerminal: (data: string) => void
+  /**
+   * Working directory of the active tab, used by `app.openInExternalEditor`.
+   * Returns `undefined` when there is no active tab or no working directory
+   * is associated with it.
+   */
+  getActiveWorkingDir: () => string | undefined
   customKeybindings: Accessor<UserKeybindingOverride[]>
 }
 
@@ -75,8 +83,11 @@ export function useShortcuts(props: UseShortcutsProps): void {
     splitFocusedTile,
     scrollFocusedTabPage,
     writeToFocusedTerminal,
+    getActiveWorkingDir,
     customKeybindings,
   } = props
+
+  const log = createLogger('shortcuts')
 
   const cleanups: (() => void)[] = []
 
@@ -145,6 +156,33 @@ export function useShortcuts(props: UseShortcutsProps): void {
       last.close()
   }, 'App')
   cmd('app.quit', 'Quit Application', () => quitApp(), 'App')
+
+  cmd('app.openInExternalEditor', 'Open in External Editor', async () => {
+    const dir = getActiveWorkingDir()
+    if (!dir)
+      return
+    // Solo-mode gate: in distributed mode the working dir lives on the worker
+    // machine, not the local filesystem we'd hand to the editor process.
+    const state = await getRuntimeState()
+    if (!state.capabilities.localSolo)
+      return
+    const editors = await loadDetectedEditors()
+    if (editors.length === 0)
+      return
+    // Prefer the user's MRU; if it points at an editor that's no longer
+    // detected (uninstalled), fall back to the first available and update
+    // the MRU so subsequent invocations are stable.
+    const mru = getPreferredEditorId()
+    const target = editors.find(e => e.id === mru) ?? editors[0]
+    if (target.id !== mru)
+      setPreferredEditorId(target.id)
+    try {
+      await platformBridge.openInEditor(target.id, dir)
+    }
+    catch (err) {
+      log.warn('open_in_editor failed', { id: target.id, dir, err })
+    }
+  }, 'App')
 
   function getVisibleTabs() {
     const focusedTile = layoutStore.focusedTileId()

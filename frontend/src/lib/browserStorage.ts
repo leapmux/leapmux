@@ -39,6 +39,7 @@ export const KEY_BROWSER_PREFS = 'leapmux:browser-prefs'
 export const KEY_MRU_AGENT_PROVIDERS = 'leapmux:mru-agent-providers'
 export const KEY_KEY_PINS = 'leapmux:key-pins'
 export const KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN = 'leapmux:directory-selector-show-hidden'
+export const KEY_PREFERRED_EDITOR = 'leapmux:preferred-editor'
 
 /** Keys that are never cleaned up and stored without wrapping. */
 export const STATIC_KEYS = new Set([
@@ -46,6 +47,7 @@ export const STATIC_KEYS = new Set([
   KEY_MRU_AGENT_PROVIDERS,
   KEY_KEY_PINS,
   KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
+  KEY_PREFERRED_EDITOR,
 ])
 
 /** Dynamic key prefixes — single source of truth for all consumers. */

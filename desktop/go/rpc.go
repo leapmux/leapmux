@@ -274,6 +274,31 @@ func (s *RPCSession) handleRequest(req *desktoppb.Request) {
 			},
 		})
 
+	case *desktoppb.Request_ListEditors:
+		editors := s.app.ListEditors(m.ListEditors.Refresh)
+		pbEditors := make([]*desktoppb.DetectedEditor, len(editors))
+		for i := range editors {
+			pbEditors[i] = &desktoppb.DetectedEditor{
+				Id:          editors[i].ID,
+				DisplayName: editors[i].DisplayName,
+			}
+		}
+		s.writeResponse(&desktoppb.Response{
+			Id: id,
+			Result: &desktoppb.Response_ListEditors{
+				ListEditors: &desktoppb.ListEditorsResponse{
+					Editors: pbEditors,
+				},
+			},
+		})
+
+	case *desktoppb.Request_OpenInEditor:
+		if err := s.app.OpenInEditor(m.OpenInEditor.EditorId, m.OpenInEditor.Path); err != nil {
+			s.writeError(id, err)
+			return
+		}
+		s.writeOK(id)
+
 	case *desktoppb.Request_Shutdown:
 		s.writeOK(id)
 		if s.onShutdown != nil {

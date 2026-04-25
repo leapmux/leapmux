@@ -1600,6 +1600,56 @@ fn proto_to_tunnel_info(info: &proto::TunnelInfo) -> TunnelInfoResponse {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectedEditorPayload {
+    id: String,
+    display_name: String,
+}
+
+#[tauri::command]
+async fn list_editors(
+    shell: State<'_, Arc<DesktopShell>>,
+    refresh: Option<bool>,
+) -> Result<Vec<DetectedEditorPayload>, String> {
+    let resp = check_response(
+        shell
+            .send_request_async(proto::request::Method::ListEditors(
+                proto::ListEditorsRequest {
+                    refresh: refresh.unwrap_or(false),
+                },
+            ))
+            .await?,
+    )?;
+    match resp.result {
+        Some(proto::response::Result::ListEditors(r)) => Ok(r
+            .editors
+            .into_iter()
+            .map(|e| DetectedEditorPayload {
+                id: e.id,
+                display_name: e.display_name,
+            })
+            .collect()),
+        _ => Err("unexpected response for list_editors".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn open_in_editor(
+    shell: State<'_, Arc<DesktopShell>>,
+    editor_id: String,
+    path: String,
+) -> Result<(), String> {
+    check_response(
+        shell
+            .send_request_async(proto::request::Method::OpenInEditor(
+                proto::OpenInEditorRequest { editor_id, path },
+            ))
+            .await?,
+    )?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn switch_mode(
     shell: State<'_, Arc<DesktopShell>>,
@@ -1976,6 +2026,8 @@ fn main() {
             create_tunnel,
             delete_tunnel,
             list_tunnels,
+            list_editors,
+            open_in_editor,
             switch_mode,
             #[cfg(target_os = "macos")]
             restart_app,

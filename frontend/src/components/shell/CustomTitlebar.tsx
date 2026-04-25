@@ -11,6 +11,7 @@ import { getPlatform } from '~/lib/shortcuts/platform'
 import { isDesktopApp } from '~/lib/systemInfo'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './CustomTitlebar.css'
+import { OpenInEditorButton } from './OpenInEditorButton'
 import { PanelLeftFilled, PanelRightFilled } from './SidebarIcons'
 import { UserMenuItems } from './UserMenuItems'
 import { WindowCloseIcon, WindowMaximizeIcon, WindowMinimizeIcon, WindowRestoreIcon } from './WindowControlIcons'
@@ -28,6 +29,8 @@ interface CustomTitlebarProps {
   onToggleRightSidebar: () => void
   leftSidebarVisible: boolean
   rightSidebarVisible: boolean
+  /** Working directory of the active tab, or undefined when nothing is active. */
+  activeWorkingDir?: () => string | undefined
 }
 
 export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
@@ -77,6 +80,8 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
       </DropdownMenu>
       <div class={styles.dragRegion} data-tauri-drag-region />
       <div class={styles.titleText}>LeapMux Desktop</div>
+
+      <OpenInEditorButton workingDir={() => props.activeWorkingDir?.()} />
 
       <IconButton
         icon={props.leftSidebarVisible ? PanelLeftFilled : PanelLeft}

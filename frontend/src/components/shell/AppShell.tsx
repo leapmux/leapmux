@@ -29,6 +29,7 @@ import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useShortcuts } from '~/hooks/useShortcuts'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { createIdentityCache } from '~/lib/identityCache'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, parentDirectory, relativeUnder } from '~/lib/paths'
@@ -117,6 +118,12 @@ export const AppShell: ParentComponent = (props) => {
   const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
   const [addTunnelTarget, setAddTunnelTarget] = createSignal<Worker | null>(null)
   const tunnelStore = createTunnelStore()
+  // listWorkers() returns freshly-deserialized objects on every call.
+  // Stabilize identity by id so the sidebar's <For> doesn't unmount and
+  // remount every worker row on each refresh / WORKERS_CHANGED push.
+  const workerIdentity = createIdentityCache<Worker>({
+    keyOf: w => w.id,
+  })
 
   // Fetch workers list.
   async function fetchWorkers() {
@@ -124,8 +131,9 @@ export const AppShell: ParentComponent = (props) => {
       return
     try {
       const resp = await workerClient.listWorkers({})
-      setWorkers(resp.workers)
-      for (const w of resp.workers) {
+      const stable = workerIdentity.stabilize(resp.workers)
+      setWorkers(stable)
+      for (const w of stable) {
         if (w.online) {
           workerInfoStore.fetchWorkerInfo(w.id)
         }
@@ -1052,6 +1060,7 @@ export const AppShell: ParentComponent = (props) => {
     splitFocusedTile: tileRenderer.splitFocusedTile,
     scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
     writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
+    getActiveWorkingDir: () => getCurrentTabContext().workingDir || undefined,
     customKeybindings: preferences.customKeybindings,
   })
 
@@ -1203,6 +1212,7 @@ export const AppShell: ParentComponent = (props) => {
                 onToggleRightSidebar={() => toggleRightSidebarRef.current?.()}
                 leftSidebarVisible={leftSidebarVisible()}
                 rightSidebarVisible={rightSidebarVisible()}
+                activeWorkingDir={() => getCurrentTabContext().workingDir || undefined}
               />
               <div class={titlebarStyles.titlebarContent}>
                 <DesktopLayout
