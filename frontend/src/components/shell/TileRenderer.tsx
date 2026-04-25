@@ -54,7 +54,7 @@ interface TileRendererOpts {
   isActiveWorkspaceArchived: () => boolean
   activeWorkspace: () => { id: string } | null
   getCurrentTabContext: () => TabContext
-  getMruAgentContext: () => { workingDir: string, homeDir: string }
+  getMruAgentContext: () => Pick<TabContext, 'workingDir' | 'homeDir'>
   handleTabSelect: (tab: Tab) => void
   handleTabClose: (tab: Tab) => Promise<void>
   setIsTabEditing: (fn: () => boolean) => void

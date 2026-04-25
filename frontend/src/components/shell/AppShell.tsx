@@ -444,7 +444,7 @@ export const AppShell: ParentComponent = (props) => {
   })
 
   // Get working directory and home directory from the MRU agent tab
-  const getMruAgentContext = (): { workingDir: string, homeDir: string } => {
+  const getMruAgentContext = (): Pick<TabContext, 'workingDir' | 'homeDir'> => {
     const agentPrefix = `${TabType.AGENT}:`
     const mruKey = tabStore.state.mruOrder.find(k => k.startsWith(agentPrefix))
     if (!mruKey)

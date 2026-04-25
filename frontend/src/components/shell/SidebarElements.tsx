@@ -31,7 +31,7 @@ export interface SidebarElementsOpts {
   onConfirmArchive: (workspaceId: string) => Promise<boolean>
   onPostArchiveWorkspace: (workspaceId: string) => void
   getCurrentTabContext: () => TabContext
-  getMruAgentContext: () => { workingDir: string, homeDir: string }
+  getMruAgentContext: () => Pick<TabContext, 'workingDir' | 'homeDir'>
   fileTreePath: string
   onFileSelect: (path: string) => void
   onFileOpen: (path: string, openSource?: GitFilterTab) => void

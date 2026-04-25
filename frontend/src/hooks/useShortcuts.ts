@@ -159,7 +159,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.quit', 'Quit Application', () => quitApp(), 'App')
 
   cmd('app.openInExternalEditor', 'Open in External Editor', async () => {
-    const dir = getCurrentTabContext().workingDir || undefined
+    const dir = getCurrentTabContext().workingDir
     if (!dir)
       return
     // Solo-mode gate: in distributed mode the working dir lives on the worker
