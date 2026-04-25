@@ -44,6 +44,16 @@ export interface Tab {
   shellStartDir?: string
   /** Last-known screen snapshot for fast visual restore. */
   screen?: Uint8Array
+  /**
+   * Cumulative PTY byte offset this tab has already applied to its
+   * xterm. Seeded at hydration from the backend's screen_end_offset
+   * (the offset at the end of `screen`, which equals `screen.length`
+   * before the ring wraps and is larger once bytes fall off), then
+   * advanced monotonically as TerminalData events arrive. Echoed back
+   * to the backend as WatchTerminalEntry.after_offset on resubscribe
+   * so the handler skips bytes we already have.
+   */
+  lastOffset?: number
   cols?: number
   rows?: number
   /** Error string from TerminalStatusChange when status is STARTUP_FAILED. */
@@ -86,6 +96,7 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     workingDir: term.workingDir || undefined,
     shellStartDir: term.shellStartDir || undefined,
     screen: term.screen.length > 0 ? term.screen : undefined,
+    lastOffset: term.screen.length > 0 ? Number(term.screenEndOffset) : undefined,
     cols: term.cols || undefined,
     rows: term.rows || undefined,
     gitBranch: term.gitBranch || undefined,
@@ -525,6 +536,21 @@ export function createTabStore() {
         t => t.type === TabType.TERMINAL && t.id === id && !t.contentReady,
         'contentReady',
         true,
+      )
+    },
+
+    /**
+     * Advance a terminal tab's resume cursor. Callers pass the offset
+     * returned by `applyTerminalData`, which has already applied its
+     * snapshot-vs-incremental return rule. Predicate skips no-op writes
+     * so same-value updates don't fire reactive notifications.
+     */
+    setTerminalLastOffset(id: string, offset: number) {
+      setState(
+        'tabs',
+        t => t.type === TabType.TERMINAL && t.id === id && t.lastOffset !== offset,
+        'lastOffset',
+        offset,
       )
     },
 

@@ -11,7 +11,7 @@ async function getTerminalText(page: Page): Promise<string> {
     }
     const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
     for (const container of containers) {
-      if (container.style.display !== 'none') {
+      if (container.dataset.active === 'true') {
         const rows = container.querySelector('.xterm-rows')
         if (rows)
           return rows.textContent ?? ''

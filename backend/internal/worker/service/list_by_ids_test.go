@@ -237,6 +237,74 @@ func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 	assert.Empty(t, resp.GetTerminals(), "closed terminal should not be returned")
 }
 
+// TestListTerminals_ScreenEndOffset_DBOnly: terminals that exist only in
+// the DB (no live PTY — worker restarted or shell exited) must report
+// screen_end_offset = len(screen). The frontend seeds its WatchEvents
+// after_offset from this, and the invariant means a cold subscribe
+// against a dead terminal resolves to "caught up" with no replay.
+func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-A")
+
+	screen := []byte("some persisted screen content")
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: "t-db", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+		Cols: 80, Rows: 24, Screen: screen,
+	}))
+
+	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+		TabIds: []string{"t-db"},
+	}, w)
+
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.Len(t, resp.GetTerminals(), 1)
+	ti := resp.GetTerminals()[0]
+	assert.Equal(t, screen, ti.GetScreen())
+	assert.Equal(t, int64(len(screen)), ti.GetScreenEndOffset(),
+		"DB-only terminals: screen_end_offset must equal len(screen)")
+}
+
+// TestListTerminals_ScreenEndOffset_LiveTerminal: terminals with a live
+// PTY in the Manager must report screen_end_offset sourced from the
+// Manager (cumulative bytes written), not from len(db_row.screen) which
+// is empty until Shutdown persists. Proves the path by injecting a
+// unique marker via AppendOutput and confirming the response carries
+// it — the DB row for this terminal has Screen=[]byte{}, so a
+// non-empty response can only have come from the Manager. Driving the
+// shell with SendInput was previously racy: PTY output continues
+// streaming asynchronously, so ti.ScreenEndOffset and a subsequent
+// ScreenSnapshotSince read at different moments diverged.
+func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-A")
+	startTestTerminal(t, svc, ctx, "t-live", "ws-A")
+
+	marker := []byte("live_offset_test_marker")
+	require.True(t, svc.Terminals.AppendOutput("t-live", marker))
+
+	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+		TabIds: []string{"t-live"},
+	}, w)
+
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.Len(t, resp.GetTerminals(), 1)
+	ti := resp.GetTerminals()[0]
+
+	// Screen and ScreenEndOffset are sampled atomically inside
+	// buildEntryLocked (single Terminal.ScreenSnapshot call), so the
+	// len(screen) == offset invariant holds regardless of concurrent
+	// shell output. The marker presence confirms we got the Manager's
+	// buffer, not the DB row's empty Screen.
+	assert.Contains(t, string(ti.GetScreen()), string(marker),
+		"live terminal must return Manager's screen (DB row has Screen=[]byte{})")
+	assert.Equal(t, int64(len(ti.GetScreen())), ti.GetScreenEndOffset(),
+		"before ring wrap: screen_end_offset equals len(screen)")
+}
+
 func TestListTerminals_InaccessibleWorkspaceDenied(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-A")

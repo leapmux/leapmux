@@ -17,7 +17,7 @@ import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
-import { bufferHasVisibleContent } from '~/lib/terminal'
+import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.store'
 
@@ -521,22 +521,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             if (checkContent && bufferHasVisibleContent(instance.terminal))
               tabStore.markTerminalContentReady(terminalId)
           }
-          if (termEvent.event.value.isSnapshot) {
-            // Initial screen snapshot from WatchEvents. Only apply if the
-            // screen hasn't already been restored (e.g. from the
-            // listTerminals snapshot written during component mount).
-            if (!instance.screenRestored) {
-              instance.suppressInput = true
-              instance.terminal.write(termEvent.event.value.data, () => {
-                instance!.suppressInput = false
-                onParsed()
-              })
-              instance.screenRestored = true
-            }
-          }
-          else {
-            instance.terminal.write(termEvent.event.value.data, onParsed)
-          }
+          const { data, isSnapshot, endOffset } = termEvent.event.value
+          const newOffset = applyTerminalData(
+            instance,
+            data,
+            isSnapshot,
+            Number(endOffset),
+            tab?.lastOffset ?? 0,
+            onParsed,
+          )
+          tabStore.setTerminalLastOffset(terminalId, newOffset)
         }
         break
       }
@@ -656,10 +650,18 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         if (!workerId)
           return
 
+        // Seed after_offset from the tab's resume cursor; 0 means a
+        // cold subscribe (the tab was hydrated without a screen or the
+        // cursor hasn't advanced yet).
+        const terminals = terminalIds.map(id => ({
+          terminalId: id,
+          afterOffset: BigInt(untrack(() => tabStore.getTerminalTab(id)?.lastOffset ?? 0)),
+        }))
+
         // Open the E2EE channel stream to the Worker.
         const handle = await watchEventsViaChannel(workerId, {
           agents,
-          terminalIds,
+          terminals,
         })
 
         // Now that the new stream listener is registered, clean up

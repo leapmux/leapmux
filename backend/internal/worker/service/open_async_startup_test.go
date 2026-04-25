@@ -180,7 +180,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 
 	wWatch := &testResponseWriter{channelID: "test-ch"}
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		TerminalIds: []string{terminalID},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID}},
 	}, wWatch)
 
 	// Catch-up replay fires synchronously during the WatchEvents handler,

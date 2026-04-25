@@ -198,10 +198,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       agentOps.handleCloseAgent(tab.id, worktreeAction)
     }
     else {
-      const instance = getTerminalInstance(tab.id)
-      if (instance) {
-        instance.dispose()
-      }
+      // Instance disposal is owned by TerminalView's reactive effect,
+      // which fires when removeTab evicts the tab from the store.
       termOps.handleTerminalClose(tab.id, worktreeAction)
     }
     removeEmptyFloatingWindow(tab.tileId)

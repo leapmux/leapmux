@@ -238,8 +238,8 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       // Do NOT gate on status === READY: the ResizeObserver's first fit()
       // fires well before the backend broadcasts READY, and that first
       // fit is often the only resize event the layout produces. The
-      // backend stashes resizes received during STARTING and applies
-      // them when the PTY is registered (see resize_during_startup_test).
+      // backend waits briefly for this during startup so the PTY can be
+      // spawned at the final size rather than SIGWINCHed to it.
       if (!ws || !tab)
         return
       await workerRpc.resizeTerminal(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })

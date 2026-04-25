@@ -142,7 +142,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await page.evaluate(() => {
       const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
       for (const container of containers) {
-        if (container.style.display !== 'none') {
+        if (container.dataset.active === 'true') {
           const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
           if (textarea) {
             textarea.focus()
@@ -194,7 +194,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await page.evaluate(() => {
       const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
       for (const container of containers) {
-        if (container.style.display !== 'none') {
+        if (container.dataset.active === 'true') {
           const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
           if (textarea) {
             textarea.focus()
@@ -209,7 +209,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await page.evaluate(() => {
       const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
       for (const container of containers) {
-        if (container.style.display !== 'none') {
+        if (container.dataset.active === 'true') {
           const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
           if (textarea) {
             textarea.focus()

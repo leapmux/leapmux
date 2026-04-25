@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,11 +19,28 @@ import (
 const screenBufferSize = 100 * 1024 // 100KB ring buffer for screen restore
 
 // ScreenBuffer is a thread-safe ring buffer that stores recent PTY output.
+// It also tracks a cumulative byte counter so callers can resume from a
+// known offset instead of re-reading the full buffer on every subscribe.
+//
+// Retention limit: the ring holds the most recent screenBufferSize bytes
+// of PTY output. Any terminal state established by escape sequences
+// emitted before that window — alt-screen toggles, cursor-visibility
+// changes, scrolling regions, character-set designations, SGR colors,
+// saved cursor position, cell content positioned by earlier writes — is
+// unrecoverable by byte-stream replay alone. A subscriber whose
+// after_offset has fallen out of the window receives a full snapshot
+// that reproduces the retained bytes correctly, but a TUI running
+// *before* that window (vim in alt screen, say) may render with missing
+// cells or misaligned cursor until the program repaints. This is the
+// ceiling of any byte-replay approach; reconstructing state beyond the
+// ring requires a parsed cell grid (tmux-style terminal emulation),
+// which is deliberately out of scope for this worker.
 type ScreenBuffer struct {
-	mu   sync.Mutex
-	buf  []byte
-	pos  int
-	full bool
+	mu    sync.Mutex
+	buf   []byte
+	pos   int
+	full  bool
+	total int64 // Total bytes ever written (monotonic within a PTY session).
 }
 
 // NewScreenBuffer creates a new screen buffer.
@@ -30,11 +48,22 @@ func NewScreenBuffer() *ScreenBuffer {
 	return &ScreenBuffer{buf: make([]byte, screenBufferSize)}
 }
 
-// Write appends data to the ring buffer.
-func (sb *ScreenBuffer) Write(data []byte) {
+// Write appends data to the ring buffer and returns the cumulative byte
+// offset at the end of the write. Callers forward that offset to watchers
+// so they can persist it as their resume cursor.
+func (sb *ScreenBuffer) Write(data []byte) int64 {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
+	sb.total += int64(len(data))
+	// Writes larger than the ring would overwrite themselves; only the
+	// final len(buf) bytes can survive, so skip ahead to them.
+	if len(data) >= len(sb.buf) {
+		copy(sb.buf, data[len(data)-len(sb.buf):])
+		sb.pos = 0
+		sb.full = true
+		return sb.total
+	}
 	for len(data) > 0 {
 		n := copy(sb.buf[sb.pos:], data)
 		data = data[n:]
@@ -44,27 +73,120 @@ func (sb *ScreenBuffer) Write(data []byte) {
 			sb.full = true
 		}
 	}
+	return sb.total
 }
 
-// Snapshot returns a copy of the buffered data in chronological order.
-func (sb *ScreenBuffer) Snapshot() []byte {
+// TotalBytes returns the cumulative byte count ever written to this buffer.
+// Monotonic within a single PTY session; a new Terminal starts at 0.
+func (sb *ScreenBuffer) TotalBytes() int64 {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
+	return sb.total
+}
 
-	if !sb.full {
-		out := make([]byte, sb.pos)
-		copy(out, sb.buf[:sb.pos])
-		return out
+// Snapshot returns a copy of every retained byte in chronological order
+// and the cumulative offset at the end of that copy. Convenience for
+// callers that want the full buffer regardless of the ring's base offset.
+func (sb *ScreenBuffer) Snapshot() ([]byte, int64) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.tailBytesLocked(sb.retainedLocked()), sb.total
+}
+
+// HasSuffix reports whether the retained bytes end with needle. Used by
+// the disconnect-notice path to check idempotency without allocating a
+// copy of the full buffer.
+func (sb *ScreenBuffer) HasSuffix(needle []byte) bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	if len(needle) == 0 {
+		return true
 	}
+	head, wrap := sb.tailLocked(len(needle))
+	if len(head)+len(wrap) < len(needle) {
+		return false
+	}
+	return bytes.Equal(head, needle[:len(head)]) &&
+		bytes.Equal(wrap, needle[len(head):])
+}
 
-	out := make([]byte, len(sb.buf))
-	n := copy(out, sb.buf[sb.pos:])
-	copy(out[n:], sb.buf[:sb.pos])
+// retainedLocked reports the number of bytes currently in the ring: pos
+// before the first wrap, the full buffer length after. Caller must hold
+// sb.mu.
+func (sb *ScreenBuffer) retainedLocked() int {
+	if sb.full {
+		return len(sb.buf)
+	}
+	return sb.pos
+}
+
+// tailLocked returns the trailing n retained bytes as two ring segments
+// — head then wrap in chronological order, head+wrap == last n bytes.
+// If fewer than n bytes are retained, returns what's available. Caller
+// must hold sb.mu.
+func (sb *ScreenBuffer) tailLocked(n int) (head, wrap []byte) {
+	if retained := sb.retainedLocked(); n > retained {
+		n = retained
+	}
+	start := sb.pos - n
+	if start >= 0 {
+		return nil, sb.buf[start:sb.pos]
+	}
+	headLen := -start
+	return sb.buf[len(sb.buf)-headLen:], sb.buf[:sb.pos]
+}
+
+// tailBytesLocked returns the trailing n retained bytes as a freshly
+// allocated, flattened slice. Zero-length when n <= 0 or the buffer is
+// empty. Caller must hold sb.mu.
+func (sb *ScreenBuffer) tailBytesLocked(n int) []byte {
+	head, wrap := sb.tailLocked(n)
+	out := make([]byte, len(head)+len(wrap))
+	copy(out, head)
+	copy(out[len(head):], wrap)
 	return out
 }
 
-// OutputHandler is called for each chunk of output from the PTY.
-type OutputHandler func(data []byte)
+// SnapshotSince returns the bytes the caller needs in order to advance
+// from afterOffset to the current head, the cumulative offset at the end
+// of those bytes, and whether the returned bytes should be treated as a
+// full-state replacement (caller must reset its terminal buffer before
+// writing) rather than an incremental append.
+//
+//   - afterOffset == total: caller is caught up. Returns (nil, total, false).
+//   - afterOffset within the retained window: returns the incremental
+//     delta since afterOffset. isSnapshot is false.
+//   - afterOffset has fallen out of the retained window, is negative, or
+//     is larger than total (PTY recreated beneath a stale client):
+//     returns the full retained buffer with isSnapshot=true so the caller
+//     drops any stale state.
+func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset int64, isSnapshot bool) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	total := sb.total
+	if afterOffset == total {
+		return nil, total, false
+	}
+	// Retained window is [total-retained, total).
+	windowStart := total - int64(sb.retainedLocked())
+
+	// Incremental catch-up: afterOffset is inside the retained window,
+	// so copy only the missing suffix directly from the ring.
+	if afterOffset >= windowStart && afterOffset < total {
+		return sb.tailBytesLocked(int(total - afterOffset)), total, false
+	}
+
+	// Cold subscribe, negative offset, stale offset > total, or caller
+	// has fallen behind the retained window: send everything we have
+	// with the snapshot flag.
+	return sb.tailBytesLocked(sb.retainedLocked()), total, true
+}
+
+// OutputHandler is called for each chunk of output from the PTY. The
+// endOffset is the cumulative byte counter *after* this chunk; callers
+// forward it to watchers as the resume cursor for this event.
+type OutputHandler func(data []byte, endOffset int64)
 
 // Terminal manages a single PTY session.
 type Terminal struct {
@@ -72,7 +194,10 @@ type Terminal struct {
 	cmd       *pty.Cmd
 	ptmx      pty.Pty
 	jobObject *procutil.JobObject
-	outputFn  OutputHandler
+	// outputFn is the internal dispatch for both live PTY reads and
+	// AppendOutput. It writes into screenBuf and forwards the resulting
+	// cumulative offset to the user-provided OutputHandler.
+	outputFn  func(data []byte)
 	screenBuf *ScreenBuffer
 	mu        sync.Mutex
 	stopped   bool
@@ -154,8 +279,8 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal
 
 	screenBuf := NewScreenBuffer()
 	wrappedOutput := func(data []byte) {
-		screenBuf.Write(data)
-		outputFn(data)
+		endOffset := screenBuf.Write(data)
+		outputFn(data, endOffset)
 	}
 
 	t := &Terminal{
@@ -254,14 +379,33 @@ func (t *Terminal) ID() string {
 	return t.id
 }
 
-// ScreenSnapshot returns the recent PTY output for screen restore.
-func (t *Terminal) ScreenSnapshot() []byte {
+// ScreenSnapshot returns the full retained PTY output and the cumulative
+// byte offset at its end.
+func (t *Terminal) ScreenSnapshot() ([]byte, int64) {
 	return t.screenBuf.Snapshot()
+}
+
+// ScreenSnapshotSince returns the bytes a subscriber needs to advance
+// from afterOffset to the current head of the screen buffer, the
+// cumulative offset at the end of those bytes, and whether the returned
+// bytes are a full-state replacement (subscriber must reset its
+// terminal) rather than an append. See ScreenBuffer.SnapshotSince for
+// the detailed contract.
+func (t *Terminal) ScreenSnapshotSince(afterOffset int64) (data []byte, endOffset int64, isSnapshot bool) {
+	return t.screenBuf.SnapshotSince(afterOffset)
+}
+
+// ScreenHasSuffix reports whether the retained screen buffer ends with
+// needle. Avoids the allocation of ScreenSnapshot for callers that only
+// need to check a trailing marker.
+func (t *Terminal) ScreenHasSuffix(needle []byte) bool {
+	return t.screenBuf.HasSuffix(needle)
 }
 
 // AppendOutput injects synthetic output into the terminal stream and screen
 // buffer without writing to the PTY. This is used for system notices that
-// should be restorable like normal terminal output.
+// should be restorable like normal terminal output. Runs through the same
+// wrappedOutput path as live PTY data so the cumulative offset advances.
 func (t *Terminal) AppendOutput(data []byte) {
 	if len(data) == 0 {
 		return

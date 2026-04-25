@@ -203,16 +203,32 @@ func (m *Manager) UpdateTitle(terminalID, title string) bool {
 	return true
 }
 
-// ScreenSnapshot returns the screen buffer snapshot for a terminal.
-func (m *Manager) ScreenSnapshot(terminalID string) []byte {
+// ScreenSnapshotSince returns the bytes a subscriber needs to advance
+// from afterOffset to the current head of the terminal's screen buffer,
+// for the watch-event catch-up path. Returns (nil, 0, false) if the
+// terminal is unknown. See Terminal.ScreenSnapshotSince for the
+// isSnapshot contract.
+func (m *Manager) ScreenSnapshotSince(terminalID string, afterOffset int64) (data []byte, endOffset int64, isSnapshot bool) {
 	m.mu.RLock()
 	t, ok := m.terminals[terminalID]
 	m.mu.RUnlock()
 
 	if !ok {
-		return nil
+		return nil, 0, false
 	}
-	return t.ScreenSnapshot()
+	return t.ScreenSnapshotSince(afterOffset)
+}
+
+// ScreenHasSuffix reports whether the live terminal's retained screen
+// ends with needle. Returns false if the terminal is unknown.
+func (m *Manager) ScreenHasSuffix(terminalID string, needle []byte) bool {
+	m.mu.RLock()
+	t, ok := m.terminals[terminalID]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return t.ScreenHasSuffix(needle)
 }
 
 // AppendOutput injects synthetic output into the tracked terminal's screen
@@ -240,7 +256,7 @@ func (m *Manager) SnapshotTerminal(terminalID string) (snap TerminalSnapshot, ok
 	if !exists {
 		return TerminalSnapshot{}, false
 	}
-	screen := t.ScreenSnapshot()
+	screen, _ := t.ScreenSnapshot()
 	if len(screen) == 0 {
 		return TerminalSnapshot{}, false
 	}
@@ -278,7 +294,27 @@ type TerminalEntry struct {
 	ID     string
 	Meta   TerminalMeta
 	Screen []byte
-	Exited bool
+	// ScreenEndOffset is the cumulative PTY byte offset at the end of
+	// Screen. Equal to len(Screen) before the ring wraps and strictly
+	// greater once old bytes have fallen off. Subscribers use this to
+	// seed their WatchEvents after_offset so resubscribes pick up
+	// exactly where the snapshot left off instead of replaying Screen.
+	ScreenEndOffset int64
+	Exited          bool
+}
+
+// buildEntryLocked assembles a TerminalEntry for id, attaching the live
+// screen snapshot and offset when a PTY is present. Caller must hold
+// m.mu (read or write).
+func (m *Manager) buildEntryLocked(id string, meta TerminalMeta) TerminalEntry {
+	entry := TerminalEntry{ID: id, Meta: meta}
+	if t, ok := m.terminals[id]; ok {
+		entry.Screen, entry.ScreenEndOffset = t.ScreenSnapshot()
+		entry.Exited = t.IsExited()
+	} else {
+		entry.Exited = true
+	}
+	return entry
 }
 
 // ListByWorkspace returns all terminals belonging to the given workspace.
@@ -291,17 +327,7 @@ func (m *Manager) ListByWorkspace(workspaceID string) []TerminalEntry {
 		if meta.WorkspaceID != workspaceID {
 			continue
 		}
-		entry := TerminalEntry{
-			ID:   id,
-			Meta: meta,
-		}
-		if t, ok := m.terminals[id]; ok {
-			entry.Screen = t.ScreenSnapshot()
-			entry.Exited = t.IsExited()
-		} else {
-			entry.Exited = true
-		}
-		result = append(result, entry)
+		result = append(result, m.buildEntryLocked(id, meta))
 	}
 	return result
 }
@@ -317,17 +343,7 @@ func (m *Manager) ListByIDs(ids []string) []TerminalEntry {
 		if !ok {
 			continue
 		}
-		entry := TerminalEntry{
-			ID:   id,
-			Meta: meta,
-		}
-		if t, ok := m.terminals[id]; ok {
-			entry.Screen = t.ScreenSnapshot()
-			entry.Exited = t.IsExited()
-		} else {
-			entry.Exited = true
-		}
-		result = append(result, entry)
+		result = append(result, m.buildEntryLocked(id, meta))
 	}
 	return result
 }

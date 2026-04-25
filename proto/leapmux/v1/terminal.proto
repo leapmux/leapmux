@@ -108,11 +108,26 @@ message TerminalInfo {
   string startup_error = 12;    // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
   string startup_message = 13;  // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
   string git_toplevel = 14;     // Working-tree root of the enclosing git repo, if any
+  // Cumulative PTY byte offset at the end of `screen`. Equal to `screen`
+  // length before the ring wraps, and greater once old bytes start
+  // falling off the retained window. Client seeds its WatchEvents
+  // `after_offset` from this so a resubscribe picks up exactly where
+  // the snapshot left off instead of replaying `screen`.
+  int64 screen_end_offset = 15;
 }
 
 message TerminalData {
   bytes data = 1;
-  bool is_snapshot = 2; // True for initial screen buffer snapshots; frontend should reset buffer before writing.
+  // True when `data` replaces the entire screen state — the client must
+  // reset its terminal buffer before writing. Set when the subscribing
+  // client's after_offset is behind the backend's retention window, or
+  // on a cold subscribe. Live-data chunks set this to false.
+  bool is_snapshot = 2;
+  // Cumulative byte offset at the end of `data`. Monotonically
+  // increases within a single PTY session and resets when the PTY is
+  // recreated. Clients persist the highest value they have observed
+  // and echo it back as WatchTerminalEntry.after_offset on resubscribe.
+  int64 end_offset = 3;
 }
 
 message TerminalClosed {

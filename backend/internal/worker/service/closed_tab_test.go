@@ -124,6 +124,33 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 	return svc, d, w
 }
 
+// startTestTerminal spawns a live PTY via svc.Terminals, persists a
+// matching DB row so access-control lookups succeed, and registers the
+// full cleanup chain. Returns the working directory assigned to the
+// terminal so tests can use it for follow-up assertions. Used by tests
+// that need a running terminal attached to an accessible workspace.
+func startTestTerminal(t *testing.T, svc *Context, ctx context.Context, id, workspaceID string) string {
+	t.Helper()
+	workingDir := t.TempDir()
+
+	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
+		ID: id, WorkspaceID: workspaceID,
+		Shell: testutil.TestShell(), WorkingDir: workingDir,
+		Cols: 80, Rows: 24,
+	}, func([]byte, int64) {}, nil))
+	t.Cleanup(func() {
+		svc.Terminals.StopTerminal(id)
+		testutil.AssertEventually(t, func() bool { return svc.Terminals.IsExited(id) }, "exit")
+		svc.Terminals.RemoveTerminal(id)
+	})
+
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: id, WorkspaceID: workspaceID, WorkingDir: workingDir, HomeDir: "/tmp",
+		Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	return workingDir
+}
+
 // drainAllInFlight joins any runAgentStartup / runTerminalStartup
 // goroutines spawned during the test and waits for any in-flight close
 // handlers tracked on svc.Cleanup. Call via `defer` immediately after
@@ -318,7 +345,7 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		TerminalIds: []string{"term-closed"},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-closed"}},
 	}, w)
 
 	// Closed terminal should produce a single stream error (NOT_FOUND).
@@ -347,7 +374,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 		ShellStartDir: "",
 		Cols:          80,
 		Rows:          24,
-	}, func([]byte) {}, nil))
+	}, func([]byte, int64) {}, nil))
 
 	require.True(t, svc.Terminals.UpdateTitle("term-1", "user@host: ~/dir"))
 
@@ -368,7 +395,8 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	// Wait until the echo output appears in the screen buffer; otherwise
 	// Shutdown can race ahead of the shell processing the input.
 	testutil.AssertEventually(t, func() bool {
-		return bytes.Contains(svc.Terminals.ScreenSnapshot("term-1"), []byte("shutdown_test"))
+		screen, _, _ := svc.Terminals.ScreenSnapshotSince("term-1", 0)
+		return bytes.Contains(screen, []byte("shutdown_test"))
 	}, "expected terminal screen to contain 'shutdown_test'")
 
 	// Call Shutdown — should persist screen to DB.

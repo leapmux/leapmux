@@ -1,5 +1,6 @@
 import type { TerminalInstance } from '~/lib/terminal'
 import { render, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -14,7 +15,7 @@ vi.mock('~/lib/terminal', async () => {
   }
 })
 
-const { TerminalView } = await import('~/components/terminal/TerminalView')
+const { TerminalView, getTerminalInstance } = await import('~/components/terminal/TerminalView')
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -35,6 +36,7 @@ function makeMockTerminalInstance(): TerminalInstance {
       bellHandler = cb
     }),
     open: vi.fn(),
+    reset: vi.fn(),
     write: vi.fn((data: string | Uint8Array, cb?: () => void) => {
       const text = typeof data === 'string' ? data : new TextDecoder().decode(data)
       if (text.includes('\x07')) {
@@ -59,7 +61,6 @@ function makeMockTerminalInstance(): TerminalInstance {
   return {
     terminal,
     fitAddon: { fit: vi.fn() } as any,
-    screenRestored: false,
     suppressInput: false,
     dispose: vi.fn(),
   }
@@ -161,6 +162,58 @@ describe('terminalView', () => {
 
     await findByTestId('terminal-startup-overlay')
     await findByText('Starting terminal…')
+  })
+
+  // Closing a single tab must dispose exactly that terminal's xterm
+  // instance (releasing its WebGL context, scrollback, and listener
+  // refs) and leave other tabs' instances intact. The disposal is
+  // driven by TerminalView's tabs-diff effect, not by the full-unmount
+  // onCleanup — a workspace switch is a separate path.
+  it('disposes a terminal instance when its tab is closed', async () => {
+    const instanceA = makeMockTerminalInstance()
+    const instanceB = makeMockTerminalInstance()
+    // createTerminalInstance is called once per new terminal; return in
+    // the order TerminalContainer mounts them.
+    mockCreateTerminalInstance
+      .mockReturnValueOnce(instanceA)
+      .mockReturnValueOnce(instanceB)
+
+    const baseTab = { workspaceId: 'ws-1', screen: new Uint8Array() }
+    const [terminals, setTerminals] = createSignal([
+      { id: 'dispose-test-A', ...baseTab },
+      { id: 'dispose-test-B', ...baseTab },
+    ])
+
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={terminals()}
+          activeTerminalId="dispose-test-A"
+          visible
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => {
+      expect(getTerminalInstance('dispose-test-A')).toBe(instanceA)
+      expect(getTerminalInstance('dispose-test-B')).toBe(instanceB)
+    })
+
+    // Close tab A by removing it from the list.
+    setTerminals([{ id: 'dispose-test-B', ...baseTab }])
+
+    await waitFor(() => {
+      expect(getTerminalInstance('dispose-test-A')).toBeUndefined()
+    })
+    expect(instanceA.dispose).toHaveBeenCalledTimes(1)
+    // B stays live — only the closed tab's instance should be disposed.
+    expect(getTerminalInstance('dispose-test-B')).toBe(instanceB)
+    expect(instanceB.dispose).not.toHaveBeenCalled()
   })
 
   it('scrolls the active terminal by one page', async () => {
