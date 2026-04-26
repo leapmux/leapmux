@@ -6,40 +6,42 @@ import {
   openAgentViaAPI,
   shareWorkspaceViaAPI,
 } from './helpers/api'
-import { expectAnyVisible, loginViaToken, loginViaUI } from './helpers/ui'
+import { expectAnyVisible, loginViaUI } from './helpers/ui'
 
 const ORG_ADMIN_URL_RE = /\/o\/admin/
 const WORKSPACE_URL_RE = /\/workspace\//
 
+/**
+ * The four "Not Found" route cases (admin-only page as non-admin, nonexistent
+ * org slug, nonexistent workspace ID, workspace under wrong org) are unit-
+ * tested at the context layer:
+ *
+ * - tests/unit/components/AuthGuard.test.tsx — requireAdmin → NotFoundPage
+ * - tests/unit/context/OrgContext.test.tsx — notFound when slug missing
+ *
+ * What only a real session-cookie + share-mode integration can verify is that
+ * a non-owner who has been granted access via SHARE_MODE_MEMBERS can open the
+ * workspace but does NOT see the new-agent button (a permission-gated UI bit
+ * that lives across the auth → org → workspace context chain).
+ */
 test.describe('Permissions', () => {
-  let sharedWorkspaceId: string
-
-  // Set up prerequisites: ensure newuser exists (fixture setup), is invited
-  // to admin's org, and a shared workspace exists.
-  test.beforeAll(async ({ leapmuxServer }) => {
+  test('non-owner of shared workspace cannot create new agents', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, adminOrgId, newuserToken } = leapmuxServer
+
+    // Invite newuser to admin's org (idempotent).
     try {
       await inviteToOrgViaAPI(hubUrl, adminToken, adminOrgId, 'newuser')
     }
-    catch {
-      // Ignore if already invited
-    }
-    // Create and share a workspace for the permissions test (unique title
-    // to avoid collisions with workspaces created by other test files)
-    sharedWorkspaceId = await createWorkspaceViaAPI(
+    catch { /* already invited */ }
+
+    // Admin creates a workspace and shares it with newuser.
+    const sharedWorkspaceId = await createWorkspaceViaAPI(
       hubUrl,
       adminToken,
       'Permissions Shared WS',
       adminOrgId,
     )
-    // Open an agent so the workspace has visible tabs.
-    await openAgentViaAPI(
-      hubUrl,
-      adminToken,
-      leapmuxServer.workerId,
-      sharedWorkspaceId,
-    )
-    // Use SHARE_MODE_MEMBERS since the Worker doesn't support SHARE_MODE_ORG.
+    await openAgentViaAPI(hubUrl, adminToken, leapmuxServer.workerId, sharedWorkspaceId)
     const newuserUserId = await getUserId(hubUrl, newuserToken)
     await shareWorkspaceViaAPI(
       hubUrl,
@@ -48,68 +50,21 @@ test.describe('Permissions', () => {
       'SHARE_MODE_MEMBERS',
       [newuserUserId],
     )
-  })
 
-  test('should show 404 for non-admin accessing admin page', async ({ page }) => {
-    // Login as a regular user (newuser was created in fixture setup)
+    // Login as newuser and open admin's shared workspace.
     await loginViaUI(page, 'newuser', 'password123')
-    await page.goto('/admin')
-    // Should see the Not Found page (AuthGuard with requireAdmin)
-    await expect(page.getByRole('heading', { name: 'Not Found' })).toBeVisible()
-    await expect(page.getByText('System Settings')).not.toBeVisible()
-  })
-
-  test('should show 404 for nonexistent org', async ({ page, leapmuxServer }) => {
-    // Login as admin and navigate to a nonexistent org slug
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/o/nonexistent-org-slug')
-    // Should see the Not Found page
-    await expect(page.getByRole('heading', { name: 'Not Found' })).toBeVisible()
-  })
-
-  test('should show 404 for nonexistent workspace ID', async ({ page, leapmuxServer }) => {
-    // Login as admin and navigate to a workspace that doesn't exist
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/o/admin/workspace/ws_nonexistent_id')
-    // Should see the Not Found page
-    await expect(page.getByRole('heading', { name: 'Not Found' })).toBeVisible()
-  })
-
-  test('should show 404 for workspace under wrong org', async ({ page, leapmuxServer }) => {
-    // Login as newuser and try to access admin's workspace under newuser's org
-    await loginViaToken(page, leapmuxServer.newuserToken)
-    // sharedWorkspaceId belongs to admin's org, but we access it under newuser's org
-    await page.goto(`/o/newuser/workspace/${sharedWorkspaceId}`)
-    // Should see the Not Found page (workspace doesn't belong to this org)
-    await expect(page.getByRole('heading', { name: 'Not Found' })).toBeVisible()
-  })
-
-  test('should isolate workspaces between users', async ({ page }) => {
-    // Login as admin
-    await loginViaUI(page)
-    // Admin's workspace page should be loaded
-    await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
-  })
-
-  test('should not show new tab button to non-owner on shared workspace', async ({ page }) => {
-    // Login as newuser (invited to admin org in beforeAll)
-    await loginViaUI(page, 'newuser', 'password123')
-
-    // Navigate to admin's org
     await page.goto('/o/admin')
     await expect(page).toHaveURL(ORG_ADMIN_URL_RE)
-
-    // Click on the shared workspace (created and shared in beforeAll)
     await page.getByText('Permissions Shared WS').click()
-
-    // Verify workspace loaded (page content is visible)
     await expect(page).toHaveURL(WORKSPACE_URL_RE)
+
+    // Workspace contents render but the new-agent button is suppressed for
+    // a non-owner. (`expectAnyVisible` tolerates either tabs already loaded
+    // or the empty state — both are valid for an existing shared workspace.)
     await expectAnyVisible(
       page.locator('[data-testid="tab"]'),
       page.getByText('no open tabs'),
     )
-
-    // New agent/terminal buttons should NOT be visible for non-owner
     await expect(page.locator('[data-testid^="new-agent-button"]')).not.toBeVisible()
   })
 })

@@ -1,7 +1,9 @@
 import type { AskQuestionState, Question } from '../controls/types'
+import { create } from '@bufbuild/protobuf'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../controls/CodexControlRequest'
 import { getProviderPlugin } from './registry'
 import { input } from './testUtils'
@@ -539,5 +541,139 @@ describe('sendCodexUserInputResponse', () => {
     const answers = (parsed.result as Record<string, unknown>).answers as Record<string, unknown>
     expect(answers).toHaveProperty('q1')
     expect(answers).not.toHaveProperty('q2')
+  })
+})
+
+describe('codex settings panel', () => {
+  const plugin = getProviderPlugin(AgentProvider.CODEX)!
+
+  const baseModels = [
+    create(AvailableModelSchema, {
+      id: 'gpt-5.4',
+      displayName: 'GPT-5.4',
+      isDefault: true,
+      supportedEfforts: [
+        { id: 'auto', name: 'Auto', description: '' },
+        { id: 'high', name: 'High', description: '' },
+      ],
+    }),
+  ]
+
+  const baseOptionGroups = [
+    create(AvailableOptionGroupSchema, {
+      key: 'service_tier',
+      label: 'Fast Mode',
+      options: [
+        create(AvailableOptionSchema, { id: 'default', name: 'Default', isDefault: true }),
+        create(AvailableOptionSchema, { id: 'fast', name: 'Fast' }),
+      ],
+    }),
+    create(AvailableOptionGroupSchema, {
+      key: 'collaboration_mode',
+      label: 'Workflow',
+      options: [
+        create(AvailableOptionSchema, { id: 'default', name: 'Suggest & Approve', isDefault: true }),
+        create(AvailableOptionSchema, { id: 'plan', name: 'Plan Mode' }),
+      ],
+    }),
+    create(AvailableOptionGroupSchema, {
+      key: 'permissionMode',
+      label: 'Approval Policy',
+      options: [
+        create(AvailableOptionSchema, { id: 'on-request', name: 'On Request', isDefault: true }),
+        create(AvailableOptionSchema, { id: 'never', name: 'Never' }),
+      ],
+    }),
+  ]
+
+  it('renders the Fast Mode group and toggles to Fast via option-group callback', async () => {
+    const onOptionGroupChange = vi.fn()
+    render(() => plugin.SettingsPanel!({
+      model: 'gpt-5.4',
+      effort: 'auto',
+      permissionMode: 'on-request',
+      availableModels: baseModels,
+      availableOptionGroups: baseOptionGroups,
+      onOptionGroupChange,
+    }))
+
+    expect(screen.getByText('Fast Mode')).toBeInTheDocument()
+    expect(screen.getByTestId('codex-service-tier-default')).toBeInTheDocument()
+    expect(screen.getByTestId('codex-service-tier-fast')).toBeInTheDocument()
+
+    await fireEvent.click(screen.getByDisplayValue('fast'))
+    expect(onOptionGroupChange).toHaveBeenCalledWith('service_tier', 'fast')
+  })
+
+  it('switches collaboration mode via option-group callback (sticky plan mode entry)', async () => {
+    const onOptionGroupChange = vi.fn()
+    render(() => plugin.SettingsPanel!({
+      model: 'gpt-5.4',
+      effort: 'auto',
+      permissionMode: 'on-request',
+      availableModels: baseModels,
+      availableOptionGroups: baseOptionGroups,
+      onOptionGroupChange,
+    }))
+
+    expect(screen.getByText('Workflow')).toBeInTheDocument()
+    await fireEvent.click(screen.getByDisplayValue('plan'))
+    expect(onOptionGroupChange).toHaveBeenCalledWith('collaboration_mode', 'plan')
+  })
+
+  it('renders Fast Mode as the first fieldset in the left column', () => {
+    const { container } = render(() => plugin.SettingsPanel!({
+      model: 'gpt-5.4',
+      effort: 'auto',
+      permissionMode: 'on-request',
+      availableModels: baseModels,
+      availableOptionGroups: baseOptionGroups,
+    }))
+
+    // Left column contains Fast Mode → Reasoning Effort → Models. The first
+    // group label rendered should be "Fast Mode" (regression for the e2e
+    // "Fast mode group appears first" assertion).
+    const labels = container.querySelectorAll('div[role="group"] > div')
+    const firstLabel = labels[0]?.textContent
+    expect(firstLabel).toBe('Fast Mode')
+  })
+
+  it('updates permissionMode through onPermissionModeChange', async () => {
+    const onPermissionModeChange = vi.fn()
+    render(() => plugin.SettingsPanel!({
+      model: 'gpt-5.4',
+      effort: 'auto',
+      permissionMode: 'on-request',
+      availableModels: baseModels,
+      availableOptionGroups: baseOptionGroups,
+      onPermissionModeChange,
+    }))
+
+    await fireEvent.click(screen.getByDisplayValue('never'))
+    expect(onPermissionModeChange).toHaveBeenCalledWith('never')
+  })
+
+  it('trigger label includes the model display name', () => {
+    const { container } = render(() => plugin.settingsTriggerLabel!({
+      model: 'gpt-5.4',
+      effort: 'auto',
+      permissionMode: 'on-request',
+      availableModels: baseModels,
+      availableOptionGroups: baseOptionGroups,
+    }))
+
+    expect(container.textContent).toContain('GPT-5.4')
+  })
+
+  it('falls back to the default model display name when no model prop is set', () => {
+    const { container } = render(() => plugin.settingsTriggerLabel!({
+      effort: 'auto',
+      permissionMode: 'on-request',
+      availableModels: baseModels,
+      availableOptionGroups: baseOptionGroups,
+    }))
+
+    // Default model is the one with isDefault=true.
+    expect(container.textContent).toContain('GPT-5.4')
   })
 })

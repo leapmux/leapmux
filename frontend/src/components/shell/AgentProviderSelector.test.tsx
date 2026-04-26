@@ -71,4 +71,47 @@ describe('agentProviderSelector', () => {
     expect(onChange).toHaveBeenCalledWith(AgentProvider.CLAUDE_CODE)
     expect(screen.getByTestId('agent-provider-selector-trigger')).toHaveTextContent('Claude Code')
   })
+
+  // Each known AgentProvider value, when present in availableProviders, must
+  // render an option with `agent-provider-option-${id}` testid and the right
+  // human-readable label. Backstops the per-provider e2e selector tests
+  // (96-codex, 104-opencode, 111-copilot, 114-cursor, 117-goose, 120-kilo)
+  // that previously verified one provider each via real-browser smoke.
+  it.each([
+    [AgentProvider.CLAUDE_CODE, 'Claude Code'],
+    [AgentProvider.CODEX, 'Codex'],
+    [AgentProvider.GEMINI_CLI, 'Gemini CLI'],
+    [AgentProvider.OPENCODE, 'OpenCode'],
+    [AgentProvider.GITHUB_COPILOT, 'GitHub Copilot'],
+    [AgentProvider.CURSOR, 'Cursor'],
+    [AgentProvider.GOOSE, 'Goose'],
+    [AgentProvider.KILO, 'Kilo'],
+  ])('renders option for provider %d with label "%s"', (provider, label) => {
+    const [value] = createSignal(provider as AgentProvider)
+    render(() => (
+      <AgentProviderSelector
+        value={value}
+        onChange={() => {}}
+        availableProviders={[provider as AgentProvider]}
+      />
+    ))
+
+    const option = screen.getByTestId(`agent-provider-option-${provider}`)
+    expect(option).toHaveTextContent(label)
+  })
+
+  it('only renders options for available providers', () => {
+    const [value] = createSignal(AgentProvider.CODEX)
+    render(() => (
+      <AgentProviderSelector
+        value={value}
+        onChange={() => {}}
+        availableProviders={[AgentProvider.CODEX, AgentProvider.CLAUDE_CODE]}
+      />
+    ))
+
+    expect(screen.queryByTestId(`agent-provider-option-${AgentProvider.GEMINI_CLI}`)).toBeNull()
+    expect(screen.queryByTestId(`agent-provider-option-${AgentProvider.OPENCODE}`)).toBeNull()
+    expect(screen.queryByTestId(`agent-provider-option-${AgentProvider.GITHUB_COPILOT}`)).toBeNull()
+  })
 })

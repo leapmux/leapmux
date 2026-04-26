@@ -117,6 +117,46 @@ describe('loginPage', () => {
     })
   })
 
+  it('disables Sign in button when username is empty', async () => {
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
+  })
+
+  it('disables Sign in button when password is empty', async () => {
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
+  })
+
+  it('disables Sign in button when both fields are empty', async () => {
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
+    })
+
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
+  })
+
+  it('enables Sign in button when both fields have values', async () => {
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+  })
+
   it('keeps button disabled after successful login', async () => {
     mockLogin.mockImplementation(() => {
       mockUser.mockReturnValue({ username: 'alice' })
