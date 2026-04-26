@@ -3,7 +3,8 @@ import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.stor
 import type { TodoItem } from '~/stores/chat.store'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { decompressContentToString } from '~/lib/decompress'
-import { codexTierToRateLimitInfo } from '~/lib/rateLimitUtils'
+import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
+import { normalizeTodoStatus, rawTodosToItems } from '~/stores/chat.store'
 
 /**
  * The result of parsing a compressed AgentChatMessage. Every field is
@@ -117,10 +118,9 @@ export function codexPlanToTodos(plan: unknown[]): TodoItem[] {
     const step = String((entry as Record<string, unknown>).step || '')
     if (!step)
       return []
-    const status = (entry as Record<string, unknown>).status
     return [{
       content: step,
-      status: status === 'inProgress' ? 'in_progress' as const : status === 'completed' ? 'completed' as const : 'pending' as const,
+      status: normalizeTodoStatus((entry as Record<string, unknown>).status),
       activeForm: step,
     }]
   })
@@ -144,11 +144,7 @@ export function extractTodos(message: AgentChatMessage, parsed: ParsedMessageCon
     )
     if (!toolUse?.input?.todos || !Array.isArray(toolUse.input.todos))
       return null
-    return toolUse.input.todos.map((t: Record<string, unknown>) => ({
-      content: String(t.content || ''),
-      status: t.status === 'in_progress' ? 'in_progress' as const : t.status === 'completed' ? 'completed' as const : 'pending' as const,
-      activeForm: String(t.activeForm || ''),
-    }))
+    return rawTodosToItems(toolUse.input.todos)
   }
 
   if (parent.method === 'turn/plan/updated') {
@@ -332,17 +328,9 @@ export function extractRateLimitInfo(parsed: ParsedMessageContent): {
   }
 
   // Codex native format: {method: "account/rateLimits/updated", params: {rateLimits: {primary: {...}, secondary: {...}}}}
-  if (inner.method === 'account/rateLimits/updated') {
-    const params = inner.params as Record<string, unknown> | undefined
-    const rl = params?.rateLimits as Record<string, unknown> | undefined
-    if (!rl)
-      return []
+  if (inner.method === CODEX_RATE_LIMITS_METHOD) {
     const results: { key: string, info: RateLimitInfo }[] = []
-    for (const tierKey of ['primary', 'secondary']) {
-      const tier = rl[tierKey] as Record<string, unknown> | undefined
-      if (!tier)
-        continue
-      const info = codexTierToRateLimitInfo(tier)
+    for (const { info } of iterCodexRateLimitTiers(inner)) {
       if (info.rateLimitType)
         results.push({ key: info.rateLimitType, info })
     }

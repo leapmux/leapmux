@@ -3,7 +3,7 @@ import type { ActionsProps } from './types'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 import { createMemo, createSignal, Show } from 'solid-js'
-import { computePercentage } from '~/components/chat/ContextUsageGrid'
+import { computePercentage } from '~/components/chat/widgets/ContextUsageGrid'
 import { CompactSwitch } from '~/components/common/CompactSwitch'
 import * as styles from '../ControlRequestBanner.css'
 

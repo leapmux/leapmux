@@ -1,4 +1,9 @@
 import { vi } from 'vitest'
+// Side-effect import: registers every provider plugin so renderer tests that
+// only import the renderer under test still get `getProviderPlugin()` working.
+// vi.mock calls below are hoisted by vitest, so the shiki mocks apply before
+// any module loaded by `./index` reaches them.
+import './index'
 
 // Shared mocks for provider renderer tests. Importing this module registers
 // stub implementations of modules that pull in shiki at evaluation time —

@@ -2,9 +2,10 @@ import type { Component } from 'solid-js'
 import type { ActionsProps, ContentProps } from './controls/types'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
-import { createSignal, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
+import { useCopyButton } from '~/hooks/useCopyButton'
 import { prettifyJson } from '~/lib/jsonFormat'
 import * as styles from './ControlRequestBanner.css'
 import { getProviderPlugin } from './providers/registry'
@@ -12,13 +13,7 @@ import { getProviderPlugin } from './providers/registry'
 /** Renders control request content only (title + details), for the banner slot. */
 export const ControlRequestContent: Component<ContentProps> = (props) => {
   const pluginContent = () => props.agentProvider != null ? getProviderPlugin(props.agentProvider)?.ControlContent : undefined
-  const [copied, setCopied] = createSignal(false)
-
-  const handleCopyJson = () => {
-    navigator.clipboard.writeText(prettifyJson(props.request?.payload))
-    setCopied(true)
-    setTimeout(setCopied, 2000, false)
-  }
+  const { copied, copy } = useCopyButton(() => prettifyJson(props.request?.payload))
 
   return (
     <Show when={props.request}>
@@ -27,7 +22,7 @@ export const ControlRequestContent: Component<ContentProps> = (props) => {
           <IconButton
             icon={copied() ? Check : Braces}
             size="sm"
-            onClick={handleCopyJson}
+            onClick={copy}
             title={copied() ? 'Copied' : 'Copy Raw JSON'}
             data-testid="control-copy-json"
           />

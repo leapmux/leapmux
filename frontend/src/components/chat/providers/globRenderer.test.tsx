@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import './testMocks'
 
-const { formatGlobSummary } = await import('../rendererUtils')
 const { renderMessageContent } = await import('../messageRenderers')
 type RenderContext = import('../messageRenderers').RenderContext
 
@@ -74,52 +73,6 @@ function renderToolResultText(
   return renderToolResultContainer(resultContent, toolUseResult, context).textContent?.trim() ?? ''
 }
 
-describe('formatGlobSummary', () => {
-  it('returns null when numFiles is undefined and no fallback', () => {
-    expect(formatGlobSummary(undefined)).toBeNull()
-  })
-
-  it('returns fallback when numFiles is undefined', () => {
-    expect(formatGlobSummary(undefined, undefined, undefined, 'Custom fallback')).toBe('Custom fallback')
-  })
-
-  it('returns "No files found" when numFiles is 0', () => {
-    expect(formatGlobSummary(0)).toBe('No files found')
-  })
-
-  it('returns fallback when numFiles is 0 and fallback provided', () => {
-    expect(formatGlobSummary(0, undefined, undefined, 'No matching files')).toBe('No matching files')
-  })
-
-  it('returns "Found N files" for numFiles > 0', () => {
-    expect(formatGlobSummary(4)).toBe('Found 4 files')
-  })
-
-  it('returns "Found 1 file" for singular', () => {
-    expect(formatGlobSummary(1)).toBe('Found 1 file')
-  })
-
-  it('includes duration when durationMs is provided', () => {
-    expect(formatGlobSummary(4, 1011)).toBe('Found 4 files \u00B7 Took 1.0s')
-  })
-
-  it('includes "Result truncated" when truncated is true', () => {
-    expect(formatGlobSummary(100, undefined, true)).toBe('Found 100 files \u00B7 Result truncated')
-  })
-
-  it('includes both duration and truncated', () => {
-    expect(formatGlobSummary(50, 2500, true)).toBe('Found 50 files \u00B7 Took 2.5s \u00B7 Result truncated')
-  })
-
-  it('omits truncated when false', () => {
-    expect(formatGlobSummary(4, 1011, false)).toBe('Found 4 files \u00B7 Took 1.0s')
-  })
-
-  it('shows duration with "No files found"', () => {
-    expect(formatGlobSummary(0, 500)).toBe('No files found \u00B7 Took 500ms')
-  })
-})
-
 describe('glob tool_use collapsed summary', () => {
   it('shows pattern in header', () => {
     const text = renderToolUseText()
@@ -176,7 +129,7 @@ describe('glob tool_result expanded view', () => {
     const text = renderToolResultText(
       '/home/user/project/src/foo.ts\n/home/user/project/src/bar.ts',
       undefined,
-      { parentToolName: 'Glob' },
+      { spanType: 'Glob' },
     )
     expect(text).toContain('/home/user/project/src/foo.ts')
     expect(text).toContain('/home/user/project/src/bar.ts')

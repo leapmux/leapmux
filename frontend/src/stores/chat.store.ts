@@ -1,4 +1,5 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { createStore } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
@@ -120,6 +121,35 @@ export interface TodoItem {
   activeForm: string
 }
 
+/**
+ * Normalize a raw todo `status` value into the canonical TodoItem status.
+ * Accepts the snake_case wire form used by Claude/ACP (`'in_progress'`) and
+ * the camelCase form emitted by Codex (`'inProgress'`); anything else falls
+ * through to `'pending'`.
+ */
+export function normalizeTodoStatus(raw: unknown): TodoItem['status'] {
+  if (raw === 'completed')
+    return 'completed'
+  if (raw === 'in_progress' || raw === 'inProgress')
+    return 'in_progress'
+  return 'pending'
+}
+
+/**
+ * Coerce a raw `todos[]` array (Claude TodoWrite input or messageParser
+ * extraction) into typed TodoItems. Returns an empty array for non-array
+ * input.
+ */
+export function rawTodosToItems(raw: unknown): TodoItem[] {
+  if (!Array.isArray(raw))
+    return []
+  return raw.map((t: Record<string, unknown>) => ({
+    content: String(t.content || ''),
+    status: normalizeTodoStatus(t.status),
+    activeForm: String(t.activeForm || ''),
+  }))
+}
+
 export interface CommandStreamSegment {
   kind: 'output' | 'interaction' | 'reasoning_summary' | 'reasoning_content' | 'reasoning_summary_break'
   text: string
@@ -204,6 +234,22 @@ export function createChatStore() {
   const spanIndex = new Map<string, Map<string, AgentChatMessage>>()
   /** Non-reactive index: maps spanId → last (tool_result) message for reverse lookup. */
   const spanResultIndex = new Map<string, Map<string, AgentChatMessage>>()
+  /**
+   * Per-message memoized parse. AgentChatMessage instances are immutable, so
+   * a WeakMap is the natural cache: entries get GC'd whenever the store drops
+   * a message. The store-level cache lets sibling lookups (a tool_result
+   * bubble inspecting its tool_use) reuse the parse the tool_use bubble's
+   * own render already paid for.
+   */
+  const parsedCache = new WeakMap<AgentChatMessage, ParsedMessageContent>()
+  function parsedFor(message: AgentChatMessage): ParsedMessageContent {
+    let cached = parsedCache.get(message)
+    if (!cached) {
+      cached = parseMessageContent(message)
+      parsedCache.set(message, cached)
+    }
+    return cached
+  }
 
   /**
    * Index messages by spanId. The first message per spanId is stored in
@@ -265,12 +311,19 @@ export function createChatStore() {
       return state.messagesByAgent[agentId] ?? []
     },
 
-    getMessageBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
-      return spanIndex.get(agentId)?.get(spanId)
+    /**
+     * Return the parsed tool_use message for a spanId, or undefined when no
+     * tool_use is indexed for it. The parse is cached per message instance.
+     */
+    getToolUseParsedBySpanId(agentId: string, spanId: string): ParsedMessageContent | undefined {
+      const msg = spanIndex.get(agentId)?.get(spanId)
+      return msg ? parsedFor(msg) : undefined
     },
 
-    getToolResultBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
-      return spanResultIndex.get(agentId)?.get(spanId)
+    /** Symmetric counterpart for the tool_result side. */
+    getToolResultParsedBySpanId(agentId: string, spanId: string): ParsedMessageContent | undefined {
+      const msg = spanResultIndex.get(agentId)?.get(spanId)
+      return msg ? parsedFor(msg) : undefined
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {
@@ -398,7 +451,7 @@ export function createChatStore() {
       }
 
       // Track latest TodoWrite
-      const parsed = parseMessageContent(message)
+      const parsed = parsedFor(message)
       const todos = extractTodos(message, parsed)
       if (todos) {
         setState('todosByAgent', agentId, todos)
@@ -628,11 +681,10 @@ export function createChatStore() {
 
     /** Trim oldest messages when total exceeds threshold. Sets hasMoreOlder=true. */
     trimOldMessages(agentId: string, maxCount: number) {
-      setState('messagesByAgent', agentId, (prev = []) => {
-        if (prev.length <= maxCount)
-          return prev
-        return prev.slice(prev.length - maxCount)
-      })
+      const prev = state.messagesByAgent[agentId]
+      if (!prev || prev.length <= maxCount)
+        return
+      setState('messagesByAgent', agentId, prev.slice(-maxCount))
       setState('hasMoreOlder', agentId, true)
     },
 

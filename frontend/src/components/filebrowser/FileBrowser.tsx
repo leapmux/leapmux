@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
 import { createMemo, For, Show } from 'solid-js'
+import { formatBytes } from '~/lib/formatBytes'
 import { detectFlavor, parentDirectory, pathSegments, sep } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './FileBrowser.css'
@@ -12,17 +13,6 @@ interface FileBrowserProps {
   error: string | null
   onNavigate: (path: string) => void
   onFileSelect: (entry: FileInfo) => void
-}
-
-function formatSize(bytes: bigint): string {
-  const n = Number(bytes)
-  if (n < 1024)
-    return `${n} B`
-  if (n < 1024 * 1024)
-    return `${(n / 1024).toFixed(1)} K`
-  if (n < 1024 * 1024 * 1024)
-    return `${(n / (1024 * 1024)).toFixed(1)} M`
-  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} G`
 }
 
 function sortedEntries(entries: FileInfo[]): FileInfo[] {
@@ -107,7 +97,7 @@ export const FileBrowser: Component<FileBrowserProps> = (props) => {
                   </span>
                   <span class={styles.fileName}>{entry.name}</span>
                   <Show when={!entry.isDir}>
-                    <span class={styles.fileSize}>{formatSize(entry.size)}</span>
+                    <span class={styles.fileSize}>{formatBytes(entry.size)}</span>
                   </Show>
                 </div>
               )}

@@ -30,25 +30,31 @@ function getQuestionProperties(payload: Record<string, unknown>): Record<string,
   return payload.properties as Record<string, unknown> | undefined
 }
 
-function isOpenCodeQuestionPayload(payload: Record<string, unknown>): boolean {
+export function isOpenCodeQuestionPayload(payload: Record<string, unknown>): boolean {
   return payload.type === 'question.asked' && Array.isArray(getQuestionProperties(payload)?.questions)
 }
 
-function wrapAsAskUserQuestion(payload: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Read the `properties.questions` array off an OpenCode-style `question.asked`
+ * payload and normalize the legacy `multiple` field to `multiSelect`. Used by
+ * both the OpenCode and Kilo plugins (Kilo is an OpenCode fork that shares
+ * the same wire format).
+ */
+export function extractOpenCodeQuestions(payload: Record<string, unknown>): Question[] {
   const properties = getQuestionProperties(payload)
-  const questions = (properties?.questions as Array<Record<string, unknown>> | undefined) ?? []
+  const rawQuestions = (properties?.questions as Array<Record<string, unknown>> | undefined) ?? []
+  return rawQuestions.map(question => ({
+    ...question,
+    multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
+  })) as Question[]
+}
+
+function wrapAsAskUserQuestion(payload: Record<string, unknown>): Record<string, unknown> {
   return {
     ...payload,
     request: {
       tool_name: 'AskUserQuestion',
-      input: {
-        questions: questions.map((question) => {
-          const mapped = { ...question }
-          if ('multiple' in mapped && !('multiSelect' in mapped))
-            mapped.multiSelect = mapped.multiple
-          return mapped
-        }),
-      },
+      input: { questions: extractOpenCodeQuestions(payload) },
     },
   }
 }
@@ -135,10 +141,7 @@ export const OpenCodeControlContent: Component<ContentProps> = (props) => {
 /** OpenCode-specific control request action buttons. */
 export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
   const options = () => getOptions(props.request.payload)
-  const questions = () => ((getQuestionProperties(props.request.payload)?.questions as Question[] | undefined) ?? []).map(question => ({
-    ...question,
-    multiSelect: question.multiSelect ?? (question as Question & { multiple?: boolean }).multiple,
-  }))
+  const questions = () => extractOpenCodeQuestions(props.request.payload)
 
   const handleOption = (optionId: string) => {
     sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)

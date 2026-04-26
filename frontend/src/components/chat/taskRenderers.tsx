@@ -1,7 +1,8 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
 import type { MessageContentRenderer } from './messageRenderers'
 import Check from 'lucide-solid/icons/check'
-import { isObject } from './messageUtils'
+import { isObject } from '~/lib/jsonPick'
+import { capitalize } from './rendererUtils'
 import { ToolUseLayout } from './toolRenderers'
 import {
   toolInputSummary,
@@ -14,7 +15,7 @@ export const taskNotificationRenderer: MessageContentRenderer = {
       return null
 
     const status = typeof parsed.status === 'string' ? parsed.status : 'completed'
-    const statusLabel = status.charAt(0).toUpperCase() + status.slice(1)
+    const statusLabel = capitalize(status)
     const summaryText = typeof parsed.summary === 'string' ? parsed.summary : 'Task notification'
     const title = `${statusLabel}: ${summaryText}`
     const outputFile = typeof parsed.output_file === 'string' ? parsed.output_file : null

@@ -4,23 +4,37 @@ import { Plugin, PluginKey } from '@milkdown/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/prose/view'
 import { $prose } from '@milkdown/utils'
 
-/** Setters for active-format signals driven by the toolbar state plugin. */
-export interface ToolbarStateSetters {
-  setActiveBold: Setter<boolean>
-  setActiveItalic: Setter<boolean>
-  setActiveStrikethrough: Setter<boolean>
-  setActiveCode: Setter<boolean>
-  setActiveCodeBlock: Setter<boolean>
-  setActiveBlockquote: Setter<boolean>
-  setActiveLink: Setter<boolean>
-  setActiveHeadingLevel: Setter<number>
-  setActiveBulletList: Setter<boolean>
-  setActiveOrderedList: Setter<boolean>
-  setActiveTaskList: Setter<boolean>
+/** Active formatting state driven by the toolbar state plugin. */
+export interface ActiveFormatting {
+  bold: boolean
+  italic: boolean
+  strikethrough: boolean
+  code: boolean
+  codeBlock: boolean
+  blockquote: boolean
+  link: boolean
+  headingLevel: number
+  bulletList: boolean
+  orderedList: boolean
+  taskList: boolean
 }
 
-/** Tracks the active formatting state of the cursor and updates SolidJS signals. */
-export function createToolbarStatePlugin(setters: ToolbarStateSetters) {
+export const INITIAL_ACTIVE_FORMATTING: ActiveFormatting = {
+  bold: false,
+  italic: false,
+  strikethrough: false,
+  code: false,
+  codeBlock: false,
+  blockquote: false,
+  link: false,
+  headingLevel: 0,
+  bulletList: false,
+  orderedList: false,
+  taskList: false,
+}
+
+/** Tracks the active formatting state of the cursor and updates a single store. */
+export function createToolbarStatePlugin(setActive: (next: ActiveFormatting) => void) {
   return $prose(() => {
     return new Plugin({
       key: new PluginKey('toolbar-state'),
@@ -29,17 +43,9 @@ export function createToolbarStatePlugin(setters: ToolbarStateSetters) {
           update(view) {
             const { state } = view
             const marks = state.storedMarks || state.selection.$from.marks()
-            setters.setActiveBold(marks.some(m => m.type.name === 'strong'))
-            setters.setActiveItalic(marks.some(m => m.type.name === 'em'))
-            setters.setActiveStrikethrough(marks.some(m => m.type.name === 'strike_through'))
-            setters.setActiveCode(marks.some(m => m.type.name === 'inlineCode'))
-            setters.setActiveLink(marks.some(m => m.type.name === 'link'))
-
-            const parentType = state.selection.$from.parent.type.name
-            setters.setActiveCodeBlock(parentType === 'code_block')
-
-            // Check blockquote by walking up the resolved position's depth
             const $from = state.selection.$from
+            const parentType = $from.parent.type.name
+
             let inBlockquote = false
             for (let d = $from.depth; d >= 0; d--) {
               if ($from.node(d).type.name === 'blockquote') {
@@ -47,41 +53,44 @@ export function createToolbarStatePlugin(setters: ToolbarStateSetters) {
                 break
               }
             }
-            setters.setActiveBlockquote(inBlockquote)
 
-            if (parentType === 'heading') {
-              setters.setActiveHeadingLevel(state.selection.$from.parent.attrs.level as number)
-            }
-            else {
-              setters.setActiveHeadingLevel(0)
-            }
-
-            // Detect list type by walking up ancestors
-            let activeBulletList = false
-            let activeOrderedList = false
-            let activeTaskList = false
+            // Detect list type by walking up ancestors.
+            let bulletList = false
+            let orderedList = false
+            let taskList = false
             for (let d = $from.depth; d >= 1; d--) {
               const node = $from.node(d)
               if (node.type.name === 'bullet_list') {
-                // Check if task list: list items have a non-null `checked` attribute
+                // Task lists: list items carry a non-null `checked` attribute.
                 const listItemIdx = $from.index(d)
                 const listItem = node.child(listItemIdx)
                 if (listItem.type.name === 'list_item' && listItem.attrs.checked != null) {
-                  activeTaskList = true
+                  taskList = true
                 }
                 else {
-                  activeBulletList = true
+                  bulletList = true
                 }
                 break
               }
               if (node.type.name === 'ordered_list') {
-                activeOrderedList = true
+                orderedList = true
                 break
               }
             }
-            setters.setActiveBulletList(activeBulletList)
-            setters.setActiveOrderedList(activeOrderedList)
-            setters.setActiveTaskList(activeTaskList)
+
+            setActive({
+              bold: marks.some(m => m.type.name === 'strong'),
+              italic: marks.some(m => m.type.name === 'em'),
+              strikethrough: marks.some(m => m.type.name === 'strike_through'),
+              code: marks.some(m => m.type.name === 'inlineCode'),
+              codeBlock: parentType === 'code_block',
+              blockquote: inBlockquote,
+              link: marks.some(m => m.type.name === 'link'),
+              headingLevel: parentType === 'heading' ? ($from.parent.attrs.level as number) : 0,
+              bulletList,
+              orderedList,
+              taskList,
+            })
           },
         }
       },

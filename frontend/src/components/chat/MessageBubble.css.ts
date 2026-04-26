@@ -1,31 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-export const floatingToolbar = style({
-  position: 'absolute',
-  top: 'var(--space-1)',
-  right: 'var(--space-1)',
-  display: 'flex',
-  gap: '2px',
-  zIndex: 10,
-})
-
-export const metaFloatingToolbar = style({
-  position: 'absolute',
-  top: '50%',
-  right: 'var(--space-1)',
-  transform: 'translateY(-50%)',
-  display: 'flex',
-  gap: '2px',
-  zIndex: 1,
-})
-
-export const threadChildren = style({
-  marginLeft: '6px',
-  paddingLeft: 'var(--space-3)',
-  paddingRight: 'var(--space-3)',
-  borderLeft: '2px solid var(--border)',
-})
-
 export const messageWithError = style({
   display: 'flex',
   flexDirection: 'column',
