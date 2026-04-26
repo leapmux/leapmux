@@ -1,12 +1,11 @@
 import type { AskQuestionState, Question } from '../controls/types'
-import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../controls/CodexControlRequest'
 import { getProviderPlugin } from './registry'
-import { input } from './testUtils'
+import { input, model, option, optionGroup } from './testUtils'
 
 // Side-effect import to register the Codex plugin.
 import './codex'
@@ -548,9 +547,7 @@ describe('codex settings panel', () => {
   const plugin = getProviderPlugin(AgentProvider.CODEX)!
 
   const baseModels = [
-    create(AvailableModelSchema, {
-      id: 'gpt-5.4',
-      displayName: 'GPT-5.4',
+    model('gpt-5.4', 'GPT-5.4', {
       isDefault: true,
       supportedEfforts: [
         { id: 'auto', name: 'Auto', description: '' },
@@ -560,30 +557,18 @@ describe('codex settings panel', () => {
   ]
 
   const baseOptionGroups = [
-    create(AvailableOptionGroupSchema, {
-      key: 'service_tier',
-      label: 'Fast Mode',
-      options: [
-        create(AvailableOptionSchema, { id: 'default', name: 'Default', isDefault: true }),
-        create(AvailableOptionSchema, { id: 'fast', name: 'Fast' }),
-      ],
-    }),
-    create(AvailableOptionGroupSchema, {
-      key: 'collaboration_mode',
-      label: 'Workflow',
-      options: [
-        create(AvailableOptionSchema, { id: 'default', name: 'Suggest & Approve', isDefault: true }),
-        create(AvailableOptionSchema, { id: 'plan', name: 'Plan Mode' }),
-      ],
-    }),
-    create(AvailableOptionGroupSchema, {
-      key: 'permissionMode',
-      label: 'Approval Policy',
-      options: [
-        create(AvailableOptionSchema, { id: 'on-request', name: 'On Request', isDefault: true }),
-        create(AvailableOptionSchema, { id: 'never', name: 'Never' }),
-      ],
-    }),
+    optionGroup('service_tier', 'Fast Mode', [
+      option('default', 'Default', { isDefault: true }),
+      option('fast', 'Fast'),
+    ]),
+    optionGroup('collaboration_mode', 'Workflow', [
+      option('default', 'Suggest & Approve', { isDefault: true }),
+      option('plan', 'Plan Mode'),
+    ]),
+    optionGroup('permissionMode', 'Approval Policy', [
+      option('on-request', 'On Request', { isDefault: true }),
+      option('never', 'Never'),
+    ]),
   ]
 
   it('renders the Fast Mode group and toggles to Fast via option-group callback', async () => {

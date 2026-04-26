@@ -1,11 +1,10 @@
-import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../controls/OpenCodeControlRequest'
 import { opencodeResultDividerRenderer } from './opencodeRenderers'
 import { getProviderPlugin } from './registry'
-import { input } from './testUtils'
+import { input, model, option, optionGroup } from './testUtils'
 
 // Side-effect import to register the Kilo plugin.
 import './kilo'
@@ -300,15 +299,11 @@ describe('kilo settings panel', () => {
     render(() => plugin.SettingsPanel!({
       model: 'openai/gpt-5',
       extraSettings: { primaryAgent: 'code' },
-      availableModels: [create(AvailableModelSchema, { id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true })],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'primaryAgent',
-        label: 'Primary Agent',
-        options: [
-          create(AvailableOptionSchema, { id: 'code', name: 'code', isDefault: true }),
-          create(AvailableOptionSchema, { id: 'plan', name: 'plan' }),
-        ],
-      })],
+      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
+      availableOptionGroups: [optionGroup('primaryAgent', 'Primary Agent', [
+        option('code', 'code', { isDefault: true }),
+        option('plan', 'plan'),
+      ])],
       onOptionGroupChange,
     }))
 
@@ -324,15 +319,11 @@ describe('kilo settings panel', () => {
     render(() => plugin.settingsTriggerLabel!({
       model: 'openai/gpt-5',
       extraSettings: { primaryAgent: 'plan' },
-      availableModels: [create(AvailableModelSchema, { id: 'openai/gpt-5', displayName: 'GPT-5', isDefault: true })],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'primaryAgent',
-        label: 'Primary Agent',
-        options: [
-          create(AvailableOptionSchema, { id: 'code', name: 'Code', isDefault: true }),
-          create(AvailableOptionSchema, { id: 'plan', name: 'Plan' }),
-        ],
-      })],
+      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
+      availableOptionGroups: [optionGroup('primaryAgent', 'Primary Agent', [
+        option('code', 'Code', { isDefault: true }),
+        option('plan', 'Plan'),
+      ])],
     }))
 
     expect(screen.getByText('GPT-5 \u00B7 Plan')).toBeInTheDocument()

@@ -1,10 +1,9 @@
-import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getProviderPlugin } from './registry'
-import { input } from './testUtils'
+import { input, model, option, optionGroup } from './testUtils'
 
 import './goose'
 
@@ -75,19 +74,15 @@ describe('goose settings panel', () => {
       model: 'fast-model',
       permissionMode: MODE_AUTO,
       availableModels: [
-        create(AvailableModelSchema, { id: 'default-model', displayName: 'Default Model' }),
-        create(AvailableModelSchema, { id: 'fast-model', displayName: 'Fast Model', isDefault: true }),
+        model('default-model', 'Default Model'),
+        model('fast-model', 'Fast Model', { isDefault: true }),
       ],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'permissionMode',
-        label: 'Mode',
-        options: [
-          create(AvailableOptionSchema, { id: MODE_AUTO, name: 'Auto', isDefault: true }),
-          create(AvailableOptionSchema, { id: MODE_APPROVE, name: 'Approve' }),
-          create(AvailableOptionSchema, { id: MODE_SMART_APPROVE, name: 'Smart Approve' }),
-          create(AvailableOptionSchema, { id: MODE_CHAT, name: 'Chat' }),
-        ],
-      })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option(MODE_AUTO, 'Auto', { isDefault: true }),
+        option(MODE_APPROVE, 'Approve'),
+        option(MODE_SMART_APPROVE, 'Smart Approve'),
+        option(MODE_CHAT, 'Chat'),
+      ])],
       onPermissionModeChange,
     }))
 
@@ -102,15 +97,11 @@ describe('goose settings panel', () => {
     render(() => plugin.settingsTriggerLabel!({
       model: 'fast-model',
       permissionMode: MODE_APPROVE,
-      availableModels: [create(AvailableModelSchema, { id: 'fast-model', displayName: 'Fast Model', isDefault: true })],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'permissionMode',
-        label: 'Mode',
-        options: [
-          create(AvailableOptionSchema, { id: MODE_AUTO, name: 'Auto', isDefault: true }),
-          create(AvailableOptionSchema, { id: MODE_APPROVE, name: 'Approve' }),
-        ],
-      })],
+      availableModels: [model('fast-model', 'Fast Model', { isDefault: true })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option(MODE_AUTO, 'Auto', { isDefault: true }),
+        option(MODE_APPROVE, 'Approve'),
+      ])],
     }))
 
     expect(screen.getByText('Fast Model \u00B7 Approve')).toBeInTheDocument()
