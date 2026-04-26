@@ -408,6 +408,68 @@ describe('createTabStore', () => {
     })
   })
 
+  it('reorderTabs moves a tab to a new position and assigns a LexoRank between neighbours', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      // Two tabs in a single tile: agent first, terminal second.
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1' })
+
+      const initialOrder = store.state.tabs.map(t => `${t.type}:${t.id}`)
+      expect(initialOrder).toEqual([`${TabType.AGENT}:a1`, `${TabType.TERMINAL}:t1`])
+
+      // Drag terminal before agent.
+      const newPosition = store.reorderTabs(`${TabType.TERMINAL}:t1`, `${TabType.AGENT}:a1`)
+      expect(newPosition).not.toBeNull()
+
+      const reorderedOrder = store.state.tabs.map(t => `${t.type}:${t.id}`)
+      expect(reorderedOrder).toEqual([`${TabType.TERMINAL}:t1`, `${TabType.AGENT}:a1`])
+
+      // The moved tab's position is updated so the new order is recoverable
+      // via sortByPositions + the tab's stored position field.
+      const movedTab = store.state.tabs.find(t => t.id === 't1')
+      expect(movedTab?.position).toBe(newPosition)
+
+      dispose()
+    })
+  })
+
+  it('reorderTabs returns null when source or target is unknown', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+      expect(store.reorderTabs('1:missing', '1:a1')).toBeNull()
+      expect(store.reorderTabs('1:a1', '1:missing')).toBeNull()
+      // Same source and target is also a no-op.
+      expect(store.reorderTabs('1:a1', '1:a1')).toBeNull()
+      dispose()
+    })
+  })
+
+  it('snapshot+restore round-trips tab order and the active tab', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1' })
+      store.setActiveTabForTile('tile-1', TabType.AGENT, 'a1')
+      store.reorderTabs(`${TabType.TERMINAL}:t1`, `${TabType.AGENT}:a1`)
+
+      const snap = store.snapshot()
+
+      // Mutate the live store to simulate a fresh page load.
+      store.clear()
+      expect(store.state.tabs).toEqual([])
+
+      store.restore(snap)
+      const restoredOrder = store.state.tabs.map(t => `${t.type}:${t.id}`)
+      expect(restoredOrder).toEqual([`${TabType.TERMINAL}:t1`, `${TabType.AGENT}:a1`])
+      // Active-tab-per-tile is preserved.
+      expect(store.getActiveTabKeyForTile('tile-1')).toBe(`${TabType.AGENT}:a1`)
+
+      dispose()
+    })
+  })
+
   it('moveTabToTile should move tab and clean up source tile MRU', () => {
     createRoot((dispose) => {
       const store = createTabStore()

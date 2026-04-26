@@ -1,10 +1,9 @@
-import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getProviderPlugin } from './registry'
-import { input } from './testUtils'
+import { input, model, option, optionGroup } from './testUtils'
 
 import './cursor'
 
@@ -68,18 +67,14 @@ describe('cursor settings panel', () => {
       model: 'auto',
       permissionMode: 'agent',
       availableModels: [
-        create(AvailableModelSchema, { id: 'auto', displayName: 'Auto', isDefault: true }),
-        create(AvailableModelSchema, { id: 'gpt-5.4', displayName: 'GPT-5.4' }),
+        model('auto', 'Auto', { isDefault: true }),
+        model('gpt-5.4', 'GPT-5.4'),
       ],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'permissionMode',
-        label: 'Mode',
-        options: [
-          create(AvailableOptionSchema, { id: 'agent', name: 'Agent', isDefault: true }),
-          create(AvailableOptionSchema, { id: 'plan', name: 'Plan' }),
-          create(AvailableOptionSchema, { id: 'ask', name: 'Ask' }),
-        ],
-      })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option('agent', 'Agent', { isDefault: true }),
+        option('plan', 'Plan'),
+        option('ask', 'Ask'),
+      ])],
       onPermissionModeChange,
     }))
 
@@ -92,15 +87,11 @@ describe('cursor settings panel', () => {
     render(() => plugin.settingsTriggerLabel!({
       model: 'auto',
       permissionMode: 'plan',
-      availableModels: [create(AvailableModelSchema, { id: 'auto', displayName: 'Auto', isDefault: true })],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'permissionMode',
-        label: 'Mode',
-        options: [
-          create(AvailableOptionSchema, { id: 'agent', name: 'Agent', isDefault: true }),
-          create(AvailableOptionSchema, { id: 'plan', name: 'Plan' }),
-        ],
-      })],
+      availableModels: [model('auto', 'Auto', { isDefault: true })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option('agent', 'Agent', { isDefault: true }),
+        option('plan', 'Plan'),
+      ])],
     }))
 
     expect(screen.getByText('Auto \u00B7 Plan')).toBeInTheDocument()

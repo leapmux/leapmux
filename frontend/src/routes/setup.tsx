@@ -1,9 +1,10 @@
 import { onMount } from 'solid-js'
 import { SetupPage } from '~/components/common/SetupPage'
+import { setPageTitle } from '~/lib/pageTitle'
 
 export default function SetupRoute() {
   onMount(() => {
-    document.title = 'Setup - LeapMux'
+    setPageTitle('Setup')
   })
   return <SetupPage />
 }

@@ -12,6 +12,7 @@ import { buildAskAnswers, trySubmitAskUserQuestion } from './controls/AskUserQue
 import { sendCodexUserInputResponse } from './controls/CodexControlRequest'
 import { getCursorQuestions, sendCursorQuestionResponse } from './controls/CursorControlRequest'
 import { sendOpenCodeQuestionResponse } from './controls/OpenCodeControlRequest'
+import { decidePlanModeToggle } from './planModeToggle'
 import { getProviderPlugin } from './providers/registry'
 import './providers'
 
@@ -68,13 +69,10 @@ export function useControlResponseHandling(
       return
     const callbacks = { onPermissionModeChange: props.onPermissionModeChange, onOptionGroupChange: props.onOptionGroupChange }
     const currentMode = pm.currentMode(props.agent || {})
-    if (currentMode === pm.planValue) {
-      pm.setMode(previousNonPlanMode, callbacks)
-    }
-    else {
-      previousNonPlanMode = currentMode
-      pm.setMode(pm.planValue, callbacks)
-    }
+    const decision = decidePlanModeToggle({ currentMode, planValue: pm.planValue, previousNonPlanMode })
+    if (decision.updatePreviousNonPlanMode !== undefined)
+      previousNonPlanMode = decision.updatePreviousNonPlanMode
+    pm.setMode(decision.nextMode, callbacks)
   }
 
   // The first pending control request (if any).

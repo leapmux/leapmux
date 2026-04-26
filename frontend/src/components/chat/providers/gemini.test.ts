@@ -1,10 +1,9 @@
-import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getProviderPlugin } from './registry'
-import { input } from './testUtils'
+import { input, model, option, optionGroup } from './testUtils'
 
 import './gemini'
 
@@ -82,18 +81,14 @@ describe('gemini settings panel', () => {
       model: 'gemini-2.5-pro',
       permissionMode: 'default',
       availableModels: [
-        create(AvailableModelSchema, { id: 'auto', displayName: 'Auto', isDefault: true }),
-        create(AvailableModelSchema, { id: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro' }),
+        model('auto', 'Auto', { isDefault: true }),
+        model('gemini-2.5-pro', 'Gemini 2.5 Pro'),
       ],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'permissionMode',
-        label: 'Permission Mode',
-        options: [
-          create(AvailableOptionSchema, { id: 'default', name: 'Default', isDefault: true }),
-          create(AvailableOptionSchema, { id: 'plan', name: 'Plan' }),
-          create(AvailableOptionSchema, { id: 'yolo', name: 'YOLO' }),
-        ],
-      })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Permission Mode', [
+        option('default', 'Default', { isDefault: true }),
+        option('plan', 'Plan'),
+        option('yolo', 'YOLO'),
+      ])],
       onPermissionModeChange,
     }))
 
@@ -109,15 +104,11 @@ describe('gemini settings panel', () => {
     render(() => plugin.settingsTriggerLabel!({
       model: 'gemini-2.5-pro',
       permissionMode: 'plan',
-      availableModels: [create(AvailableModelSchema, { id: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', isDefault: true })],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'permissionMode',
-        label: 'Permission Mode',
-        options: [
-          create(AvailableOptionSchema, { id: 'default', name: 'Default', isDefault: true }),
-          create(AvailableOptionSchema, { id: 'plan', name: 'Plan' }),
-        ],
-      })],
+      availableModels: [model('gemini-2.5-pro', 'Gemini 2.5 Pro', { isDefault: true })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Permission Mode', [
+        option('default', 'Default', { isDefault: true }),
+        option('plan', 'Plan'),
+      ])],
     }))
 
     expect(screen.getByText('Gemini 2.5 Pro \u00B7 Plan')).toBeInTheDocument()

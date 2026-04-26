@@ -1,10 +1,9 @@
-import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { AgentProvider, AvailableModelSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getProviderPlugin } from './registry'
-import { input } from './testUtils'
+import { input, model, option, optionGroup } from './testUtils'
 
 import './copilot'
 
@@ -79,18 +78,14 @@ describe('copilot settings panel', () => {
       model: 'gpt-5.4-mini',
       permissionMode: MODE_AGENT,
       availableModels: [
-        create(AvailableModelSchema, { id: 'gpt-5.4', displayName: 'GPT-5.4' }),
-        create(AvailableModelSchema, { id: 'gpt-5.4-mini', displayName: 'GPT-5.4 mini', isDefault: true }),
+        model('gpt-5.4', 'GPT-5.4'),
+        model('gpt-5.4-mini', 'GPT-5.4 mini', { isDefault: true }),
       ],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'permissionMode',
-        label: 'Mode',
-        options: [
-          create(AvailableOptionSchema, { id: MODE_AGENT, name: 'Agent', isDefault: true }),
-          create(AvailableOptionSchema, { id: MODE_PLAN, name: 'Plan' }),
-          create(AvailableOptionSchema, { id: MODE_AUTOPILOT, name: 'Autopilot' }),
-        ],
-      })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option(MODE_AGENT, 'Agent', { isDefault: true }),
+        option(MODE_PLAN, 'Plan'),
+        option(MODE_AUTOPILOT, 'Autopilot'),
+      ])],
       onPermissionModeChange,
     }))
 
@@ -105,15 +100,11 @@ describe('copilot settings panel', () => {
     render(() => plugin.settingsTriggerLabel!({
       model: 'gpt-5.4-mini',
       permissionMode: MODE_PLAN,
-      availableModels: [create(AvailableModelSchema, { id: 'gpt-5.4-mini', displayName: 'GPT-5.4 mini', isDefault: true })],
-      availableOptionGroups: [create(AvailableOptionGroupSchema, {
-        key: 'permissionMode',
-        label: 'Mode',
-        options: [
-          create(AvailableOptionSchema, { id: MODE_AGENT, name: 'Agent', isDefault: true }),
-          create(AvailableOptionSchema, { id: MODE_PLAN, name: 'Plan' }),
-        ],
-      })],
+      availableModels: [model('gpt-5.4-mini', 'GPT-5.4 mini', { isDefault: true })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option(MODE_AGENT, 'Agent', { isDefault: true }),
+        option(MODE_PLAN, 'Plan'),
+      ])],
     }))
 
     expect(screen.getByText('GPT-5.4 mini \u00B7 Plan')).toBeInTheDocument()

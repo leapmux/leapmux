@@ -3,7 +3,7 @@ import { createSignal, onCleanup, onMount } from 'solid-js'
 export type TileSizeClass = 'full' | 'narrow' | 'compact' | 'minimal' | 'micro'
 export type TileHeightClass = 'tall' | 'short' | 'tiny'
 
-function widthToSizeClass(width: number): TileSizeClass {
+export function widthToSizeClass(width: number): TileSizeClass {
   if (width >= 480)
     return 'full'
   if (width >= 360)
@@ -15,7 +15,7 @@ function widthToSizeClass(width: number): TileSizeClass {
   return 'micro'
 }
 
-function heightToHeightClass(height: number): TileHeightClass {
+export function heightToHeightClass(height: number): TileHeightClass {
   if (height >= 120)
     return 'tall'
   if (height >= 72)

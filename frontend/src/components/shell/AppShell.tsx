@@ -33,6 +33,7 @@ import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createIdentityCache } from '~/lib/identityCache'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
+import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
 import { detectFlavor, parentDirectory, relativeUnder } from '~/lib/paths'
 import { printConsoleBanner } from '~/lib/systemInfo'
 import { createAgentStore } from '~/stores/agent.store'
@@ -55,7 +56,7 @@ import { CustomTitlebar } from './CustomTitlebar'
 import * as titlebarStyles from './CustomTitlebar.css'
 import { DesktopLayout } from './DesktopLayout'
 import { FloatingWindowLayer } from './FloatingWindowLayer'
-import { MobileLayout } from './MobileLayout'
+import { createMobileSidebarToggles, MobileLayout } from './MobileLayout'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
 import { createTileRenderer } from './TileRenderer'
 import { useAgentOperations } from './useAgentOperations'
@@ -168,20 +169,13 @@ export const AppShell: ParentComponent = (props) => {
 
   // Mobile layout state
   const isMobile = useIsMobile()
-  const [leftSidebarOpen, setLeftSidebarOpen] = createSignal(false)
-  const [rightSidebarOpen, setRightSidebarOpen] = createSignal(false)
-  const toggleLeftSidebar = () => {
-    setLeftSidebarOpen(prev => !prev)
-    setRightSidebarOpen(false)
-  }
-  const toggleRightSidebar = () => {
-    setRightSidebarOpen(prev => !prev)
-    setLeftSidebarOpen(false)
-  }
-  const closeAllSidebars = () => {
-    setLeftSidebarOpen(false)
-    setRightSidebarOpen(false)
-  }
+  const {
+    leftSidebarOpen,
+    rightSidebarOpen,
+    toggleLeftSidebar,
+    toggleRightSidebar,
+    closeAllSidebars,
+  } = createMobileSidebarToggles()
 
   // Shared turn-end signal: bumped when an agent turn ends.
   // Drives sound playback, git file status refresh, and directory tree refresh.
@@ -299,12 +293,10 @@ export const AppShell: ParentComponent = (props) => {
     if (!isWorkspaceRoute())
       return
     const ws = workspaceStore.state.workspaces.find(s => s.id === workspace.activeWorkspaceId())
-    if (ws) {
-      document.title = `${ws.title || 'Untitled'} - LeapMux`
-    }
-    else {
-      document.title = 'Dashboard - LeapMux'
-    }
+    if (ws)
+      setWorkspaceTitle(ws.title)
+    else
+      setDashboardTitle()
   })
 
   // Active workspace object
