@@ -339,6 +339,19 @@ export const AppShell: ParentComponent = (props) => {
   })
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
+  // Whether the active tab's working tree is settled enough to query git
+  // status. Used to gate every gitFileStatusStore.refresh — both the
+  // workspace-list tab fields (via the createEffect below that mirrors
+  // store → tab) and the Files section's per-row badges read from the
+  // same store, so a single gate protects both. See isTabReadyForGitStatus
+  // for the rationale on why we defer during a STARTING tab's phase-0
+  // window.
+  const activeTabReady = createMemo(() => {
+    const tab = activeTab()
+    const agent = tab?.type === TabType.AGENT ? agentStore.getById(tab.id) : null
+    return isTabReadyForGitStatus(tab, agent)
+  })
+
   // Get worker, working directory, and home directory from the currently active tab
   const getCurrentTabContext = (): TabContext => {
     const tab = activeTab()
@@ -361,11 +374,15 @@ export const AppShell: ParentComponent = (props) => {
     }
   }
 
-  // Refresh git file status when a turn ends.
+  // Refresh git file status when a turn ends. Another agent's turn can
+  // fire while the active tab is still in its phase-0 window, so gate on
+  // activeTabReady — see its definition for the rationale.
   createEffect(on(
     () => turnEndTrigger(),
     (_, prev) => {
       if (prev === undefined)
+        return
+      if (!activeTabReady())
         return
       const ctx = getCurrentTabContext()
       if (ctx.workerId && ctx.workingDir) {
@@ -1138,30 +1155,17 @@ export const AppShell: ParentComponent = (props) => {
   })
 
   // Refresh git status only when workerId or workingDir actually changes
-  // (not on every tab switch within the same worker context). The
-  // readiness signal is included so that a STARTING agent's or
-  // terminal's transition out of its phase-0 window re-fires this
-  // effect with fresh data — see isTabReadyForGitStatus for the
-  // rationale on why we defer.
-  const activeTabReady = createMemo(() => {
-    const tab = activeTab()
-    const agent = tab?.type === TabType.AGENT ? agentStore.getById(tab.id) : null
-    return isTabReadyForGitStatus(tab, agent)
-  })
-
+  // (not on every tab switch within the same worker context). Including
+  // activeTabReady in the dep key lets the effect re-fire when a STARTING
+  // tab finishes its phase-0 window — see activeTabReady for why we defer.
   createEffect(on(
     () => {
       const ctx = getCurrentTabContext()
       return `${ctx.workerId}\0${ctx.workingDir}\0${activeTabReady() ? '1' : '0'}`
     },
     () => {
-      if (!activeTabReady()) {
-        // The dep above changed (e.g. workingDir flipped to a fresh
-        // STARTING tab) while phase 0 is still running. Skip the
-        // refresh until phase 0 completes — a mid-checkout `git
-        // status` would mark every in-index file as deleted.
+      if (!activeTabReady())
         return
-      }
       const ctx = getCurrentTabContext()
       if (ctx.workerId && ctx.workingDir) {
         gitFileStatusStore.refresh(ctx.workerId, ctx.workingDir)
