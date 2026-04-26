@@ -14,14 +14,11 @@ import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import { create } from '@bufbuild/protobuf'
-import Bot from 'lucide-solid/icons/bot'
-import Terminal from 'lucide-solid/icons/terminal'
 import { createEffect, createMemo, For, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatView } from '~/components/chat/ChatView'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
-import { Icon } from '~/components/common/Icon'
 import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
@@ -31,11 +28,11 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { relativizePath } from '~/lib/paths'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
-import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
+import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
 import { TabBar } from './TabBar'
 import { Tile } from './Tile'
 
@@ -456,58 +453,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
         </For>
 
         <Show when={!tab() && activeWorkspace()}>
-          <Show
-            when={!isActiveWorkspaceArchived()}
-            fallback={(
-              <div class={styles.placeholder} data-testid="tile-empty-state">
-                This workspace is archived. Unarchive it to create new agents or terminals.
-              </div>
-            )}
-          >
-            <Show
-              when={!hasMultipleTiles() || layoutStore.focusedTileId() === tileId}
-              fallback={(
-                <div class={styles.emptyTileHint} data-testid="empty-tile-hint">
-                  No tabs in this tile.
-                </div>
-              )}
-            >
-              <div class={styles.emptyTileActions} data-testid="empty-tile-actions">
-                <button
-                  class="outline"
-                  data-testid="empty-tile-open-agent"
-                  onClick={() => {
-                    focusTile(tileId)
-                    agentOps.handleOpenAgent()
-                  }}
-                >
-                  <Icon icon={Bot} size="sm" />
-                  <span class={styles.emptyTileActionContent}>
-                    <span>Open a new agent tab...</span>
-                    <Show when={getShortcutHintsText('app.newAgent')}>
-                      {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
-                    </Show>
-                  </span>
-                </button>
-                <button
-                  class="outline"
-                  data-testid="empty-tile-open-terminal"
-                  onClick={() => {
-                    focusTile(tileId)
-                    termOps.handleOpenTerminal()
-                  }}
-                >
-                  <Icon icon={Terminal} size="sm" />
-                  <span class={styles.emptyTileActionContent}>
-                    <span>Open a new terminal tab...</span>
-                    <Show when={getShortcutHintsText('app.newTerminal')}>
-                      {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
-                    </Show>
-                  </span>
-                </button>
-              </div>
-            </Show>
-          </Show>
+          <EmptyTilePlaceholder
+            archived={isActiveWorkspaceArchived()}
+            showActions={!hasMultipleTiles() || layoutStore.focusedTileId() === tileId}
+            onOpenAgent={() => {
+              focusTile(tileId)
+              agentOps.handleOpenAgent()
+            }}
+            onOpenTerminal={() => {
+              focusTile(tileId)
+              termOps.handleOpenTerminal()
+            }}
+          />
         </Show>
       </>
     )

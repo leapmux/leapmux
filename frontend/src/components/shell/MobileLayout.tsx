@@ -1,9 +1,38 @@
 import type { Component, JSX } from 'solid-js'
 import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { createSectionStore } from '~/stores/section.store'
-import { Show } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
+
+/**
+ * Mobile sidebar open/close state with mutual exclusion: opening one sidebar
+ * always closes the other; toggling a sidebar closes itself or opens it while
+ * closing the other.
+ */
+export function createMobileSidebarToggles() {
+  const [leftSidebarOpen, setLeftSidebarOpen] = createSignal(false)
+  const [rightSidebarOpen, setRightSidebarOpen] = createSignal(false)
+  const toggleLeftSidebar = () => {
+    setLeftSidebarOpen(prev => !prev)
+    setRightSidebarOpen(false)
+  }
+  const toggleRightSidebar = () => {
+    setRightSidebarOpen(prev => !prev)
+    setLeftSidebarOpen(false)
+  }
+  const closeAllSidebars = () => {
+    setLeftSidebarOpen(false)
+    setRightSidebarOpen(false)
+  }
+  return {
+    leftSidebarOpen,
+    rightSidebarOpen,
+    toggleLeftSidebar,
+    toggleRightSidebar,
+    closeAllSidebars,
+  }
+}
 
 interface MobileLayoutProps {
   sectionStore: ReturnType<typeof createSectionStore>

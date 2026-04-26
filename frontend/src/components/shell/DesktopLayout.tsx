@@ -18,6 +18,87 @@ const DEFAULT_SIDEBAR_PX = 250
 const MIN_SIDEBAR_PX = 250
 const COLLAPSED_SIZE_PX = 45
 
+/** Snapshot of sidebar state needed to compute an auto-collapse / auto-expand decision. */
+export interface AutoCollapseInput {
+  viewportWidth: number
+  leftCollapsed: boolean
+  rightCollapsed: boolean
+  leftWidth: number
+  rightWidth: number
+  autoCollapsedLeft: boolean
+  autoCollapsedRight: boolean
+  leftWidthBeforeCollapse: number
+  rightWidthBeforeCollapse: number
+}
+
+/**
+ * Decision produced by {@link decideAutoCollapse}. Each field is undefined
+ * unless that side should be transitioned. `collapseLeft: true` means the
+ * caller should collapse the left sidebar (recording the current width as
+ * "before collapse" first); `expandLeft.newWidth` means the caller should
+ * restore the left sidebar to that width.
+ */
+export interface AutoCollapseDecision {
+  collapseLeft?: true
+  collapseRight?: true
+  expandLeft?: { newWidth: number }
+  expandRight?: { newWidth: number }
+}
+
+/**
+ * Decide whether to auto-collapse or auto-expand sidebars based on the
+ * current viewport. Pure function — does not read the DOM, so it can be
+ * unit-tested exhaustively without rendering.
+ *
+ * Rules (mirroring the original DesktopLayout behavior):
+ *
+ * - If the visible sidebar pixels exceed half the viewport, auto-collapse
+ *   any uncollapsed side (recording its width to be restored later).
+ * - Otherwise, if a side was previously *auto*-collapsed and restoring it
+ *   would still fit within half the viewport, auto-expand it back to its
+ *   pre-collapse width. User-initiated collapses are not auto-expanded.
+ */
+export function decideAutoCollapse(input: AutoCollapseInput): AutoCollapseDecision {
+  const halfViewport = input.viewportWidth / 2
+  const leftPx = input.leftCollapsed ? 0 : input.leftWidth
+  const rightPx = input.rightCollapsed ? 0 : input.rightWidth
+  const visibleTotal = leftPx + rightPx
+
+  if (visibleTotal > halfViewport && visibleTotal > 0) {
+    const decision: AutoCollapseDecision = {}
+    if (!input.leftCollapsed)
+      decision.collapseLeft = true
+    if (!input.rightCollapsed)
+      decision.collapseRight = true
+    return decision
+  }
+
+  const wantExpandLeft = input.autoCollapsedLeft && input.leftCollapsed
+  const wantExpandRight = input.autoCollapsedRight && input.rightCollapsed
+  if (!wantExpandLeft && !wantExpandRight)
+    return {}
+
+  let wouldUse = 0
+  if (wantExpandLeft)
+    wouldUse += input.leftWidthBeforeCollapse
+  else if (!input.leftCollapsed)
+    wouldUse += input.leftWidth
+  if (wantExpandRight)
+    wouldUse += input.rightWidthBeforeCollapse
+  else if (!input.rightCollapsed)
+    wouldUse += input.rightWidth
+
+  if (wouldUse > halfViewport)
+    return {}
+
+  const decision: AutoCollapseDecision = {}
+  if (wantExpandLeft)
+    decision.expandLeft = { newWidth: input.leftWidthBeforeCollapse }
+  if (wantExpandRight)
+    decision.expandRight = { newWidth: input.rightWidthBeforeCollapse }
+  return decision
+}
+
 interface SidebarFactoryOpts {
   isCollapsed: Accessor<boolean>
   onExpand: () => void
@@ -234,55 +315,41 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
 
   // --- Auto-collapse / expand on viewport resize ---
   const applyViewportResize = () => {
-    const newWidth = window.innerWidth
-    const halfViewport = newWidth / 2
+    const decision = decideAutoCollapse({
+      viewportWidth: window.innerWidth,
+      leftCollapsed: leftCollapsed(),
+      rightCollapsed: rightCollapsed(),
+      leftWidth: leftWidth(),
+      rightWidth: rightWidth(),
+      autoCollapsedLeft: autoCollapsedLeft(),
+      autoCollapsedRight: autoCollapsedRight(),
+      leftWidthBeforeCollapse,
+      rightWidthBeforeCollapse,
+    })
+    if (!decision.collapseLeft && !decision.collapseRight && !decision.expandLeft && !decision.expandRight)
+      return
 
-    const leftPx = leftCollapsed() ? 0 : leftWidth()
-    const rightPx = rightCollapsed() ? 0 : rightWidth()
-    const visibleTotal = leftPx + rightPx
-
-    if (visibleTotal > halfViewport && visibleTotal > 0) {
-      if (!leftCollapsed()) {
-        leftWidthBeforeCollapse = leftWidth()
-        setAutoCollapsedLeft(true)
-        setLeftCollapsed(true)
-      }
-      if (!rightCollapsed()) {
-        rightWidthBeforeCollapse = rightWidth()
-        setAutoCollapsedRight(true)
-        setRightCollapsed(true)
-      }
-      saveSidebarState()
+    if (decision.collapseLeft) {
+      leftWidthBeforeCollapse = leftWidth()
+      setAutoCollapsedLeft(true)
+      setLeftCollapsed(true)
     }
-    else {
-      const wantExpandLeft = autoCollapsedLeft() && leftCollapsed()
-      const wantExpandRight = autoCollapsedRight() && rightCollapsed()
-      if (wantExpandLeft || wantExpandRight) {
-        let wouldUse = 0
-        if (wantExpandLeft)
-          wouldUse += leftWidthBeforeCollapse
-        else if (!leftCollapsed())
-          wouldUse += leftWidth()
-        if (wantExpandRight)
-          wouldUse += rightWidthBeforeCollapse
-        else if (!rightCollapsed())
-          wouldUse += rightWidth()
-
-        if (wouldUse <= halfViewport) {
-          if (wantExpandLeft) {
-            setAutoCollapsedLeft(false)
-            setLeftCollapsed(false)
-            setLeftWidth(leftWidthBeforeCollapse)
-          }
-          if (wantExpandRight) {
-            setAutoCollapsedRight(false)
-            setRightCollapsed(false)
-            setRightWidth(rightWidthBeforeCollapse)
-          }
-          saveSidebarState()
-        }
-      }
+    if (decision.collapseRight) {
+      rightWidthBeforeCollapse = rightWidth()
+      setAutoCollapsedRight(true)
+      setRightCollapsed(true)
     }
+    if (decision.expandLeft) {
+      setAutoCollapsedLeft(false)
+      setLeftCollapsed(false)
+      setLeftWidth(decision.expandLeft.newWidth)
+    }
+    if (decision.expandRight) {
+      setAutoCollapsedRight(false)
+      setRightCollapsed(false)
+      setRightWidth(decision.expandRight.newWidth)
+    }
+    saveSidebarState()
   }
 
   let resizeRafId: number | null = null

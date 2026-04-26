@@ -8,6 +8,7 @@ import { Icon } from '~/components/common/Icon'
 import * as styles from '~/components/common/LoginPage.css'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
+import { setPageTitle } from '~/lib/pageTitle'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
 import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
@@ -28,7 +29,7 @@ const OAuthCompleteSignupPage: Component = () => {
   const [tokenError, setTokenError] = createSignal<string | null>(null)
 
   onMount(async () => {
-    document.title = 'Complete Sign Up - LeapMux'
+    setPageTitle('Complete Sign Up')
     if (!signupToken()) {
       setTokenError('Missing signup token.')
       setLoading(false)

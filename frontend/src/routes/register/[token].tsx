@@ -2,6 +2,7 @@ import { useNavigate, useParams } from '@solidjs/router'
 import { onMount } from 'solid-js'
 import { AuthGuard } from '~/components/common/AuthGuard'
 import { RegistrationPage } from '~/components/common/RegistrationPage'
+import { setPageTitle } from '~/lib/pageTitle'
 import { isSoloMode } from '~/lib/systemInfo'
 
 export default function RegisterRoute() {
@@ -9,7 +10,7 @@ export default function RegisterRoute() {
   const navigate = useNavigate()
 
   onMount(() => {
-    document.title = 'Register Worker - LeapMux'
+    setPageTitle('Register Worker')
     if (isSoloMode()) {
       navigate('/o/admin', { replace: true })
     }

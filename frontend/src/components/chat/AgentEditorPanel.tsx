@@ -16,7 +16,13 @@ import { showWarnToast } from '~/components/common/Toast'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { PREFIX_EDITOR_MIN_HEIGHT, safeGetString, safeRemoveItem, safeSetString } from '~/lib/browserStorage'
+import {
+  clampEditorHeight,
+  clearEditorMinHeight,
+  EDITOR_MIN_HEIGHT,
+  getStoredEditorMinHeight,
+  persistEditorMinHeight,
+} from '~/lib/editor/editorMinHeight'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { spinner } from '~/styles/animations.css'
@@ -69,22 +75,6 @@ export interface AgentEditorPanelProps {
   addDropDataTransferRef?: (fn: (dataTransfer: DataTransfer) => Promise<number>) => void
   /** Ref to expose the triggerSend function for external callers. */
   triggerSendRef?: (fn: () => void) => void
-}
-
-// Per-agent editor height state
-const EDITOR_MIN_HEIGHT = 38 // px - minimum height of the markdown editor wrapper
-function editorMinHeightKey(agentId: string): string {
-  return `${PREFIX_EDITOR_MIN_HEIGHT}${agentId}`
-}
-
-function getStoredEditorMinHeight(agentId: string): number | undefined {
-  const stored = safeGetString(editorMinHeightKey(agentId))
-  if (stored) {
-    const val = Number.parseInt(stored, 10)
-    if (!Number.isNaN(val) && val >= EDITOR_MIN_HEIGHT)
-      return val
-  }
-  return undefined
 }
 
 // In-memory cache of per-agent heights (avoids localStorage reads on every render).
@@ -250,7 +240,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const resetEditorHeight = () => {
     setEditorMinHeight(undefined)
     if (props.agentId)
-      safeRemoveItem(editorMinHeightKey(props.agentId))
+      clearEditorMinHeight(props.agentId)
   }
 
   // Control response handling (extracted module)
@@ -335,8 +325,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const delta = startY - moveEvent.clientY
-      const newMin = Math.max(EDITOR_MIN_HEIGHT, Math.min(maxHeight, startHeight + delta))
-      setEditorMinHeight(newMin)
+      setEditorMinHeight(clampEditorHeight(startHeight + delta, maxHeight))
     }
 
     const onMouseUp = () => {
@@ -344,15 +333,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       document.body.style.cursor = ''
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
-      const val = editorMinHeightSignal()
-      if (props.agentId) {
-        if (val !== undefined && val > EDITOR_MIN_HEIGHT) {
-          safeSetString(editorMinHeightKey(props.agentId), String(val))
-        }
-        else {
-          safeRemoveItem(editorMinHeightKey(props.agentId))
-        }
-      }
+      if (props.agentId)
+        persistEditorMinHeight(props.agentId, editorMinHeightSignal())
     }
 
     document.addEventListener('mousemove', onMouseMove)
@@ -362,7 +344,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const handleResizeReset = () => {
     setEditorMinHeight(undefined)
     if (props.agentId)
-      safeRemoveItem(editorMinHeightKey(props.agentId))
+      clearEditorMinHeight(props.agentId)
   }
 
   return (

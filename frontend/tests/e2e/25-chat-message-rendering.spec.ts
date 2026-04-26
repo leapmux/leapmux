@@ -1,94 +1,40 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { assistantBubbles, firstAssistantBubble, waitForAgentIdle } from './helpers/ui'
 
-async function sendAndWaitForReply(page: Page, message: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(message)
-  await page.keyboard.press('Meta+Enter')
-
-  // Wait for the turn to fully settle before asserting on bubbles. Tests
-  // that hover over earlier messages otherwise race the streaming
-  // auto-scroll, which slides the user bubble out from under the cursor
-  // mid-transition and looks like a flaky :hover drop.
-  await expect(firstAssistantBubble(page)).toBeVisible()
-  await waitForAgentIdle(page)
-}
+/**
+ * Smoke test for end-to-end chat rendering: user input → real LLM response →
+ * rendered bubbles. The bubble component itself is exhaustively unit-tested
+ * in `tests/unit/components/MessageBubble.test.tsx` (over 30 cases covering
+ * thinking, todos, tools, attachments, edits, etc.). This e2e exercises the
+ * remaining integration: the editor send path, the WebSocket/RPC delivery
+ * to a real Claude agent, the streaming-to-rendered transition, and the
+ * markdown HTML output that only Shiki + jsdom-incompatible CSS can verify.
+ */
 
 test.describe('Chat Message Rendering', () => {
-  test('should render user message as human-friendly text, not raw JSON', async ({ page, authenticatedWorkspace }) => {
-    await sendAndWaitForReply(page, 'Hello world')
+  test('user message renders as human text and assistant reply renders as markdown', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.type('What is 2+2? Reply with just the number.')
+    await page.keyboard.press('Meta+Enter')
 
+    await expect(firstAssistantBubble(page)).toBeVisible()
+    await waitForAgentIdle(page)
+
+    // User bubble: shows the human text, NOT the raw JSON envelope.
     const userBubble = page.locator('[data-testid="message-bubble"][data-role="user"]').first()
-    await expect(userBubble).toBeVisible()
+    const userContent = userBubble.locator('[data-testid="message-content"]')
+    await expect(userContent).toContainText('What is 2+2?')
+    await expect(userContent).not.toContainText('{"content":')
 
-    const content = userBubble.locator('[data-testid="message-content"]')
-    await expect(content).toContainText('Hello world')
-    await expect(content).not.toContainText('{"content":')
-  })
-
-  test('should render assistant message as markdown', async ({ page, authenticatedWorkspace }) => {
-    await sendAndWaitForReply(page, 'What is 2+2? Reply with just the number.')
-
-    // Wait for turn to complete so the text bubble is present
-    await expect(page.locator('[data-testid="interrupt-button"]')).not.toBeVisible({ timeout: 30_000 })
-
-    // Find an assistant bubble whose message-content contains <p> tags
-    // (skip thinking bubbles and turn-end indicators which have no <p>)
+    // Assistant bubble: rendered as HTML markdown (at least one <p>),
+    // not raw text.
     const assistantBubble = assistantBubbles(page).filter({
       has: page.locator('[data-testid="message-content"] p'),
     }).first()
-
-    const content = assistantBubble.locator('[data-testid="message-content"]')
-
-    // Content should be rendered as HTML elements (e.g. <p> tags), not raw text
-    const hasParagraph = await content.locator('p').count()
-    expect(hasParagraph).toBeGreaterThan(0)
-  })
-
-  test('should show floating toolbar on hover', async ({ page, authenticatedWorkspace }) => {
-    await sendAndWaitForReply(page, 'Hi')
-
-    const bubble = page.locator('[data-testid="message-bubble"]').first()
-    const row = bubble.locator('..') // parent messageRow div
-    // The toolbar has opacity:0 by default and is revealed on hover via toolHeaderActions.
-    // Playwright's toBeVisible() does not consider opacity:0 as hidden, so we check CSS directly.
-    const toolbar = row.locator('[data-testid="message-toolbar"]')
-
-    // Move mouse away first to ensure no hover state
-    await page.mouse.move(0, 0)
-
-    // Toolbar should have opacity 0 initially
-    await expect(toolbar).toHaveCSS('opacity', '0')
-
-    // Hover over the bubble — the :hover rule on messageRow reveals the toolbar.
-    // We hover on the bubble (stable size) rather than the row to avoid the
-    // cursor landing outside the hover zone if the toolbar causes a reflow.
-    await bubble.hover()
-    await expect(toolbar).toHaveCSS('opacity', '1')
-
-    // Move mouse away
-    await page.mouse.move(0, 0)
-    await expect(toolbar).toHaveCSS('opacity', '0')
-  })
-
-  test('should copy Raw JSON to clipboard on button click', async ({ page, context, authenticatedWorkspace }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    await sendAndWaitForReply(page, 'Hello')
-
-    const userBubble = page.locator('[data-testid="message-bubble"][data-role="user"]').first()
-    const userRow = userBubble.locator('..') // parent messageRow div
-
-    // Hover and click the copy JSON button
-    await userBubble.hover()
-    const copyButton = userRow.locator('[data-testid="message-copy-json"]')
-    await expect(copyButton).toBeVisible()
-    await copyButton.click()
-
-    // Clipboard should contain JSON with "content"
-    const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
-    expect(clipboardText).toContain('"content"')
+    const assistantContent = assistantBubble.locator('[data-testid="message-content"]')
+    const paragraphs = await assistantContent.locator('p').count()
+    expect(paragraphs).toBeGreaterThan(0)
   })
 })

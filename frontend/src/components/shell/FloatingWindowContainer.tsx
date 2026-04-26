@@ -5,6 +5,45 @@ import { For, onCleanup, onMount } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
 import * as styles from './FloatingWindowContainer.css'
 
+const SNAP_THRESHOLD_PX = 15
+
+/**
+ * Snap a fractional (0..1) window position to the nearest parent edge if it
+ * is within `SNAP_THRESHOLD_PX` of that edge. `x`/`y`/`w`/`h` are fractions of
+ * `parentW`/`parentH`. Returns the (possibly snapped) `{x, y}`. Snapping is
+ * performed independently along each axis: left vs. right, top vs. bottom.
+ */
+export function snapPosition(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  parentW: number,
+  parentH: number,
+): { x: number, y: number } {
+  const snapX = SNAP_THRESHOLD_PX / parentW
+  const snapY = SNAP_THRESHOLD_PX / parentH
+
+  let snappedX = x
+  let snappedY = y
+
+  // Snap left edge
+  if (Math.abs(x) < snapX)
+    snappedX = 0
+  // Snap right edge
+  else if (Math.abs(x + w - 1) < snapX)
+    snappedX = 1 - w
+
+  // Snap top edge
+  if (Math.abs(y) < snapY)
+    snappedY = 0
+  // Snap bottom edge
+  else if (Math.abs(y + h - 1) < snapY)
+    snappedY = 1 - h
+
+  return { x: snappedX, y: snappedY }
+}
+
 interface FloatingWindowContainerProps {
   windowId: string
   x: number
@@ -66,31 +105,6 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
   }
 
   // --- Edge snapping ---
-  const SNAP_THRESHOLD_PX = 15
-
-  const snapPosition = (x: number, y: number, w: number, h: number, parentW: number, parentH: number) => {
-    const snapX = SNAP_THRESHOLD_PX / parentW
-    const snapY = SNAP_THRESHOLD_PX / parentH
-
-    let snappedX = x
-    let snappedY = y
-
-    // Snap left edge
-    if (Math.abs(x) < snapX)
-      snappedX = 0
-    // Snap right edge
-    else if (Math.abs(x + w - 1) < snapX)
-      snappedX = 1 - w
-
-    // Snap top edge
-    if (Math.abs(y) < snapY)
-      snappedY = 0
-    // Snap bottom edge
-    else if (Math.abs(y + h - 1) < snapY)
-      snappedY = 1 - h
-
-    return { x: snappedX, y: snappedY }
-  }
 
   // --- Opacity (scroll on titlebar) ---
   const handleTitleBarWheel = (e: WheelEvent) => {
