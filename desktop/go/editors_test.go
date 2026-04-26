@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,16 +36,21 @@ func newFakeProber() *fakeProber {
 	}
 }
 
-func (f *fakeProber) addPath(p string)        { f.paths[p] = true }
+// All path keys are stored canonicalized to forward slashes so tests can
+// describe their world POSIX-style and still match on Windows, where
+// production code's filepath.Join introduces backslashes that wouldn't
+// otherwise hit our map.
+func (f *fakeProber) addPath(p string)        { f.paths[filepath.ToSlash(p)] = true }
 func (f *fakeProber) addLookPath(n, p string) { f.pathLook[n] = p }
 func (f *fakeProber) setEnv(k, v string)      { f.env[k] = v }
 func (f *fakeProber) setHome(h string)        { f.home = h }
 
 func (f *fakeProber) Stat(p string) (os.FileInfo, error) {
-	if !f.paths[p] {
+	key := filepath.ToSlash(p)
+	if !f.paths[key] {
 		return nil, fs.ErrNotExist
 	}
-	mode := f.pathInfos[p]
+	mode := f.pathInfos[key]
 	return fakeFileInfo{name: filepath.Base(p), mode: mode}, nil
 }
 
@@ -57,9 +63,10 @@ func (f *fakeProber) LookPath(n string) (string, error) {
 }
 
 func (f *fakeProber) Glob(pattern string) ([]string, error) {
+	pattern = filepath.ToSlash(pattern)
 	var out []string
 	for p := range f.paths {
-		ok, _ := filepath.Match(pattern, p)
+		ok, _ := path.Match(pattern, p)
 		if ok {
 			out = append(out, p)
 		}
@@ -336,7 +343,13 @@ func TestValidateOpenPath_RejectsRelative(t *testing.T) {
 
 func TestValidateOpenPath_RejectsTraversal(t *testing.T) {
 	t.Parallel()
-	_, err := validateOpenPath("/etc/../etc/passwd")
+	// Build an absolute path containing ".." that is absolute on both
+	// POSIX and Windows. A literal "/etc/..." is drive-relative on
+	// Windows and would fail the IsAbs check before the traversal check
+	// runs. Avoid filepath.Join, which would Clean and collapse the "..".
+	base := t.TempDir()
+	input := base + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(base)
+	_, err := validateOpenPath(input)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "traversal")
 }
