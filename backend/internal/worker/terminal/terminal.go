@@ -233,6 +233,10 @@ type Terminal struct {
 	stopped   bool
 	exitCode  int
 	exitCh    chan struct{}
+	// readDoneCh is closed when readOutput returns. exitCh tracks
+	// cmd.Wait() in a separate goroutine, so a closed exitCh does NOT
+	// imply screenBuf writes have stopped — wait on this instead.
+	readDoneCh chan struct{}
 }
 
 // Options configures a new Terminal.
@@ -314,16 +318,20 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal
 	}
 
 	t := &Terminal{
-		id:        opts.ID,
-		cmd:       cmd,
-		ptmx:      ptmx,
-		jobObject: jobObject,
-		outputFn:  wrappedOutput,
-		screenBuf: screenBuf,
-		exitCh:    make(chan struct{}),
+		id:         opts.ID,
+		cmd:        cmd,
+		ptmx:       ptmx,
+		jobObject:  jobObject,
+		outputFn:   wrappedOutput,
+		screenBuf:  screenBuf,
+		exitCh:     make(chan struct{}),
+		readDoneCh: make(chan struct{}),
 	}
 
-	go t.readOutput()
+	go func() {
+		t.readOutput()
+		close(t.readDoneCh)
+	}()
 	go t.waitForExit()
 
 	slog.Info("terminal started",
@@ -392,6 +400,13 @@ func (t *Terminal) Stop() {
 func (t *Terminal) Wait() int {
 	<-t.exitCh
 	return t.exitCode
+}
+
+// WaitForReadDrained blocks until readOutput has returned, after which
+// the screen buffer's cumulative offset is stable. Only returns once
+// the PTY is closed (via Stop or natural child exit).
+func (t *Terminal) WaitForReadDrained() {
+	<-t.readDoneCh
 }
 
 // IsExited returns true if the terminal process has exited.

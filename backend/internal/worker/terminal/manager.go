@@ -190,6 +190,21 @@ func (m *Manager) IsExited(terminalID string) bool {
 	return t.IsExited()
 }
 
+// WaitForReadDrained blocks until the terminal's read goroutine has
+// drained (see Terminal.WaitForReadDrained). Returns false if the
+// terminal is unknown.
+func (m *Manager) WaitForReadDrained(terminalID string) bool {
+	m.mu.RLock()
+	t, ok := m.terminals[terminalID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+	t.WaitForReadDrained()
+	return true
+}
+
 // UpdateTitle updates the title of a terminal in the in-memory metadata.
 func (m *Manager) UpdateTitle(terminalID, title string) bool {
 	m.mu.Lock()

@@ -94,14 +94,30 @@ func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
 	assert.GreaterOrEqual(t, attempts.Load(), int32(1), "expected at least 1 attempt")
 }
 
+// recordingBackoff records each NextBackOff result so tests can assert
+// on the values requested rather than wall-clock elapsed time, which is
+// noisy on Windows where the scheduler tick (~15.6ms) dwarfs 10ms sleeps.
+type recordingBackoff struct {
+	inner     backoff.BackOff
+	intervals []time.Duration
+}
+
+func (r *recordingBackoff) NextBackOff() time.Duration {
+	d := r.inner.NextBackOff()
+	r.intervals = append(r.intervals, d)
+	return d
+}
+
+func (r *recordingBackoff) Reset() { r.inner.Reset() }
+
 func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
-	var timestamps []time.Time
+	var attempts atomic.Int32
 	failCount := 4
 
 	mock := &mockConnectorClient{
 		requestRegistrationFn: func(_ context.Context, _ *connect.Request[leapmuxv1.RequestRegistrationRequest]) (*connect.Response[leapmuxv1.RequestRegistrationResponse], error) {
-			timestamps = append(timestamps, time.Now())
-			if len(timestamps) <= failCount {
+			n := int(attempts.Add(1))
+			if n <= failCount {
 				return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("hub down"))
 			}
 			return connect.NewResponse(&leapmuxv1.RequestRegistrationResponse{
@@ -116,24 +132,32 @@ func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
 		},
 	}
 
-	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = 10 * time.Millisecond
-	bo.MaxInterval = 100 * time.Millisecond
-	bo.Multiplier = 2.0
-	bo.RandomizationFactor = 0
-	bo.Reset()
+	inner := backoff.NewExponentialBackOff()
+	inner.InitialInterval = 10 * time.Millisecond
+	inner.MaxInterval = 100 * time.Millisecond
+	inner.Multiplier = 2.0
+	inner.RandomizationFactor = 0
+	inner.Reset()
+	rec := &recordingBackoff{inner: inner}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := registerWithClient(ctx, mock, "http://localhost:0", "0.0.1", nil, nil, nil, bo)
+	_, err := registerWithClient(ctx, mock, "http://localhost:0", "0.0.1", nil, nil, nil, rec)
 	require.NoError(t, err, "registerWithClient failed")
 
-	// Verify gaps between retries are increasing.
-	for i := 2; i < len(timestamps); i++ {
-		prev := timestamps[i-1].Sub(timestamps[i-2])
-		curr := timestamps[i].Sub(timestamps[i-1])
-		assert.GreaterOrEqual(t, curr, prev, "gap[%d]=%v < gap[%d]=%v, expected non-decreasing intervals", i-1, curr, i-2, prev)
+	// One NextBackOff per failed attempt — the success doesn't sleep.
+	require.Len(t, rec.intervals, failCount,
+		"expected one backoff interval per failed attempt")
+
+	// Verify the intervals returned by the BackOff are non-decreasing.
+	// Asserting on the values the function actually requests is exact, vs.
+	// measuring elapsed wall-clock time which is noisy on Windows where
+	// the default scheduler tick (~15.6ms) dwarfs 10ms intervals.
+	for i := 1; i < len(rec.intervals); i++ {
+		assert.GreaterOrEqual(t, rec.intervals[i], rec.intervals[i-1],
+			"interval[%d]=%v < interval[%d]=%v, expected non-decreasing",
+			i, rec.intervals[i], i-1, rec.intervals[i-1])
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,29 +58,31 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: 0}},
 	}, w1)
 
-	var initialOffset int64
 	testutil.AssertEventually(t, func() bool {
 		for _, data := range collectTerminalData(t, w1, "t-resub") {
 			if data.GetEndOffset() > 0 {
-				initialOffset = data.GetEndOffset()
 				return true
 			}
 		}
 		return false
 	}, "first subscribe delivered the current screen")
-	require.Greater(t, initialOffset, int64(0))
 
-	// Second subscribe with after_offset at the current head. The backend
-	// must not send any TerminalData.
+	// Freeze the screen buffer before reading the head offset.
+	// cmd.exe keeps emitting prompt-setup bytes (alt-screen, title bar,
+	// cursor toggles) for hundreds of ms after start, so any wall-clock
+	// "settle" is racy on slow CI; Stop+WaitForReadDrained is sync.
+	svc.Terminals.StopTerminal("t-resub")
+	require.True(t, svc.Terminals.WaitForReadDrained("t-resub"))
+
+	_, currentOffset, _ := svc.Terminals.ScreenSnapshotSince("t-resub", 0)
+	require.Greater(t, currentOffset, int64(0))
+
 	w2 := &testResponseWriter{channelID: "test-ch"}
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: initialOffset}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: currentOffset}},
 	}, w2)
 
-	// Give the handler a moment; if it was going to emit data it'd be in
-	// the stream buffer synchronously (the catch-up loop runs in the RPC
-	// call path, not a background goroutine).
-	time.Sleep(50 * time.Millisecond)
+	// dispatch is synchronous: catch-up has run by the time it returns.
 	datas := collectTerminalData(t, w2, "t-resub")
 	assert.Empty(t, datas,
 		"resubscribe with after_offset=current must not replay bytes — the client already has them")
