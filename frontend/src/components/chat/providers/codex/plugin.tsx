@@ -1,0 +1,403 @@
+import type { JSX } from 'solid-js'
+import type { Question } from '../../controls/types'
+import type { MessageCategory } from '../../messageClassification'
+import type { RenderContext } from '../../messageRenderers'
+import type { ClassificationContext, ClassificationInput, ProviderPlugin } from '../registry'
+import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { PermissionMode } from '~/utils/controlResponse'
+import * as workerRpc from '~/api/workerRpc'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { isObject, pickString } from '~/lib/jsonPick'
+import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
+import * as styles from '../../ChatView.css'
+import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from '../../controls/CodexControlRequest'
+import { isNotificationThreadWrapper } from '../../messageUtils'
+import { registerProvider } from '../registry'
+import { codexNotificationRenderer, codexNotificationThreadEntry } from './notifications'
+import {
+  codexAgentMessageRenderer,
+  codexCollabAgentToolCallRenderer,
+  codexMcpToolCallRenderer,
+  codexPlanRenderer,
+  codexReasoningRenderer,
+  codexTurnCompletedRenderer,
+  codexTurnPlanRenderer,
+  codexWebSearchRenderer,
+} from './renderers'
+import { codexCommandExecutionRenderer } from './renderers/commandExecution'
+import { codexFileChangeRenderer } from './renderers/fileChange'
+import {
+  CODEX_EXTRA_COLLABORATION_MODE,
+  CodexSettingsPanel,
+  CodexTriggerLabel,
+  DEFAULT_CODEX_COLLABORATION_MODE,
+  DEFAULT_CODEX_EFFORT,
+  DEFAULT_CODEX_MODEL,
+} from './settings'
+import { codexToolResultMeta } from './toolResult'
+
+const CODEX_TURN_FAILED_NOTIFICATION = 'Codex turn failed'
+
+let codexReqIdCounter = 1000
+
+/**
+ * Builds a JSON-RPC request for interrupting a Codex turn.
+ */
+function buildCodexInterruptRequest(threadId: string, turnId: string): string {
+  return JSON.stringify({
+    jsonrpc: '2.0',
+    id: ++codexReqIdCounter,
+    method: 'turn/interrupt',
+    params: { threadId, turnId },
+  })
+}
+
+function isCodexInterruptRequestText(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>
+    return parsed.method === 'turn/interrupt'
+  }
+  catch {
+    return false
+  }
+}
+
+function codexAssistantInterruptEcho(parent: Record<string, unknown>): boolean {
+  if (parent.role !== 'assistant')
+    return false
+
+  if (typeof parent.content === 'string')
+    return isCodexInterruptRequestText(parent.content)
+
+  if (parent.type !== 'assistant' || !isObject(parent.message))
+    return false
+
+  const content = (parent.message as Record<string, unknown>).content
+  if (!Array.isArray(content))
+    return false
+
+  const text = content
+    .filter((c: unknown) => isObject(c) && c.type === 'text')
+    .map((c: unknown) => String((c as Record<string, unknown>).text || ''))
+    .join('')
+
+  return text.length > 0 && isCodexInterruptRequestText(text)
+}
+
+function isCodexJsonRpcResponse(parent: Record<string, unknown>): boolean {
+  if ('method' in parent || 'item' in parent || 'turn' in parent)
+    return false
+  return ('result' in parent || 'error' in parent) && ('id' in parent)
+}
+
+function isCodexEmptyCompletedWebSearch(item: Record<string, unknown>): boolean {
+  const query = pickString(item, 'query').trim()
+  const action = isObject(item.action) ? item.action as Record<string, unknown> : null
+  const actionType = pickString(action, 'type')
+
+  if (actionType === 'other')
+    return query.length === 0
+
+  if (actionType === 'openPage')
+    return !action?.url
+
+  return false
+}
+
+/** Extra notification types for Codex (agent_error). */
+const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
+function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] } | null): wrapper is { old_seqs: number[], messages: unknown[] } {
+  if (isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES, (t, st) =>
+    t === 'system' && st !== 'init' && st !== 'task_notification')) {
+    return true
+  }
+  // Codex method-based notifications (e.g. account/rateLimits/updated)
+  if (!wrapper || (wrapper as { messages: unknown[] }).messages.length < 1)
+    return false
+  return (wrapper as { messages: unknown[] }).messages.some((msg: unknown) =>
+    isObject(msg) && msg.method === 'account/rateLimits/updated')
+}
+
+/** Returns true when a Codex rate limit message has all tiers below the warning threshold. */
+function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
+  if (m.method !== 'account/rateLimits/updated')
+    return false
+  const params = m.params as Record<string, unknown> | undefined
+  const rl = params?.rateLimits as Record<string, unknown> | undefined
+  if (!rl)
+    return true
+  for (const tierKey of ['primary', 'secondary']) {
+    const tier = rl[tierKey] as Record<string, unknown> | undefined
+    if (tier && (tier.usedPercent as number) >= 80)
+      return false
+  }
+  return true
+}
+
+function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
+  if (!isObject(m))
+    return false
+  const msg = m as Record<string, unknown>
+  if (msg.method === 'thread/tokenUsage/updated')
+    return true
+  if (msg.type === 'agent_error' && msg.error === CODEX_TURN_FAILED_NOTIFICATION)
+    return true
+  return isCodexRateLimitAllAllowed(msg)
+}
+
+const codexPlugin: ProviderPlugin = {
+  defaultModel: DEFAULT_CODEX_MODEL,
+  defaultEffort: DEFAULT_CODEX_EFFORT,
+  defaultPermissionMode: 'on-request',
+  bypassPermissionMode: 'never',
+  attachments: {
+    text: true,
+    image: true,
+    pdf: false,
+    binary: false,
+  },
+  planMode: {
+    currentMode: agent => agent.extraSettings?.[CODEX_EXTRA_COLLABORATION_MODE] || DEFAULT_CODEX_COLLABORATION_MODE,
+    planValue: 'plan',
+    defaultValue: DEFAULT_CODEX_COLLABORATION_MODE,
+    setMode: (mode, cb) => cb.onOptionGroupChange?.(CODEX_EXTRA_COLLABORATION_MODE, mode),
+  },
+  classify(input: ClassificationInput, context?: ClassificationContext): MessageCategory {
+    const parent = input.parentObject
+    const wrapper = input.wrapper
+
+    // Notification threads (settings_changed, context_cleared, etc.)
+    if (isCodexNotifThread(wrapper)) {
+      // Filter notifications that are intentionally invisible in chat.
+      const msgs = wrapper.messages.filter(m => !isCodexHiddenNotificationThreadMessage(m))
+      if (msgs.length === 0)
+        return { kind: 'hidden' }
+      return { kind: 'notification_thread', messages: msgs }
+    }
+
+    // Empty wrapper — hide.
+    if (wrapper && (wrapper as { messages: unknown[] }).messages.length === 0)
+      return { kind: 'hidden' }
+
+    if (!parent)
+      return { kind: 'unknown' }
+
+    if (isCodexJsonRpcResponse(parent))
+      return { kind: 'hidden' }
+
+    if (codexAssistantInterruptEcho(parent))
+      return { kind: 'hidden' }
+
+    const type = parent.type as string | undefined
+    const subtype = parent.subtype as string | undefined
+
+    // Startup and status notifications are transient lifecycle signals.
+    // Persist them if needed, but keep them out of chat rendering.
+    if (parent.method === 'thread/started' || parent.method === 'turn/started' || parent.method === 'thread/status/changed')
+      return { kind: 'hidden' }
+
+    if (type === 'system') {
+      if (subtype === 'init')
+        return { kind: 'hidden' }
+      if (subtype === 'status' && parent.status !== 'compacting')
+        return { kind: 'hidden' }
+      if (subtype === 'task_notification')
+        return { kind: 'hidden' }
+      return { kind: 'notification' }
+    }
+
+    if (type === 'agent_error' && parent.error === CODEX_TURN_FAILED_NOTIFICATION)
+      return { kind: 'hidden' }
+
+    if (parent.method === 'turn/plan/updated' && isObject(parent.params))
+      return { kind: 'tool_use', toolName: 'turnPlan', toolUse: parent, content: [] }
+
+    // Each item is now its own message (no more merging).
+    const effective = parent
+
+    // Codex item types from item/completed notifications.
+    // The params are stored natively: {item: {type: "agentMessage", ...}, threadId, turnId}
+    const item = (effective.item as Record<string, unknown> | undefined)
+      ?? (parent.item as Record<string, unknown> | undefined)
+    const itemType = item?.type as string | undefined
+
+    // turn/completed → result divider
+    if (effective.turn && isObject(effective.turn) && (effective.turn as Record<string, unknown>).status)
+      return { kind: 'result_divider' }
+
+    if (item && itemType) {
+      // agentMessage → assistant text
+      if (itemType === 'agentMessage')
+        return { kind: 'assistant_text' }
+
+      // plan → tool_use (rendered bubble-less like ExitPlanMode)
+      if (itemType === 'plan')
+        return { kind: 'tool_use', toolName: 'plan', toolUse: item, content: [] }
+
+      // commandExecution → tool use
+      if (itemType === 'commandExecution')
+        return { kind: 'tool_use', toolName: 'commandExecution', toolUse: item, content: [] }
+
+      // fileChange → tool use
+      if (itemType === 'fileChange')
+        return { kind: 'tool_use', toolName: 'fileChange', toolUse: item, content: [] }
+
+      // mcpToolCall → tool use
+      if (itemType === 'mcpToolCall')
+        return { kind: 'tool_use', toolName: (item.tool as string) || 'mcpTool', toolUse: item, content: [] }
+
+      // dynamicToolCall → tool use
+      if (itemType === 'dynamicToolCall')
+        return { kind: 'tool_use', toolName: (item.tool as string) || 'dynamicTool', toolUse: item, content: [] }
+
+      // collabAgentToolCall → tool use (SpawnAgent)
+      if (itemType === 'collabAgentToolCall') {
+        if (item.tool === 'spawnAgent' && item.status === 'completed')
+          return { kind: 'hidden' }
+        return { kind: 'tool_use', toolName: 'collabAgentToolCall', toolUse: item, content: [] }
+      }
+
+      // webSearch → tool use / result-like native codex message
+      if (itemType === 'webSearch') {
+        if (isCodexEmptyCompletedWebSearch(item))
+          return { kind: 'hidden' }
+        return { kind: 'tool_use', toolName: 'webSearch', toolUse: item, content: [] }
+      }
+
+      // reasoning → thinking (hide if both summary and content are empty)
+      if (itemType === 'reasoning') {
+        const summary = item.summary as unknown[] | undefined
+        const content = item.content as unknown[] | undefined
+        if ((!summary || summary.length === 0) && (!content || content.length === 0))
+          return context?.hasCommandStream ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
+        return { kind: 'assistant_thinking' }
+      }
+
+      // userMessage → hidden (echoed back by Codex; persisted but not displayed)
+      if (itemType === 'userMessage')
+        return { kind: 'hidden' }
+    }
+
+    // User message (persisted by LeapMux service layer)
+    if (!parent.item && typeof parent.content === 'string') {
+      if (parent.hidden === true)
+        return { kind: 'hidden' }
+      if (parent.planExecution === true)
+        return { kind: 'plan_execution' }
+      return { kind: 'user_content' }
+    }
+
+    // Codex method-based notifications
+    if (parent.method === 'thread/tokenUsage/updated')
+      return { kind: 'hidden' }
+
+    if (parent.method === 'account/rateLimits/updated') {
+      if (isCodexRateLimitAllAllowed(parent))
+        return { kind: 'hidden' }
+      return { kind: 'notification' }
+    }
+
+    if (parent.method === 'mcpServer/startupStatus/updated')
+      return { kind: 'notification' }
+
+    // LeapMux notification types
+    if (type === 'settings_changed' || type === 'context_cleared'
+      || type === 'interrupted' || type === 'agent_error' || type === 'agent_renamed' || type === 'compacting') {
+      return { kind: 'notification' }
+    }
+
+    if ((input.spanType === 'ToolSearch' && (parent.type === 'assistant' || parent.type === 'user'))
+      || (input.spanType === 'TodoWrite' && parent.type === 'user')
+      || (input.spanType === 'EnterPlanMode' && parent.type === 'user')) {
+      return { kind: 'hidden' }
+    }
+
+    return { kind: 'unknown' }
+  },
+
+  renderMessage(category: MessageCategory, parsed: unknown, role: MessageRole, context?: RenderContext): JSX.Element | null {
+    if (category.kind === 'assistant_text')
+      return codexAgentMessageRenderer(parsed, role, context)
+    if (category.kind === 'assistant_thinking')
+      return codexReasoningRenderer(parsed, role, context)
+    if (category.kind === 'result_divider')
+      return codexTurnCompletedRenderer(parsed, role, context)
+    if (category.kind === 'notification') {
+      const codexResult = codexNotificationRenderer(parsed, role, context)
+      if (codexResult !== null)
+        return codexResult
+      // Fall through to Claude-shaped notification renderers (settings_changed,
+      // interrupted, agent_renamed, etc.) — Codex emits these too.
+      return null
+    }
+    if (category.kind === 'tool_use') {
+      // Use the item stored in category.toolUse (resolved to final state in classify).
+      const cat = category as { toolName: string, toolUse: Record<string, unknown> }
+      if (cat.toolName === 'turnPlan')
+        return codexTurnPlanRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'plan')
+        return codexPlanRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'commandExecution')
+        return codexCommandExecutionRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'fileChange')
+        return codexFileChangeRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'webSearch')
+        return codexWebSearchRenderer(cat.toolUse, role, context)
+      if (cat.toolName === 'collabAgentToolCall')
+        return codexCollabAgentToolCallRenderer(cat.toolUse, role, context)
+      return codexMcpToolCallRenderer(cat.toolUse, role, context)
+    }
+    return null
+  },
+
+  toolResultMeta: codexToolResultMeta,
+  notificationThreadEntry: codexNotificationThreadEntry,
+
+  buildInterruptContent(agentSessionId: string, codexTurnId?: string): string | null {
+    if (!agentSessionId || !codexTurnId)
+      return null
+    return buildCodexInterruptRequest(agentSessionId, codexTurnId)
+  },
+
+  isAskUserQuestion(payload) {
+    return (payload as Record<string, unknown>).method === 'item/tool/requestUserInput'
+  },
+
+  extractAskUserQuestions(payload) {
+    const params = isObject(payload.params) ? payload.params as Record<string, unknown> : undefined
+    return Array.isArray(params?.questions) ? params!.questions as Question[] : []
+  },
+
+  async sendAskUserQuestionResponse(agentId, sendControlResponse, requestId, questions, askState, _payload) {
+    await sendCodexUserInputResponse(agentId, sendControlResponse, requestId, questions, askState)
+  },
+
+  buildControlResponse(payload, content, requestId) {
+    const response = content
+      ? buildDenyResponse(requestId, content)
+      : buildAllowResponse(requestId, getToolInput(payload))
+    // Codex's plan-mode prompt response carries an extra marker so the worker
+    // can route it back into the plan-mode handshake instead of the regular
+    // tool-approval flow.
+    if (getToolName(payload) === 'CodexPlanModePrompt')
+      response.codexPlanModePrompt = true
+    return response
+  },
+
+  // Codex applies the new approval policy on the next turn/start.
+  async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
+    await workerRpc.updateAgentSettings(workerId, {
+      agentId,
+      settings: { permissionMode: mode },
+    })
+  },
+  ControlContent: CodexControlContent,
+  ControlActions: CodexControlActions,
+
+  SettingsPanel: CodexSettingsPanel,
+  settingsMenuClass: styles.settingsMenuWide,
+
+  settingsTriggerLabel: CodexTriggerLabel,
+}
+
+registerProvider(AgentProvider.CODEX, codexPlugin)

@@ -12,44 +12,25 @@ import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } 
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
-import { showWarnToast } from '~/components/common/Toast'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import {
-  clampEditorHeight,
-  clearEditorMinHeight,
-  EDITOR_MIN_HEIGHT,
-  getStoredEditorMinHeight,
-  persistEditorMinHeight,
-} from '~/lib/editor/editorMinHeight'
+import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
-import {
-  buildAcceptAttribute,
-  clearAttachments,
-  collectDroppedAttachmentFiles,
-  describeUnsupportedAttachment,
-  getAttachments,
-  inferAttachmentDetails,
-  isAttachmentSupported,
-  MAX_TOTAL_ATTACHMENT_SIZE,
-  nextPastedImageName,
-  readFileAsAttachment,
-  setAttachments as setAttachmentsCache,
-  totalAttachmentSize,
-} from './attachments'
 import { AttachmentStrip } from './AttachmentStrip'
 import * as styles from './ChatView.css'
-import { ContextUsageGrid } from './ContextUsageGrid'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
 import { useControlResponseHandling } from './controlResponseHandling'
-import { EditorSettingsDropdown } from './EditorSettingsDropdown'
-import { MarkdownEditor } from './MarkdownEditor'
+import { EditorSettingsDropdown } from './markdownEditor/EditorSettingsDropdown'
+import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
 import { getProviderPlugin } from './providers/registry'
+import { useChatAttachments } from './useChatAttachments'
+import { useEditorMinHeight } from './useEditorMinHeight'
+import { ContextUsageGrid } from './widgets/ContextUsageGrid'
 
 export interface AgentEditorPanelProps {
   agentId: string
@@ -77,113 +58,37 @@ export interface AgentEditorPanelProps {
   triggerSendRef?: (fn: () => void) => void
 }
 
-// In-memory cache of per-agent heights (avoids localStorage reads on every render).
-const editorMinHeightCache = new Map<string, number | undefined>()
-
 export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let panelRef: HTMLDivElement | undefined
-  const [isDragging, setIsDragging] = createSignal(false)
   const [_editorContentHeight, setEditorContentHeight] = createSignal(0)
   const [hasContent, setHasContent] = createSignal(false)
-  const [attachments, setAttachments] = createSignal<FileAttachment[]>([])
   let fileInputRef: HTMLInputElement | undefined
   const { loading: sending, start: startSending } = createLoadingSignal()
   const interruptLoading = createLoadingSignal()
 
-  // Swap attachments on agentId change (same pattern as editor height cache).
-  createEffect(on(() => props.agentId, (agentId, prevAgentId) => {
-    if (prevAgentId) {
-      setAttachmentsCache(prevAgentId, attachments())
-    }
-    setAttachments(agentId ? getAttachments(agentId) : [])
-  }))
-
-  const attachmentCapabilities = createMemo(() =>
-    getProviderPlugin(props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE)?.attachments)
-  const acceptAttribute = createMemo(() => buildAcceptAttribute(attachmentCapabilities()))
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
 
-  /** Validate and add files as attachments. */
-  const addFiles = async (files: FileList | File[] | PendingAttachmentFile[], isPastedImage?: boolean): Promise<number> => {
-    const currentAttachments = attachments()
-    let currentSize = totalAttachmentSize(currentAttachments)
+  const att = useChatAttachments({
+    agentId: () => props.agentId,
+    agentProvider: () => props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE,
+    providerLabel: currentProviderLabel,
+  })
+  const attachments = att.attachments
+  const acceptAttribute = att.acceptAttribute
+  const addFiles = att.addFiles
+  const removeAttachment = att.removeAttachment
+  const clearAllAttachments = att.clearAllAttachments
+  const handleFileInputChange = () => att.handleFileInputChange(fileInputRef)
 
-    const accepted: FileAttachment[] = []
-    const rejectionReasons = new Map<string, number>()
-    let sizeLimitHit = false
-    // Sequential reads to avoid I/O burst; parallelism isn't needed given the 10 MB cap.
-    for (const item of [...files]) {
-      const file = item instanceof File ? item : item.file
-      if (currentSize + file.size > MAX_TOTAL_ATTACHMENT_SIZE) {
-        sizeLimitHit = true
-        break
-      }
-      const filename = isPastedImage
-        ? `${nextPastedImageName(props.agentId)}.${file.type.split('/')[1] || 'png'}`
-        : (item instanceof File ? undefined : item.filename)
-      const attachment = await readFileAsAttachment(file, filename)
-      const details = inferAttachmentDetails(attachment.filename, attachment.mimeType, attachment.data)
-      if (!isAttachmentSupported(details.kind, attachmentCapabilities())) {
-        const reason = describeUnsupportedAttachment(details.kind, currentProviderLabel())
-        rejectionReasons.set(reason, (rejectionReasons.get(reason) ?? 0) + 1)
-        continue
-      }
-      accepted.push(attachment)
-      currentSize += file.size
-    }
-
-    for (const [reason, count] of rejectionReasons) {
-      showWarnToast(count === 1 ? reason : `${reason} (${count} files)`)
-    }
-    if (sizeLimitHit)
-      showWarnToast('Total attachment size exceeds 10 MB')
-
-    if (accepted.length === 0)
-      return 0
-
-    const updated = [...currentAttachments, ...accepted]
-    setAttachments(updated)
-    if (props.agentId)
-      setAttachmentsCache(props.agentId, updated)
-    return accepted.length
-  }
-
-  const removeAttachment = (id: string) => {
-    const updated = attachments().filter(a => a.id !== id)
-    setAttachments(updated)
-    if (props.agentId)
-      setAttachmentsCache(props.agentId, updated)
-  }
-
-  const clearAllAttachments = () => {
-    setAttachments([])
-    if (props.agentId)
-      clearAttachments(props.agentId)
-  }
-
-  const handleFileInputChange = () => {
-    if (fileInputRef?.files?.length) {
-      addFiles(fileInputRef.files)
-      fileInputRef.value = ''
-    }
-  }
-
-  // Per-agent editor min height: reactive signal that switches when agentId changes.
-  const [editorMinHeightSignal, setEditorMinHeightSignal] = createSignal<number | undefined>(undefined)
-  // Load per-agent height when agentId changes.
-  createEffect(on(() => props.agentId, (agentId) => {
-    if (!agentId)
-      return
-    if (!editorMinHeightCache.has(agentId)) {
-      editorMinHeightCache.set(agentId, getStoredEditorMinHeight(agentId))
-    }
-    setEditorMinHeightSignal(editorMinHeightCache.get(agentId))
-  }))
-  const setEditorMinHeight = (val: number | undefined) => {
-    setEditorMinHeightSignal(val)
-    if (props.agentId)
-      editorMinHeightCache.set(props.agentId, val)
-  }
+  const editorHeight = useEditorMinHeight({
+    agentId: () => props.agentId,
+    containerHeight: () => props.containerHeight,
+    panelRef: () => panelRef,
+  })
+  const editorMinHeightSignal = editorHeight.editorMinHeight
+  const isDragging = editorHeight.isDragging
+  const handleResizeStart = editorHeight.handleResizeStart
+  const handleResizeReset = editorHeight.handleResizeReset
 
   // Shared state for AskUserQuestion selections
   const [askSelections, setAskSelections] = createSignal<Record<number, string[]>>({})
@@ -237,18 +142,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     tryRegisterEditorRef(agentId)
   }))
 
-  const resetEditorHeight = () => {
-    setEditorMinHeight(undefined)
-    if (props.agentId)
-      clearEditorMinHeight(props.agentId)
-  }
-
   // Control response handling (extracted module)
   const ctrl = useControlResponseHandling(
     props,
     askState,
     () => editorContentRef,
-    resetEditorHeight,
+    editorHeight.resetEditorHeight,
     () => attachments(),
     (content, fileAttachments) => {
       props.onSendMessage(content, fileAttachments)
@@ -266,15 +165,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // Expose addFiles for external callers (e.g. ChatDropZone).
   // eslint-disable-next-line solid/reactivity -- one-time ref registration, addFiles is stable
   props.addFilesRef?.(addFiles)
-
-  const addDroppedDataTransfer = async (dataTransfer: DataTransfer): Promise<number> => {
-    const { files, sizeLimitHit } = await collectDroppedAttachmentFiles(dataTransfer, totalAttachmentSize(attachments()))
-    if (sizeLimitHit)
-      showWarnToast('Total attachment size exceeds 10 MB')
-    return addFiles(files)
-  }
   // eslint-disable-next-line solid/reactivity -- one-time ref registration, handler is stable
-  props.addDropDataTransferRef?.(addDroppedDataTransfer)
+  props.addDropDataTransferRef?.(att.addDroppedDataTransfer)
 
   const handlePasteFiles = (files: File[]) => {
     if (ctrl.activeControlRequest())
@@ -285,7 +177,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const handleDropDataTransfer = (dataTransfer: DataTransfer) => {
     if (ctrl.activeControlRequest())
       return
-    void addDroppedDataTransfer(dataTransfer)
+    void att.addDroppedDataTransfer(dataTransfer)
   }
 
   // Agent info card (extracted module)
@@ -304,48 +196,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   })
 
   let triggerSend: (() => void) | undefined
-
-  const maxEditorHeight = () => {
-    const h = props.containerHeight ?? 0
-    return h > 0 ? Math.floor(h * 0.5) : 200
-  }
-
-  const handleResizeStart = (e: MouseEvent) => {
-    e.preventDefault()
-    setIsDragging(true)
-    const startY = e.clientY
-    const maxHeight = maxEditorHeight()
-    // Use the current visual height of the editor wrapper as the drag starting
-    // point so the drag feels anchored to the handle's visual position.
-    const editorWrapperEl = panelRef?.querySelector('[data-testid="chat-editor"]') as HTMLElement | null
-    const startHeight = editorWrapperEl?.getBoundingClientRect().height
-      ?? editorMinHeightSignal()
-      ?? EDITOR_MIN_HEIGHT
-    document.body.style.cursor = 'row-resize'
-
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const delta = startY - moveEvent.clientY
-      setEditorMinHeight(clampEditorHeight(startHeight + delta, maxHeight))
-    }
-
-    const onMouseUp = () => {
-      setIsDragging(false)
-      document.body.style.cursor = ''
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-      if (props.agentId)
-        persistEditorMinHeight(props.agentId, editorMinHeightSignal())
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-  }
-
-  const handleResizeReset = () => {
-    setEditorMinHeight(undefined)
-    if (props.agentId)
-      clearEditorMinHeight(props.agentId)
-  }
 
   return (
     <div
@@ -380,7 +230,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           disabled={props.disabled}
           onTogglePlanMode={ctrl.togglePlanMode}
           requestedHeight={editorMinHeightSignal()}
-          maxHeight={maxEditorHeight()}
+          maxHeight={editorHeight.maxEditorHeight()}
           onContentHeightChange={setEditorContentHeight}
           onContentChange={(has) => {
             setHasContent(has)
@@ -390,7 +240,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             if (!has) {
               const h = editorMinHeightSignal()
               if (h !== undefined && h <= EDITOR_MIN_HEIGHT)
-                resetEditorHeight()
+                editorHeight.resetEditorHeight()
             }
             if (has && ctrl.isAskUserQuestion()) {
               const page = askCurrentPage()
@@ -443,7 +293,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       const reqId = ctrl.activeControlRequest()?.requestId
                       if (reqId)
                         ctrl.cleanupControlRequestDrafts(reqId)
-                      resetEditorHeight()
+                      editorHeight.resetEditorHeight()
                       return props.onControlResponse?.(agentId, content) ?? Promise.resolve()
                     }}
                     hasEditorContent={hasContent()}

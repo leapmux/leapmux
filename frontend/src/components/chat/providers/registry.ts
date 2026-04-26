@@ -1,6 +1,13 @@
+// Provider plugin registry. Each provider module (claude, codex, opencode, +stubs)
+// calls registerProvider() at import time as a side effect; the side-effect imports
+// live in providers/index.ts. getProviderPlugin() returns undefined if a provider
+// was never imported, so callers that depend on a provider being registered must
+// ensure providers/index.ts (or the specific provider module) is imported first.
+
 import type { Component, JSX } from 'solid-js'
-import type { ActionsProps, ContentProps } from '../controls/types'
+import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
+import type { RenderContext } from '../messageRenderers'
 import type { AgentProvider, AvailableModel, AvailableOptionGroup, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -18,11 +25,6 @@ export interface ProviderSettingsPanelProps {
   onEffortChange?: (effort: string) => void
   onPermissionModeChange?: (mode: PermissionMode) => void
   onOptionGroupChange?: (key: string, value: string) => void
-}
-
-/** Context for rendering a message — forwarded from MessageBubble. */
-export interface RenderContext {
-  [key: string]: unknown
 }
 
 export interface AttachmentCapabilities {
@@ -47,6 +49,34 @@ export interface ClassificationContext {
   commandStreamLength?: number
 }
 
+/**
+ * Toolbar-relevant metadata for a tool_result-shaped message. Returned by the
+ * provider plugin so MessageBubble doesn't need to know per-tool wire formats.
+ *
+ * `copyableContent` is a getter so the (potentially expensive) copyable text
+ * — Edit's unified diff, for instance — is computed only when the user clicks
+ * the copy button, not on every render.
+ */
+export interface ToolResultMeta {
+  /** Result has more content than fits collapsed; toolbar shows expand button. */
+  collapsible: boolean
+  /** Result has a renderable diff; toolbar shows split/unified toggle. */
+  hasDiff: boolean
+  /** Lazily computed copyable text. Returns null when nothing is copyable. */
+  copyableContent: () => string | null
+}
+
+/**
+ * One entry inside a notification_thread wrapper, after the provider has
+ * inspected a single message. The shared thread renderer concatenates entries
+ * into the final markup; the `'group'` variant lets a provider opt into
+ * collapse-by-`groupKey` (e.g. Codex MCP startup statuses grouped by state).
+ */
+export type NotificationThreadEntry
+  = | { kind: 'text', text: string }
+    | { kind: 'group', groupKey: string, prefix: string, entry: string }
+    | { kind: 'divider', text: string, loading?: boolean }
+
 export interface ProviderPlugin {
   /** Default model identifier for this provider. */
   defaultModel?: string
@@ -70,6 +100,23 @@ export interface ProviderPlugin {
   ) => JSX.Element | null
 
   /**
+   * Compute toolbar metadata (collapsible, copyable content, diff presence)
+   * for a tool_result-shaped message. Return null when this provider does not
+   * produce metadata for the message — MessageBubble will then render its
+   * toolbar with no per-tool affordances.
+   *
+   * Receives the parsed tool_use sibling so the provider can inspect both
+   * halves (e.g. Claude pulls `file_path` from the input when the result
+   * payload doesn't carry it).
+   */
+  toolResultMeta?: (
+    category: MessageCategory,
+    parsed: unknown,
+    spanType: string | undefined,
+    toolUseParsed: ParsedMessageContent | undefined,
+  ) => ToolResultMeta | null
+
+  /**
    * Build the wire-format content string to interrupt the agent.
    * Returns null if interrupt is not supported or not applicable.
    */
@@ -80,6 +127,59 @@ export interface ProviderPlugin {
    * "ask user question" interaction for this provider.
    */
   isAskUserQuestion?: (payload: Record<string, unknown>) => boolean
+
+  /**
+   * Convert one message inside a notification_thread wrapper into thread
+   * entries. The shared `renderNotificationThread` consults each provider's
+   * implementation before falling back to its own provider-neutral switch.
+   *
+   * Returns null when this provider doesn't recognize the message (the shared
+   * switch tries next). Returns an empty array when the provider recognizes
+   * the message but it produces no visible entries (e.g. all tiers below the
+   * warning threshold).
+   */
+  notificationThreadEntry?: (msg: Record<string, unknown>) => NotificationThreadEntry[] | null
+
+  /**
+   * Extract `Question[]` from an `AskUserQuestion` control request payload.
+   * Each provider's payload shape differs (Codex `params.questions`,
+   * OpenCode `properties.questions`, Cursor's custom shape, Claude's
+   * `getToolInput(payload).questions`).
+   */
+  extractAskUserQuestions?: (payload: Record<string, unknown>) => Question[]
+
+  /**
+   * Send the user's answers back as a control response. Receives the original
+   * `payload` so providers that need echo fields off it (Claude reads them
+   * via `getToolInput`) can access them without a separate API.
+   */
+  sendAskUserQuestionResponse?: (
+    agentId: string,
+    sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>,
+    requestId: string,
+    questions: Question[],
+    askState: AskQuestionState,
+    payload: Record<string, unknown>,
+  ) => Promise<void>
+
+  /**
+   * Build the wire-format control-response object for a *non-AskUserQuestion*
+   * control request. The shared layer serializes the result and ships it.
+   *
+   * Receives the editor `content` (empty when the user hit Send with no
+   * input), the original `payload`, and the `requestId`. Each provider
+   * decides whether the response is allow vs deny, what shape the response
+   * takes, and whether to add provider-specific markers (e.g. Codex's
+   * `codexPlanModePrompt` flag, or Claude's force-deny on `ExitPlanMode`).
+   *
+   * ACP-based providers can delegate to `acpBuildControlResponse` from
+   * `providers/acpShared`.
+   */
+  buildControlResponse?: (
+    payload: Record<string, unknown>,
+    content: string,
+    requestId: string,
+  ) => Record<string, unknown>
 
   /**
    * The permission mode value that disables all approval prompts.

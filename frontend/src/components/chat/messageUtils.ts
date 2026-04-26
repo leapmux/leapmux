@@ -1,9 +1,6 @@
-/** Utility functions shared across chat renderers and other components. */
+/** Chat-specific message helpers (notification thread detection, assistant content extraction). */
 
-/** Type guard for plain objects. */
-export function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
+import { isObject } from '~/lib/jsonPick'
 
 /** Default notification thread types recognized by LeapMux (shared across providers). */
 const BASE_NOTIFICATION_TYPES = new Set([

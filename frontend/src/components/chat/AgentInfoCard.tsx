@@ -10,7 +10,7 @@ import { useCopyButton } from '~/hooks/useCopyButton'
 import { tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
-import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './ContextUsageGrid'
+import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './widgets/ContextUsageGrid'
 
 export interface AgentInfoCardProps {
   agent?: AgentInfo

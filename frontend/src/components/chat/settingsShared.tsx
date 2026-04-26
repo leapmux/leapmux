@@ -9,11 +9,6 @@ import * as styles from './ChatView.css'
 /** Option group key for the permission mode setting, shared across providers. */
 export const PERMISSION_MODE_KEY = 'permissionMode' as const
 
-/** Option group keys for Claude Code-specific settings. */
-export const OUTPUT_STYLE_KEY = 'outputStyle' as const
-export const FAST_MODE_KEY = 'fastMode' as const
-export const ALWAYS_THINKING_KEY = 'alwaysThinkingEnabled' as const
-
 /** Shared item type used by RadioGroup and settings helpers. */
 export interface SettingsItem {
   label: string

@@ -1,30 +1,32 @@
 import type { Component } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { RenderContext } from './messageRenderers'
+import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { CommandStreamSegment } from '~/stores/chat.store'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
-import { createMemo, createResource, createSignal, ErrorBoundary, onMount, Show } from 'solid-js'
+import { createMemo, createResource, createSignal, ErrorBoundary, onCleanup, onMount, Show } from 'solid-js'
 import { render } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
 import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
-import { formatUnifiedDiffText, rawDiffToHunks } from './diffUtils'
+import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import * as styles from './MessageBubble.css'
 import { buildClassificationInput, classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
 import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
-import { getAssistantContent, isObject } from './messageUtils'
+import { getAssistantContent } from './messageUtils'
 import { renderNotificationThread } from './notificationRenderers'
-import { COLLAPSED_RESULT_ROWS, ToolHeaderActions } from './toolRenderers'
+import { getProviderPlugin } from './providers/registry'
+import { ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
@@ -60,7 +62,8 @@ function roleLabel(role: MessageRole): string {
   }
 }
 
-function injectCopyButtons(container: HTMLElement) {
+function injectCopyButtons(container: HTMLElement): Array<() => void> {
+  const disposers: Array<() => void> = []
   const preElements = container.querySelectorAll('pre')
   for (const pre of preElements) {
     if (pre.querySelector('.copy-code-button'))
@@ -72,7 +75,7 @@ function injectCopyButtons(container: HTMLElement) {
     const host = document.createElement('div')
     host.style.display = 'contents'
 
-    render(() => {
+    const dispose = render(() => {
       const [copied, setCopied] = createSignal(false)
 
       return (
@@ -92,8 +95,10 @@ function injectCopyButtons(container: HTMLElement) {
       )
     }, host)
 
+    disposers.push(dispose)
     pre.appendChild(host)
   }
+  return disposers
 }
 
 /** Classify a message, returning both the parsed content and category. */
@@ -122,10 +127,10 @@ interface MessageBubbleProps {
   workingDir?: string
   homeDir?: string
   onReply?: (quotedText: string) => void
-  /** Look up a message by its spanId (for tool_use ↔ tool_result linking). */
-  getMessageBySpanId?: (spanId: string) => AgentChatMessage | undefined
-  /** Look up the tool_result message by spanId (reverse of getMessageBySpanId). */
-  getToolResultBySpanId?: (spanId: string) => AgentChatMessage | undefined
+  /** Look up the parsed tool_use message by spanId (for tool_result → tool_use linking). */
+  getToolUseParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
+  /** Look up the parsed tool_result message by spanId (for tool_use → tool_result linking). */
+  getToolResultParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
   commandStream?: CommandStreamSegment[]
   /** Lifted expand/collapse state for tool results, managed by ChatView. */
   toolResultExpanded?: boolean
@@ -203,216 +208,51 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     setTimeout(setJsonCopied, 2000, false)
   }
 
-  // Look up the corresponding tool_use message for tool_result messages.
-  const toolUseMessage = createMemo(() => {
+  // Look up the parsed sibling tool_use for tool_result bubbles.
+  const toolUseParsed = createMemo(() => {
     if (category().kind !== 'tool_result')
       return undefined
     const spanId = props.message.spanId
-    if (!spanId || !props.getMessageBySpanId)
+    if (!spanId || !props.getToolUseParsedBySpanId)
       return undefined
-    return props.getMessageBySpanId(spanId)
+    return props.getToolUseParsedBySpanId(spanId)
   })
 
-  // Look up the corresponding tool_result message for tool_use messages.
-  const toolResultMessage = createMemo(() => {
+  // Look up the parsed sibling tool_result for tool_use bubbles.
+  const toolResultParsed = createMemo(() => {
     if (category().kind !== 'tool_use')
       return undefined
     const spanId = props.message.spanId
-    if (!spanId || !props.getToolResultBySpanId)
+    if (!spanId || !props.getToolResultParsedBySpanId)
       return undefined
-    return props.getToolResultBySpanId(spanId)
+    return props.getToolResultParsedBySpanId(spanId)
   })
 
-  /** Extract the raw text content from a tool_result block inside a parsed message object. */
-  function extractToolResultText(obj: Record<string, unknown>): string | null {
-    const msg = obj.message as Record<string, unknown> | undefined
-    if (!msg || !Array.isArray(msg.content))
+  // Toolbar metadata for the current message — collapsibility, diff presence,
+  // and a lazy copyable-content getter. Each provider's plugin decides which
+  // messages produce metadata (Claude returns it for tool_result; Codex for
+  // terminal-state tool_use spans).
+  const toolMeta = createMemo<ToolResultMeta | null>(() => {
+    const plugin = getProviderPlugin(props.message.agentProvider)
+    if (!plugin?.toolResultMeta)
       return null
-    const tr = (msg.content as Array<Record<string, unknown>>).find(c => isObject(c) && c.type === 'tool_result')
-    if (!tr)
-      return null
-    const text = Array.isArray(tr.content)
-      ? (tr.content as Array<Record<string, unknown>>).filter(c => isObject(c) && c.type === 'text').map(c => c.text).join('')
-      : String(tr.content || '')
-    return text || null
-  }
-
-  const isCodexTerminalCommandResult = createMemo(() => {
-    if (props.message.agentProvider !== AgentProvider.CODEX)
-      return false
-    if (category().kind !== 'tool_use' || props.message.spanType !== 'commandExecution')
-      return false
-    const item = parsed().parentObject?.item as Record<string, unknown> | undefined
-    const status = typeof item?.status === 'string' ? item.status : ''
-    return status === 'completed' || status === 'failed'
+    return plugin.toolResultMeta(category(), parsed().parentObject, props.message.spanType, toolUseParsed())
   })
 
-  const isCodexCompletedFileChangeResult = createMemo(() => {
-    if (props.message.agentProvider !== AgentProvider.CODEX)
-      return false
-    if (category().kind !== 'tool_use' || props.message.spanType !== 'fileChange')
-      return false
-    const item = parsed().parentObject?.item as Record<string, unknown> | undefined
-    return item?.status === 'completed'
-  })
-
-  // Whether the message is rendered by a renderer that has its own internal ToolHeaderActions.
-  // tool_use and agent_prompt render their own ToolHeaderActions inside ToolUseLayout,
-  // except Codex terminal command results, which should use the shared result toolbar.
+  // The renderer renders its own ToolHeaderActions (inside ToolUseLayout) for
+  // tool_use / agent_prompt — except when the provider produces toolResultMeta
+  // for a tool_use, which means the message is acting as a result and uses the
+  // bubble's outer toolbar instead.
   const hasInternalActions = () => {
-    if (isCodexTerminalCommandResult() || isCodexCompletedFileChangeResult())
+    const kind = category().kind
+    if (kind !== 'tool_use' && kind !== 'agent_prompt')
       return false
-    return category().kind === 'tool_use' || category().kind === 'agent_prompt'
+    return toolMeta() === null
   }
 
-  // Shared derivation for tool_result messages: extract toolName and toolUseResult once.
-  const toolResultInfo = createMemo(() => {
-    if (category().kind !== 'tool_result')
-      return null
-    const obj = parsed().parentObject
-    if (!obj)
-      return null
-    const toolUseResult = obj.tool_use_result as Record<string, unknown> | undefined
-    const toolName = props.message.spanType || String(toolUseResult?.tool_name || '')
-    return { obj, toolUseResult, toolName }
-  })
-
-  // Determine if this tool_result is collapsible (enough lines/items to warrant collapse).
-  const isCollapsibleToolResult = createMemo(() => {
-    if (isCodexTerminalCommandResult()) {
-      const item = parsed().parentObject?.item as Record<string, unknown> | undefined
-      const output = typeof item?.aggregatedOutput === 'string' ? item.aggregatedOutput : ''
-      return output.split('\n').length > COLLAPSED_RESULT_ROWS
-    }
-
-    const info = toolResultInfo()
-    if (!info)
-      return false
-
-    const { obj, toolUseResult, toolName } = info
-
-    // Grep/Glob: collapsible based on structured data or raw result content.
-    if (toolName === 'Grep' || toolName === 'Glob') {
-      // Structured: check filenames array from tool_use_result.
-      const filenames = Array.isArray(toolUseResult?.filenames) ? toolUseResult!.filenames as string[] : []
-      if (filenames.length > COLLAPSED_RESULT_ROWS)
-        return true
-      // Structured: check content lines from tool_use_result (Grep content mode).
-      if (toolName === 'Grep' && typeof toolUseResult?.content === 'string'
-        && toolUseResult.content.split('\n').length > COLLAPSED_RESULT_ROWS) {
-        return true
-      }
-      // Fallback: check raw result content (e.g. subagent without tool_use_result).
-      const rc = extractToolResultText(obj)
-      return rc != null && rc.split('\n').filter((l: string) => l.trim()).length > COLLAPSED_RESULT_ROWS
-    }
-
-    // Read with structured file data: use numLines directly.
-    if (toolName === 'Read') {
-      const file = toolUseResult?.file as Record<string, unknown> | undefined
-      if (file && typeof file.numLines === 'number')
-        return file.numLines > COLLAPSED_RESULT_ROWS
-    }
-
-    // Agent: collapsible when structured content is present, or when raw result text is long enough (async launches).
-    if (toolName === 'Agent') {
-      if (Array.isArray(toolUseResult?.content)
-        && (toolUseResult!.content as Array<Record<string, unknown>>).some(c => typeof c === 'object' && c !== null && c.type === 'text')) {
-        return true
-      }
-      const rc = extractToolResultText(obj)
-      return rc != null && rc.split('\n').length > COLLAPSED_RESULT_ROWS
-    }
-
-    // WebFetch: always collapsible when structured result is present.
-    if (toolName === 'WebFetch' && typeof toolUseResult?.code === 'number')
-      return true
-
-    // WebSearch: always collapsible when structured results are present.
-    if (toolName === 'WebSearch' && Array.isArray(toolUseResult?.results))
-      return true
-
-    // Fallback: collapsible if result text exceeds threshold lines.
-    const rc = extractToolResultText(obj)
-    return rc != null && rc.split('\n').length > COLLAPSED_RESULT_ROWS
-  })
-
-  // Determine if this tool_result has a diff (Edit/Write with structuredPatch or old/new strings).
-  const hasToolResultDiff = createMemo(() => {
-    if (isCodexCompletedFileChangeResult()) {
-      const item = parsed().parentObject?.item as Record<string, unknown> | undefined
-      const changes = Array.isArray(item?.changes) ? item.changes as Array<Record<string, unknown>> : []
-      return changes.some(change => typeof change.diff === 'string' && change.diff.includes('@@ '))
-    }
-
-    const info = toolResultInfo()
-    if (!info)
-      return false
-    const { toolUseResult } = info
-    if (!toolUseResult)
-      return false
-    if (Array.isArray(toolUseResult.structuredPatch) && (toolUseResult.structuredPatch as unknown[]).length > 0)
-      return true
-    const oldString = String(toolUseResult.oldString || '')
-    const newString = String(toolUseResult.newString || '')
-    return oldString !== '' && newString !== '' && oldString !== newString
-  })
-
-  // Extract copyable content for tool_result messages (Read/Write/Edit/Bash/etc.).
-  const copyableResultContent = createMemo((): string | null => {
-    if (isCodexTerminalCommandResult()) {
-      const item = parsed().parentObject?.item as Record<string, unknown> | undefined
-      return typeof item?.aggregatedOutput === 'string' ? item.aggregatedOutput : null
-    }
-
-    if (isCodexCompletedFileChangeResult()) {
-      const item = parsed().parentObject?.item as Record<string, unknown> | undefined
-      const changes = Array.isArray(item?.changes) ? item.changes as Array<Record<string, unknown>> : []
-      const diffs = changes
-        .map(change => typeof change.diff === 'string' ? change.diff : '')
-        .filter(Boolean)
-      return diffs.length > 0 ? diffs.join('\n\n') : null
-    }
-
-    const info = toolResultInfo()
-    if (!info)
-      return null
-
-    const { obj, toolUseResult, toolName } = info
-
-    // Edit: format as unified diff.
-    if (toolName === 'Edit') {
-      const structuredPatch = Array.isArray(toolUseResult?.structuredPatch) && (toolUseResult!.structuredPatch as unknown[]).length > 0
-        ? toolUseResult!.structuredPatch as Array<{ oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }>
-        : null
-      const filePath = String(toolUseResult?.filePath || '')
-      if (structuredPatch) {
-        return formatUnifiedDiffText(structuredPatch, filePath)
-      }
-      const oldStr = String(toolUseResult?.oldString || '')
-      const newStr = String(toolUseResult?.newString || '')
-      if (oldStr && newStr && oldStr !== newStr) {
-        return formatUnifiedDiffText(rawDiffToHunks(oldStr, newStr), filePath)
-      }
-      return null
-    }
-
-    // Read: copy file content from structured data.
-    if (toolName === 'Read') {
-      const file = toolUseResult?.file as Record<string, unknown> | undefined
-      if (file && typeof file.content === 'string')
-        return file.content
-    }
-
-    // Write: copy new file content from structured data.
-    if (toolName === 'Write') {
-      if (typeof toolUseResult?.newString === 'string')
-        return toolUseResult.newString as string
-    }
-
-    // Fallback: extract raw result content for any tool.
-    return extractToolResultText(obj)
-  })
+  const isCollapsibleToolResult = () => toolMeta()?.collapsible ?? false
+  const hasToolResultDiff = () => toolMeta()?.hasDiff ?? false
+  const copyableResultContent = () => toolMeta()?.copyableContent() ?? null
 
   const [resultCopied, setResultCopied] = createSignal(false)
   const copyResultContent = async () => {
@@ -427,27 +267,30 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const diffView = () => localDiffView() ?? prefs.diffView()
   const toggleDiffView = () => props.onSetLocalDiffView?.(diffView() === 'unified' ? 'split' : 'unified')
 
-  // Build render context for message renderers.
-  const renderContext = (): RenderContext => ({
-    createdAt: props.message.createdAt,
-    workingDir: props.workingDir,
-    homeDir: props.homeDir,
-    diffView: diffView(),
-    // eslint-disable-next-line solid/reactivity -- reactive: renderContext() is a getter re-invoked in JSX; props.onReply is read each call
-    onReply: props.onReply ? (text: string) => props.onReply!(formatChatQuote(text)) : undefined,
+  // Build render context for message renderers. A plain object literal with
+  // getter accessors for reactive fields gives stable identity (allocated once
+  // per component setup) AND per-field reactivity — body components track only
+  // the getters they read, so changes to one field don't cascade to siblings.
+  const renderContext: RenderContext = {
+    get workingDir() { return props.workingDir },
+    get homeDir() { return props.homeDir },
+    diffView,
+    // eslint-disable-next-line solid/reactivity -- props.onReply is read each call via the getter, not captured here
+    get onReply() { return props.onReply ? (text: string) => props.onReply!(formatChatQuote(text)) : undefined },
     onCopyJson: copyJson,
-    jsonCopied: jsonCopied(),
-    expandAgentThoughts: prefs.expandAgentThoughts(),
-    toolUseMessage: toolUseMessage(),
-    toolResultMessage: toolResultMessage(),
-    spanColor: props.message.spanColor,
-    spanType: props.message.spanType,
-    spanId: props.message.spanId,
-    toolResultExpanded: toolResultExpanded(),
-    commandStream: props.commandStream,
-    getMessageUiState: props.getMessageUiState,
-    setMessageUiState: props.setMessageUiState,
-  })
+    jsonCopied,
+    get createdAt() { return props.message.createdAt },
+    get expandAgentThoughts() { return prefs.expandAgentThoughts() },
+    get toolUseParsed() { return toolUseParsed() },
+    get toolResultParsed() { return toolResultParsed() },
+    get spanColor() { return props.message.spanColor },
+    get spanType() { return props.message.spanType },
+    get spanId() { return props.message.spanId },
+    toolResultExpanded,
+    commandStream: () => props.commandStream,
+    get getMessageUiState() { return props.getMessageUiState },
+    get setMessageUiState() { return props.setMessageUiState },
+  }
 
   // Extract assistant text for the reply button.
   const extractAssistantText = (): string | null => {
@@ -465,7 +308,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
     // OpenCode format: {sessionUpdate: 'agent_message_chunk'|'agent_thought_chunk', content: {text: '...'}}
     const su = obj.sessionUpdate as string | undefined
-    if (su === 'agent_message_chunk' || su === 'agent_thought_chunk') {
+    if (su === ACP_SESSION_UPDATE.AGENT_MESSAGE_CHUNK || su === ACP_SESSION_UPDATE.AGENT_THOUGHT_CHUNK) {
       const ct = obj.content as Record<string, unknown> | undefined
       if (ct && typeof ct.text === 'string')
         return (ct.text as string).trim() || null
@@ -526,8 +369,13 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     : messageBubbleClass(category().kind, props.message.role)
 
   onMount(() => {
-    if (contentRef)
-      injectCopyButtons(contentRef)
+    if (!contentRef)
+      return
+    const disposers = injectCopyButtons(contentRef)
+    onCleanup(() => {
+      for (const d of disposers)
+        d()
+    })
   })
 
   return (
@@ -546,8 +394,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
               {category().kind === 'hidden'
                 ? <pre class={chatStyles.hiddenMessageJson}>{prettifyJson(rawJson())}</pre>
                 : category().kind === 'notification_thread'
-                  ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages)
-                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext(), category(), props.message.agentProvider)}
+                  ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages, props.message.agentProvider)
+                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext, category(), props.message.agentProvider)}
             </ErrorBoundary>
           </div>
         </div>

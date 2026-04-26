@@ -373,8 +373,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     pageScrollRef={(fn) => {
                       chatHandlers.set(agentId, { pageScroll: fn })
                     }}
-                    getMessageBySpanId={spanId => chatStore.getMessageBySpanId(agentId, spanId)}
-                    getToolResultBySpanId={spanId => chatStore.getToolResultBySpanId(agentId, spanId)}
+                    getToolUseParsedBySpanId={spanId => chatStore.getToolUseParsedBySpanId(agentId, spanId)}
+                    getToolResultParsedBySpanId={spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId)}
                     getCommandStreamBySpanId={spanId => chatStore.getCommandStream(agentId, spanId)}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined

@@ -1,7 +1,7 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
 import type { MessageContentRenderer } from './messageRenderers'
 import Check from 'lucide-solid/icons/check'
-import { isObject } from './messageUtils'
+import { isObject } from '~/lib/jsonPick'
 import { ToolUseLayout } from './toolRenderers'
 import {
   toolInputSummary,

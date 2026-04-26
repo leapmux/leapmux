@@ -1,6 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { SpanLines } from '~/components/chat/SpanLines'
+import { SpanLines } from '~/components/chat/widgets/SpanLines'
 
 describe('spanLines', () => {
   it('renders nothing when lines array is empty', () => {

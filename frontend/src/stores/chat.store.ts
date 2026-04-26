@@ -1,4 +1,5 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { createStore } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
@@ -204,6 +205,22 @@ export function createChatStore() {
   const spanIndex = new Map<string, Map<string, AgentChatMessage>>()
   /** Non-reactive index: maps spanId → last (tool_result) message for reverse lookup. */
   const spanResultIndex = new Map<string, Map<string, AgentChatMessage>>()
+  /**
+   * Per-message memoized parse. AgentChatMessage instances are immutable, so
+   * a WeakMap is the natural cache: entries get GC'd whenever the store drops
+   * a message. The store-level cache lets sibling lookups (a tool_result
+   * bubble inspecting its tool_use) reuse the parse the tool_use bubble's
+   * own render already paid for.
+   */
+  const parsedCache = new WeakMap<AgentChatMessage, ParsedMessageContent>()
+  function parsedFor(message: AgentChatMessage): ParsedMessageContent {
+    let cached = parsedCache.get(message)
+    if (!cached) {
+      cached = parseMessageContent(message)
+      parsedCache.set(message, cached)
+    }
+    return cached
+  }
 
   /**
    * Index messages by spanId. The first message per spanId is stored in
@@ -265,12 +282,19 @@ export function createChatStore() {
       return state.messagesByAgent[agentId] ?? []
     },
 
-    getMessageBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
-      return spanIndex.get(agentId)?.get(spanId)
+    /**
+     * Return the parsed tool_use message for a spanId, or undefined when no
+     * tool_use is indexed for it. The parse is cached per message instance.
+     */
+    getToolUseParsedBySpanId(agentId: string, spanId: string): ParsedMessageContent | undefined {
+      const msg = spanIndex.get(agentId)?.get(spanId)
+      return msg ? parsedFor(msg) : undefined
     },
 
-    getToolResultBySpanId(agentId: string, spanId: string): AgentChatMessage | undefined {
-      return spanResultIndex.get(agentId)?.get(spanId)
+    /** Symmetric counterpart for the tool_result side. */
+    getToolResultParsedBySpanId(agentId: string, spanId: string): ParsedMessageContent | undefined {
+      const msg = spanResultIndex.get(agentId)?.get(spanId)
+      return msg ? parsedFor(msg) : undefined
     },
 
     setMessages(agentId: string, messages: AgentChatMessage[], hasMore = false) {

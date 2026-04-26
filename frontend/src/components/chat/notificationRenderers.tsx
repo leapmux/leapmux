@@ -2,34 +2,21 @@
 /* eslint-disable solid/no-innerhtml -- HTML is produced from user/assistant text via remark, not arbitrary user input */
 import type { JSXElement } from 'solid-js'
 import type { MessageContentRenderer } from './messageRenderers'
-import type { RateLimitInfo } from '~/stores/agentSession.store'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
-import { codexTierToRateLimitInfo, formatRateLimitMessage } from '~/lib/rateLimitUtils'
+import { isObject, pickFirstNumber, pickNumber, pickString } from '~/lib/jsonPick'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
-import { markdownContent } from './markdownContent.css'
+import { markdownContent } from './markdownEditor/markdownContent.css'
 import {
   controlResponseMessage,
   resultDivider,
-  resultErrorDetail,
 } from './messageStyles.css'
-import { isObject } from './messageUtils'
-import { formatDuration } from './rendererUtils'
+import { getProviderPlugin } from './providers/registry'
 import { PERMISSION_MODE_KEY } from './settingsShared'
-
-// ---------------------------------------------------------------------------
-// Humanize subtype strings: "error_during_execution" → "Error during execution"
-// ---------------------------------------------------------------------------
-
-const UNDERSCORE = /_/g
-const FIRST_CHAR = /^\w/
-
-function humanizeSubtype(subtype: string): string {
-  return subtype.replace(UNDERSCORE, ' ').replace(FIRST_CHAR, c => c.toUpperCase())
-}
 
 // ---------------------------------------------------------------------------
 // Display helpers for settings change notifications
@@ -109,7 +96,7 @@ export const agentErrorRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'agent_error')
       return null
-    const error = typeof parsed.error === 'string' ? parsed.error : 'Unknown error'
+    const error = pickString(parsed, 'error', 'Unknown error')
     return <div class={controlResponseMessage}>{error}</div>
   },
 }
@@ -119,7 +106,7 @@ export const agentRenamedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
     if (!isObject(parsed) || parsed.type !== 'agent_renamed')
       return null
-    const title = typeof parsed.title === 'string' ? parsed.title : ''
+    const title = pickString(parsed, 'title')
     if (!title)
       return null
     return (
@@ -131,37 +118,11 @@ export const agentRenamedRenderer: MessageContentRenderer = {
   },
 }
 
-/**
- * Cleans up synthetic API error messages from Claude Code.
- * Extracts a human-readable message from the embedded JSON body, e.g.:
- *   "API Error: 529 {\"type\":\"error\",...,\"message\":\"Overloaded...\"}"
- * becomes:
- *   "API Error: 529 · Overloaded..."
- */
-const apiErrorPattern = /^API Error: (\d+) (.*)$/
-function cleanAPIErrorMessage(msg: string): string {
-  const match = apiErrorPattern.exec(msg)
-  if (!match)
-    return msg
-  const [, statusCode, body] = match
-  if (body.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(body)
-      const message = parsed?.error?.message
-      if (typeof message === 'string')
-        return `API Error: ${statusCode} ${message}`
-    }
-    catch { /* not parseable JSON */ }
-    return `API Error: ${statusCode}`
-  }
-  return msg
-}
-
 function formatApiRetryLabel(data: Record<string, unknown>): string {
-  const attempt = typeof data.attempt === 'number' ? data.attempt : '?'
-  const maxRetries = typeof data.max_retries === 'number' ? data.max_retries : '?'
+  const attempt = pickNumber(data, 'attempt', '?' as const)
+  const maxRetries = pickNumber(data, 'max_retries', '?' as const)
   const errorStatus = data.error_status != null ? String(data.error_status) : null
-  const error = typeof data.error === 'string' ? data.error : null
+  const error = pickString(data, 'error', null)
   const detail = [errorStatus, error].filter(Boolean).join(' ')
   return detail
     ? `API Retry ${attempt}/${maxRetries} (${detail})`
@@ -175,144 +136,6 @@ export const apiRetryRenderer: MessageContentRenderer = {
       return null
     return <div class={controlResponseMessage}>{formatApiRetryLabel(parsed as Record<string, unknown>)}</div>
   },
-}
-
-/** Handles rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} or Codex native format */
-export const rateLimitRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
-    if (!isObject(parsed))
-      return null
-    // Existing Claude Code format: {type: "rate_limit", rate_limit_info: {...}}
-    if (parsed.type === 'rate_limit') {
-      const info = parsed.rate_limit_info
-      if (!isObject(info))
-        return <div class={controlResponseMessage}>Rate limit update</div>
-      // Hide "allowed" status from chat — the popover still shows it.
-      const rl = info as RateLimitInfo
-      if (rl.status === 'allowed')
-        return null
-      return <div class={controlResponseMessage}>{formatRateLimitMessage(rl)}</div>
-    }
-    // Codex native format: {method: "account/rateLimits/updated", params: {rateLimits: {...}}}
-    if (parsed.method === 'account/rateLimits/updated')
-      return renderCodexRateLimits(parsed)
-    return null
-  },
-}
-
-function codexStartupStateAndError(status: unknown, fallbackError: unknown): { state: string, error: string } {
-  if (typeof status === 'string') {
-    return {
-      state: status,
-      error: typeof fallbackError === 'string' ? fallbackError : '',
-    }
-  }
-
-  if (isObject(status)) {
-    return {
-      state: typeof status.state === 'string' ? status.state : '',
-      error: typeof status.error === 'string' ? status.error : typeof fallbackError === 'string' ? fallbackError : '',
-    }
-  }
-
-  return {
-    state: '',
-    error: typeof fallbackError === 'string' ? fallbackError : '',
-  }
-}
-
-function formatCodexStartupStatus(parsed: Record<string, unknown>): string | null {
-  if (parsed.method !== 'mcpServer/startupStatus/updated')
-    return null
-
-  const params = isObject(parsed.params) ? parsed.params as Record<string, unknown> : undefined
-  const name = typeof params?.name === 'string' ? params.name.trim() : ''
-  const { state, error } = codexStartupStateAndError(params?.status, params?.error)
-  const normalizedState = state.trim()
-  const normalizedError = error.trim()
-  const suffix = normalizedError ? ` (${normalizedError})` : ''
-
-  switch (normalizedState) {
-    case 'starting':
-      return name ? `Starting MCP server: ${name}` : 'Starting MCP server'
-    case 'ready':
-      return name ? `MCP server ready: ${name}` : 'MCP server ready'
-    case 'failed':
-      return name ? `MCP server failed to start: ${name}${suffix}` : `MCP server failed to start${suffix}`
-    case 'cancelled':
-      return name ? `MCP server startup cancelled: ${name}${suffix}` : `MCP server startup cancelled${suffix}`
-    default: {
-      const stateLabel = normalizedState || 'unknown'
-      if (name)
-        return `MCP server status update: ${name} (${stateLabel})${suffix}`
-      return `MCP server status update (${stateLabel})${suffix}`
-    }
-  }
-}
-
-interface CodexStartupGroupEntry {
-  groupKey: string
-  prefix: string
-  entry: string
-}
-
-function codexStartupGroupEntry(parsed: Record<string, unknown>): CodexStartupGroupEntry | null {
-  if (parsed.method !== 'mcpServer/startupStatus/updated')
-    return null
-
-  const params = isObject(parsed.params) ? parsed.params as Record<string, unknown> : undefined
-  const name = typeof params?.name === 'string' ? params.name.trim() : ''
-  const { state, error } = codexStartupStateAndError(params?.status, params?.error)
-  const normalizedState = state.trim() || 'unknown'
-  const normalizedError = error.trim()
-  const baseName = name || 'unknown'
-  const errorSuffix = normalizedError ? ` (${normalizedError})` : ''
-
-  switch (normalizedState) {
-    case 'starting':
-      return { groupKey: 'starting', prefix: 'Starting MCP server', entry: baseName }
-    case 'ready':
-      return { groupKey: 'ready', prefix: 'MCP server ready', entry: baseName }
-    case 'failed':
-      return { groupKey: 'failed', prefix: 'MCP server failed to start', entry: `${baseName}${errorSuffix}` }
-    case 'cancelled':
-      return { groupKey: 'cancelled', prefix: 'MCP server startup cancelled', entry: `${baseName}${errorSuffix}` }
-    default:
-      return { groupKey: `status:${normalizedState}`, prefix: `MCP server status update (${normalizedState})`, entry: `${baseName}${errorSuffix}` }
-  }
-}
-
-export const codexMcpStartupStatusRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
-    if (!isObject(parsed))
-      return null
-    const label = formatCodexStartupStatus(parsed)
-    if (!label)
-      return null
-    return <div class={controlResponseMessage}>{label}</div>
-  },
-}
-
-/** Render Codex native rate limit notification. */
-function renderCodexRateLimits(parsed: Record<string, unknown>): JSXElement {
-  const params = parsed.params as Record<string, unknown> | undefined
-  const rl = params?.rateLimits as Record<string, unknown> | undefined
-  if (!rl)
-    return <div class={controlResponseMessage}>Rate limit update</div>
-
-  const parts: string[] = []
-  for (const tierKey of ['primary', 'secondary'] as const) {
-    const tier = rl[tierKey] as Record<string, unknown> | undefined
-    if (!tier)
-      continue
-    const info = codexTierToRateLimitInfo(tier)
-    if (info.status === 'allowed')
-      continue
-    parts.push(formatRateLimitMessage(info))
-  }
-  if (parts.length === 0)
-    return null
-  return <div class={controlResponseMessage}>{parts.join(', ')}</div>
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +158,7 @@ export const compactBoundaryRenderer: MessageContentRenderer = {
     // Wire format uses snake_case compact_metadata; internal format uses camelCase compactMetadata.
     const meta = (isObject(parsed.compact_metadata) ? parsed.compact_metadata : parsed.compactMetadata) as Record<string, unknown> | undefined
     const trigger = meta?.trigger as string | undefined
-    const preTokens = (typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : meta?.preTokens) as number | undefined
+    const preTokens = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
     const parts = ['Context compacted']
     if (trigger)
       parts.push(`(${trigger})`)
@@ -352,7 +175,7 @@ export const microcompactBoundaryRenderer: MessageContentRenderer = {
       return null
     const meta = (isObject(parsed.microcompactMetadata) ? parsed.microcompactMetadata : parsed.microcompact_metadata) as Record<string, unknown> | undefined
     const trigger = meta?.trigger as string | undefined
-    const tokensSaved = (typeof meta?.tokensSaved === 'number' ? meta.tokensSaved : meta?.tokens_saved) as number | undefined
+    const tokensSaved = pickFirstNumber(meta, ['tokensSaved', 'tokens_saved'])
     const parts = ['Context microcompacted']
     if (trigger)
       parts.push(`(${trigger})`)
@@ -368,62 +191,6 @@ export const systemInitRenderer: MessageContentRenderer = {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'init')
       return null
     return <span />
-  },
-}
-
-/** Handles result messages: {"type":"result","duration_ms":865,"num_turns":558,...} */
-export const resultRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'result')
-      return null
-
-    // Error turn: show errors array if present (e.g. "No conversation found with session ID: ...")
-    if (parsed.is_error === true) {
-      const errors = Array.isArray(parsed.errors) ? parsed.errors as string[] : []
-      const resultText = typeof parsed.result === 'string' ? parsed.result : ''
-      const durationMs = typeof parsed.duration_ms === 'number' ? parsed.duration_ms : 0
-      const durationSuffix = durationMs > 0 ? ` (${formatDuration(durationMs)})` : ''
-
-      // Execution errors with a descriptive subtype: show humanized subtype
-      // in the divider and the raw error details below.
-      const subtype = typeof parsed.subtype === 'string' ? parsed.subtype : ''
-      if (subtype && subtype !== 'success') {
-        const humanSubtype = humanizeSubtype(subtype)
-        const label = humanSubtype + durationSuffix
-        const errorDetail = errors.length > 0 ? errors.join('\n') : resultText || ''
-        return (
-          <>
-            <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
-            {errorDetail && <pre class={resultErrorDetail}>{errorDetail}</pre>}
-          </>
-        )
-      }
-
-      const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
-      const label = cleanAPIErrorMessage(errorMsg) + durationSuffix
-      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
-    }
-
-    const durationMs = typeof parsed.duration_ms === 'number' ? parsed.duration_ms : 0
-    const resultText = typeof parsed.result === 'string' ? parsed.result : ''
-    const durationStr = formatDuration(durationMs)
-
-    // When stop_reason is absent (agent never produced output), show the result
-    // text as an error — e.g. "Unknown skill: update-pr".
-    // Local commands that produce real output (e.g. /context) complete with
-    // num_turns > 1 despite having no stop_reason; skip the error path for those.
-    const numTurns = typeof parsed.num_turns === 'number' ? parsed.num_turns : 0
-    if (!parsed.stop_reason && numTurns <= 1 && resultText) {
-      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
-    }
-
-    // For non-success subtypes, show result text with duration.
-    // For success, the result repeats the last assistant message — skip it.
-    const displayText = parsed.subtype !== 'success' ? resultText : ''
-    const label = displayText
-      ? `${displayText} (${durationStr})`
-      : `Took ${durationStr}`
-    return <div class={resultDivider}>{label}</div>
   },
 }
 
@@ -472,120 +239,113 @@ function formatCompactionTokens(preTokens: number | undefined, tokensSaved: numb
 }
 
 /**
+ * Walk a single message in a notification_thread wrapper, producing one or
+ * more flat thread entries via the provider plugin (if any) followed by the
+ * provider-neutral switch. Returns an array — the caller appends.
+ */
+function threadEntriesFor(
+  m: Record<string, unknown>,
+  agentProvider: AgentProvider | undefined,
+): Array<{ kind: 'text', text: string } | { kind: 'group', groupKey: string, prefix: string, entry: string } | { kind: 'divider', text: string, loading?: boolean }> {
+  const plugin = agentProvider != null ? getProviderPlugin(agentProvider) : undefined
+  const fromPlugin = plugin?.notificationThreadEntry?.(m)
+  if (fromPlugin !== null && fromPlugin !== undefined)
+    return fromPlugin
+
+  const t = m.type as string | undefined
+  const st = m.subtype as string | undefined
+
+  if (t === 'settings_changed') {
+    const changes = m.changes as Record<string, { old: string, new: string }> | undefined
+    if (!changes)
+      return []
+    const parts: string[] = []
+    for (const [key, val] of Object.entries(changes)) {
+      if (val.old !== val.new)
+        parts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
+    }
+    return parts.length > 0 ? [{ kind: 'text', text: parts.join(', ') }] : []
+  }
+  if (t === 'context_cleared')
+    return [{ kind: 'text', text: 'Context cleared' }]
+  if (t === 'plan_execution')
+    return [{ kind: 'text', text: 'Executing plan' }]
+  if (t === 'agent_error')
+    return [{ kind: 'text', text: pickString(m, 'error', 'Unknown error') }]
+  if (t === 'interrupted')
+    return [{ kind: 'text', text: 'Interrupted' }]
+  if (t === 'agent_renamed') {
+    const title = pickString(m, 'title')
+    return title ? [{ kind: 'text', text: `Renamed to ${title}` }] : []
+  }
+  if (t === 'system' && st === 'api_retry')
+    return [{ kind: 'text', text: formatApiRetryLabel(m) }]
+  if (t === 'compacting' || (t === 'system' && st === 'status' && m.status === 'compacting'))
+    return [{ kind: 'divider', text: 'Compacting context...', loading: true }]
+  if (t === 'system' && st === 'compact_boundary') {
+    const meta = (isObject(m.compact_metadata) ? m.compact_metadata : m.compactMetadata) as Record<string, unknown> | undefined
+    const pre = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
+    const saved = pickFirstNumber(meta, ['tokens_saved', 'tokensSaved'])
+    return [{ kind: 'divider', text: `Context compacted${formatCompactionTokens(pre, saved)}` }]
+  }
+  if (t === 'system' && st === 'microcompact_boundary') {
+    const meta = (isObject(m.microcompactMetadata) ? m.microcompactMetadata : m.microcompact_metadata) as Record<string, unknown> | undefined
+    const pre = pickFirstNumber(meta, ['preTokens', 'pre_tokens'])
+    const saved = pickFirstNumber(meta, ['tokensSaved', 'tokens_saved'])
+    return [{ kind: 'divider', text: `Context microcompacted${formatCompactionTokens(pre, saved)}` }]
+  }
+  return []
+}
+
+/**
  * Renders a notification thread (multiple consolidated messages in a single wrapper)
  * as a combined notification. Used when Hub threads consecutive notifications together.
+ *
+ * `agentProvider` is consulted via `plugin.notificationThreadEntry` for any
+ * provider-specific messages (e.g. Codex MCP startup statuses) before the
+ * shared switch handles provider-neutral types.
  */
-export function renderNotificationThread(messages: unknown[]): JSXElement {
+export function renderNotificationThread(messages: unknown[], agentProvider?: AgentProvider): JSXElement {
   type RenderEntry = { kind: 'text', text: string } | { kind: 'divider', text: string, loading?: boolean }
   const entries: RenderEntry[] = []
-  const startupGroupOrder: string[] = []
-  const startupGroups = new Map<string, { prefix: string, entries: string[] }>()
+  const groupOrder: string[] = []
+  const groups = new Map<string, { prefix: string, entries: string[] }>()
 
-  const flushStartupGroups = () => {
-    if (startupGroupOrder.length === 0)
+  const flushGroups = () => {
+    if (groupOrder.length === 0)
       return
-    for (const key of startupGroupOrder) {
-      const group = startupGroups.get(key)
+    for (const key of groupOrder) {
+      const group = groups.get(key)
       if (!group || group.entries.length === 0)
         continue
       entries.push({ kind: 'text', text: `${group.prefix}: ${group.entries.join(', ')}` })
     }
-    startupGroups.clear()
-    startupGroupOrder.length = 0
+    groups.clear()
+    groupOrder.length = 0
   }
 
   for (const msg of messages) {
     if (!isObject(msg))
       continue
-    const m = msg as Record<string, unknown>
-    const t = m.type as string | undefined
-    const st = m.subtype as string | undefined
-
-    const startup = codexStartupGroupEntry(m)
-    if (startup) {
-      if (!startupGroups.has(startup.groupKey)) {
-        startupGroups.set(startup.groupKey, { prefix: startup.prefix, entries: [startup.entry] })
-        startupGroupOrder.push(startup.groupKey)
-      }
-      else {
-        startupGroups.get(startup.groupKey)!.entries.push(startup.entry)
-      }
-      continue
-    }
-
-    flushStartupGroups()
-
-    if (m.method === 'account/rateLimits/updated') {
-      const params = m.params as Record<string, unknown> | undefined
-      const rl = params?.rateLimits as Record<string, unknown> | undefined
-      for (const tierKey of ['primary', 'secondary']) {
-        const tier = rl?.[tierKey] as Record<string, unknown> | undefined
-        if (!tier)
-          continue
-        const info = codexTierToRateLimitInfo(tier)
-        if (info.rateLimitType && info.status !== 'allowed')
-          entries.push({ kind: 'text', text: formatRateLimitMessage(info) })
-      }
-    }
-    else if (t === 'rate_limit') {
-      const info = m.rate_limit_info
-      if (isObject(info)) {
-        const rlInfo = info as Record<string, unknown>
-        if (rlInfo.status !== 'allowed')
-          entries.push({ kind: 'text', text: formatRateLimitMessage(rlInfo) })
-      }
-    }
-    else if (t === 'settings_changed') {
-      const changes = m.changes as Record<string, { old: string, new: string }> | undefined
-      if (changes) {
-        const parts: string[] = []
-        for (const [key, val] of Object.entries(changes)) {
-          if (val.old !== val.new)
-            parts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
+    const produced = threadEntriesFor(msg as Record<string, unknown>, agentProvider)
+    for (const entry of produced) {
+      if (entry.kind === 'group') {
+        const existing = groups.get(entry.groupKey)
+        if (existing) {
+          existing.entries.push(entry.entry)
         }
-        if (parts.length > 0)
-          entries.push({ kind: 'text', text: parts.join(', ') })
+        else {
+          groups.set(entry.groupKey, { prefix: entry.prefix, entries: [entry.entry] })
+          groupOrder.push(entry.groupKey)
+        }
+        continue
       }
-    }
-    else if (t === 'context_cleared') {
-      entries.push({ kind: 'text', text: 'Context cleared' })
-    }
-    else if (t === 'plan_execution') {
-      entries.push({ kind: 'text', text: 'Executing plan' })
-    }
-    else if (t === 'agent_error') {
-      const error = typeof m.error === 'string' ? m.error : 'Unknown error'
-      entries.push({ kind: 'text', text: error })
-    }
-    else if (t === 'interrupted') {
-      entries.push({ kind: 'text', text: 'Interrupted' })
-    }
-    else if (t === 'agent_renamed') {
-      const title = typeof m.title === 'string' ? m.title : ''
-      if (title)
-        entries.push({ kind: 'text', text: `Renamed to ${title}` })
-    }
-    else if (t === 'system' && st === 'api_retry') {
-      entries.push({ kind: 'text', text: formatApiRetryLabel(m) })
-    }
-    else if (t === 'compacting' || (t === 'system' && st === 'status' && m.status === 'compacting')) {
-      entries.push({ kind: 'divider', text: 'Compacting context...', loading: true })
-    }
-    else if (t === 'system' && st === 'compact_boundary') {
-      const meta = (isObject(m.compact_metadata) ? m.compact_metadata : m.compactMetadata) as Record<string, unknown> | undefined
-      const compactPreTokens = (typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : meta?.preTokens) as number | undefined
-      const compactTokensSaved = (typeof meta?.tokens_saved === 'number' ? meta.tokens_saved : meta?.tokensSaved) as number | undefined
-      entries.push({ kind: 'divider', text: `Context compacted${formatCompactionTokens(compactPreTokens, compactTokensSaved)}` })
-    }
-    else if (t === 'system' && st === 'microcompact_boundary') {
-      const meta = (isObject(m.microcompactMetadata) ? m.microcompactMetadata : m.microcompact_metadata) as Record<string, unknown> | undefined
-      const microcompactPreTokens = (typeof meta?.preTokens === 'number' ? meta.preTokens : meta?.pre_tokens) as number | undefined
-      const microcompactTokensSaved = (typeof meta?.tokensSaved === 'number' ? meta.tokensSaved : meta?.tokens_saved) as number | undefined
-      entries.push({ kind: 'divider', text: `Context microcompacted${formatCompactionTokens(microcompactPreTokens, microcompactTokensSaved)}` })
+      flushGroups()
+      entries.push(entry)
     }
   }
 
-  flushStartupGroups()
+  flushGroups()
 
   const elements: JSXElement[] = []
   let pendingText: string[] = []

@@ -1,7 +1,8 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
-import type { StructuredPatchHunk } from './diffUtils'
 import type { RenderContext } from './messageRenderers'
+import type { CommandResultSource } from './results/commandResult'
+import type { FileEditDiffSource } from './results/fileEditDiff'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
@@ -13,18 +14,17 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
-import { createSignal, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { containsAnsi, escapeHtml, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown, shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
-import { DiffView, rawDiffToHunks } from './diffUtils'
-import { parseCatNContent, ReadResultView } from './ReadResultView'
 import { RelativeTime } from './RelativeTime'
-import { spanColorKey } from './SpanLines'
-import { spanLineColors } from './SpanLines.css'
+import { CommandResultBody } from './results/commandResult'
+import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
+import { parseCatNContent, ReadResultView } from './results/ReadResultView'
 import {
   controlResponseTag,
   toolBodyContent,
@@ -40,6 +40,8 @@ import {
   toolUseHeader,
   toolUseIcon,
 } from './toolStyles.css'
+import { spanColorKey } from './widgets/SpanLines'
+import { spanLineColors } from './widgets/SpanLines.css'
 
 /** Inline control response tag (Approved / Rejected) for tool headers. */
 export function ControlResponseTag(props: { response?: { action: string, comment: string } }): JSX.Element {
@@ -62,7 +64,23 @@ export function EmptyTodoLayout(props: { toolName: string, context?: RenderConte
   return <ToolUseLayout icon={ListTodo} toolName={props.toolName} title="To-do list cleared" context={props.context} />
 }
 
-/** Shared layout for tool_use messages. Renders header boilerplate and optional body. */
+/**
+ * Shared layout for tool_use messages. Three content slots, ordered by
+ * information density:
+ *
+ *  1. `title` — the header line, always visible. Identifies what the tool
+ *     ran on (file path, command description, search pattern).
+ *  2. `summary` — second line, also always visible when present. A brief
+ *     preview that supplements the title (Bash command first line, Grep
+ *     search path, etc.).
+ *  3. `children` — "the details": the full expanded body. Hidden by default
+ *     until the user clicks the expand toggle, OR shown unconditionally when
+ *     `alwaysVisible` is set (e.g. TodoList where the list IS the content).
+ *
+ * Don't pass `summary` content as `children` or vice versa — the relationship
+ * between summary (preview) and children (full) is what makes the
+ * expand/collapse interaction read naturally.
+ */
 export function ToolUseLayout(props: {
   /** Lucide icon component (e.g. ListTodo, Vote, SquareTerminal). */
   icon: LucideIcon
@@ -70,9 +88,9 @@ export function ToolUseLayout(props: {
   toolName: string
   /** Primary title shown in the header. String auto-wraps in toolInputText; JSX renders as-is. */
   title: string | JSX.Element
-  /** Summary line shown below header inside the bordered area, always visible even when collapsed. */
+  /** Brief preview line below the header, always visible (when present). */
   summary?: JSX.Element
-  /** Body content shown below the header. */
+  /** The details — full body content, hidden until expanded (or always visible when `alwaysVisible` is set). */
   children?: JSX.Element
   /** If true, body is always visible (not gated by expand). Default: false. */
   alwaysVisible?: boolean
@@ -91,16 +109,17 @@ export function ToolUseLayout(props: {
   onToggleExpand?: () => void
   /** Custom label for the expand button tooltip. */
   expandLabel?: string
-  /** Copy content callback. */
-  onCopyContent?: () => void
-  contentCopied?: boolean
-  copyContentLabel?: string
-  onCopyMarkdown?: () => void
-  markdownCopied?: boolean
-  onReply?: () => void
+  /**
+   * Optional bag for the copy/reply/markdown buttons forwarded to
+   * `ToolHeaderActions`. Layout-owned fields (timestamp, expanded, hasDiff,
+   * etc.) come from `props.context` / `props.expanded` / `props.hasDiff` —
+   * don't put them here.
+   */
+  headerActions?: ToolHeaderActionsForwardedProps
 }): JSX.Element {
   const expanded = () => props.expanded ?? false
-  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!props.onCopyContent || !!props.onCopyMarkdown || !!props.onReply
+  const actions = () => props.headerActions
+  const hasActions = () => !!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!actions()?.onCopyContent || !!actions()?.onCopyMarkdown || !!actions()?.onReply
   return (
     <div class={toolMessage} data-tool-message>
       <div class={toolUseHeader}>
@@ -119,14 +138,14 @@ export function ToolUseLayout(props: {
             expanded={expanded()}
             onToggleExpand={props.onToggleExpand}
             expandLabel={props.expandLabel}
-            onCopyContent={props.onCopyContent}
-            contentCopied={props.contentCopied}
-            copyContentLabel={props.copyContentLabel}
-            onReply={props.onReply}
-            onCopyMarkdown={props.onCopyMarkdown}
-            markdownCopied={props.markdownCopied}
+            onCopyContent={actions()?.onCopyContent}
+            contentCopied={actions()?.contentCopied}
+            copyContentLabel={actions()?.copyContentLabel}
+            onReply={actions()?.onReply}
+            onCopyMarkdown={actions()?.onCopyMarkdown}
+            markdownCopied={actions()?.markdownCopied}
             onCopyJson={props.context?.onCopyJson}
-            jsonCopied={props.context?.jsonCopied ?? false}
+            jsonCopied={props.context?.jsonCopied?.() ?? false}
             hasDiff={props.hasDiff}
             diffView={props.diffView}
             onToggleDiffView={props.onDiffViewChange ? () => props.onDiffViewChange!(props.diffView === 'unified' ? 'split' : 'unified') : undefined}
@@ -148,6 +167,20 @@ export function ToolUseLayout(props: {
       </Show>
     </div>
   )
+}
+
+/**
+ * The `ToolUseLayout`-forwarded subset of `ToolHeaderActions` props. Layout-
+ * owned fields (timestamp, expanded, hasDiff, json copy) come from `context`
+ * or sibling `ToolUseLayout` props, so they're excluded here.
+ */
+export interface ToolHeaderActionsForwardedProps {
+  onCopyContent?: () => void
+  contentCopied?: boolean
+  copyContentLabel?: string
+  onReply?: () => void
+  onCopyMarkdown?: () => void
+  markdownCopied?: boolean
 }
 
 /** Actions area in tool header: Reply + Raw JSON copy + diff toggle + expand/collapse, all with tooltips. */
@@ -279,14 +312,6 @@ export function ToolHeaderActions(props: {
   )
 }
 
-/** Local diff-view preference state, shared by ToolUseMessage and ToolResultMessage. */
-export function useDiffViewToggle(contextDiffView: () => DiffViewPreference | undefined) {
-  const [localDiffView, setLocalDiffView] = createSignal<DiffViewPreference | null>(null)
-  const diffView = () => localDiffView() ?? contextDiffView() ?? 'unified'
-  const toggleDiffView = () => setLocalDiffView(diffView() === 'unified' ? 'split' : 'unified')
-  return { diffView, toggleDiffView }
-}
-
 export function renderBashHighlight(code: string): string {
   try {
     return shikiHighlighter.codeToHtml(code, {
@@ -316,59 +341,77 @@ export function stripLeadingBlankLines(content: string): string {
   return content.replace(LEADING_BLANK_LINES_RE, '')
 }
 
+/**
+ * How to render the body of a tool_result when no diff or commandResult is
+ * provided:
+ *
+ *  - `'bash'` → strip leading blank lines, render ANSI/pre, and show a
+ *    success/error header when `isError` is set. Used for any preformatted
+ *    output that should look like a shell command result.
+ *  - `'read'` → try to parse the content as cat-n format; render the
+ *    syntax-highlighted ReadResultView when it parses, else plain pre.
+ *  - `'pre'` → plain preformatted text.
+ *  - `'markdown'` → render content as markdown.
+ *
+ * `undefined` is the catch-all when the body never reaches this branch (e.g.
+ * the caller always provides `commandResult` or `diffSource`); behaves like
+ * `'bash'` for header rendering when `isError` is set.
+ */
+export type ToolResultDisplayKind = 'bash' | 'read' | 'pre' | 'markdown'
+
 /** Render Read tool results with syntax highlighting, or fall back to plain pre text. */
 function renderReadOrPre(
-  toolName: string,
   resultContent: string,
   readFilePath?: string,
   collapsed?: boolean,
 ): JSX.Element {
-  if (toolName === 'Read') {
-    const parsed = parseCatNContent(resultContent)
-    if (parsed) {
-      const displayLines = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
-        ? parsed.slice(0, COLLAPSED_RESULT_ROWS)
-        : parsed
-      const isCollapsed = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
-      return (
-        <div class={isCollapsed ? toolResultCollapsed : undefined}>
-          <ReadResultView lines={displayLines} filePath={readFilePath} />
-        </div>
-      )
-    }
+  const parsed = parseCatNContent(resultContent)
+  if (parsed) {
+    const displayLines = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
+      ? parsed.slice(0, COLLAPSED_RESULT_ROWS)
+      : parsed
+    const isCollapsed = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
+    return (
+      <div class={isCollapsed ? toolResultCollapsed : undefined}>
+        <ReadResultView lines={displayLines} filePath={readFilePath} />
+      </div>
+    )
   }
   return <div class={toolResultContentPre}>{resultContent}</div>
 }
 
-/** Inner component for tool_result messages with structuredPatch — owns local diff view state. */
+/**
+ * Inner component for tool_result messages — renders an Edit/Write diff when
+ *  `diffSource` carries one, otherwise falls back to text/Read/markdown via
+ *  `displayKind`.
+ */
 export function ToolResultMessage(props: {
-  toolName: string
   resultContent: string
-  isPreText: boolean
-  structuredPatch: StructuredPatchHunk[] | null
-  oldStr: string
-  newStr: string
-  filePath: string
-  originalFile?: string
-  /** File path for Read tool syntax highlighting. */
+  /** How to render the body when neither `commandResult` nor `diffSource` is set. */
+  displayKind?: ToolResultDisplayKind
+  /** Pre-picked diff source (from `pickFileEditDiff`); null when no diff to render. */
+  diffSource?: FileEditDiffSource | null
+  /** File path for Read tool syntax highlighting (only used when displayKind='read'). */
   readFilePath?: string
   /** Whether the tool result is an error (from is_error field). */
   isError?: boolean
   /** Optional status detail shown inline with the Bash-like result header. */
   statusDetail?: string
+  /**
+   * Pre-built command-execution source. When set, the body delegates to
+   * CommandResultBody for the canonical status header + output rendering.
+   */
+  commandResult?: CommandResultSource | null
   context?: RenderContext
 }): JSX.Element {
-  const diffView = () => props.context?.diffView ?? 'unified'
-  const hasPatch = () => !!props.structuredPatch && props.structuredPatch.length > 0
-  const hasFallbackDiff = () => props.oldStr !== '' && props.newStr !== '' && props.oldStr !== props.newStr
-  const hasDiff = () => hasPatch() || hasFallbackDiff()
+  const diffView = () => props.context?.diffView?.() ?? 'unified'
+  const renderableDiff = () => fileEditHasDiff(props.diffSource) ? props.diffSource : null
   const errorText = () => extractToolUseError(props.resultContent)
 
   // Collapsible via expand/collapse button in MessageBubble toolbar.
-  const isRead = () => props.toolName === 'Read'
-  const isBashLike = () => props.toolName === 'Bash' || props.toolName === 'TaskOutput' || props.toolName === ''
+  const isBashLike = () => props.displayKind === 'bash' || props.displayKind === undefined
   const normalizedResultContent = () => isBashLike() ? stripLeadingBlankLines(props.resultContent) : props.resultContent
-  const expanded = () => props.context?.toolResultExpanded ?? false
+  const expanded = () => props.context?.toolResultExpanded?.() ?? false
   const resultLines = () => normalizedResultContent().split('\n')
   const isCollapsed = () => {
     if (expanded())
@@ -384,46 +427,46 @@ export function ToolResultMessage(props: {
   const statusIcon = () => props.isError ? CircleAlert : Check
 
   return (
-    <div class={toolMessage} data-tool-message>
-      <Show when={isBashLike() && props.isError !== undefined}>
-        <div class={toolUseHeader}>
-          <span class={`${inlineFlex} ${toolUseIcon}`}>
-            <Icon icon={statusIcon()} size="md" />
-          </span>
-          <span class={toolInputText}>
-            {props.isError ? 'Error' : 'Success'}
-            <Show when={props.statusDetail}>
-              {detail => ` (${detail()})`}
-            </Show>
-          </span>
-        </div>
-      </Show>
-      <Show
-        when={!errorText()}
-        fallback={<div class={toolResultError}>{errorText()}</div>}
-      >
-        <Show
-          when={hasDiff()}
-          fallback={
-            props.isPreText
-              ? isBashLike()
-                ? containsAnsi(normalizedResultContent())
-                  /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
-                  ? <div class={`${toolResultContentAnsi}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderAnsi(displayContent())} />
-                  : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayContent()}</div>
-                : renderReadOrPre(props.toolName, props.resultContent, props.readFilePath, isRead() && !expanded())
-              /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */
-              : <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(displayContent())} />
-          }
-        >
-          <DiffView
-            hunks={hasPatch() ? props.structuredPatch! : rawDiffToHunks(props.oldStr, props.newStr)}
-            view={diffView()}
-            filePath={props.filePath}
-            originalFile={props.originalFile}
-          />
+    <Show
+      when={!props.commandResult}
+      fallback={<CommandResultBody source={props.commandResult!} context={props.context} />}
+    >
+      <div class={toolMessage} data-tool-message>
+        <Show when={isBashLike() && props.isError !== undefined}>
+          <div class={toolUseHeader}>
+            <span class={`${inlineFlex} ${toolUseIcon}`}>
+              <Icon icon={statusIcon()} size="md" />
+            </span>
+            <span class={toolInputText}>
+              {props.isError ? 'Error' : 'Success'}
+              <Show when={props.statusDetail}>
+                {detail => ` (${detail()})`}
+              </Show>
+            </span>
+          </div>
         </Show>
-      </Show>
-    </div>
+        <Show
+          when={!errorText()}
+          fallback={<div class={toolResultError}>{errorText()}</div>}
+        >
+          <Show
+            when={renderableDiff()}
+            fallback={
+              props.displayKind === 'markdown'
+                /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderMarkdown, not user input */
+                ? <div class={`${toolResultContent}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderMarkdown(displayContent())} />
+                : props.displayKind === 'read'
+                  ? renderReadOrPre(props.resultContent, props.readFilePath, !expanded())
+                  : containsAnsi(normalizedResultContent())
+                    /* eslint-disable-next-line solid/no-innerhtml -- HTML from renderAnsi, not user input */
+                    ? <div class={`${toolResultContentAnsi}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`} innerHTML={renderAnsi(displayContent())} />
+                    : <div class={`${toolResultContentPre}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>{displayContent()}</div>
+            }
+          >
+            {src => <FileEditDiffBody source={src()} view={diffView()} />}
+          </Show>
+        </Show>
+      </div>
+    </Show>
   )
 }

@@ -971,7 +971,7 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container).toHaveTextContent('Error (exit code: 1)')
+    expect(view.container).toHaveTextContent('Error (exit 1)')
   })
 
   it('renders live fileChange stream inside the matching codex fileChange bubble', () => {

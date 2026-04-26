@@ -1,10 +1,10 @@
-// Import all provider modules to trigger side-effect registrations.
+// Side-effect imports: each provider module calls registerProvider() at import time.
+// Removing or reordering these silently breaks getProviderPlugin() lookups in registry.ts.
 import './claude'
-import './copilot'
 import './codex'
-import './cursor'
-import './gemini'
-import './goose'
-import './kilo'
 import './opencode'
-import './stubs'
+import './stubs/copilot'
+import './stubs/cursor'
+import './stubs/gemini'
+import './stubs/goose'
+import './stubs/kilo'

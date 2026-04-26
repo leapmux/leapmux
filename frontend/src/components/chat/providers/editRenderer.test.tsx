@@ -56,7 +56,7 @@ describe('claude Edit tool_use rendering', () => {
     expect(text).toContain('(replace all)')
   })
 
-  it('expands Edit diffs by default so changed lines are visible immediately', () => {
+  it('does not render the diff body — diffs live on the result message', () => {
     const { container } = renderEditToolUse({
       file_path: '/tmp/example.ts',
       old_string: 'const beforeExpansion = true;\n',
@@ -65,7 +65,10 @@ describe('claude Edit tool_use rendering', () => {
     })
 
     const text = container.textContent ?? ''
-    expect(text).toContain('beforeExpansion')
-    expect(text).toContain('afterExpansion')
+    // Header surfaces the file path.
+    expect(text).toContain('example.ts')
+    // The old/new contents are not rendered on the tool_use side.
+    expect(text).not.toContain('beforeExpansion')
+    expect(text).not.toContain('afterExpansion')
   })
 })

@@ -18,7 +18,7 @@ beforeAll(() => {
 function makeContext(overrides: Partial<RenderContext> = {}): RenderContext {
   return {
     onCopyJson: vi.fn(),
-    jsonCopied: false,
+    jsonCopied: () => false,
     ...overrides,
   }
 }
