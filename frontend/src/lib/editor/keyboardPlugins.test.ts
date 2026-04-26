@@ -8,8 +8,7 @@ import { createTabKeyPlugin } from './keyboardPlugins'
 
 /**
  * Unit tests for `createTabKeyPlugin` exercising every branch of the keyboard
- * handler against a real Milkdown editor mounted in jsdom. Replaces the
- * Tab/Shift+Tab portions of `frontend/tests/e2e/20-markdown-editor-input.spec.ts`.
+ * handler against a real Milkdown editor mounted in jsdom.
  */
 
 let editor: Editor | undefined

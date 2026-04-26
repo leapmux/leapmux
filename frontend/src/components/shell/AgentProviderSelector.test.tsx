@@ -74,9 +74,7 @@ describe('agentProviderSelector', () => {
 
   // Each known AgentProvider value, when present in availableProviders, must
   // render an option with `agent-provider-option-${id}` testid and the right
-  // human-readable label. Backstops the per-provider e2e selector tests
-  // (96-codex, 104-opencode, 111-copilot, 114-cursor, 117-goose, 120-kilo)
-  // that previously verified one provider each via real-browser smoke.
+  // human-readable label.
   it.each([
     [AgentProvider.CLAUDE_CODE, 'Claude Code'],
     [AgentProvider.CODEX, 'Codex'],

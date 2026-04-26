@@ -615,9 +615,8 @@ describe('codex settings panel', () => {
       availableOptionGroups: baseOptionGroups,
     }))
 
-    // Left column contains Fast Mode → Reasoning Effort → Models. The first
-    // group label rendered should be "Fast Mode" (regression for the e2e
-    // "Fast mode group appears first" assertion).
+    // The left column orders fieldsets Fast Mode → Reasoning Effort → Models,
+    // so the first group label rendered must be "Fast Mode".
     const labels = container.querySelectorAll('div[role="group"] > div')
     const firstLabel = labels[0]?.textContent
     expect(firstLabel).toBe('Fast Mode')
