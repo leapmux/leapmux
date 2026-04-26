@@ -381,7 +381,7 @@ task test-backend -- -run TestMyFunction ./internal/hub/...
 task test-frontend -- src/lib/validate.test.ts
 
 # E2E tests: pass a file path or --grep <pattern> to Playwright
-task test-e2e -- tests/e2e/25-chat-message-rendering.spec.ts
+task test-e2e -- tests/e2e/040-chat-message-rendering.spec.ts
 task test-e2e -- --grep "should persist theme"
 ```
 
