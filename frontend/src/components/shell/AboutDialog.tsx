@@ -79,7 +79,7 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
             <small>
               All product names, logos, and trademarks are the property of their respective owners.
               LeapMux is not affiliated with, endorsed by, or sponsored by any third party.
-              Agent icons are used solely to indicate compatibility and are reproduced for identification purposes only.
+              Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced for identification purposes only.
             </small>
           </div>
         </div>
