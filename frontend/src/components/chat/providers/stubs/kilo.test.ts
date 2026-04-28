@@ -3,14 +3,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
 import { acpResultDividerRenderer } from '../acp/renderers'
-import { getProviderPlugin } from '../registry'
+import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
 // Side-effect import to register the Kilo plugin.
 import './kilo'
 
 describe('kilo classify', () => {
-  const plugin = getProviderPlugin(AgentProvider.KILO)!
+  const plugin = providerFor(AgentProvider.KILO)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -218,7 +218,7 @@ describe('kilo classify', () => {
 })
 
 describe('kilo result divider renderer', () => {
-  const plugin = getProviderPlugin(AgentProvider.KILO)!
+  const plugin = providerFor(AgentProvider.KILO)!
 
   it('renders "Turn ended" for end_turn', () => {
     const parsed = { stopReason: 'end_turn', usage: { totalTokens: 100 } }
@@ -239,13 +239,13 @@ describe('kilo result divider renderer', () => {
 
   it('is returned by plugin.renderMessage for result_divider', () => {
     const parsed = { stopReason: 'end_turn' }
-    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.RESULT)
+    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.TURN_END)
     expect(result).not.toBeNull()
   })
 })
 
 describe('kilo tool_call renderer', () => {
-  const plugin = getProviderPlugin(AgentProvider.KILO)!
+  const plugin = providerFor(AgentProvider.KILO)!
 
   it('renders tool_call with execute kind', () => {
     const toolUse = {
@@ -277,7 +277,7 @@ describe('kilo tool_call renderer', () => {
 })
 
 describe('kilo plan mode', () => {
-  const plugin = getProviderPlugin(AgentProvider.KILO)!
+  const plugin = providerFor(AgentProvider.KILO)!
 
   it('reads the current mode from extraSettings.primaryAgent', () => {
     expect(plugin.planMode?.currentMode({ extraSettings: { primaryAgent: 'plan' } })).toBe('plan')
@@ -292,7 +292,7 @@ describe('kilo plan mode', () => {
 })
 
 describe('kilo settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.KILO)!
+  const plugin = providerFor(AgentProvider.KILO)!
 
   it('renders primary-agent choices and updates through the unified onChange dispatcher', async () => {
     const onChange = vi.fn()
@@ -331,7 +331,7 @@ describe('kilo settings panel', () => {
 })
 
 describe('kilo tool_call_update renderer', () => {
-  const plugin = getProviderPlugin(AgentProvider.KILO)!
+  const plugin = providerFor(AgentProvider.KILO)!
 
   it('renders completed execute tool_call_update with command and output', () => {
     const toolUse = {
@@ -390,7 +390,7 @@ describe('kilo tool_call_update renderer', () => {
 })
 
 describe('kilo isAskUserQuestion', () => {
-  const plugin = getProviderPlugin(AgentProvider.KILO)!
+  const plugin = providerFor(AgentProvider.KILO)!
 
   it('returns true for question requests', () => {
     const payload = {
@@ -414,7 +414,7 @@ describe('kilo isAskUserQuestion', () => {
 })
 
 describe('kilo buildInterruptContent', () => {
-  const plugin = getProviderPlugin(AgentProvider.KILO)!
+  const plugin = providerFor(AgentProvider.KILO)!
 
   it('builds a cancel notification', () => {
     const content = plugin.buildInterruptContent!('session-123')

@@ -8,11 +8,11 @@ import { IconButton } from '~/components/common/IconButton'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { prettifyJson } from '~/lib/jsonFormat'
 import * as styles from './ControlRequestBanner.css'
-import { getProviderPlugin } from './providers/registry'
+import { providerFor } from './providers/registry'
 
 /** Renders control request content only (title + details), for the banner slot. */
 export const ControlRequestContent: Component<ContentProps> = (props) => {
-  const pluginContent = () => props.agentProvider != null ? getProviderPlugin(props.agentProvider)?.ControlContent : undefined
+  const pluginContent = () => props.agentProvider != null ? providerFor(props.agentProvider)?.ControlContent : undefined
   const { copied, copy } = useCopyButton(() => prettifyJson(props.request?.payload))
 
   return (
@@ -35,7 +35,7 @@ export const ControlRequestContent: Component<ContentProps> = (props) => {
 
 /** Renders control request action buttons only, for the footer slot. */
 export const ControlRequestActions: Component<ActionsProps> = (props) => {
-  const pluginActions = () => props.agentProvider != null ? getProviderPlugin(props.agentProvider)?.ControlActions : undefined
+  const pluginActions = () => props.agentProvider != null ? providerFor(props.agentProvider)?.ControlActions : undefined
   return (
     <Show when={props.request}>
       <Dynamic component={pluginActions()} {...props} />

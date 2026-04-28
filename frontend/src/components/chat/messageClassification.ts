@@ -1,7 +1,7 @@
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import * as chatStyles from './messageStyles.css'
-import { getProviderPlugin } from './providers/registry'
+import { providerFor } from './providers/registry'
 import './providers'
 
 // ---------------------------------------------------------------------------
@@ -61,8 +61,8 @@ export function classifyMessage(
   context?: ClassificationContext,
 ): MessageCategory {
   const provider = input.agentProvider ?? AgentProvider.CLAUDE_CODE
-  const plugin = getProviderPlugin(provider)
-    ?? getProviderPlugin(AgentProvider.CLAUDE_CODE)
+  const plugin = providerFor(provider)
+    ?? providerFor(AgentProvider.CLAUDE_CODE)
   if (plugin)
     return plugin.classify(input, context)
   return { kind: 'unknown' }

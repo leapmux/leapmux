@@ -24,7 +24,7 @@ type CursorCLIAgent struct {
 }
 
 // StartCursorCLI starts a Cursor CLI ACP agent process and performs the handshake.
-func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
@@ -175,7 +175,7 @@ func (a *CursorCLIAgent) reapplyModelAndMode() {
 // normalization) and permission mode.
 func (a *CursorCLIAgent) refreshCursorFromSession(resp json.RawMessage) {
 	a.applySessionRefresh(resp, normalizeCursorModelID, &a.permissionMode, "mode", func(model, mode string) {
-		a.sink.BroadcastSettingsRefreshed(model, "", mode, nil)
+		a.sink.PersistSettingsRefresh(model, "", mode, nil)
 	})
 }
 
@@ -184,9 +184,9 @@ var cursorCLIAvailableModels = []*leapmuxv1.AvailableModel{
 }
 
 func init() {
-	registerProvider(
+	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 			return StartCursorCLI(ctx, opts, sink)
 		},
 		cursorCLIAvailableModels,

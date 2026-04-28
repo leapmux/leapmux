@@ -3,15 +3,11 @@ import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from '../../messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
-import FileIcon from 'lucide-solid/icons/file'
-import FileImageIcon from 'lucide-solid/icons/file-image'
-import { For, Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
+import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject } from '~/lib/jsonPick'
-import { MarkdownText, PlanExecutionMessage, ThinkingMessage } from '../../messageRenderers'
-import { attachmentItem, attachmentList } from '../../messageStyles.css'
+import { MarkdownText, PlanExecutionMessage, ThinkingMessage, UserContentMessage } from '../../messageRenderers'
 import { ToolStatusHeader } from '../../results/ToolStatusHeader'
-import { getMessageContentArray, joinContentText } from './extractors/assistantContent'
+import { getMessageContentArray } from './extractors/assistantContent'
 
 /** Handles assistant messages: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}} */
 export const assistantTextRenderer: MessageContentRenderer = {
@@ -19,7 +15,7 @@ export const assistantTextRenderer: MessageContentRenderer = {
     const content = getMessageContentArray(parsed)
     if (!content)
       return null
-    const text = joinContentText(content)
+    const text = joinContentParagraphs(content, { text: 'text' })
     if (!text)
       return null
     return <MarkdownText text={text} />
@@ -32,7 +28,7 @@ export const assistantThinkingRenderer: MessageContentRenderer = {
     const content = getMessageContentArray(parsed)
     if (!content)
       return null
-    const text = joinContentText(content, 'thinking')
+    const text = joinContentParagraphs(content, { thinking: 'thinking' })
     if (!text)
       return null
     return <ThinkingMessage text={text} context={context} />
@@ -97,44 +93,18 @@ export const userTextContentRenderer: MessageContentRenderer = {
   },
 }
 
-/** Handles user messages: {"content":"..."} or {"content":"...", "attachments":[...]} */
+/**
+ * Handles Claude user messages: {"content":"..."} or
+ * {"content":"...", "attachments":[...]}. Delegates to the shared
+ * UserContentMessage so attachment rendering stays consistent across
+ * providers, and adds Claude's discriminator: skip when the parsed body has
+ * a `type` field (those are routed to other Claude-shaped renderers).
+ */
 export const userContentRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || typeof parsed.content !== 'string' || 'type' in parsed)
+    if (!isObject(parsed) || 'type' in parsed)
       return null
-    const attachments = Array.isArray((parsed as Record<string, unknown>).attachments)
-      ? (parsed as Record<string, unknown>).attachments as Array<{ filename?: string, mime_type?: string }>
-      : undefined
-    const content = parsed.content as string
-    const hasAttachments = attachments && attachments.length > 0
-    const hasText = content.trim().length > 0
-
-    if (!hasAttachments) {
-      if (!hasText)
-        return null
-      return <MarkdownText text={content} />
-    }
-
-    return (
-      <>
-        <div class={attachmentList}>
-          <For each={attachments}>
-            {att => (
-              <span class={attachmentItem}>
-                <Icon
-                  icon={att.mime_type?.startsWith('image/') ? FileImageIcon : FileIcon}
-                  size="xs"
-                />
-                {att.filename ?? 'Unnamed file'}
-              </span>
-            )}
-          </For>
-        </div>
-        <Show when={hasText}>
-          <MarkdownText text={content} />
-        </Show>
-      </>
-    )
+    return <UserContentMessage parsed={parsed} />
   },
 }
 

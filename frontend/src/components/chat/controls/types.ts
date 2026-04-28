@@ -57,12 +57,20 @@ export interface ActionsProps {
   onPermissionModeChange?: (mode: PermissionMode) => void
   contextUsage?: ContextUsageInfo
   modelContextWindow?: number
+  /**
+   * Optional pre-extracted question list. Providers whose payload shape
+   * isn't compatible with `getToolInput(...).questions` (e.g. Pi's
+   * extension_ui_request) pass this directly so AskUserQuestionActions
+   * can drive the same selection / multi-page flow without a wrapper
+   * adapter.
+   */
+  questions?: Question[]
 }
 
 export function sendResponse(
   agentId: string,
   onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
-  response: Record<string, unknown>,
+  response: unknown,
 ): Promise<void> {
   const bytes = new TextEncoder().encode(JSON.stringify(response))
   return onRespond(agentId, bytes)

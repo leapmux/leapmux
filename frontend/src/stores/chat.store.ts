@@ -548,6 +548,10 @@ export function createChatStore() {
     },
 
     clearStreamingText(agentId: string) {
+      // Skip the setState when the buffer is already empty so reactive
+      // consumers aren't woken on every tool-span persist (the typical case).
+      if (!state.streamingText[agentId])
+        return
       setState('streamingText', agentId, '')
     },
 

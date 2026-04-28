@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -52,8 +51,8 @@ type acpPendingInput struct {
 // shared by all ACP agents (GeminiCLIAgent, OpenCodeAgent) and CodexAgent.
 type jsonrpcBase struct {
 	processBase
-	nextReqID   atomic.Int64
-	pendingReqs sync.Map // reqID (int64) -> chan json.RawMessage
+	responseCorrelator[int64]
+	nextReqID atomic.Int64
 
 	// Prompt queueing: ACP servers support only one active prompt per session.
 	// Messages arriving mid-turn are queued and coalesced into a single prompt
@@ -332,7 +331,7 @@ func (b *acpBase) applySessionRefresh(
 // permissionMode (Gemini, Copilot, Goose).
 func (b *acpBase) refreshModelAndPermissionModeFromSession(resp json.RawMessage) {
 	b.applySessionRefresh(resp, nil, &b.permissionMode, "mode", func(model, mode string) {
-		b.sink.BroadcastSettingsRefreshed(model, "", mode, nil)
+		b.sink.PersistSettingsRefresh(model, "", mode, nil)
 	})
 }
 
@@ -340,7 +339,7 @@ func (b *acpBase) refreshModelAndPermissionModeFromSession(resp json.RawMessage)
 // currentPrimaryAgent (OpenCode, Kilo).
 func (b *acpBase) refreshModelAndPrimaryAgentFromSession(resp json.RawMessage) {
 	b.applySessionRefresh(resp, nil, &b.currentPrimaryAgent, "primaryAgent", func(model, agent string) {
-		b.sink.BroadcastSettingsRefreshed(model, "", "", map[string]string{
+		b.sink.PersistSettingsRefresh(model, "", "", map[string]string{
 			OptionGroupKeyPrimaryAgent: agent,
 		})
 	})
@@ -472,9 +471,8 @@ type jsonrpcResponseMessage struct {
 func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
 	reqID := b.nextReqID.Add(1)
 
-	ch := make(chan json.RawMessage, 1)
-	b.pendingReqs.Store(reqID, ch)
-	defer b.pendingReqs.Delete(reqID)
+	ch, release := b.register(reqID)
+	defer release()
 
 	data, err := json.Marshal(jsonrpcMessage{
 		JSONRPC: "2.0",
@@ -487,23 +485,11 @@ func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout
 	}
 	data = append(data, '\n')
 
-	if _, err := b.stdin.Write(data); err != nil {
+	if err := b.writeStdin(data); err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case resp := <-ch:
-		return resp, nil
-	case <-b.processDone:
-		return nil, b.processExitError()
-	case <-b.ctx.Done():
-		return nil, b.ctx.Err()
-	case <-timer.C:
-		return nil, fmt.Errorf("timeout waiting for %s response", method)
-	}
+	return b.awaitResponse(ch, method, timeout)
 }
 
 func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) error {
@@ -517,7 +503,7 @@ func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) er
 	}
 	data = append(data, '\n')
 
-	if _, err := b.stdin.Write(data); err != nil {
+	if err := b.writeStdin(data); err != nil {
 		return fmt.Errorf("write notification: %w", err)
 	}
 
@@ -549,7 +535,7 @@ func (b *jsonrpcBase) writeJSONRPCResponse(resp jsonrpcResponseMessage) error {
 		return fmt.Errorf("marshal response: %w", err)
 	}
 	data = append(data, '\n')
-	if _, err := b.stdin.Write(data); err != nil {
+	if err := b.writeStdin(data); err != nil {
 		return fmt.Errorf("write response: %w", err)
 	}
 	return nil
@@ -558,28 +544,20 @@ func (b *jsonrpcBase) writeJSONRPCResponse(resp jsonrpcResponseMessage) error {
 // handleJSONRPCResponse checks if a parsed line is a JSON-RPC response and
 // routes it to the pending request channel. Returns true if the line was consumed.
 func (b *jsonrpcBase) handleJSONRPCResponse(line *parsedLine) bool {
-	if line.ID == nil || line.Method != "" {
+	if !line.HasID() || line.Method != "" {
 		return false
 	}
 
-	reqID, err := line.ID.Int64()
-	if err != nil {
-		return false
-	}
-
-	val, ok := b.pendingReqs.Load(reqID)
+	reqID, ok := line.IDInt64()
 	if !ok {
 		return false
 	}
 
-	ch := val.(chan json.RawMessage)
+	body := line.Result
 	if len(line.Error) > 0 && string(line.Error) != "null" {
-		ch <- line.Error
-	} else {
-		ch <- line.Result
+		body = line.Error
 	}
-
-	return true
+	return b.deliver(reqID, body)
 }
 
 // readOutputLoop reads JSONL lines from stdout, using handleJSONRPCResponse as
@@ -690,8 +668,8 @@ func (b *acpBase) sendPrompt(
 	if err != nil {
 		if !b.IsStopped() {
 			slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
-			b.sink.BroadcastNotification(map[string]interface{}{
-				"type":  "agent_error",
+			b.sink.PersistLeapMuxNotification(map[string]interface{}{
+				"type":  NotificationTypeAgentError,
 				"error": fmt.Sprintf("prompt failed: %v", err),
 			})
 		}
@@ -753,7 +731,7 @@ func (b *acpBase) persistPromptResponse(
 	if enrich != nil {
 		resp = enrich(resp)
 	}
-	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, resp, SpanInfo{}); err != nil {
+	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, resp, SpanInfo{}); err != nil {
 		slog.Error("persist acp prompt result", "agent_id", b.agentID, "error", err)
 	}
 	b.sink.ResetSpans()
@@ -824,8 +802,9 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 
 func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	var tcu struct {
-		ToolCallID string `json:"toolCallId"`
-		Status     string `json:"status"`
+		ToolCallID string             `json:"toolCallId"`
+		Status     string             `json:"status"`
+		Content    []acpToolCallBlock `json:"content"`
 	}
 	if err := json.Unmarshal(update, &tcu); err != nil {
 		slog.Warn("acp tool_call_update unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
@@ -837,11 +816,25 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 
 	switch tcu.Status {
 	case "in_progress":
-		b.sink.BroadcastStreamChunk(update, tcu.ToolCallID, acpUpdateToolCallUpdate)
+		// ACP tool_call_update content (when the server provides it) is
+		// cumulative; ship only the new tail so the frontend's command-stream
+		// buffer doesn't grow quadratically as updates arrive. When the
+		// payload carries no text content, drop the broadcast entirely —
+		// in_progress with only status fields has nothing useful to stream.
+		full := acpToolCallText(tcu.Content)
+		if full == "" {
+			return
+		}
+		delta := b.recordCumulativeDelta(tcu.ToolCallID, full)
+		if delta == "" {
+			return
+		}
+		b.sink.BroadcastStreamChunk([]byte(delta), tcu.ToolCallID, acpUpdateToolCallUpdate)
 	case "completed", "failed", "cancelled":
 		b.mu.Lock()
 		b.turnToolUses++
 		b.mu.Unlock()
+		b.clearCumulativeDelta(tcu.ToolCallID)
 
 		spanType := b.sink.GetSpanType(tcu.ToolCallID)
 		if spanType == "" {
@@ -855,6 +848,34 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		b.sink.BroadcastStreamEnd(tcu.ToolCallID)
 		b.sink.CloseSpan(tcu.ToolCallID)
 	}
+}
+
+// acpToolCallBlock is the {type, content:{type,text}} shape ACP servers ship
+// for tool_call_update.content[]. The outer type is typically "content" and
+// the inner content carries the renderable payload.
+type acpToolCallBlock struct {
+	Type    string `json:"type"`
+	Content struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// acpToolCallText concatenates the text from all `{type:"content"}` blocks
+// whose inner content is `{type:"text", text:...}`. Returns "" when the
+// payload carries no text (e.g. status-only in_progress updates, image-only
+// content, or unrecognized block types).
+func acpToolCallText(blocks []acpToolCallBlock) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Content.Type == "text" {
+			b.WriteString(block.Content.Text)
+		}
+	}
+	return b.String()
 }
 
 func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
@@ -872,16 +893,16 @@ func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
 	}
 
 	info := map[string]interface{}{
-		"contextUsage": map[string]interface{}{
-			"inputTokens":              usage.Used,
-			"cacheCreationInputTokens": int64(0),
-			"cacheReadInputTokens":     int64(0),
-			"outputTokens":             int64(0),
-			"contextWindow":            usage.Size,
+		"context_usage": map[string]interface{}{
+			"input_tokens":                usage.Used,
+			"cache_creation_input_tokens": int64(0),
+			"cache_read_input_tokens":     int64(0),
+			"output_tokens":               int64(0),
+			"context_window":              usage.Size,
 		},
 	}
 	if usage.Cost.Amount > 0 {
-		info["totalCostUsd"] = usage.Cost.Amount
+		info["total_cost_usd"] = usage.Cost.Amount
 	}
 	b.sink.BroadcastSessionInfo(info)
 }
@@ -1352,14 +1373,13 @@ func (b *acpBase) handlePlan(update json.RawMessage) {
 	}
 }
 
-func (b *acpBase) handleRequestPermission(id *json.Number, content []byte) {
-	if id == nil {
+func (b *acpBase) handleRequestPermission(id string, content []byte) {
+	if id == "" {
 		slog.Warn("acp requestPermission missing id", "agent_id", b.agentID)
 		return
 	}
-	requestID := id.String()
-	b.sink.PersistControlRequest(requestID, content)
-	b.sink.BroadcastControlRequest(requestID, content)
+	b.sink.PersistControlRequest(id, content)
+	b.sink.BroadcastControlRequest(id, content)
 }
 
 // handleOutput dispatches a single parsed output line using the provider's
@@ -1381,7 +1401,7 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 	case acpMethodSessionUpdate:
 		b.handleACPSessionUpdate(line.Params, extraSessionUpdate)
 	case acpMethodSessionRequestPermission:
-		b.handleRequestPermission(line.ID, line.Raw)
+		b.handleRequestPermission(line.IDString(), line.Raw)
 	default:
 		if extraMethod != nil && extraMethod(line) {
 			return
@@ -1394,10 +1414,14 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 
 // doSendACPPrompt sends a single ACP prompt RPC and processes the response.
 // Used as the promptFunc for all ACP agents; handleResponse varies per provider.
+//
+// No timeout on the RPC: the turn unblocks via response, process exit, or
+// ctx cancel (the user interrupting). A wall-clock cap would just kill
+// long-but-legitimate turns.
 func (b *acpBase) doSendACPPrompt(content string, attachments []*leapmuxv1.Attachment, handleResponse func(json.RawMessage)) {
 	b.sendPrompt(content, attachments,
 		func(params json.RawMessage) (json.RawMessage, error) {
-			return b.sendRequest(acpMethodSessionPrompt, params, 10*time.Minute)
+			return b.sendRequest(acpMethodSessionPrompt, params, 0)
 		},
 		handleResponse,
 	)

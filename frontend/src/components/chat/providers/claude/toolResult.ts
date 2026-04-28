@@ -116,7 +116,7 @@ function computeCopyableContent(
 }
 
 /**
- * ProviderPlugin.toolResultMeta implementation for Claude Code.
+ * Provider.toolResultMeta implementation for Claude Code.
  *
  * Returns null for any non-tool_result category. The `toolUseParsed` argument
  * is currently unused (Claude reads everything off the result message + its

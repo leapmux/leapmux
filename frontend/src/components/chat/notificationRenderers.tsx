@@ -5,7 +5,8 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
-import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickString } from '~/lib/jsonPick'
+import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
 import { MarkdownText } from './messageRenderers'
@@ -13,7 +14,7 @@ import {
   controlResponseMessage,
   resultDivider,
 } from './messageStyles.css'
-import { getProviderPlugin } from './providers/registry'
+import { providerFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
 import { PERMISSION_MODE_KEY } from './settingsShared'
 
@@ -37,7 +38,7 @@ function displayValue(key: string, value: string): string {
 /** Handles settings change notifications: {"type":"settings_changed","changes":{...}} */
 export const settingsChangedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'settings_changed')
+    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.SettingsChanged)
       return null
     const changes = parsed.changes as Record<string, { old: string, new: string, label?: string, oldLabel?: string, newLabel?: string }>
     if (!changes)
@@ -63,15 +64,21 @@ export const settingsChangedRenderer: MessageContentRenderer = {
 /** Handles interrupt notifications: {"type":"interrupted"} */
 export const interruptedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'interrupted')
+    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.Interrupted)
       return null
     return <div class={controlResponseMessage}>Interrupted</div>
   },
 }
 
+/**
+ * Handles compacting status notifications. The canonical shape is the raw
+ * Claude `system` message: `{type:"system",subtype:"status",status:"compacting"}`.
+ */
 export const compactingRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'compacting')
+    if (!isObject(parsed))
+      return null
+    if (!(parsed.type === 'system' && parsed.subtype === 'status' && parsed.status === NOTIFICATION_TYPE.Compacting))
       return null
     return (
       <div class={resultDivider}>
@@ -84,7 +91,7 @@ export const compactingRenderer: MessageContentRenderer = {
 
 export const contextClearedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'context_cleared')
+    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.ContextCleared)
       return null
     return <div class={controlResponseMessage}>Context cleared</div>
   },
@@ -93,24 +100,39 @@ export const contextClearedRenderer: MessageContentRenderer = {
 /** Handles agent error notifications: {"type":"agent_error","error":"..."} */
 export const agentErrorRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'agent_error')
+    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.AgentError)
       return null
     const error = pickString(parsed, 'error', 'Unknown error')
     return <div class={controlResponseMessage}>{error}</div>
   },
 }
 
-/** Handles agent renamed notifications: {"type":"agent_renamed","title":"..."} */
-export const agentRenamedRenderer: MessageContentRenderer = {
+/**
+ * Handles plan_updated notifications:
+ * `{"type":"plan_updated","plan_title":"...","plan_file_path":"...","update_agent_title"?:true}`.
+ *
+ * Two display variants:
+ * - With `update_agent_title:true`: "Plan updated and renamed to <title>".
+ * - Without:                       "Plan updated: <title>".
+ */
+export const planUpdatedRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'agent_renamed')
+    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.PlanUpdated)
       return null
-    const title = pickString(parsed, 'title')
+    const title = pickString(parsed, 'plan_title')
     if (!title)
       return null
+    if (parsed.update_agent_title === true) {
+      return (
+        <div class={controlResponseMessage}>
+          {'Plan updated and renamed to '}
+          {title}
+        </div>
+      )
+    }
     return (
       <div class={controlResponseMessage}>
-        {'Renamed to '}
+        {'Plan updated: '}
         {title}
       </div>
     )
@@ -141,12 +163,21 @@ export const apiRetryRenderer: MessageContentRenderer = {
 // Context compaction boundary renderers
 // ---------------------------------------------------------------------------
 
-/** Handles compact_boundary messages: {"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto"|"manual","pre_tokens":number}} */
+/**
+ * Handles compact_boundary messages. Recognizes two shapes:
+ *  - Claude raw `system` message: `{type:"system",subtype:"compact_boundary",compact_metadata:{trigger,pre_tokens}}`
+ *  - Codex raw JSON-RPC notification: `{method:"thread/compacted",params:{threadId,turnId}}`
+ */
 export const compactBoundaryRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'compact_boundary')
+    if (!isObject(parsed))
       return null
-    // Wire format uses snake_case compact_metadata; internal format uses camelCase compactMetadata.
+    const isClaude = parsed.type === 'system' && parsed.subtype === 'compact_boundary'
+    const isCodex = parsed.method === 'thread/compacted'
+    if (!isClaude && !isCodex)
+      return null
+    // Claude carries metadata under `compact_metadata` / `compactMetadata`.
+    // Codex carries no metadata today; the message itself is the boundary.
     const meta = pickFirstObject(parsed, ['compact_metadata', 'compactMetadata'])
     const trigger = meta?.trigger as string | undefined
     const preTokens = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
@@ -238,7 +269,7 @@ function threadEntriesFor(
   m: Record<string, unknown>,
   agentProvider: AgentProvider | undefined,
 ): Array<{ kind: 'text', text: string } | { kind: 'group', groupKey: string, prefix: string, entry: string } | { kind: 'divider', text: string, loading?: boolean }> {
-  const plugin = agentProvider != null ? getProviderPlugin(agentProvider) : undefined
+  const plugin = agentProvider != null ? providerFor(agentProvider) : undefined
   const fromPlugin = plugin?.notificationThreadEntry?.(m)
   if (fromPlugin !== null && fromPlugin !== undefined)
     return fromPlugin
@@ -246,7 +277,7 @@ function threadEntriesFor(
   const t = m.type as string | undefined
   const st = m.subtype as string | undefined
 
-  if (t === 'settings_changed') {
+  if (t === NOTIFICATION_TYPE.SettingsChanged) {
     const changes = m.changes as Record<string, { old: string, new: string }> | undefined
     if (!changes)
       return []
@@ -257,27 +288,42 @@ function threadEntriesFor(
     }
     return parts.length > 0 ? [{ kind: 'text', text: parts.join(', ') }] : []
   }
-  if (t === 'context_cleared')
+  if (t === NOTIFICATION_TYPE.ContextCleared)
     return [{ kind: 'text', text: 'Context cleared' }]
-  if (t === 'plan_execution')
+  if (t === NOTIFICATION_TYPE.PlanExecution)
     return [{ kind: 'text', text: 'Executing plan' }]
-  if (t === 'agent_error')
+  if (t === NOTIFICATION_TYPE.AgentError)
     return [{ kind: 'text', text: pickString(m, 'error', 'Unknown error') }]
-  if (t === 'interrupted')
+  if (t === NOTIFICATION_TYPE.Interrupted)
     return [{ kind: 'text', text: 'Interrupted' }]
-  if (t === 'agent_renamed') {
-    const title = pickString(m, 'title')
-    return title ? [{ kind: 'text', text: `Renamed to ${title}` }] : []
+  if (t === NOTIFICATION_TYPE.PlanUpdated) {
+    const title = pickString(m, 'plan_title')
+    if (!title)
+      return []
+    if (m.update_agent_title === true)
+      return [{ kind: 'text', text: `Plan updated and renamed to ${title}` }]
+    return [{ kind: 'text', text: `Plan updated: ${title}` }]
   }
   if (t === 'system' && st === 'api_retry')
     return [{ kind: 'text', text: formatApiRetryLabel(m) }]
-  if (t === 'compacting' || (t === 'system' && st === 'status' && m.status === 'compacting'))
+  if (t === 'system' && st === 'status' && m.status === NOTIFICATION_TYPE.Compacting)
     return [{ kind: 'divider', text: 'Compacting context...', loading: true }]
   if (t === 'system' && st === 'compact_boundary') {
     const meta = pickFirstObject(m, ['compact_metadata', 'compactMetadata'])
     const pre = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
     const saved = pickFirstNumber(meta, ['tokens_saved', 'tokensSaved'])
     return [{ kind: 'divider', text: `Context compacted${formatCompactionTokens(pre, saved)}` }]
+  }
+  // Codex `thread/compacted` is the boundary signal; no metadata fields.
+  if (m.method === 'thread/compacted')
+    return [{ kind: 'divider', text: 'Context compacted' }]
+  // Codex `item/started` of a contextCompaction item is the in-progress
+  // spinner. The completed boundary arrives later via `thread/compacted`.
+  if (m.method === 'item/started') {
+    const params = pickObject(m, 'params')
+    const item = pickObject(params, 'item')
+    if (item && item.type === 'contextCompaction')
+      return [{ kind: 'divider', text: 'Compacting context...', loading: true }]
   }
   if (t === 'system' && st === 'microcompact_boundary') {
     const meta = pickFirstObject(m, ['microcompactMetadata', 'microcompact_metadata'])

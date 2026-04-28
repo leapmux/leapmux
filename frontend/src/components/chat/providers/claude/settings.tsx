@@ -1,16 +1,19 @@
+import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { ProviderSettingsPanelProps } from '../registry'
-import ChevronsDown from 'lucide-solid/icons/chevrons-down'
-import ChevronsUp from 'lucide-solid/icons/chevrons-up'
-import Dot from 'lucide-solid/icons/dot'
 import Flame from 'lucide-solid/icons/flame'
-import Sparkles from 'lucide-solid/icons/sparkles'
 import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
 import { EFFORT_AUTO } from '~/utils/controlResponse'
 import * as styles from '../../ChatView.css'
-import { effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupDefaultValue, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
+import { effortIcon, effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupDefaultValue, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
+
+// Claude swaps the default xhigh→Zap mapping for Flame to free up Zap for
+// its `max` tier (an effort level Pi/Codex don't expose).
+const CLAUDE_EFFORT_ICONS: Record<string, LucideIcon> = {
+  xhigh: Flame,
+  max: Zap,
+}
 
 /** Option group keys for Claude Code-specific settings. */
 export const OUTPUT_STYLE_KEY = 'outputStyle' as const
@@ -128,17 +131,6 @@ export function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.E
 
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
-  const effortIcon = () => {
-    switch (currentEffort()) {
-      case 'auto': return <Icon icon={Sparkles} size="xs" />
-      case 'low': return <Icon icon={ChevronsDown} size="xs" />
-      case 'high': return <Icon icon={ChevronsUp} size="xs" />
-      case 'xhigh': return <Icon icon={Flame} size="xs" />
-      case 'max': return <Icon icon={Zap} size="xs" />
-      default: return <Icon icon={Dot} size="xs" />
-    }
-  }
-
   const hasEffort = () => hasEfforts(props.availableModels, currentModel())
   const mode = () => optionLabel(props.availableOptionGroups, PERMISSION_MODE_KEY, currentMode())
 
@@ -146,7 +138,7 @@ export function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.E
     <>
       <Show when={props.availableModels && props.availableModels.length > 0}>
         {displayName()}
-        <Show when={hasEffort()}>{effortIcon()}</Show>
+        <Show when={hasEffort()}>{effortIcon(currentEffort(), CLAUDE_EFFORT_ICONS)}</Show>
       </Show>
       {mode()}
     </>

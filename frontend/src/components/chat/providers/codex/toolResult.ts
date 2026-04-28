@@ -28,7 +28,7 @@ function readCodexItem(parsed: unknown): CodexItem | null {
 }
 
 /**
- * ProviderPlugin.toolResultMeta implementation for Codex.
+ * Provider.toolResultMeta implementation for Codex.
  *
  * Codex's terminal-state spans are classified as `tool_use` (not
  * `tool_result`), so this checks the spanType + item.status to decide whether

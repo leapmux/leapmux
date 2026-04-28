@@ -8,18 +8,21 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { CommandStreamSegment } from '~/stores/chat.store'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
+import FileIcon from 'lucide-solid/icons/file'
+import FileImageIcon from 'lucide-solid/icons/file-image'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createSignal, Show, untrack } from 'solid-js'
+import { createSignal, For, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
-import { thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
+import { attachmentItem, attachmentList, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
-import { getProviderPlugin } from './providers/registry'
+import { providerFor } from './providers/registry'
 import {
   toolInputText,
   toolUseIcon,
@@ -161,6 +164,56 @@ export function PlanExecutionMessage(props: { text: string, context?: RenderCont
 }
 
 /**
+ * Provider-neutral renderer for user messages persisted as
+ * `{"content":"...", "attachments":[...]}` by the Leapmux service layer.
+ * Used by Claude, Codex, Pi, and every ACP-based provider
+ * (OpenCode/Gemini/Cursor/Goose/Kilo/Copilot) so no plugin has to reinvent
+ * attachment + markdown rendering. Renders nothing when the parsed body has
+ * no usable text or attachments.
+ */
+export function UserContentMessage(props: { parsed: unknown }): JSX.Element {
+  const parsed = (): Record<string, unknown> | null => {
+    return isObject(props.parsed) ? props.parsed as Record<string, unknown> : null
+  }
+  const content = (): string => {
+    const obj = parsed()
+    return obj && typeof obj.content === 'string' ? obj.content as string : ''
+  }
+  const attachments = (): Array<{ filename?: string, mime_type?: string }> => {
+    const obj = parsed()
+    if (!obj || !Array.isArray(obj.attachments))
+      return []
+    return obj.attachments as Array<{ filename?: string, mime_type?: string }>
+  }
+  const hasText = (): boolean => content().trim().length > 0
+  const hasAttachments = (): boolean => attachments().length > 0
+  const hasAny = (): boolean => hasText() || hasAttachments()
+
+  return (
+    <Show when={hasAny()}>
+      <Show when={hasAttachments()}>
+        <div class={attachmentList}>
+          <For each={attachments()}>
+            {att => (
+              <span class={attachmentItem}>
+                <Icon
+                  icon={att.mime_type?.startsWith('image/') ? FileImageIcon : FileIcon}
+                  size="xs"
+                />
+                {att.filename ?? 'Unnamed file'}
+              </span>
+            )}
+          </For>
+        </div>
+      </Show>
+      <Show when={hasText()}>
+        <MarkdownText text={content()} />
+      </Show>
+    </Show>
+  )
+}
+
+/**
  * Render a message's content.
  *
  * All rendering goes through the provider plugin's `renderMessage`. The plugin
@@ -185,7 +238,7 @@ export function renderMessageContent(
       : parsedOrRawJson
 
     const provider = agentProvider ?? AgentProvider.CLAUDE_CODE
-    const plugin = getProviderPlugin(provider) ?? getProviderPlugin(AgentProvider.CLAUDE_CODE)
+    const plugin = providerFor(provider) ?? providerFor(AgentProvider.CLAUDE_CODE)
     const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, role, context) ?? null
     if (result !== null)
       return result

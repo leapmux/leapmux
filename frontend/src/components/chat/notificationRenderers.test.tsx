@@ -72,6 +72,58 @@ describe('renderNotificationThread: compaction and context_cleared rendering', (
     expect(text).toContain('Context compacted')
     expect(text).toContain('Model')
   })
+
+  // -- Phase 4 raw-passthrough shapes ----------------------------------
+
+  it('codex thread/compacted (raw JSON-RPC) renders as "Context compacted"', () => {
+    const messages = [{ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }]
+    expect(renderText(messages)).toBe('Context compacted')
+  })
+
+  it('codex item/started+contextCompaction (raw JSON-RPC) renders the in-progress spinner', () => {
+    const messages = [{
+      method: 'item/started',
+      params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
+    }]
+    expect(renderText(messages)).toBe('Compacting context...')
+  })
+
+  it('codex item/started for non-compaction items does NOT match the compaction spinner', () => {
+    const messages = [{
+      method: 'item/started',
+      params: { item: { type: 'commandExecution', id: 'cmd-1' } },
+    }]
+    // commandExecution is not a notification — describer returns [], so the
+    // thread renders empty. The point is we don't accidentally emit a
+    // compaction spinner for unrelated item kinds.
+    expect(renderText(messages)).not.toContain('Compacting context')
+  })
+
+  it('thread/compacted alongside settings_changed renders both in order', () => {
+    const messages = [
+      { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } },
+      { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
+    ]
+    const text = renderText(messages)
+    const compactedIdx = text.indexOf('Context compacted')
+    const modelIdx = text.indexOf('Model')
+    expect(compactedIdx).toBeGreaterThanOrEqual(0)
+    expect(modelIdx).toBeGreaterThan(compactedIdx)
+  })
+
+  it('legacy synthesized {type:"compacting"} envelope no longer matches the spinner (accepted regression)', () => {
+    // Phase 4.1 stops emitting this shape; old DB rows fall through to the
+    // raw-JSON fallback bubble. This test pins the migration boundary.
+    const messages = [{ type: 'compacting' }]
+    expect(renderText(messages)).not.toContain('Compacting context')
+  })
+
+  it('legacy synthesized {type:"system",subtype:"compact_boundary",threadId} from Codex still matches Claude\'s shape', () => {
+    // The Claude raw shape has identical {type:"system",subtype:"compact_boundary"} —
+    // legacy Codex synthesized rows happen to render correctly via this path.
+    const messages = [{ type: 'system', subtype: 'compact_boundary', threadId: 't1', turnId: 'turn1' }]
+    expect(renderText(messages)).toContain('Context compacted')
+  })
 })
 
 describe('renderNotificationThread: message ordering', () => {
@@ -173,39 +225,54 @@ describe('renderNotificationThread: message ordering', () => {
   })
 })
 
-describe('renderNotificationThread: agent_renamed', () => {
-  it('standalone agent_renamed shows "Renamed to <title>"', () => {
-    const messages = [{ type: 'agent_renamed', title: 'My Plan' }]
-    expect(renderText(messages)).toBe('Renamed to My Plan')
+describe('renderNotificationThread: plan_updated', () => {
+  it('without update_agent_title shows "Plan updated: <title>"', () => {
+    const messages = [{ type: 'plan_updated', plan_title: 'My Plan', plan_file_path: '/p.md' }]
+    expect(renderText(messages)).toBe('Plan updated: My Plan')
   })
 
-  it('agent_renamed with empty title renders nothing', () => {
-    const messages = [{ type: 'agent_renamed', title: '' }]
+  it('with update_agent_title:true shows "Plan updated and renamed to <title>"', () => {
+    const messages = [{
+      type: 'plan_updated',
+      plan_title: 'Auth Refactor',
+      plan_file_path: '/p.md',
+      update_agent_title: true,
+    }]
+    expect(renderText(messages)).toBe('Plan updated and renamed to Auth Refactor')
+  })
+
+  it('with empty plan_title renders nothing', () => {
+    const messages = [{ type: 'plan_updated', plan_title: '', plan_file_path: '/p.md' }]
     expect(renderText(messages)).toBe('')
   })
 
-  it('agent_renamed with missing title renders nothing', () => {
-    const messages = [{ type: 'agent_renamed' }]
+  it('with missing plan_title renders nothing', () => {
+    const messages = [{ type: 'plan_updated', plan_file_path: '/p.md' }]
     expect(renderText(messages)).toBe('')
   })
 
-  it('agent_renamed combined with settings_changed in thread', () => {
+  it('combined with settings_changed in a thread', () => {
     const messages = [
       { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
-      { type: 'agent_renamed', title: 'Debug Session' },
+      { type: 'plan_updated', plan_title: 'Debug Session', plan_file_path: '/p.md' },
     ]
     const text = renderText(messages)
     expect(text).toContain('Model')
-    expect(text).toContain('Renamed to Debug Session')
+    expect(text).toContain('Plan updated: Debug Session')
   })
 
-  it('agent_renamed combined with interrupted in thread', () => {
+  it('combined with interrupted in a thread, with auto-rename', () => {
     const messages = [
-      { type: 'agent_renamed', title: 'Test Plan' },
+      {
+        type: 'plan_updated',
+        plan_title: 'Test Plan',
+        plan_file_path: '/p.md',
+        update_agent_title: true,
+      },
       { type: 'interrupted' },
     ]
     const text = renderText(messages)
-    expect(text).toContain('Renamed to Test Plan')
+    expect(text).toContain('Plan updated and renamed to Test Plan')
     expect(text).toContain('Interrupted')
   })
 })

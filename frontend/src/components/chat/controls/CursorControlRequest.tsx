@@ -120,7 +120,7 @@ export const CursorControlContent: Component<ContentProps> = (props) => {
           {planName() ? `Create Plan: ${planName()}` : 'Create Plan'}
         </div>
         <Show when={overview()}>
-          <div class={styles.codexReason}>{overview()}</div>
+          <div class={styles.bannerReason}>{overview()}</div>
         </Show>
       </Match>
     </Switch>

@@ -178,6 +178,53 @@ describe('handleSend', () => {
 })
 
 describe('handleControlSend', () => {
+  it('uses Claude AskUserQuestion response format keyed by question text', () => {
+    createRoot((dispose) => {
+      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const askState = createMinimalAskState()
+      askState.setSelections({ 0: ['Build'] })
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+        controlRequests: [makeControlRequest('req-1', 'test-agent', {
+          request: {
+            tool_name: 'AskUserQuestion',
+            input: {
+              questions: [
+                { header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }, { label: 'Test' }] },
+              ],
+            },
+          },
+        })],
+        onControlResponse,
+        onSendMessage: vi.fn(),
+      }
+      const result = useControlResponseHandling(props, askState, () => undefined, vi.fn())
+
+      result.handleControlSend('')
+
+      expect(onControlResponse).toHaveBeenCalledOnce()
+      const [, bytes] = onControlResponse.mock.calls[0]
+      const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
+      expect(parsed).toMatchObject({
+        type: 'control_response',
+        response: {
+          request_id: 'req-1',
+          response: {
+            behavior: 'allow',
+            updatedInput: {
+              answers: {
+                'Pick a task': 'Build',
+              },
+            },
+          },
+        },
+      })
+      expect(parsed.response.response.updatedInput.answers).not.toHaveProperty('Task')
+      dispose()
+    })
+  })
+
   it('does not pass attachments to control responses', () => {
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     const attachments = [makeAttachment()]
@@ -202,6 +249,40 @@ describe('handleControlSend', () => {
     expect(onSendMessage).not.toHaveBeenCalled()
     // onControlResponse should have been called (the allow response).
     expect(onControlResponse).toHaveBeenCalled()
+  })
+
+  it('uses Pi-native extension_ui_response values for select prompts', () => {
+    createRoot((dispose) => {
+      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const askState = createMinimalAskState()
+      askState.setSelections({ 0: ['Block'] })
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.PI },
+        controlRequests: [makeControlRequest('req-1', 'test-agent', {
+          type: 'extension_ui_request',
+          id: 'req-1',
+          method: 'select',
+          title: 'Allow dangerous command?',
+          options: ['Allow', 'Block'],
+        })],
+        onControlResponse,
+        onSendMessage: vi.fn(),
+      }
+      const result = useControlResponseHandling(props, askState, () => undefined, vi.fn())
+
+      result.handleControlSend('')
+
+      expect(onControlResponse).toHaveBeenCalledOnce()
+      const [, bytes] = onControlResponse.mock.calls[0]
+      const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
+      expect(parsed).toMatchObject({
+        type: 'extension_ui_response',
+        id: 'req-1',
+        value: 'Block',
+      })
+      dispose()
+    })
   })
 
   it('uses Codex-native request_user_input responses', () => {

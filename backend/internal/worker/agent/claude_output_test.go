@@ -35,8 +35,7 @@ type outputTestSink struct {
 }
 
 type planUpdateCall struct {
-	FilePath string
-	Title    string
+	Title string
 }
 
 func (s *outputTestSink) OpenSpan(spanID, parentSpanID string) {
@@ -75,10 +74,10 @@ func (s *outputTestSink) PermissionModes() []string {
 	return append([]string(nil), s.permissionModes...)
 }
 
-func (s *outputTestSink) UpdatePlan(filePath string, _ []byte, _ leapmuxv1.ContentCompression, title string) {
+func (s *outputTestSink) UpdatePlan(_ []byte, _ leapmuxv1.ContentCompression, title string) {
 	s.planMu.Lock()
 	defer s.planMu.Unlock()
-	s.planCalls = append(s.planCalls, planUpdateCall{FilePath: filePath, Title: title})
+	s.planCalls = append(s.planCalls, planUpdateCall{Title: title})
 }
 
 func (s *outputTestSink) PlanCalls() []planUpdateCall {
@@ -257,7 +256,6 @@ func TestHandleOutput_PlanFileDetected_UsesPlatformPathSeparators(t *testing.T) 
 
 	calls := sink.PlanCalls()
 	require.Len(t, calls, 1, "UpdatePlan should fire for a Write to ~/.claude/plans/")
-	assert.Equal(t, planPath, calls[0].FilePath)
 	assert.Equal(t, "My Plan", calls[0].Title)
 }
 
@@ -293,20 +291,47 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
-	agent.HandleOutput([]byte(`{
-		"type":"rate_limit_event",
-		"rate_limit_info":{
-			"rateLimitType":"five_hour",
-			"status":"exceeded",
-			"resetsAt":1893456000
-		}
-	}`))
+	rawEvent := `{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000}}`
+	agent.HandleOutput([]byte(rawEvent))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
 	assert.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
 	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.DueAt)
 	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000}`, string(schedule.SourcePayload))
+
+	// Persists raw rate_limit_event verbatim as SYSTEM (no longer
+	// synthesizes a stripped-down {type:"rate_limit",rate_limit_info}).
+	require.Equal(t, 1, sink.NotificationCount())
+	last := sink.LastNotification()
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
+		"Claude-emitted rate_limit_event must persist as SYSTEM")
+	assert.JSONEq(t, rawEvent, string(last.Content),
+		"raw envelope must be preserved verbatim so future fields flow through")
+}
+
+// TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire locks in the wire
+// translation: Claude's SDK emits camelCase rate_limit_info, but the
+// broadcast `rate_limits` map exposes a snake_case tier shape so all
+// providers (Claude / Codex) deliver the same field names to the frontend.
+func TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	rawEvent := `{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000,"utilization":1.0}}`
+	agent.HandleOutput([]byte(rawEvent))
+
+	require.Equal(t, 1, sink.SessionInfoCount())
+	info := sink.LastSessionInfo()
+	rateLimits, ok := info["rate_limits"].(map[string]any)
+	require.True(t, ok, "broadcast must carry rate_limits in snake_case, got %#v", info)
+
+	tier, ok := rateLimits["five_hour"].(map[string]any)
+	require.True(t, ok, "tier should be keyed by rate_limit_type")
+	assert.Equal(t, "five_hour", tier["rate_limit_type"])
+	assert.Equal(t, "exceeded", tier["status"])
+	assert.Equal(t, int64(1893456000), tier["resets_at"])
+	assert.Equal(t, 1.0, tier["utilization"])
 }
 
 func TestClaudeRateLimitEvent_AllowedCancelsResume(t *testing.T) {
@@ -532,12 +557,12 @@ func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
 
 	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(100), usage["inputTokens"])
-	assert.Equal(t, int64(50), usage["outputTokens"])
-	assert.Equal(t, int64(10), usage["cacheCreationInputTokens"])
-	assert.Equal(t, int64(30), usage["cacheReadInputTokens"])
+	usage, ok := info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(100), usage["input_tokens"])
+	assert.Equal(t, int64(50), usage["output_tokens"])
+	assert.Equal(t, int64(10), usage["cache_creation_input_tokens"])
+	assert.Equal(t, int64(30), usage["cache_read_input_tokens"])
 }
 
 func TestIsRetryableClaudeResultError(t *testing.T) {
@@ -610,10 +635,10 @@ func TestHandleOutput_SubagentAssistantDoesNotOverwriteContextUsage(t *testing.T
 
 	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(500), usage["inputTokens"], "subagent should not overwrite top-level inputTokens")
-	assert.Equal(t, int64(200), usage["outputTokens"], "subagent should not overwrite top-level outputTokens")
+	usage, ok := info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(500), usage["input_tokens"], "subagent should not overwrite top-level input_tokens")
+	assert.Equal(t, int64(200), usage["output_tokens"], "subagent should not overwrite top-level output_tokens")
 }
 
 func TestHandleOutput_ResultModelUsagePicksPrimaryContextWindow(t *testing.T) {
@@ -644,9 +669,9 @@ func TestHandleOutput_ResultModelUsagePicksPrimaryContextWindow(t *testing.T) {
 
 	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(1000000), usage["contextWindow"], "should pick primary model's contextWindow")
+	usage, ok := info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(1000000), usage["context_window"], "should pick primary model's context_window")
 }
 
 func TestHandleOutput_ResultModelUsagePicksNon1MContextWindow(t *testing.T) {
@@ -676,9 +701,9 @@ func TestHandleOutput_ResultModelUsagePicksNon1MContextWindow(t *testing.T) {
 
 	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(200000), usage["contextWindow"], "should pick non-1M opus contextWindow")
+	usage, ok := info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(200000), usage["context_window"], "should pick non-1M opus context_window")
 }
 
 func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) {
@@ -708,9 +733,9 @@ func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) 
 
 	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(1000000), usage["contextWindow"], "top-level result should set 1M")
+	usage, ok := info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(1000000), usage["context_window"], "top-level result should set 1M")
 
 	prevCount := sink.SessionInfoCount()
 
@@ -741,9 +766,9 @@ func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) 
 
 	require.Greater(t, sink.SessionInfoCount(), prevCount)
 	info = sink.LastSessionInfo()
-	usage, ok = info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(1000000), usage["contextWindow"],
+	usage, ok = info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(1000000), usage["context_window"],
 		"subagent result must not overwrite context window")
 }
 
@@ -774,9 +799,9 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 
 	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(1000000), usage["contextWindow"])
+	usage, ok := info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(1000000), usage["context_window"])
 
 	prevCount := sink.SessionInfoCount()
 
@@ -808,9 +833,9 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 
 	require.Greater(t, sink.SessionInfoCount(), prevCount)
 	info = sink.LastSessionInfo()
-	usage, ok = info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage in session info")
-	assert.Equal(t, int64(1000000), usage["contextWindow"],
+	usage, ok = info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(1000000), usage["context_window"],
 		"subagent result without parent_tool_use_id must not overwrite context window")
 }
 

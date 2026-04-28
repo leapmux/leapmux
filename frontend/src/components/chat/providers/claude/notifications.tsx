@@ -40,10 +40,10 @@ function cleanAPIErrorMessage(msg: string): string {
   return msg
 }
 
-/** Handles Claude rate limit notifications: {"type":"rate_limit","rate_limit_info":{...}} */
+/** Handles Claude rate limit notifications: {"type":"rate_limit_event","rate_limit_info":{...}} */
 export const rateLimitRenderer: MessageContentRenderer = {
   render(parsed, _role, _context) {
-    if (!isObject(parsed) || parsed.type !== 'rate_limit')
+    if (!isObject(parsed) || parsed.type !== 'rate_limit_event')
       return null
     const info = parsed.rate_limit_info
     if (!isObject(info))
@@ -103,12 +103,12 @@ export const resultRenderer: MessageContentRenderer = {
   },
 }
 
-/** Handles rate_limit entries within a notification thread (consolidated dividers). */
+/** Handles rate_limit_event entries within a notification thread (consolidated dividers). */
 export function claudeNotificationThreadEntry(
   m: Record<string, unknown>,
 ): NotificationThreadEntry[] | null {
   const t = m.type as string | undefined
-  if (t === 'rate_limit') {
+  if (t === 'rate_limit_event') {
     const info = m.rate_limit_info
     if (isObject(info)) {
       const rlInfo = info as Record<string, unknown>

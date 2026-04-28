@@ -1,7 +1,7 @@
 import type { StructuredPatchHunk } from '../diff'
 import type { FileEditDiffSource } from './fileEditDiff'
 import { describe, expect, it } from 'vitest'
-import { fileEditHasDiff, pickFileEditDiff } from './fileEditDiff'
+import { fileEditDiffFromHunks, fileEditDiffFromNewFile, fileEditDiffHunks, fileEditHasDiff, pickFileEditDiff } from './fileEditDiff'
 
 const PATCH: StructuredPatchHunk[] = [
   { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
@@ -51,6 +51,59 @@ describe('fileEditHasDiff', () => {
     // The new-file shortcut intentionally only applies to oldStr=''+newStr='something'.
     // An empty replacement is not currently treated as a renderable diff by itself.
     expect(fileEditHasDiff(source({ oldStr: 'gone', newStr: '' }))).toBe(false)
+  })
+})
+
+describe('fileEditDiffFromNewFile', () => {
+  it('builds an all-added source with the file content as newStr', () => {
+    expect(fileEditDiffFromNewFile('/tmp/new.ts', 'package main\n')).toEqual({
+      filePath: '/tmp/new.ts',
+      structuredPatch: null,
+      oldStr: '',
+      newStr: 'package main\n',
+    })
+  })
+
+  it('preserves an empty path / empty content (defensive: no crash on edges)', () => {
+    expect(fileEditDiffFromNewFile('', '')).toEqual({
+      filePath: '',
+      structuredPatch: null,
+      oldStr: '',
+      newStr: '',
+    })
+  })
+
+  it('produces an object recognized as renderable when content is non-empty', () => {
+    expect(fileEditHasDiff(fileEditDiffFromNewFile('/x', 'a'))).toBe(true)
+  })
+
+  it('produces an object that fileEditDiffHunks renders via the string-diff path', () => {
+    const hunks = fileEditDiffHunks(fileEditDiffFromNewFile('/x', 'one\ntwo'))
+    // rawDiffToHunks turns "" → "one\ntwo" into a single hunk with the new lines.
+    expect(hunks.length).toBeGreaterThan(0)
+  })
+})
+
+describe('fileEditDiffFromHunks', () => {
+  const hunks: StructuredPatchHunk[] = [
+    { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+  ]
+
+  it('attaches pre-parsed hunks and leaves the string halves empty', () => {
+    expect(fileEditDiffFromHunks('/tmp/a.ts', hunks)).toEqual({
+      filePath: '/tmp/a.ts',
+      structuredPatch: hunks,
+      oldStr: '',
+      newStr: '',
+    })
+  })
+
+  it('keeps the hunks reference identity (no defensive copy)', () => {
+    expect(fileEditDiffFromHunks('/tmp/a.ts', hunks).structuredPatch).toBe(hunks)
+  })
+
+  it('preserves an empty hunks array (a zero-hunk diff is meaningful)', () => {
+    expect(fileEditDiffFromHunks('/tmp/a.ts', []).structuredPatch).toEqual([])
   })
 })
 

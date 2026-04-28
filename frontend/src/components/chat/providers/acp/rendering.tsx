@@ -7,8 +7,11 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
-import { isObject, pickObject } from '~/lib/jsonPick'
+import type { ContentBlock } from '~/lib/contentBlocks'
+import { joinContentParagraphs } from '~/lib/contentBlocks'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
+import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import {
   acpAgentMessageRenderer,
   acpPlanRenderer,
@@ -39,6 +42,13 @@ export function renderACPMessage(category: MessageCategory, parsed: unknown, rol
       return acpToolCallUpdateRenderer(cat.toolUse, role, context)
     return acpToolCallRenderer(cat.toolUse, role, context)
   }
+  if (category.kind === 'user_content')
+    return <UserContentMessage parsed={parsed} />
+  if (category.kind === 'plan_execution') {
+    const obj = isObject(parsed) ? parsed as Record<string, unknown> : null
+    const text = obj && typeof obj.content === 'string' ? obj.content as string : ''
+    return text ? <PlanExecutionMessage text={text} context={context} /> : null
+  }
   return null
 }
 
@@ -52,27 +62,37 @@ export function pickAcpRawOutputMetadata(toolUse: Record<string, unknown> | null
 }
 
 /**
- * Walk an ACP tool_call_update's `content[]` for `{type:'content', content:{text}}`
- * entries and concatenate their text. If the array yields nothing, fall back to
- * `rawOutput.output || rawOutput.error`. Returns an empty string when neither
- * source has text.
+ * Flatten ACP's nested `[{type:'content', content:{text}}, ...]` shape into
+ * the canonical Anthropic-style `[{type:'text', text}, ...]` so the shared
+ * {@link joinContentParagraphs} helper handles ACP content the same way it
+ * handles Claude/Pi/Codex content. Non-text entries (image, diff, etc.)
+ * pass through unchanged for the helper's image formatter to handle.
+ */
+export function flattenAcpContent(content: unknown): ContentBlock[] {
+  if (!Array.isArray(content))
+    return []
+  return content.flatMap((item): ContentBlock[] => {
+    if (!isObject(item))
+      return []
+    const entry = item as Record<string, unknown>
+    if (entry.type === 'content' && isObject(entry.content)) {
+      const inner = entry.content as Record<string, unknown>
+      const text = pickString(inner, 'text')
+      return text ? [{ type: 'text', text }] : []
+    }
+    return [entry]
+  })
+}
+
+/**
+ * Pull joined text out of an ACP tool_call_update's `content[]`. Falls back
+ * to `rawOutput.output || rawOutput.error` when the content array yields
+ * nothing.
  */
 export function collectAcpToolText(toolUse: Record<string, unknown> | null | undefined): string {
   if (!toolUse)
     return ''
-  const contentArr = toolUse.content as unknown[] | undefined
-  let text = ''
-  if (Array.isArray(contentArr)) {
-    for (const item of contentArr) {
-      if (!isObject(item))
-        continue
-      const entry = item as Record<string, unknown>
-      if (entry.type === 'content' && isObject(entry.content)) {
-        const ct = entry.content as Record<string, unknown>
-        text += String(ct.text || '')
-      }
-    }
-  }
+  const text = joinContentParagraphs(flattenAcpContent(toolUse.content), { text: 'text' })
   if (text)
     return text
   const rawOutput = pickObject(toolUse, 'rawOutput')

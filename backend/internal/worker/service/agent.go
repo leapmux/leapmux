@@ -397,11 +397,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 		content := r.GetContent()
-		if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX && isInterruptRequest(content) {
+		if dbAgent.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
 			svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, "[Request interrupted by user]")
 		}
 
-		svc.handleControlRequestMessage(agentID, content)
+		svc.handleControlRequestMessage(agentID, dbAgent.AgentProvider, content)
 		sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
 	})
 
@@ -695,8 +695,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 						AgentSessionID: "",
 						ID:             agentID,
 					})
-					svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-						"type":  "agent_error",
+					svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+						"type":  agent.NotificationTypeAgentError,
 						"error": "Failed to restart agent with new settings: " + err.Error(),
 					})
 				} else {
@@ -746,8 +746,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 		}
 		if len(changes) > 0 {
-			svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-				"type":    "settings_changed",
+			svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+				"type":    agent.NotificationTypeSettingsChanged,
 				"changes": changes,
 			})
 		}
@@ -1428,6 +1428,15 @@ func (svc *Context) handleClearContext(agentID string) {
 		return
 	}
 
+	// Broadcast STARTING so frontends gate the thinking indicator and
+	// startup panel correctly while the process is bouncing. Without this,
+	// an agent whose status was non-ACTIVE before /clear (e.g. INACTIVE
+	// after a worker restart that killed the process) shows no progress
+	// affordance until context_cleared lands — by which point the indicator
+	// is suppressed again because the chat history ends in a turn boundary.
+	startingMsg := "Restarting " + agent.DisplayName(dbAgent.AgentProvider) + "…"
+	svc.broadcastAgentStarting(&dbAgent, startingMsg, nil)
+
 	// Stop the running agent and wait for it to fully exit so that
 	// StartAgent below doesn't fail with "agent already running".
 	svc.Agents.StopAndWaitAgent(agentID)
@@ -1463,23 +1472,44 @@ func (svc *Context) handleClearContext(agentID string) {
 			AgentSessionID: "",
 			ID:             agentID,
 		})
-		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":  "agent_error",
-			"error": "Failed to restart agent after clearing context: " + err.Error(),
+		// Persist the error and broadcast STARTUP_FAILED so the frontend
+		// transitions out of the STARTING state we entered above; otherwise
+		// the startup panel would stay stuck on the "Restarting…" label.
+		errMsg := err.Error()
+		svc.persistAgentStartupError(agentID, errMsg)
+		svc.broadcastAgentFailed(&dbAgent, errMsg, nil)
+		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type":  agent.NotificationTypeAgentError,
+			"error": "Failed to restart agent after clearing context: " + errMsg,
 		})
 		return
 	}
-	if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings); err != nil {
+	activeDbAgent, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings)
+	if err != nil {
 		slog.Warn("clear context: failed to persist confirmed settings", "agent_id", agentID, "error", err)
+		activeDbAgent = dbAgent
 	}
 	slog.Info("clear context: agent restarted successfully", "agent_id", agentID)
 
-	// Only broadcast context_cleared once the new agent is up; on failure
-	// the agent_error notification above stands on its own so clients do
-	// not see a "cleared" UI state for an agent that is actually down.
-	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type": "context_cleared",
+	// Persist context_cleared before broadcasting ACTIVE so the frontend
+	// receives the notification while the startup banner is still showing,
+	// and the banner is replaced atomically by the new message instead of
+	// disappearing into a brief empty gap. broadcastAgentActive is an
+	// in-memory fan-out (microseconds), while PersistLeapMuxNotification
+	// runs a DB write before broadcasting (5–50ms) — sending ACTIVE first
+	// would let the banner clear before the message lands, producing the
+	// flicker the ordering avoids. On failure the agent_error /
+	// STARTUP_FAILED pair above stands on its own so clients do not see a
+	// "cleared" UI state for an agent that is down.
+	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type": agent.NotificationTypeContextCleared,
 	})
+
+	// Broadcast ACTIVE explicitly so the frontend leaves STARTING even if
+	// the OutputSink's init handshake didn't (or hasn't yet) emitted its
+	// own ACTIVE broadcast. broadcastAgentActive carries the fresh model
+	// catalogs that the catch-up path also relies on.
+	svc.broadcastAgentActive(&activeDbAgent, nil)
 }
 
 // resolveResumeSessionID returns the session ID to resume if the agent was
@@ -1563,7 +1593,7 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 // (e.g. Claude control_request JSON or Codex JSON-RPC interrupt).
 // These payloads are forwarded directly to the agent's stdin and are not
 // wrapped in a user message envelope or persisted as chat messages.
-func (svc *Context) handleControlRequestMessage(agentID, content string) {
+func (svc *Context) handleControlRequestMessage(agentID string, provider leapmuxv1.AgentProvider, content string) {
 	// Persist set_permission_mode to the DB eagerly so that /clear
 	// (which reads the DB) always sees the latest mode. Some providers
 	// (e.g. Claude Code) don't echo the mode back in their
@@ -1579,7 +1609,7 @@ func (svc *Context) handleControlRequestMessage(agentID, content string) {
 		if isSetMode {
 			return
 		}
-		if isInterruptRequest(content) {
+		if agent.IsInterruptRequest(provider, content) {
 			// Agent is already gone — nothing to interrupt.
 			return
 		}
@@ -1664,8 +1694,8 @@ func (svc *Context) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 	svc.broadcastSettingsStatusChange(dbAgent, nil)
 
 	if oldMode != "" {
-		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": "settings_changed",
+		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type": agent.NotificationTypeSettingsChanged,
 			"changes": map[string]interface{}{
 				agent.OptionGroupKeyPermissionMode: map[string]string{
 					"old": oldMode, "new": mode,
@@ -1716,8 +1746,8 @@ func (svc *Context) setAgentCollaborationModeWithAgent(dbAgent db.Agent, mode st
 
 	svc.broadcastSettingsStatusChange(dbAgent, extras)
 
-	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type": "settings_changed",
+	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type": agent.NotificationTypeSettingsChanged,
 		"changes": map[string]interface{}{
 			agent.CodexExtraCollaborationMode: map[string]string{
 				"old": oldMode, "new": mode,
@@ -1777,8 +1807,8 @@ func (svc *Context) setCodexBypassExtrasWithAgent(dbAgent db.Agent) db.Agent {
 
 	svc.broadcastSettingsStatusChange(dbAgent, extras)
 
-	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type":    "settings_changed",
+	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type":    agent.NotificationTypeSettingsChanged,
 		"changes": changes,
 	})
 
@@ -2204,16 +2234,10 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		return
 	}
 
-	// Read plan content from DB (compressed).
+	// Read plan content from disk. The agents row carries the path; the
+	// file is the sole source of truth for plan content.
 	var planContent string
-	if len(dbAgent.PlanContent) > 0 {
-		if decompressed, dErr := msgcodec.Decompress(dbAgent.PlanContent, dbAgent.PlanContentCompression); dErr == nil {
-			planContent = string(decompressed)
-		}
-	}
-
-	// Fallback: read plan file from disk.
-	if planContent == "" && dbAgent.PlanFilePath != "" {
+	if dbAgent.PlanFilePath != "" {
 		if data, readErr := os.ReadFile(dbAgent.PlanFilePath); readErr == nil && len(data) > 0 {
 			planContent = string(data)
 		}
@@ -2222,8 +2246,8 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 	if planContent == "" {
 		slog.Warn("plan exec: no plan content found, broadcasting notification without restart",
 			"agent_id", agentID)
-		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":           "plan_execution",
+		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type":           agent.NotificationTypePlanExecution,
 			"plan_file_path": dbAgent.PlanFilePath,
 		})
 		return
@@ -2247,11 +2271,11 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 
 		// Clear span tracking and broadcast notifications.
 		svc.Output.ResetSpanTracker(agentID)
-		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": "context_cleared",
+		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type": agent.NotificationTypeContextCleared,
 		})
-		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":           "plan_execution",
+		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type":           agent.NotificationTypePlanExecution,
 			"plan_file_path": dbAgent.PlanFilePath,
 		})
 	} else {
@@ -2293,11 +2317,11 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 	svc.Output.ResetSpanTracker(agentID)
 
 	// Broadcast context_cleared and plan_execution as separate notifications.
-	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type": "context_cleared",
+	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type": agent.NotificationTypeContextCleared,
 	})
-	svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type":           "plan_execution",
+	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+		"type":           agent.NotificationTypePlanExecution,
 		"plan_file_path": dbAgent.PlanFilePath,
 	})
 
@@ -2325,8 +2349,8 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 			AgentSessionID: "",
 			ID:             agentID,
 		})
-		svc.Output.BroadcastNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":  "agent_error",
+		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type":  agent.NotificationTypeAgentError,
 			"error": "Failed to restart agent for plan execution: " + err.Error(),
 		})
 		return
@@ -2357,21 +2381,6 @@ func parseSetPermissionMode(content string) (string, bool) {
 		return "", false
 	}
 	return msg.Request.Mode, true
-}
-
-// isInterruptRequest checks whether the raw payload is an interrupt request
-// for a supported provider format.
-func isInterruptRequest(content string) bool {
-	var msg struct {
-		Method  string `json:"method"`
-		Request struct {
-			Subtype string `json:"subtype"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal([]byte(content), &msg); err != nil {
-		return false
-	}
-	return msg.Request.Subtype == "interrupt" || msg.Method == "turn/interrupt" || msg.Method == "session/cancel" || msg.Method == "cancel"
 }
 
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.

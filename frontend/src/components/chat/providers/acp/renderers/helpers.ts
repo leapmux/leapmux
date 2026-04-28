@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-solid'
-import File from 'lucide-solid/icons/file'
+import Eye from 'lucide-solid/icons/eye'
 import FileEdit from 'lucide-solid/icons/file-pen-line'
 import Search from 'lucide-solid/icons/search'
 import Terminal from 'lucide-solid/icons/terminal'
@@ -13,7 +13,7 @@ export function kindIcon(kind: string | undefined): LucideIcon {
   switch (kind) {
     case ACP_TOOL_KIND.EXECUTE: return Terminal
     case ACP_TOOL_KIND.EDIT: return FileEdit
-    case ACP_TOOL_KIND.READ: return File
+    case ACP_TOOL_KIND.READ: return Eye
     case ACP_TOOL_KIND.SEARCH: return Search
     default: return Wrench
   }

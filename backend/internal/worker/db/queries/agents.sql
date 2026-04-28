@@ -67,14 +67,11 @@ UPDATE agents SET home_dir = ? WHERE id = ?;
 -- name: UpdateAgentPlanFilePath :exec
 UPDATE agents SET plan_file_path = ? WHERE id = ?;
 
--- name: UpdateAgentPlanContent :exec
-UPDATE agents SET plan_content = ?, plan_content_compression = ? WHERE id = ?;
-
 -- name: UpdateAgentPlan :exec
-UPDATE agents SET plan_file_path = ?, plan_content = ?, plan_content_compression = ?, plan_title = ? WHERE id = ?;
+UPDATE agents SET plan_file_path = ?, plan_title = ? WHERE id = ?;
 
 -- name: UpdateAgentPlanAndTitle :exec
-UPDATE agents SET plan_file_path = ?, plan_content = ?, plan_content_compression = ?, plan_title = ?, title = ? WHERE id = ?;
+UPDATE agents SET plan_file_path = ?, plan_title = ?, title = ? WHERE id = ?;
 
 -- name: GetAgentWorkspaceID :one
 SELECT workspace_id FROM agents WHERE id = ?;

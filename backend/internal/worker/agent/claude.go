@@ -93,7 +93,7 @@ type ClaudeCodeAgent struct {
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
-// The sink receives parsed output events via the Provider.HandleOutput method.
+// The sink receives parsed output events via the Agent.HandleOutput method.
 //
 // Claude Code with --input-format stream-json does not produce any output
 // (including the init message) until it receives input on stdin. Therefore,
@@ -299,7 +299,7 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 	}
 
 	data = append(data, '\n')
-	if _, err := a.stdin.Write(data); err != nil {
+	if err := a.writeStdin(data); err != nil {
 		return fmt.Errorf("write stdin: %w", err)
 	}
 
@@ -588,7 +588,7 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 		"alwaysThinking", thinking,
 	)
 
-	a.sink.BroadcastSettingsRefreshed(model, effort, mode, map[string]string{
+	a.sink.PersistSettingsRefresh(model, effort, mode, map[string]string{
 		ExtraKeyOutputStyle:    outputStyle,
 		ExtraKeyFastMode:       fastMode,
 		ExtraKeyAlwaysThinking: thinking,
@@ -929,9 +929,9 @@ func effortSupported(modelID, effort string) bool {
 }
 
 func init() {
-	registerProvider(
+	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 			return StartClaudeCode(ctx, opts, sink)
 		},
 		claudeCodeAvailableModels,

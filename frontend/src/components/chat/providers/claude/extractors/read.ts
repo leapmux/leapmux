@@ -1,6 +1,6 @@
 import type { ReadFileResultSource } from '../../../results/readFileResult'
-import type { ParsedCatLine } from '../../../results/ReadResultView'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { readFileSourceFromContent } from '../../../results/readFileResult'
 import { parseCatNContent } from '../../../results/ReadResultView'
 
 /** Non-text Read variants that the catch-all renderer continues to handle. */
@@ -37,16 +37,14 @@ export function claudeReadFromToolResult(args: ClaudeReadInputArg): ReadFileResu
     const startLine = pickNumber(file, 'startLine', 1)
     const totalLines = pickNumber(file, 'totalLines', 0)
     const numLines = pickNumber(file, 'numLines', 0)
-    const lines: ParsedCatLine[] = fileContent
-      ? fileContent.split('\n').map((text, i) => ({ num: startLine + i, text }))
-      : []
-    return {
+    return readFileSourceFromContent({
       filePath,
-      lines,
+      content: fileContent,
+      startLine,
       totalLines,
       numLines,
       fallbackContent: resultContent,
-    }
+    })
   }
 
   // Subagent fallback: try to parse the raw resultContent as cat-n.

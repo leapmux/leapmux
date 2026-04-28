@@ -323,21 +323,6 @@ func cursorCreatePlanResponseDisplayText(responseContent []byte) string {
 }
 
 func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv1.AgentProvider, content []byte) string {
-	switch provider {
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
-		// handled below
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
-		// handled below
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
-		// handled below
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
-		// handled below
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
-		// handled below
-	default:
-		return ""
-	}
-
 	reqID := controlResponseRequestID(content)
 	if reqID == "" {
 		return ""
@@ -383,6 +368,38 @@ func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv
 		default:
 			return ""
 		}
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:
+		return piExtensionUIResponseDisplayText(payload.Method, content)
+	default:
+		return ""
+	}
+}
+
+// piExtensionUIResponseDisplayText extracts a human-readable summary of a Pi
+// extension_ui_response so the user's choice shows up as a synthetic message
+// in the transcript.
+func piExtensionUIResponseDisplayText(method string, responseContent []byte) string {
+	var resp struct {
+		Cancelled bool   `json:"cancelled"`
+		Confirmed *bool  `json:"confirmed"`
+		Value     string `json:"value"`
+	}
+	if err := json.Unmarshal(responseContent, &resp); err != nil {
+		return ""
+	}
+
+	if resp.Cancelled {
+		return "Cancelled"
+	}
+
+	switch method {
+	case agent.PiDialogMethodConfirm:
+		if resp.Confirmed != nil && *resp.Confirmed {
+			return "Approve"
+		}
+		return "Deny"
+	case agent.PiDialogMethodSelect, agent.PiDialogMethodInput, agent.PiDialogMethodEditor:
+		return strings.TrimSpace(resp.Value)
 	default:
 		return ""
 	}

@@ -86,7 +86,7 @@ func TestHandlePromptResponse_PersistsThinkingText(t *testing.T) {
 
 	// Third message: result divider.
 	resultMsg := sink.Messages()[2]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, resultMsg.Role)
+	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, resultMsg.Role)
 
 	// Accumulated text should be reset.
 	agent.mu.Lock()
@@ -118,14 +118,25 @@ func TestHandleOpenCodeOutput_ToolCallUpdateInProgress(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash"}}}`
-	agent.HandleOutput([]byte(input))
-
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "tc-1", got.SpanID)
-	require.Equal(t, "tool_call_update", got.Method)
+	// Status-only in_progress (no content) — must not broadcast a stream
+	// chunk, since shipping the raw envelope would let the frontend
+	// concatenate it into the command-stream buffer.
+	statusOnly := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash"}}}`
+	agent.HandleOutput([]byte(statusOnly))
+	require.Equal(t, 0, sink.StreamChunkCount(), "in_progress without content must not broadcast")
 	require.Equal(t, 0, sink.MessageCount())
+
+	// in_progress with cumulative text content — broadcast just the new
+	// delta, not the raw envelope.
+	first := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"line1\n"}}]}}}`
+	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"in_progress","kind":"execute","title":"bash","content":[{"type":"content","content":{"type":"text","text":"line1\nline2\n"}}]}}}`
+	agent.HandleOutput([]byte(first))
+	agent.HandleOutput([]byte(second))
+	chunks := sink.StreamChunks()
+	require.Equal(t, 2, len(chunks))
+	require.Equal(t, "line1\n", string(chunks[0].Content))
+	require.Equal(t, "line2\n", string(chunks[1].Content))
+	require.Equal(t, "tool_call_update", chunks[0].Method)
 }
 
 func TestHandleOpenCodeOutput_ToolCallUpdateCompleted(t *testing.T) {
@@ -174,11 +185,11 @@ func TestHandleOpenCodeOutput_UsageUpdate(t *testing.T) {
 
 	require.Equal(t, 1, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
+	usage, ok := info["context_usage"].(map[string]interface{})
 	require.True(t, ok)
-	require.Equal(t, int64(1000), usage["inputTokens"])
-	require.Equal(t, int64(128000), usage["contextWindow"])
-	require.Equal(t, 0.05, info["totalCostUsd"])
+	require.Equal(t, int64(1000), usage["input_tokens"])
+	require.Equal(t, int64(128000), usage["context_window"])
+	require.Equal(t, 0.05, info["total_cost_usd"])
 	require.Equal(t, 0, sink.MessageCount())
 }
 
@@ -191,7 +202,7 @@ func TestHandleOpenCodeOutput_UsageUpdateNoCost(t *testing.T) {
 
 	require.Equal(t, 1, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
-	_, hasCost := info["totalCostUsd"]
+	_, hasCost := info["total_cost_usd"]
 	require.False(t, hasCost)
 }
 
@@ -219,7 +230,7 @@ func TestHandleOpenCodeOutput_Plan(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_RequestPermission(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
@@ -245,7 +256,7 @@ func TestHandleOpenCodeOutput_RequestPermission(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_RequestPermissionWithoutID(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
 	// Missing "id" field — should be ignored (logged as warning).
@@ -351,7 +362,7 @@ func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, msg.Role)
+	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, msg.Role)
 
 	// The persisted content should have stopReason at the top level.
 	var parsed map[string]interface{}

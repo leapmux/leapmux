@@ -43,13 +43,13 @@ func newRefreshTestFixture(t *testing.T, seed db.UpdateAgentAllSettingsParams) r
 	return refreshTestFixture{svc: svc, sink: sink, mock: mock}
 }
 
-// TestBroadcastSettingsRefreshed_SkipsWhenUnchanged verifies that a refresh
+// TestPersistSettingsRefresh_SkipsWhenUnchanged verifies that a refresh
 // matching the persisted row does no DB write and fires no StatusChange
 // event. Refresh runs at startup and after every UpdateSettings, and the
 // common case is that the CLI confirms values we already stored — skipping
 // the no-op path avoids redundant DB churn and avoids waking every
 // connected frontend to re-render identical settings.
-func TestBroadcastSettingsRefreshed_SkipsWhenUnchanged(t *testing.T) {
+func TestPersistSettingsRefresh_SkipsWhenUnchanged(t *testing.T) {
 	f := newRefreshTestFixture(t, db.UpdateAgentAllSettingsParams{
 		Model:          "opus",
 		Effort:         "high",
@@ -57,7 +57,7 @@ func TestBroadcastSettingsRefreshed_SkipsWhenUnchanged(t *testing.T) {
 		ExtraSettings:  `{"output_style":"default"}`,
 	})
 
-	f.sink.BroadcastSettingsRefreshed("opus", "high", "default", map[string]string{"output_style": "default"})
+	f.sink.PersistSettingsRefresh("opus", "high", "default", map[string]string{"output_style": "default"})
 
 	assert.Equal(t, int64(0), f.mock.streamCount.Load(),
 		"a refresh that matches the DB should not broadcast")
@@ -69,10 +69,10 @@ func TestBroadcastSettingsRefreshed_SkipsWhenUnchanged(t *testing.T) {
 	assert.Equal(t, "default", dbAgent.PermissionMode)
 }
 
-// TestBroadcastSettingsRefreshed_WritesAndBroadcastsOnChange verifies the
+// TestPersistSettingsRefresh_WritesAndBroadcastsOnChange verifies the
 // positive path: when at least one field changes, the row is rewritten and
 // a StatusChange event reaches watchers.
-func TestBroadcastSettingsRefreshed_WritesAndBroadcastsOnChange(t *testing.T) {
+func TestPersistSettingsRefresh_WritesAndBroadcastsOnChange(t *testing.T) {
 	f := newRefreshTestFixture(t, db.UpdateAgentAllSettingsParams{
 		Model:          "opus",
 		Effort:         "auto",
@@ -80,7 +80,7 @@ func TestBroadcastSettingsRefreshed_WritesAndBroadcastsOnChange(t *testing.T) {
 	})
 
 	// CLI resolves "auto" → "high" and reports it back.
-	f.sink.BroadcastSettingsRefreshed("opus", "high", "default", nil)
+	f.sink.PersistSettingsRefresh("opus", "high", "default", nil)
 
 	assert.Equal(t, int64(1), f.mock.streamCount.Load(),
 		"a refresh that changes effort should broadcast exactly once")

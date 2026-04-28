@@ -28,7 +28,7 @@ import { ControlRequestActions, ControlRequestContent } from './ControlRequestBa
 import { useControlResponseHandling } from './controlResponseHandling'
 import { EditorSettingsDropdown } from './markdownEditor/EditorSettingsDropdown'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
-import { getProviderPlugin } from './providers/registry'
+import { providerFor } from './providers/registry'
 import { useChatAttachments } from './useChatAttachments'
 import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
@@ -310,7 +310,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     hasEditorContent={hasContent()}
                     onTriggerSend={() => triggerSend?.()}
                     editorContentRef={editorContentRef}
-                    bypassPermissionMode={props.agent?.agentProvider ? getProviderPlugin(props.agent.agentProvider)?.bypassPermissionMode : undefined}
+                    bypassPermissionMode={props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.bypassPermissionMode : undefined}
                     onPermissionModeChange={props.onPermissionModeChange}
                     contextUsage={props.agentSessionInfo?.contextUsage}
                     modelContextWindow={modelContextWindow()}

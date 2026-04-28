@@ -51,7 +51,7 @@ func TestHandleGeminiOutput_ToolCallOpensSpan(t *testing.T) {
 }
 
 func TestHandleGeminiOutput_RequestPermission(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newGeminiAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s1","options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"}],"toolCall":{"toolCallId":"tc-1","title":"shell","kind":"execute"}}}`
@@ -70,11 +70,11 @@ func TestHandleGeminiOutput_UsageUpdateBroadcastsSessionInfo(t *testing.T) {
 
 	require.Equal(t, 1, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
+	usage, ok := info["context_usage"].(map[string]interface{})
 	require.True(t, ok)
-	require.Equal(t, int64(321), usage["inputTokens"])
-	require.Equal(t, int64(12345), usage["contextWindow"])
-	require.Equal(t, 0.25, info["totalCostUsd"])
+	require.Equal(t, int64(321), usage["input_tokens"])
+	require.Equal(t, int64(12345), usage["context_window"])
+	require.Equal(t, 0.25, info["total_cost_usd"])
 }
 
 func TestHandleGeminiOutput_CurrentModeUpdateBroadcastsPermissionMode(t *testing.T) {
@@ -101,7 +101,7 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 	})
 
 	require.Equal(t, 3, sink.MessageCount())
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, sink.Messages()[2].Role)
+	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, sink.Messages()[2].Role)
 	require.Equal(t, 1, sink.SessionInfoCount())
 }
 

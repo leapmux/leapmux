@@ -1,10 +1,11 @@
 import type { Question } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
-import type { ClassificationContext, ClassificationInput, ProviderPlugin } from '../registry'
+import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { PermissionMode } from '~/utils/controlResponse'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
@@ -70,7 +71,7 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
       return { kind: 'hidden' }
     return { kind: 'notification' }
   },
-  rate_limit(parent) {
+  rate_limit_event(parent) {
     const info = pickObject(parent, 'rate_limit_info')
     if (info?.status === 'allowed')
       return { kind: 'hidden' }
@@ -78,9 +79,8 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
   },
   interrupted: () => ({ kind: 'notification' }),
   context_cleared: () => ({ kind: 'notification' }),
-  compacting: () => ({ kind: 'notification' }),
   settings_changed: () => ({ kind: 'notification' }),
-  agent_renamed: () => ({ kind: 'notification' }),
+  plan_updated: () => ({ kind: 'notification' }),
   result: () => ({ kind: 'result_divider' }),
 }
 
@@ -165,7 +165,7 @@ function classifyClaudeCodeMessage(
     const msgs = wrapper.messages.filter((m) => {
       if (!isObject(m))
         return true
-      if (m.type !== 'rate_limit')
+      if (m.type !== 'rate_limit_event')
         return true
       const info = pickObject(m, 'rate_limit_info')
       return info?.status !== 'allowed'
@@ -220,14 +220,10 @@ function claudeExtractQuotableText(category: MessageCategory, parsed: ParsedMess
   if (!obj)
     return null
   if (category.kind === 'assistant_text' || category.kind === 'assistant_thinking') {
-    const content = getAssistantContent(obj)
-    if (!content)
-      return null
-    const text = content
-      .filter(c => c.type === 'text' || c.type === 'thinking')
-      .map(c => String(c.type === 'thinking' ? c.thinking || '' : c.text || ''))
-      .join('\n')
-      .trim()
+    const text = joinContentParagraphs(getAssistantContent(obj), {
+      text: 'text',
+      thinking: 'thinking',
+    }).trim()
     return text || null
   }
   if (category.kind === 'user_text') {
@@ -243,7 +239,7 @@ function claudeExtractQuotableText(category: MessageCategory, parsed: ParsedMess
   return null
 }
 
-const claudeCodePlugin: ProviderPlugin = {
+const claudeCodePlugin: Provider = {
   defaultModel: DEFAULT_CLAUDE_MODEL,
   defaultEffort: DEFAULT_CLAUDE_EFFORT,
   defaultPermissionMode: 'default',

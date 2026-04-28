@@ -4,6 +4,7 @@ import type { ActionsProps, AskQuestionState, ContentProps, Question } from './t
 import { For, Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from './AskUserQuestionControl'
@@ -51,6 +52,31 @@ function sendCodexPlanPromptResponse(
   })
 }
 
+const CODEX_OTHER_OPTION_LABEL = 'None of the above'
+
+function hasCodexOtherOption(question: Question): boolean {
+  const raw = question as unknown as Record<string, unknown>
+  return raw.isOther === true && Array.isArray(question.options) && question.options.length > 0
+}
+
+function codexAnswerValues(question: Question, index: number, askState: AskQuestionState): string[] {
+  const selected = askState.selections()[index] ?? []
+  const customText = askState.customTexts()[index]?.trim()
+  const values = [...selected]
+
+  if (customText) {
+    if (values.length === 0 && hasCodexOtherOption(question)) {
+      // Codex marks its auto-added free-form option explicitly.
+      values.push(CODEX_OTHER_OPTION_LABEL)
+    }
+    // Codex's TUI appends free-form text as a user_note answer entry,
+    // even for questions without a selected option.
+    values.push(`user_note: ${customText}`)
+  }
+
+  return values
+}
+
 /**
  * Sends a Codex-native requestUserInput response as a JSON-RPC response directly.
  */
@@ -63,13 +89,9 @@ export function sendCodexUserInputResponse(
 ): Promise<void> {
   const answers: Record<string, { answers: string[] }> = {}
   for (let i = 0; i < questions.length; i++) {
-    const sel = askState.selections()[i] ?? []
-    const customText = askState.customTexts()[i]?.trim()
-    const value = sel.length > 0 ? sel.join(', ') : (customText || '')
-    if (value) {
-      const key = questions[i].id || questions[i].header || `q${i}`
-      answers[key] = { answers: [value] }
-    }
+    const values = codexAnswerValues(questions[i], i, askState)
+    const key = questions[i].id || questions[i].header || `q${i}`
+    answers[key] = { answers: values }
   }
   return sendResponse(agentId, onRespond, {
     jsonrpc: '2.0',
@@ -141,13 +163,13 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
         <>
           <div class={styles.controlBannerTitle}>{title()}</div>
           <Show when={reason()}>
-            <div class={styles.codexReason}>{reason()}</div>
+            <div class={styles.bannerReason}>{reason()}</div>
           </Show>
           <Show when={command()}>
-            <CollapsibleText text={command()!} maxLines={6} class={styles.toolSummary} />
+            <CollapsibleText text={command()!} maxLines={6} class={styles.bannerCodeBlock} />
           </Show>
           <Show when={cwd()}>
-            <div class={styles.codexCwd}>
+            <div class={styles.bannerHint}>
               {'cwd: '}
               {cwd()}
             </div>
@@ -163,6 +185,7 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
           request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
           askState={props.askState}
           optionsDisabled={props.optionsDisabled}
+          agentProvider={AgentProvider.CODEX}
         />
       </Match>
     </Switch>
@@ -241,16 +264,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
     const input = parsed?.response?.response?.updatedInput
     const claudeAnswers = input?.answers as Record<string, string> | undefined
     if (claudeAnswers) {
-      // Convert {key: "value"} to {key: {answers: ["value"]}} for Codex format.
-      const codexAnswers: Record<string, { answers: string[] }> = {}
-      const qs = questions()
-      for (const [key, value] of Object.entries(claudeAnswers)) {
-        // Use question id as key if available, falling back to header-based key
-        const qIdx = qs.findIndex(q => (q.id || q.header || '') === key || q.header === key)
-        const codexKey = qIdx >= 0 && qs[qIdx].id ? qs[qIdx].id! : key
-        codexAnswers[codexKey] = { answers: [value] }
-      }
-      await sendCodexUserInputResponse(props.request.agentId, props.onRespond, props.request.requestId, qs, props.askState)
+      await sendCodexUserInputResponse(props.request.agentId, props.onRespond, props.request.requestId, questions(), props.askState)
       return
     }
     // Deny / stop — translate to decline
@@ -329,6 +343,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
           {...props}
           request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
           onRespond={userInputOnRespond}
+          agentProvider={AgentProvider.CODEX}
         />
       </Match>
     </Switch>

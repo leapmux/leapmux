@@ -76,13 +76,11 @@ func newACPAgentForRPCWithResponder[T any](
 			mu.Lock()
 			requests = append(requests, recordedRequest{Method: req.Method, Params: req.Params})
 			mu.Unlock()
-			if ch, ok := ab.pendingReqs.Load(req.ID); ok {
-				body := json.RawMessage(`{}`)
-				if respond != nil {
-					body = respond(req.Method)
-				}
-				ch.(chan json.RawMessage) <- body
+			body := json.RawMessage(`{}`)
+			if respond != nil {
+				body = respond(req.Method)
 			}
+			ab.deliver(req.ID, body)
 		}
 	}()
 

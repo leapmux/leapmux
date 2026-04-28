@@ -1,15 +1,19 @@
-// Provider plugin registry. Each provider module (claude, codex, opencode, +stubs)
+// Provider registry. Each provider module (claude, codex, opencode, +stubs)
 // calls registerProvider() at import time as a side effect; the side-effect imports
-// live in providers/index.ts. getProviderPlugin() returns undefined if a provider
+// live in providers/index.ts. providerFor() returns undefined if a provider
 // was never imported, so callers that depend on a provider being registered must
 // ensure providers/index.ts (or the specific provider module) is imported first.
+//
+// This mirrors the backend's `agent.Provider` interface and `agent.ProviderFor`
+// lookup; each side carries the per-provider hooks its layer needs.
 
 import type { Component, JSX } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
-import type { AgentProvider, AvailableModel, AvailableOptionGroup, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider, AvailableModel, AvailableOptionGroup, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 /**
@@ -95,7 +99,7 @@ export type NotificationThreadEntry
     | { kind: 'group', groupKey: string, prefix: string, entry: string }
     | { kind: 'divider', text: string, loading?: boolean }
 
-export interface ProviderPlugin {
+export interface Provider {
   /** Default model identifier for this provider. */
   defaultModel?: string
   /** Default effort for this provider. */
@@ -212,7 +216,7 @@ export interface ProviderPlugin {
     payload: Record<string, unknown>,
     content: string,
     requestId: string,
-  ) => Record<string, unknown>
+  ) => unknown
 
   /**
    * The permission mode value that disables all approval prompts.
@@ -264,14 +268,53 @@ export interface ProviderPlugin {
 
   /** Attachment support for the provider. */
   attachments?: AttachmentCapabilities
+
+  /**
+   * Inner-message `type` values that don't represent agent progress for
+   * the chat-level working-state heuristic. The shared `isAgentWorking`
+   * keeps scanning back when the most recent message has one of these
+   * types instead of treating it as an activity signal — covers
+   * provider-specific lifecycle / status / extension events.
+   */
+  nonProgressTypes?: ReadonlySet<string>
+
+  /**
+   * JSON-RPC method names that don't represent agent progress (transport
+   * metadata or pure lifecycle signals). Counterpart to `nonProgressTypes`
+   * for providers whose wire format dispatches by `method` rather than
+   * `type` (Codex JSON-RPC).
+   */
+  nonProgressMethods?: ReadonlySet<string>
+
+  /**
+   * Provider-specific gate for the chat-level thinking indicator. Returns
+   * true/false to take precedence over the message-history heuristic, or
+   * null to fall through to the default. Codex uses this to gate on its
+   * explicit `codexTurnId` so a freshly-created tab doesn't show as
+   * thinking before any message arrives.
+   */
+  hasActiveTurn?: (
+    agent: AgentInfo,
+    sessionInfo: AgentSessionInfo | undefined,
+  ) => boolean | null
 }
 
-const registry = new Map<number, ProviderPlugin>()
+const registry = new Map<number, Provider>()
 
-export function registerProvider(provider: AgentProvider, plugin: ProviderPlugin): void {
+export function registerProvider(provider: AgentProvider, plugin: Provider): void {
   registry.set(provider, plugin)
 }
 
-export function getProviderPlugin(provider: AgentProvider): ProviderPlugin | undefined {
+export function providerFor(provider: AgentProvider): Provider | undefined {
   return registry.get(provider)
+}
+
+/**
+ * All registered providers, in insertion order. Used by shared heuristics
+ * (e.g. `isAgentWorking`) that need to aggregate per-provider configuration
+ * without hard-coding which providers exist. Callers must have already
+ * triggered the side-effect imports in `providers/index.ts`.
+ */
+export function allRegisteredProviders(): Provider[] {
+  return Array.from(registry.values())
 }

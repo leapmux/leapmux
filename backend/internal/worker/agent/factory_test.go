@@ -48,6 +48,7 @@ func TestDisplayName(t *testing.T) {
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "Cursor"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "Goose"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, "Kilo"},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, "Pi Coding Agent"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, "agent"},
 		{leapmuxv1.AgentProvider(9999), "agent"}, // unknown value → generic fallback
 	}

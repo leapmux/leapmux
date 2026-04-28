@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { getProviderPlugin } from '../registry'
+import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
 import './copilot'
@@ -16,7 +16,7 @@ const MODE_PLAN = 'https://agentclientprotocol.com/protocol/session-modes#plan'
 const MODE_AUTOPILOT = 'https://agentclientprotocol.com/protocol/session-modes#autopilot'
 
 describe('copilot provider', () => {
-  const plugin = getProviderPlugin(AgentProvider.GITHUB_COPILOT)!
+  const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -70,7 +70,7 @@ describe('copilot provider', () => {
 })
 
 describe('copilot settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.GITHUB_COPILOT)!
+  const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
   it('renders runtime modes and updates through the unified onChange dispatcher', async () => {
     const onChange = vi.fn()

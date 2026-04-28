@@ -47,13 +47,20 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		a.handleFileChangeOutputDelta(line.Params)
 
 	case "item/started":
-		a.handleItemStarted(line.Params)
+		a.handleItemStarted(line.Raw, line.Params)
 
 	case "item/completed":
 		a.handleItemCompleted(line.Params)
 
 	case "thread/compacted":
-		a.handleThreadCompacted(line.Params)
+		// Persist the raw JSON-RPC envelope verbatim as SYSTEM. The
+		// consolidator routes by `method:"thread/compacted"` so reconnect
+		// rehydration sees the full Codex-emitted payload (threadId,
+		// turnId, plus any future fields) instead of a synthesized
+		// stripped-down envelope.
+		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
+			slog.Error("codex persist thread/compacted", "agent_id", a.agentID, "error", err)
+		}
 
 	case "turn/completed":
 		a.handleTurnCompleted(line.Params)
@@ -62,7 +69,12 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		a.handleTokenUsageUpdated(line.Raw, line.Params)
 
 	case "thread/name/updated":
-		a.handleThreadNameUpdated(line.Params)
+		// Codex-emitted lifecycle metadata — persist as SYSTEM so the role
+		// reflects the source (the agent, not LeapMux). Hidden from the
+		// transcript by frontend lifecycle classification.
+		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
+			slog.Error("codex persist thread/name/updated", "agent_id", a.agentID, "error", err)
+		}
 
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
@@ -71,7 +83,7 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		"item/fileChange/requestApproval",
 		"item/permissions/requestApproval",
 		"item/tool/requestUserInput":
-		a.handleApprovalRequest(line.ID, line.Raw)
+		a.handleApprovalRequest(line.IDString(), line.Raw)
 
 	case "serverRequest/resolved":
 		a.handleServerRequestResolved(line.Params)
@@ -80,7 +92,8 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		a.handleRateLimitsUpdated(line.Raw, line.Params)
 
 	case "mcpServer/startupStatus/updated":
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, line.Raw); err != nil {
+		// Codex-emitted MCP server status — SYSTEM (agent-sourced metadata).
+		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
 			slog.Error("codex persist startup status notification", "agent_id", a.agentID, "error", err)
 		}
 
@@ -96,6 +109,10 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 }
 
 // handleTurnStarted processes turn/started notifications.
+//
+// Resets per-turn state and broadcasts the new turn ID so the frontend
+// can wire up interrupt. Git status is refreshed automatically at
+// turn-end by the sink layer.
 func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 	var notif struct {
 		ThreadID string `json:"threadId"`
@@ -110,21 +127,13 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		a.turnSawPlan = false
 		a.turnPlanText = ""
 		a.streamingPlan = false
-		threadID := a.threadID
 		a.mu.Unlock()
 
 		// Broadcast the turn ID so the frontend can use it for interrupts.
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
-			"codexTurnId": notif.Turn.ID,
+			"codex_turn_id": notif.Turn.ID,
 		})
-		a.sink.BroadcastStatusActive(threadID)
-		return
 	}
-
-	a.mu.Lock()
-	threadID := a.threadID
-	a.mu.Unlock()
-	a.sink.BroadcastStatusActive(threadID)
 }
 
 // handleAgentMessageDelta processes item/agentMessage/delta — streaming text.
@@ -148,7 +157,7 @@ func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 			a.streamingPlan = true
 			a.mu.Unlock()
 			a.sink.BroadcastSessionInfo(map[string]interface{}{
-				"streamingType": "plan",
+				"streaming_type": "plan",
 			})
 		} else {
 			a.mu.Unlock()
@@ -217,7 +226,7 @@ func (a *CodexAgent) handleFileChangeOutputDelta(params json.RawMessage) {
 }
 
 // handleItemStarted processes item/started notifications.
-func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
+func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 	item, itemType, itemID, threadID := extractCodexItem(params)
 	if item == nil {
 		return
@@ -234,7 +243,12 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 	case "agentMessage":
 		// No-op for started — wait for completed to persist.
 	case "contextCompaction":
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, []byte(`{"type":"compacting"}`)); err != nil {
+		// Persist the raw `item/started` JSON-RPC notification verbatim as
+		// SYSTEM. Preserves both `method:"item/started"` (so the
+		// notification consolidator and frontend classifier route by
+		// method) and Codex-specific fields under `params.item.*` that a
+		// synthesized `{type:"compacting"}` would discard.
+		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, raw); err != nil {
 			slog.Error("codex persist compacting notification", "agent_id", a.agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
@@ -292,7 +306,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Unlock()
 		if wasStreamingPlan {
 			a.sink.BroadcastSessionInfo(map[string]interface{}{
-				"streamingType": "",
+				"streaming_type": "",
 			})
 		}
 
@@ -350,29 +364,6 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 	}
 }
 
-func (a *CodexAgent) handleThreadCompacted(params json.RawMessage) {
-	var notif struct {
-		ThreadID string `json:"threadId"`
-		TurnID   string `json:"turnId"`
-	}
-	if err := json.Unmarshal(params, &notif); err != nil {
-		slog.Warn("codex thread_compacted unmarshal failed", "agent_id", a.agentID, "error", err)
-		return
-	}
-	content, err := json.Marshal(map[string]interface{}{
-		"type":     "system",
-		"subtype":  "compact_boundary",
-		"threadId": notif.ThreadID,
-		"turnId":   notif.TurnID,
-	})
-	if err != nil {
-		return
-	}
-	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
-		slog.Error("codex persist compacted notification", "agent_id", a.agentID, "error", err)
-	}
-}
-
 // handleTurnCompleted processes turn/completed notifications.
 func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	var notif struct {
@@ -421,7 +412,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	}
 
 	// Persist as a result divider.
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, params, SpanInfo{}); err != nil {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, params, SpanInfo{}); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
 	}
 
@@ -442,7 +433,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && sawPlan && planText != "" {
 			// Persist plan content so initiatePlanExecution can use it.
 			compressed, compression := msgcodec.Compress([]byte(planText))
-			a.sink.UpdatePlan("", compressed, compression, extractPlanTitle(planText))
+			a.sink.UpdatePlan(compressed, compression, extractPlanTitle(planText))
 			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
 			payload, err := json.Marshal(map[string]interface{}{
 				"type":       "control_request",
@@ -467,7 +458,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 	// Clear the turn ID in session info.
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		"codexTurnId": "",
+		"codex_turn_id": "",
 	})
 }
 
@@ -498,24 +489,24 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 	}
 
 	// Persist the raw Codex notification so reconnect/catch-up can rehydrate
-	// context usage from history.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
+	// context usage from history. Codex-emitted metadata → SYSTEM role.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, content); err != nil {
 		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
 	}
 
 	usage := map[string]interface{}{
-		"inputTokens":              max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
-		"cacheCreationInputTokens": int64(0),
-		"cacheReadInputTokens":     notif.TokenUsage.Last.CachedInputTokens,
-		"outputTokens":             notif.TokenUsage.Last.OutputTokens,
+		"input_tokens":                max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
+		"cache_creation_input_tokens": int64(0),
+		"cache_read_input_tokens":     notif.TokenUsage.Last.CachedInputTokens,
+		"output_tokens":               notif.TokenUsage.Last.OutputTokens,
 	}
 	if notif.TokenUsage.ModelContextWindow != nil {
-		usage["contextWindow"] = *notif.TokenUsage.ModelContextWindow
+		usage["context_window"] = *notif.TokenUsage.ModelContextWindow
 	} else if cw := modelContextWindow(a.availableModels, a.model); cw > 0 {
-		usage["contextWindow"] = cw
+		usage["context_window"] = cw
 	}
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		"contextUsage": usage,
+		"context_usage": usage,
 	})
 }
 
@@ -528,30 +519,16 @@ func (a *CodexAgent) isMainThreadID(threadID string) bool {
 	return threadID == a.threadID
 }
 
-// handleThreadNameUpdated processes thread/name/updated notifications.
-func (a *CodexAgent) handleThreadNameUpdated(params json.RawMessage) {
-	var notif struct {
-		ThreadName *string `json:"threadName"`
-	}
-	if json.Unmarshal(params, &notif) == nil && notif.ThreadName != nil {
-		a.sink.BroadcastNotification(map[string]interface{}{
-			"type": "agent_renamed",
-			"name": *notif.ThreadName,
-		})
-	}
-}
-
 // handleApprovalRequest processes server requests (approval requests from Codex).
 // These arrive as JSON-RPC requests (with an "id" field) from the server.
 // The id is already extracted from the outer envelope to avoid re-parsing content.
-func (a *CodexAgent) handleApprovalRequest(id *json.Number, content []byte) {
-	if id == nil {
+func (a *CodexAgent) handleApprovalRequest(id string, content []byte) {
+	if id == "" {
 		slog.Warn("codex approval request missing id", "agent_id", a.agentID)
 		return
 	}
-	requestID := id.String()
-	a.sink.PersistControlRequest(requestID, content)
-	a.sink.BroadcastControlRequest(requestID, content)
+	a.sink.PersistControlRequest(id, content)
+	a.sink.BroadcastControlRequest(id, content)
 }
 
 // handleServerRequestResolved processes serverRequest/resolved notifications.
@@ -575,8 +552,8 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 		Message string `json:"message"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.Message != "" {
-		a.sink.BroadcastNotification(map[string]interface{}{
-			"type":  "agent_error",
+		a.sink.PersistLeapMuxNotification(map[string]interface{}{
+			"type":  NotificationTypeAgentError,
 			"error": notif.Message,
 		})
 	}
@@ -586,8 +563,8 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 // The raw content is persisted as-is via PersistNotification, and converted
 // rate limit info is broadcast via BroadcastSessionInfo for the live popover.
 func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMessage) {
-	// Persist the raw Codex notification in the notification thread.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
+	// Persist the raw Codex notification — agent-emitted metadata, SYSTEM role.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, content); err != nil {
 		slog.Error("codex persist rateLimits", "agent_id", a.agentID, "error", err)
 	}
 
@@ -617,12 +594,12 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 			status = "allowed_warning"
 		}
 		info := map[string]interface{}{
-			"rateLimitType": rlType,
-			"utilization":   float64(tier.UsedPercent) / 100,
-			"status":        status,
+			"rate_limit_type": rlType,
+			"utilization":     float64(tier.UsedPercent) / 100,
+			"status":          status,
 		}
 		if tier.ResetsAt != nil {
-			info["resetsAt"] = *tier.ResetsAt
+			info["resets_at"] = *tier.ResetsAt
 			if status == "exceeded" {
 				resetAt := time.Unix(*tier.ResetsAt, 0).UTC()
 				if latestExceededReset == nil || resetAt.After(*latestExceededReset) {
@@ -634,7 +611,7 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 	}
 	if len(rateLimits) > 0 {
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
-			"rateLimits": rateLimits,
+			"rate_limits": rateLimits,
 		})
 	}
 

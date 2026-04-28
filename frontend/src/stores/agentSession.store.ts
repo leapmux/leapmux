@@ -1,10 +1,14 @@
 import { createStore } from 'solid-js/store'
 import { PREFIX_AGENT_SESSION, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { shallowEqual } from '~/lib/shallowEqual'
 
 export interface ContextUsageInfo {
   inputTokens: number
   cacheCreationInputTokens: number
   cacheReadInputTokens: number
+  outputTokens?: number
+  /** Authoritative provider-reported current context size, when available. */
+  contextTokens?: number
   contextWindow?: number
 }
 
@@ -72,17 +76,36 @@ export function createAgentSessionStore() {
       }
       setState('infoByAgent', agentId, (prev = {}) => {
         const merged = { ...prev }
+        let changed = false
         for (const [key, value] of Object.entries(partial)) {
-          if (value !== undefined && value !== null) {
-            if (key === 'rateLimits' && typeof value === 'object') {
-              // Deep-merge rateLimits: preserve existing entries, update/add new ones
-              merged.rateLimits = { ...merged.rateLimits, ...value as Record<string, RateLimitInfo> }
+          if (value === undefined || value === null)
+            continue
+          if (key === 'rateLimits' && typeof value === 'object') {
+            // Deep-merge rateLimits: preserve existing entries, update/add new ones.
+            const incoming = value as Record<string, RateLimitInfo>
+            const existing = merged.rateLimits ?? {}
+            const next = { ...existing }
+            let rlChanged = false
+            for (const [rlKey, rlInfo] of Object.entries(incoming)) {
+              if (!shallowEqual(existing[rlKey], rlInfo)) {
+                next[rlKey] = rlInfo
+                rlChanged = true
+              }
             }
-            else {
-              (merged as Record<string, unknown>)[key] = value
+            if (rlChanged) {
+              merged.rateLimits = next
+              changed = true
             }
+            continue
+          }
+          const current = (merged as Record<string, unknown>)[key]
+          if (!shallowEqual(current, value)) {
+            (merged as Record<string, unknown>)[key] = value
+            changed = true
           }
         }
+        if (!changed)
+          return prev
         saveToStorage(agentId, merged)
         return merged
       })

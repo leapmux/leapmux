@@ -28,7 +28,7 @@ type contextUsageSnapshot struct {
 }
 
 // HandleOutput processes a single NDJSON line from Claude Code.
-// This is the Claude Code-specific implementation of the Provider interface.
+// This is the Claude Code-specific implementation of the Agent interface.
 func (a *ClaudeCodeAgent) HandleOutput(content []byte) {
 	a.handleClaudeOutput(content, "")
 }
@@ -57,7 +57,7 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 	case "system":
 		role = leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM
 	case "result":
-		role = leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT
+		role = leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END
 	}
 
 	slog.Debug("HandleOutput", "agent_id", a.agentID, "type", msgType, "len", len(content))
@@ -78,8 +78,8 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 			a.handlePersistableMessage(content, msgType, role)
 		}
 
-	case "context_cleared", "interrupted", "plan_execution":
-		if msgType == "interrupted" {
+	case NotificationTypeContextCleared, NotificationTypeInterrupted, NotificationTypePlanExecution:
+		if msgType == NotificationTypeInterrupted {
 			a.sink.ResetSpans()
 		}
 		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
@@ -95,7 +95,7 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 	case "control_response":
 		a.claudeCodeHandleControlResponse(content)
 
-	case "rate_limit_event":
+	case NotificationTypeRateLimitEvent:
 		a.claudeCodeHandleRateLimitEvent(content)
 
 	default:
@@ -223,7 +223,7 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 					if planContentStr != "" {
 						compressed, compression = msgcodec.Compress([]byte(planContentStr))
 					}
-					a.sink.UpdatePlan(filePath, compressed, compression, extractPlanTitle(planContentStr))
+					a.sink.UpdatePlan(compressed, compression, extractPlanTitle(planContentStr))
 				}
 			}
 		}
@@ -248,16 +248,12 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 				if statusVal == "" && prev == "" {
 					return
 				}
-				// Emit a LEAPMUX notification for compacting status so it threads with
-				// other LEAPMUX notifications (context_cleared, settings_changed, etc.).
-				if statusVal == "compacting" {
-					leapmuxContent := []byte(`{"type":"compacting"}`)
-					if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, leapmuxContent); err != nil {
-						slog.Error("persist compacting notification", "agent_id", a.agentID, "error", err)
-					}
-					return
-				}
 			}
+			// Persist the raw `system` message verbatim (role is already
+			// SYSTEM here). Includes `compacting` status, api_retry, and
+			// other notification-threaded subtypes — the renderer extracts
+			// `subtype`/`status` from the raw envelope so future fields
+			// like `tokensBefore`/`durationMs` don't get discarded.
 			if err := a.sink.PersistNotification(role, content); err != nil {
 				slog.Error("persist notification-threaded system message", "agent_id", a.agentID, "error", err)
 			}
@@ -448,10 +444,21 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		return
 	}
 
+	// Decode the SDK's camelCase shape and re-emit as snake_case to match
+	// the platform's session-info wire format. New fields the SDK adds in
+	// the future need to be enumerated here explicitly so they pick up the
+	// correct casing on the wire — the persisted notification still
+	// carries the raw Claude shape, so consumers that need an unknown
+	// field can fall back to that path.
 	var rlInfo struct {
-		RateLimitType string `json:"rateLimitType"`
-		Status        string `json:"status"`
-		ResetsAt      *int64 `json:"resetsAt"`
+		RateLimitType      string   `json:"rateLimitType"`
+		Status             string   `json:"status"`
+		ResetsAt           *int64   `json:"resetsAt"`
+		Utilization        *float64 `json:"utilization,omitempty"`
+		SurpassedThreshold *float64 `json:"surpassedThreshold,omitempty"`
+		OverageStatus      string   `json:"overageStatus,omitempty"`
+		OverageResetsAt    *int64   `json:"overageResetsAt,omitempty"`
+		IsUsingOverage     *bool    `json:"isUsingOverage,omitempty"`
 	}
 	if err := json.Unmarshal(rle.RateLimitInfo, &rlInfo); err != nil {
 		slog.Warn("claude rate limit info unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -461,22 +468,39 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		rlInfo.RateLimitType = "unknown"
 	}
 
-	rateLimits := map[string]json.RawMessage{
-		rlInfo.RateLimitType: rle.RateLimitInfo,
+	tier := map[string]any{
+		"rate_limit_type": rlInfo.RateLimitType,
+		"status":          rlInfo.Status,
 	}
+	if rlInfo.Utilization != nil {
+		tier["utilization"] = *rlInfo.Utilization
+	}
+	if rlInfo.ResetsAt != nil {
+		tier["resets_at"] = *rlInfo.ResetsAt
+	}
+	if rlInfo.SurpassedThreshold != nil {
+		tier["surpassed_threshold"] = *rlInfo.SurpassedThreshold
+	}
+	if rlInfo.OverageStatus != "" {
+		tier["overage_status"] = rlInfo.OverageStatus
+	}
+	if rlInfo.OverageResetsAt != nil {
+		tier["overage_resets_at"] = *rlInfo.OverageResetsAt
+	}
+	if rlInfo.IsUsingOverage != nil {
+		tier["is_using_overage"] = *rlInfo.IsUsingOverage
+	}
+
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		"rateLimits": rateLimits,
+		"rate_limits": map[string]any{rlInfo.RateLimitType: tier},
 	})
 
-	notifContent, err := json.Marshal(map[string]interface{}{
-		"type":            "rate_limit",
-		"rate_limit_info": rle.RateLimitInfo,
-	})
-	if err != nil {
-		slog.Warn("marshal rate_limit notification", "agent_id", a.agentID, "error", err)
-		return
-	}
-	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, notifContent); err != nil {
+	// Persist the raw `rate_limit_event` envelope verbatim as SYSTEM. The
+	// frontend's extractRateLimitInfo / notification renderer reads
+	// `rate_limit_info` from this raw Claude-native shape (camelCase) —
+	// the persisted side stays in the SDK's format so notification
+	// rendering remains a passthrough.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, content); err != nil {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}
 
@@ -538,15 +562,15 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 		if shouldBroadcast {
 			snapshot.LastBroadcast = now
 			usageMap := map[string]interface{}{
-				"inputTokens":              snapshot.InputTokens,
-				"outputTokens":             snapshot.OutputTokens,
-				"cacheCreationInputTokens": snapshot.CacheCreationInputTokens,
-				"cacheReadInputTokens":     snapshot.CacheReadInputTokens,
+				"input_tokens":                snapshot.InputTokens,
+				"output_tokens":               snapshot.OutputTokens,
+				"cache_creation_input_tokens": snapshot.CacheCreationInputTokens,
+				"cache_read_input_tokens":     snapshot.CacheReadInputTokens,
 			}
 			if snapshot.ContextWindow > 0 {
-				usageMap["contextWindow"] = snapshot.ContextWindow
+				usageMap["context_window"] = snapshot.ContextWindow
 			}
-			info["contextUsage"] = usageMap
+			info["context_usage"] = usageMap
 		}
 	}
 	snapshot.mu.Unlock()
@@ -719,9 +743,18 @@ func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 			slog.Warn("notification threadable unmarshal failed", "role", "leapmux", "error", err)
 			return false
 		}
-		return msg.Type == "settings_changed" || msg.Type == "context_cleared" || msg.Type == "interrupted" || msg.Type == "rate_limit" || msg.Type == "agent_error" || msg.Type == "compacting"
+		switch msg.Type {
+		case NotificationTypeSettingsChanged,
+			NotificationTypeContextCleared,
+			NotificationTypeInterrupted,
+			NotificationTypeRateLimit,
+			NotificationTypeAgentError,
+			NotificationTypeCompacting:
+			return true
+		}
+		return false
 	case leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM:
-		return NotificationConsolidatorForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).Classify(content).Consolidatable()
+		return ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).Classify(content).Consolidatable()
 	default:
 		return false
 	}

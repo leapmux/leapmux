@@ -4,10 +4,13 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
@@ -614,31 +617,58 @@ func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
 // NewSink creates a per-agent OutputSink backed by this OutputHandler.
 func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.OutputSink {
 	return &agentOutputSink{
-		h:                        h,
-		agentID:                  agentID,
-		agentProvider:            agentProvider,
-		notificationConsolidator: agent.NotificationConsolidatorForProvider(agentProvider),
-		tracker:                  h.spanTracker(agentID),
+		h:             h,
+		agentID:       agentID,
+		agentProvider: agentProvider,
+		plugin:        agent.ProviderFor(agentProvider),
+		tracker:       h.spanTracker(agentID),
 	}
 }
 
 // agentOutputSink implements agent.OutputSink for a single agent.
 type agentOutputSink struct {
-	h                        *OutputHandler
-	agentID                  string
-	agentProvider            leapmuxv1.AgentProvider
-	notificationConsolidator agent.NotificationConsolidator
-	tracker                  *SpanTracker
+	h             *OutputHandler
+	agentID       string
+	agentProvider leapmuxv1.AgentProvider
+	plugin        agent.Provider
+	tracker       *SpanTracker
+
+	// sessionInfoMu guards lastSessionInfo against concurrent
+	// BroadcastSessionInfo calls. Agent handlers may broadcast from
+	// multiple goroutines (Pi fans out from many event handlers in
+	// particular), so the dedup state needs synchronized access.
+	//
+	// Values are stored as their JSON-marshaled bytes (not the original
+	// `any` value) so per-key dedup is a `bytes.Equal` instead of a
+	// recursive `reflect.DeepEqual`. The wire encoding of these values
+	// is JSON anyway, so the cached bytes line up exactly with what the
+	// frontend would observe.
+	sessionInfoMu   sync.Mutex
+	lastSessionInfo map[string][]byte
 }
 
 // --- OutputSink interface implementation ---
 
 func (s *agentOutputSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span agent.SpanInfo) error {
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, span, s.tracker)
+	if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, role, content, span, s.tracker); err != nil {
+		return err
+	}
+	// TURN_END role marks the universal turn-end signal across providers
+	// (Claude type:"result", Codex turn/completed, ACP prompt response,
+	// Pi agent_end). Refresh git status at every turn end so the user
+	// does not have to update it manually. Mid-turn notifications use
+	// PersistNotification, not PersistMessage, so they don't trigger
+	// here. Run on a goroutine so the agent's stdout-read loop is not
+	// blocked by the four git subprocesses BroadcastGitStatus shells out
+	// to plus the DB lookup.
+	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END {
+		go s.BroadcastGitStatus()
+	}
+	return nil
 }
 
 func (s *agentOutputSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
-	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, s.notificationConsolidator, role, content)
+	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, s.plugin, role, content)
 }
 
 func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
@@ -809,8 +839,8 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 
 	// Broadcast settings_changed notification for the chat view.
 	if oldMode != "" && oldMode != mode {
-		s.BroadcastNotification(map[string]interface{}{
-			"type": "settings_changed",
+		s.PersistLeapMuxNotification(map[string]interface{}{
+			"type": agent.NotificationTypeSettingsChanged,
 			"changes": map[string]interface{}{
 				agent.OptionGroupKeyPermissionMode: map[string]string{"old": oldMode, "new": mode},
 			},
@@ -818,7 +848,7 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 	}
 }
 
-func (s *agentOutputSink) BroadcastSettingsRefreshed(model, effort, permissionMode string, extraSettings map[string]string) {
+func (s *agentOutputSink) PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string) {
 	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
 		slog.Error("failed to fetch agent for settings broadcast",
@@ -881,12 +911,80 @@ func (s *agentOutputSink) BroadcastStatusActive(sessionID string) {
 	})
 }
 
-func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
-	s.h.broadcastAgentSessionInfo(s.agentID, info)
+// BroadcastGitStatus emits a partial AgentStatusChange carrying only the
+// agent id and a freshly-computed git status. Auto-fired by
+// PersistMessage at every turn-end (TURN_END role) so the working-tree
+// view stays in sync without provider involvement; providers do not
+// call this directly.
+//
+// The frontend's statusChange handler treats events whose Status is
+// UNSPECIFIED as partial updates and applies only the populated fields,
+// so this avoids re-shipping the full catalog/settings payload that
+// BroadcastStatusActive carries.
+func (s *agentOutputSink) BroadcastGitStatus() {
+	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+	if err != nil {
+		slog.Error("failed to fetch agent for git status broadcast",
+			"agent_id", s.agentID, "error", err)
+		return
+	}
+	sc := &leapmuxv1.AgentStatusChange{
+		AgentId:   s.agentID,
+		GitStatus: gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
+	}
+	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+		AgentId: s.agentID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
+	})
 }
 
-func (s *agentOutputSink) BroadcastNotification(content map[string]interface{}) {
-	s.h.BroadcastNotification(s.agentID, s.agentProvider, content)
+// BroadcastSessionInfo emits an ephemeral agent_session_info update,
+// but only for keys whose values changed since the previous broadcast.
+// Agent handlers commonly re-emit identical payloads (Pi especially,
+// since it fans out from many event handlers, but Claude/Codex/ACP also
+// repeat usage and rate-limit values across successive turns); shipping
+// unchanged keys wakes reactive frontend consumers for nothing. When
+// every key is equal to the cached value, the broadcast is dropped
+// entirely.
+//
+// Equality is per-key on the JSON-marshaled bytes of each value: scalars
+// short-circuit to a tiny `bytes.Equal`, and nested maps (contextUsage,
+// rateLimits) compare as their canonical JSON encoding (Go marshals map
+// keys in sorted order). Any change inside a nested map ships the whole
+// sub-map, which matches the frontend store's per-key merge semantics
+// in agentSession.store.ts. A marshal failure is treated as "changed"
+// so the value still passes through to the broadcast.
+func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
+	if len(info) == 0 {
+		return
+	}
+	s.sessionInfoMu.Lock()
+	if s.lastSessionInfo == nil {
+		s.lastSessionInfo = make(map[string][]byte, len(info))
+	}
+	changed := make(map[string]interface{}, len(info))
+	for k, v := range info {
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			// Can't dedup without canonical bytes — pass through.
+			changed[k] = v
+			continue
+		}
+		if prev, ok := s.lastSessionInfo[k]; ok && bytes.Equal(prev, encoded) {
+			continue
+		}
+		changed[k] = v
+		s.lastSessionInfo[k] = encoded
+	}
+	s.sessionInfoMu.Unlock()
+	if len(changed) == 0 {
+		return
+	}
+	s.h.broadcastAgentSessionInfo(s.agentID, changed)
+}
+
+func (s *agentOutputSink) PersistLeapMuxNotification(content map[string]interface{}) {
+	s.h.PersistLeapMuxNotification(s.agentID, s.agentProvider, content)
 }
 
 func (s *agentOutputSink) StorePlanModeToolUse(toolUseID, targetMode string) {
@@ -901,8 +999,8 @@ func (s *agentOutputSink) LoadAndDeletePlanModeToolUse(toolUseID string) (string
 	return v.(string), true
 }
 
-func (s *agentOutputSink) UpdatePlan(filePath string, content []byte, compression leapmuxv1.ContentCompression, title string) {
-	s.h.updatePlan(s.agentID, filePath, content, compression, title)
+func (s *agentOutputSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {
+	s.h.updatePlan(s.agentID, content, compression, title)
 }
 
 func (s *agentOutputSink) ScheduleAutoContinue(schedule agent.AutoContinueSchedule) {
@@ -998,7 +1096,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 
 // persistNotificationThreaded persists a notification message, appending it
 // to the current notification thread if one exists.
-func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, consolidator agent.NotificationConsolidator, role leapmuxv1.MessageRole, contentJSON []byte) error {
+func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, role leapmuxv1.MessageRole, contentJSON []byte) error {
 	if h.wakeLock != nil {
 		h.wakeLock.RecordActivity()
 	}
@@ -1008,7 +1106,7 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 
 	if ref, ok := h.lastNotifThread.Load(agentID); ok {
 		threadRef := ref.(*notifThreadRef)
-		if err := h.appendToNotificationThread(agentID, agentProvider, consolidator, threadRef, role, contentJSON); err == nil {
+		if err := h.appendToNotificationThread(agentID, agentProvider, plugin, threadRef, role, contentJSON); err == nil {
 			return nil
 		}
 	}
@@ -1017,7 +1115,7 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 }
 
 // appendToNotificationThread appends a message to an existing notification thread.
-func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, consolidator agent.NotificationConsolidator, threadRef *notifThreadRef, role leapmuxv1.MessageRole, contentJSON []byte) error {
+func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, threadRef *notifThreadRef, role leapmuxv1.MessageRole, contentJSON []byte) error {
 	parentRow, err := h.queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
 		ID:      threadRef.msgID,
 		AgentID: agentID,
@@ -1041,7 +1139,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		wrapper.OldSeqs = wrapper.OldSeqs[len(wrapper.OldSeqs)-16:]
 	}
 	wrapper.Messages = append(wrapper.Messages, contentJSON)
-	wrapper.Messages = consolidateNotificationThread(wrapper.Messages, consolidator)
+	wrapper.Messages = consolidateNotificationThread(wrapper.Messages, plugin)
 
 	merged, err := json.Marshal(wrapper)
 	if err != nil {
@@ -1130,7 +1228,7 @@ func (h *OutputHandler) broadcastMessage(agentID string, msg *leapmuxv1.AgentCha
 // broadcastAgentSessionInfo broadcasts ephemeral agent session metadata.
 func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[string]interface{}) {
 	content := map[string]interface{}{
-		"type": "agent_session_info",
+		"type": agent.NotificationTypeAgentSessionInfo,
 		"info": info,
 	}
 	contentJSON, err := json.Marshal(content)
@@ -1148,91 +1246,150 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 	})
 }
 
-// BroadcastNotification persists and broadcasts a LEAPMUX notification.
-func (h *OutputHandler) BroadcastNotification(agentID string, agentProvider leapmuxv1.AgentProvider, content map[string]interface{}) {
+// PersistLeapMuxNotification persists and broadcasts a LEAPMUX notification.
+func (h *OutputHandler) PersistLeapMuxNotification(agentID string, agentProvider leapmuxv1.AgentProvider, content map[string]interface{}) {
 	contentJSON, err := json.Marshal(content)
 	if err != nil {
 		slog.Warn("marshal notification content", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := h.persistNotificationThreaded(agentID, agentProvider, agent.NotificationConsolidatorForProvider(agentProvider), leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, contentJSON); err != nil {
+	if err := h.persistNotificationThreaded(agentID, agentProvider, agent.ProviderFor(agentProvider), leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, contentJSON); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
 }
 
-// updatePlan persists a plan file path, content, and title for an agent.
-func (h *OutputHandler) updatePlan(agentID, filePath string, compressed []byte, compression leapmuxv1.ContentCompression, title string) {
+// updatePlan archives the agent's prior plan file (if any), writes the new
+// content to a fresh canonical path, and emits a `plan_updated` notification
+// when the user-visible title or path changed. The on-disk plan file is the
+// sole source of truth for content; the agents row only stores the path and
+// the most recent title. The canonical path is always derived from
+// `<sanitized_title>.<agent_id>.md`.
+func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compression leapmuxv1.ContentCompression, title string) {
 	agentRow, err := h.queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Warn("failed to fetch agent for plan update", "agent_id", agentID, "error", err)
 		return
 	}
 
-	// Preserve existing plan_title when the new content yields no title.
+	// Decompress the new content. An empty payload after decompression is
+	// treated as "no new plan content" — we only fall through to the
+	// title/path bookkeeping below when the caller has actual bytes.
+	var newContent []byte
+	if len(compressed) > 0 {
+		decompressed, err := msgcodec.Decompress(compressed, compression)
+		if err != nil {
+			slog.Warn("failed to decompress plan content", "agent_id", agentID, "error", err)
+			return
+		}
+		newContent = decompressed
+	}
+	if len(newContent) == 0 {
+		return
+	}
+
+	// Preserve existing plan_title when the caller's payload had no first
+	// line we could extract from. The title comparison below is then a
+	// no-op for that field.
 	if title == "" {
 		title = agentRow.PlanTitle
 	}
 
-	canonicalPath := agentRow.PlanFilePath
-	if len(compressed) > 0 {
-		content, err := msgcodec.Decompress(compressed, compression)
-		if err != nil {
-			slog.Warn("failed to decompress plan content", "agent_id", agentID, "error", err)
-		} else if len(content) > 0 {
-			materializedPath, err := h.materializePlanFile(title, content, h.now())
-			if err != nil {
-				slog.Warn("failed to materialize plan file", "agent_id", agentID, "error", err)
-			} else {
-				canonicalPath = materializedPath
-			}
+	now := h.now()
+
+	// Disk-based no-op detection. If the canonical content on disk matches
+	// the new payload byte-for-byte and the title is unchanged, there is
+	// nothing to archive, write, or broadcast — short-circuit before any
+	// filesystem mutation.
+	if title == agentRow.PlanTitle && agentRow.PlanFilePath != "" {
+		if existing, err := os.ReadFile(agentRow.PlanFilePath); err == nil && bytes.Equal(existing, newContent) {
+			return
 		}
 	}
 
-	if filePath != "" && canonicalPath == "" {
-		slog.Debug("ignoring provider-native plan path in favor of worker materialization", "agent_id", agentID, "provider_path", filePath)
+	dir, err := h.resolvePlanDir(agentRow.PlanFilePath, now)
+	if err != nil {
+		slog.Warn("failed to resolve plan dir", "agent_id", agentID, "error", err)
+		return
+	}
+	canonicalPath := filepath.Join(dir, planFilename(title, agentID))
+
+	// Archive whatever the agent's prior plan file is, regardless of
+	// title — option (a) of the title-change semantics. The archive
+	// preserves the prior name + agent id, so historical files retain
+	// the title they had when written.
+	if agentRow.PlanFilePath != "" {
+		if _, err := h.archivePlanFile(agentRow.PlanFilePath, now); err != nil {
+			slog.Warn("failed to archive prior plan file", "agent_id", agentID, "prior_path", agentRow.PlanFilePath, "error", err)
+		}
 	}
 
-	shouldAutoRename := title != "" &&
+	if err := writePlanFile(canonicalPath, newContent); err != nil {
+		slog.Warn("failed to write plan file", "agent_id", agentID, "path", canonicalPath, "error", err)
+		return
+	}
+
+	titleChanged := title != agentRow.PlanTitle
+	pathChanged := canonicalPath != agentRow.PlanFilePath
+	shouldAutoRename := titleChanged && title != "" &&
 		title != agentRow.Title &&
 		(agentRow.Title == agentRow.PlanTitle ||
 			agentAutoTitlePattern.MatchString(agentRow.Title))
 
 	if shouldAutoRename {
 		if err := h.queries.UpdateAgentPlanAndTitle(bgCtx(), db.UpdateAgentPlanAndTitleParams{
-			PlanFilePath:           canonicalPath,
-			PlanContent:            compressed,
-			PlanContentCompression: compression,
-			PlanTitle:              title,
-			Title:                  title,
-			ID:                     agentID,
+			PlanFilePath: canonicalPath,
+			PlanTitle:    title,
+			Title:        title,
+			ID:           agentID,
 		}); err != nil {
 			slog.Warn("failed to update agent plan", "agent_id", agentID, "error", err)
-		} else {
-			h.BroadcastNotification(agentID, agentRow.AgentProvider, map[string]interface{}{
-				"type":  "agent_renamed",
-				"title": title,
-			})
+			return
 		}
-	} else {
+	} else if titleChanged || pathChanged {
 		if err := h.queries.UpdateAgentPlan(bgCtx(), db.UpdateAgentPlanParams{
-			PlanFilePath:           canonicalPath,
-			PlanContent:            compressed,
-			PlanContentCompression: compression,
-			PlanTitle:              title,
-			ID:                     agentID,
+			PlanFilePath: canonicalPath,
+			PlanTitle:    title,
+			ID:           agentID,
 		}); err != nil {
 			slog.Warn("failed to update agent plan", "agent_id", agentID, "error", err)
+			return
 		}
 	}
+
+	if !titleChanged && !pathChanged {
+		// Path and title unchanged — content differed (we wouldn't be here
+		// otherwise), but the user-visible header is the same. The new
+		// file is already on disk; no notification needed.
+		return
+	}
+
+	payload := map[string]interface{}{
+		"type":           agent.NotificationTypePlanUpdated,
+		"plan_title":     title,
+		"plan_file_path": canonicalPath,
+	}
+	if shouldAutoRename {
+		payload["update_agent_title"] = true
+	}
+	h.PersistLeapMuxNotification(agentID, agentRow.AgentProvider, payload)
+}
+
+// indexedRaw bundles a message's original index, raw bytes, and (optional)
+// classification so downstream sort-and-emit can reconstruct the persisted
+// thread in original order. idx == -1 marks an empty slot.
+type indexedRaw struct {
+	idx  int
+	raw  json.RawMessage
+	kind agent.NotificationKind
 }
 
 // consolidateNotificationThread consolidates a notification thread's messages.
 // Service-owned LeapMux notification types are merged centrally, while
-// provider-owned raw payloads are classified through the injected consolidator.
+// provider-owned raw payloads are classified through the injected plugin.
 // Ordering is preserved by the last occurrence index of each retained entry.
-func consolidateNotificationThread(messages []json.RawMessage, providerConsolidator agent.NotificationConsolidator) []json.RawMessage {
-	if providerConsolidator == nil {
-		providerConsolidator = agent.NotificationConsolidatorForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
+func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Provider) []json.RawMessage {
+	if plugin == nil {
+		plugin = agent.ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
 	}
 
 	type settingsChange struct {
@@ -1249,32 +1406,22 @@ func consolidateNotificationThread(messages []json.RawMessage, providerConsolida
 		} `json:"rate_limit_info,omitempty"`
 	}
 
+	// Last-by-index slots: each holds the most recent occurrence of one
+	// notification class. settings is special — its raw payload is rebuilt
+	// at emit time from mergedChanges so the persisted entry reflects only
+	// the net effective diff across the thread.
+	settings := indexedRaw{idx: -1}
+	contextCleared := indexedRaw{idx: -1}
+	interrupted := indexedRaw{idx: -1}
+	planExec := indexedRaw{idx: -1}
+	planUpdated := indexedRaw{idx: -1}
+	status := indexedRaw{idx: -1}
+	apiRetry := indexedRaw{idx: -1}
+
 	mergedChanges := map[string]settingsChange{}
-	settingsLastIdx := -1
-
-	contextClearedRaw := json.RawMessage(nil)
-	contextClearedLastIdx := -1
-
-	interruptedRaw := json.RawMessage(nil)
-	interruptedLastIdx := -1
-
-	planExecRaw := json.RawMessage(nil)
-	planExecLastIdx := -1
-
-	type indexedRaw struct {
-		idx  int
-		raw  json.RawMessage
-		kind agent.NotificationKind
-	}
 
 	rateLimitByType := map[string]indexedRaw{}
 	providerEntries := map[string]indexedRaw{}
-
-	var latestStatus indexedRaw
-	statusLastIdx := -1
-
-	var latestAPIRetry indexedRaw
-	apiRetryLastIdx := -1
 
 	var keepAll []indexedRaw
 
@@ -1287,7 +1434,7 @@ func consolidateNotificationThread(messages []json.RawMessage, providerConsolida
 		}
 
 		switch env.Type {
-		case "settings_changed":
+		case agent.NotificationTypeSettingsChanged:
 			for key, val := range env.Changes {
 				if existing, ok := mergedChanges[key]; ok {
 					mergedChanges[key] = settingsChange{Old: existing.Old, New: val.New}
@@ -1295,54 +1442,55 @@ func consolidateNotificationThread(messages []json.RawMessage, providerConsolida
 					mergedChanges[key] = val
 				}
 			}
-			settingsLastIdx = i
+			settings.idx = i
 
-		case "context_cleared":
-			contextClearedRaw = raw
-			contextClearedLastIdx = i
+		case agent.NotificationTypeContextCleared:
+			contextCleared = indexedRaw{idx: i, raw: raw}
 			keepAll = slices.DeleteFunc(keepAll, func(ir indexedRaw) bool {
 				return ir.kind == agent.NotificationKindCompactionBoundary
 			})
 
-		case "plan_execution":
-			planExecRaw = raw
-			planExecLastIdx = i
+		case agent.NotificationTypePlanExecution:
+			planExec = indexedRaw{idx: i, raw: raw}
 
-		case "interrupted":
-			interruptedRaw = raw
-			interruptedLastIdx = i
+		case agent.NotificationTypePlanUpdated:
+			// Multiple plan_updated entries within one notification thread
+			// fold to the most recent — same pattern as plan_execution. The
+			// frontend extractor already prefers the latest, but keeping
+			// only the most recent in the persisted thread also keeps the
+			// chat readable when an agent iterates on a plan title.
+			planUpdated = indexedRaw{idx: i, raw: raw}
 
-		case "rate_limit":
+		case agent.NotificationTypeInterrupted:
+			interrupted = indexedRaw{idx: i, raw: raw}
+
+		case agent.NotificationTypeRateLimit:
 			key := "unknown"
 			if env.RLInfo != nil && env.RLInfo.RateLimitType != "" {
 				key = env.RLInfo.RateLimitType
 			}
 			rateLimitByType[key] = indexedRaw{idx: i, raw: raw}
-		case "compacting":
-			latestStatus = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindStatus}
-			statusLastIdx = i
+
+		case agent.NotificationTypeCompacting:
+			status = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindStatus}
 
 		default:
-			class := providerConsolidator.Classify(raw)
+			class := plugin.Classify(raw)
 			switch class.Kind {
 			case agent.NotificationKindStatus:
-				latestStatus = indexedRaw{idx: i, raw: raw, kind: class.Kind}
-				statusLastIdx = i
+				status = indexedRaw{idx: i, raw: raw, kind: class.Kind}
 			case agent.NotificationKindAPIRetry:
-				latestAPIRetry = indexedRaw{idx: i, raw: raw, kind: class.Kind}
-				apiRetryLastIdx = i
+				apiRetry = indexedRaw{idx: i, raw: raw, kind: class.Kind}
 			case agent.NotificationKindCompactionBoundary:
-				statusLastIdx = -1
-				latestStatus = indexedRaw{}
-				if contextClearedLastIdx >= 0 && i > contextClearedLastIdx {
-					contextClearedRaw = nil
-					contextClearedLastIdx = -1
+				status = indexedRaw{idx: -1}
+				if contextCleared.idx >= 0 && i > contextCleared.idx {
+					contextCleared = indexedRaw{idx: -1}
 				}
 				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw, kind: class.Kind})
 			case agent.NotificationKindProviderScoped:
 				prev, ok := providerEntries[class.Key]
 				if ok {
-					merged, err := providerConsolidator.Merge(class, prev.raw, raw)
+					merged, err := plugin.Merge(class, prev.raw, raw)
 					if err != nil {
 						slog.Warn("consolidate provider notification merge failed", "key", class.Key, "error", err)
 						merged = raw
@@ -1359,7 +1507,9 @@ func consolidateNotificationThread(messages []json.RawMessage, providerConsolida
 
 	var entries []indexedRaw
 
-	if settingsLastIdx >= 0 {
+	// Settings is rebuilt at emit time so the persisted payload reflects only
+	// effective net changes; intermediate flips that cancel out are dropped.
+	if settings.idx >= 0 {
 		effective := map[string]settingsChange{}
 		for key, val := range mergedChanges {
 			if val.Old != val.New {
@@ -1368,25 +1518,19 @@ func consolidateNotificationThread(messages []json.RawMessage, providerConsolida
 		}
 		if len(effective) > 0 {
 			entry := map[string]interface{}{
-				"type":    "settings_changed",
+				"type":    agent.NotificationTypeSettingsChanged,
 				"changes": effective,
 			}
 			if data, err := json.Marshal(entry); err == nil {
-				entries = append(entries, indexedRaw{idx: settingsLastIdx, raw: data})
+				entries = append(entries, indexedRaw{idx: settings.idx, raw: data})
 			}
 		}
 	}
 
-	if contextClearedLastIdx >= 0 {
-		entries = append(entries, indexedRaw{idx: contextClearedLastIdx, raw: contextClearedRaw})
-	}
-
-	if planExecLastIdx >= 0 {
-		entries = append(entries, indexedRaw{idx: planExecLastIdx, raw: planExecRaw})
-	}
-
-	if interruptedLastIdx >= 0 {
-		entries = append(entries, indexedRaw{idx: interruptedLastIdx, raw: interruptedRaw})
+	for _, slot := range []indexedRaw{contextCleared, planExec, planUpdated, interrupted, status, apiRetry} {
+		if slot.idx >= 0 {
+			entries = append(entries, slot)
+		}
 	}
 
 	for _, rateLimit := range rateLimitByType {
@@ -1395,14 +1539,6 @@ func consolidateNotificationThread(messages []json.RawMessage, providerConsolida
 
 	for _, providerEntry := range providerEntries {
 		entries = append(entries, providerEntry)
-	}
-
-	if statusLastIdx >= 0 {
-		entries = append(entries, latestStatus)
-	}
-
-	if apiRetryLastIdx >= 0 {
-		entries = append(entries, latestAPIRetry)
 	}
 
 	entries = append(entries, keepAll...)

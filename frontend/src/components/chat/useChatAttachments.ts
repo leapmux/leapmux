@@ -18,7 +18,7 @@ import {
   setAttachments as setAttachmentsCache,
   totalAttachmentSize,
 } from './attachments'
-import { getProviderPlugin } from './providers/registry'
+import { providerFor } from './providers/registry'
 
 export interface UseChatAttachmentsOptions {
   agentId: Accessor<string>
@@ -56,7 +56,7 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
     setAttachments(agentId ? getAttachments(agentId) : [])
   }))
 
-  const capabilities = createMemo(() => getProviderPlugin(opts.agentProvider())?.attachments)
+  const capabilities = createMemo(() => providerFor(opts.agentProvider())?.attachments)
   const acceptAttribute = createMemo(() => buildAcceptAttribute(capabilities()))
 
   const addFiles = async (files: FileList | File[] | PendingAttachmentFile[], isPastedImage?: boolean): Promise<number> => {

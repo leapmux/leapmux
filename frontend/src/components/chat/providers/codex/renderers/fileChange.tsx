@@ -12,7 +12,7 @@ import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
 import { diffStatsFromHunks, parseUnifiedDiffCached, rawDiffToHunks } from '../../../diff'
-import { FileEditDiffBody } from '../../../results/fileEditDiff'
+import { FileEditDiffBody, fileEditDiffFromHunks, fileEditDiffFromNewFile } from '../../../results/fileEditDiff'
 import { ToolResultMessage, ToolUseLayout } from '../../../toolRenderers'
 import {
   toolInputPath,
@@ -23,7 +23,6 @@ import {
 } from '../../../toolStyles.css'
 import { renderDeleteTitle, renderEditTitle, renderWriteTitle } from '../../../toolTitleRenderers'
 import { defineCodexRenderer } from '../defineRenderer'
-import { codexFileEditFromAdd, codexFileEditFromHunks } from '../extractors/fileEdit'
 import { LiveStreamOutput } from '../renderHelpers'
 import { readLiveStream } from '../status'
 
@@ -109,7 +108,7 @@ function renderCompletedFileChange(args: FileChangeRenderArgs): JSX.Element {
     return (
       <ToolResultMessage
         resultContent=""
-        diffSource={codexFileEditFromAdd(shape.simpleAddPath, shape.simpleAddContent)}
+        diffSource={fileEditDiffFromNewFile(shape.simpleAddPath, shape.simpleAddContent)}
         context={context}
       />
     )
@@ -143,7 +142,7 @@ function renderCompletedFileChange(args: FileChangeRenderArgs): JSX.Element {
                   </div>
                 </Show>
                 <FileEditDiffBody
-                  source={codexFileEditFromHunks(entry.path, entry.hunks)}
+                  source={fileEditDiffFromHunks(entry.path, entry.hunks)}
                   view={context?.diffView?.() ?? 'unified'}
                 />
               </div>

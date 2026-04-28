@@ -104,14 +104,14 @@ describe('claude Bash interrupted renders "Interrupted"', () => {
   })
 })
 
-describe('claude Bash success renders "Success"', () => {
-  it('renders Success status with stdout', () => {
+describe('claude Bash success hides the success status row', () => {
+  it('renders stdout without a Success label', () => {
     const parsed = makeBashResult({
       tool_name: 'Bash',
       stdout: 'all good',
     }, '')
     const { container } = renderClaudeToolResult(parsed, { spanType: 'Bash' })
-    expect(container.textContent ?? '').toContain('Success')
     expect(container.textContent ?? '').toContain('all good')
+    expect(container.textContent ?? '').not.toContain('Success')
   })
 })

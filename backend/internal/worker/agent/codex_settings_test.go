@@ -65,9 +65,7 @@ func newCodexAgentForRPC(t *testing.T, respond func(method string) json.RawMessa
 			mu.Lock()
 			requests = append(requests, codexRecordedRequest{Method: req.Method, Params: req.Params})
 			mu.Unlock()
-			if ch, ok := agent.pendingReqs.Load(req.ID); ok {
-				ch.(chan json.RawMessage) <- respond(req.Method)
-			}
+			agent.deliver(req.ID, respond(req.Method))
 		}
 	}()
 

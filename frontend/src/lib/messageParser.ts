@@ -3,6 +3,7 @@ import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.stor
 import type { TodoItem } from '~/stores/chat.store'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { decompressContentToString } from '~/lib/decompress'
+import { isObject, pickFirstNumber, pickNumber } from '~/lib/jsonPick'
 import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { normalizeTodoStatus, rawTodosToItems } from '~/stores/chat.store'
 
@@ -28,6 +29,13 @@ const EMPTY_PARSED: ParsedMessageContent = {
   wrapper: null,
 }
 
+// AgentChatMessage is immutable once persisted, so caching by message
+// reference avoids the repeated decompress + JSON.parse cost across
+// every caller of parseMessageContent (isAgentWorking scans, the
+// MessageBubble render path, findLatestTodos, etc.). The WeakMap lets
+// trimmed/replaced messages get GC'd without manual eviction.
+const parseCache = new WeakMap<AgentChatMessage, ParsedMessageContent>()
+
 /**
  * Decompress and parse an AgentChatMessage's content in a single pass.
  * Never throws -- returns safe defaults on any failure.
@@ -38,6 +46,15 @@ const EMPTY_PARSED: ParsedMessageContent = {
  * All other messages are stored as raw JSON (no wrapper).
  */
 export function parseMessageContent(message: AgentChatMessage): ParsedMessageContent {
+  const cached = parseCache.get(message)
+  if (cached)
+    return cached
+  const result = parseMessageContentImpl(message)
+  parseCache.set(message, result)
+  return result
+}
+
+function parseMessageContentImpl(message: AgentChatMessage): ParsedMessageContent {
   const text = decompressContentToString(message.content, message.contentCompression)
   if (text === null)
     return EMPTY_PARSED
@@ -170,6 +187,43 @@ export function findLatestTodos(messages: AgentChatMessage[]): TodoItem[] | null
   return null
 }
 
+/** Normalize a snake_case context_usage broadcast payload into AgentSessionInfo shape. */
+export function normalizeContextUsage(value: unknown): ContextUsageInfo | undefined {
+  if (!isObject(value))
+    return undefined
+
+  const inputTokens = pickNumber(value, 'input_tokens', 0)
+  const cacheCreationInputTokens = pickNumber(value, 'cache_creation_input_tokens', 0)
+  const cacheReadInputTokens = pickNumber(value, 'cache_read_input_tokens', 0)
+  const outputTokens = pickNumber(value, 'output_tokens', undefined)
+  // Pi's native RPC shape calls this `tokens`; LeapMux-normalized payloads use
+  // `context_tokens` so the grid can distinguish authoritative totals from the
+  // Claude-style input/cache component fields.
+  const contextTokens = pickFirstNumber(value, ['context_tokens', 'tokens'])
+  const contextWindow = pickNumber(value, 'context_window', undefined)
+
+  const hasTokenData = inputTokens > 0
+    || cacheCreationInputTokens > 0
+    || cacheReadInputTokens > 0
+    || (outputTokens ?? 0) > 0
+    || (contextTokens ?? 0) > 0
+  if (!hasTokenData)
+    return undefined
+
+  const usage: ContextUsageInfo = {
+    inputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+  }
+  if (outputTokens !== undefined)
+    usage.outputTokens = outputTokens
+  if (contextTokens !== undefined)
+    usage.contextTokens = contextTokens
+  if (contextWindow !== undefined && contextWindow > 0)
+    usage.contextWindow = contextWindow
+  return usage
+}
+
 /** Extract context usage from an assistant message's inner usage field. */
 export function extractAssistantUsage(parsed: ParsedMessageContent): {
   totalCostUsd?: number
@@ -181,21 +235,55 @@ export function extractAssistantUsage(parsed: ParsedMessageContent): {
   // Skip subagent messages — their usage is already included in the parent's totals.
   if (inner.parent_tool_use_id)
     return null
+  const result: { totalCostUsd?: number, contextUsage?: ContextUsageInfo } = {}
+
+  const totalCostUsd = pickNumber(inner, 'total_cost_usd', undefined)
+  if (totalCostUsd !== undefined)
+    result.totalCostUsd = totalCostUsd
+
+  const normalizedContextUsage = normalizeContextUsage(inner.context_usage)
+  if (normalizedContextUsage)
+    result.contextUsage = normalizedContextUsage
+
   const usage = (inner.message as Record<string, unknown> | undefined)?.usage as
     Record<string, unknown> | undefined
-  if (!usage)
-    return null
-
-  const result: { totalCostUsd?: number, contextUsage?: ContextUsageInfo } = {}
-  if (typeof inner.total_cost_usd === 'number')
-    result.totalCostUsd = inner.total_cost_usd as number
-  if (typeof usage.input_tokens === 'number') {
-    result.contextUsage = {
-      inputTokens: (usage.input_tokens as number) ?? 0,
-      cacheCreationInputTokens: (usage.cache_creation_input_tokens as number) ?? 0,
-      cacheReadInputTokens: (usage.cache_read_input_tokens as number) ?? 0,
+  if (usage && !result.contextUsage) {
+    // Claude Code shape.
+    if (typeof usage.input_tokens === 'number') {
+      result.contextUsage = {
+        inputTokens: usage.input_tokens as number,
+        cacheCreationInputTokens: pickNumber(usage, 'cache_creation_input_tokens', 0),
+        cacheReadInputTokens: pickNumber(usage, 'cache_read_input_tokens', 0),
+      }
+    }
+    // Pi shape, retained as a fallback for raw/unaugmented messages. Newer
+    // backend messages carry a normalized top-level contextUsage above.
+    else if (typeof usage.input === 'number') {
+      const inputTokens = usage.input as number
+      const cacheCreationInputTokens = pickNumber(usage, 'cacheWrite', 0)
+      const cacheReadInputTokens = pickNumber(usage, 'cacheRead', 0)
+      const outputTokens = pickNumber(usage, 'output', undefined)
+      const totalTokens = pickNumber(usage, 'totalTokens', undefined)
+      const hasPiTokenData = inputTokens > 0
+        || cacheCreationInputTokens > 0
+        || cacheReadInputTokens > 0
+        || (outputTokens ?? 0) > 0
+        || (totalTokens ?? 0) > 0
+      if (hasPiTokenData) {
+        const piUsage: ContextUsageInfo = {
+          inputTokens,
+          cacheCreationInputTokens,
+          cacheReadInputTokens,
+        }
+        if (outputTokens !== undefined)
+          piUsage.outputTokens = outputTokens
+        if (totalTokens !== undefined && totalTokens > 0)
+          piUsage.contextTokens = totalTokens
+        result.contextUsage = piUsage
+      }
     }
   }
+
   return Object.keys(result).length > 0 ? result : null
 }
 
@@ -269,10 +357,11 @@ function findPrimaryContextWindow(modelUsage: Record<string, unknown>, primaryMo
   return maxContextWindow(modelUsage)
 }
 
-/** Extract result-message metadata: subtype, contextWindow, totalCostUsd, numToolUses. */
+/** Extract result-message metadata: subtype, context usage/window, totalCostUsd, numToolUses. */
 export function extractResultMetadata(parsed: ParsedMessageContent, primaryModelId?: string): {
   subtype?: string
   contextWindow?: number
+  contextUsage?: ContextUsageInfo
   totalCostUsd?: number
   numToolUses?: number
 } | null {
@@ -283,7 +372,7 @@ export function extractResultMetadata(parsed: ParsedMessageContent, primaryModel
   if (inner.parent_tool_use_id)
     return null
 
-  const result: { subtype?: string, contextWindow?: number, totalCostUsd?: number, numToolUses?: number } = {}
+  const result: { subtype?: string, contextWindow?: number, contextUsage?: ContextUsageInfo, totalCostUsd?: number, numToolUses?: number } = {}
 
   if (inner.subtype)
     result.subtype = inner.subtype as string
@@ -303,13 +392,18 @@ export function extractResultMetadata(parsed: ParsedMessageContent, primaryModel
       result.contextWindow = cw
   }
 
-  if (typeof inner.total_cost_usd === 'number')
-    result.totalCostUsd = inner.total_cost_usd as number
+  const normalizedContextUsage = normalizeContextUsage(inner.context_usage)
+  if (normalizedContextUsage)
+    result.contextUsage = normalizedContextUsage
+
+  const totalCostUsd = pickNumber(inner, 'total_cost_usd', undefined)
+  if (totalCostUsd !== undefined)
+    result.totalCostUsd = totalCostUsd
 
   return Object.keys(result).length > 0 ? result : null
 }
 
-/** Extract rate limit info from a LEAPMUX rate_limit or Codex rateLimits/updated inner message. */
+/** Extract rate limit info from a Claude rate_limit_event or Codex rateLimits/updated inner message. */
 export function extractRateLimitInfo(parsed: ParsedMessageContent): {
   key: string
   info: RateLimitInfo
@@ -318,8 +412,8 @@ export function extractRateLimitInfo(parsed: ParsedMessageContent): {
   if (!inner)
     return []
 
-  // Claude Code format: {type: "rate_limit", rate_limit_info: {...}}
-  if (inner.type === 'rate_limit') {
+  // Claude raw rate_limit_event format: {type:"rate_limit_event", rate_limit_info:{...}}
+  if (inner.type === 'rate_limit_event') {
     const rlInfo = inner.rate_limit_info as Record<string, unknown> | undefined
     if (!rlInfo || typeof rlInfo !== 'object')
       return []
@@ -327,7 +421,7 @@ export function extractRateLimitInfo(parsed: ParsedMessageContent): {
     return [{ key, info: rlInfo as RateLimitInfo }]
   }
 
-  // Codex native format: {method: "account/rateLimits/updated", params: {rateLimits: {primary: {...}, secondary: {...}}}}
+  // Codex native format: {method:"account/rateLimits/updated", params:{rateLimits:{primary:{...},secondary:{...}}}}
   if (inner.method === CODEX_RATE_LIMITS_METHOD) {
     const results: { key: string, info: RateLimitInfo }[] = []
     for (const { info } of iterCodexRateLimitTiers(inner)) {
@@ -353,16 +447,37 @@ export function extractSettingsChanges(parsed: ParsedMessageContent): {
   return changes as { [key: string]: { old: string, new: string } | undefined }
 }
 
-/** Extract renamed title from an agent_renamed notification (wrapped or unwrapped). */
-export function extractAgentRenamed(parsed: ParsedMessageContent): string | undefined {
+/**
+ * Plan-update payload extracted from a `plan_updated` LEAPMUX notification.
+ * `updateAgentTitle === true` signals the backend's auto-rename branch
+ * fired and the agent tab name should be updated to `planTitle`.
+ */
+export interface PlanUpdatedInfo {
+  planTitle: string
+  planFilePath: string
+  updateAgentTitle: boolean
+}
+
+/**
+ * Extract plan_updated payload from a notification (wrapped or unwrapped).
+ * Returns the most recent `plan_updated` entry in the wrapper, or undefined
+ * if none present.
+ */
+export function extractPlanUpdated(parsed: ParsedMessageContent): PlanUpdatedInfo | undefined {
   const messagesToCheck: unknown[] = parsed.wrapper
     ? parsed.wrapper.messages
     : parsed.topLevel ? [parsed.topLevel] : []
-  for (const msg of messagesToCheck) {
+  // Iterate in reverse so the most recent entry in a consolidated thread wins.
+  for (let i = messagesToCheck.length - 1; i >= 0; i--) {
+    const msg = messagesToCheck[i]
     if (typeof msg === 'object' && msg !== null) {
       const m = msg as Record<string, unknown>
-      if (m.type === 'agent_renamed' && typeof m.title === 'string' && m.title !== '') {
-        return m.title as string
+      if (m.type === 'plan_updated') {
+        return {
+          planTitle: typeof m.plan_title === 'string' ? m.plan_title : '',
+          planFilePath: typeof m.plan_file_path === 'string' ? m.plan_file_path : '',
+          updateAgentTitle: m.update_agent_title === true,
+        }
       }
     }
   }

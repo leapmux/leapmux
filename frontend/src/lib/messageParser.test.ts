@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { makeMessage, rawContent } from '../../tests/unit/helpers/messageFactory'
 import {
-  extractAgentRenamed,
   extractAssistantUsage,
   extractCodexTokenUsage,
   extractPlanFilePath,
+  extractPlanUpdated,
   extractRateLimitInfo,
   extractResultMetadata,
   extractSettingsChanges,
@@ -350,6 +350,71 @@ describe('extractAssistantUsage', () => {
     expect(extractAssistantUsage(parseMessageContent(msg))).toBeNull()
   })
 
+  it('extracts normalized Pi usage and cumulative cost from augmented message_end', () => {
+    const content = {
+      type: 'message_end',
+      total_cost_usd: 0.12,
+      context_usage: {
+        input_tokens: 100,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 20,
+        output_tokens: 10,
+        context_window: 200000,
+      },
+      message: {
+        role: 'assistant',
+        usage: {
+          input: 100,
+          output: 10,
+          cacheRead: 20,
+          cacheWrite: 5,
+          totalTokens: 130,
+        },
+      },
+    }
+    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const result = extractAssistantUsage(parseMessageContent(msg))
+
+    expect(result).toEqual({
+      totalCostUsd: 0.12,
+      contextUsage: {
+        inputTokens: 100,
+        cacheCreationInputTokens: 5,
+        cacheReadInputTokens: 20,
+        outputTokens: 10,
+        contextWindow: 200000,
+      },
+    })
+  })
+
+  it('extracts raw Pi usage as a fallback for unaugmented message_end', () => {
+    const content = {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        usage: {
+          input: 100,
+          output: 10,
+          cacheRead: 20,
+          cacheWrite: 5,
+          totalTokens: 130,
+        },
+      },
+    }
+    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const result = extractAssistantUsage(parseMessageContent(msg))
+
+    expect(result).toEqual({
+      contextUsage: {
+        inputTokens: 100,
+        cacheCreationInputTokens: 5,
+        cacheReadInputTokens: 20,
+        outputTokens: 10,
+        contextTokens: 130,
+      },
+    })
+  })
+
   it('returns null for subagent messages with parent_tool_use_id', () => {
     const content = {
       type: 'assistant',
@@ -429,13 +494,43 @@ describe('extractResultMetadata', () => {
         'claude-sonnet': { contextWindow: 200000 },
       },
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg))
 
     expect(result).toEqual({
       subtype: 'turn_end',
       contextWindow: 200000,
       totalCostUsd: 0.10,
+    })
+  })
+
+  it('extracts normalized context usage from augmented Pi agent_end', () => {
+    const content = {
+      type: 'agent_end',
+      total_cost_usd: 0.42,
+      context_usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 0,
+        context_tokens: 60000,
+        context_window: 200000,
+      },
+      messages: [],
+    }
+    const msg = makeMsg(MessageRole.TURN_END, content)
+    const result = extractResultMetadata(parseMessageContent(msg))
+
+    expect(result).toEqual({
+      contextUsage: {
+        inputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+        contextTokens: 60000,
+        contextWindow: 200000,
+      },
+      totalCostUsd: 0.42,
     })
   })
 
@@ -448,7 +543,7 @@ describe('extractResultMetadata', () => {
         'claude-opus-4-6[1m]': { contextWindow: 1000000 },
       },
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg), 'opus[1m]')
 
     expect(result).toEqual({
@@ -466,7 +561,7 @@ describe('extractResultMetadata', () => {
         'claude-opus-4-6-20251001': { contextWindow: 200000 },
       },
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg), 'opus')
 
     expect(result).toEqual({
@@ -484,7 +579,7 @@ describe('extractResultMetadata', () => {
         'claude-opus-4-6[1m]': { contextWindow: 1000000 },
       },
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg), 'sonnet')
 
     expect(result).toEqual({
@@ -494,13 +589,13 @@ describe('extractResultMetadata', () => {
   })
 
   it('returns null for empty inner message', () => {
-    const msg = makeMsg(MessageRole.RESULT, {})
+    const msg = makeMsg(MessageRole.TURN_END, {})
     expect(extractResultMetadata(parseMessageContent(msg))).toBeNull()
   })
 
   it('extracts only subtype when no modelUsage or cost', () => {
     const content = { type: 'result', subtype: 'turn_end' }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     expect(extractResultMetadata(parseMessageContent(msg))).toEqual({ subtype: 'turn_end' })
   })
 
@@ -514,7 +609,7 @@ describe('extractResultMetadata', () => {
         'claude-sonnet': { contextWindow: 200000 },
       },
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     expect(extractResultMetadata(parseMessageContent(msg))).toBeNull()
   })
 
@@ -524,7 +619,7 @@ describe('extractResultMetadata', () => {
       subtype: 'turn_end',
       num_tool_uses: 5,
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_end', numToolUses: 5 })
   })
@@ -535,7 +630,7 @@ describe('extractResultMetadata', () => {
       subtype: 'turn_end',
       num_tool_uses: 0,
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_end', numToolUses: 0 })
   })
@@ -546,7 +641,7 @@ describe('extractResultMetadata', () => {
       turn: { status: 'completed', usage: { inputTokens: 100, outputTokens: 50 } },
       num_tool_uses: 3,
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 3 })
   })
@@ -556,7 +651,7 @@ describe('extractResultMetadata', () => {
       turn: { status: 'completed', usage: { inputTokens: 100, outputTokens: 50 } },
       num_tool_uses: 0,
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 0 })
   })
@@ -566,7 +661,7 @@ describe('extractResultMetadata', () => {
       turn: { status: 'failed' },
       num_tool_uses: 0,
     }
-    const msg = makeMsg(MessageRole.RESULT, content)
+    const msg = makeMsg(MessageRole.TURN_END, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 0 })
   })
@@ -577,16 +672,16 @@ describe('extractResultMetadata', () => {
 // ---------------------------------------------------------------------------
 
 describe('extractRateLimitInfo', () => {
-  it('extracts rate limit info', () => {
+  it('extracts rate limit info from raw rate_limit_event', () => {
     const content = {
-      type: 'rate_limit',
+      type: 'rate_limit_event',
       rate_limit_info: {
         rateLimitType: 'five_hour',
         status: 'allowed_warning',
         utilization: 0.85,
       },
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageRole.SYSTEM, wrap(content))
     const result = extractRateLimitInfo(parseMessageContent(msg))
 
     expect(result).toEqual([{
@@ -597,22 +692,33 @@ describe('extractRateLimitInfo', () => {
 
   it('defaults key to unknown when rateLimitType is missing', () => {
     const content = {
-      type: 'rate_limit',
+      type: 'rate_limit_event',
       rate_limit_info: { status: 'exceeded' },
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageRole.SYSTEM, wrap(content))
     const result = extractRateLimitInfo(parseMessageContent(msg))
     expect(result[0].key).toBe('unknown')
   })
 
-  it('returns empty array for non-rate_limit type', () => {
+  it('returns empty array for non-rate_limit_event type', () => {
     const content = { type: 'settings_changed', rate_limit_info: {} }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
     expect(extractRateLimitInfo(parseMessageContent(msg))).toEqual([])
   })
 
   it('returns empty array when rate_limit_info is missing', () => {
-    const content = { type: 'rate_limit' }
+    const content = { type: 'rate_limit_event' }
+    const msg = makeMsg(MessageRole.SYSTEM, wrap(content))
+    expect(extractRateLimitInfo(parseMessageContent(msg))).toEqual([])
+  })
+
+  it('returns empty array for the legacy synthesized {type:"rate_limit"} shape (deprecated)', () => {
+    // Old-style synthesized envelope no longer produced by the worker;
+    // legacy DB rows render as raw-JSON fallback per the migration plan.
+    const content = {
+      type: 'rate_limit',
+      rate_limit_info: { rateLimitType: 'five_hour', status: 'exceeded' },
+    }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
     expect(extractRateLimitInfo(parseMessageContent(msg))).toEqual([])
   })
@@ -678,45 +784,82 @@ describe('extractSettingsChanges', () => {
 })
 
 // ---------------------------------------------------------------------------
-// extractAgentRenamed
+// extractPlanUpdated
 // ---------------------------------------------------------------------------
 
-describe('extractAgentRenamed', () => {
-  it('extracts title from wrapped agent_renamed message', () => {
-    const content = { type: 'agent_renamed', title: 'Add authentication' }
+describe('extractPlanUpdated', () => {
+  it('extracts payload from a wrapped plan_updated message', () => {
+    const content = {
+      type: 'plan_updated',
+      plan_title: 'Add authentication',
+      plan_file_path: '/plans/auth.md',
+    }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
-    expect(extractAgentRenamed(parseMessageContent(msg))).toBe('Add authentication')
+    expect(extractPlanUpdated(parseMessageContent(msg))).toEqual({
+      planTitle: 'Add authentication',
+      planFilePath: '/plans/auth.md',
+      updateAgentTitle: false,
+    })
   })
 
-  it('extracts title from wrapped thread with multiple messages', () => {
-    const otherMsg = { type: 'settings_changed' }
-    const renameMsg = { type: 'agent_renamed', title: 'My Plan Title' }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(otherMsg, renameMsg))
-    expect(extractAgentRenamed(parseMessageContent(msg))).toBe('My Plan Title')
+  it('preserves update_agent_title:true when the auto-rename branch fired', () => {
+    const content = {
+      type: 'plan_updated',
+      plan_title: 'Auth Refactor',
+      plan_file_path: '/plans/auth.md',
+      update_agent_title: true,
+    }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const got = extractPlanUpdated(parseMessageContent(msg))
+    expect(got?.updateAgentTitle).toBe(true)
   })
 
-  it('extracts title from unwrapped agent_renamed message', () => {
-    const content = { type: 'agent_renamed', title: 'Unwrapped Title' }
+  it('returns the most recent plan_updated entry in a consolidated thread', () => {
+    const earlier = { type: 'plan_updated', plan_title: 'old', plan_file_path: '/plans/old.md' }
+    const later = { type: 'plan_updated', plan_title: 'new', plan_file_path: '/plans/new.md' }
+    const msg = makeMsg(MessageRole.LEAPMUX, wrap(earlier, later))
+    const got = extractPlanUpdated(parseMessageContent(msg))
+    expect(got?.planTitle).toBe('new')
+    expect(got?.planFilePath).toBe('/plans/new.md')
+  })
+
+  it('extracts payload from an unwrapped plan_updated notification', () => {
+    const content = {
+      type: 'plan_updated',
+      plan_title: 'Unwrapped',
+      plan_file_path: '/plans/u.md',
+    }
     const msg = makeMsg(MessageRole.LEAPMUX, content)
-    expect(extractAgentRenamed(parseMessageContent(msg))).toBe('Unwrapped Title')
+    const got = extractPlanUpdated(parseMessageContent(msg))
+    expect(got?.planTitle).toBe('Unwrapped')
+    expect(got?.planFilePath).toBe('/plans/u.md')
   })
 
-  it('returns undefined when title is empty', () => {
-    const content = { type: 'agent_renamed', title: '' }
+  it('returns undefined for non-plan_updated messages', () => {
+    const content = { type: 'settings_changed', plan_title: 'Not a plan update' }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
-    expect(extractAgentRenamed(parseMessageContent(msg))).toBeUndefined()
+    expect(extractPlanUpdated(parseMessageContent(msg))).toBeUndefined()
   })
 
-  it('returns undefined for non-agent_renamed messages', () => {
-    const content = { type: 'settings_changed', title: 'Not a rename' }
+  it('returns the payload even when fields are empty strings, leaving consumer to decide', () => {
+    const content = { type: 'plan_updated', plan_title: '', plan_file_path: '' }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
-    expect(extractAgentRenamed(parseMessageContent(msg))).toBeUndefined()
+    expect(extractPlanUpdated(parseMessageContent(msg))).toEqual({
+      planTitle: '',
+      planFilePath: '',
+      updateAgentTitle: false,
+    })
   })
 
-  it('returns undefined when title is missing', () => {
-    const content = { type: 'agent_renamed' }
+  it('coerces a non-boolean update_agent_title to false', () => {
+    const content = {
+      type: 'plan_updated',
+      plan_title: 't',
+      plan_file_path: '/p.md',
+      update_agent_title: 'truthy-but-not-true',
+    }
     const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
-    expect(extractAgentRenamed(parseMessageContent(msg))).toBeUndefined()
+    expect(extractPlanUpdated(parseMessageContent(msg))?.updateAgentTitle).toBe(false)
   })
 })
 
