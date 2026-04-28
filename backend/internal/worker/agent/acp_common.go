@@ -812,7 +812,7 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		return
 	}
 
-	spanColor := b.sink.PeekNextSpanColor()
+	spanColor := b.sink.ReserveSpanColor(tc.ToolCallID, "")
 	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
 		SpanID: tc.ToolCallID, SpanType: spanType, SpanColor: spanColor,
 	}); err != nil {

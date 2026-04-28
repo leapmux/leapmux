@@ -238,8 +238,8 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 			slog.Error("codex persist compacting notification", "agent_id", a.agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
-		// Pre-peek the span color before persisting so it is recorded with the message.
-		spanColor := a.sink.PeekNextSpanColor()
+		// Reserve the span color before persisting so it is recorded with the message.
+		spanColor := a.sink.ReserveSpanColor(itemID, parentSpanID)
 		// Persist first at parent depth, then open span so the
 		// completed message is indented under the started message.
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
@@ -250,7 +250,7 @@ func (a *CodexAgent) handleItemStarted(params json.RawMessage) {
 		a.sink.SetSpanType(itemID, itemType)
 		a.sink.OpenSpan(itemID, parentSpanID)
 	case "collabAgentToolCall":
-		spanColor := a.sink.PeekNextSpanColor()
+		spanColor := a.sink.ReserveSpanColor(itemID, parentSpanID)
 		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
 		}); err != nil {
