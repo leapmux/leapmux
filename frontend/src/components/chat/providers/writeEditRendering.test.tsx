@@ -51,15 +51,23 @@ function makeClaudeToolUseCategory(name: string, input: Record<string, unknown>)
   return { kind: 'tool_use', toolName: name, toolUse, content: [toolUse] }
 }
 
-function makeClaudeToolResultMessage(toolUseResult: Record<string, unknown> | undefined, content: string = 'OK') {
-  return {
+function makeClaudeToolResultMessage(
+  toolUseResult: Record<string, unknown> | undefined,
+  content: string = 'OK',
+  options: { isError?: boolean, toolUseResultRaw?: unknown } = {},
+) {
+  const block: Record<string, unknown> = { type: 'tool_result', tool_use_id: 'toolu_x', content }
+  if (options.isError !== undefined)
+    block.is_error = options.isError
+  const envelope: Record<string, unknown> = {
     type: 'user',
-    message: {
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content }],
-    },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    message: { role: 'user', content: [block] },
   }
+  if (options.toolUseResultRaw !== undefined)
+    envelope.tool_use_result = options.toolUseResultRaw
+  else if (toolUseResult)
+    envelope.tool_use_result = toolUseResult
+  return envelope
 }
 
 function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: RenderContext) {
@@ -170,6 +178,24 @@ describe('claude Edit tool_result diff selection', () => {
     expect(text).toContain('standaloneOld')
     expect(text).toContain('standaloneNew')
   })
+
+  // Regression: when Claude rejects an Edit (e.g. "File has not been read yet"),
+  // the wire-shape carries `is_error: true` and a `<tool_use_error>` wrapper in
+  // content. Previously we still rendered the tool_use input as a diff, which
+  // misled users into thinking the edit had been applied.
+  it('renders the error message and suppresses the fallback diff when is_error=true', () => {
+    const errorContent = '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>'
+    const parsed = makeClaudeToolResultMessage(undefined, errorContent, {
+      isError: true,
+      toolUseResultRaw: 'Error: File has not been read yet. Read it first before writing to it.',
+    })
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Edit', toolUseParsed: editToolUseParsed })
+    const text = container.textContent ?? ''
+    expect(text).toContain('File has not been read yet')
+    expect(text).not.toContain('fallbackOldZZZ')
+    expect(text).not.toContain('fallbackNewZZZ')
+    expect(text).toContain('Error')
+  })
 })
 
 describe('claude Write tool_result diff selection', () => {
@@ -207,6 +233,19 @@ describe('claude Write tool_result diff selection', () => {
     const text = container.textContent ?? ''
     // The fallback all-added diff renders the new file content.
     expect(text).toContain('fallbackWriteBodyZZZ')
+  })
+
+  it('renders the error message and suppresses the fallback diff when is_error=true', () => {
+    const errorContent = '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>'
+    const parsed = makeClaudeToolResultMessage(undefined, errorContent, {
+      isError: true,
+      toolUseResultRaw: 'Error: File has not been read yet. Read it first before writing to it.',
+    })
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Write', toolUseParsed: writeToolUseParsed })
+    const text = container.textContent ?? ''
+    expect(text).toContain('File has not been read yet')
+    expect(text).not.toContain('fallbackWriteBodyZZZ')
+    expect(text).toContain('Error')
   })
 })
 
