@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
-import type { ParsedCatLine } from '~/components/chat/ReadResultView'
+import type { ParsedCatLine } from '~/components/chat/results/ReadResultView'
 import { createMemo } from 'solid-js'
-import { ReadResultView } from '~/components/chat/ReadResultView'
+import { ReadResultView } from '~/components/chat/results/ReadResultView'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import * as styles from './FileViewer.css'
 

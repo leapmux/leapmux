@@ -1,17 +1,13 @@
 import type { Accessor } from 'solid-js'
 import type { FileAttachment } from './attachments'
-import type { AskQuestionState, EditorContentRef, Question } from './controls/types'
+import type { AskQuestionState, EditorContentRef } from './controls/types'
+import type { ProviderSettingChange } from './providers/registry'
 import type { ControlRequest } from '~/stores/control.store'
-import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createMemo, on } from 'solid-js'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { PREFIX_ASK_STATE, safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/browserStorage'
 import { clearDraft } from '~/lib/editor/draftPersistence'
-import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
-import { buildAskAnswers, trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
-import { sendCodexUserInputResponse } from './controls/CodexControlRequest'
-import { getCursorQuestions, sendCursorQuestionResponse } from './controls/CursorControlRequest'
-import { sendOpenCodeQuestionResponse } from './controls/OpenCodeControlRequest'
+import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
 import { decidePlanModeToggle } from './planModeToggle'
 import { getProviderPlugin } from './providers/registry'
 import './providers'
@@ -21,8 +17,7 @@ export interface ControlResponseHandlingProps {
   agent?: { permissionMode?: string, extraSettings?: Record<string, string>, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array) => Promise<void>
-  onPermissionModeChange?: (mode: PermissionMode) => void
-  onOptionGroupChange?: (key: string, value: string) => void
+  onSettingChange?: (change: ProviderSettingChange) => void
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   settingsLoading?: boolean
   agentWorking?: boolean
@@ -65,14 +60,14 @@ export function useControlResponseHandling(
     if (props.settingsLoading)
       return
     const pm = planModeConfig()
-    if (!pm)
+    const onChange = props.onSettingChange
+    if (!pm || !onChange)
       return
-    const callbacks = { onPermissionModeChange: props.onPermissionModeChange, onOptionGroupChange: props.onOptionGroupChange }
     const currentMode = pm.currentMode(props.agent || {})
     const decision = decidePlanModeToggle({ currentMode, planValue: pm.planValue, previousNonPlanMode })
     if (decision.updatePreviousNonPlanMode !== undefined)
       previousNonPlanMode = decision.updatePreviousNonPlanMode
-    pm.setMode(decision.nextMode, callbacks)
+    pm.setMode(decision.nextMode, onChange)
   }
 
   // The first pending control request (if any).
@@ -161,28 +156,9 @@ export function useControlResponseHandling(
     if (!req)
       return
     if (isAskUserQuestion()) {
-      const provider = props.agent?.agentProvider
-      // Extract and normalize questions once for both page navigation and response building.
-      const normalizedQuestions: Question[] = (() => {
-        switch (provider) {
-          case AgentProvider.CODEX: {
-            const params = req.payload.params as Record<string, unknown> | undefined
-            return (params?.questions as Question[] | undefined) ?? []
-          }
-          case AgentProvider.OPENCODE: {
-            const properties = req.payload.properties as Record<string, unknown> | undefined
-            const rawQuestions = (properties?.questions as Array<Record<string, unknown>> | undefined) ?? []
-            return rawQuestions.map(question => ({
-              ...question,
-              multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
-            })) as Question[]
-          }
-          case AgentProvider.CURSOR:
-            return getCursorQuestions(req.payload)
-          default:
-            return (getToolInput(req.payload).questions as Question[] | undefined) ?? []
-        }
-      })()
+      const provider = props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE
+      const plugin = getProviderPlugin(provider) ?? getProviderPlugin(AgentProvider.CLAUDE_CODE)
+      const normalizedQuestions = plugin?.extractAskUserQuestions?.(req.payload) ?? []
       const normalizedRequest: ControlRequest = {
         ...req,
         payload: {
@@ -194,21 +170,7 @@ export function useControlResponseHandling(
         },
       }
       const sendAskResponse = () => {
-        switch (provider) {
-          case AgentProvider.CODEX:
-            void sendCodexUserInputResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
-            break
-          case AgentProvider.OPENCODE:
-            void sendOpenCodeQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
-            break
-          case AgentProvider.CURSOR:
-            void sendCursorQuestionResponse(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState)
-            break
-          default: {
-            const response = buildAskAnswers(askState, normalizedQuestions, getToolInput(req.payload), req.requestId)
-            void sendControlResponse(req.agentId, new TextEncoder().encode(JSON.stringify(response)))
-          }
-        }
+        void plugin?.sendAskUserQuestionResponse?.(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState, req.payload)
       }
       const submitted = trySubmitAskUserQuestion(
         askState,
@@ -223,14 +185,13 @@ export function useControlResponseHandling(
       resetEditorHeightFn()
       return
     }
-    const toolName = getToolName(req.payload)
-    const response = (content || toolName === 'ExitPlanMode')
-      ? buildDenyResponse(req.requestId, content)
-      : buildAllowResponse(req.requestId, getToolInput(req.payload))
-    if (toolName === 'CodexPlanModePrompt')
-      (response as Record<string, unknown>).codexPlanModePrompt = true
-    const bytes = new TextEncoder().encode(JSON.stringify(response))
-    sendControlResponse(req.agentId, bytes)
+    const provider = props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE
+    const plugin = getProviderPlugin(provider) ?? getProviderPlugin(AgentProvider.CLAUDE_CODE)
+    const response = plugin?.buildControlResponse?.(req.payload, content, req.requestId)
+    if (response) {
+      const bytes = new TextEncoder().encode(JSON.stringify(response))
+      void sendControlResponse(req.agentId, bytes)
+    }
     cleanupControlRequestDrafts(req.requestId)
     resetEditorHeightFn()
   }

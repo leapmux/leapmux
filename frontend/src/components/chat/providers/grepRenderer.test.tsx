@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import './testMocks'
 
-const { formatGrepSummary } = await import('../rendererUtils')
 const { renderMessageContent } = await import('../messageRenderers')
 type RenderContext = import('../messageRenderers').RenderContext
 
@@ -64,48 +63,6 @@ function renderToolResultText(
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
-
-describe('formatGrepSummary', () => {
-  it('returns null when no structured data and no fallback', () => {
-    expect(formatGrepSummary(undefined, undefined)).toBeNull()
-  })
-
-  it('returns fallback when no structured data', () => {
-    expect(formatGrepSummary(undefined, undefined, 'Custom fallback')).toBe('Custom fallback')
-  })
-
-  it('returns "No matches found" when both are 0', () => {
-    expect(formatGrepSummary(0, 0)).toBe('No matches found')
-  })
-
-  it('returns fallback when both are 0 and fallback provided', () => {
-    expect(formatGrepSummary(0, 0, 'No files found')).toBe('No files found')
-  })
-
-  it('returns "Found N files" for files only', () => {
-    expect(formatGrepSummary(5, 0)).toBe('Found 5 files')
-  })
-
-  it('returns "Found 1 file" for singular file', () => {
-    expect(formatGrepSummary(1, 0)).toBe('Found 1 file')
-  })
-
-  it('returns "Found N lines" for lines only', () => {
-    expect(formatGrepSummary(0, 7)).toBe('Found 7 lines')
-  })
-
-  it('returns "Found 1 line" for singular line', () => {
-    expect(formatGrepSummary(0, 1)).toBe('Found 1 line')
-  })
-
-  it('returns "Found N files and M lines" for both', () => {
-    expect(formatGrepSummary(3, 12)).toBe('Found 3 files and 12 lines')
-  })
-
-  it('returns "Found 1 file and 1 line" for singular both', () => {
-    expect(formatGrepSummary(1, 1)).toBe('Found 1 file and 1 line')
-  })
-})
 
 describe('grep tool_use collapsed summary', () => {
   it('shows pattern in header', () => {
@@ -189,7 +146,7 @@ describe('grep tool_result expanded view', () => {
 
   it('falls back to raw preformatted text when tool_use_result is missing', () => {
     const text = renderToolResultText('raw grep output line 1\nline 2', undefined, {
-      parentToolName: 'Grep',
+      spanType: 'Grep',
     })
     expect(text).toContain('raw grep output line 1')
     expect(text).toContain('line 2')

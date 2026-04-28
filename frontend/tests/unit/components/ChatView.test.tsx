@@ -790,7 +790,7 @@ describe('chatView', () => {
         <ChatView
           messages={messages}
           streamingText=""
-          pageScrollRef={(fn) => { pageScroll = fn }}
+          onScrollApiReady={(api) => { pageScroll = api.pageScroll }}
         />
       </PreferencesProvider>
     ))
@@ -819,14 +819,14 @@ describe('chatView', () => {
             <ChatView
               messages={messages}
               streamingText=""
-              pageScrollRef={(fn) => { hiddenPageScroll = fn }}
+              onScrollApiReady={(api) => { hiddenPageScroll = api.pageScroll }}
             />
           </div>
           <div>
             <ChatView
               messages={messages}
               streamingText=""
-              pageScrollRef={(fn) => { visiblePageScroll = fn }}
+              onScrollApiReady={(api) => { visiblePageScroll = api.pageScroll }}
             />
           </div>
         </div>
@@ -971,7 +971,7 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
 
-    expect(view.container).toHaveTextContent('Error (exit code: 1)')
+    expect(view.container).toHaveTextContent('Error (exit 1)')
   })
 
   it('renders live fileChange stream inside the matching codex fileChange bubble', () => {

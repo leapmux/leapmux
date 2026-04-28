@@ -1,5 +1,9 @@
 import type { RateLimitInfo } from '~/stores/agentSession.store'
 import { formatLocalDateTime } from '~/lib/dateFormat'
+import { pickObject } from '~/lib/jsonPick'
+
+/** JSON-RPC method name for Codex rate-limit notifications. */
+export const CODEX_RATE_LIMITS_METHOD = 'account/rateLimits/updated'
 
 export const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
   five_hour: '5-hour',
@@ -13,6 +17,35 @@ export const RATE_LIMIT_POPOVER_LABELS: Record<string, string> = {
 
 /** Window-duration-to-type mapping for Codex rate limits. */
 const WINDOW_DURATION_TYPES: Record<number, string> = { 300: 'five_hour', 10080: 'seven_day' }
+
+/** Codex rate-limit tier keys, ordered from most-restrictive to least-restrictive. */
+const CODEX_RATE_LIMIT_TIER_KEYS = ['primary', 'secondary'] as const
+export type CodexRateLimitTierKey = typeof CODEX_RATE_LIMIT_TIER_KEYS[number]
+
+export interface CodexRateLimitTierEntry {
+  key: CodexRateLimitTierKey
+  tier: Record<string, unknown>
+  info: RateLimitInfo
+}
+
+/**
+ * Walk the `params.rateLimits.{primary,secondary}` tiers of a Codex
+ * `account/rateLimits/updated` payload, yielding the parsed `RateLimitInfo`
+ * for each tier that's present. Skips tiers whose payload is missing or
+ * not an object. Used by both the notification renderer and the all-allowed
+ * predicate so the tier-walking shape lives in one place.
+ */
+export function* iterCodexRateLimitTiers(payload: Record<string, unknown> | null | undefined): Generator<CodexRateLimitTierEntry> {
+  const rl = pickObject(pickObject(payload, 'params'), 'rateLimits')
+  if (!rl)
+    return
+  for (const key of CODEX_RATE_LIMIT_TIER_KEYS) {
+    const tier = pickObject(rl, key)
+    if (!tier)
+      continue
+    yield { key, tier, info: codexTierToRateLimitInfo(tier) }
+  }
+}
 
 /** Convert a Codex rate limit tier to RateLimitInfo. */
 export function codexTierToRateLimitInfo(tier: Record<string, unknown>): RateLimitInfo {

@@ -1,4 +1,5 @@
 import type { TabContext } from './tabContext'
+import type { ProviderSettingChange } from '~/components/chat/providers/registry'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -12,7 +13,7 @@ import { createEffect, createSignal, on } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
-import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex'
+import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex/settings'
 import { getProviderPlugin } from '~/components/chat/providers/registry'
 import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
 import { showWarnToast } from '~/components/common/Toast'
@@ -319,6 +320,24 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleOptionGroupSettingChange(agentId, key, value, defaultValue, label)
   }
 
+  /**
+   * Single entry point for any settings panel change. Routes the discriminated
+   * patch to the right RPC: `model`/`effort` go through `updateAgentSettings`,
+   * `permissionMode` may dispatch via the provider plugin's `changePermissionMode`,
+   * and `optionGroup` writes to `extraSettings`.
+   */
+  const handleAgentSettingChange = (agentId: string, change: ProviderSettingChange) => {
+    switch (change.kind) {
+      case 'model':
+      case 'effort':
+        return handleModelOrEffortChange(agentId, change.kind, change.value)
+      case 'permissionMode':
+        return handlePermissionModeChange(agentId, change.value)
+      case 'optionGroup':
+        return handleOptionGroupChange(agentId, change.key, change.value)
+    }
+  }
+
   // Retry a failed message delivery.
   // Always re-sends via sendAgentMessage (which auto-starts the agent
   // if needed), then removes the old failed message.
@@ -427,6 +446,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleInterrupt,
     handlePermissionModeChange,
     handleOptionGroupChange,
+    handleAgentSettingChange,
     handleRetryMessage,
     handleDeleteMessage,
     handleCloseAgent,

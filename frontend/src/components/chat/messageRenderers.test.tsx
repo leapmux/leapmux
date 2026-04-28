@@ -4,7 +4,9 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { parseMessageContent } from '~/lib/messageParser'
 import { renderMessageContent } from './messageRenderers'
+import './providers'
 
 // Mock shiki worker to avoid Web Worker unavailability in test environment.
 // Vitest auto-hoists vi.mock calls above imports.
@@ -113,20 +115,22 @@ function makeFakeMessage(content: Record<string, unknown>): AgentChatMessage {
   } as unknown as AgentChatMessage
 }
 
-describe('write tool_use hides content when linked result is an update', () => {
+describe('write/edit tool_use messages never render the diff body', () => {
   const writeInput = { file_path: '/tmp/test.go', content: 'package main\n\nfunc main() {}\n' }
 
-  it('shows diff when no linked tool_result exists', () => {
+  it('does not render Write file content (no linked tool_result)', () => {
     const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Write', writeInput), MessageRole.ASSISTANT, undefined, category, AgentProvider.CLAUDE_CODE),
     )
-    // The diff view should render the new file content.
-    expect(container.textContent).toContain('package main')
+    // The diff body lives on the tool_result; tool_use only shows the header.
+    expect(container.textContent).not.toContain('package main')
+    // The header still surfaces the file path.
+    expect(container.textContent).toContain('test.go')
   })
 
-  it('hides diff when linked tool_result has type "update"', () => {
-    const toolResultMessage = makeFakeMessage({
+  it('does not render Write file content even when linked tool_result is "update" type', () => {
+    const toolResultParsed = parseMessageContent(makeFakeMessage({
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', content: 'Updated successfully.' }] },
       tool_use_result: {
@@ -134,29 +138,30 @@ describe('write tool_use hides content when linked result is an update', () => {
         filePath: '/tmp/test.go',
         structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
       },
-    })
-    const context: RenderContext = { toolResultMessage }
+    }))
+    const context: RenderContext = { toolResultParsed }
     const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Write', writeInput), MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE),
     )
-    // The diff should be hidden — the tool_result shows the diff instead.
+    // Same outcome as the no-linked-result case: never renders content.
     expect(container.textContent).not.toContain('package main')
   })
 
-  it('shows diff when linked tool_result is not an update (new file)', () => {
-    const toolResultMessage = makeFakeMessage({
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: 'File created.' }] },
-      tool_use_result: { filePath: '/tmp/test.go' },
-    })
-    const context: RenderContext = { toolResultMessage }
-    const category = makeToolUseCategory('Write', writeInput)
+  it('does not render Edit old/new strings on the tool_use side', () => {
+    const editInput = {
+      file_path: '/tmp/test.go',
+      old_string: 'beforeMarkerXYZ',
+      new_string: 'afterMarkerXYZ',
+    }
+    const category = makeToolUseCategory('Edit', editInput)
     const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Write', writeInput), MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(makeToolUseMessage('Edit', editInput), MessageRole.ASSISTANT, undefined, category, AgentProvider.CLAUDE_CODE),
     )
-    // New file creation: the full content should still be visible.
-    expect(container.textContent).toContain('package main')
+    expect(container.textContent).not.toContain('beforeMarkerXYZ')
+    expect(container.textContent).not.toContain('afterMarkerXYZ')
+    // Header still shows the file path.
+    expect(container.textContent).toContain('test.go')
   })
 })
 

@@ -360,21 +360,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     onTrimOldMessages={() => chatStore.trimOldMessages(agentId, MAX_LOADED_CHAT_MESSAGES)}
                     savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
                     onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
-                    scrollStateRef={(fn) => {
-                      agentScrollStates.set(agentId, fn)
-                      if (agentTab()?.id === at.id)
-                        getScrollStateRef.current = fn
+                    onScrollApiReady={(api) => {
+                      agentScrollStates.set(agentId, api.getScrollState)
+                      agentScrollToBottoms.set(agentId, api.forceScrollToBottom)
+                      chatHandlers.set(agentId, { pageScroll: api.pageScroll })
+                      if (agentTab()?.id === at.id) {
+                        getScrollStateRef.current = api.getScrollState
+                        forceScrollToBottomRef.current = api.forceScrollToBottom
+                      }
                     }}
-                    scrollToBottomRef={(fn) => {
-                      agentScrollToBottoms.set(agentId, fn)
-                      if (agentTab()?.id === at.id)
-                        forceScrollToBottomRef.current = fn
-                    }}
-                    pageScrollRef={(fn) => {
-                      chatHandlers.set(agentId, { pageScroll: fn })
-                    }}
-                    getMessageBySpanId={spanId => chatStore.getMessageBySpanId(agentId, spanId)}
-                    getToolResultBySpanId={spanId => chatStore.getToolResultBySpanId(agentId, spanId)}
+                    getToolUseParsedBySpanId={spanId => chatStore.getToolUseParsedBySpanId(agentId, spanId)}
+                    getToolResultParsedBySpanId={spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId)}
                     getCommandStreamBySpanId={spanId => chatStore.getCommandStream(agentId, spanId)}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined
@@ -604,10 +600,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
         focusRef={(fn) => { focusEditorRef.current = fn }}
         controlRequests={controlStore.getRequests(agentId())}
         onControlResponse={agentOps.handleControlResponse}
+        onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
         onPermissionModeChange={mode => agentOps.handlePermissionModeChange(agentId(), mode)}
-        onOptionGroupChange={(key, value) => agentOps.handleOptionGroupChange(agentId(), key, value)}
-        onModelChange={v => agentOps.handleModelOrEffortChange(agentId(), 'model', v)}
-        onEffortChange={v => agentOps.handleModelOrEffortChange(agentId(), 'effort', v)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}
         settingsLoading={settingsLoading.loading()}
         agentSessionInfo={agentSessionStore.getInfo(agentId())}

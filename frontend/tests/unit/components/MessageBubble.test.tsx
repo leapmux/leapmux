@@ -362,6 +362,27 @@ describe('messageBubble rawJson', () => {
     expect(envelope.old_seqs).toEqual([5, 8])
     expect((envelope.messages as unknown[]).length).toBe(2)
   })
+
+  it('uses toolbar copy for hidden raw JSON instead of injecting an inline pre copy button', () => {
+    const msg = makeMsg({
+      role: MessageRole.SYSTEM,
+      content: rawContent({ type: 'system', subtype: 'init', cwd: '/repo' }),
+    })
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const content = screen.getByTestId('message-content')
+    expect(content.querySelector('pre')).toBeInTheDocument()
+    expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
+
+    const toolbar = screen.getByTestId('message-toolbar')
+    expect(toolbar.querySelector('[data-testid="message-copy-json"]')).toBeInTheDocument()
+    expect(view.container.querySelector('[data-code-copy="false"]')).toBeInTheDocument()
+  })
 })
 
 // ---------------------------------------------------------------------------

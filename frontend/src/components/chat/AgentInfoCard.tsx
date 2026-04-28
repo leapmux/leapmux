@@ -10,19 +10,12 @@ import { useCopyButton } from '~/hooks/useCopyButton'
 import { tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
-import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './ContextUsageGrid'
+import { formatTokenCount } from './rendererUtils'
+import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './widgets/ContextUsageGrid'
 
 export interface AgentInfoCardProps {
   agent?: AgentInfo
   agentSessionInfo?: AgentSessionInfo
-}
-
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000)
-    return `${(tokens / 1_000_000).toFixed(1)}M`
-  if (tokens >= 1_000)
-    return `${(tokens / 1_000).toFixed(1)}k`
-  return String(tokens)
 }
 
 function CopyButton(props: { getText: () => string | undefined, title: string, testId?: string }) {

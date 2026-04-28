@@ -153,6 +153,41 @@ export const hiddenMessageJson = style({
   overflow: 'auto',
 })
 
+// Reset Shiki's <pre>/<code> chrome so the wrapper's padding/border/scroll
+// remain authoritative; spans pick up dual-theme colors via CSS vars.
+globalStyle(`${hiddenMessageJson} pre.shiki`, {
+  margin: 0,
+  padding: 0,
+  border: 'none',
+  background: 'none',
+  backgroundColor: 'transparent',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  fontSize: 'inherit',
+  fontFamily: 'inherit',
+  lineHeight: 'inherit',
+})
+
+globalStyle(`${hiddenMessageJson} pre.shiki code`, {
+  padding: 0,
+  background: 'none',
+  backgroundColor: 'transparent',
+  fontSize: 'inherit',
+  fontFamily: 'inherit',
+})
+
+// JSON tokens have no per-span backgrounds; force transparent so the
+// wrapper's --card bg shows through (otherwise spans inherit the theme's
+// editor bg from the <pre>'s inline --shiki-light-bg / --shiki-dark-bg).
+globalStyle(`${hiddenMessageJson} pre.shiki span`, {
+  color: 'var(--shiki-light)',
+  backgroundColor: 'transparent',
+})
+
+globalStyle(`html[data-theme="dark"] ${hiddenMessageJson} pre.shiki span`, {
+  color: 'var(--shiki-dark)',
+})
+
 // Control response message (compact)
 export const controlResponseMessage = style({
   display: 'flex',

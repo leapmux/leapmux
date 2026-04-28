@@ -5,12 +5,13 @@ import type { FileDiffBase, FileViewMode as TabFileViewMode } from '~/stores/tab
 import AtSign from 'lucide-solid/icons/at-sign'
 import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { diffAdded, diffRemoved } from '~/components/chat/diffStyles.css'
-import { DiffView, rawDiffToHunks } from '~/components/chat/diffUtils'
+import { DiffView, rawDiffToHunks } from '~/components/chat/diff'
+import { diffAdded, diffRemoved } from '~/components/chat/diff/diffStyles.css'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { GitFileRef } from '~/generated/leapmux/v1/git_pb'
 import { detectFileViewMode, isImageExtension } from '~/lib/fileType'
+import { formatBytes } from '~/lib/formatBytes'
 import { DiffModeToolbar } from './DiffModeToolbar'
 import * as styles from './FileViewer.css'
 import { TOOLBAR_CLEARANCE_PX } from './FileViewer.css'
@@ -20,16 +21,6 @@ import { MarkdownFileView } from './MarkdownFileView'
 import { TextFileView } from './TextFileView'
 
 const MAX_FILE_SIZE = 256 * 1024 // 256 KiB
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024)
-    return `${bytes} B`
-  const kb = bytes / 1024
-  if (kb < 1024)
-    return `${kb.toFixed(1)} KiB`
-  const mb = kb / 1024
-  return `${mb.toFixed(1)} MiB`
-}
 
 export const FileViewer: Component<{
   workerId: string
@@ -321,7 +312,7 @@ export const FileViewer: Component<{
           <Show when={!isDiffMode() && !isRefMode()}>
             <Show when={imageTooLarge()}>
               <div class={styles.imageSizeError}>
-                {`Image too large to preview (${formatSize(totalSize())})`}
+                {`Image too large to preview (${formatBytes(totalSize())})`}
               </div>
             </Show>
             <Show when={viewMode() === 'text' && content()}>
@@ -368,11 +359,11 @@ export const FileViewer: Component<{
         <div class={styles.statusBar}>
           <Show when={isTruncated()}>
             <span class={styles.truncationWarning}>
-              {`Truncated at ${formatSize(MAX_FILE_SIZE)}`}
+              {`Truncated at ${formatBytes(MAX_FILE_SIZE)}`}
             </span>
           </Show>
           <Show when={totalSize() > 0}>
-            <span class={styles.statusMeta}>{formatSize(totalSize())}</span>
+            <span class={styles.statusMeta}>{formatBytes(totalSize())}</span>
           </Show>
         </div>
       </Show>

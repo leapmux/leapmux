@@ -1,7 +1,5 @@
 /** Shared utility functions for message renderers. */
 
-import { pluralize } from '~/lib/plural'
-
 /** Format task status for display. */
 export function formatTaskStatus(status?: string): string {
   if (!status)
@@ -10,7 +8,12 @@ export function formatTaskStatus(status?: string): string {
     return 'Complete'
   if (status === 'failed')
     return 'Failed'
-  return status.charAt(0).toUpperCase() + status.slice(1)
+  return capitalize(status)
+}
+
+/** Capitalize the first character; leaves the rest unchanged. */
+export function capitalize(s: string): string {
+  return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s
 }
 
 /** Return the first non-empty trimmed line from text, or null. */
@@ -57,6 +60,15 @@ export function formatNumber(n: number): string {
   return n.toLocaleString('en-US')
 }
 
+/** Format a token count with a fixed decimal (e.g. 1.0k, 12.3M). */
+export function formatTokenCount(n: number): string {
+  if (n >= 1_000_000)
+    return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000)
+    return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
 /** Format a number in compact form (e.g. 1.2k, 3.5m, 1.1g). */
 export function formatCompactNumber(n: number): string {
   if (n < 1000)
@@ -71,38 +83,6 @@ export function formatCompactNumber(n: number): string {
   }
   const v = n / 1_000_000_000
   return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))}g`
-}
-
-/** Format a Grep result summary for display (without trailing colon). */
-export function formatGrepSummary(numFiles?: number, numLines?: number, fallback?: string | null): string | null {
-  if (numFiles === undefined && numLines === undefined)
-    return fallback || null
-  const nf = numFiles ?? 0
-  const nl = numLines ?? 0
-  if (nf <= 0 && nl <= 0)
-    return fallback || 'No matches found'
-  const parts: string[] = []
-  if (nf > 0)
-    parts.push(pluralize(nf, 'file'))
-  if (nl > 0)
-    parts.push(pluralize(nl, 'line'))
-  return `Found ${parts.join(' and ')}`
-}
-
-/** Format a Glob result summary for display. Parts are joined with " · ". */
-export function formatGlobSummary(numFiles?: number, durationMs?: number, truncated?: boolean, fallback?: string | null): string | null {
-  if (numFiles === undefined)
-    return fallback || null
-  const parts: string[] = []
-  if (numFiles <= 0)
-    parts.push(fallback || 'No files found')
-  else
-    parts.push(`Found ${pluralize(numFiles, 'file')}`)
-  if (durationMs !== undefined)
-    parts.push(`Took ${formatDuration(durationMs)}`)
-  if (truncated)
-    parts.push('Result truncated')
-  return parts.join(' \u00B7 ')
 }
 
 /** Helper: format tool input for compact display (fallback for unknown tools) */

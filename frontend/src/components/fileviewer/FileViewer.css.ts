@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { codeViewContainer } from '~/components/chat/codeViewStyles.css'
-import { diffContainer, diffSplitContainer } from '~/components/chat/diffStyles.css'
+import { diffContainer, diffSplitContainer } from '~/components/chat/diff/diffStyles.css'
+import { codeViewContainer } from '~/components/chat/markdownEditor/codeViewStyles.css'
 
 // Floating toolbar clearance: toolbar height (28px) + top offset + bottom gap.
 const toolbarClearance = 'calc(28px + var(--space-2) * 2)'

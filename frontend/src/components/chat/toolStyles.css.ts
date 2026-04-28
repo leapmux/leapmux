@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
-import { LINE_THICKNESS, TOOL_BODY_INDENT } from './SpanLines.css'
+import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.css'
 
 // Tool use/result messages - document-style, no bubble
 export const toolMessage = style({
@@ -277,4 +277,29 @@ export const webSearchLinkDomain = style({
   fontSize: 'var(--text-9)',
   flexShrink: 0,
   whiteSpace: 'nowrap',
+})
+
+// MCP image content. Constrained so a 4K screenshot doesn't take over the
+// chat layout; the image keeps its aspect ratio and shrinks to fit.
+export const mcpImage = style({
+  display: 'block',
+  maxWidth: '100%',
+  maxHeight: '320px',
+  width: 'auto',
+  height: 'auto',
+  objectFit: 'contain',
+  borderRadius: 'var(--radius-2)',
+  border: '1px solid var(--border)',
+  marginTop: 'var(--space-1)',
+  marginBottom: 'var(--space-1)',
+})
+
+// Wrapper around an MCP image link/placeholder so it sits on its own line
+// with the same spacing as toolInputSummary.
+export const mcpImageRow = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
+  marginTop: 'var(--space-1)',
+  marginBottom: 'var(--space-1)',
 })
