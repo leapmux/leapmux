@@ -99,7 +99,7 @@ func (s *testSink) GetSpanType(spanID string) string {
 	return s.spanTypes[spanID]
 }
 
-func (s *testSink) PeekNextSpanColor() int32 { return 0 }
+func (s *testSink) ReserveSpanColor(spanID, parentSpanID string) int32 { return 0 }
 
 func (s *testSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
 	s.mu.Lock()
@@ -351,7 +351,7 @@ func (noopSink) CloseSpan(string)                                               
 func (noopSink) ResetSpans()                                                          {}
 func (noopSink) SetSpanType(string, string)                                           {}
 func (noopSink) GetSpanType(string) string                                            { return "" }
-func (noopSink) PeekNextSpanColor() int32                                             { return 0 }
+func (noopSink) ReserveSpanColor(string, string) int32                                { return 0 }
 func (noopSink) BroadcastStreamChunk([]byte, string, string)                          {}
 func (noopSink) BroadcastStreamEnd(string)                                            {}
 func (noopSink) PersistControlRequest(string, []byte)                                 {}

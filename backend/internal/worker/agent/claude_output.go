@@ -318,11 +318,11 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		content = a.enrichResultWithToolUses(content)
 	}
 
-	// Pre-peek the span color for tool_use messages (assistant with a spanID)
+	// Reserve the span color for tool_use messages (assistant with a spanID)
 	// so it is available at persist time, before the span is actually opened.
 	var spanColor int32
 	if msgType == "assistant" && spanID != "" {
-		spanColor = a.sink.PeekNextSpanColor()
+		spanColor = a.sink.ReserveSpanColor(spanID, parentSpanID)
 	}
 
 	// Persist as a standalone message with hierarchy metadata.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"slices"
 	"sort"
 	"sync"
@@ -54,26 +55,95 @@ type SpanLine struct {
 // Color indices are 1-based and wrap around within [1, spanPaletteSize].
 const spanPaletteSize = 8
 
+// pendingSpan holds the color reserved for a span by ReserveSpanColor that
+// hasn't yet been committed by OpenSpan. Treated as "in use" by chooseColor
+// so a back-to-back reservation cannot pick the same color.
+type pendingSpan struct {
+	spanID string
+	color  int
+}
+
 // SpanTracker manages hierarchical span state for an agent's message threading.
 type SpanTracker struct {
 	mu        sync.Mutex
 	spans     []ActiveSpan
 	spanTypes map[string]string // spanID → span type (tool name / item type)
 	parentMap map[string]string // spanID → parentSpanID (persists after close for ancestry lookups)
-	nextColor int
+	pending   *pendingSpan      // color reserved by ReserveSpanColor; consumed by matching OpenSpan.
+	rng       *rand.Rand        // lazy-initialized random source for color choice; tests inject directly.
+	deck      []int             // shuffled draw pile for primary-rule color selection; refilled when empty.
 }
 
-// OpenSpan registers a new subagent span.
-func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+// randIntn returns a random integer in [0, n) from the tracker's RNG, lazy
+// initializing it on first use. Must be called with t.mu held.
+func (t *SpanTracker) randIntn(n int) int {
+	t.ensureRNG()
+	return t.rng.IntN(n)
+}
 
-	// Record parentage (persists after close for ancestry lookups).
-	if t.parentMap == nil {
-		t.parentMap = make(map[string]string)
+func (t *SpanTracker) ensureRNG() {
+	if t.rng == nil {
+		t.rng = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 	}
-	t.parentMap[spanID] = parentSpanID
+}
 
+// refillDeck repopulates the draw pile with a freshly shuffled palette.
+// Must be called with t.mu held.
+func (t *SpanTracker) refillDeck() {
+	t.ensureRNG()
+	if cap(t.deck) < spanPaletteSize {
+		t.deck = make([]int, spanPaletteSize)
+	} else {
+		t.deck = t.deck[:spanPaletteSize]
+	}
+	for i := 0; i < spanPaletteSize; i++ {
+		t.deck[i] = i + 1
+	}
+	t.rng.Shuffle(len(t.deck), func(i, j int) {
+		t.deck[i], t.deck[j] = t.deck[j], t.deck[i]
+	})
+}
+
+// drawFromDeck returns the first color in the deck that is not blocked,
+// popping it from the pile. If no remaining card is eligible, the deck is
+// refilled and the search retried — guaranteeing every "round" of 8 picks
+// without external blocking constraints visits all 8 palette colors before
+// any repeats. Caller is expected to ensure at least one of
+// {1..spanPaletteSize} is not blocked; if every color is blocked anyway,
+// returns a uniformly random palette color so output keeps flowing.
+// Must be called with t.mu held.
+func (t *SpanTracker) drawFromDeck(blocked map[int]bool) int {
+	if len(t.deck) == 0 {
+		t.refillDeck()
+	}
+	for i, c := range t.deck {
+		if !blocked[c] {
+			t.deck = slices.Delete(t.deck, i, i+1)
+			return c
+		}
+	}
+	// Every remaining card is blocked. Refill once: with a fresh shuffled
+	// deck of all 8 cards, an unblocked color will be found unless the
+	// caller has every palette color blocked.
+	t.refillDeck()
+	for i, c := range t.deck {
+		if !blocked[c] {
+			t.deck = slices.Delete(t.deck, i, i+1)
+			return c
+		}
+	}
+	// Defensive: caller is supposed to fall back to chooseColor's saturated
+	// branch when every color is in use. If we end up here anyway, pick a
+	// random palette color so output keeps flowing rather than crashing.
+	slog.Warn("span color deck exhausted with all colors blocked; using random fallback")
+	return 1 + t.randIntn(spanPaletteSize)
+}
+
+// resolveColumn computes the column index a new span with the given parent
+// would receive if opened now. Mirrors the logic in OpenSpan so that
+// ReserveSpanColor can pre-compute adjacency at peek time without committing
+// any state. Must be called with t.mu held.
+func (t *SpanTracker) resolveColumn(parentSpanID string) int {
 	// Single pass: find parent column, build used-column set, and track the
 	// rightmost active column for minCol computation below.
 	parentCol := -1
@@ -106,18 +176,112 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 	}
 
 	// Find first free column starting from minCol.
-	column := -1
 	for i := minCol; ; i++ {
 		if !used[i] {
-			column = i
+			return i
+		}
+	}
+}
+
+// chooseColor picks a color for a new span using the two-tier rule:
+//
+//  1. Primary: draw the next eligible color from a shuffled deck of the
+//     full palette, skipping any deck card currently in use by an active
+//     span or pending reservation. The deck is refilled (reshuffled) when
+//     emptied, so any 8-pick window with no blocking constraints visits
+//     every palette color exactly once before any repeats.
+//  2. Fallback (only when every palette color is in use): pick uniformly
+//     at random from colors that are not the parent's, not the
+//     column-immediately-left active span's, and not the
+//     column-immediately-right active span's.
+//
+// Must be called with t.mu held.
+func (t *SpanTracker) chooseColor(parentSpanID string, newColumn int) int {
+	inUse := make(map[int]bool, len(t.spans)+1)
+	allInUse := true
+	for _, s := range t.spans {
+		inUse[s.ColorIndex] = true
+	}
+	if t.pending != nil {
+		inUse[t.pending.color] = true
+	}
+	for c := 1; c <= spanPaletteSize; c++ {
+		if !inUse[c] {
+			allInUse = false
 			break
 		}
 	}
+	if !allInUse {
+		return t.drawFromDeck(inUse)
+	}
 
-	t.nextColor = t.nextColor%spanPaletteSize + 1
+	// Saturated palette: relax exclusion to parent + adjacents only.
+	parentColor := 0
+	leftCol := -1
+	leftColor := 0
+	rightCol := -1
+	rightColor := 0
+	for _, s := range t.spans {
+		if s.SpanID == parentSpanID {
+			parentColor = s.ColorIndex
+		}
+		if s.Column < newColumn && s.Column > leftCol {
+			leftCol = s.Column
+			leftColor = s.ColorIndex
+		}
+		if s.Column > newColumn && (rightCol == -1 || s.Column < rightCol) {
+			rightCol = s.Column
+			rightColor = s.ColorIndex
+		}
+	}
+
+	excluded := make(map[int]bool, 3)
+	if parentColor != 0 {
+		excluded[parentColor] = true
+	}
+	if leftColor != 0 {
+		excluded[leftColor] = true
+	}
+	if rightColor != 0 {
+		excluded[rightColor] = true
+	}
+
+	candidates := make([]int, 0, spanPaletteSize)
+	for c := 1; c <= spanPaletteSize; c++ {
+		if !excluded[c] {
+			candidates = append(candidates, c)
+		}
+	}
+	// At most 3 exclusions vs 8 colors, so candidates is always non-empty.
+	return candidates[t.randIntn(len(candidates))]
+}
+
+// OpenSpan registers a new subagent span.
+func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Record parentage (persists after close for ancestry lookups).
+	if t.parentMap == nil {
+		t.parentMap = make(map[string]string)
+	}
+	t.parentMap[spanID] = parentSpanID
+
+	column := t.resolveColumn(parentSpanID)
+
+	// Honor a pending reservation for this exact span so the persisted
+	// span_color matches the rendered span color.
+	var color int
+	if t.pending != nil && t.pending.spanID == spanID {
+		color = t.pending.color
+		t.pending = nil
+	} else {
+		color = t.chooseColor(parentSpanID, column)
+	}
+
 	t.spans = append(t.spans, ActiveSpan{
 		SpanID:     spanID,
-		ColorIndex: t.nextColor,
+		ColorIndex: color,
 		Column:     column,
 	})
 }
@@ -155,7 +319,8 @@ func (t *SpanTracker) Reset() {
 	defer t.mu.Unlock()
 
 	t.spans = nil
-	t.nextColor = 0
+	t.pending = nil
+	t.deck = t.deck[:0]
 	clear(t.spanTypes)
 	clear(t.parentMap)
 }
@@ -170,6 +335,11 @@ func (t *SpanTracker) CloseSpan(spanID string) {
 	})
 	if t.spanTypes != nil {
 		delete(t.spanTypes, spanID)
+	}
+	// Defensive: if a reservation for this exact span was never consumed by
+	// OpenSpan, drop it so the color goes back to Free.
+	if t.pending != nil && t.pending.spanID == spanID {
+		t.pending = nil
 	}
 	if len(t.spans) == 0 {
 		clear(t.parentMap)
@@ -199,13 +369,25 @@ func (t *SpanTracker) GetSpanType(spanID string) string {
 	return t.spanTypes[spanID]
 }
 
-// PeekNextColor returns the color index that will be assigned to the next
-// span opened via OpenSpan. Safe to call only when output processing is
-// sequential per agent (which it is for both Claude and Codex handlers).
-func (t *SpanTracker) PeekNextColor() int32 {
+// ReserveSpanColor commits to the color that the next OpenSpan(spanID,
+// parentSpanID) call will receive, so the caller can persist the color into
+// a message before the span itself opens. The reservation is held on the
+// tracker's pending slot and consumed when OpenSpan is called for the same
+// spanID. Subsequent calls with the same spanID are idempotent and return
+// the cached color; calls with a different spanID overwrite the slot.
+//
+// Safe to call only when output processing is sequential per agent (which
+// it is for all Claude/Codex/ACP handlers).
+func (t *SpanTracker) ReserveSpanColor(spanID, parentSpanID string) int32 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return int32(t.nextColor%spanPaletteSize + 1)
+	if t.pending != nil && t.pending.spanID == spanID {
+		return int32(t.pending.color)
+	}
+	column := t.resolveColumn(parentSpanID)
+	color := t.chooseColor(parentSpanID, column)
+	t.pending = &pendingSpan{spanID: spanID, color: color}
+	return int32(color)
 }
 
 // Snapshot returns the depth and span lines for a given parentSpanID in a single
@@ -479,8 +661,8 @@ func (s *agentOutputSink) GetSpanType(spanID string) string {
 	return s.tracker.GetSpanType(spanID)
 }
 
-func (s *agentOutputSink) PeekNextSpanColor() int32 {
-	return s.tracker.PeekNextColor()
+func (s *agentOutputSink) ReserveSpanColor(spanID, parentSpanID string) int32 {
+	return s.tracker.ReserveSpanColor(spanID, parentSpanID)
 }
 
 func (s *agentOutputSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
