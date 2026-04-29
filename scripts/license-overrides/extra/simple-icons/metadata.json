@@ -2,5 +2,6 @@
   "name": "simple-icons",
   "version": "embedded brand marks",
   "license": "CC0-1.0",
-  "url": "https://github.com/simple-icons/simple-icons"
+  "url": "https://github.com/simple-icons/simple-icons",
+  "description": "Path data for the Sublime Text, Zed, Xcode, and Notepad++ editor glyphs in `frontend/src/components/common/EditorIcons.tsx` was extracted from this collection's `data/simple-icons.json` and re-rendered as inline SVG components."
 }

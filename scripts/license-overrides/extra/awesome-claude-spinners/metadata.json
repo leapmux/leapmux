@@ -1,5 +1,6 @@
 {
   "name": "awesome-claude-spinners",
   "license": "MIT",
-  "url": "https://github.com/AlexPl292/awesome-claude-spinners"
+  "url": "https://github.com/AlexPl292/awesome-claude-spinners",
+  "description": "The spinner verb JSON files under `frontend/src/spinners/` are copied from the upstream `spinners/` directory by the `generate-spinners` task."
 }
