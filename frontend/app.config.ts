@@ -143,6 +143,11 @@ export default defineConfig({
         '@noble/post-quantum/slh-dsa.js',
         // UI / misc
         '@knadh/oat/oat.min.js',
+        '@tauri-apps/api/core',
+        '@tauri-apps/api/dpi',
+        '@tauri-apps/api/event',
+        '@tauri-apps/api/webviewWindow',
+        '@tauri-apps/api/window',
         'diff',
         'fracturedjsonjs',
         'fzstd',

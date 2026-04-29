@@ -15,13 +15,51 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
-import { extractAgentRenamed, extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
+import { extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
+import { CODEX_RATE_LIMITS_METHOD } from '~/lib/rateLimitUtils'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.store'
 
 const log = createLogger('workspace')
+const TEXT_DECODER = new TextDecoder()
+
+/**
+ * Translate a snake_case `rate_limits` broadcast payload to the camelCase
+ * `RateLimitInfo` shape that the agent-session store and rate-limit utils
+ * consume. The wire format is provider-agnostic snake_case (Claude/Codex
+ * both emit it that way); the frontend keeps idiomatic camelCase types.
+ */
+function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | undefined {
+  if (typeof value !== 'object' || value === null)
+    return undefined
+  const out: Record<string, RateLimitInfo> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw !== 'object' || raw === null)
+      continue
+    const tier = raw as Record<string, unknown>
+    const info: RateLimitInfo = {}
+    if (typeof tier.rate_limit_type === 'string')
+      info.rateLimitType = tier.rate_limit_type
+    if (typeof tier.status === 'string')
+      info.status = tier.status
+    if (typeof tier.utilization === 'number')
+      info.utilization = tier.utilization
+    if (typeof tier.resets_at === 'number')
+      info.resetsAt = tier.resets_at
+    if (typeof tier.surpassed_threshold === 'number')
+      info.surpassedThreshold = tier.surpassed_threshold
+    if (typeof tier.overage_status === 'string')
+      info.overageStatus = tier.overage_status
+    if (typeof tier.overage_resets_at === 'number')
+      info.overageResetsAt = tier.overage_resets_at
+    if (typeof tier.is_using_overage === 'boolean')
+      info.isUsingOverage = tier.is_using_overage
+    out[key] = info
+  }
+  return out
+}
 
 export interface WorkspaceConnectionParams {
   agentStore: ReturnType<typeof createAgentStore>
@@ -112,39 +150,57 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'agentMessage': {
         const msg = inner.value
 
-        // Intercept ephemeral agent_session_info messages (broadcast by
-        // Worker without persisting). These update the agent session store
-        // and should not appear in chat history.
-        if (msg.role === MessageRole.LEAPMUX) {
-          try {
-            const parsed = parseMessageContent(msg)
-            if (parsed.topLevel === null)
-              break
+        // Single decompress-and-parse pass shared across the metadata,
+        // span-cleanup, assistant-usage, and TURN_END branches below.
+        // parseMessageContent never throws — failures yield EMPTY_PARSED
+        // (topLevel null), which causes each branch to no-op cleanly.
+        const parsed = parseMessageContent(msg)
 
-            // Ephemeral (unwrapped) agent_session_info — not persisted, skip addMessage.
-            if (!parsed.wrapper && parsed.topLevel.type === 'agent_session_info') {
-              const info = parsed.topLevel.info as Record<string, unknown> | undefined
-              const updates: Record<string, unknown> = {}
-              if (info?.total_cost_usd !== undefined)
-                updates.totalCostUsd = info.total_cost_usd
-              if (info?.contextUsage !== undefined)
-                updates.contextUsage = info.contextUsage
-              if (info?.rateLimits !== undefined)
-                updates.rateLimits = info.rateLimits as Record<string, unknown>
-              if (info?.codexTurnId !== undefined)
-                updates.codexTurnId = info.codexTurnId as string
-              if (info?.streamingType !== undefined)
-                updates.streamingType = info.streamingType as string
-              agentSessionStore.updateInfo(agentId, updates)
-              break
-            }
+        // Intercept ephemeral agent_session_info messages (broadcast by the
+        // Worker without persisting). The broadcast wire is snake_case
+        // across all providers; translate to the frontend store's camelCase
+        // shape at this boundary so JS consumers (RateLimitInfo,
+        // ContextUsageInfo, AgentSessionInfo) can stay idiomatic without
+        // forcing snake_case identifiers throughout the frontend.
+        if (parsed.topLevel !== null && !parsed.wrapper && parsed.topLevel.type === 'agent_session_info') {
+          const info = parsed.topLevel.info as Record<string, unknown> | undefined
+          const updates: Record<string, unknown> = {}
+          if (typeof info?.total_cost_usd === 'number')
+            updates.totalCostUsd = info.total_cost_usd
+          const contextUsage = normalizeContextUsage(info?.context_usage)
+          if (contextUsage)
+            updates.contextUsage = contextUsage
+          if (info?.rate_limits !== undefined)
+            updates.rateLimits = wireRateLimitsToCamel(info.rate_limits)
+          if (info?.codex_turn_id !== undefined)
+            updates.codexTurnId = info.codex_turn_id as string
+          if (info?.streaming_type !== undefined)
+            updates.streamingType = info.streaming_type as string
+          // Pi (and any future provider) may broadcast session_info
+          // payloads whose keys are all dropped here — skip the store
+          // write so reactive consumers aren't woken for nothing.
+          if (Object.keys(updates).length > 0)
+            agentSessionStore.updateInfo(agentId, updates)
+          break
+        }
 
-            // Persisted LEAPMUX messages — extract metadata, then fall through to addMessage.
-            const innerType = getInnerMessageType(parsed)
-            if (innerType === 'context_cleared') {
-              agentSessionStore.clearContextUsage(agentId)
-              chatStore.clearTodos(agentId)
-            }
+        // Pull notification metadata out of any message regardless of role —
+        // Codex token-usage / rate-limit notifications now arrive as SYSTEM,
+        // while LeapMux-injected settings_changed / context_cleared remain
+        // LEAPMUX. Each branch is gated on the inner type/method so a Pi
+        // assistant message doesn't pay for five sequential extractors that
+        // can never match.
+        if (parsed.topLevel !== null) {
+          const innerMsg = getInnerMessage(parsed)
+          const innerType = innerMsg?.type as string | undefined
+          const innerMethod = innerMsg?.method as string | undefined
+
+          if (innerType === 'context_cleared') {
+            agentSessionStore.clearContextUsage(agentId)
+            chatStore.clearTodos(agentId)
+          }
+
+          if (innerType === 'rate_limit_event' || innerMethod === CODEX_RATE_LIMITS_METHOD) {
             const rls = extractRateLimitInfo(parsed)
             if (rls.length > 0) {
               const rateLimits: Record<string, RateLimitInfo> = {}
@@ -152,24 +208,38 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
                 rateLimits[rl.key] = rl.info
               agentSessionStore.updateInfo(agentId, { rateLimits } as Record<string, unknown>)
             }
+          }
+
+          if (innerMethod === 'thread/tokenUsage/updated') {
             const codexUsage = extractCodexTokenUsage(parsed)
-            if (codexUsage) {
+            if (codexUsage)
               agentSessionStore.updateInfo(agentId, codexUsage as Record<string, unknown>)
-            }
+          }
+
+          if (innerType === 'settings_changed') {
             const sc = extractSettingsChanges(parsed)
-            if (sc) {
+            if (sc)
               emitSettingsChanged(sc)
-            }
+          }
+
+          // plan_execution / plan_updated may also appear inside a
+          // notification wrapper that holds multiple message types, so
+          // wrapper messages always run the walk; non-wrapper messages
+          // gate on the inner type to skip the call entirely.
+          if (parsed.wrapper !== null || innerType === 'plan_execution') {
             const planFile = extractPlanFilePath(parsed)
-            if (planFile) {
+            if (planFile)
               agentSessionStore.updateInfo(agentId, { planFilePath: planFile })
-            }
-            const renamedTitle = extractAgentRenamed(parsed)
-            if (renamedTitle) {
-              tabStore.updateTabTitle(TabType.AGENT, agentId, renamedTitle)
+          }
+          if (parsed.wrapper !== null || innerType === 'plan_updated') {
+            const planUpdate = extractPlanUpdated(parsed)
+            if (planUpdate) {
+              if (planUpdate.planFilePath)
+                agentSessionStore.updateInfo(agentId, { planFilePath: planUpdate.planFilePath })
+              if (planUpdate.updateAgentTitle && planUpdate.planTitle)
+                tabStore.updateTabTitle(TabType.AGENT, agentId, planUpdate.planTitle)
             }
           }
-          catch { /* ignore parse errors */ }
         }
 
         chatStore.addMessage(agentId, msg)
@@ -179,89 +249,84 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         ) {
           chatStore.trimOldMessages(agentId, MAX_BACKGROUND_CHAT_MESSAGES)
         }
-        // Keep accumulating top-level assistant stream text until the turn's
-        // explicit completion boundary. Persisted user echoes, tool messages,
-        // and LEAPMUX notifications should not wipe the in-progress stream.
-        if (msg.role === MessageRole.RESULT)
+        // Any persisted assistant or result message ends the in-flight
+        // streaming text. The streamed deltas have either been promoted
+        // to a persisted text block (Codex agentMessage, Pi message_end,
+        // ACP text) or the agent has transitioned to a tool/span message
+        // that implicitly closes the prior text block — without clearing
+        // here, subsequent text deltas concatenate onto the previous
+        // block into one wall of text.
+        if (msg.role === MessageRole.ASSISTANT || msg.role === MessageRole.TURN_END)
           chatStore.clearStreamingText(agentId)
 
         if (msg.spanId && (msg.spanType === 'commandExecution' || msg.spanType === 'fileChange' || msg.spanType === 'reasoning') && msg.role === MessageRole.ASSISTANT) {
-          try {
-            const parsed = parseMessageContent(msg)
-            const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-            const isCompletedReasoning = item?.type === 'reasoning'
-              && (((item.summary as unknown[] | undefined)?.length ?? 0) > 0 || ((item.content as unknown[] | undefined)?.length ?? 0) > 0)
-            if ((item?.type === 'commandExecution' || item?.type === 'fileChange') && item.status === 'completed') {
-              chatStore.clearCommandStream(agentId, msg.spanId)
-            }
-            else if (isCompletedReasoning) {
-              chatStore.clearCommandStream(agentId, msg.spanId)
-            }
+          const item = parsed.parentObject?.item as Record<string, unknown> | undefined
+          const isCompletedReasoning = item?.type === 'reasoning'
+            && (((item.summary as unknown[] | undefined)?.length ?? 0) > 0 || ((item.content as unknown[] | undefined)?.length ?? 0) > 0)
+          if ((item?.type === 'commandExecution' || item?.type === 'fileChange') && item.status === 'completed') {
+            chatStore.clearCommandStream(agentId, msg.spanId)
           }
-          catch { /* ignore parse errors */ }
+          else if (isCompletedReasoning) {
+            chatStore.clearCommandStream(agentId, msg.spanId)
+          }
         }
 
         // Extract context usage from assistant messages (rehydrates on reconnect).
         if (msg.role === MessageRole.ASSISTANT) {
-          try {
-            const parsed = parseMessageContent(msg)
-            const method = parsed.parentObject?.method as string | undefined
-            const item = parsed.parentObject?.item as Record<string, unknown> | undefined
-            if (method === 'thread/started') {
-              // A new Codex thread starts idle. Clear any stale turn ID that may
-              // have been restored from localStorage so the chat can show its
-              // empty state instead of a phantom thinking indicator.
-              agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
-            }
-            if (item?.type === 'agentMessage') {
-              chatStore.clearStreamingText(agentId)
-            }
-            else if (item?.type === 'plan') {
-              chatStore.clearStreamingText(agentId)
-              agentSessionStore.updateInfo(agentId, { streamingType: '' })
-            }
-            const usage = extractAssistantUsage(parsed)
-            if (usage) {
-              agentSessionStore.updateInfo(agentId, usage as Record<string, unknown>)
-            }
+          const method = parsed.parentObject?.method as string | undefined
+          const item = parsed.parentObject?.item as Record<string, unknown> | undefined
+          if (method === 'thread/started') {
+            // A new Codex thread starts idle. Clear any stale turn ID that may
+            // have been restored from localStorage so the chat can show its
+            // empty state instead of a phantom thinking indicator.
+            agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
           }
-          catch { /* ignore parse errors */ }
+          // The general assistant-message clear above already drops the
+          // streamed text buffer. Plan items additionally clear the
+          // streamingType session flag so the plan streaming UI dismisses.
+          if (item?.type === 'plan') {
+            agentSessionStore.updateInfo(agentId, { streamingType: '' })
+          }
+          const usage = extractAssistantUsage(parsed)
+          if (usage) {
+            agentSessionStore.updateInfo(agentId, usage as Record<string, unknown>)
+          }
         }
 
-        // Play turn-end sound when a real RESULT (with subtype) arrives.
+        // Play turn-end sound when a TURN_END divider (with subtype) arrives.
         // Also extract contextWindow and total_cost_usd (rehydrates on reconnect).
-        if (msg.role === MessageRole.RESULT) {
-          try {
-            const modelId = agentStore.getById(agentId)?.model
-            const meta = extractResultMetadata(parseMessageContent(msg), modelId)
-            if (meta) {
-              if (msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed') {
-                // Codex also clears the active turn ID via ephemeral session info,
-                // but the persisted turn/completed result must be enough to stop
-                // the thinking indicator after reconnect or missed live events.
-                agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
-              }
-              if (meta.subtype && catchUpPhase === 'live')
-                params.onTurnEnd?.(agentId, meta.numToolUses)
-              if (meta.contextWindow !== undefined) {
-                const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
-                if (existingUsage) {
-                  agentSessionStore.updateInfo(agentId, {
-                    contextUsage: { ...existingUsage, contextWindow: meta.contextWindow },
-                  })
-                }
-              }
-              if (meta.totalCostUsd !== undefined) {
-                agentSessionStore.updateInfo(agentId, { totalCostUsd: meta.totalCostUsd })
+        if (msg.role === MessageRole.TURN_END) {
+          const modelId = agentStore.getById(agentId)?.model
+          const meta = extractResultMetadata(parsed, modelId)
+          if (meta) {
+            if (msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed') {
+              // Codex also clears the active turn ID via ephemeral session info,
+              // but the persisted turn/completed result must be enough to stop
+              // the thinking indicator after reconnect or missed live events.
+              agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
+            }
+            if (meta.subtype && catchUpPhase === 'live')
+              params.onTurnEnd?.(agentId, meta.numToolUses)
+            if (meta.contextUsage) {
+              agentSessionStore.updateInfo(agentId, { contextUsage: meta.contextUsage })
+            }
+            else if (meta.contextWindow !== undefined) {
+              const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
+              if (existingUsage) {
+                agentSessionStore.updateInfo(agentId, {
+                  contextUsage: { ...existingUsage, contextWindow: meta.contextWindow },
+                })
               }
             }
+            if (meta.totalCostUsd !== undefined) {
+              agentSessionStore.updateInfo(agentId, { totalCostUsd: meta.totalCostUsd })
+            }
           }
-          catch { /* ignore parse errors */ }
         }
         break
       }
       case 'streamChunk': {
-        const text = new TextDecoder().decode(inner.value.delta)
+        const text = TEXT_DECODER.decode(inner.value.delta)
         if (inner.value.spanId) {
           chatStore.appendCommandStream(
             agentId,
@@ -434,7 +499,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const agentEntry = agentStore.getById(cr.agentId)
         if (agentEntry?.status === AgentStatus.INACTIVE)
           break
-        const payload = JSON.parse(new TextDecoder().decode(cr.payload))
+        const payload = JSON.parse(TEXT_DECODER.decode(cr.payload))
         controlStore.addRequest(cr.agentId, {
           requestId: cr.requestId,
           agentId: cr.agentId,

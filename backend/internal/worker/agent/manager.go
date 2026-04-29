@@ -18,7 +18,7 @@ var ErrAgentNotFound = errors.New("agent not found")
 // Manager tracks active agents and routes messages.
 type Manager struct {
 	mu                 sync.RWMutex
-	agents             map[string]Provider                          // agentID -> Provider
+	agents             map[string]Agent                             // agentID -> Agent
 	cachedModels       map[string][]*leapmuxv1.AvailableModel       // agentID -> last known models
 	cachedOptionGroups map[string][]*leapmuxv1.AvailableOptionGroup // agentID -> last known option groups
 	lifecycleLocks     map[string]*lifecycleEntry                   // agentID -> refcounted mutex
@@ -36,7 +36,7 @@ type lifecycleEntry struct {
 // The optional onExit handler is called when any agent process exits.
 func NewManager(onExit ExitHandler) *Manager {
 	return &Manager{
-		agents:             make(map[string]Provider),
+		agents:             make(map[string]Agent),
 		cachedModels:       make(map[string][]*leapmuxv1.AvailableModel),
 		cachedOptionGroups: make(map[string][]*leapmuxv1.AvailableOptionGroup),
 		lifecycleLocks:     make(map[string]*lifecycleEntry),
@@ -84,7 +84,7 @@ func (m *Manager) RestartAgent(ctx context.Context, opts Options, sink OutputSin
 }
 
 // startFunc is the function signature for starting an agent process.
-type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Provider, error)
+type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Agent, error)
 
 // StartAgent spawns an agent for the given agent ID, dispatching based on
 // opts.AgentProvider.
@@ -92,7 +92,7 @@ type startFunc func(ctx context.Context, opts Options, sink OutputSink) (Provide
 // Returns the confirmed settings from the startup handshake (e.g. permission
 // mode, discovered model).
 func (m *Manager) StartAgent(ctx context.Context, opts Options, sink OutputSink) (*leapmuxv1.AgentSettings, error) {
-	reg, ok := providerRegistry[opts.AgentProvider]
+	reg, ok := agentFactoryRegistry[opts.AgentProvider]
 	if !ok {
 		return nil, fmt.Errorf("unsupported agent provider: %v", opts.AgentProvider)
 	}
@@ -277,7 +277,7 @@ func (m *Manager) AvailableModels(agentID string, provider leapmuxv1.AgentProvid
 	if len(cached) > 0 {
 		return withDefaultModelMarked(cached, provider)
 	}
-	if reg, ok := providerRegistry[provider]; ok {
+	if reg, ok := agentFactoryRegistry[provider]; ok {
 		return withDefaultModelMarked(reg.defaultModels, provider)
 	}
 	return nil
@@ -345,7 +345,7 @@ func (m *Manager) AvailableOptionGroups(agentID string, provider leapmuxv1.Agent
 // provider from the provider registry. This is a package-level function
 // that does not require a Manager instance.
 func AvailableOptionGroupsForProvider(provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableOptionGroup {
-	if reg, ok := providerRegistry[provider]; ok {
+	if reg, ok := agentFactoryRegistry[provider]; ok {
 		return reg.optionGroups
 	}
 	return nil
@@ -401,7 +401,7 @@ func (m *Manager) ListAgentIDs() []string {
 // StopAll stops all running agents.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
-	providers := make([]Provider, 0, len(m.agents))
+	providers := make([]Agent, 0, len(m.agents))
 	for _, p := range m.agents {
 		providers = append(providers, p)
 	}

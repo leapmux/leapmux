@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { getProviderPlugin } from '../registry'
+import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
 import './gemini'
@@ -12,7 +12,7 @@ vi.mock('~/api/workerRpc', () => ({
 }))
 
 describe('gemini provider', () => {
-  const plugin = getProviderPlugin(AgentProvider.GEMINI_CLI)!
+  const plugin = providerFor(AgentProvider.GEMINI_CLI)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -73,7 +73,7 @@ describe('gemini provider', () => {
 })
 
 describe('gemini settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.GEMINI_CLI)!
+  const plugin = providerFor(AgentProvider.GEMINI_CLI)!
 
   it('renders permission modes and updates through the unified onChange dispatcher', async () => {
     const onChange = vi.fn()

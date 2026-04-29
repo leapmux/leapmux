@@ -20,9 +20,10 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
   <a href="https://geminicli.com/"><img src="icons/agents/gemini-cli.svg" width="64" height="64" title="Gemini CLI"></a>&nbsp;
   <a href="https://cursor.com/cli"><img src="icons/agents/cursor.svg" width="64" height="64" title="Cursor"></a>&nbsp;
   <a href="https://github.com/features/copilot/cli"><img src="icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot"></a>&nbsp;
-  <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
   <a href="https://opencode.ai/"><img src="icons/agents/opencode.svg" width="64" height="64" title="OpenCode"></a>&nbsp;
-  <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" title="Goose"></a>
+  <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" title="Pi Coding Agent"></a>
+  <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
+  <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" title="Goose"></a>&nbsp;
 </p>
 
 ## Key Features
@@ -528,40 +529,40 @@ task clean-desktop    # Remove desktop binaries, bundles, and Rust target/
 
 ```
 leapmux/
-├── .github/workflows/       # CI, Docker, and release workflows
+├── .github/workflows/           # CI, Docker, and release workflows
 │
-├── backend/                 # Go backend module
-│   ├── channelwire/         # E2EE channel wire format definitions
+├── backend/                     # Go backend module
+│   ├── channelwire/             # E2EE channel wire format definitions
 │   │
-│   ├── cmd/leapmux/         # Unified binary entry point
-│   │   ├── admin*.go        # Admin CLI (org, user, session, worker, oauth, encryption, db)
-│   │   ├── hub.go           # Hub mode
-│   │   ├── main.go          # Subcommand routing (hub, worker, solo, dev, admin)
-│   │   ├── solo.go          # Solo/dev mode (hub + worker, default)
-│   │   └── worker.go        # Worker mode
+│   ├── cmd/leapmux/             # Unified binary entry point
+│   │   ├── admin*.go            # Admin CLI (org, user, session, worker, oauth, encryption, db)
+│   │   ├── hub.go               # Hub mode
+│   │   ├── main.go              # Subcommand routing (hub, worker, solo, dev, admin)
+│   │   ├── solo.go              # Solo/dev mode (hub + worker, default)
+│   │   └── worker.go            # Worker mode
 │   │
-│   ├── generated/proto/     # Generated Go protobuf code (gitignored)
+│   ├── generated/proto/         # Generated Go protobuf code (gitignored)
 │   │
-│   ├── hub/                 # Hub public API (thin wrapper)
-│   │   └── server.go        # NewServer(), Serve(), RegisterBackend(), etc.
+│   ├── hub/                     # Hub public API (thin wrapper)
+│   │   └── server.go            # NewServer(), Serve(), RegisterBackend(), etc.
 │   │
 │   ├── internal/
-│   │   ├── config/          # Shared configuration loading (koanf-based)
+│   │   ├── config/              # Shared configuration loading (koanf-based)
 │   │   │
-│   │   ├── hub/             # Hub implementation
-│   │   │   ├── auth/        # Session-based authentication
-│   │   │   ├── bootstrap/   # Database initialization and seeding
-│   │   │   ├── channelmgr/  # E2EE channel routing and chunk validation
-│   │   │   ├── cleanup/     # Periodic cleanup of expired data
-│   │   │   ├── config/      # Hub configuration (incl. storage backend selection)
-│   │   │   ├── frontend/    # Frontend asset embedding and dev proxy
-│   │   │   ├── keystore/    # Encryption key management and rotation
-│   │   │   ├── layout/      # Workspace tiling layout management
-│   │   │   ├── notifier/    # Worker notification queue (persistent delivery with retries)
-│   │   │   ├── oauth/       # OAuth/OIDC provider integrations (GitHub, OIDC)
-│   │   │   ├── password/    # Password hashing and verification
-│   │   │   ├── service/     # RPC service implementations (auth, workspace, channel relay)
-│   │   │   ├── store/       # Storage abstraction and backend implementations
+│   │   ├── hub/                 # Hub implementation
+│   │   │   ├── auth/            # Session-based authentication
+│   │   │   ├── bootstrap/       # Database initialization and seeding
+│   │   │   ├── channelmgr/      # E2EE channel routing and chunk validation
+│   │   │   ├── cleanup/         # Periodic cleanup of expired data
+│   │   │   ├── config/          # Hub configuration (incl. storage backend selection)
+│   │   │   ├── frontend/        # Frontend asset embedding and dev proxy
+│   │   │   ├── keystore/        # Encryption key management and rotation
+│   │   │   ├── layout/          # Workspace tiling layout management
+│   │   │   ├── notifier/        # Worker notification queue (persistent delivery with retries)
+│   │   │   ├── oauth/           # OAuth/OIDC provider integrations (GitHub, OIDC)
+│   │   │   ├── password/        # Password hashing and verification
+│   │   │   ├── service/         # RPC service implementations (auth, workspace, channel relay)
+│   │   │   ├── store/           # Storage abstraction and backend implementations
 │   │   │   │   ├── sqlite/      # SQLite backend (default)
 │   │   │   │   ├── postgres/    # PostgreSQL backend (also used by CockroachDB, YugabyteDB)
 │   │   │   │   ├── mysql/       # MySQL backend (also used by TiDB)
@@ -570,84 +571,91 @@ leapmux/
 │   │   │   │   ├── tidb/        # TiDB integration tests
 │   │   │   │   ├── sqlutil/     # Shared SQL helpers (migrations, bulk ops, converters)
 │   │   │   │   └── storetest/   # Backend-agnostic test suite
-│   │   │   ├── storeopen/   # Store factory (opens backend from config)
-│   │   │   ├── testutil/    # Shared test helpers for hub tests
-│   │   │   └── workermgr/   # Worker connection registry and pending approvals
+│   │   │   ├── storeopen/       # Store factory (opens backend from config)
+│   │   │   ├── testutil/        # Shared test helpers for hub tests
+│   │   │   └── workermgr/       # Worker connection registry and pending approvals
 │   │   │
-│   │   ├── logging/         # Structured logging and middleware
-│   │   ├── metrics/         # Prometheus metrics and interceptors
-│   │   ├── noise/           # Noise_NK protocol and key fingerprinting
-│   │   ├── util/            # Shared utilities (id, lexorank, msgcodec, ptrconv, sqlitedb, timefmt, validate, testutil)
+│   │   ├── logging/             # Structured logging and middleware
+│   │   ├── metrics/             # Prometheus metrics and interceptors
+│   │   ├── noise/               # Noise_NK protocol and key fingerprinting
+│   │   ├── util/                # Shared utilities (id, lexorank, msgcodec, ptrconv, sqlitedb, timefmt, validate, testutil)
 │   │   │
-│   │   └── worker/          # Worker implementation
-│   │       ├── agent/       # Agent process management
-│   │       ├── channel/     # E2EE channel session management and dispatch
-│   │       ├── config/      # Worker configuration
-│   │       ├── db/          # Worker database (SQLite-only), migrations, and queries
-│   │       ├── filebrowser/ # File system access
-│   │       ├── gitutil/     # Git repository utilities
-│   │       ├── hub/         # gRPC client to Hub (with auto-reconnect)
-│   │       ├── service/     # Agent, terminal, file, and git service handlers
-│   │       ├── terminal/    # PTY session management
-│   │       └── wakelock/    # System wake lock management
+│   │   └── worker/              # Worker implementation
+│   │       ├── agent/           # Agent process management (one provider plugin per coding agent)
+│   │       │                    # - claude*, codex*, opencode*, gemini*, copilot*, cursor*,
+│   │       │                    # - kilo*, goose*, pi* — share processBase / jsonrpcBase
+│   │       │
+│   │       ├── channel/         # E2EE channel session management and dispatch
+│   │       ├── config/          # Worker configuration
+│   │       ├── db/              # Worker database (SQLite-only), migrations, and queries
+│   │       ├── filebrowser/     # File system access
+│   │       ├── gitutil/         # Git repository utilities
+│   │       ├── hub/             # gRPC client to Hub (with auto-reconnect)
+│   │       ├── service/         # Agent, terminal, file, and git service handlers
+│   │       ├── terminal/        # PTY session management
+│   │       └── wakelock/        # System wake lock management
 │   │
-│   ├── locallisten/         # Local-socket listeners (Unix domain sockets and Windows named pipes)
-│   ├── solo/                # Shared solo mode startup logic
-│   ├── spautil/             # SPA HTTP handler utilities
-│   ├── tunnel/              # Tunnel channel and connection management
-│   ├── util/version/        # Build version information
+│   ├── locallisten/             # Local-socket listeners (Unix domain sockets and Windows named pipes)
+│   ├── solo/                    # Shared solo mode startup logic
+│   ├── spautil/                 # SPA HTTP handler utilities
+│   ├── tunnel/                  # Tunnel channel and connection management
+│   ├── util/version/            # Build version information
 │   │
-│   └── worker/              # Worker public API (thin wrapper)
-│       └── runner.go        # Run(), RunConfig
+│   └── worker/                  # Worker public API (thin wrapper)
+│       └── runner.go            # Run(), RunConfig
 │
-├── desktop/                 # Tauri v2 desktop app + Go desktop sidecar
-│   ├── go/                  # Go desktop sidecar (solo startup, proxy, tunnels, OS integrations)
-│   └── rust/                # Tauri v2 Rust shell (WebView, packaging, icons)
-│       └── scripts/         # Packaging helpers (DMG creation, icon generation)
+├── desktop/                     # Tauri v2 desktop app + Go desktop sidecar
+│   ├── go/                      # Go desktop sidecar (solo startup, proxy, tunnels, OS integrations)
+│   └── rust/                    # Tauri v2 Rust shell (WebView, packaging, icons)
+│       └── scripts/             # Packaging helpers (DMG creation, icon generation)
 │
-├── docker/                  # Dockerfile and s6-overlay service definitions
+├── docker/                      # Dockerfile and s6-overlay service definitions
 │
-├── frontend/                # SolidJS web application
-│   ├── patches/             # Bun patch overrides for dependencies
-│   ├── public/              # Static assets (fonts, icons, sounds, PWA manifest)
-│   ├── scripts/             # Build and development scripts
+├── frontend/                    # SolidJS web application
+│   ├── patches/                 # Bun patch overrides for dependencies
+│   ├── public/                  # Static assets (fonts, icons, sounds, PWA manifest)
+│   ├── scripts/                 # Build and development scripts
 │   ├── src/
-│   │   ├── api/             # ConnectRPC client setup
-│   │   ├── components/      # UI components (chat, terminal, filebrowser, shell, etc.)
-│   │   ├── context/         # Auth, Org, Workspace, and Preferences providers
-│   │   ├── generated/       # Generated TypeScript protobuf code (gitignored)
-│   │   ├── hooks/           # Custom hooks
-│   │   ├── lib/             # Utility libraries
-│   │   ├── routes/          # Route definitions
-│   │   ├── spinners/        # Spinner verb JSON files (generated, gitignored)
-│   │   ├── stores/          # State management (agents, chat, terminals, etc.)
-│   │   ├── styles/          # Global styles and themes
-│   │   ├── types/           # TypeScript type definitions
-│   │   └── utils/           # Shared utility functions
+│   │   ├── api/                 # ConnectRPC client setup
+│   │   ├── components/          # UI components (chat, terminal, filebrowser, shell, etc.)
+│   │   │   └── chat/providers/  # Per-agent classifier + renderers + control UI
+│   │   │                        # - claude/, codex/, opencode/, pi/, acp/ (shared ACP base)
+│   │   │                        # - stubs/ (gemini, cursor, copilot, kilo, goose)
+│   │   │
+│   │   ├── context/             # Auth, Org, Workspace, and Preferences providers
+│   │   ├── generated/           # Generated TypeScript protobuf code (gitignored)
+│   │   ├── hooks/               # Custom hooks
+│   │   ├── lib/                 # Utility libraries
+│   │   ├── routes/              # Route definitions
+│   │   ├── spinners/            # Spinner verb JSON files (generated, gitignored)
+│   │   ├── stores/              # State management (agents, chat, terminals, etc.)
+│   │   ├── styles/              # Global styles and themes
+│   │   ├── types/               # TypeScript type definitions
+│   │   └── utils/               # Shared utility functions
 │   └── tests/
-│       ├── e2e/             # End-to-end tests (Playwright)
-│       └── unit/            # Unit tests (Vitest)
+│       ├── e2e/                 # End-to-end tests (Playwright)
+│       └── unit/                # Unit tests (Vitest)
 │
-├── icons/                   # SVG icons (app logo and agent provider icons)
+├── icons/                       # SVG icons (app logo and agent provider icons)
 │
-├── proto/                   # Protocol Buffer definitions
-│   └── leapmux/v1/          # Service and message definitions
+├── proto/                       # Protocol Buffer definitions
+│   └── leapmux/v1/              # Service and message definitions
 │
-├── scripts/                 # Utility scripts
-│   ├── build-ico.mjs        # ICO file builder
-│   ├── generate-notice.mjs  # License collection and NOTICE.md/HTML generation
-│   └── license-overrides/   # Vendored licenses for packages missing them
+├── scripts/                     # Utility scripts
+│   ├── build-ico.mjs            # ICO file builder
+│   ├── generate-notice.mjs      # License collection and NOTICE.md/HTML generation
+│   └── license-overrides/       # Vendored licenses for packages missing them
 │
-├── buf.gen.yaml             # Protocol Buffer code generation targets
-├── buf.yaml                 # Protocol Buffer linting configuration
-├── go.work                  # Go workspace (backend + desktop/go modules)
-├── mprocs.yaml              # Dev mode process configuration (task dev)
-├── mprocs-desktop.yaml      # Desktop dev mode process configuration (task dev-desktop)
-├── mprocs-solo.yaml         # Solo mode process configuration (task dev-solo)
-├── NOTICE.md                # Third-party dependency licenses (generated)
-├── README.md                # This file
-├── Taskfile.yaml            # Build orchestration (go-task.dev)
-└── versions.env             # Version string and tool/image versions
+├── buf.gen.yaml                 # Protocol Buffer code generation targets
+├── buf.yaml                     # Protocol Buffer linting configuration
+├── go.work                      # Go workspace (backend + desktop/go modules)
+├── mprocs.yaml                  # Dev mode process configuration (task dev)
+├── mprocs-desktop.yaml          # Desktop dev mode process configuration (task dev-desktop)
+├── mprocs-solo.yaml             # Solo mode process configuration (task dev-solo)
+├── NOTICE.md                    # Third-party dependency licenses (generated)
+├── README.md                    # This file
+├── Taskfile.yaml                # Build orchestration (go-task.dev)
+└── versions.env                 # Version string and tool/image versions
 ```
 
 ## Contributing
@@ -667,4 +675,4 @@ See the [LICENSE](LICENSE.md) file for full details.
 
 ## Disclaimer
 
-All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anomaly, Anthropic, Anysphere, Apple, Block, Cognition, Don Ho, GitHub, Google, JetBrains, Kilo Code, Microsoft, OpenAI, Sublime HQ, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.
+All product names, logos, and trademarks are the property of their respective owners. LeapMux is not affiliated with, endorsed by, or sponsored by Anomaly, Anthropic, Anysphere, Apple, Block, Cognition, Don Ho, Earendil, GitHub, Google, JetBrains, Kilo Code, Microsoft, OpenAI, Sublime HQ, Zed Industries, or any other third party. Coding agent, editor, and IDE icons are used solely to indicate compatibility and are reproduced here for identification purposes only.

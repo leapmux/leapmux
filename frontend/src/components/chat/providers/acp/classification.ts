@@ -142,7 +142,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     }
 
     if (type === 'settings_changed' || type === 'context_cleared'
-      || type === 'interrupted' || type === 'agent_error' || type === 'agent_renamed' || type === 'compacting') {
+      || type === 'interrupted' || type === 'agent_error' || type === 'plan_updated' || type === 'compacting') {
       return { kind: 'notification' }
     }
 

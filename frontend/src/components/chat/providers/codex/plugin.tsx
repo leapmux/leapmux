@@ -3,18 +3,20 @@ import type { JSX } from 'solid-js'
 import type { Question } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
-import type { ClassificationContext, ClassificationInput, ProviderPlugin } from '../registry'
+import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { PermissionMode } from '~/utils/controlResponse'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_INTERNAL_TOOL, CODEX_ITEM, CODEX_METHOD, CODEX_STATUS } from '~/types/toolMessages'
 import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ChatView.css'
 import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from '../../controls/CodexControlRequest'
+import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider } from '../registry'
@@ -85,15 +87,9 @@ function codexAssistantInterruptEcho(parent: Record<string, unknown>): boolean {
   if (parent.type !== 'assistant')
     return false
 
-  const message = pickObject(parent, 'message')
-  if (!message || !Array.isArray(message.content))
-    return false
-
-  let text = ''
-  for (const c of message.content) {
-    if (isObject(c) && c.type === 'text' && typeof c.text === 'string')
-      text += c.text
-  }
+  // Substring match only — skip image blocks rather than embedding them
+  // so the matched needle is text-only.
+  const text = joinContentParagraphs(getMessageContent(parent), { text: 'text' }, () => null)
   return text.length > 0 && isCodexInterruptRequestText(text)
 }
 
@@ -119,16 +115,47 @@ function isCodexEmptyCompletedWebSearch(item: Record<string, unknown>): boolean 
 
 /** Extra notification types for Codex (agent_error). */
 const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
+/**
+ * Codex JSON-RPC methods that, when persisted as SYSTEM, are notification-thread
+ * entries. The consolidator treats these the same way `system+subtype` events
+ * are treated for Claude.
+ */
+const CODEX_NOTIF_METHODS = new Set<string>([
+  CODEX_RATE_LIMITS_METHOD,
+  'thread/compacted',
+  'thread/tokenUsage/updated',
+  'thread/name/updated',
+  'mcpServer/startupStatus/updated',
+])
 function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] } | null): wrapper is { old_seqs: number[], messages: unknown[] } {
   if (isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES, (t, st) =>
     t === 'system' && st !== 'init' && st !== 'task_notification')) {
     return true
   }
-  // Codex method-based notifications (e.g. account/rateLimits/updated)
+  // Codex method-based notifications now arriving as SYSTEM-roled raw
+  // JSON-RPC envelopes — recognize them by the inner `method` field.
   if (!wrapper || (wrapper as { messages: unknown[] }).messages.length < 1)
     return false
-  return (wrapper as { messages: unknown[] }).messages.some((msg: unknown) =>
-    isObject(msg) && msg.method === CODEX_RATE_LIMITS_METHOD)
+  return (wrapper as { messages: unknown[] }).messages.some((msg: unknown) => {
+    if (!isObject(msg))
+      return false
+    const method = (msg as Record<string, unknown>).method
+    if (typeof method !== 'string')
+      return false
+    if (CODEX_NOTIF_METHODS.has(method))
+      return true
+    // item/started for a contextCompaction item is the in-progress
+    // compacting indicator (paired with thread/compacted on completion).
+    if (method === 'item/started') {
+      const params = (msg as Record<string, unknown>).params
+      if (isObject(params)) {
+        const item = (params as Record<string, unknown>).item
+        if (isObject(item) && (item as Record<string, unknown>).type === 'contextCompaction')
+          return true
+      }
+    }
+    return false
+  })
 }
 
 /** Returns true when a Codex rate limit message has all tiers below the warning threshold. */
@@ -189,11 +216,16 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
 /**
  * Lifecycle methods that signal turn/thread state transitions but should not
  * appear in the chat. Persisted upstream; classified out here.
+ *
+ * Exported because `agentState.ts`'s working-state heuristic must skip these
+ * too — anything we hide from the chat must also be ignored when deciding
+ * "is the agent thinking?". Adding a method here propagates automatically.
  */
-const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
+export const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
   CODEX_METHOD.THREAD_STARTED,
   CODEX_METHOD.TURN_STARTED,
   CODEX_METHOD.THREAD_STATUS_CHANGED,
+  CODEX_METHOD.THREAD_NAME_UPDATED,
   CODEX_METHOD.THREAD_TOKEN_USAGE_UPDATED,
 ])
 
@@ -203,11 +235,11 @@ const CODEX_LEAPMUX_NOTIFICATION_TYPES = new Set<string>([
   'context_cleared',
   'interrupted',
   'agent_error',
-  'agent_renamed',
+  'plan_updated',
   'compacting',
 ])
 
-const codexPlugin: ProviderPlugin = {
+const codexPlugin: Provider = {
   defaultModel: DEFAULT_CODEX_MODEL,
   defaultEffort: DEFAULT_CODEX_EFFORT,
   defaultPermissionMode: 'on-request',
@@ -218,6 +250,21 @@ const codexPlugin: ProviderPlugin = {
     pdf: false,
     binary: false,
   },
+  // Codex's wire format dispatches via JSON-RPC `method`. Anything we hide
+  // from the chat plus the metadata-only updates (mcp startup, rate limits,
+  // thread compaction) must also be invisible to the working-state
+  // heuristic — adding a method to either set propagates automatically.
+  nonProgressMethods: new Set<string>([
+    ...CODEX_HIDDEN_LIFECYCLE_METHODS,
+    'thread/compacted',
+    'mcpServer/startupStatus/updated',
+    'account/rateLimits/updated',
+  ]),
+  // Codex exposes an explicit turn ID for the active turn. Prefer it over
+  // the generic message-history heuristic so idle-but-running tabs don't
+  // show as thinking on creation, and so post-reconnect rehydration is
+  // driven by the authoritative server-side state.
+  hasActiveTurn: (_agent, sessionInfo) => Boolean(sessionInfo?.codexTurnId),
   planMode: {
     currentMode: agent => agent.extraSettings?.[CODEX_EXTRA_COLLABORATION_MODE] || DEFAULT_CODEX_COLLABORATION_MODE,
     planValue: 'plan',
@@ -317,8 +364,15 @@ const codexPlugin: ProviderPlugin = {
       if (codexResult !== null)
         return codexResult
       // Fall through to Claude-shaped notification renderers (settings_changed,
-      // interrupted, agent_renamed, etc.) — Codex emits these too.
+      // interrupted, plan_updated, etc.) — Codex emits these too.
       return null
+    }
+    if (category.kind === 'user_content')
+      return <UserContentMessage parsed={parsed} />
+    if (category.kind === 'plan_execution') {
+      const obj = isObject(parsed) ? parsed as Record<string, unknown> : null
+      const text = obj && typeof obj.content === 'string' ? obj.content as string : ''
+      return text ? <PlanExecutionMessage text={text} context={context} /> : null
     }
     if (category.kind === 'tool_use') {
       // Use the item stored in category.toolUse (resolved to final state in classify).

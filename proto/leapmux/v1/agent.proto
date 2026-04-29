@@ -14,6 +14,7 @@ enum AgentProvider {
   AGENT_PROVIDER_KILO = 6;
   AGENT_PROVIDER_OPENCODE = 7;
   AGENT_PROVIDER_GOOSE = 8;
+  AGENT_PROVIDER_PI = 9;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.
@@ -31,7 +32,10 @@ enum MessageRole {
   MESSAGE_ROLE_USER = 1;
   MESSAGE_ROLE_ASSISTANT = 2;
   MESSAGE_ROLE_SYSTEM = 3;
-  MESSAGE_ROLE_RESULT = 4;
+  // Turn-end divider. Persisted by every provider's terminal envelope
+  // (Claude type:"result", Codex turn/completed, ACP prompt response,
+  // Pi agent_end) and gates the sink-level git-status auto-broadcast.
+  MESSAGE_ROLE_TURN_END = 4;
   MESSAGE_ROLE_LEAPMUX = 5;  // Platform notifications (settings changes, interrupts)
 }
 

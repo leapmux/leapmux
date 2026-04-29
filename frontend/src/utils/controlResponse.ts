@@ -2,7 +2,7 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 // Import directly from registry (not providers/index) to avoid circular dependency.
 // providers/index re-exports from registry but also side-effect-imports claude/codex,
 // which import settingsShared, which imports this module's constants.
-import { getProviderPlugin } from '~/components/chat/providers/registry'
+import { providerFor } from '~/components/chat/providers/registry'
 
 /** Extract the tool_name from a control_request payload */
 export function getToolName(payload: Record<string, unknown>): string {
@@ -63,6 +63,33 @@ export function buildDenyResponse(
 }
 
 /**
+ * Decode the inverse of `buildAllowResponse` / `buildDenyResponse`: a
+ * `control_response` envelope's serialized bytes back into its `behavior`.
+ * Returns null on any decode failure or when the envelope doesn't carry a
+ * recognizable behavior — callers can then fall back to their own state.
+ *
+ * Providers that want to translate the shared AskUserQuestion
+ * response into their own wire format (e.g. Pi's `extension_ui_response`
+ * shape) call this helper instead of reaching into the nested
+ * `response.response` themselves.
+ */
+export function decodeControlResponseBehavior(content: Uint8Array): 'allow' | 'deny' | null {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(content)) as Record<string, unknown>
+  }
+  catch {
+    return null
+  }
+  const outer = parsed.response as Record<string, unknown> | undefined
+  const inner = outer?.response as Record<string, unknown> | undefined
+  const behavior = inner?.behavior
+  if (behavior === 'allow' || behavior === 'deny')
+    return behavior
+  return null
+}
+
+/**
  * Builds a control_request JSON string for changing Claude Code's permission mode.
  * The hub detects this format and sends it as raw input to Claude Code's stdin.
  * Uses the same wire protocol as the Agent SDK's setPermissionMode().
@@ -71,7 +98,7 @@ export type PermissionMode = string
 
 /** Returns the default model for the given agent provider. */
 export function defaultModelForProvider(provider: AgentProvider): string {
-  return getProviderPlugin(provider)?.defaultModel ?? 'opus'
+  return providerFor(provider)?.defaultModel ?? 'opus'
 }
 
 /**
@@ -85,5 +112,5 @@ export const EFFORT_AUTO = 'auto'
 
 /** Returns the default effort for the given agent provider. */
 export function defaultEffortForProvider(provider: AgentProvider): string {
-  return getProviderPlugin(provider)?.defaultEffort ?? EFFORT_AUTO
+  return providerFor(provider)?.defaultEffort ?? EFFORT_AUTO
 }

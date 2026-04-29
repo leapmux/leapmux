@@ -28,7 +28,7 @@ export const GenericToolContent: Component<{ request: ControlRequest }> = (props
         Permission Required:
         {toolName()}
       </div>
-      <CollapsibleText text={inputSummary()} maxLines={6} class={styles.toolSummary} />
+      <CollapsibleText text={inputSummary()} maxLines={6} class={styles.bannerCodeBlock} />
     </>
   )
 }

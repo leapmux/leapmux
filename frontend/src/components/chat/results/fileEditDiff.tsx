@@ -18,6 +18,35 @@ export interface FileEditDiffSource {
   originalFile?: string
 }
 
+/**
+ * Build a FileEditDiffSource for a new-file write — the full file body
+ * becomes the all-added side. Provider-neutral: used by Codex's
+ * fileChange "add" rows and Pi's `write` tool.
+ */
+export function fileEditDiffFromNewFile(path: string, content: string): FileEditDiffSource {
+  return {
+    filePath: path,
+    structuredPatch: null,
+    oldStr: '',
+    newStr: content,
+  }
+}
+
+/**
+ * Build a FileEditDiffSource for an edit whose unified diff has already
+ * been parsed into structured hunks. Provider-neutral: used by Codex's
+ * fileChange "modify" rows (hunks parsed from a unified diff) and Pi's
+ * `edit` tool result (hunks parsed via parsePiNumberedDiff).
+ */
+export function fileEditDiffFromHunks(path: string, hunks: StructuredPatchHunk[]): FileEditDiffSource {
+  return {
+    filePath: path,
+    structuredPatch: hunks,
+    oldStr: '',
+    newStr: '',
+  }
+}
+
 export function fileEditHasDiff(source: FileEditDiffSource | null | undefined): source is FileEditDiffSource {
   if (!source)
     return false

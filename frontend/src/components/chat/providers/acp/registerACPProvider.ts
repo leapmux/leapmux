@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
-import type { ProviderPlugin } from '../registry'
+import type { Provider } from '../registry'
 import type { ACPSettingsPanelConfig } from './settings'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -15,8 +15,8 @@ import { createACPSettingsPanel, createACPTriggerLabel } from './settings'
  * their own payload sniffer + extractor + responder.
  */
 export interface ACPQuestionHandling {
-  isAskUserQuestion: NonNullable<ProviderPlugin['isAskUserQuestion']>
-  extractAskUserQuestions: NonNullable<ProviderPlugin['extractAskUserQuestions']>
+  isAskUserQuestion: NonNullable<Provider['isAskUserQuestion']>
+  extractAskUserQuestions: NonNullable<Provider['extractAskUserQuestions']>
   sendAskUserQuestionResponse: (
     agentId: string,
     sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>,
@@ -56,7 +56,7 @@ export interface ACPProviderOptions {
 function planModeFromConfig(
   config: ACPSettingsPanelConfig,
   planValue: string,
-): NonNullable<ProviderPlugin['planMode']> {
+): NonNullable<Provider['planMode']> {
   if (config.kind === 'permissionMode') {
     const fallback = config.defaultMode
     return {
@@ -81,7 +81,7 @@ function planModeFromConfig(
  */
 export function registerACPProvider(opts: ACPProviderOptions): void {
   const sc = opts.settingsConfig
-  const plugin: ProviderPlugin = {
+  const plugin: Provider = {
     defaultModel: sc.defaultModel || undefined,
     attachments: { text: true, image: true, pdf: true, binary: true },
 

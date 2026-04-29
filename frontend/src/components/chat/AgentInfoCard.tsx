@@ -6,8 +6,9 @@ import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
-import { tildify } from '~/lib/paths'
+import { basename, tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
 import { formatTokenCount } from './rendererUtils'
@@ -16,6 +17,14 @@ import { computePercentage, contextBufferPct, contextSize, resolveContextWindow 
 export interface AgentInfoCardProps {
   agent?: AgentInfo
   agentSessionInfo?: AgentSessionInfo
+}
+
+export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
+  if (agentProvider !== AgentProvider.PI)
+    return sessionId
+
+  const tail = basename(sessionId) || sessionId
+  return tail.endsWith('.jsonl') ? tail.slice(0, -'.jsonl'.length) : tail
 }
 
 function CopyButton(props: { getText: () => string | undefined, title: string, testId?: string }) {
@@ -43,6 +52,12 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
   }
 
   const showInfoTrigger = () => !!props.agent?.agentSessionId || hasContextInfo()
+
+  const sessionIdDisplay = createMemo(() => {
+    const sessionId = props.agent?.agentSessionId
+    return sessionId ? formatAgentSessionIdForDisplay(props.agent?.agentProvider, sessionId) : undefined
+  })
+  const sessionIdCopyTitle = () => props.agent?.agentProvider === AgentProvider.PI ? 'Copy session file path' : 'Copy session ID'
 
   // 1-minute timer for countdown refresh
   const [now, setNow] = createSignal(Date.now())
@@ -78,10 +93,10 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       <Show when={props.agent?.agentSessionId}>
         <div class={styles.infoRow}>
           <span class={styles.infoLabel}>Session ID</span>
-          <span class={styles.infoValue} data-testid="session-id-value">{props.agent?.agentSessionId}</span>
+          <span class={styles.infoValue} data-testid="session-id-value">{sessionIdDisplay()}</span>
           <CopyButton
             getText={() => props.agent?.agentSessionId}
-            title="Copy session ID"
+            title={sessionIdCopyTitle()}
             testId="session-id-copy"
           />
         </div>

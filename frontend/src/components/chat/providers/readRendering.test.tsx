@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import './claude'
 import './opencode'
+import './pi'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -42,6 +43,36 @@ function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: Render
     content: [],
   }
   const result = renderMessageContent(toolUse, MessageRole.ASSISTANT, context, category, AgentProvider.OPENCODE)
+  return render(() => result)
+}
+
+function parsed(parentObject: Record<string, unknown>) {
+  return {
+    rawText: JSON.stringify(parentObject),
+    topLevel: parentObject,
+    parentObject,
+    wrapper: null,
+  }
+}
+
+function renderPiReadResult(content: string, startArgs: Record<string, unknown> = {}) {
+  const payload = {
+    type: 'tool_execution_end',
+    toolCallId: 'call-1',
+    toolName: 'read',
+    result: { content: [{ type: 'text', text: content }] },
+  }
+  const start = {
+    type: 'tool_execution_start',
+    toolCallId: 'call-1',
+    toolName: 'read',
+    args: startArgs,
+  }
+  const category: MessageCategory = { kind: 'tool_result' }
+  const result = renderMessageContent(payload, MessageRole.ASSISTANT, {
+    spanType: 'read',
+    toolUseParsed: parsed(start),
+  }, category, AgentProvider.PI)
   return render(() => result)
 }
 
@@ -90,6 +121,18 @@ describe('claude Read tool_result rendering', () => {
     const { container } = renderClaudeToolResult(parsed, { spanType: 'Read' })
     expect(container.querySelector('[class*="codeView"]')).toBeNull()
     expect(container.textContent ?? '').toContain('[image data]')
+  })
+})
+
+describe('pi Read tool_result rendering', () => {
+  it('renders plain Pi read content through the shared line-numbered body', () => {
+    const { container } = renderPiReadResult('piLineA\npiLineB', { path: '/tmp/a.ts', offset: 10 })
+    expect(container.querySelector('[class*="codeView"]')).not.toBeNull()
+    expect(container.querySelector('[data-line-num="10"]')).not.toBeNull()
+    expect(container.querySelector('[data-line-num="11"]')).not.toBeNull()
+    const text = container.textContent ?? ''
+    expect(text).toContain('piLineA')
+    expect(text).toContain('piLineB')
   })
 })
 

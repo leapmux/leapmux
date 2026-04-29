@@ -5,6 +5,7 @@ import CircleAlert from 'lucide-solid/icons/circle-alert'
 import { createMemo, Show } from 'solid-js'
 import { getToolResultExpanded } from '../messageRenderers'
 import { stripLeadingBlankLines } from '../toolRenderers'
+import { toolMessage } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ToolStatusHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
@@ -66,12 +67,29 @@ export function CommandResultBody(props: {
   const expanded = () => getToolResultExpanded(props.context)
   const { display, isCollapsed } = useCollapsedLines({ text: normalized, expanded })
   const statusIcon = () => props.source.isError ? CircleAlert : Check
+  const statusLabel = () => commandStatusLabel(props.source)
+  const showStatusHeader = () => statusLabel() !== 'Success'
 
+  const content = () => (
+    <Show when={normalized()}>
+      <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} />
+    </Show>
+  )
+
+  // Keep the status branch under <Show> so it re-runs when isError or
+  // exitCode changes mid-stream.
   return (
-    <ToolStatusHeader icon={statusIcon()} title={commandStatusLabel(props.source)} dataToolMessage>
-      <Show when={normalized()}>
-        <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} />
-      </Show>
-    </ToolStatusHeader>
+    <Show
+      when={showStatusHeader()}
+      fallback={(
+        <div class={toolMessage} data-tool-message>
+          {content()}
+        </div>
+      )}
+    >
+      <ToolStatusHeader icon={statusIcon()} title={statusLabel()} dataToolMessage>
+        {content()}
+      </ToolStatusHeader>
+    </Show>
   )
 }

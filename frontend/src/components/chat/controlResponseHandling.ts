@@ -9,7 +9,7 @@ import { PREFIX_ASK_STATE, safeGetJson, safeRemoveItem, safeSetJson } from '~/li
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
 import { decidePlanModeToggle } from './planModeToggle'
-import { getProviderPlugin } from './providers/registry'
+import { providerFor } from './providers/registry'
 import './providers'
 
 export interface ControlResponseHandlingProps {
@@ -43,7 +43,7 @@ export function useControlResponseHandling(
   getAttachments?: () => FileAttachment[],
   onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => void,
 ): ControlResponseHandlingResult {
-  const planModeConfig = () => props.agent?.agentProvider ? getProviderPlugin(props.agent.agentProvider)?.planMode : undefined
+  const planModeConfig = () => props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.planMode : undefined
 
   // Track previous non-plan mode for Shift+Tab toggling.
   let previousNonPlanMode = planModeConfig()?.defaultValue ?? 'default'
@@ -81,7 +81,7 @@ export function useControlResponseHandling(
     if (!req)
       return false
     const plugin = props.agent?.agentProvider != null
-      ? getProviderPlugin(props.agent.agentProvider)
+      ? providerFor(props.agent.agentProvider)
       : undefined
     return plugin?.isAskUserQuestion?.(req.payload) ?? false
   }
@@ -157,7 +157,7 @@ export function useControlResponseHandling(
       return
     if (isAskUserQuestion()) {
       const provider = props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE
-      const plugin = getProviderPlugin(provider) ?? getProviderPlugin(AgentProvider.CLAUDE_CODE)
+      const plugin = providerFor(provider) ?? providerFor(AgentProvider.CLAUDE_CODE)
       const normalizedQuestions = plugin?.extractAskUserQuestions?.(req.payload) ?? []
       const normalizedRequest: ControlRequest = {
         ...req,
@@ -178,6 +178,7 @@ export function useControlResponseHandling(
         content,
         sendAskResponse,
         editorContentRefAccessor(),
+        provider === AgentProvider.CODEX,
       )
       if (!submitted)
         return false
@@ -186,7 +187,7 @@ export function useControlResponseHandling(
       return
     }
     const provider = props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE
-    const plugin = getProviderPlugin(provider) ?? getProviderPlugin(AgentProvider.CLAUDE_CODE)
+    const plugin = providerFor(provider) ?? providerFor(AgentProvider.CLAUDE_CODE)
     const response = plugin?.buildControlResponse?.(req.payload, content, req.requestId)
     if (response) {
       const bytes = new TextEncoder().encode(JSON.stringify(response))

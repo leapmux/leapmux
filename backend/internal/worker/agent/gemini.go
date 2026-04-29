@@ -22,7 +22,7 @@ type GeminiCLIAgent struct {
 }
 
 // StartGeminiCLI starts a Gemini CLI ACP agent process and performs the handshake.
-func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
@@ -177,11 +177,11 @@ func broadcastGeminiQuotaSessionInfo(sink OutputSink, resp json.RawMessage) {
 	}
 
 	sink.BroadcastSessionInfo(map[string]interface{}{
-		"contextUsage": map[string]interface{}{
-			"inputTokens":              inputTokens,
-			"cacheCreationInputTokens": int64(0),
-			"cacheReadInputTokens":     int64(0),
-			"outputTokens":             outputTokens,
+		"context_usage": map[string]interface{}{
+			"input_tokens":                inputTokens,
+			"cache_creation_input_tokens": int64(0),
+			"cache_read_input_tokens":     int64(0),
+			"output_tokens":               outputTokens,
 		},
 	})
 }
@@ -198,9 +198,9 @@ var geminiCLIAvailableModels = []*leapmuxv1.AvailableModel{
 }
 
 func init() {
-	registerProvider(
+	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 			return StartGeminiCLI(ctx, opts, sink)
 		},
 		geminiCLIAvailableModels,

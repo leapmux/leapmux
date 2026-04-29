@@ -55,19 +55,19 @@ describe('classifyMessage', () => {
     })
 
     it('classifies wrapper with non-allowed rate_limit as notification_thread', () => {
-      const result = classifyMessage(input(undefined, wrapper({ type: 'rate_limit', rate_limit_info: { status: 'rate_limited' } })))
+      const result = classifyMessage(input(undefined, wrapper({ type: 'rate_limit_event', rate_limit_info: { status: 'rate_limited' } })))
       expect(result.kind).toBe('notification_thread')
     })
 
     it('classifies wrapper with only allowed rate_limit as hidden', () => {
-      const result = classifyMessage(input(undefined, wrapper({ type: 'rate_limit', rate_limit_info: { status: 'allowed' } })))
+      const result = classifyMessage(input(undefined, wrapper({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } })))
       expect(result.kind).toBe('hidden')
     })
 
     it('filters allowed rate_limit from mixed notification thread', () => {
       const msgs = [
         { type: 'settings_changed', changes: {} },
-        { type: 'rate_limit', rate_limit_info: { status: 'allowed' } },
+        { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
       ]
       const result = classifyMessage(input(undefined, { old_seqs: [], messages: msgs }))
       expect(result.kind).toBe('notification_thread')
@@ -186,12 +186,12 @@ describe('classifyMessage', () => {
     })
 
     it('classifies non-allowed rate_limit as notification', () => {
-      const result = classifyMessage(input({ type: 'rate_limit', rate_limit_info: { rateLimitType: 'five_hour', status: 'rate_limited' } }))
+      const result = classifyMessage(input({ type: 'rate_limit_event', rate_limit_info: { rateLimitType: 'five_hour', status: 'rate_limited' } }))
       expect(result.kind).toBe('notification')
     })
 
     it('classifies allowed rate_limit as hidden', () => {
-      const result = classifyMessage(input({ type: 'rate_limit', rate_limit_info: { status: 'allowed' } }))
+      const result = classifyMessage(input({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }))
       expect(result.kind).toBe('hidden')
     })
   })

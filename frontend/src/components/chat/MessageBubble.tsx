@@ -26,7 +26,7 @@ import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { renderNotificationThread } from './notificationRenderers'
-import { getProviderPlugin } from './providers/registry'
+import { providerFor } from './providers/registry'
 import { renderJsonHighlight, ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
@@ -57,7 +57,7 @@ function roleLabel(role: MessageRole): string {
     case MessageRole.USER: return 'user'
     case MessageRole.ASSISTANT: return 'assistant'
     case MessageRole.SYSTEM: return 'system'
-    case MessageRole.RESULT: return 'result'
+    case MessageRole.TURN_END: return 'result'
     case MessageRole.LEAPMUX: return 'leapmux'
     default: return 'system'
   }
@@ -245,7 +245,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // messages produce metadata (Claude returns it for tool_result; Codex for
   // terminal-state tool_use spans).
   const toolMeta = createMemo<ToolResultMeta | null>(() => {
-    const plugin = getProviderPlugin(props.message.agentProvider)
+    const plugin = providerFor(props.message.agentProvider)
     if (!plugin?.toolResultMeta)
       return null
     return plugin.toolResultMeta(category(), parsed().parentObject, props.message.spanType, toolUseParsed())
@@ -305,7 +305,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Quotable text dispatch: each provider plugin reads its own wire format
   // (Codex: parent.item.text, ACP: parent.content.text, Claude: message.content[]).
   const extractQuotableText = createMemo(() => {
-    const plugin = getProviderPlugin(props.message.agentProvider)
+    const plugin = providerFor(props.message.agentProvider)
     return plugin?.extractQuotableText?.(category(), parsed()) ?? null
   })
 

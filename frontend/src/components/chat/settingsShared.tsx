@@ -1,10 +1,43 @@
+import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { AvailableModel, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import Check from 'lucide-solid/icons/check'
+import ChevronsDown from 'lucide-solid/icons/chevrons-down'
+import ChevronsUp from 'lucide-solid/icons/chevrons-up'
+import Dot from 'lucide-solid/icons/dot'
+import Sparkles from 'lucide-solid/icons/sparkles'
+import Zap from 'lucide-solid/icons/zap'
 import { createMemo, createSignal, createUniqueId, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { EFFORT_AUTO } from '~/utils/controlResponse'
 import * as styles from './ChatView.css'
+
+/**
+ * Default icon-per-effort-level map used by {@link effortIcon}. Providers can
+ * pass an override map to swap or extend any key (e.g. Claude maps `xhigh`
+ * to a flame to free up Zap for its `max` tier).
+ */
+export const DEFAULT_EFFORT_ICONS: Readonly<Record<string, LucideIcon>> = {
+  [EFFORT_AUTO]: Sparkles,
+  xhigh: Zap,
+  high: ChevronsUp,
+  medium: Dot,
+  low: ChevronsDown,
+  minimal: ChevronsDown,
+  off: ChevronsDown,
+  none: ChevronsDown,
+}
+
+/**
+ * Render the icon for a thinking/effort level. Falls back to the default map
+ * then to a neutral Dot. Overrides are merged on top of the defaults so a
+ * caller only has to specify the keys it wants to change.
+ */
+export function effortIcon(level: string, overrides?: Record<string, LucideIcon>): JSX.Element {
+  const I = overrides?.[level] ?? DEFAULT_EFFORT_ICONS[level] ?? Dot
+  return <Icon icon={I} size="xs" />
+}
 
 /** Option group key for the permission mode setting, shared across providers. */
 export const PERMISSION_MODE_KEY = 'permissionMode' as const

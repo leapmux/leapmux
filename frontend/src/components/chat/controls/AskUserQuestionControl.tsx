@@ -6,6 +6,7 @@ import { createUniqueId, For, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { pluralize } from '~/lib/plural'
 import { spinner } from '~/styles/animations.css'
@@ -18,12 +19,18 @@ import { sendResponse } from './types'
 // Selection helpers
 // ---------------------------------------------------------------------------
 
-function toggleSelection(state: AskQuestionState, qIdx: number, label: string, multiSelect: boolean, totalQuestions: number) {
-  state.setCustomTexts((prev) => {
-    if (!(qIdx in prev))
-      return prev
-    return { ...prev, [qIdx]: '' }
-  })
+function preservesSelectionNotes(agentProvider?: AgentProvider): boolean {
+  return agentProvider === AgentProvider.CODEX
+}
+
+function toggleSelection(state: AskQuestionState, qIdx: number, label: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {
+  if (!preserveCustomText) {
+    state.setCustomTexts((prev) => {
+      if (!(qIdx in prev))
+        return prev
+      return { ...prev, [qIdx]: '' }
+    })
+  }
   state.setSelections((prev) => {
     const current = prev[qIdx] ?? []
     if (multiSelect) {
@@ -68,11 +75,11 @@ export function buildAskAnswers(
     const customText = state.customTexts()[i]?.trim()
 
     if (sel.length > 0) {
-      const key = questions[i].header || `q${i}`
+      const key = questions[i].question || questions[i].header || `q${i}`
       answers[key] = sel.join(', ')
     }
     else if (customText) {
-      const key = questions[i].header || `q${i}`
+      const key = questions[i].question || questions[i].header || `q${i}`
       answers[key] = customText
     }
   }
@@ -98,6 +105,7 @@ export function trySubmitAskUserQuestion(
   currentContent: string,
   onSubmit: () => void,
   editorContentRef?: EditorContentRef,
+  preserveSelectionNotes = false,
 ): boolean {
   const input = getToolInput(request.payload)
   const questions = (input.questions as Question[] | undefined) ?? []
@@ -105,7 +113,7 @@ export function trySubmitAskUserQuestion(
   // Save current editor text to the current page.
   const page = state.currentPage()
   state.setCustomTexts(prev => ({ ...prev, [page]: currentContent }))
-  if (currentContent) {
+  if (currentContent && !preserveSelectionNotes) {
     state.setSelections(prev => ({ ...prev, [page]: [] }))
   }
 
@@ -143,9 +151,16 @@ export function trySubmitAskUserQuestion(
 // Content and Actions components
 // ---------------------------------------------------------------------------
 
-export const AskUserQuestionContent: Component<{ request: ControlRequest, askState: AskQuestionState, optionsDisabled?: boolean }> = (props) => {
+/**
+ * `questions` may be passed directly when a provider doesn't ship a
+ * tool_input shape compatible with `getToolInput` (e.g. Pi's
+ * extension_ui_request `select` payloads). Without it the component
+ * falls back to extracting `questions` from the wrapped tool input,
+ * preserving the original Claude/Codex/OpenCode/Cursor flow.
+ */
+export const AskUserQuestionContent: Component<{ request: ControlRequest, askState: AskQuestionState, optionsDisabled?: boolean, agentProvider?: AgentProvider, questions?: Question[] }> = (props) => {
   const input = () => getToolInput(props.request.payload)
-  const questions = () => (input().questions as Question[] | undefined) ?? []
+  const questions = () => props.questions ?? (input().questions as Question[] | undefined) ?? []
   const currentPage = () => props.askState.currentPage()
   const currentQuestion = () => questions()[currentPage()]
 
@@ -188,7 +203,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                                 value={opt.label}
                                 checked={(props.askState.selections()[qIdx()] ?? [])[0] === opt.label}
                                 onChange={() => {
-                                  toggleSelection(props.askState, qIdx(), opt.label, false, questions().length)
+                                  toggleSelection(props.askState, qIdx(), opt.label, false, questions().length, preservesSelectionNotes(props.agentProvider))
                                 }}
                                 disabled={props.optionsDisabled}
                               />
@@ -217,7 +232,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                         <input
                           type="checkbox"
                           checked={isSelected(props.askState, qIdx(), opt.label)}
-                          onChange={() => toggleSelection(props.askState, qIdx(), opt.label, true, questions().length)}
+                          onChange={() => toggleSelection(props.askState, qIdx(), opt.label, true, questions().length, preservesSelectionNotes(props.agentProvider))}
                           disabled={props.optionsDisabled}
                         />
                         <span class={styles.optionContent}>
@@ -241,7 +256,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
 
 export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
   const input = () => getToolInput(props.request.payload)
-  const questions = () => (input().questions as Question[] | undefined) ?? []
+  const questions = () => props.questions ?? (input().questions as Question[] | undefined) ?? []
 
   /** Check if question at index is answered, accounting for unsaved editor content on the current page. */
   const isPageAnswered = (qIdx: number) => {
@@ -276,8 +291,9 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
     const text = props.editorContentRef.get()
     const page = props.askState.currentPage()
     props.askState.setCustomTexts(prev => ({ ...prev, [page]: text }))
-    if (text) {
-      // Clear selections for this page since custom text overrides
+    if (text && !preservesSelectionNotes(props.agentProvider)) {
+      // Clear selections for this page since custom text overrides for providers
+      // that model answers and custom text as mutually exclusive.
       props.askState.setSelections(prev => ({ ...prev, [page]: [] }))
     }
   }

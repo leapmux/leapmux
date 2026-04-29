@@ -42,6 +42,13 @@ type processBase struct {
 	mu      sync.Mutex
 	stopped bool
 
+	// stdinMu serializes Write syscalls to p.stdin without coupling them to
+	// p.mu, so a slow stdin (full kernel pipe buffer, e.g. when a large
+	// inline image attachment is being shipped) cannot stall state operations
+	// or Stop. Held only across the Write — never together with p.mu — so
+	// callers must check `stopped` separately before taking it.
+	stdinMu sync.Mutex
+
 	// jobObject, when non-nil, is the Windows kill-on-close job group that
 	// holds the shell wrapper and every descendant it spawns. Terminating or
 	// closing it reaps the whole tree — the Windows analogue of Unix's
@@ -58,26 +65,94 @@ type processBase struct {
 
 	apiTimeout   time.Duration // timeout for JSON-RPC requests
 	turnToolUses int           // number of tool uses in the current turn
+
+	// cumulativeBroadcast tracks the length of cumulative text already
+	// broadcast for a given span (typically a tool call), keyed by span id.
+	// Providers whose in-progress events carry the full running output (Pi's
+	// `tool_execution_update.partialResult`, ACP's `tool_call_update.content`
+	// when the server sends cumulative deltas) record the prior broadcast
+	// length here so they can ship only the new tail. Guarded by p.mu.
+	cumulativeBroadcast map[string]int
+}
+
+// recordCumulativeLength records the new cumulative text length for spanID
+// and returns (prevLen, reset) where reset is true when the stream rotated
+// (newLen < prevLen). Assumes the producer's stream is append-only; current
+// callers (Pi `partialResult`, ACP `tool_call_update.content`) satisfy this
+// contract. Safe for concurrent use; takes p.mu briefly.
+func (p *processBase) recordCumulativeLength(spanID string, newLen int) (prevLen int, reset bool) {
+	p.mu.Lock()
+	if p.cumulativeBroadcast == nil {
+		p.cumulativeBroadcast = make(map[string]int)
+	}
+	prevLen = p.cumulativeBroadcast[spanID]
+	p.cumulativeBroadcast[spanID] = newLen
+	p.mu.Unlock()
+	if newLen < prevLen {
+		return 0, true
+	}
+	return prevLen, false
+}
+
+// recordCumulativeDelta is the string-tail variant of recordCumulativeLength
+// for callers that already hold the full cumulative text. Returns the new
+// tail since the previous call, or "" when there is no new content; on a
+// stream reset the entire `full` is returned.
+func (p *processBase) recordCumulativeDelta(spanID, full string) string {
+	prevLen, reset := p.recordCumulativeLength(spanID, len(full))
+	if reset {
+		return full
+	}
+	return full[prevLen:]
+}
+
+// clearCumulativeDelta drops the cumulative-broadcast bookkeeping for spanID,
+// typically after the span closes. Caller must NOT hold p.mu.
+func (p *processBase) clearCumulativeDelta(spanID string) {
+	p.mu.Lock()
+	delete(p.cumulativeBroadcast, spanID)
+	p.mu.Unlock()
+}
+
+// resetCumulativeDeltas drops all cumulative-broadcast bookkeeping, used at
+// turn boundaries to recover from aborted streams that never sent a
+// terminating event. Caller must NOT hold p.mu.
+func (p *processBase) resetCumulativeDeltas() {
+	p.mu.Lock()
+	clear(p.cumulativeBroadcast)
+	p.mu.Unlock()
+}
+
+// writeStdin serializes a Write to p.stdin under stdinMu. The lock is held
+// only across the Write — never together with p.mu — so a slow stdin can't
+// stall state operations or Stop, and callers that already hold p.mu (e.g.
+// ClaudeCodeAgent.SendInput) won't recursively deadlock. If Stop closes
+// stdin concurrently, the Write returns a broken-pipe error which is
+// surfaced unchanged. Callers that need a deterministic "agent is stopped"
+// error must check `stopped` themselves before calling.
+func (p *processBase) writeStdin(data []byte) error {
+	p.stdinMu.Lock()
+	defer p.stdinMu.Unlock()
+	_, err := p.stdin.Write(data)
+	return err
 }
 
 // SendRawInput writes raw bytes directly to the process's stdin without
 // wrapping. Ensures a trailing newline.
 func (p *processBase) SendRawInput(data []byte) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.stopped {
+	stopped := p.stopped
+	p.mu.Unlock()
+	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
 
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-
-	if _, err := p.stdin.Write(data); err != nil {
+	if err := p.writeStdin(data); err != nil {
 		return fmt.Errorf("write stdin: %w", err)
 	}
-
 	return nil
 }
 
@@ -305,14 +380,57 @@ func setupProcessPipes(cmd *exec.Cmd, cancel func()) (stdin io.WriteCloser, stdo
 // fields. Raw is the original bytes; the typed fields are populated by a
 // single json.Unmarshal in readOutput so downstream consumers never need to
 // re-parse the envelope.
+//
+// ID is a json.RawMessage rather than a typed integer/string because
+// providers disagree on the wire format: JSON-RPC 2.0 (Codex, ACP) uses
+// integer ids, while Pi uses opaque string ids. Capturing the raw bytes
+// avoids unmarshal errors that would otherwise wipe out the rest of the
+// envelope when the form does not match a typed field. Use IDInt64 /
+// IDString to interpret the value at the point of use.
 type parsedLine struct {
 	Raw    []byte
-	ID     *json.Number    `json:"id"`
+	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
 	Type   string          `json:"type"`
 	Params json.RawMessage `json:"params"`
 	Result json.RawMessage `json:"result"`
 	Error  json.RawMessage `json:"error"`
+}
+
+// HasID reports whether the line carried a non-null id field.
+func (p *parsedLine) HasID() bool {
+	return len(p.ID) > 0 && string(p.ID) != "null"
+}
+
+// IDInt64 returns the line's id parsed as an int64. Returns false when the
+// id is missing, null, or not numeric.
+func (p *parsedLine) IDInt64() (int64, bool) {
+	if !p.HasID() {
+		return 0, false
+	}
+	var n json.Number
+	if err := json.Unmarshal(p.ID, &n); err != nil {
+		return 0, false
+	}
+	v, err := n.Int64()
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// IDString returns the line's id as a string. For string-form ids it returns
+// the unquoted contents; for numeric ids it returns the canonical string
+// form (e.g. "42"). Returns "" when the id is missing or null.
+func (p *parsedLine) IDString() string {
+	if !p.HasID() {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(p.ID, &s); err == nil {
+		return s
+	}
+	return strings.TrimSpace(string(p.ID))
 }
 
 // parseLine creates a parsedLine from raw bytes. Used by HandleOutput methods

@@ -7,8 +7,6 @@ CREATE TABLE agents (
     working_dir      TEXT NOT NULL DEFAULT '',
     home_dir                 TEXT    NOT NULL DEFAULT '',
     plan_file_path           TEXT    NOT NULL DEFAULT '',
-    plan_content             BLOB    NOT NULL DEFAULT '',
-    plan_content_compression INTEGER NOT NULL DEFAULT 0,
     plan_title               TEXT    NOT NULL DEFAULT '',
     title            TEXT NOT NULL DEFAULT '',
     model            TEXT NOT NULL DEFAULT 'opus',

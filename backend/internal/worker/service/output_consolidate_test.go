@@ -70,7 +70,7 @@ func codexStartupStatus(name, status string, errorText interface{}) map[string]i
 }
 
 func consolidateForProvider(provider leapmuxv1.AgentProvider, msgs []json.RawMessage) []json.RawMessage {
-	return consolidateNotificationThread(msgs, agent.NotificationConsolidatorForProvider(provider))
+	return consolidateNotificationThread(msgs, agent.ProviderFor(provider))
 }
 
 func TestConsolidateNotificationThread_OrderPreserved(t *testing.T) {
@@ -193,6 +193,22 @@ func TestConsolidateNotificationThread_PlanExecution(t *testing.T) {
 	}
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 	assert.Equal(t, []string{"plan_execution", "context_cleared"}, types(t, result))
+}
+
+func TestConsolidateNotificationThread_PlanUpdatedFoldsToMostRecent(t *testing.T) {
+	msgs := []json.RawMessage{
+		raw(t, map[string]interface{}{"type": "plan_updated", "plan_title": "v1", "plan_file_path": "/v1.md"}),
+		raw(t, map[string]interface{}{"type": "settings_changed", "changes": map[string]interface{}{"model": map[string]interface{}{"old": "A", "new": "B"}}}),
+		raw(t, map[string]interface{}{"type": "plan_updated", "plan_title": "v2", "plan_file_path": "/v2.md"}),
+		raw(t, map[string]interface{}{"type": "plan_updated", "plan_title": "v3", "plan_file_path": "/v3.md", "update_agent_title": true}),
+	}
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
+	// Settings (1 entry) + the most recent plan_updated only.
+	require.Equal(t, []string{"settings_changed", "plan_updated"}, types(t, result))
+	m := parseRaw(t, result[1])
+	assert.Equal(t, "v3", m["plan_title"])
+	assert.Equal(t, "/v3.md", m["plan_file_path"])
+	assert.Equal(t, true, m["update_agent_title"])
 }
 
 func TestConsolidateNotificationThread_NoContextClearedOnSettingsChanged(t *testing.T) {
@@ -426,4 +442,74 @@ func TestConsolidateNotificationThread_DefaultProviderKeepsUnknownProviderNotifi
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, msgs)
 	require.Len(t, result, 2)
 	assert.Equal(t, []string{"mcpServer/startupStatus/updated", "mcpServer/startupStatus/updated"}, types(t, result))
+}
+
+// TestConsolidateNotificationThread_PiCompactionStartCollapses verifies
+// that repeated `compaction_start` events (Pi's in-progress indicator)
+// collapse to the single latest entry — without the new Pi consolidator
+// the chat would accumulate one row per attempt.
+func TestConsolidateNotificationThread_PiCompactionStartCollapses(t *testing.T) {
+	msgs := []json.RawMessage{
+		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
+		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 2}),
+		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 3}),
+	}
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
+	require.Len(t, result, 1, "compaction_start collapses to the latest in-progress entry")
+	assert.JSONEq(t, `{"type":"compaction_start","attempt":3}`, string(result[0]))
+}
+
+// TestConsolidateNotificationThread_PiCompactionEndsAllPreserved keeps
+// each `compaction_end` event as its own marker. Each end is a discrete
+// "this is where the conversation was compacted" boundary; the chat
+// history should retain the full sequence (mirrors Codex/Claude
+// boundary semantics).
+func TestConsolidateNotificationThread_PiCompactionEndsAllPreserved(t *testing.T) {
+	msgs := []json.RawMessage{
+		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "first"}),
+		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "second"}),
+	}
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
+	require.Len(t, result, 2, "compaction boundary markers must each be preserved")
+	assert.Equal(t, []string{"compaction_end", "compaction_end"}, types(t, result))
+}
+
+// TestConsolidateNotificationThread_PiAutoRetryCollapses ensures
+// auto_retry_* events behave like Claude's api_retry — only the latest
+// retry indicator survives so the UI doesn't show one row per attempt.
+func TestConsolidateNotificationThread_PiAutoRetryCollapses(t *testing.T) {
+	msgs := []json.RawMessage{
+		raw(t, map[string]interface{}{"type": "auto_retry_start", "attempt": 1}),
+		raw(t, map[string]interface{}{"type": "auto_retry_end", "attempt": 1}),
+		raw(t, map[string]interface{}{"type": "auto_retry_start", "attempt": 2}),
+	}
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
+	require.Len(t, result, 1, "the latest auto_retry indicator is the only one kept")
+	assert.JSONEq(t, `{"type":"auto_retry_start","attempt":2}`, string(result[0]))
+}
+
+// TestConsolidateNotificationThread_PiExtensionErrorsAllPreserved is the
+// inverse of the consolidation cases above: each extension_error is
+// meaningful (a distinct plugin failure) and must NOT be collapsed.
+func TestConsolidateNotificationThread_PiExtensionErrorsAllPreserved(t *testing.T) {
+	msgs := []json.RawMessage{
+		raw(t, map[string]interface{}{"type": "extension_error", "message": "first"}),
+		raw(t, map[string]interface{}{"type": "extension_error", "message": "second"}),
+	}
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
+	require.Len(t, result, 2, "extension errors must each persist — they are not consolidatable")
+}
+
+// TestConsolidateNotificationThread_PiCompactionResetsStatus mirrors the
+// Codex/Claude semantics: when a boundary lands, any pending in-progress
+// status is cleared so the UI doesn't show "compacting…" after the
+// boundary already arrived.
+func TestConsolidateNotificationThread_PiCompactionResetsStatus(t *testing.T) {
+	msgs := []json.RawMessage{
+		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
+		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "done"}),
+	}
+	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
+	require.Len(t, result, 1, "the boundary clears the trailing in-progress status")
+	assert.JSONEq(t, `{"type":"compaction_end","summary":"done"}`, string(result[0]))
 }

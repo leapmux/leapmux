@@ -6,7 +6,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// testSinkSettingsRefreshed records the args of a BroadcastSettingsRefreshed call.
+// testSinkSettingsRefreshed records the args of a PersistSettingsRefresh call.
 type testSinkSettingsRefreshed struct {
 	Model          string
 	Effort         string
@@ -29,6 +29,7 @@ type testSink struct {
 	openSpans         []testSinkSpanOpen
 	closedSpans       []string
 	resetSpanCount    int
+	statusActives     []string
 	autoSchedules     []AutoContinueSchedule
 	autoCancels       []AutoContinueReason
 	planModeToolUses  sync.Map
@@ -131,7 +132,7 @@ func (s *testSink) UpdatePermissionMode(mode string) {
 	defer s.mu.Unlock()
 	s.permissionModes = append(s.permissionModes, mode)
 }
-func (s *testSink) BroadcastSettingsRefreshed(model, effort, permissionMode string, extraSettings map[string]string) {
+func (s *testSink) PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := make(map[string]string, len(extraSettings))
@@ -142,7 +143,11 @@ func (s *testSink) BroadcastSettingsRefreshed(model, effort, permissionMode stri
 		Model: model, Effort: effort, PermissionMode: permissionMode, ExtraSettings: cp,
 	})
 }
-func (s *testSink) BroadcastStatusActive(string) {}
+func (s *testSink) BroadcastStatusActive(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statusActives = append(s.statusActives, sessionID)
+}
 func (s *testSink) BroadcastSessionInfo(info map[string]interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,7 +158,7 @@ func (s *testSink) BroadcastSessionInfo(info map[string]interface{}) {
 	}
 	s.sessionInfos = append(s.sessionInfos, cp)
 }
-func (s *testSink) BroadcastNotification(map[string]interface{}) {}
+func (s *testSink) PersistLeapMuxNotification(map[string]interface{}) {}
 func (s *testSink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.planModeToolUses.Store(toolUseID, targetMode)
 }
@@ -166,7 +171,7 @@ func (s *testSink) LoadAndDeletePlanModeToolUse(toolUseID string) (string, bool)
 	return v.(string), true
 }
 
-func (s *testSink) UpdatePlan(string, []byte, leapmuxv1.ContentCompression, string) {}
+func (s *testSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string) {}
 func (s *testSink) ScheduleAutoContinue(schedule AutoContinueSchedule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -197,6 +202,15 @@ func (s *testSink) LastNotification() testSinkMessage {
 	return s.notifications[len(s.notifications)-1]
 }
 
+// PersistedNotifications returns a snapshot of every PersistNotification
+// call in order. Distinct from recordingControlSink.Notifications, which
+// captures PersistLeapMuxNotification map payloads.
+func (s *testSink) PersistedNotifications() []testSinkMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]testSinkMessage(nil), s.notifications...)
+}
+
 // Messages returns a copy of all persisted messages.
 func (s *testSink) Messages() []testSinkMessage {
 	s.mu.Lock()
@@ -215,6 +229,13 @@ func (s *testSink) LastStreamChunk() testSinkStreamChunk {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.streamChunks[len(s.streamChunks)-1]
+}
+
+// StreamChunks returns a copy of all broadcast stream chunks in order.
+func (s *testSink) StreamChunks() []testSinkStreamChunk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]testSinkStreamChunk(nil), s.streamChunks...)
 }
 
 func (s *testSink) StreamEndCount() int {
@@ -345,27 +366,27 @@ type noopSink struct{}
 func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, SpanInfo) error {
 	return nil
 }
-func (noopSink) PersistNotification(leapmuxv1.MessageRole, []byte) error              { return nil }
-func (noopSink) OpenSpan(string, string)                                              {}
-func (noopSink) CloseSpan(string)                                                     {}
-func (noopSink) ResetSpans()                                                          {}
-func (noopSink) SetSpanType(string, string)                                           {}
-func (noopSink) GetSpanType(string) string                                            { return "" }
-func (noopSink) ReserveSpanColor(string, string) int32                                { return 0 }
-func (noopSink) BroadcastStreamChunk([]byte, string, string)                          {}
-func (noopSink) BroadcastStreamEnd(string)                                            {}
-func (noopSink) PersistControlRequest(string, []byte)                                 {}
-func (noopSink) DeleteControlRequest(string)                                          {}
-func (noopSink) BroadcastControlRequest(string, []byte)                               {}
-func (noopSink) BroadcastControlCancel(string)                                        {}
-func (noopSink) UpdateSessionID(string)                                               {}
-func (noopSink) UpdatePermissionMode(string)                                          {}
-func (noopSink) BroadcastSettingsRefreshed(string, string, string, map[string]string) {}
-func (noopSink) BroadcastStatusActive(string)                                         {}
-func (noopSink) BroadcastSessionInfo(map[string]interface{})                          {}
-func (noopSink) BroadcastNotification(map[string]interface{})                         {}
-func (noopSink) StorePlanModeToolUse(string, string)                                  {}
-func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)                   { return "", false }
-func (noopSink) UpdatePlan(string, []byte, leapmuxv1.ContentCompression, string)      {}
-func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                            {}
-func (noopSink) CancelAutoContinue(AutoContinueReason)                                {}
+func (noopSink) PersistNotification(leapmuxv1.MessageRole, []byte) error          { return nil }
+func (noopSink) OpenSpan(string, string)                                          {}
+func (noopSink) CloseSpan(string)                                                 {}
+func (noopSink) ResetSpans()                                                      {}
+func (noopSink) SetSpanType(string, string)                                       {}
+func (noopSink) GetSpanType(string) string                                        { return "" }
+func (noopSink) ReserveSpanColor(string, string) int32                            { return 0 }
+func (noopSink) BroadcastStreamChunk([]byte, string, string)                      {}
+func (noopSink) BroadcastStreamEnd(string)                                        {}
+func (noopSink) PersistControlRequest(string, []byte)                             {}
+func (noopSink) DeleteControlRequest(string)                                      {}
+func (noopSink) BroadcastControlRequest(string, []byte)                           {}
+func (noopSink) BroadcastControlCancel(string)                                    {}
+func (noopSink) UpdateSessionID(string)                                           {}
+func (noopSink) UpdatePermissionMode(string)                                      {}
+func (noopSink) PersistSettingsRefresh(string, string, string, map[string]string) {}
+func (noopSink) BroadcastStatusActive(string)                                     {}
+func (noopSink) BroadcastSessionInfo(map[string]interface{})                      {}
+func (noopSink) PersistLeapMuxNotification(map[string]interface{})                {}
+func (noopSink) StorePlanModeToolUse(string, string)                              {}
+func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)               { return "", false }
+func (noopSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)          {}
+func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                        {}
+func (noopSink) CancelAutoContinue(AutoContinueReason)                            {}

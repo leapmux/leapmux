@@ -23,7 +23,7 @@ func (m *Manager) MockStartAgent(ctx context.Context, opts Options, sink OutputS
 // ClaudeCodeAgent. Unlike the in-package spawnMockClaudeAgent (which runs
 // TestHelperProcess to simulate the Claude Code protocol), this helper is
 // for external consumers that only need a running agent in the manager.
-func mockStartForTest(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+func mockStartForTest(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, "cat")
 	cmd.Env = os.Environ()

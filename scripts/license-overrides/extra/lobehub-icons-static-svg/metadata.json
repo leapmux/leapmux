@@ -2,5 +2,6 @@
   "name": "@lobehub/icons-static-svg",
   "version": "1.87.0",
   "license": "MIT",
-  "url": "https://github.com/lobehub/lobe-icons"
+  "url": "https://github.com/lobehub/lobe-icons",
+  "description": "Agent provider icons in `frontend/src/components/common/AgentProviderIcon.tsx` and the Cursor/Windsurf editor glyphs in `frontend/src/components/common/EditorIcons.tsx` are derived from this icon collection."
 }

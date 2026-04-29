@@ -19,6 +19,7 @@ export function agentProviderLabel(provider?: AgentProvider): string {
     case AgentProvider.CURSOR: return 'Cursor'
     case AgentProvider.GOOSE: return 'Goose'
     case AgentProvider.KILO: return 'Kilo'
+    case AgentProvider.PI: return 'Pi Coding Agent'
     default: return 'Unknown'
   }
 }
@@ -164,6 +165,32 @@ function KiloIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
+function PiIcon(props: { size: number, class?: string }): JSX.Element {
+  // Glyph occupies x/y ∈ [165.29, 634.72]; viewBox is tightened to leave a
+  // small margin (~55 units on each side) so the rendered mark visually
+  // matches the other agent icons rather than appearing 25–30 % smaller.
+  return (
+    <svg
+      height={props.size}
+      width={props.size}
+      viewBox="110 110 580 580"
+      xmlns="http://www.w3.org/2000/svg"
+      class={props.class}
+      style={iconStyle(props.size)}
+    >
+      <path
+        fill="var(--lm-icon-monochrome)"
+        fill-rule="evenodd"
+        d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"
+      />
+      <path
+        fill="var(--lm-icon-monochrome)"
+        d="M517.36 400 H634.72 V634.72 H517.36 Z"
+      />
+    </svg>
+  )
+}
+
 function CursorIcon(props: { size: number, class?: string }): JSX.Element {
   return (
     <svg
@@ -213,6 +240,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.KILO}>
         <KiloIcon size={props.size} class={props.class} />
+      </Match>
+      <Match when={props.provider === AgentProvider.PI}>
+        <PiIcon size={props.size} class={props.class} />
       </Match>
     </Switch>
   )

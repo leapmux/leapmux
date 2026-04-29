@@ -3,14 +3,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
 import { acpResultDividerRenderer } from '../acp/renderers'
-import { getProviderPlugin } from '../registry'
+import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
 // Side-effect import to register the OpenCode plugin.
 import './plugin'
 
 describe('opencode extractQuotableText (acpExtractQuotableText)', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('reads parent.content.text for assistant_text', () => {
     const parent = { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '  Hello  ' } }
@@ -38,7 +38,7 @@ describe('opencode extractQuotableText (acpExtractQuotableText)', () => {
 })
 
 describe('opencode classify', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -246,7 +246,7 @@ describe('opencode classify', () => {
 })
 
 describe('opencode result divider renderer', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('renders "Turn ended" for end_turn', () => {
     const parsed = { stopReason: 'end_turn', usage: { totalTokens: 100 } }
@@ -267,13 +267,13 @@ describe('opencode result divider renderer', () => {
 
   it('is returned by plugin.renderMessage for result_divider', () => {
     const parsed = { stopReason: 'end_turn' }
-    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.RESULT)
+    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.TURN_END)
     expect(result).not.toBeNull()
   })
 })
 
 describe('opencode tool_call renderer', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('renders tool_call with execute kind', () => {
     const toolUse = {
@@ -305,7 +305,7 @@ describe('opencode tool_call renderer', () => {
 })
 
 describe('opencode plan mode', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('reads the current mode from extraSettings.primaryAgent', () => {
     expect(plugin.planMode?.currentMode({ extraSettings: { primaryAgent: 'plan' } })).toBe('plan')
@@ -320,7 +320,7 @@ describe('opencode plan mode', () => {
 })
 
 describe('opencode settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('renders primary-agent choices and updates through the unified onChange dispatcher', async () => {
     const onChange = vi.fn()
@@ -359,7 +359,7 @@ describe('opencode settings panel', () => {
 })
 
 describe('opencode tool_call_update renderer', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('renders completed execute tool_call_update with command and output', () => {
     const toolUse = {
@@ -493,7 +493,7 @@ describe('opencode tool_call_update renderer', () => {
 })
 
 describe('opencode isAskUserQuestion', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('returns true for question requests', () => {
     const payload = {
@@ -517,7 +517,7 @@ describe('opencode isAskUserQuestion', () => {
 })
 
 describe('opencode buildInterruptContent', () => {
-  const plugin = getProviderPlugin(AgentProvider.OPENCODE)!
+  const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('builds a cancel notification', () => {
     const content = plugin.buildInterruptContent!('session-123')

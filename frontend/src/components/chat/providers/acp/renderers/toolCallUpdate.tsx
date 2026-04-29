@@ -105,6 +105,7 @@ function ToolCallUpdateMessage(props: {
   // `extractToolOutput` re-walks `props.toolUse.content` each access.
   const output = createMemo(() => extractToolOutput(props.toolUse))
   const outputText = createMemo(() => stripLeadingBlankLines(output().text))
+  const isFailed = () => props.toolUse.status === 'failed'
 
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, MESSAGE_UI_KEY.OPENCODE_TOOL_CALL_UPDATE)
   const { copied: commandCopied, copy: copyCommand } = useCopyButton(() => command())
@@ -112,14 +113,19 @@ function ToolCallUpdateMessage(props: {
   // Output collapsing — shared hook keeps isCollapsed/display memoized.
   const collapsed = useCollapsedLines({ text: outputText, expanded })
 
-  // Edit-kind diffs take priority: a tool_call_update with `content[].type=diff`
-  // can land on any kind in principle, and we render the diff unconditionally
-  // when present.
+  // Edit-kind diffs take priority on successful updates: a
+  // tool_call_update with `content[].type=diff` can land on any kind in
+  // principle, and we render the diff before other kind-specific bodies.
   const body = createMemo<AcpKindBody>(() => {
-    const diff = pickFileEditDiff(
-      acpFileEditFromToolCallContent(props.toolUse.content),
-      acpFileEditFromToolCallRawInput(kind(), rawInput()),
-    )
+    // On failure, `rawInput` is the attempted edit/write input, not an
+    // applied change. Do not synthesize a success-looking diff from it (or
+    // from a diff block) when the tool_call_update status is failed.
+    const diff = isFailed()
+      ? null
+      : pickFileEditDiff(
+          acpFileEditFromToolCallContent(props.toolUse.content),
+          acpFileEditFromToolCallRawInput(kind(), rawInput()),
+        )
     if (diff)
       return { kind: 'edit', diff }
     switch (kind()) {

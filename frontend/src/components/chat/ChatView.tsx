@@ -180,6 +180,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     messageVersion: () => props.messageVersion,
     streamingText: () => props.streamingText,
     agentWorking: () => props.agentWorking,
+    agentStatus: () => props.agentStatus,
     hasOlderMessages: () => props.hasOlderMessages,
     fetchingOlder: () => props.fetchingOlder,
     onLoadOlderMessages: () => props.onLoadOlderMessages?.(),

@@ -14,7 +14,7 @@ import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
 import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex/settings'
-import { getProviderPlugin } from '~/components/chat/providers/registry'
+import { providerFor } from '~/components/chat/providers/registry'
 import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
 import { showWarnToast } from '~/components/common/Toast'
 import { toastCloseFailure } from '~/components/shell/closeFailureToast'
@@ -101,7 +101,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   const defaultPermissionModeForAgent = (provider: AgentProvider): PermissionMode => {
-    return getProviderPlugin(provider)?.defaultPermissionMode ?? 'default'
+    return providerFor(provider)?.defaultPermissionMode ?? 'default'
   }
 
   // Open a new agent in the given workspace
@@ -238,7 +238,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       const agent = props.agentStore.getById(agentId)
       const workerId = getAgentWorkerId(agentId)
-      const plugin = agent ? getProviderPlugin(agent.agentProvider) : undefined
+      const plugin = agent ? providerFor(agent.agentProvider) : undefined
       if (!plugin?.buildInterruptContent) {
         logger.error('No interrupt handler for provider', agent?.agentProvider)
         return
@@ -268,7 +268,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     props.agentStore.updateAgent(agentId, { permissionMode: mode })
     props.settingsLoading.start()
     try {
-      const plugin = getProviderPlugin(agent.agentProvider)
+      const plugin = providerFor(agent.agentProvider)
       if (plugin?.changePermissionMode) {
         await plugin.changePermissionMode(agent.workerId, agentId, mode)
       }

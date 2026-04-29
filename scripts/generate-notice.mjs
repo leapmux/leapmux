@@ -458,11 +458,15 @@ function collectJsDeps() {
 //
 // Layout:
 //   scripts/license-overrides/extra/<slug>/
-//     metadata.json   — { "name", "license", "version"?, "url"? }
+//     metadata.json   — { "name", "license", "version"?, "url"?, "description"? }
 //     LICENSE         — full license text (or any file matching LICENSE_NAMES_RE)
+//
+// `description` is rendered as a markdown paragraph between the Source link
+// and the license text — useful for clarifying what was vendored or how the
+// asset is used.
 
 function collectExtraDeps() {
-  /** @type {Array<{name: string, version: string | null, license: string | null, url: string | null, licenseText: string}>} */
+  /** @type {Array<{name: string, version: string | null, license: string | null, url: string | null, description: string | null, licenseText: string}>} */
   const deps = []
   const warnings = []
   const errors = []
@@ -509,6 +513,7 @@ function collectExtraDeps() {
       version: typeof meta.version === 'string' && meta.version.length > 0 ? meta.version : null,
       license: meta.license,
       url: typeof meta.url === 'string' && meta.url.length > 0 ? meta.url : null,
+      description: typeof meta.description === 'string' && meta.description.length > 0 ? meta.description : null,
       licenseText: normalizeLicenseText(readFileSync(licFile, 'utf-8')),
     })
   }
@@ -634,6 +639,10 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
       lines.push('')
       if (dep.url) {
         lines.push(`Source: <${dep.url}>`)
+        lines.push('')
+      }
+      if (dep.description) {
+        lines.push(dep.description)
         lines.push('')
       }
       lines.push('```')

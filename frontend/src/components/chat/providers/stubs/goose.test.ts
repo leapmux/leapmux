@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { getProviderPlugin } from '../registry'
+import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
 import './goose'
@@ -17,7 +17,7 @@ const MODE_SMART_APPROVE = 'smart_approve'
 const MODE_CHAT = 'chat'
 
 describe('goose provider', () => {
-  const plugin = getProviderPlugin(AgentProvider.GOOSE)!
+  const plugin = providerFor(AgentProvider.GOOSE)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -66,7 +66,7 @@ describe('goose provider', () => {
 })
 
 describe('goose settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.GOOSE)!
+  const plugin = providerFor(AgentProvider.GOOSE)!
 
   it('renders runtime modes and updates through the unified onChange dispatcher', async () => {
     const onChange = vi.fn()

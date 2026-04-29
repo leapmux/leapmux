@@ -2,7 +2,7 @@ import type { LucideIcon } from 'lucide-solid'
 import Bot from 'lucide-solid/icons/bot'
 import ChevronsRight from 'lucide-solid/icons/chevrons-right'
 import ClockFading from 'lucide-solid/icons/clock-fading'
-import File from 'lucide-solid/icons/file'
+import Eye from 'lucide-solid/icons/eye'
 import FilePen from 'lucide-solid/icons/file-pen'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import FolderSearch from 'lucide-solid/icons/folder-search'
@@ -23,7 +23,7 @@ import { isClaudeMcpTool } from '../extractors/mcp'
 export function toolIconFor(name: string): LucideIcon {
   switch (name) {
     case CLAUDE_TOOL.BASH: return Terminal
-    case CLAUDE_TOOL.READ: return File
+    case CLAUDE_TOOL.READ: return Eye
     case CLAUDE_TOOL.WRITE: return FilePlus
     case CLAUDE_TOOL.EDIT: return FilePen
     case CLAUDE_TOOL.GREP: return TextSearch

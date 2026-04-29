@@ -36,7 +36,7 @@ func (s *stubProvider) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup
 func (s *stubProvider) UpdateSettings(*leapmuxv1.AgentSettings) bool             { return true }
 
 // startMockAgent wraps mockStart to satisfy the startFunc signature.
-func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	return mockStart(ctx, opts, sink)
 }
 
@@ -210,7 +210,7 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 		AgentID:    "auto-exit",
 		Model:      "test",
 		WorkingDir: t.TempDir(),
-	}, noopSink{}, func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+	}, noopSink{}, func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 		// Create a process that exits immediately.
 		ctx2, cancel := context.WithCancel(ctx)
 		cmd := exec.CommandContext(ctx2, "true")

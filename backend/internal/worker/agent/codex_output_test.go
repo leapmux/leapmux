@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"sync"
 	"testing"
 	"time"
 
@@ -12,29 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// controlRequestRecord captures a single PersistControlRequest / BroadcastControlRequest call.
-type controlRequestRecord struct {
-	RequestID string
-	Payload   []byte
-}
-
-type planUpdateRecord struct {
-	FilePath    string
-	Content     []byte
-	Compression leapmuxv1.ContentCompression
-	Title       string
-}
-
-// controlTestSink extends testSink to also record control request calls.
-type controlTestSink struct {
-	testSink
-
-	crMu              sync.Mutex
-	persistedControls []controlRequestRecord
-	broadcastControls []controlRequestRecord
-	planUpdates       []planUpdateRecord
-}
-
 type startupStatusGuardSink struct {
 	testSink
 	t *testing.T
@@ -43,71 +19,6 @@ type startupStatusGuardSink struct {
 func (s *startupStatusGuardSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
 	s.t.Fatalf("startup status notification must not be persisted as a regular message: role=%v content=%s", role, string(content))
 	return nil
-}
-
-func (s *controlTestSink) PersistControlRequest(requestID string, payload []byte) {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	s.persistedControls = append(s.persistedControls, controlRequestRecord{
-		RequestID: requestID,
-		Payload:   append([]byte(nil), payload...),
-	})
-}
-
-func (s *controlTestSink) BroadcastControlRequest(requestID string, payload []byte) {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	s.broadcastControls = append(s.broadcastControls, controlRequestRecord{
-		RequestID: requestID,
-		Payload:   append([]byte(nil), payload...),
-	})
-}
-
-func (s *controlTestSink) PersistedControlCount() int {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return len(s.persistedControls)
-}
-
-func (s *controlTestSink) BroadcastControlCount() int {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return len(s.broadcastControls)
-}
-
-func (s *controlTestSink) LastPersistedControl() controlRequestRecord {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return s.persistedControls[len(s.persistedControls)-1]
-}
-
-func (s *controlTestSink) LastBroadcastControl() controlRequestRecord {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return s.broadcastControls[len(s.broadcastControls)-1]
-}
-
-func (s *controlTestSink) UpdatePlan(filePath string, content []byte, compression leapmuxv1.ContentCompression, title string) {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	s.planUpdates = append(s.planUpdates, planUpdateRecord{
-		FilePath:    filePath,
-		Content:     append([]byte(nil), content...),
-		Compression: compression,
-		Title:       title,
-	})
-}
-
-func (s *controlTestSink) PlanUpdateCount() int {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return len(s.planUpdates)
-}
-
-func (s *controlTestSink) LastPlanUpdate() planUpdateRecord {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return s.planUpdates[len(s.planUpdates)-1]
 }
 
 func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
@@ -120,8 +31,41 @@ func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
 	}
 }
 
+func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
+	sink := &recordingControlSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"t1","turn":{"id":"turn-42"}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	sink.mu.Lock()
+	statusActiveCount := len(sink.statusActives)
+	sessionInfos := append([]map[string]interface{}(nil), sink.sessionInfos...)
+	sink.mu.Unlock()
+	assert.Equal(t, 0, statusActiveCount, "turn/started must NOT re-broadcast full status")
+	require.Equal(t, 1, len(sessionInfos), "turn/started should broadcast the codex_turn_id session info")
+	assert.Equal(t, "turn-42", sessionInfos[0]["codex_turn_id"])
+}
+
+func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {
+	sink := &recordingControlSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	// turn/started with no turn.id has no per-turn state to broadcast;
+	// git status now refreshes at turn-end via the sink layer.
+	input := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"t1"}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	sink.mu.Lock()
+	statusActiveCount := len(sink.statusActives)
+	sessionInfoCount := len(sink.sessionInfos)
+	sink.mu.Unlock()
+	assert.Equal(t, 0, statusActiveCount, "turn/started fallback must NOT re-broadcast full status")
+	assert.Equal(t, 0, sessionInfoCount, "turn/started fallback should not broadcast a turn ID")
+}
+
 func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":42,"method":"item/tool/requestUserInput","params":{"threadId":"t1","turnId":"turn1","itemId":"item1","questions":[{"id":"q1","header":"Header","question":"Which option?","options":[{"label":"A"}]}]}}`
@@ -148,7 +92,7 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 }
 
 func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"rm -rf /","reason":"cleanup"}}`
@@ -162,7 +106,7 @@ func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
 }
 
 func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":8,"method":"item/fileChange/requestApproval","params":{"reason":"editing file"}}`
@@ -176,7 +120,7 @@ func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
 }
 
 func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":9,"method":"item/permissions/requestApproval","params":{"reason":"needs access"}}`
@@ -202,10 +146,10 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	require.Equal(t, "", got.SpanID)
 	require.Equal(t, "# Plan\n", string(got.Content))
 
-	// Verify the session info was broadcast with streamingType "plan".
+	// Verify the session info was broadcast with streaming_type "plan".
 	require.Equal(t, 1, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
-	assert.Equal(t, "plan", info["streamingType"])
+	assert.Equal(t, "plan", info["streaming_type"])
 
 	// Second delta should NOT broadcast session info again.
 	input2 := `{"method":"item/plan/delta","params":{"delta":"Step 1\n"}}`
@@ -218,7 +162,7 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	assert.Equal(t, 0, sink.MessageCount())
 }
 
-func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(t *testing.T) {
+func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsSystem(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -226,13 +170,15 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsCompactingNotification(
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.NotificationCount())
-	var parsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(sink.LastNotification().Content, &parsed))
-	require.Equal(t, "compacting", parsed["type"])
 	require.Equal(t, 0, sink.MessageCount())
+	last := sink.LastNotification()
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
+		"contextCompaction must persist as SYSTEM (Codex-emitted, not LeapMux-synthesized)")
+	assert.JSONEq(t, input, string(last.Content),
+		"raw JSON-RPC envelope must be preserved verbatim — synthesized {type:\"compacting\"} discarded item.id and threadId")
 }
 
-func TestHandleCodexOutput_McpStartupStatusPersistsNotification(t *testing.T) {
+func TestHandleCodexOutput_McpStartupStatusPersistsAsSystem(t *testing.T) {
 	sink := &startupStatusGuardSink{t: t}
 	agent := newCodexAgentWithSink(sink)
 
@@ -241,7 +187,28 @@ func TestHandleCodexOutput_McpStartupStatusPersistsNotification(t *testing.T) {
 
 	require.Equal(t, 1, sink.NotificationCount())
 	require.Equal(t, 0, sink.MessageCount())
-	require.Equal(t, input, string(sink.LastNotification().Content))
+	last := sink.LastNotification()
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
+		"Codex-emitted MCP startup-status updates must persist as SYSTEM (not LEAPMUX)")
+	assert.JSONEq(t, input, string(last.Content), "raw JSON-RPC envelope must be preserved verbatim")
+}
+
+func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsSystem(t *testing.T) {
+	sink := &recordingControlSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"thread/name/updated","params":{"threadId":"thread-1","name":"Refactoring auth"}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	require.Equal(t, 1, sink.NotificationCount(),
+		"thread/name/updated must persist for reconnect rehydration")
+	require.Equal(t, 0, sink.MessageCount(),
+		"thread/name/updated must NOT fall through to the default ASSISTANT branch")
+	last := sink.LastNotification()
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
+		"Codex-emitted lifecycle metadata must persist as SYSTEM")
+	assert.JSONEq(t, input, string(last.Content),
+		"raw envelope must be preserved so future renderers can read every field")
 }
 
 func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
@@ -255,6 +222,40 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	schedule := sink.LastAutoSchedule()
 	require.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
 	require.True(t, schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()))
+
+	// Raw notification persisted as SYSTEM (agent-emitted metadata).
+	require.Equal(t, 1, sink.NotificationCount())
+	last := sink.LastNotification()
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role)
+	assert.JSONEq(t, input, string(last.Content))
+}
+
+// TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire locks in the
+// snake_case wire shape for Codex's session-info `rate_limits` payload.
+// Both Codex and Claude broadcast the same tier shape so the frontend
+// can consume one format regardless of provider.
+func TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":85,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
+	handleCodexOutput(agent, parseLine([]byte(input)))
+
+	require.Equal(t, 1, sink.SessionInfoCount())
+	info := sink.LastSessionInfo()
+	rateLimits, ok := info["rate_limits"].(map[string]interface{})
+	require.True(t, ok, "broadcast must carry rate_limits in snake_case, got %#v", info)
+
+	primary, ok := rateLimits["five_hour"].(map[string]interface{})
+	require.True(t, ok, "primary tier should be keyed by rate_limit_type=five_hour")
+	assert.Equal(t, "five_hour", primary["rate_limit_type"])
+	assert.Equal(t, "allowed_warning", primary["status"])
+	assert.Equal(t, 0.85, primary["utilization"])
+	assert.Equal(t, int64(1893456000), primary["resets_at"])
+
+	secondary, ok := rateLimits["seven_day"].(map[string]interface{})
+	require.True(t, ok, "secondary tier should be keyed by rate_limit_type=seven_day")
+	assert.Equal(t, "seven_day", secondary["rate_limit_type"])
 }
 
 func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
@@ -507,7 +508,7 @@ func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFi
 	require.Equal(t, "call-1", closedSpans[0])
 }
 
-func TestHandleCodexOutput_ThreadCompactedPersistsBoundaryNotification(t *testing.T) {
+func TestHandleCodexOutput_ThreadCompactedPersistsRawAsSystem(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -515,13 +516,12 @@ func TestHandleCodexOutput_ThreadCompactedPersistsBoundaryNotification(t *testin
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.NotificationCount())
-	var parsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(sink.LastNotification().Content, &parsed))
-	require.Equal(t, "system", parsed["type"])
-	require.Equal(t, "compact_boundary", parsed["subtype"])
-	require.Equal(t, "t1", parsed["threadId"])
-	require.Equal(t, "turn1", parsed["turnId"])
 	require.Equal(t, 0, sink.MessageCount())
+	last := sink.LastNotification()
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
+		"thread/compacted must persist as SYSTEM (Codex-emitted)")
+	assert.JSONEq(t, input, string(last.Content),
+		"raw JSON-RPC envelope must be preserved verbatim — frontend keys off `method:\"thread/compacted\"`")
 }
 
 func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
@@ -628,10 +628,10 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 	completed := `{"method":"item/completed","params":{"item":{"type":"plan","id":"plan1","text":"# Plan\nStep 1"}}}`
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 
-	// Session info should now have streamingType "" to clear the plan streaming.
+	// Session info should now have streaming_type "" to clear the plan streaming.
 	require.Equal(t, 2, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
-	assert.Equal(t, "", info["streamingType"])
+	assert.Equal(t, "", info["streaming_type"])
 
 	// Plan message should be persisted.
 	require.Equal(t, 1, sink.MessageCount())
@@ -642,7 +642,7 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 
 	require.Equal(t, 3, sink.SessionInfoCount())
 	info2 := sink.LastSessionInfo()
-	assert.Equal(t, "plan", info2["streamingType"])
+	assert.Equal(t, "plan", info2["streaming_type"])
 }
 
 func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testing.T) {
@@ -682,7 +682,7 @@ func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
 }
 
 func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
 	// Missing "id" field — should be ignored (logged as warning).
@@ -703,15 +703,20 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.NotificationCount())
+	last := sink.LastNotification()
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
+		"Codex-emitted thread/tokenUsage/updated must persist as SYSTEM")
+	assert.JSONEq(t, input, string(last.Content),
+		"raw envelope must be preserved so reconnect/catch-up sees full token usage detail")
 	require.Equal(t, 1, sink.SessionInfoCount())
 
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage map, got %#v", info["contextUsage"])
-	require.Equal(t, int64(5), usage["inputTokens"])
-	require.Equal(t, int64(0), usage["cacheCreationInputTokens"])
-	require.Equal(t, int64(5), usage["cacheReadInputTokens"])
-	require.Equal(t, int64(4096), usage["contextWindow"])
+	usage, ok := info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage map, got %#v", info["context_usage"])
+	require.Equal(t, int64(5), usage["input_tokens"])
+	require.Equal(t, int64(0), usage["cache_creation_input_tokens"])
+	require.Equal(t, int64(5), usage["cache_read_input_tokens"])
+	require.Equal(t, int64(4096), usage["context_window"])
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *testing.T) {
@@ -725,9 +730,9 @@ func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *tes
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
-	require.True(t, ok, "expected contextUsage map, got %#v", info["contextUsage"])
-	require.Equal(t, int64(1_050_000), usage["contextWindow"])
+	usage, ok := info["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage map, got %#v", info["context_usage"])
+	require.Equal(t, int64(1_050_000), usage["context_window"])
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedIgnoresSubagentThreads(t *testing.T) {
@@ -756,7 +761,7 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CodexCollaborationPlan
@@ -780,7 +785,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanItem(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CodexCollaborationPlan
@@ -797,7 +802,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanI
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CodexCollaborationPlan
@@ -811,7 +816,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CodexCollaborationPlan

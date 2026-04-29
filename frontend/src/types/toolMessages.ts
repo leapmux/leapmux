@@ -218,6 +218,7 @@ export const CODEX_ITEM = {
   REASONING: 'reasoning',
   PLAN: 'plan',
   USER_MESSAGE: 'userMessage',
+  CONTEXT_COMPACTION: 'contextCompaction',
 } as const
 
 export type CodexItemType = typeof CODEX_ITEM[keyof typeof CODEX_ITEM]
@@ -257,6 +258,7 @@ export const CODEX_METHOD = {
   THREAD_STARTED: 'thread/started',
   TURN_STARTED: 'turn/started',
   THREAD_STATUS_CHANGED: 'thread/status/changed',
+  THREAD_NAME_UPDATED: 'thread/name/updated',
   TURN_PLAN_UPDATED: 'turn/plan/updated',
   THREAD_TOKEN_USAGE_UPDATED: 'thread/tokenUsage/updated',
   MCP_SERVER_STARTUP_STATUS_UPDATED: 'mcpServer/startupStatus/updated',

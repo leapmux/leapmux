@@ -50,10 +50,32 @@ describe('trySubmitAskUserQuestion', () => {
     expect(state.currentPage()).toBe(1)
     expect(editorContentRef.set).toHaveBeenCalledWith('')
   })
+
+  it('can preserve selected options when editor text is provider-specific notes', () => {
+    const state = makeAskState({
+      selections: { 0: ['Build'] },
+    })
+    const onSubmit = vi.fn()
+    const submitted = trySubmitAskUserQuestion(
+      state,
+      makeRequest([
+        { header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] },
+      ]),
+      'note for selected option',
+      onSubmit,
+      undefined,
+      true,
+    )
+
+    expect(submitted).toBe(true)
+    expect(onSubmit).toHaveBeenCalledOnce()
+    expect(state.customTexts()[0]).toBe('note for selected option')
+    expect(state.selections()[0]).toEqual(['Build'])
+  })
 })
 
 describe('buildAskAnswers', () => {
-  it('prefers selected options over custom text for the same question', () => {
+  it('keys answers by question text as expected by Claude Code', () => {
     const state = makeAskState({
       selections: { 0: ['Build'] },
       customTexts: { 0: 'typed answer' },
@@ -71,7 +93,7 @@ describe('buildAskAnswers', () => {
         response: {
           updatedInput: {
             answers: {
-              Task: 'Build',
+              'Pick a task': 'Build',
             },
           },
         },

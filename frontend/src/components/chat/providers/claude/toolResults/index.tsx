@@ -3,6 +3,7 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { pickFileEditDiff } from '../../../results/fileEditDiff'
@@ -12,7 +13,7 @@ import { SearchResultBody } from '../../../results/searchResult'
 import { WebFetchResultBody } from '../../../results/webFetchResult'
 import { WebSearchResultsBody } from '../../../results/webSearchResults'
 import { ToolResultMessage } from '../../../toolRenderers'
-import { getAssistantContent, getMessageContentArray, joinContentText } from '../extractors/assistantContent'
+import { getAssistantContent, getMessageContentArray } from '../extractors/assistantContent'
 import { claudeBashFromToolResult } from '../extractors/bash'
 import { claudeFileEditFromToolUseInput, claudeFileEditFromToolUseResult, isClaudeFileEditTool } from '../extractors/fileEdit'
 import { claudeGlobFromToolResult, claudeGrepFromToolResult } from '../extractors/grepGlob'
@@ -113,10 +114,7 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
     const agentId = pickString(info.toolUseResult, 'agentId')
     const status = pickString(info.toolUseResult, 'status', 'completed')
     const agentContent = Array.isArray(info.toolUseResult.content)
-      ? (info.toolUseResult.content as Array<Record<string, unknown>>)
-          .filter(c => isObject(c) && c.type === 'text')
-          .map(c => String(c.text || ''))
-          .join('\n\n')
+      ? joinContentParagraphs(info.toolUseResult.content as Array<Record<string, unknown>>, { text: 'text' })
       : info.resultContent
     return <AgentResultView agentId={agentId} status={status} content={agentContent} context={ctx} />
   },
@@ -184,7 +182,7 @@ export function renderClaudeToolResult(
 
   const resultData = toolResult as Record<string, unknown>
   const resultContent = Array.isArray(resultData.content)
-    ? joinContentText(resultData.content as Array<Record<string, unknown>>)
+    ? joinContentParagraphs(resultData.content as Array<Record<string, unknown>>, { text: 'text' })
     : String(resultData.content || '')
 
   // Extract tool name: prefer span_type (always set for span messages),

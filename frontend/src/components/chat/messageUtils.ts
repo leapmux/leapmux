@@ -6,10 +6,9 @@ import { isObject } from '~/lib/jsonPick'
 const BASE_NOTIFICATION_TYPES = new Set([
   'settings_changed',
   'context_cleared',
-  'compacting',
   'interrupted',
-  'rate_limit',
-  'agent_renamed',
+  'rate_limit_event',
+  'plan_updated',
 ])
 
 /**

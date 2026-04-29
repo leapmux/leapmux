@@ -1,15 +1,9 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingsPanelProps } from '../registry'
-import ChevronsDown from 'lucide-solid/icons/chevrons-down'
-import ChevronsUp from 'lucide-solid/icons/chevrons-up'
-import Dot from 'lucide-solid/icons/dot'
-import Sparkles from 'lucide-solid/icons/sparkles'
-import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
 import { EFFORT_AUTO } from '~/utils/controlResponse'
 import * as styles from '../../ChatView.css'
-import { defaultModelId, effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
+import { defaultModelId, effortIcon, effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
 
 /** Default model for Codex agents. */
 const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_CODEX_DEFAULT_MODEL || 'gpt-5.4'
@@ -168,18 +162,6 @@ export function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Elemen
   const currentCollaborationMode = () => extra()[CODEX_EXTRA_COLLABORATION_MODE] || DEFAULT_CODEX_COLLABORATION_MODE
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
-  const effortIcon = () => {
-    switch (currentEffort()) {
-      case 'auto': return <Icon icon={Sparkles} size="xs" />
-      case 'xhigh': return <Icon icon={Zap} size="xs" />
-      case 'high': return <Icon icon={ChevronsUp} size="xs" />
-      case 'low': return <Icon icon={ChevronsDown} size="xs" />
-      case 'minimal': return <Icon icon={ChevronsDown} size="xs" />
-      case 'none': return <Icon icon={ChevronsDown} size="xs" />
-      default: return <Icon icon={Dot} size="xs" />
-    }
-  }
-
   const hasEffort = () => hasEfforts(props.availableModels, currentModel())
   const mode = () => currentCollaborationMode() === 'plan'
     ? optionLabel(props.availableOptionGroups, CODEX_EXTRA_COLLABORATION_MODE, currentCollaborationMode())
@@ -187,7 +169,7 @@ export function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Elemen
   return (
     <>
       {displayName()}
-      <Show when={hasEffort()}>{effortIcon()}</Show>
+      <Show when={hasEffort()}>{effortIcon(currentEffort())}</Show>
       {' '}
       {mode()}
     </>

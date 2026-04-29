@@ -35,7 +35,7 @@ func TestHandleCopilotOutput_AgentMessageChunk(t *testing.T) {
 }
 
 func TestHandleCopilotOutput_RequestPermission(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCopilotAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s1","options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"}],"toolCall":{"toolCallId":"tc-1","title":"shell","kind":"execute"}}}`

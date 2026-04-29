@@ -1,4 +1,5 @@
 import type { McpContentItem, McpToolCallSource, McpToolCallStatus } from '../../../results/mcpToolCall'
+import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
 import { capitalize } from '../../../rendererUtils'
 import { mcpToolCallDisplayName, parseMcpContentItem } from '../../../results/mcpToolCall'
@@ -74,11 +75,10 @@ export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpT
   // text content (Claude's MCP errors arrive as plain-text blocks).
   let error: string | undefined
   if (args.isError) {
-    const flat = content
-      .map(c => c.type === 'text' ? c.text : '')
-      .filter(Boolean)
-      .join('\n\n')
-      .trim()
+    const flat = joinContentParagraphs(
+      content as Array<Record<string, unknown>>,
+      { text: 'text' },
+    ).trim()
     error = flat || undefined
   }
 

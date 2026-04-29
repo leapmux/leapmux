@@ -17,7 +17,7 @@ test.describe('Plan Mode Tab Auto-Naming', () => {
     // the agent spending minutes exploring the codebase.
     const exitBanner = await enterAndExitPlanMode(page, 'first')
 
-    // Tab should be renamed by now (agent_renamed fires on Write).
+    // Tab should be renamed by now (plan_updated with update_agent_title:true fires on Write).
     await expect(agentTab).toContainText('Dummy plan first')
 
     // ── Step 3: Approve the plan ──

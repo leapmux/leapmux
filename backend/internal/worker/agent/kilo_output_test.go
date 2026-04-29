@@ -80,7 +80,7 @@ func TestHandleKiloPromptResponse_PersistsThinkingText(t *testing.T) {
 	require.Equal(t, "agent_message_chunk", assistantParsed["sessionUpdate"])
 
 	resultMsg := sink.Messages()[2]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT, resultMsg.Role)
+	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, resultMsg.Role)
 
 	agent.mu.Lock()
 	require.Equal(t, "", agent.turnThinkingText.String())
@@ -136,11 +136,11 @@ func TestHandleKiloOutput_UsageUpdate(t *testing.T) {
 
 	require.Equal(t, 1, sink.SessionInfoCount())
 	info := sink.LastSessionInfo()
-	usage, ok := info["contextUsage"].(map[string]interface{})
+	usage, ok := info["context_usage"].(map[string]interface{})
 	require.True(t, ok)
-	require.Equal(t, int64(1000), usage["inputTokens"])
-	require.Equal(t, int64(128000), usage["contextWindow"])
-	require.Equal(t, 0.05, info["totalCostUsd"])
+	require.Equal(t, int64(1000), usage["input_tokens"])
+	require.Equal(t, int64(128000), usage["context_window"])
+	require.Equal(t, 0.05, info["total_cost_usd"])
 	require.Equal(t, 0, sink.MessageCount())
 }
 
@@ -167,7 +167,7 @@ func TestHandleKiloOutput_Plan(t *testing.T) {
 }
 
 func TestHandleKiloOutput_RequestPermission(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newKiloAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run command: ls","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`

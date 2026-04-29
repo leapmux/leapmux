@@ -201,6 +201,13 @@ func validateAttachmentForProvider(provider leapmuxv1.AgentProvider, attachment 
 		return nil
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
 		return nil
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:
+		if attachment.kind == attachmentKindPDF {
+			return fmt.Errorf("pi does not support PDF attachments: %s", attachment.filename)
+		}
+		if attachment.kind == attachmentKindBinary {
+			return fmt.Errorf("pi does not support binary attachments: %s", attachment.filename)
+		}
 	}
 	return nil
 }

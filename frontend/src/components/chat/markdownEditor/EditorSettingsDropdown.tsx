@@ -9,7 +9,7 @@ import { Icon } from '~/components/common/Icon'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { spinner } from '~/styles/animations.css'
 import * as styles from '../ChatView.css'
-import { getProviderPlugin } from '../providers/registry'
+import { providerFor } from '../providers/registry'
 import '../providers'
 
 export interface EditorSettingsDropdownProps extends ProviderSettingsState {
@@ -19,7 +19,7 @@ export interface EditorSettingsDropdownProps extends ProviderSettingsState {
 
 export function EditorSettingsDropdown(props: EditorSettingsDropdownProps): JSX.Element {
   const provider = createMemo(() => props.agentProvider ?? AgentProvider.CLAUDE_CODE)
-  const plugin = createMemo(() => getProviderPlugin(provider()))
+  const plugin = createMemo(() => providerFor(provider()))
 
   const settingsPanelProps = (): ProviderSettingsPanelProps => ({
     disabled: props.disabled,

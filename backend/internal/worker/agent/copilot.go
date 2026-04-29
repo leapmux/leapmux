@@ -21,7 +21,7 @@ type CopilotCLIAgent struct {
 }
 
 // StartCopilotCLI starts a Copilot CLI ACP agent process and performs the handshake.
-func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
@@ -130,9 +130,9 @@ func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGr
 }
 
 func init() {
-	registerProvider(
+	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 			return StartCopilotCLI(ctx, opts, sink)
 		},
 		nil, // models discovered dynamically from session/new

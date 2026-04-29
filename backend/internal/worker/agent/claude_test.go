@@ -342,7 +342,7 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 	testutil.AssertEventually(t, func() bool {
 		msgs := sink.Messages()
 		for _, m := range msgs {
-			if m.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT {
+			if m.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END {
 				return true
 			}
 		}
@@ -353,7 +353,7 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 	msgs := sink.Messages()
 	var resultContent []byte
 	for _, m := range msgs {
-		if m.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_RESULT {
+		if m.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END {
 			resultContent = m.Content
 		}
 	}

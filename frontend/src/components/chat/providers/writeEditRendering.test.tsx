@@ -8,6 +8,7 @@ import { parseMessageContent } from '~/lib/messageParser'
 import './claude'
 import './codex'
 import './opencode'
+import './pi'
 import './testMocks'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -83,6 +84,43 @@ function renderClaudeToolResult(parsed: Record<string, unknown>, context?: Rende
   return render(() => result)
 }
 
+function makePiToolStart(toolName: string, args: Record<string, unknown>) {
+  return {
+    type: 'tool_execution_start',
+    toolCallId: `call_${toolName}_1`,
+    toolName,
+    args,
+  }
+}
+
+function makePiToolEnd(toolName: string, result: Record<string, unknown>, isError = false) {
+  return {
+    type: 'tool_execution_end',
+    toolCallId: `call_${toolName}_1`,
+    toolName,
+    result,
+    isError,
+  }
+}
+
+function renderPiToolUse(toolName: string, args: Record<string, unknown>, context?: RenderContext) {
+  const toolUse = makePiToolStart(toolName, args)
+  const category: MessageCategory = { kind: 'tool_use', toolName, toolUse, content: [] }
+  const result = renderMessageContent(toolUse, MessageRole.ASSISTANT, context, category, AgentProvider.PI)
+  return render(() => result)
+}
+
+function renderPiToolResult(toolName: string, resultPayload: Record<string, unknown>, startArgs: Record<string, unknown>, isError = false) {
+  const start = makePiToolStart(toolName, startArgs)
+  const end = makePiToolEnd(toolName, resultPayload, isError)
+  const category: MessageCategory = { kind: 'tool_result' }
+  const result = renderMessageContent(end, MessageRole.ASSISTANT, {
+    spanType: toolName,
+    toolUseParsed: parseMessageContent(makeFakeMessage(start)),
+  }, category, AgentProvider.PI)
+  return render(() => result)
+}
+
 // ---------------------------------------------------------------------------
 // Claude Code: tool_use never renders a diff
 // ---------------------------------------------------------------------------
@@ -153,6 +191,18 @@ describe('claude Edit tool_result diff selection', () => {
     const text = container.textContent ?? ''
     expect(text).toContain('fallbackOldZZZ')
     expect(text).toContain('fallbackNewZZZ')
+  })
+
+  it('renders error text instead of the linked tool_use diff when is_error is true', () => {
+    const parsed = makeClaudeToolResultMessage({
+      tool_name: 'Edit',
+      filePath: '/tmp/file.ts',
+    }, 'Found 2 occurrences; old_string must be unique.', { isError: true })
+    const { container } = renderClaudeToolResult(parsed, { toolUseParsed: editToolUseParsed })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Found 2 occurrences')
+    expect(text).not.toContain('fallbackOldZZZ')
+    expect(text).not.toContain('fallbackNewZZZ')
   })
 
   it('renders the result content text when neither result nor tool_use carries a diff', () => {
@@ -250,6 +300,113 @@ describe('claude Write tool_result diff selection', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Pi: tool_use is header-only; tool_result owns diffs with tool_use fallback
+// ---------------------------------------------------------------------------
+
+describe('pi Edit/Write tool_use renders header only (no diff body)', () => {
+  it('edit tool_use shows file path + edit count but not changed lines', () => {
+    const { container } = renderPiToolUse('edit', {
+      path: '/tmp/example.ts',
+      edits: [{ oldText: 'piOldToolUseMarker', newText: 'piNewToolUseMarker' }],
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('example.ts')
+    expect(text).toContain('1 edit(s)')
+    expect(text).not.toContain('piOldToolUseMarker')
+    expect(text).not.toContain('piNewToolUseMarker')
+  })
+
+  it('write tool_use shows file path but not file content', () => {
+    const { container } = renderPiToolUse('write', {
+      path: '/tmp/new.ts',
+      content: 'piWriteToolUseMarker\n',
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('new.ts')
+    expect(text).not.toContain('piWriteToolUseMarker')
+  })
+})
+
+describe('pi Edit tool_result diff selection', () => {
+  it('renders the result-side details.diff when present and ignores the tool_use fallback', () => {
+    const resultDiff = [
+      ' 1 keep',
+      '-2 piResultOldMarker',
+      '+2 piResultNewMarker',
+    ].join('\n')
+    const { container } = renderPiToolResult('edit', {
+      content: [{ type: 'text', text: 'Modified.' }],
+      details: { diff: resultDiff },
+    }, {
+      path: '/tmp/file.ts',
+      edits: [{ oldText: 'piFallbackOldMarker', newText: 'piFallbackNewMarker' }],
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('piResultOldMarker')
+    expect(text).toContain('piResultNewMarker')
+    expect(text).not.toContain('piFallbackOldMarker')
+    expect(text).not.toContain('piFallbackNewMarker')
+    expect(text).not.toContain('Modified.')
+  })
+
+  it('falls back to linked edit tool_use diffs when the result has no diff', () => {
+    const { container } = renderPiToolResult('edit', {
+      content: [{ type: 'text', text: 'Modified.' }],
+      details: {},
+    }, {
+      path: '/tmp/file.ts',
+      edits: [{ oldText: 'piFallbackOldMarker', newText: 'piFallbackNewMarker' }],
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('piFallbackOldMarker')
+    expect(text).toContain('piFallbackNewMarker')
+    expect(text).not.toContain('Modified.')
+  })
+
+  it('renders error text instead of linked edit tool_use diffs when isError is true', () => {
+    const { container } = renderPiToolResult('edit', {
+      content: [{ type: 'text', text: 'Found 2 occurrences of edits[2]; oldText must be unique.' }],
+      details: {},
+    }, {
+      path: '/tmp/file.ts',
+      edits: [{ oldText: 'piFailedFallbackOldMarker', newText: 'piFailedFallbackNewMarker' }],
+    }, true)
+    const text = container.textContent ?? ''
+    expect(text).toContain('Found 2 occurrences')
+    expect(text).not.toContain('piFailedFallbackOldMarker')
+    expect(text).not.toContain('piFailedFallbackNewMarker')
+  })
+})
+
+describe('pi Write tool_result diff selection', () => {
+  it('falls back to linked write tool_use content as an all-added diff', () => {
+    const { container } = renderPiToolResult('write', {
+      content: [{ type: 'text', text: 'Created.' }],
+      details: {},
+    }, {
+      path: '/tmp/new.ts',
+      content: 'piFallbackWriteBodyMarker\n',
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('piFallbackWriteBodyMarker')
+    expect(text).not.toContain('Created.')
+  })
+
+  it('renders error text instead of linked write content when isError is true', () => {
+    const { container } = renderPiToolResult('write', {
+      content: [{ type: 'text', text: 'Refusing to overwrite existing file.' }],
+      details: {},
+    }, {
+      path: '/tmp/new.ts',
+      content: 'piFailedFallbackWriteBodyMarker\n',
+    }, true)
+    const text = container.textContent ?? ''
+    expect(text).toContain('Refusing to overwrite existing file')
+    expect(text).not.toContain('piFailedFallbackWriteBodyMarker')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Codex fileChange
 // ---------------------------------------------------------------------------
 
@@ -301,6 +458,23 @@ describe('codex fileChange routes through the shared diff component', () => {
     expect(text).toContain('codexFileANew')
     expect(text).toContain('codexFileBOld')
     expect(text).toContain('codexFileBNew')
+  })
+
+  it('does not render failed fileChange diffs as completed edits', () => {
+    const { container } = renderCodexFileChange({
+      type: 'fileChange',
+      status: 'failed',
+      changes: [
+        {
+          path: '/tmp/failed.ts',
+          kind: 'update',
+          diff: '@@ -1,1 +1,1 @@\n-codexFailedOld\n+codexFailedNew\n',
+        },
+      ],
+    })
+    const text = container.textContent ?? ''
+    expect(text).not.toContain('codexFailedOld')
+    expect(text).not.toContain('codexFailedNew')
   })
 })
 
@@ -366,6 +540,27 @@ describe('opencode tool_call_update diff selection', () => {
     })
     const text = container.textContent ?? ''
     expect(text).toContain('opencodePlainOutputZ')
+  })
+
+  it('renders failure output instead of rawInput fallback diff when status is failed', () => {
+    const { container } = renderOpenCodeUpdate({
+      sessionUpdate: 'tool_call_update',
+      kind: 'edit',
+      status: 'failed',
+      title: 'Edit /tmp/failed.ts',
+      rawInput: {
+        filePath: '/tmp/failed.ts',
+        oldText: 'opencodeFailedRawOld',
+        newText: 'opencodeFailedRawNew',
+      },
+      content: [
+        { type: 'content', content: { text: 'Could not apply patch.' } },
+      ],
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Could not apply patch')
+    expect(text).not.toContain('opencodeFailedRawOld')
+    expect(text).not.toContain('opencodeFailedRawNew')
   })
 
   // Regression: an earlier cleanup wrote `!effectiveDiff() !== null`, which

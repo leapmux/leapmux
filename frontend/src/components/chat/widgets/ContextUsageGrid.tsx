@@ -29,9 +29,11 @@ export function resolveContextWindow(usage: ContextUsageInfo, modelContextWindow
   return DEFAULT_CONTEXT_WINDOW
 }
 
-/** Total context size = cache_creation + cache_read + input tokens. */
+/** Total context size. Prefer an authoritative provider-reported total when present. */
 export function contextSize(usage: ContextUsageInfo): number {
-  return usage.cacheCreationInputTokens + usage.cacheReadInputTokens + usage.inputTokens
+  if (usage.contextTokens != null)
+    return usage.contextTokens
+  return usage.cacheCreationInputTokens + usage.cacheReadInputTokens + usage.inputTokens + (usage.outputTokens ?? 0)
 }
 
 /**

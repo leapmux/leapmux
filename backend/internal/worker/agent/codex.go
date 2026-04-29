@@ -88,7 +88,7 @@ type CodexAgent struct {
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
-func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Codex doesn't have third-party provider detection or model/effort
@@ -443,7 +443,10 @@ func (a *CodexAgent) sendTurnStart(
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
 
-	resp, err := a.sendRequest("turn/start", paramsJSON, a.APITimeout())
+	// No timeout: the turn unblocks via response, process exit, or ctx
+	// cancel. Codex turns can legitimately run minutes-to-hours; a wall-
+	// clock cap would just kill long-running work.
+	resp, err := a.sendRequest("turn/start", paramsJSON, 0)
 	if err != nil {
 		return fmt.Errorf("turn/start: %w", err)
 	}
@@ -475,7 +478,9 @@ func (a *CodexAgent) sendTurnSteer(threadID, turnID string, input []map[string]i
 		return fmt.Errorf("marshal turn/steer params: %w", err)
 	}
 
-	_, err = a.sendRequest("turn/steer", paramsJSON, a.APITimeout())
+	// No timeout: turn/steer rides the active turn's lifetime; Codex only
+	// responds when the steered turn completes (which can be long-running).
+	_, err = a.sendRequest("turn/steer", paramsJSON, 0)
 	if err != nil {
 		return fmt.Errorf("turn/steer: %w", err)
 	}
@@ -682,7 +687,7 @@ func (a *CodexAgent) refreshSettingsFromAgent() {
 		"serviceTier", tier,
 	)
 
-	a.sink.BroadcastSettingsRefreshed(model, effort, approval, map[string]string{
+	a.sink.PersistSettingsRefresh(model, effort, approval, map[string]string{
 		CodexExtraSandboxPolicy:     sandbox,
 		CodexExtraNetworkAccess:     network,
 		CodexExtraCollaborationMode: collab,
@@ -732,7 +737,7 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*leapmuxv1.Av
 
 	// Build a lookup from default models so we can fill in missing metadata.
 	var defaults []*leapmuxv1.AvailableModel
-	if reg, ok := providerRegistry[leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX]; ok {
+	if reg, ok := agentFactoryRegistry[leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX]; ok {
 		defaults = reg.defaultModels
 	}
 	defaultsByID := make(map[string]*leapmuxv1.AvailableModel, len(defaults))
@@ -829,9 +834,9 @@ var codexDefaultModels = []*leapmuxv1.AvailableModel{
 var codexBinaryCandidates = []string{"codex", "codex-x86_64-pc-windows-msvc"}
 
 func init() {
-	registerProvider(
+	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 			return StartCodex(ctx, opts, sink)
 		},
 		codexDefaultModels,

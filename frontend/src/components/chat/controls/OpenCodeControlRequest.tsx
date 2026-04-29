@@ -122,7 +122,7 @@ export const OpenCodeControlContent: Component<ContentProps> = (props) => {
         <>
           <div class={styles.controlBannerTitle}>{title()}</div>
           <Show when={kind()}>
-            <div class={styles.codexCwd}>{kind()}</div>
+            <div class={styles.bannerHint}>{kind()}</div>
           </Show>
         </>
       )}

@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { getProviderPlugin } from '../registry'
+import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
 import './cursor'
@@ -12,7 +12,7 @@ vi.mock('~/api/workerRpc', () => ({
 }))
 
 describe('cursor provider', () => {
-  const plugin = getProviderPlugin(AgentProvider.CURSOR)!
+  const plugin = providerFor(AgentProvider.CURSOR)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -59,7 +59,7 @@ describe('cursor provider', () => {
 })
 
 describe('cursor settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.CURSOR)!
+  const plugin = providerFor(AgentProvider.CURSOR)!
 
   it('renders runtime modes and updates through the unified onChange dispatcher', async () => {
     const onChange = vi.fn()

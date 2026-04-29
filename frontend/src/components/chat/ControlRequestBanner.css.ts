@@ -86,7 +86,7 @@ export const optionDescription = style({
   color: 'var(--muted-foreground)',
 })
 
-export const toolSummary = style({
+export const bannerCodeBlock = style({
   fontSize: 'var(--text-7)',
   color: 'var(--muted-foreground)',
   fontFamily: 'var(--font-mono)',
@@ -227,13 +227,13 @@ export const collapsibleToggle = style({
   },
 })
 
-export const codexReason = style({
+export const bannerReason = style({
   fontSize: 'var(--text-7)',
   color: 'var(--foreground)',
   marginBottom: 'var(--space-2)',
 })
 
-export const codexCwd = style({
+export const bannerHint = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
   fontFamily: 'var(--font-mono)',

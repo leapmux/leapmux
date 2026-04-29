@@ -5,13 +5,13 @@ import type { RenderContext } from '../../messageRenderers'
 import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import MessageSquare from 'lucide-solid/icons/message-square'
 import { createMemo } from 'solid-js'
+import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject } from '~/lib/jsonPick'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { useSharedExpandedState } from '../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../messageUiKeys'
 import {
   agentErrorRenderer,
-  agentRenamedRenderer,
   apiRetryRenderer,
   compactBoundaryRenderer,
   compactingRenderer,
@@ -19,6 +19,7 @@ import {
   controlResponseRenderer,
   interruptedRenderer,
   microcompactBoundaryRenderer,
+  planUpdatedRenderer,
   settingsChangedRenderer,
   systemInitRenderer,
 } from '../../notificationRenderers'
@@ -101,7 +102,7 @@ function claudeNotificationRenderer(
     ?? contextClearedRenderer.render(parsed, role, context)
     ?? compactingRenderer.render(parsed, role, context)
     ?? agentErrorRenderer.render(parsed, role, context)
-    ?? agentRenamedRenderer.render(parsed, role, context)
+    ?? planUpdatedRenderer.render(parsed, role, context)
     ?? rateLimitRenderer.render(parsed, role, context)
     ?? apiRetryRenderer.render(parsed, role, context)
     ?? compactBoundaryRenderer.render(parsed, role, context)
@@ -146,10 +147,7 @@ function renderClaudeAgentPrompt(
   if (!Array.isArray(content))
     return null
 
-  const text = (content as Array<Record<string, unknown>>)
-    .filter(c => isObject(c) && c.type === 'text')
-    .map(c => String(c.text || ''))
-    .join('\n\n')
+  const text = joinContentParagraphs(content as Array<Record<string, unknown>>, { text: 'text' })
   if (!text)
     return null
 

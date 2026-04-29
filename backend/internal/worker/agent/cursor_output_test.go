@@ -41,7 +41,7 @@ func TestHandleCursorOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testin
 }
 
 func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCursorAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":7,"method":"cursor/ask_question","params":{"toolCallId":"tc-1","title":"Need input","questions":[{"id":"q1","prompt":"Pick one","allowMultiple":false,"options":[{"id":"a","label":"Alpha"},{"id":"b","label":"Beta"}]}]}}`
@@ -72,7 +72,7 @@ func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
 }
 
 func TestHandleCursorOutput_CreatePlanPersistsControlRequest(t *testing.T) {
-	sink := &controlTestSink{}
+	sink := &recordingControlSink{}
 	agent := newCursorAgentWithSink(sink)
 
 	input := `{"jsonrpc":"2.0","id":8,"method":"cursor/create_plan","params":{"toolCallId":"plan-1","name":"Migration","overview":"Review the generated plan"}}`

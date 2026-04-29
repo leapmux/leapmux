@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { getProviderPlugin } from '../registry'
+import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
 // Side-effect import to register the Claude plugin.
 import './plugin'
 
 describe('claude extractQuotableText', () => {
-  const plugin = getProviderPlugin(AgentProvider.CLAUDE_CODE)!
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
 
-  it('returns concatenated text + thinking blocks for assistant_text', () => {
+  it('joins text + thinking blocks as paragraphs (preserves order, ≥2 newlines between blocks)', () => {
     const parent = {
       type: 'assistant',
       message: {
@@ -20,7 +20,7 @@ describe('claude extractQuotableText', () => {
         ],
       },
     }
-    expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, input(parent))).toBe('Hello\npondering')
+    expect(plugin.extractQuotableText!({ kind: 'assistant_text' }, input(parent))).toBe('Hello\n\npondering')
   })
 
   it('returns null when assistant message has no quotable content', () => {
@@ -47,7 +47,7 @@ describe('claude extractQuotableText', () => {
 })
 
 describe('claude classify', () => {
-  const plugin = getProviderPlugin(AgentProvider.CLAUDE_CODE)!
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({

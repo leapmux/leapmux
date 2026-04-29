@@ -4,14 +4,14 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../../controls/CodexControlRequest'
-import { getProviderPlugin } from '../registry'
+import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
 // Side-effect import to register the Codex plugin.
 import './plugin'
 
 describe('codex extractQuotableText', () => {
-  const plugin = getProviderPlugin(AgentProvider.CODEX)!
+  const plugin = providerFor(AgentProvider.CODEX)!
 
   it('reads parent.item.text for assistant_text', () => {
     const parent = { item: { type: 'agentMessage', text: '  Hello  ' } }
@@ -39,7 +39,7 @@ describe('codex extractQuotableText', () => {
 })
 
 describe('codex classify', () => {
-  const plugin = getProviderPlugin(AgentProvider.CODEX)!
+  const plugin = providerFor(AgentProvider.CODEX)!
 
   it('exposes attachment capabilities', () => {
     expect(plugin.attachments).toEqual({
@@ -104,6 +104,53 @@ describe('codex classify', () => {
     }
     const result = plugin.classify(input(undefined, wrapper))
     expect(result).toEqual({ kind: 'notification_thread', messages: wrapper.messages })
+  })
+
+  it('classifies wrapped raw thread/compacted (Phase 4.3) as a notification thread', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [{ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }],
+    }
+    const result = plugin.classify(input(undefined, wrapper))
+    expect(result.kind).toBe('notification_thread')
+  })
+
+  it('classifies wrapped raw item/started+contextCompaction (Phase 4.2) as a notification thread', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [{
+        method: 'item/started',
+        params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
+      }],
+    }
+    const result = plugin.classify(input(undefined, wrapper))
+    expect(result.kind).toBe('notification_thread')
+  })
+
+  it('does NOT classify wrapped item/started for non-compaction items as a notification thread', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [{
+        method: 'item/started',
+        params: { item: { type: 'commandExecution', id: 'cmd-1' } },
+      }],
+    }
+    // commandExecution is rendered through the assistant span flow, not the
+    // notification thread. Wrapping it must not turn it into a notif thread.
+    const result = plugin.classify(input(undefined, wrapper))
+    expect(result.kind).not.toBe('notification_thread')
+  })
+
+  it('classifies wrapped thread/tokenUsage/updated and thread/name/updated as a notification thread', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        { method: 'thread/name/updated', params: { threadId: 't1', name: 'Refactor auth' } },
+        { method: 'thread/tokenUsage/updated', params: { threadId: 't1' } },
+      ],
+    }
+    const result = plugin.classify(input(undefined, wrapper))
+    expect(result.kind).toBe('notification_thread')
   })
 
   it('keeps high-usage rate limit notifications visible', () => {
@@ -283,7 +330,7 @@ describe('codex classify', () => {
 })
 
 describe('codex result divider', () => {
-  const plugin = getProviderPlugin(AgentProvider.CODEX)!
+  const plugin = providerFor(AgentProvider.CODEX)!
 
   it('classifies turn/completed as result_divider', () => {
     const parent = {
@@ -320,13 +367,13 @@ describe('codex result divider', () => {
     const parsed = {
       turn: { id: 'turn-1', status: 'completed' },
     }
-    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.RESULT)
+    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.TURN_END)
     expect(result).not.toBeNull()
   })
 })
 
 describe('codex isAskUserQuestion', () => {
-  const plugin = getProviderPlugin(AgentProvider.CODEX)!
+  const plugin = providerFor(AgentProvider.CODEX)!
 
   it('returns true for requestUserInput method', () => {
     const payload = {
@@ -500,7 +547,7 @@ describe('sendCodexUserInputResponse', () => {
     })
   })
 
-  it('uses custom text when no selection', async () => {
+  it('sends custom text as a Codex user_note when no option is selected', async () => {
     let captured: Uint8Array | undefined
     const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
       captured = content
@@ -519,13 +566,13 @@ describe('sendCodexUserInputResponse', () => {
       id: 10,
       result: {
         answers: {
-          q1: { answers: ['my custom answer'] },
+          q1: { answers: ['user_note: my custom answer'] },
         },
       },
     })
   })
 
-  it('joins multi-select values', async () => {
+  it('sends multi-select values as separate answer entries', async () => {
     let captured: Uint8Array | undefined
     const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
       captured = content
@@ -544,13 +591,68 @@ describe('sendCodexUserInputResponse', () => {
       id: 11,
       result: {
         answers: {
-          q1: { answers: ['A, C'] },
+          q1: { answers: ['A', 'C'] },
         },
       },
     })
   })
 
-  it('skips unanswered questions', async () => {
+  it('preserves selected options and appends custom text as a Codex user_note', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    const questions: Question[] = [
+      { id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] },
+    ]
+    const state = makeAskState({ selections: { 0: ['B'] }, customTexts: { 0: 'note for B' } })
+
+    await sendCodexUserInputResponse('agent1', onRespond, '13', questions, state)
+
+    const parsed = decode(captured!)
+    expect(parsed).toMatchObject({
+      jsonrpc: '2.0',
+      id: 13,
+      result: {
+        answers: {
+          q1: { answers: ['B', 'user_note: note for B'] },
+        },
+      },
+    })
+  })
+
+  it('formats Codex Other/custom text like the native TUI', async () => {
+    let captured: Uint8Array | undefined
+    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+      captured = content
+    })
+
+    const questions: Question[] = [
+      {
+        id: 'q1',
+        question: 'Pick one',
+        options: [{ label: 'A' }, { label: 'B' }],
+        isOther: true,
+      } as unknown as Question,
+    ]
+    const state = makeAskState({ customTexts: { 0: 'my custom answer' } })
+
+    await sendCodexUserInputResponse('agent1', onRespond, '14', questions, state)
+
+    const parsed = decode(captured!)
+    expect(parsed).toMatchObject({
+      jsonrpc: '2.0',
+      id: 14,
+      result: {
+        answers: {
+          q1: { answers: ['None of the above', 'user_note: my custom answer'] },
+        },
+      },
+    })
+  })
+
+  it('includes unanswered questions with empty answer lists like the native TUI', async () => {
     let captured: Uint8Array | undefined
     const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
       captured = content
@@ -565,14 +667,19 @@ describe('sendCodexUserInputResponse', () => {
     await sendCodexUserInputResponse('agent1', onRespond, '12', questions, state)
 
     const parsed = decode(captured!)
-    const answers = (parsed.result as Record<string, unknown>).answers as Record<string, unknown>
-    expect(answers).toHaveProperty('q1')
-    expect(answers).not.toHaveProperty('q2')
+    expect(parsed).toMatchObject({
+      result: {
+        answers: {
+          q1: { answers: ['A'] },
+          q2: { answers: [] },
+        },
+      },
+    })
   })
 })
 
 describe('codex settings panel', () => {
-  const plugin = getProviderPlugin(AgentProvider.CODEX)!
+  const plugin = providerFor(AgentProvider.CODEX)!
 
   const baseModels = [
     model('gpt-5.4', 'GPT-5.4', {

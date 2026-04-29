@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { createEffect, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -14,6 +14,14 @@ export interface UseChatScrollOptions {
   messageVersion?: Accessor<number | undefined>
   streamingText: Accessor<string>
   agentWorking?: Accessor<boolean | undefined>
+  /**
+   * Agent lifecycle status. Tracked in the auto-scroll signature so a
+   * STARTING transition (e.g. /clear's "Restarting <Provider>…" banner
+   * appearing below the message list) scrolls the new banner into view.
+   * Without this, the banner is added below the visible viewport and the
+   * user has to scroll manually to see it.
+   */
+  agentStatus?: Accessor<AgentStatus | undefined>
   hasOlderMessages?: Accessor<boolean | undefined>
   fetchingOlder?: Accessor<boolean | undefined>
   onLoadOlderMessages?: () => void
@@ -249,12 +257,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     autoScrollFirstSeq = firstSeq
     // Cheap signature over the inputs that drive auto-scroll, so wake-ups
     // from same-reference store re-emits short-circuit before reading
-    // scrollHeight (which forces layout).
+    // scrollHeight (which forces layout). agentStatus is included so a
+    // STARTING transition (which renders the inline AgentStartupBanner
+    // below the message list) scrolls the banner into view.
     const sig = [
       msgs.length,
       opts.messageVersion?.() ?? 0,
       opts.streamingText().length,
       opts.agentWorking?.() ?? false,
+      opts.agentStatus?.() ?? 0,
     ]
     if (prependedOlderMessages)
       return

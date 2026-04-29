@@ -17,7 +17,7 @@ type KiloAgent struct {
 }
 
 // StartKilo starts a Kilo ACP agent process and performs the handshake.
-func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
@@ -158,9 +158,9 @@ func (a *KiloAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 }
 
 func init() {
-	registerProvider(
+	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		func(ctx context.Context, opts Options, sink OutputSink) (Provider, error) {
+		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 			return StartKilo(ctx, opts, sink)
 		},
 		nil, // models discovered dynamically from newSession

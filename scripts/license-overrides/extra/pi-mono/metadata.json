@@ -1,0 +1,6 @@
+{
+  "name": "pi-mono brand mark",
+  "license": "MIT",
+  "url": "https://github.com/badlogic/pi-mono",
+  "description": "The Pi Coding Agent provider icon (`icons/agents/pi.svg` and the\n`PiIcon` SVG component in `frontend/src/components/common/AgentProviderIcon.tsx`)\nis the official pi-mono brand mark provided by the project's author."
+}

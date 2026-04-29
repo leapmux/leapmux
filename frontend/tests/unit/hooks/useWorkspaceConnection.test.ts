@@ -275,7 +275,7 @@ describe('codex result replay handling', () => {
 
       const msg = {
         id: 'm1',
-        role: MessageRole.RESULT,
+        role: MessageRole.TURN_END,
         content: new TextEncoder().encode(JSON.stringify({
           num_tool_uses: 2,
           threadId: 'thread-1',
@@ -617,6 +617,60 @@ describe('startupMessage handling in terminal statusChange', () => {
       const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
       expect(tab?.gitBranch).toBe('feature/x')
       expect(tab?.gitOriginUrl).toBe('git@example.com:org/repo.git')
+      dispose()
+    })
+  })
+})
+
+/**
+ * agent_session_info wire-shape handling. The worker broadcasts
+ * snake_case keys exclusively (`total_cost_usd`, `context_usage`,
+ * `rate_limits`, `codex_turn_id`, `streaming_type`, `pi_*`); these tests
+ * reproduce the unwrap-and-merge logic in useWorkspaceConnection that
+ * translates wire keys back to the frontend store's camelCase shape.
+ */
+describe('agent_session_info snake_case wire normalization', () => {
+  function applyAgentSessionInfo(
+    sessionStore: ReturnType<typeof createAgentSessionStore>,
+    agentId: string,
+    info: Record<string, unknown> | undefined,
+  ) {
+    if (!info)
+      return
+    const updates: Record<string, unknown> = {}
+    if (typeof info.total_cost_usd === 'number')
+      updates.totalCostUsd = info.total_cost_usd
+    if (info.context_usage !== undefined)
+      updates.contextUsage = info.context_usage
+    if (info.rate_limits !== undefined)
+      updates.rateLimits = info.rate_limits
+    if (Object.keys(updates).length > 0)
+      sessionStore.updateInfo(agentId, updates)
+  }
+
+  it('writes totalCostUsd from a snake_case payload', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      applyAgentSessionInfo(store, 'cc-1', { total_cost_usd: 0.42 })
+      expect(store.getInfo('cc-1').totalCostUsd).toBe(0.42)
+      dispose()
+    })
+  })
+
+  it('ignores a camelCase-only payload (legacy wire format removed)', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      applyAgentSessionInfo(store, 'cc-2', { totalCostUsd: 0.42 })
+      expect(store.getInfo('cc-2').totalCostUsd).toBeUndefined()
+      dispose()
+    })
+  })
+
+  it('skips updateInfo for an empty info payload', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      applyAgentSessionInfo(store, 'cc-3', {})
+      expect(Object.keys(store.getInfo('cc-3'))).toHaveLength(0)
       dispose()
     })
   })
