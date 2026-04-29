@@ -227,6 +227,9 @@ export function renderClaudeToolResult(
   const isPreText = toolName === '' || PRE_TEXT_TOOLS.has(toolName)
   const displayKind = pickDisplayKind(toolName, isPreText)
   const isErrorVal = typeof resultData.is_error === 'boolean' ? resultData.is_error : undefined
+  // When the tool failed (`is_error: true`), the edit was *not* applied — fall
+  // back to text rendering so the error message surfaces instead of a diff
+  // synthesized from the tool_use input.
   const effectiveDiff = isClaudeFileEditTool(toolName) && isErrorVal !== true
     ? pickFileEditDiff(
         claudeFileEditFromToolUseResult(toolUseResult),

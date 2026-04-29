@@ -423,13 +423,18 @@ export function ToolResultMessage(props: {
 
   const statusIcon = () => props.isError ? CircleAlert : Check
 
+  // Always surface a status header when the tool failed, even for non-bash
+  // display kinds — otherwise an Edit/Write rejection silently looks like a
+  // success. For non-error results we keep the bash-only behavior so plain
+  // tool results don't grow a redundant "Success" line.
+  const showStatusHeader = () => props.isError === true || (isBashLike() && props.isError !== undefined)
   return (
     <Show
       when={!props.commandResult}
       fallback={<CommandResultBody source={props.commandResult!} context={props.context} />}
     >
       <div class={toolMessage} data-tool-message>
-        <Show when={isBashLike() && props.isError !== undefined}>
+        <Show when={showStatusHeader()}>
           <div class={toolUseHeader}>
             <span class={`${inlineFlex} ${toolUseIcon}`}>
               <Icon icon={statusIcon()} size="md" />
@@ -443,8 +448,8 @@ export function ToolResultMessage(props: {
           </div>
         </Show>
         <Show
-          when={!errorText()}
-          fallback={<div class={toolResultError}>{errorText()}</div>}
+          when={!errorText() && props.isError !== true}
+          fallback={<div class={toolResultError}>{errorText() ?? props.resultContent}</div>}
         >
           <Show
             when={renderableDiff()}
