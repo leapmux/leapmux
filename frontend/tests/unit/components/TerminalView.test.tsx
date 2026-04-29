@@ -24,7 +24,11 @@ beforeAll(() => {
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
-  window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as any
+  window.matchMedia = vi.fn().mockReturnValue({
+    matches: false,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }) as any
 })
 
 function makeMockTerminalInstance(): TerminalInstance {
