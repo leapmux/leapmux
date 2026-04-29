@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCompactNumber } from './rendererUtils'
+import { formatCompactNumber, joinMetaParts } from './rendererUtils'
 
 describe('formatCompactNumber', () => {
   it('numbers below 1000 are returned as-is', () => {
@@ -41,5 +41,20 @@ describe('formatCompactNumber', () => {
     expect(formatCompactNumber(2000)).toBe('2k')
     expect(formatCompactNumber(3_000_000)).toBe('3m')
     expect(formatCompactNumber(4_000_000_000)).toBe('4g')
+  })
+})
+
+describe('joinMetaParts', () => {
+  it('joins truthy strings with ` · `', () => {
+    expect(joinMetaParts(['a', 'b', 'c'])).toBe('a · b · c')
+  })
+
+  it('drops empty strings, false, null, and undefined', () => {
+    expect(joinMetaParts(['a', '', false, null, undefined, 'b'])).toBe('a · b')
+  })
+
+  it('returns an empty string when nothing is truthy', () => {
+    expect(joinMetaParts([])).toBe('')
+    expect(joinMetaParts([false, null, undefined, ''])).toBe('')
   })
 })

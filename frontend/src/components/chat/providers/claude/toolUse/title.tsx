@@ -1,7 +1,8 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
-import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, TaskStopInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
+import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, RemoteTriggerInput, TaskStopInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
+import { joinMetaParts } from '../../../rendererUtils'
 import { toolInputCode, toolInputText } from '../../../toolStyles.css'
 import {
   renderAgentTitle,
@@ -54,14 +55,12 @@ export function renderClaudeToolTitle(toolName: string, input: Record<string, un
     // Claude-only tool titles
     case CLAUDE_TOOL.TASK_OUTPUT: {
       const { task_id, block, timeout } = input as { task_id?: string, block?: boolean, timeout?: number }
-      const parts: string[] = []
-      if (task_id)
-        parts.push(`task ID: ${task_id}`)
-      if (typeof timeout === 'number')
-        parts.push(`timeout: ${timeout >= 1000 ? `${timeout / 1000}s` : `${timeout}ms`}`)
-      if (block !== undefined)
-        parts.push(`block: ${block}`)
-      const meta = parts.length > 0 ? ` (${parts.join(' · ')})` : ''
+      const inner = joinMetaParts([
+        task_id && `task ID: ${task_id}`,
+        typeof timeout === 'number' && `timeout: ${timeout >= 1000 ? `${timeout / 1000}s` : `${timeout}ms`}`,
+        block !== undefined && `block: ${block}`,
+      ])
+      const meta = inner ? ` (${inner})` : ''
       return <span class={toolInputText}>{`Waiting for output${meta}`}</span>
     }
     case CLAUDE_TOOL.TOOL_SEARCH: {
@@ -81,6 +80,24 @@ export function renderClaudeToolTitle(toolName: string, input: Record<string, un
     case CLAUDE_TOOL.SKILL: {
       const skillName = String(input.skill || '')
       return <span class={toolInputText}>{`Skill: /${skillName}`}</span>
+    }
+    case CLAUDE_TOOL.REMOTE_TRIGGER: {
+      const { action, trigger_id: triggerId, body } = input as RemoteTriggerInput
+      const name = typeof body?.name === 'string' ? body.name : ''
+      const label = (() => {
+        switch (action) {
+          case 'list': return 'List triggers'
+          case 'get': return triggerId ? `Get trigger ${triggerId}` : 'Get trigger'
+          case 'create': return name ? `Create trigger: ${name}` : 'Create trigger'
+          case 'update': {
+            const head = triggerId ? `Update trigger ${triggerId}` : 'Update trigger'
+            return name ? `${head}: ${name}` : head
+          }
+          case 'run': return triggerId ? `Run trigger ${triggerId}` : 'Run trigger'
+          default: return 'RemoteTrigger'
+        }
+      })()
+      return <span class={toolInputText}>{label}</span>
     }
     default: {
       const hint = extractInputHint(input)

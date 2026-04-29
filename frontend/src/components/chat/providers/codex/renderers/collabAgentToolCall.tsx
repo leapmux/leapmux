@@ -9,6 +9,7 @@ import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
 import { markdownContent } from '../../../markdownEditor/markdownContent.css'
 import { useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
+import { joinMetaParts } from '../../../rendererUtils'
 import { ToolUseLayout } from '../../../toolRenderers'
 import { toolInputSummary, toolResultCollapsed, toolResultContent } from '../../../toolStyles.css'
 import { renderAgentTitle } from '../../../toolTitleRenderers'
@@ -47,10 +48,10 @@ defineCodexRenderer({
       const e = reasoningEffort()
       return e ? (getCachedSettingsLabel('effort', e) || e) : ''
     }
-    const spawnAgentDetails = createMemo(() => [
-      modelLabel() ? `model: ${modelLabel()}` : '',
-      effortLabel() ? `reasoning effort: ${effortLabel()}` : '',
-    ].filter(Boolean).join(' · '))
+    const spawnAgentDetails = createMemo(() => joinMetaParts([
+      modelLabel() && `model: ${modelLabel()}`,
+      effortLabel() && `reasoning effort: ${effortLabel()}`,
+    ]))
     const titleEl = createMemo(() => {
       if (isTerminalWait())
         return `Wait ${status()}`

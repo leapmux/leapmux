@@ -6,7 +6,7 @@ import { relativizePath } from '~/lib/paths'
 import { CODEX_ITEM } from '~/types/toolMessages'
 import { useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
-import { firstNonEmptyLine, formatDuration } from '../../../rendererUtils'
+import { firstNonEmptyLine, formatDuration, joinMetaParts } from '../../../rendererUtils'
 import { renderBashHighlight, ToolResultMessage, ToolUseLayout } from '../../../toolRenderers'
 import { toolInputSummary, toolResultContentPre } from '../../../toolStyles.css'
 import { renderBashTitle } from '../../../toolTitleRenderers'
@@ -81,14 +81,12 @@ defineCodexRenderer({
     const title = createMemo(() => renderBashTitle('Run command', command()) || 'Run command')
 
     const statusParts = createMemo(() => {
-      const parts: string[] = []
       const code = baseSource()?.exitCode ?? null
       const dur = baseSource()?.durationMs ?? null
-      if (code != null)
-        parts.push(`exit ${code}`)
-      if (dur != null)
-        parts.push(formatDuration(dur))
-      return parts.join(' · ')
+      return joinMetaParts([
+        code != null && `exit ${code}`,
+        dur != null && formatDuration(dur),
+      ])
     })
 
     return (

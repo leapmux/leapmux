@@ -48,7 +48,7 @@ export interface UseCollapsedLinesResult {
  */
 export function useCollapsedLines(opts: UseCollapsedLinesOptions): UseCollapsedLinesResult {
   const threshold = opts.threshold ?? COLLAPSED_RESULT_ROWS
-  const isCollapsed = createMemo(() => !opts.expanded() && hasMoreLinesThan(opts.text(), threshold))
+  const isCollapsed = useCollapsedFlag(opts)
   const display = createMemo(() => {
     if (!isCollapsed())
       return opts.text()
@@ -63,6 +63,17 @@ export function useCollapsedLines(opts: UseCollapsedLinesOptions): UseCollapsedL
     return text.slice(0, idx - 1)
   })
   return { isCollapsed, display }
+}
+
+/**
+ * Memoized collapse-flag for kinds that always render the full text and only
+ * flip a fade class (`'markdown-tool-result'`, `'json'`). Equivalent to the
+ * `isCollapsed` half of {@link useCollapsedLines} without computing the
+ * unused `display` slice.
+ */
+export function useCollapsedFlag(opts: UseCollapsedLinesOptions): Accessor<boolean> {
+  const threshold = opts.threshold ?? COLLAPSED_RESULT_ROWS
+  return createMemo(() => !opts.expanded() && hasMoreLinesThan(opts.text(), threshold))
 }
 
 export interface UseCollapsedItemsOptions<T> {

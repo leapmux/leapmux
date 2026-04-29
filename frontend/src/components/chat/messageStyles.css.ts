@@ -176,12 +176,8 @@ globalStyle(`${hiddenMessageJson} pre.shiki code`, {
   fontFamily: 'inherit',
 })
 
-// JSON tokens have no per-span backgrounds; force transparent so the
-// wrapper's --card bg shows through (otherwise spans inherit the theme's
-// editor bg from the <pre>'s inline --shiki-light-bg / --shiki-dark-bg).
 globalStyle(`${hiddenMessageJson} pre.shiki span`, {
   color: 'var(--shiki-light)',
-  backgroundColor: 'transparent',
 })
 
 globalStyle(`html[data-theme="dark"] ${hiddenMessageJson} pre.shiki span`, {

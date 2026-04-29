@@ -35,9 +35,14 @@ import langYaml from 'shiki/langs/yaml.mjs'
 import { unified } from 'unified'
 import { visit } from 'unist-util-visit'
 
+// Override each theme's `bg` so Shiki emits `--shiki-light-bg`/`--shiki-dark-bg`
+// as `transparent`. Lets the surrounding wrapper's background show through
+// instead of the theme's editor color.
+const transparentBgThemes = [themeGithubLight, themeGithubDark].map(t => ({ ...t, bg: 'transparent' }))
+
 // Create synchronous Shiki highlighter with pre-loaded languages
 export const shikiHighlighter = createHighlighterCoreSync({
-  themes: [themeGithubLight, themeGithubDark],
+  themes: transparentBgThemes,
   langs: [
     langTypescript,
     langJavascript,

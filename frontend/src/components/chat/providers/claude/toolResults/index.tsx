@@ -19,11 +19,13 @@ import { claudeFileEditFromToolUseInput, claudeFileEditFromToolUseResult, isClau
 import { claudeGlobFromToolResult, claudeGrepFromToolResult } from '../extractors/grepGlob'
 import { claudeMcpFromToolResult, isClaudeMcpTool } from '../extractors/mcp'
 import { claudeReadFromToolResult } from '../extractors/read'
+import { claudeRemoteTriggerFromToolResult } from '../extractors/remoteTrigger'
 import { claudeWebFetchFromToolResult } from '../extractors/webFetch'
 import { claudeWebSearchFromToolResult } from '../extractors/webSearch'
 import { AgentResultView } from './agent'
 import { AskUserQuestionResultView } from './askUserQuestion'
 import { ExitPlanModeResultView } from './exitPlanMode'
+import { RemoteTriggerResultView } from './remoteTrigger'
 import { TaskOutputResultView } from './taskOutput'
 import { ToolSearchResultView } from './toolSearch'
 
@@ -159,6 +161,13 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
       context={ctx}
     />
   ),
+
+  [CLAUDE_TOOL.REMOTE_TRIGGER]: (info, ctx) => {
+    const source = claudeRemoteTriggerFromToolResult(info.toolUseResult, info.resultContent)
+    if (!source)
+      return null
+    return <RemoteTriggerResultView source={source} context={ctx} />
+  },
 }
 
 /** Render a Claude tool_result message. */

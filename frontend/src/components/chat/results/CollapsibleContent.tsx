@@ -1,9 +1,10 @@
-/* eslint-disable solid/no-innerhtml -- HTML is produced via renderAnsi/renderMarkdown, not arbitrary user input */
+/* eslint-disable solid/no-innerhtml -- HTML is produced via renderAnsi/renderMarkdown/renderJsonHighlight, not arbitrary user input */
 import type { JSX } from 'solid-js'
 import { createMemo, Match, Switch } from 'solid-js'
 import { containsAnsi, renderAnsi } from '~/lib/renderAnsi'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { markdownContent } from '../markdownEditor/markdownContent.css'
+import { renderJsonHighlight } from '../toolRenderers'
 import { toolResultCollapsed, toolResultContent, toolResultContentAnsi, toolResultContentPre } from '../toolStyles.css'
 
 /**
@@ -16,8 +17,12 @@ import { toolResultCollapsed, toolResultContent, toolResultContentAnsi, toolResu
  * - `'markdown-tool-result'`: render as markdown inside the `toolResultContent`
  *   wrapper (the styling used for WebFetch / Agent tool result bodies). The
  *   full text is always rendered; only the fade class differs.
+ * - `'json'`: shiki-highlighted JSON inside the shared `toolResultContentAnsi`
+ *   shiki wrapper. Like the markdown variants, the full text is always
+ *   rendered (slicing mid-token would break shiki output); only the fade
+ *   class differs.
  */
-export type CollapsibleContentKind = 'ansi-or-pre' | 'pre' | 'markdown' | 'markdown-tool-result'
+export type CollapsibleContentKind = 'ansi-or-pre' | 'pre' | 'markdown' | 'markdown-tool-result' | 'json'
 
 export interface CollapsibleContentProps {
   /**
@@ -26,8 +31,14 @@ export interface CollapsibleContentProps {
    * branch.
    */
   text: string
-  /** Display text — already truncated/sliced by the caller via `useCollapsedLines`. */
-  display: string
+  /**
+   * Display text — already truncated/sliced by the caller via `useCollapsedLines`.
+   * Required for the slice-based kinds (`'pre'`, `'ansi-or-pre'`, `'markdown'`);
+   * omit for `'markdown-tool-result'` and `'json'`, which always render the
+   * full `text` and only flip the fade class. When omitted, slice-based kinds
+   * fall back to rendering `text` in full.
+   */
+  display?: string
   /** When true, applies the `toolResultCollapsed` fade class. */
   isCollapsed: boolean
   /** Body kind. See {@link CollapsibleContentKind}. */
@@ -44,25 +55,30 @@ export interface CollapsibleContentProps {
 export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element {
   const collapsedClass = () => props.isCollapsed ? ` ${toolResultCollapsed}` : ''
   const isAnsi = createMemo(() => props.kind === 'ansi-or-pre' && containsAnsi(props.text))
+  const slice = () => props.display ?? props.text
 
   return (
     <Switch>
       <Match when={props.kind === 'markdown'}>
-        <div class={`${markdownContent}${collapsedClass()}`} innerHTML={renderMarkdown(props.display)} />
+        <div class={`${markdownContent}${collapsedClass()}`} innerHTML={renderMarkdown(slice())} />
       </Match>
       <Match when={props.kind === 'markdown-tool-result'}>
         {/* Markdown bodies don't truncate by lines (would slice mid-block); the
             full text is rendered and only the fade class differs by `isCollapsed`. */}
         <div class={`${toolResultContent}${collapsedClass()}`} innerHTML={renderMarkdown(props.text)} />
       </Match>
+      <Match when={props.kind === 'json'}>
+        {/* Same as 'markdown-tool-result': render full shiki HTML; visual clip via fade. */}
+        <div class={`${toolResultContentAnsi}${collapsedClass()}`} innerHTML={renderJsonHighlight(props.text)} />
+      </Match>
       <Match when={props.kind === 'pre'}>
-        <div class={`${toolResultContentPre}${collapsedClass()}`}>{props.display}</div>
+        <div class={`${toolResultContentPre}${collapsedClass()}`}>{slice()}</div>
       </Match>
       <Match when={isAnsi()}>
-        <div class={`${toolResultContentAnsi}${collapsedClass()}`} innerHTML={renderAnsi(props.display)} />
+        <div class={`${toolResultContentAnsi}${collapsedClass()}`} innerHTML={renderAnsi(slice())} />
       </Match>
       <Match when={props.kind === 'ansi-or-pre'}>
-        <div class={`${toolResultContentPre}${collapsedClass()}`}>{props.display}</div>
+        <div class={`${toolResultContentPre}${collapsedClass()}`}>{slice()}</div>
       </Match>
     </Switch>
   )

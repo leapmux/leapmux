@@ -5,7 +5,7 @@ import ClockFading from 'lucide-solid/icons/clock-fading'
 import { Show } from 'solid-js'
 import { pickNumber, pickString } from '~/lib/jsonPick'
 import { getToolResultExpanded } from '../../../messageRenderers'
-import { formatTaskStatus } from '../../../rendererUtils'
+import { formatTaskStatus, joinMetaParts } from '../../../rendererUtils'
 import { CollapsibleContent } from '../../../results/CollapsibleContent'
 import { ToolStatusHeader } from '../../../results/ToolStatusHeader'
 import { useCollapsedLines } from '../../../results/useCollapsedLines'
@@ -26,24 +26,18 @@ export function TaskOutputResultView(props: {
   const icon = () => status() === 'completed' ? Check : ClockFading
 
   const meta = () => {
-    const parts: string[] = []
-    if (taskId())
-      parts.push(`task ID: ${taskId()}`)
-    if (exitCode() !== null)
-      parts.push(`exit code: ${exitCode()}`)
-    return parts.length > 0 ? ` (${parts.join(' · ')})` : ''
+    const inner = joinMetaParts([
+      taskId() && `task ID: ${taskId()}`,
+      exitCode() !== null && `exit code: ${exitCode()}`,
+    ])
+    return inner ? ` (${inner})` : ''
   }
 
   const title = () => {
     const label = statusLabel()
     const desc = description()
-    if (label && desc)
-      return `${label}: ${desc}${meta()}`
-    if (label)
-      return `${label}${meta()}`
-    if (desc)
-      return `${desc}${meta()}`
-    return `TaskOutput${meta()}`
+    const body = label && desc ? `${label}: ${desc}` : (label || desc || 'TaskOutput')
+    return `${body}${meta()}`
   }
 
   const { display, isCollapsed } = useCollapsedLines({ text: output, expanded })

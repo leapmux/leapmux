@@ -4,13 +4,13 @@ import { Show } from 'solid-js'
 import { formatBytes } from '~/lib/formatBytes'
 import { pickNumber, pickString } from '~/lib/jsonPick'
 import { getToolResultExpanded } from '../messageRenderers'
-import { formatDuration } from '../rendererUtils'
+import { formatDuration, joinMetaParts } from '../rendererUtils'
 import {
   toolMessage,
   toolResultPrompt,
 } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
-import { useCollapsedLines } from './useCollapsedLines'
+import { useCollapsedFlag } from './useCollapsedLines'
 
 /** Provider-neutral source for a WebFetch tool result. */
 export interface WebFetchResultSource {
@@ -49,25 +49,22 @@ export function WebFetchResultBody(props: {
   source: WebFetchResultSource
   context?: RenderContext
 }): JSX.Element {
-  const expanded = () => getToolResultExpanded(props.context)
-  const text = () => props.source.result
-  const { display, isCollapsed } = useCollapsedLines({ text, expanded })
+  const isCollapsed = useCollapsedFlag({
+    text: () => props.source.result,
+    expanded: () => getToolResultExpanded(props.context),
+  })
 
-  const summary = () => {
-    const parts: string[] = []
-    parts.push(`${props.source.code} ${props.source.codeText}`)
-    if (props.source.bytes > 0)
-      parts.push(formatBytes(props.source.bytes))
-    if (props.source.durationMs > 0)
-      parts.push(formatDuration(props.source.durationMs))
-    return parts.join(' · ')
-  }
+  const summary = () => joinMetaParts([
+    `${props.source.code} ${props.source.codeText}`,
+    props.source.bytes > 0 && formatBytes(props.source.bytes),
+    props.source.durationMs > 0 && formatDuration(props.source.durationMs),
+  ])
 
   return (
     <div class={toolMessage}>
       <div class={toolResultPrompt}>{summary()}</div>
       <Show when={props.source.result}>
-        <CollapsibleContent kind="markdown-tool-result" text={text()} display={display()} isCollapsed={isCollapsed()} />
+        <CollapsibleContent kind="markdown-tool-result" text={props.source.result} isCollapsed={isCollapsed()} />
       </Show>
     </div>
   )

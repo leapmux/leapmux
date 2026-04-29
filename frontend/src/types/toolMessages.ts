@@ -96,6 +96,12 @@ export interface AskUserQuestionInput {
   }>
 }
 
+export interface RemoteTriggerInput {
+  action?: 'list' | 'get' | 'create' | 'update' | 'run'
+  trigger_id?: string
+  body?: Record<string, unknown>
+}
+
 /**
  * Canonical Claude tool name literals. Use these constants instead of bare
  * string literals when dispatching on tool name — typos become compile errors
@@ -120,6 +126,7 @@ export const CLAUDE_TOOL = {
   ENTER_PLAN_MODE: 'EnterPlanMode',
   EXIT_PLAN_MODE: 'ExitPlanMode',
   SKILL: 'Skill',
+  REMOTE_TRIGGER: 'RemoteTrigger',
 } as const
 
 export type ClaudeToolName = typeof CLAUDE_TOOL[keyof typeof CLAUDE_TOOL]
@@ -141,6 +148,7 @@ export type KnownToolInput
     | { toolName: typeof CLAUDE_TOOL.TOOL_SEARCH, input: ToolSearchInput }
     | { toolName: typeof CLAUDE_TOOL.TASK_STOP, input: TaskStopInput }
     | { toolName: typeof CLAUDE_TOOL.ASK_USER_QUESTION, input: AskUserQuestionInput }
+    | { toolName: typeof CLAUDE_TOOL.REMOTE_TRIGGER, input: RemoteTriggerInput }
 
 /** All known tool names (subset of ClaudeToolName that have typed inputs). */
 export type KnownToolName = KnownToolInput['toolName']
@@ -161,6 +169,7 @@ const KNOWN_TOOLS = new Set<string>([
   CLAUDE_TOOL.TOOL_SEARCH,
   CLAUDE_TOOL.TASK_STOP,
   CLAUDE_TOOL.ASK_USER_QUESTION,
+  CLAUDE_TOOL.REMOTE_TRIGGER,
 ])
 
 /** Type guard: returns true if the tool name is a known tool. */

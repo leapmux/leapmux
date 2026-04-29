@@ -5,7 +5,7 @@ import Check from 'lucide-solid/icons/check'
 import { getToolResultExpanded } from '../../../messageRenderers'
 import { CollapsibleContent } from '../../../results/CollapsibleContent'
 import { ToolStatusHeader } from '../../../results/ToolStatusHeader'
-import { useCollapsedLines } from '../../../results/useCollapsedLines'
+import { useCollapsedFlag } from '../../../results/useCollapsedLines'
 
 function formatAgentStatus(status: string): string {
   if (status === 'async_launched')
@@ -20,14 +20,15 @@ export function AgentResultView(props: {
   content: string
   context?: RenderContext
 }): JSX.Element {
-  const expanded = () => getToolResultExpanded(props.context)
-  const text = () => props.content
-  const { display, isCollapsed } = useCollapsedLines({ text, expanded })
+  const isCollapsed = useCollapsedFlag({
+    text: () => props.content,
+    expanded: () => getToolResultExpanded(props.context),
+  })
   const icon = () => props.status === 'completed' ? Check : Bot
 
   return (
     <ToolStatusHeader icon={icon()} title={`Agent ${props.agentId} ${formatAgentStatus(props.status)}`}>
-      <CollapsibleContent kind="markdown-tool-result" text={text()} display={display()} isCollapsed={isCollapsed()} />
+      <CollapsibleContent kind="markdown-tool-result" text={props.content} isCollapsed={isCollapsed()} />
     </ToolStatusHeader>
   )
 }

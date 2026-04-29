@@ -1,6 +1,7 @@
 import type { MessageCategory } from '../../messageClassification'
 import type { ToolResultMeta } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { formatUnifiedDiffText } from '../../diff'
@@ -9,6 +10,7 @@ import { hasMoreLinesThan } from '../../results/useCollapsedLines'
 import { COLLAPSED_RESULT_ROWS } from '../../toolRenderers'
 import { extractToolResultText } from './extractors/assistantContent'
 import { claudeFileEditFromToolUseResult } from './extractors/fileEdit'
+import { claudeRemoteTriggerFromToolResult } from './extractors/remoteTrigger'
 
 /** Resolve toolName + tool_use_result for a Claude tool_result message. */
 function extractToolResultInfo(
@@ -65,6 +67,9 @@ function isCollapsible(
   if (toolName === CLAUDE_TOOL.WEB_SEARCH && Array.isArray(toolUseResult?.results))
     return true
 
+  if (toolName === CLAUDE_TOOL.REMOTE_TRIGGER)
+    return claudeRemoteTriggerFromToolResult(toolUseResult, resultText ?? '') !== null
+
   return resultText != null && hasMoreLinesThan(resultText, COLLAPSED_RESULT_ROWS)
 }
 
@@ -111,6 +116,12 @@ function computeCopyableContent(
 
   if (toolName === CLAUDE_TOOL.WRITE && typeof toolUseResult?.newString === 'string')
     return toolUseResult.newString as string
+
+  if (toolName === CLAUDE_TOOL.REMOTE_TRIGGER) {
+    const source = claudeRemoteTriggerFromToolResult(toolUseResult, resultText ?? '')
+    if (source)
+      return `HTTP ${source.status}\n${prettifyJson(source.parsed ?? source.json)}`
+  }
 
   return resultText
 }

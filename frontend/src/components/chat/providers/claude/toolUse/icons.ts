@@ -16,6 +16,7 @@ import Terminal from 'lucide-solid/icons/terminal'
 import TextSearch from 'lucide-solid/icons/text-search'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
 import Vote from 'lucide-solid/icons/vote'
+import Webhook from 'lucide-solid/icons/webhook'
 import Wrench from 'lucide-solid/icons/wrench'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { isClaudeMcpTool } from '../extractors/mcp'
@@ -40,6 +41,7 @@ export function toolIconFor(name: string): LucideIcon {
     case CLAUDE_TOOL.SKILL: return PocketKnife
     case CLAUDE_TOOL.TOOL_SEARCH: return Search
     case CLAUDE_TOOL.TASK_STOP: return OctagonX
+    case CLAUDE_TOOL.REMOTE_TRIGGER: return Webhook
     default: return isClaudeMcpTool(name) ? Wrench : ChevronsRight
   }
 }

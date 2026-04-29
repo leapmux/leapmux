@@ -85,6 +85,15 @@ export function formatCompactNumber(n: number): string {
   return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))}g`
 }
 
+/**
+ * Join the truthy entries with ` · `, dropping empty/falsy parts. Lets call
+ * sites express optional summary fields as a flat array instead of building
+ * one with imperative `parts.push(...)` + `if` guards.
+ */
+export function joinMetaParts(parts: ReadonlyArray<string | false | null | undefined>): string {
+  return parts.filter((p): p is string => !!p).join(' · ')
+}
+
 /** Helper: format tool input for compact display (fallback for unknown tools) */
 export function formatToolInput(input: unknown): string {
   if (input === null || input === undefined || JSON.stringify(input) === '{}') {
