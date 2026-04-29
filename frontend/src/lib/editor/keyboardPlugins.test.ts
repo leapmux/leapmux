@@ -2,9 +2,9 @@ import type { Editor } from '@milkdown/core'
 import { defaultValueCtx, Editor as EditorImpl, editorViewCtx, rootCtx, serializerCtx } from '@milkdown/core'
 import { commonmark } from '@milkdown/preset-commonmark'
 import { gfm } from '@milkdown/preset-gfm'
-import { TextSelection } from '@milkdown/prose/state'
+import { AllSelection, TextSelection } from '@milkdown/prose/state'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createTabKeyPlugin } from './keyboardPlugins'
+import { createSelectAllPlugin, createTabKeyPlugin } from './keyboardPlugins'
 
 /**
  * Unit tests for `createTabKeyPlugin` exercising every branch of the keyboard
@@ -300,5 +300,122 @@ describe('tab key plugin — modifier guards', () => {
     })
 
     expect(getDoc().topNodeName).toBe('paragraph')
+  })
+})
+
+async function makeSelectAllEditor(initialMarkdown: string) {
+  host = document.createElement('div')
+  document.body.appendChild(host)
+
+  editor = await EditorImpl.make()
+    .config((ctx) => {
+      ctx.set(rootCtx, host!)
+      ctx.set(defaultValueCtx, initialMarkdown)
+    })
+    .use(createSelectAllPlugin())
+    .use(commonmark)
+    .use(gfm)
+    .create()
+  return editor
+}
+
+function dispatchSelectAll(modifier: 'meta' | 'ctrl' = 'meta') {
+  let handled = false
+  editor?.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const event = new KeyboardEvent('keydown', {
+      key: 'a',
+      metaKey: modifier === 'meta',
+      ctrlKey: modifier === 'ctrl',
+      bubbles: true,
+      cancelable: true,
+    })
+    handled = view.someProp('handleKeyDown', f => f(view, event)) ?? false
+  })
+  return handled
+}
+
+function getSelection() {
+  let info: { type: string, from: number, to: number, docSize: number } | undefined
+  editor?.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const sel = view.state.selection
+    info = {
+      type: sel instanceof AllSelection ? 'all' : sel instanceof TextSelection ? 'text' : 'other',
+      from: sel.from,
+      to: sel.to,
+      docSize: view.state.doc.content.size,
+    }
+  })
+  if (!info)
+    throw new Error('editor not ready')
+  return info
+}
+
+describe('select-all plugin', () => {
+  it('cmd+a produces a TextSelection (not the default AllSelection)', async () => {
+    await makeSelectAllEditor('hello')
+    const handled = dispatchSelectAll('meta')
+
+    expect(handled).toBe(true)
+    const sel = getSelection()
+    expect(sel.type).toBe('text')
+  })
+
+  it('ctrl+a also produces a TextSelection', async () => {
+    await makeSelectAllEditor('hello')
+    const handled = dispatchSelectAll('ctrl')
+
+    expect(handled).toBe(true)
+    expect(getSelection().type).toBe('text')
+  })
+
+  it('the resulting TextSelection covers all text content including a code block', async () => {
+    await makeSelectAllEditor('before\n\n```\ncode\n```\n\nafter')
+    dispatchSelectAll('meta')
+
+    const sel = getSelection()
+    expect(sel.type).toBe('text')
+    // First textblock content starts at position 1 (just inside the opening
+    // <p>), last textblock content ends at docSize - 1.
+    expect(sel.from).toBe(1)
+    expect(sel.to).toBe(sel.docSize - 1)
+  })
+
+  it('cmd+shift+a is not intercepted (passes through to default handlers)', async () => {
+    await makeSelectAllEditor('hello')
+    let handled = false
+    editor?.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const event = new KeyboardEvent('keydown', {
+        key: 'a',
+        metaKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      handled = view.someProp('handleKeyDown', f => f(view, event)) ?? false
+    })
+
+    expect(handled).toBe(false)
+  })
+
+  it('plain "a" is not intercepted', async () => {
+    await makeSelectAllEditor('hello')
+    let handled = false
+    editor?.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const event = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true })
+      handled = view.someProp('handleKeyDown', f => f(view, event)) ?? false
+    })
+
+    expect(handled).toBe(false)
+  })
+
+  it('cmd+a on an empty document is a no-op', async () => {
+    await makeSelectAllEditor('')
+    const handled = dispatchSelectAll('meta')
+
+    expect(handled).toBe(false)
   })
 })

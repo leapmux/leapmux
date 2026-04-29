@@ -1,6 +1,6 @@
 import { lift, wrapIn } from '@milkdown/prose/commands'
 import { liftListItem, sinkListItem } from '@milkdown/prose/schema-list'
-import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state'
+import { Plugin, PluginKey, Selection, TextSelection } from '@milkdown/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/prose/view'
 import { $prose } from '@milkdown/utils'
 
@@ -807,6 +807,45 @@ export function createCodeBlockEnterPlugin() {
           if (!empty || $from.parent.type.name !== 'code_block')
             return false
           view.dispatch(state.tr.insertText('\n').scrollIntoView())
+          return true
+        },
+      },
+    })
+  })
+}
+
+/**
+ * Override Cmd/Ctrl+A so the resulting selection is a TextSelection spanning
+ * the entire document, instead of ProseMirror's default AllSelection.
+ *
+ * AllSelection sets the DOM Selection range at the editor div level
+ * (anchor = (editorDiv, 0), focus = (editorDiv, childCount)), which
+ * Tauri/macOS WKWebView fails to paint when the document contains a code
+ * block — because <code> has overflow-x: auto and the element-level
+ * selection paint path bails on scroll-container descendants. A
+ * TextSelection between the first and last textblock positions covers the
+ * same content but renders through the text-level paint path, which works.
+ */
+export function createSelectAllPlugin() {
+  return $prose(() => {
+    return new Plugin({
+      key: new PluginKey('select-all'),
+      props: {
+        handleKeyDown: (view, event) => {
+          const isSelectAll = (event.metaKey || event.ctrlKey)
+            && !event.shiftKey && !event.altKey
+            && (event.key === 'a' || event.key === 'A')
+          if (!isSelectAll)
+            return false
+          const { state } = view
+          const fromPos = Selection.atStart(state.doc).from
+          const toPos = Selection.atEnd(state.doc).to
+          if (fromPos === toPos)
+            return false
+          event.preventDefault()
+          view.dispatch(
+            state.tr.setSelection(TextSelection.create(state.doc, fromPos, toPos)),
+          )
           return true
         },
       },

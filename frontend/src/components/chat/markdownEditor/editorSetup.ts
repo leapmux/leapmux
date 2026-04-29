@@ -31,6 +31,7 @@ import {
   createCodeSpanEscapePlugin,
   createListDeleteFixPlugin,
   createPlaceholderPlugin,
+  createSelectAllPlugin,
   createSendOnEnterPlugin,
   createSuppressTextSubstitutionPlugin,
   createTabKeyPlugin,
@@ -75,6 +76,7 @@ export interface EditorSetupOptions {
  */
 export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
   const placeholderPlugin = createPlaceholderPlugin(opts.pluginRefs)
+  const selectAllPlugin = createSelectAllPlugin()
   const sendPlugin = createSendOnEnterPlugin(opts.pluginRefs)
   const blockquoteBackspacePlugin = createBlockquoteBackspacePlugin()
   const tabKeyPlugin = createTabKeyPlugin({
@@ -152,6 +154,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
         }
       })
     })
+    .use(selectAllPlugin)
     .use(selectionWrapPlugin)
     .use(commonmark.filter(p =>
       p !== milkdownInsertHrInputRule
