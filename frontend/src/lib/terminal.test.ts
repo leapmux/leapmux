@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createTerminalInstance } from './terminal'
+import { copySelectionToClipboard, createTerminalInstance } from './terminal'
 
 // xterm.js requires a DOM element for open(), but we can still test
 // the suppressInput mechanism without rendering.
@@ -71,5 +71,43 @@ describe('createTerminalInstance', () => {
     expect(instance.suppressInput).toBe(false)
 
     instance.dispose()
+  })
+})
+
+describe('copySelectionToClipboard', () => {
+  it('writes non-empty text to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+
+    copySelectionToClipboard('hello')
+
+    expect(writeText).toHaveBeenCalledWith('hello')
+  })
+
+  it('skips empty strings (avoids clobbering the clipboard on deselect)', () => {
+    const writeText = vi.fn()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+
+    copySelectionToClipboard('')
+
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('swallows clipboard errors so callers do not have to', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+
+    expect(() => copySelectionToClipboard('hello')).not.toThrow()
+    // Allow the rejected promise to settle without an unhandled rejection.
+    await Promise.resolve()
   })
 })

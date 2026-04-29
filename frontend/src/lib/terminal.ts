@@ -199,6 +199,14 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   // the next paint re-rasterizes with the now-loaded font.
   reloadFontsAndClearAtlas(terminal, fontFamily, fontSize)
 
+  // Auto-copy the selection so users don't have to press Cmd/Ctrl+C
+  // (mirrors iTerm2's "Copy on Select" behavior). Empty selections
+  // (e.g. a click that clears highlight) are skipped so we don't
+  // clobber whatever the user has on the clipboard.
+  terminal.onSelectionChange(() => {
+    copySelectionToClipboard(terminal.getSelection())
+  })
+
   return {
     terminal,
     fitAddon,
@@ -272,4 +280,18 @@ function clearAtlas(terminal: Terminal): void {
   catch {
     // Terminal was disposed before fonts settled; nothing to do.
   }
+}
+
+/**
+ * Write `text` to the system clipboard, ignoring empty inputs and
+ * environments without a clipboard API. Errors (e.g. permission denied
+ * on a non-secure context) are swallowed — auto-copy is a convenience,
+ * not a contract.
+ */
+export function copySelectionToClipboard(text: string): void {
+  if (text.length === 0)
+    return
+  if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText)
+    return
+  void navigator.clipboard.writeText(text).catch(() => {})
 }
