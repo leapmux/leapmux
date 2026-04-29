@@ -10,6 +10,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Opt arduino/setup-protoc, arduino/setup-task, and bufbuild/buf-setup-action
+  # into Node.js 24 ahead of GitHub's June 2 2026 forced switch — those three
+  # still ship `using: node20` in their action.yml. Drop this once they cut
+  # Node-24 releases (or once the forced-switch date passes and the override
+  # becomes a no-op).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   linux:
     # UBUNTU VERSION: the `ubuntu-24.04` literal below is the single source of
@@ -25,7 +33,7 @@ jobs:
           - arch: arm64
             runner_suffix: '-arm'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Derive cache epoch
         run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
@@ -34,7 +42,7 @@ jobs:
         run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
 
       - name: Cache APT packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .apt-cache
           key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/workflows/ci.yaml') }}
@@ -84,12 +92,12 @@ jobs:
             gstreamer1.0-pulseaudio
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: |
@@ -108,14 +116,14 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -125,7 +133,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Tauri downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/tauri
           key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
@@ -136,7 +144,7 @@ jobs:
         # keyed on CACHE_WEEK lets us skip the clone on subsequent runs
         # within the same ISO week while still refreshing weekly (matching
         # the Tauri cache policy above).
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: frontend/src/spinners
           key: spinners-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
@@ -270,7 +278,7 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Derive cache epoch
         run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
@@ -279,12 +287,12 @@ jobs:
         run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: |
@@ -303,14 +311,14 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -320,13 +328,13 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Tauri downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/Library/Caches/tauri
           key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
 
       - name: Cache awesome-claude-spinners
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: frontend/src/spinners
           key: spinners-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
@@ -391,7 +399,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Load tool versions
         shell: bash
@@ -405,12 +413,12 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: |
@@ -424,7 +432,7 @@ jobs:
           components: clippy
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -434,13 +442,13 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       - name: Cache Tauri downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/AppData/Local/tauri
           key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
 
       - name: Cache awesome-claude-spinners
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: frontend/src/spinners
           key: spinners-${{ runner.os }}-${{ env.CACHE_WEEK }}
@@ -451,7 +459,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('frontend/bun.lock') }}
@@ -517,7 +525,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Load tool versions and git metadata
         run: |
@@ -556,7 +564,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Full history + tags so `git log <prev-prerelease>..HEAD` can
           # build the changelog block in the release notes below.
