@@ -7,7 +7,7 @@ import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPan
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { isMac } from '~/lib/shortcuts/platform'
-import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
+import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, reloadFontsAndClearAtlas, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
@@ -232,12 +232,16 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
       instance.sendInput(new TextEncoder().encode(data))
   }
 
-  // React to font preference changes and update existing terminal instances
+  // React to font preference changes and update existing terminal instances.
+  // After the new family's variants finish loading, clear each terminal's
+  // atlas so the WebGL renderer drops any fallback glyphs it rasterized
+  // before the swap.
   createEffect(() => {
     const family = preferences.monoFontFamily()
     for (const [, instance] of instances) {
       instance.terminal.options.fontFamily = family
       instance.fitAddon.fit()
+      reloadFontsAndClearAtlas(instance.terminal, family, 13)
     }
   })
 

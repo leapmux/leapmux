@@ -164,11 +164,13 @@ export function bufferHasVisibleContent(terminal: Terminal): boolean {
 
 export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: ITheme }): TerminalInstance {
   const theme = opts?.theme ?? resolveTerminalTheme(getTerminalThemePreference())
+  const fontFamily = opts?.fontFamily || DEFAULT_MONO_FONT_FAMILY
+  const fontSize = opts?.fontSize || DEFAULT_FONT_SIZE
 
   const terminal = new Terminal({
     cursorBlink: true,
-    fontSize: opts?.fontSize || DEFAULT_FONT_SIZE,
-    fontFamily: opts?.fontFamily || DEFAULT_MONO_FONT_FAMILY,
+    fontSize,
+    fontFamily,
     theme,
     ...(opts?.cols ? { cols: opts.cols } : {}),
     ...(opts?.rows ? { rows: opts.rows } : {}),
@@ -188,6 +190,15 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     // WebGL not supported, fall back to canvas renderer
   }
 
+  // Web fonts (e.g. Hack NF) are declared with font-display: swap and load
+  // asynchronously. xterm's WebGL/canvas renderer rasterizes glyphs into a
+  // texture atlas as cells paint — if a given (weight, style) variant
+  // hasn't loaded yet, those cells are filled with fallback-font glyphs
+  // and never refreshed once the real font arrives. Trigger explicit
+  // fetches for every variant, then clear the atlas once they settle so
+  // the next paint re-rasterizes with the now-loaded font.
+  reloadFontsAndClearAtlas(terminal, fontFamily, fontSize)
+
   return {
     terminal,
     fitAddon,
@@ -195,5 +206,70 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     dispose() {
       terminal.dispose()
     },
+  }
+}
+
+// xterm rasterizes a separate glyph for each (weight, style) combination,
+// so we have to trigger fetches for all four variants — not just the
+// regular face the renderer happens to paint first.
+const FONT_VARIANTS: ReadonlyArray<{ weight: string, style: string }> = [
+  { weight: 'normal', style: 'normal' },
+  { weight: 'bold', style: 'normal' },
+  { weight: 'normal', style: 'italic' },
+  { weight: 'bold', style: 'italic' },
+]
+
+/**
+ * Initiate font-face fetches for every (weight, style) variant xterm
+ * rasterizes into its glyph atlas. More reliable than waiting on
+ * `document.fonts.ready`: that promise only awaits loads already in
+ * flight, and at the moment a terminal is constructed the renderer may
+ * not have referenced the font yet — so `.ready` can resolve before any
+ * fetch has even started.
+ */
+function loadMonoFontVariants(fontFamily: string, fontSize: number): Promise<void> {
+  if (typeof document === 'undefined' || !document.fonts?.load)
+    return Promise.resolve()
+  return Promise.all(
+    FONT_VARIANTS.map(({ weight, style }) =>
+      document.fonts.load(`${style} ${weight} ${fontSize}px ${fontFamily}`).catch(() => []),
+    ),
+  ).then(() => {})
+}
+
+/**
+ * Trigger explicit fetches for every (weight, style) variant, then clear
+ * the terminal's glyph atlas so the next paint re-rasterizes with the
+ * now-loaded font.
+ *
+ * Why a promise-based clear and not a `FontFaceSet` `loadingdone` listener:
+ * when the first fetch attempt fails (e.g. Tauri's static-file server is
+ * briefly unavailable on cold start) and the retry succeeds, faces
+ * transition `error → loaded` and Chromium does not emit `loadingdone`.
+ * `document.fonts.load(...)` resolves cleanly in that case.
+ *
+ * Two passes — once after our `load()` promises settle, once on the next
+ * animation frame — cover the case where xterm's first paint rasterized
+ * fallback glyphs in the brief window between the load completing and
+ * our `.then()` callback running.
+ */
+export function reloadFontsAndClearAtlas(
+  terminal: Terminal,
+  fontFamily: string,
+  fontSize: number,
+): Promise<void> {
+  return loadMonoFontVariants(fontFamily, fontSize).then(() => {
+    clearAtlas(terminal)
+    if (typeof requestAnimationFrame !== 'undefined')
+      requestAnimationFrame(() => clearAtlas(terminal))
+  })
+}
+
+function clearAtlas(terminal: Terminal): void {
+  try {
+    terminal.clearTextureAtlas()
+  }
+  catch {
+    // Terminal was disposed before fonts settled; nothing to do.
   }
 }
