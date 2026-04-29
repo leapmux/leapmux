@@ -19,11 +19,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.11.0",
+    "@bufbuild/protobuf": "^2.12.0",
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-web": "^2.1.1",
     "@corvu/resizable": "^0.2.5",
-    "@knadh/oat": "0.6.0",
+    "@knadh/oat": "^0.6.1",
     "@milkdown/core": "^7.20.0",
     "@milkdown/ctx": "^7.20.0",
     "@milkdown/plugin-clipboard": "^7.20.0",
@@ -50,7 +50,7 @@
     "diff": "^9.0.0",
     "fracturedjsonjs": "^5.0.1",
     "fzstd": "^0.1.1",
-    "lucide-solid": "^1.8.0",
+    "lucide-solid": "^1.11.0",
     "random-word-slugs": "^0.1.7",
     "rehype-stringify": "^10.0.1",
     "remark-gfm": "^4.0.1",
@@ -72,15 +72,15 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@vanilla-extract/vite-plugin": "^5.2.2",
     "ds-store": "^0.1.6",
-    "eslint": "^10.2.0",
+    "eslint": "^10.2.1",
     "eslint-plugin-solid": "^0.14.5",
     "jiti": "^2.6.1",
     "jsdom": "^29.0.2",
     "magic-string": "^0.30.21",
-    "typescript": "^6.0.2",
-    "vite": "^8.0.8",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10",
     "vite-plugin-solid": "^2.11.12",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.5"
   },
   "overrides": {
     "vite": "$vite"
