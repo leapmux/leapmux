@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { copySelectionToClipboard, createTerminalInstance } from './terminal'
+import { copySelectionToClipboard, createTerminalInstance, resolveTerminalThemeMode } from './terminal'
 
 // xterm.js requires a DOM element for open(), but we can still test
 // the suppressInput mechanism without rendering.
@@ -71,6 +71,23 @@ describe('createTerminalInstance', () => {
     expect(instance.suppressInput).toBe(false)
 
     instance.dispose()
+  })
+})
+
+describe('resolveTerminalThemeMode', () => {
+  it('returns the explicit terminal preference when set', () => {
+    expect(resolveTerminalThemeMode('light', 'dark', true)).toBe('light')
+    expect(resolveTerminalThemeMode('dark', 'light', false)).toBe('dark')
+  })
+
+  it('follows the UI theme preference when set to match-ui', () => {
+    expect(resolveTerminalThemeMode('match-ui', 'light', true)).toBe('light')
+    expect(resolveTerminalThemeMode('match-ui', 'dark', false)).toBe('dark')
+  })
+
+  it('falls back to OS prefers-color-scheme when both prefs defer to system', () => {
+    expect(resolveTerminalThemeMode('match-ui', 'system', true)).toBe('dark')
+    expect(resolveTerminalThemeMode('match-ui', 'system', false)).toBe('light')
   })
 })
 

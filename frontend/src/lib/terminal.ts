@@ -1,4 +1,5 @@
 import type { ITheme } from '@xterm/xterm'
+import type { ThemePreference } from '~/app'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
@@ -83,27 +84,41 @@ export function getTerminalThemePreference(): TerminalThemePreference {
   return 'match-ui'
 }
 
-/** Resolve the terminal theme preference to 'dark' or 'light'. */
-export function resolveTerminalThemeMode(pref: TerminalThemePreference): 'dark' | 'light' {
+/**
+ * Resolve the terminal theme preference to 'dark' or 'light'.
+ *
+ * `match-ui` mode depends on the current UI theme preference and (when
+ * that preference is `'system'`) the OS-level prefers-color-scheme. Both
+ * are passed in explicitly so callers in a reactive context can wire
+ * them to signals — reading them inside the function would bypass
+ * Solid's dependency tracking and the terminal would stop following the
+ * UI theme after the first resolution.
+ */
+export function resolveTerminalThemeMode(
+  pref: TerminalThemePreference,
+  uiPref: ThemePreference,
+  prefersDark: boolean,
+): 'dark' | 'light' {
   if (pref === 'light')
     return 'light'
   if (pref === 'dark')
     return 'dark'
-  // match-ui: check the current UI theme
-  const uiTheme = loadBrowserPrefs().theme || 'system'
-  if (uiTheme === 'light')
+  if (uiPref === 'light')
     return 'light'
-  if (uiTheme === 'system') {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches
-      ? 'dark'
-      : 'light'
-  }
-  return 'dark'
+  if (uiPref === 'dark')
+    return 'dark'
+  return prefersDark ? 'dark' : 'light'
 }
 
 /** Resolve the effective terminal theme based on the preference. */
-export function resolveTerminalTheme(pref: TerminalThemePreference): ITheme {
-  return resolveTerminalThemeMode(pref) === 'dark' ? darkTerminalTheme : lightTerminalTheme
+export function resolveTerminalTheme(
+  pref: TerminalThemePreference,
+  uiPref: ThemePreference,
+  prefersDark: boolean,
+): ITheme {
+  return resolveTerminalThemeMode(pref, uiPref, prefersDark) === 'dark'
+    ? darkTerminalTheme
+    : lightTerminalTheme
 }
 
 /**
@@ -163,7 +178,12 @@ export function bufferHasVisibleContent(terminal: Terminal): boolean {
 }
 
 export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: ITheme }): TerminalInstance {
-  const theme = opts?.theme ?? resolveTerminalTheme(getTerminalThemePreference())
+  const theme = opts?.theme ?? resolveTerminalTheme(
+    getTerminalThemePreference(),
+    (loadBrowserPrefs().theme as ThemePreference) || 'system',
+    typeof window !== 'undefined'
+    && window.matchMedia('(prefers-color-scheme: dark)').matches,
+  )
   const fontFamily = opts?.fontFamily || DEFAULT_MONO_FONT_FAMILY
   const fontSize = opts?.fontSize || DEFAULT_FONT_SIZE
 

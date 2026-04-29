@@ -2,7 +2,7 @@ import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
 import type { Tab } from '~/stores/tab.store'
-import { createEffect, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
+import { createEffect, createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -245,9 +245,29 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   })
 
-  // React to terminal theme preference changes
+  // Track OS-level prefers-color-scheme reactively so terminal theme can
+  // follow the system when both UI theme is `system` and terminal theme
+  // is `match-ui`. Without this, flipping macOS dark mode would not
+  // propagate to live xterm instances.
+  const [prefersDark, setPrefersDark] = createSignal(
+    typeof window !== 'undefined'
+    && window.matchMedia('(prefers-color-scheme: dark)').matches,
+  )
+  onMount(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = (e: MediaQueryListEvent) => setPrefersDark(e.matches)
+    mq.addEventListener('change', handler)
+    onCleanup(() => mq.removeEventListener('change', handler))
+  })
+
+  // React to terminal/UI theme preference and OS-theme changes — all
+  // three feed into the resolved theme when the user picks `match-ui`.
   createEffect(() => {
-    const theme = resolveTerminalTheme(preferences.terminalTheme())
+    const theme = resolveTerminalTheme(
+      preferences.terminalTheme(),
+      preferences.theme(),
+      prefersDark(),
+    )
     for (const [, instance] of instances) {
       instance.terminal.options.theme = theme
     }
@@ -283,8 +303,16 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     instances.clear()
   })
 
-  const terminalTheme = () => resolveTerminalTheme(preferences.terminalTheme())
-  const terminalThemeMode = () => resolveTerminalThemeMode(preferences.terminalTheme())
+  const terminalTheme = () => resolveTerminalTheme(
+    preferences.terminalTheme(),
+    preferences.theme(),
+    prefersDark(),
+  )
+  const terminalThemeMode = () => resolveTerminalThemeMode(
+    preferences.terminalTheme(),
+    preferences.theme(),
+    prefersDark(),
+  )
 
   return (
     <div class={styles.container} data-theme={terminalThemeMode()}>
