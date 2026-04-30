@@ -3,12 +3,23 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
 )
+
+// appImageEnvKeys are env vars set by the Linux AppImage runtime that must
+// not leak into the agent shell. ARGV0 is the critical one: zsh reads it
+// and uses it as argv[0] of every external command it execs (see
+// AppImageKit#852), so when the user's rc files activate mise and the
+// shell then execs `claude`, the mise shim sees argv[0] = the AppImage
+// filename and bails with "<file>.AppImage is not a valid shim"
+// (jdx/mise#3537). The others are scrubbed for hygiene — they expose
+// AppImage internals to user-space tools that have no business knowing.
+var appImageEnvKeys = []string{"ARGV0", "APPIMAGE", "APPDIR", "OWD"}
 
 // buildShellWrappedCommand constructs an exec.Cmd that launches a binary
 // inside the user's shell. When interactive is true, the shell is invoked
@@ -71,6 +82,9 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 
 	cmd := exec.CommandContext(ctx, shellPath, cmdArgs...)
 	cmd.Dir = workingDir
+	if os.Getenv("APPIMAGE") != "" {
+		cmd.Env = filterEnv(cmd.Environ(), appImageEnvKeys...)
+	}
 	procutil.HideConsoleWindow(cmd)
 	return cmd, delimiter, metaPrefix
 }

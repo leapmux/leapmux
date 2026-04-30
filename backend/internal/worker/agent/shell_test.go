@@ -226,6 +226,71 @@ func TestBuildShellWrappedCommand_UnknownShell(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], "exec claude")
 }
 
+// When the desktop app runs as a Linux AppImage, the runtime exports
+// ARGV0 (= AppImage filename), and zsh interprets that env var as the
+// argv[0] to use when execing every external command (AppImageKit#852).
+// The result is mise's shim — invoked when zsh runs `claude` — sees
+// argv[0] = the AppImage filename and bails with "<file>.AppImage is
+// not a valid shim" (jdx/mise#3537). The fix is to scrub the AppImage
+// runtime's env vars from the agent shell. We also strip APPIMAGE,
+// APPDIR, and OWD because they expose AppImage internals to user-space
+// tools that have no business knowing.
+func TestBuildShellWrappedCommand_AppImage_ScrubsEnv(t *testing.T) {
+	t.Setenv("APPIMAGE", "/path/to/leapmux-desktop_0.0.1-dev_amd64.AppImage")
+	t.Setenv("APPDIR", "/tmp/.mount_xxxxxx")
+	t.Setenv("ARGV0", "leapmux-desktop_0.0.1-dev_amd64.AppImage")
+	t.Setenv("OWD", "/home/user")
+	t.Setenv("PATH_SHOULD_SURVIVE", "/usr/bin:/bin")
+
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/bin/zsh", true, "claude",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
+	)
+
+	// Shell invocation itself must not change — the bug is in the env,
+	// not in argv[0] of the spawned shell.
+	assert.Equal(t, "/bin/zsh", cmd.Path)
+	require.Len(t, cmd.Args, 5)
+	assert.Equal(t, "-i", cmd.Args[1])
+	assert.Equal(t, "-l", cmd.Args[2])
+	assert.Equal(t, "-c", cmd.Args[3])
+
+	// AppImage-injected vars must be absent from cmd.Env so the user's
+	// shell — and any tools it sources, including mise — never sees them.
+	hasKey := func(env []string, key string) bool {
+		for _, e := range env {
+			if name, _, _ := strings.Cut(e, "="); strings.EqualFold(name, key) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, key := range []string{"ARGV0", "APPIMAGE", "APPDIR", "OWD"} {
+		assert.False(t, hasKey(cmd.Env, key), "env var %q should be scrubbed when running inside an AppImage", key)
+	}
+	// Unrelated env vars must survive the scrub.
+	assert.True(t, hasKey(cmd.Env, "PATH_SHOULD_SURVIVE"), "non-AppImage env vars must not be touched")
+}
+
+// When APPIMAGE is unset, env is left untouched (cmd.Env stays nil so the
+// child inherits the parent's environment unchanged) — no behavior
+// change for .deb installs, dev runs, or unpacked AppDir launches.
+func TestBuildShellWrappedCommand_NoAppImage_PreservesEnv(t *testing.T) {
+	t.Setenv("APPIMAGE", "")
+	t.Setenv("ARGV0", "should-survive-when-not-in-appimage")
+
+	cmd, _, _ := buildShellWrappedCommand(
+		context.Background(), "/bin/zsh", true, "claude",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
+	)
+
+	assert.Equal(t, "/bin/zsh", cmd.Path)
+	require.Len(t, cmd.Args, 5)
+	// cmd.Env stays nil so exec inherits os.Environ() verbatim — no
+	// blanket scrubbing when we're not inside an AppImage.
+	assert.Nil(t, cmd.Env)
+}
+
 func TestBuildShellWrappedCommand_NoModelEffort(t *testing.T) {
 	// When third-party provider was detected from settings, modelEffortArgs is nil.
 	// No conditional logic should be generated.
