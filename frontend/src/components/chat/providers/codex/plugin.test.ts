@@ -94,6 +94,15 @@ describe('codex classify', () => {
     expect(result).toEqual({ kind: 'hidden' })
   })
 
+  it('hides skills/changed notifications', () => {
+    const parent = {
+      method: 'skills/changed',
+      params: {},
+    }
+    const result = plugin.classify(input(parent))
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
   it('classifies mixed wrappers when context_cleared follows a hidden Codex lifecycle event', () => {
     const wrapper = {
       old_seqs: [],

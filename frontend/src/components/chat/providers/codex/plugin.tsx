@@ -227,6 +227,7 @@ export const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
   CODEX_METHOD.THREAD_STATUS_CHANGED,
   CODEX_METHOD.THREAD_NAME_UPDATED,
   CODEX_METHOD.THREAD_TOKEN_USAGE_UPDATED,
+  CODEX_METHOD.SKILLS_CHANGED,
 ])
 
 /** LeapMux-side notification `type` values produced by the worker. */

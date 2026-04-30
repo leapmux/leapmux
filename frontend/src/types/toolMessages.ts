@@ -271,6 +271,7 @@ export const CODEX_METHOD = {
   TURN_PLAN_UPDATED: 'turn/plan/updated',
   THREAD_TOKEN_USAGE_UPDATED: 'thread/tokenUsage/updated',
   MCP_SERVER_STARTUP_STATUS_UPDATED: 'mcpServer/startupStatus/updated',
+  SKILLS_CHANGED: 'skills/changed',
 } as const
 
 export type CodexMethod = typeof CODEX_METHOD[keyof typeof CODEX_METHOD]

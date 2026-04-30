@@ -180,6 +180,7 @@ describe('isAgentWorking', () => {
     { method: 'thread/status/changed', params: { status: 'idle' } },
     { method: 'thread/name/updated', params: {} },
     { method: 'thread/tokenUsage/updated', params: {} },
+    { method: 'skills/changed', params: {} },
     { method: 'thread/compacted', params: {} },
     { method: 'mcpServer/startupStatus/updated', params: {} },
     { method: 'account/rateLimits/updated', params: {} },
