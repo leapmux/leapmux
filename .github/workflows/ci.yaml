@@ -133,10 +133,24 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Tauri downloads
+        # The cached ~/.cache/tauri contents (linuxdeploy AppImage, the
+        # extracted AppRun, and the linuxdeploy-plugin-* scripts) are
+        # post-processed by desktop/rust/scripts/patch-linuxdeploy.sh,
+        # which also installs a compiled wrapper built from
+        # linuxdeploy-wrapper.c. The patch script is idempotent on a
+        # clean download, but on a cache hit it skips re-applying
+        # patches it has already left behind — so if either input file
+        # changes (e.g. a new sentinel string, an updated allowlist,
+        # or a wrapper rebuild), the cached file would silently retain
+        # the old patches until the weekly key rotation. Hashing both
+        # inputs into the cache key invalidates the cache exactly when
+        # the patch logic changes. Linux-only: macOS and Windows
+        # Tauri caches contain unrelated tooling not touched by these
+        # scripts.
         uses: actions/cache@v5
         with:
           path: ~/.cache/tauri
-          key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+          key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
 
       - name: Cache awesome-claude-spinners
         # Spinner JSON files are fetched by `task generate-spinners` with
