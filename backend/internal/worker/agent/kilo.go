@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -24,7 +25,7 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error
 		ctx, opts.Shell, opts.LoginShell, "kilo", []string{"KILO_CLIENT"}, []string{"acp"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = filterEnv(cmd.Environ(), "KILO_CLIENT")
+	cmd.Env = procutil.FilterEnv(cmd.Environ(), "KILO_CLIENT")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
 	if opts.LoginShell {
 		cmd.Env = append(cmd.Env, "KILO_CLIENT=1")

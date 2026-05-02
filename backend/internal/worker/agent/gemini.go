@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 const (
@@ -29,7 +30,7 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 		ctx, opts.Shell, opts.LoginShell, "gemini", []string{"GEMINI_CLI"}, []string{"--acp"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = filterEnv(cmd.Environ(), "GEMINI_CLI", "GEMINI_CLI_NO_RELAUNCH")
+	cmd.Env = procutil.FilterEnv(cmd.Environ(), "GEMINI_CLI", "GEMINI_CLI_NO_RELAUNCH")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
 	if opts.LoginShell {
 		cmd.Env = append(cmd.Env, "GEMINI_CLI=1")

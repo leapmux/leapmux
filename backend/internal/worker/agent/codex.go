@@ -10,6 +10,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -98,7 +99,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		ctx, opts.Shell, opts.LoginShell, binary, []string{"CODEX_CI"}, []string{"app-server"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = filterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
+	cmd.Env = procutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
 	if opts.LoginShell {
 		cmd.Env = append(cmd.Env, "CODEX_CI=1")

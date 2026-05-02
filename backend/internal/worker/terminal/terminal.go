@@ -275,9 +275,9 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal
 
 	cmd := ptmx.CommandContext(ctx, shell, args...)
 	cmd.Dir = opts.WorkingDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = procutil.ScrubAppImageEnvSlice(append(os.Environ(),
 		"TERM=xterm-256color",
-	)
+	))
 	// No procutil.HideConsoleWindow here: on Windows, CREATE_NO_WINDOW is
 	// incompatible with ConPTY — the pseudo console already serves as the
 	// child's console, and the flag would leave it with none.

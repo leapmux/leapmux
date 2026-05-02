@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -210,27 +209,6 @@ func DisplayName(provider leapmuxv1.AgentProvider) string {
 	default:
 		return "agent"
 	}
-}
-
-// filterEnv returns a copy of environ with entries matching any of the
-// given key names removed. Keys are matched case-insensitively by the
-// portion before the first '='.
-func filterEnv(environ []string, keys ...string) []string {
-	filtered := make([]string, 0, len(environ))
-	for _, entry := range environ {
-		name, _, _ := strings.Cut(entry, "=")
-		skip := false
-		for _, k := range keys {
-			if strings.EqualFold(name, k) {
-				skip = true
-				break
-			}
-		}
-		if !skip {
-			filtered = append(filtered, entry)
-		}
-	}
-	return filtered
 }
 
 // ListAvailableProviders returns providers whose binary is found in the

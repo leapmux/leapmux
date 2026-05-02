@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,90 @@ func TestTerminal_StartAndStop(t *testing.T) {
 
 	// Double stop is safe.
 	term.Stop()
+}
+
+// When the desktop app runs as a Linux AppImage, the runtime exports
+// ARGV0 (= AppImage filename), and zsh interprets that env var as the
+// argv[0] to use when execing every external command (AppImageKit#852).
+// Terminal tabs spawn the user's login shell directly; if ARGV0 leaks
+// through, mise's shim sees argv[0] = the AppImage filename and bails
+// with "<file>.AppImage is not a valid shim" (jdx/mise#3537) — the same
+// failure mode commit 5d430a3 fixed for agent shells. Scrub APPIMAGE,
+// APPDIR, ARGV0, and OWD whenever APPIMAGE is set on the parent.
+func TestTerminal_AppImage_ScrubsEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("AppImage is a Linux runtime; POSIX-only test")
+	}
+
+	t.Setenv("APPIMAGE", "/path/to/leapmux-desktop_0.0.1-dev_amd64.AppImage")
+	t.Setenv("APPDIR", "/tmp/.mount_xxxxxx")
+	t.Setenv("ARGV0", "leapmux-desktop_0.0.1-dev_amd64.AppImage")
+	t.Setenv("OWD", "/home/user")
+
+	var mu sync.Mutex
+	var output []byte
+
+	term, err := Start(context.Background(), Options{
+		ID:         "test-appimage-scrub",
+		Shell:      "/bin/sh",
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
+	}, func(data []byte, _ int64) {
+		mu.Lock()
+		defer mu.Unlock()
+		output = append(output, data...)
+	})
+	require.NoError(t, err, "Start")
+	defer func() {
+		term.Stop()
+		term.Wait()
+	}()
+
+	// Sentinel-bracket the value so we can disambiguate the echoed line
+	// from any prompt / banner / set-x output the shell may emit. An
+	// interactive PTY echoes the raw input *and* the shell's readline
+	// prints it back, both with the literal `${ARGV0}` text. Only the
+	// executed output produces a `<S>…<E>` block free of `$`, so wait
+	// for that to appear before reading the last block.
+	require.NoError(t, term.SendInput([]byte("echo \"<S>${ARGV0}<E>\""+testutil.TestShellEnter())), "SendInput")
+
+	executedBlock := func(s string) (between string, ok bool) {
+		rest := s
+		for {
+			i := strings.Index(rest, "<S>")
+			if i == -1 {
+				return between, ok
+			}
+			rest = rest[i+len("<S>"):]
+			j := strings.Index(rest, "<E>")
+			if j == -1 {
+				return between, ok
+			}
+			candidate := rest[:j]
+			if !strings.Contains(candidate, "$") {
+				between = candidate
+				ok = true
+			}
+			rest = rest[j+len("<E>"):]
+		}
+	}
+
+	testutil.AssertEventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		_, ok := executedBlock(string(output))
+		return ok
+	}, "expected executed echo output (a <S>…<E> block without `$`)")
+
+	mu.Lock()
+	got := string(output)
+	mu.Unlock()
+	// After the scrub: ARGV0 is unset → echo prints "<S><E>".
+	// Without the scrub: ARGV0 leaks → echo prints "<S>leapmux-…AppImage<E>".
+	between, ok := executedBlock(got)
+	require.True(t, ok, "no executed-output sentinel in PTY buffer: %q", got)
+	assert.Empty(t, between, "ARGV0 should be scrubbed inside an AppImage launch; leaked %q", between)
 }
 
 func TestTerminal_Resize(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -36,7 +37,7 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		ctx, opts.Shell, opts.LoginShell, "opencode", []string{"OPENCODE_CLIENT"}, []string{"acp"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = filterEnv(cmd.Environ(), "OPENCODE_CLIENT")
+	cmd.Env = procutil.FilterEnv(cmd.Environ(), "OPENCODE_CLIENT")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
 	if opts.LoginShell {
 		cmd.Env = append(cmd.Env, "OPENCODE_CLIENT=1")

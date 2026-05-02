@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,7 +18,7 @@ func TestCodex_LoginShellEnvUsesCodexMarkers(t *testing.T) {
 
 	cmd := exec.CommandContext(ctx, "echo", "test")
 	cmd.Dir = t.TempDir()
-	cmd.Env = filterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
+	cmd.Env = procutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
 	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
 
 	foundWorker := false
@@ -39,7 +40,7 @@ func TestCodex_LoginShellEnvUsesCodexMarkers(t *testing.T) {
 	assert.False(t, foundThreadID, "CODEX_THREAD_ID should be filtered from env")
 
 	shellCmd, _, _ := buildShellWrappedCommand(ctx, testutil.TestShell(), true, "codex", []string{"CODEX_CI"}, []string{"app-server"}, nil, t.TempDir())
-	shellCmd.Env = filterEnv(shellCmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
+	shellCmd.Env = procutil.FilterEnv(shellCmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
 	shellCmd.Env = append(shellCmd.Env, "LEAPMUX_WORKER=1", "CODEX_CI=1")
 
 	foundWorker = false
