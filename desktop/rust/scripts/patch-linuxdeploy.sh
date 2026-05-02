@@ -121,4 +121,65 @@ if ! grep -q 'GST_REGISTRY_FORK' "$GSTREAMER_PLUGIN"; then
     sed -i 's|${APPDIR}/usr/lib/gstreamer1.0/gstreamer-1.0/|${APPDIR}/usr/lib/gstreamer-1.0/|g' "$GSTREAMER_PLUGIN"
 fi
 
+# Inject an allowlist into the GStreamer plugin's copy loop so that
+# only the plugins we actually use are bundled into the AppDir. By
+# default the upstream script copies every plugin from the build
+# host's /usr/lib/<arch>/gstreamer-1.0/ directory (~270 .so files on
+# Ubuntu 24.04). Every one of them gets scanned at registry build
+# time, and any whose deps don't resolve on the host distro emits a
+# warning (e.g. libgstfluidsynthmidi.so pulls in libjack which on
+# Arch's pipewire-jack fails to resolve pw_log_topic_register).
+#
+# The app's only confirmed media use case is HTML5 <audio> playback
+# of MP3 files via WebKitGTK's GStreamer backend (playbin →
+# decodebin → mpegaudioparse → mpg123audiodec → audioconvert →
+# audioresample → autoaudiosink → pulsesink/alsasink). Tier 1 covers
+# that pipeline. Tier 2 adds tiny low-risk extras WebKit's media
+# layer benefits from (appsrc/appsink for MediaSource, souphttpsrc
+# for HTTP playbin URIs, coretracers for diagnostics). Tier 3 keeps
+# the common HTML5 audio fallbacks (Ogg/Vorbis, Opus, FLAC, WAV) so
+# we don't break those formats if anything embeds them.
+#
+# Everything else is dropped — video codecs, hardware encoders,
+# WebRTC stack, streaming protocols (HLS/DASH/RTSP/RTP), MIDI, JACK,
+# OpenGL/Vulkan, exotic codecs (codec2, flite). This also lets
+# linuxdeploy skip bundling those plugins' transitive shared libs
+# (libcodec2, libx265, libavcodec, libavfilter, libplacebo,
+# libSvtAv1Enc, libaom, libflite_*, etc.) — saving ~120 MB off the
+# AppImage on top of the ~25 MB of plugin .so files themselves.
+#
+# Adding new plugins later means: (1) update PLUGIN_ALLOWLIST below,
+# (2) delete ~/.cache/tauri/linuxdeploy-plugin-gstreamer.sh to force
+# a re-download + re-patch, and (3) rebuild the AppImage. The
+# `grep -q LEAPMUX_PLUGIN_ALLOWLIST` check below is the patch
+# sentinel.
+PLUGIN_ALLOWLIST='libgstcoreelements.so'                # Tier 1: pipeline plumbing
+PLUGIN_ALLOWLIST+='|libgstplayback.so'                  # Tier 1: playbin / decodebin
+PLUGIN_ALLOWLIST+='|libgsttypefindfunctions.so'         # Tier 1: format detection
+PLUGIN_ALLOWLIST+='|libgstaudioparsers.so'              # Tier 1: mpegaudioparse
+PLUGIN_ALLOWLIST+='|libgstmpg123.so'                    # Tier 1: MP3 decoder
+PLUGIN_ALLOWLIST+='|libgstid3demux.so'                  # Tier 1: ID3v2 tag stripping
+PLUGIN_ALLOWLIST+='|libgstaudioconvert.so'              # Tier 1: format conversion
+PLUGIN_ALLOWLIST+='|libgstaudioresample.so'             # Tier 1: sample-rate conversion
+PLUGIN_ALLOWLIST+='|libgstvolume.so'                    # Tier 1: <audio> volume
+PLUGIN_ALLOWLIST+='|libgstautodetect.so'                # Tier 1: autoaudiosink
+PLUGIN_ALLOWLIST+='|libgstpulseaudio.so'                # Tier 1: PulseAudio sink
+PLUGIN_ALLOWLIST+='|libgstalsa.so'                      # Tier 1: ALSA fallback sink
+PLUGIN_ALLOWLIST+='|libgstapp.so'                       # Tier 2: appsrc/appsink (MediaSource)
+PLUGIN_ALLOWLIST+='|libgstsoup.so'                      # Tier 2: souphttpsrc (HTTP URIs)
+PLUGIN_ALLOWLIST+='|libgstcoretracers.so'               # Tier 2: tracing / diagnostics
+PLUGIN_ALLOWLIST+='|libgstogg.so'                       # Tier 3: Ogg demuxer
+PLUGIN_ALLOWLIST+='|libgstvorbis.so'                    # Tier 3: Vorbis decoder
+PLUGIN_ALLOWLIST+='|libgstopus.so'                      # Tier 3: Opus decoder
+PLUGIN_ALLOWLIST+='|libgstflac.so'                      # Tier 3: FLAC decoder
+PLUGIN_ALLOWLIST+='|libgstwavparse.so'                  # Tier 3: WAV parser
+if ! grep -q 'LEAPMUX_PLUGIN_ALLOWLIST' "$GSTREAMER_PLUGIN"; then
+    echo "patch-linuxdeploy: patching GStreamer plugin to use allowlist ..."
+    sed -i '/^    echo "Copying plugin:/i\
+    # LEAPMUX_PLUGIN_ALLOWLIST: only bundle plugins we actually use,\
+    # so unused plugins are neither shipped nor scanned at registry\
+    # build time. See desktop/rust/scripts/patch-linuxdeploy.sh.\
+    case "$(basename "$i")" in '"$PLUGIN_ALLOWLIST"') ;; *) echo "Skipping plugin (not in leapmux allowlist): $i"; continue ;; esac' "$GSTREAMER_PLUGIN"
+fi
+
 echo "patch-linuxdeploy: done."
