@@ -1936,6 +1936,29 @@ fn main() {
     {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+
+        // Pin GStreamer's registry cache to a stable per-user file so
+        // the plugin scan survives across launches and doesn't collide
+        // with any system-wide GStreamer registry the user may have.
+        // Per the XDG Base Directory Spec, XDG_CACHE_HOME must be an
+        // absolute path; treat empty or relative values as unset and
+        // fall back to $HOME/.cache. Skip pinning entirely if neither
+        // resolves to an absolute path — a relative GST_REGISTRY would
+        // be resolved against the process working directory.
+        let cache_root = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_absolute())
+                    .map(|home| home.join(".cache"))
+            });
+        if let Some(dir) = cache_root.map(|root| root.join("leapmux")) {
+            if std::fs::create_dir_all(&dir).is_ok() {
+                std::env::set_var("GST_REGISTRY", dir.join("gstreamer-registry.bin"));
+            }
+        }
     }
 
     let builder = tauri::Builder::default()
