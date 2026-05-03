@@ -62,9 +62,16 @@ func defaultEditorSpecs() []EditorSpec {
 		{
 			ID:          "zed",
 			DisplayName: "Zed",
+			// `zed` on PATH is the ZFS Event Daemon on systems with
+			// zfs-utils (Arch) or zfsutils-linux (Debian/Ubuntu) — unrelated
+			// to the editor. Distros that hit that collision (Arch's
+			// `extra/zed`, NixOS's `zed-editor`) ship the editor's CLI as
+			// `zeditor`; the Flatpak wrapper `dev.zed.Zed` is similarly
+			// unambiguous. Probe those first; fall through to `zed` last.
 			detect: tryAll(
-				tryLookPath("zed"),
+				tryLookPath("zeditor"),
 				tryPath(flatpakBin+"/dev.zed.Zed"),
+				tryLookPath("zed"),
 			),
 		},
 
