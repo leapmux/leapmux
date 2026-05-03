@@ -235,3 +235,46 @@ describe('activateBindings (Mac Option dead-key)', () => {
     expect(handler).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('activateBindings (IME composition)', () => {
+  afterEach(() => {
+    unbindAll()
+    resetCommands()
+  })
+
+  it('does not invoke the handler while an IME composition is active', () => {
+    const handler = vi.fn()
+    resetCommands()
+    registerCommand({ id: 'test.composing', title: 'Test', handler })
+
+    activateBindings([{ key: '$mod+j', command: 'test.composing' }])
+
+    // Simulate a keydown that fires during CJK composition (e.g. Korean
+    // double-consonant input on macOS where event.isComposing is true).
+    const event = new KeyboardEvent('keydown', {
+      key: 'j',
+      code: 'KeyJ',
+      ctrlKey: true,
+    })
+    Object.defineProperty(event, 'isComposing', { get: () => true })
+    window.dispatchEvent(event)
+
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('still invokes the handler when isComposing is false', () => {
+    const handler = vi.fn()
+    resetCommands()
+    registerCommand({ id: 'test.notComposing', title: 'Test', handler })
+
+    activateBindings([{ key: '$mod+j', command: 'test.notComposing' }])
+
+    window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'j',
+      code: 'KeyJ',
+      ctrlKey: true,
+    }))
+
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+})

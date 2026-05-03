@@ -19,6 +19,7 @@ import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { getPlatform } from '~/lib/shortcuts/platform'
 import { getPrimaryBindingForCommand, tinykeysToTauriAccelerator } from '~/lib/shortcuts/tauriAccelerator'
+import { getFocusedChatSend } from '~/stores/focusedChatSend.store'
 import { tabKey } from '~/stores/tab.store'
 
 interface UseShortcutsProps {
@@ -215,6 +216,10 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.scrollActiveTabPageUp', 'Scroll Active Tab Up One Page', () => scrollActiveTabPage(-1), 'View')
   cmd('app.scrollActiveTabPageDown', 'Scroll Active Tab Down One Page', () => scrollActiveTabPage(1), 'View')
 
+  cmd('chat.sendMessage', 'Send Message', () => {
+    getFocusedChatSend()?.()
+  }, 'Chat')
+
   // Terminal cursor navigation
   cmd('terminal.lineStart', 'Go to Line Start', () => writeToFocusedTerminal('\x01'), 'Terminal')
   cmd('terminal.lineEnd', 'Go to Line End', () => writeToFocusedTerminal('\x05'), 'Terminal')
@@ -239,6 +244,11 @@ export function useShortcuts(props: UseShortcutsProps): void {
   registerLazyContext('editorFocused', () => {
     const el = document.activeElement
     return !!el?.closest('.ProseMirror')
+  })
+
+  registerLazyContext('chatInputFocused', () => {
+    const el = document.activeElement
+    return !!el?.closest('[data-chat-input]')
   })
 
   registerLazyContext('terminalFocused', () => {
@@ -294,6 +304,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
     observer?.disconnect()
     unregisterLazyContext('inputFocused')
     unregisterLazyContext('editorFocused')
+    unregisterLazyContext('chatInputFocused')
     unregisterLazyContext('terminalFocused')
   })
 }

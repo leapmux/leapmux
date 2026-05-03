@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Dialog } from '~/components/common/Dialog'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
+import { evaluateWhen } from '~/lib/shortcuts/context'
+import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
 import { useShortcuts } from './useShortcuts'
 
 const refreshFileTree = vi.fn()
@@ -283,6 +285,83 @@ describe('useShortcuts', () => {
       expect(props.termOps.handleOpenTerminal).not.toHaveBeenCalled()
       expect(props.setShowNewTerminalDialog).not.toHaveBeenCalled()
       expect(props.setShowNewWorkspace).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('chat.sendMessage', () => {
+    afterEach(() => {
+      document.body.innerHTML = ''
+    })
+
+    it('invokes the registered send fn for the panel containing focused element', () => {
+      const props = makeProps()
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      const panel = document.createElement('div')
+      panel.setAttribute('data-chat-panel', '')
+      const input = document.createElement('input')
+      panel.appendChild(input)
+      document.body.appendChild(panel)
+
+      const send = vi.fn()
+      registerPanelSend(panel, send)
+      input.focus()
+
+      executeCommand('chat.sendMessage')
+      expect(send).toHaveBeenCalledOnce()
+
+      unregisterPanelSend(panel)
+    })
+
+    it('is a no-op when focus is not inside a chat panel', () => {
+      const props = makeProps()
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      const send = vi.fn()
+      const panel = document.createElement('div')
+      panel.setAttribute('data-chat-panel', '')
+      document.body.appendChild(panel)
+      registerPanelSend(panel, send)
+
+      const outside = document.createElement('input')
+      document.body.appendChild(outside)
+      outside.focus()
+
+      executeCommand('chat.sendMessage')
+      expect(send).not.toHaveBeenCalled()
+
+      unregisterPanelSend(panel)
+    })
+
+    it('chatInputFocused is true only when focus is inside [data-chat-input]', () => {
+      const props = makeProps()
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      const editor = document.createElement('div')
+      editor.setAttribute('data-chat-input', '')
+      const inside = document.createElement('input')
+      editor.appendChild(inside)
+
+      const outside = document.createElement('input')
+      document.body.append(editor, outside)
+
+      inside.focus()
+      expect(evaluateWhen('chatInputFocused')).toBe(true)
+
+      outside.focus()
+      expect(evaluateWhen('chatInputFocused')).toBe(false)
     })
   })
 

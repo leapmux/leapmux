@@ -170,6 +170,10 @@ export function activateBindings(bindings: readonly Keybinding[]): void {
 
   for (const group of groups) {
     keyMap[toTinykeysKey(group.key)] = (e: KeyboardEvent) => {
+      // Skip dispatch while an IME composition is active so CJK input is not
+      // hijacked by modifier shortcuts that share keys with composition commits.
+      if (e.isComposing)
+        return
       const commandId = resolve(group.bindings, group.key)
       if (commandId) {
         e.preventDefault()

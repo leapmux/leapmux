@@ -72,4 +72,7 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   // Desktop-only
   { key: '$mod+q', command: 'app.quit', when: 'isDesktop' },
   { key: '$mod+Shift+e', command: 'app.openInExternalEditor', when: '!dialogOpen && isDesktop' },
+
+  // Chat input
+  { key: '$mod+j', command: 'chat.sendMessage', when: 'chatInputFocused' },
 ]
