@@ -1336,6 +1336,18 @@ func (svc *Context) broadcastAgentActive(dbAgent *db.Agent, gitStatus *leapmuxv1
 	})
 }
 
+// broadcastAgentInactive fans out an INACTIVE AgentStatusChange. Used to
+// clear a transient STARTING spinner when an auto-start attempt
+// (ensureAgentRunning) fails — the failure surfaces to the user as a
+// per-message delivery_error rather than a permanent STARTUP_FAILED, so
+// the agent stays retryable on the next send.
+func (svc *Context) broadcastAgentInactive(dbAgent *db.Agent) {
+	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
+		AgentId: dbAgent.ID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: buildAgentInactiveStatus(dbAgent, nil)},
+	})
+}
+
 // runAgentPhase0 broadcasts the per-mode label and executes the git-mode
 // mutation. Returns the result (with rollback metadata populated iff a
 // mutation partially succeeded before failing) and any error.
@@ -1561,8 +1573,15 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
 	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 
+	// Broadcast STARTING so the chat startup banner appears beneath any
+	// just-typed messages while the cold subprocess spins up. Symmetric
+	// with handleClearContext and runAgentStartup; without this, the
+	// auto-start path (cold subprocess after worker/desktop restart) is
+	// silent — the bubble pulses but no progress affordance is shown.
+	svc.broadcastAgentStarting(&dbAgent, "Starting "+agent.DisplayName(dbAgent.AgentProvider)+"…", nil)
+
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
+	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
 		AgentID:         agentID,
 		Model:           model,
 		Effort:          dbAgent.Effort,
@@ -1579,6 +1598,12 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	}, sink)
 	if err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
+		// Revert the STARTING broadcast so the spinner clears. Caller
+		// surfaces the failure as a per-message delivery_error; we don't
+		// broadcast STARTUP_FAILED here because that would make the
+		// agent permanently unusable until the user opens a new one,
+		// while the existing design keeps it retryable on the next send.
+		svc.broadcastAgentInactive(&dbAgent)
 		return err
 	}
 	if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings); err != nil {
