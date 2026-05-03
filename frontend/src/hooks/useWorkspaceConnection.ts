@@ -111,6 +111,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
     // Non-active workspace agent — only handle status/git changes,
     // skip full chat processing to avoid routing events to the wrong stores.
+    //
+    // Live controlRequest / controlCancel / agentMessage / streamChunk events
+    // for these agents are intentionally dropped here: the user can't see them
+    // (no active tab renders this agent), and the WatchEvents catch-up replay
+    // run by useWorkspaceConnection.watchEvents on workspace switch reads
+    // pending control_requests from the DB, so any still-pending prompt is
+    // re-delivered through the full handler at that point. The DB row is the
+    // source of truth; live broadcasts are an optimization for the active
+    // workspace.
     if (nonActiveAgentIds.has(agentId)) {
       if (inner.case === 'statusChange') {
         const sc = inner.value
@@ -518,8 +527,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId: cr.agentId,
           payload,
         })
-        if (catchUpPhase === 'live')
+        if (catchUpPhase === 'live') {
+          // Light up the tab badge so a user looking at a sibling tab knows
+          // the background agent is now waiting on them. Gated on 'live' so
+          // a page reload that replays a still-pending row does not redraw
+          // an alert the user is already aware of.
+          if (tabStore.state.activeTabKey !== tabKey({ type: TabType.AGENT, id: cr.agentId })) {
+            tabStore.setNotification(TabType.AGENT, cr.agentId, true)
+          }
           params.onTurnEnd?.(agentId)
+        }
         break
       }
       case 'controlCancel': {

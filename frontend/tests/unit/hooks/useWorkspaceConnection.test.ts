@@ -265,6 +265,70 @@ describe('agent tab notification keys', () => {
       dispose()
     })
   })
+
+  // Mirrors the live controlRequest branch in useWorkspaceConnection: a
+  // background tab that receives a control request must light its badge
+  // so the user knows to switch over. The active tab must NOT be badged
+  // (the prompt is already on screen).
+  function applyControlRequestNotification(
+    tabStore: ReturnType<typeof createTabStore>,
+    agentId: string,
+    catchUpPhase: 'catchingUp' | 'live',
+  ) {
+    if (catchUpPhase !== 'live')
+      return
+    if (tabStore.state.activeTabKey !== `${TabType.AGENT}:${agentId}`) {
+      tabStore.setNotification(TabType.AGENT, agentId, true)
+    }
+  }
+
+  it('badges a background tab when a live control request arrives', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.AGENT, id: 'agent-A', tileId: 'tile-1' })
+      tabStore.addTab({ type: TabType.AGENT, id: 'agent-B', tileId: 'tile-1' }, { activate: false })
+      tabStore.setActiveTab(TabType.AGENT, 'agent-A')
+
+      applyControlRequestNotification(tabStore, 'agent-B', 'live')
+
+      const tabB = tabStore.state.tabs.find(t => t.id === 'agent-B')
+      const tabA = tabStore.state.tabs.find(t => t.id === 'agent-A')
+      expect(tabB?.hasNotification).toBe(true)
+      expect(tabA?.hasNotification).not.toBe(true)
+      dispose()
+    })
+  })
+
+  it('does not badge the focused tab when its own control request arrives', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.AGENT, id: 'agent-A', tileId: 'tile-1' })
+      tabStore.setActiveTab(TabType.AGENT, 'agent-A')
+
+      applyControlRequestNotification(tabStore, 'agent-A', 'live')
+
+      expect(tabStore.state.tabs[0].hasNotification).not.toBe(true)
+      dispose()
+    })
+  })
+
+  // A page reload replays still-pending control_requests via the catch-up
+  // path; surfacing them as new badges would alarm the user about prompts
+  // they were already aware of. Only 'live' arrivals should badge.
+  it('does not badge during catch-up replay', () => {
+    createRoot((dispose) => {
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.AGENT, id: 'agent-A', tileId: 'tile-1' })
+      tabStore.addTab({ type: TabType.AGENT, id: 'agent-B', tileId: 'tile-1' }, { activate: false })
+      tabStore.setActiveTab(TabType.AGENT, 'agent-A')
+
+      applyControlRequestNotification(tabStore, 'agent-B', 'catchingUp')
+
+      const tabB = tabStore.state.tabs.find(t => t.id === 'agent-B')
+      expect(tabB?.hasNotification).not.toBe(true)
+      dispose()
+    })
+  })
 })
 
 describe('codex result replay handling', () => {

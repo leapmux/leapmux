@@ -107,4 +107,60 @@ describe('createControlStore', () => {
       dispose()
     })
   })
+
+  // Two Codex / ACP-family tabs commonly produce identical request_ids
+  // (the JSON-RPC id space is per-subprocess and starts low). Answering
+  // one tab's prompt must not silently suppress the sibling's prompt.
+  it('does not suppress a sibling agent request that shares a requestId', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-A', makeRequest('1', 'agent-A'))
+      store.removeRequest('agent-A', '1')
+
+      store.addRequest('agent-B', makeRequest('1', 'agent-B'))
+      expect(store.getRequests('agent-B')).toHaveLength(1)
+      expect(store.getRequests('agent-B')[0].requestId).toBe('1')
+      dispose()
+    })
+  })
+
+  // Stale replay protection still works within a single agent: a request
+  // the user just answered must not redraw if the same row is replayed
+  // before the backend's DELETE round-trip is observed by the new stream.
+  it('keeps suppressing the same agent+requestId after a response', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+      store.removeRequest('agent-1', 'r1')
+
+      // Simulate a replayed controlRequest landing during a reconnect.
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+      expect(store.getRequests('agent-1')).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  // The previous wipe-on-overflow behavior could let an answered prompt
+  // re-add itself once 100 unrelated responses cleared the dedup set.
+  // The LRU eviction must keep the most-recent entries protected even
+  // after the cap is exceeded.
+  it('preserves the most-recent suppressions after overflow', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-1', makeRequest('keep', 'agent-1'))
+      store.removeRequest('agent-1', 'keep')
+
+      // Answer 200 unrelated requests across other agents to force eviction.
+      for (let i = 0; i < 200; i++) {
+        const id = `noise-${i}`
+        store.addRequest(`agent-noise-${i}`, makeRequest(id, `agent-noise-${i}`))
+        store.removeRequest(`agent-noise-${i}`, id)
+      }
+
+      // The most-recent suppressed key from the noise burst must still block.
+      store.addRequest('agent-noise-199', makeRequest('noise-199', 'agent-noise-199'))
+      expect(store.getRequests('agent-noise-199')).toHaveLength(0)
+      dispose()
+    })
+  })
 })
