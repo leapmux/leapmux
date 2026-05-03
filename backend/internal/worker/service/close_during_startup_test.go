@@ -167,23 +167,20 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	agentID := openResp.GetAgent().GetId()
 
-	// Rollback happens in the goroutine after startAgentFn returns, so
-	// poll for the filesystem + DB side effects under Eventually rather
-	// than assuming the goroutine finished by the time dispatch returned.
-	require.Eventually(t, func() bool {
-		if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
-			return false
-		}
-		if localBranchExists(t, repoDir, branchName) {
-			return false
-		}
-		if _, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath); err != sql.ErrNoRows {
-			return false
-		}
-		_, _, _, registered := svc.AgentStartup.status(agentID)
-		return !registered
-	}, 5*time.Second, 20*time.Millisecond,
-		"close-during-startup must remove worktree, branch, and worktree DB row")
+	// Rollback happens in the goroutine after startAgentFn returns. Wait
+	// for that goroutine deterministically rather than polling under
+	// Eventually — Windows CI takes several seconds for `git worktree add`
+	// + `git worktree remove` + `git branch -D`, so a fixed polling budget
+	// flakes when the cumulative git time outruns it.
+	svc.AgentStartup.WaitForInFlight()
+
+	_, statErr := os.Stat(worktreePath)
+	assert.True(t, os.IsNotExist(statErr), "worktree directory must be removed (stat err=%v)", statErr)
+	assert.False(t, localBranchExists(t, repoDir, branchName), "branch must be deleted")
+	_, wtErr := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
+	assert.ErrorIs(t, wtErr, sql.ErrNoRows, "worktree DB row must be cleaned up")
+	_, _, _, registered := svc.AgentStartup.status(agentID)
+	assert.False(t, registered, "AgentStartup registry entry must be cleared")
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
@@ -249,25 +246,22 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 	require.NotEmpty(t, terminalID)
 
 	// Rollback + cleanup happen in the goroutine after startTerminalFn
-	// returns; poll for all observable side effects.
-	require.Eventually(t, func() bool {
-		if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
-			return false
-		}
-		if localBranchExists(t, repoDir, branchName) {
-			return false
-		}
-		if _, err := svc.Queries.GetWorktreeByPath(ctx, worktreePath); err != sql.ErrNoRows {
-			return false
-		}
-		row, err := svc.Queries.GetTerminal(ctx, terminalID)
-		if err != nil || !row.ClosedAt.Valid {
-			return false
-		}
-		_, _, _, registered := svc.TerminalStartup.status(terminalID)
-		return !registered && !svc.Terminals.HasTerminal(terminalID)
-	}, 5*time.Second, 20*time.Millisecond,
-		"close-during-terminal-startup must roll back worktree, close DB row, clear registry, and drop PTY")
+	// returns. Wait for that goroutine deterministically rather than
+	// polling — see the agent-side test above for why the fixed polling
+	// budget flakes on Windows CI.
+	svc.TerminalStartup.WaitForInFlight()
+
+	_, statErr := os.Stat(worktreePath)
+	assert.True(t, os.IsNotExist(statErr), "worktree directory must be removed (stat err=%v)", statErr)
+	assert.False(t, localBranchExists(t, repoDir, branchName), "branch must be deleted")
+	_, wtErr := svc.Queries.GetWorktreeByPath(ctx, worktreePath)
+	assert.ErrorIs(t, wtErr, sql.ErrNoRows, "worktree DB row must be cleaned up")
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid, "terminal DB row must have closed_at set")
+	_, _, _, registered := svc.TerminalStartup.status(terminalID)
+	assert.False(t, registered, "TerminalStartup registry entry must be cleared")
+	assert.False(t, svc.Terminals.HasTerminal(terminalID), "PTY must be dropped from the manager")
 
 	// READY must never have been broadcast — the post-spawn closed_at
 	// re-check in runTerminalStartup has to short-circuit that path.
