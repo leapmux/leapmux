@@ -503,6 +503,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         class={styles.editorWrapper}
         ref={editorRef}
         data-testid="chat-editor"
+        data-chat-input
         style={editorWrapperStyle()}
       />
       <CodeLanguagePopover

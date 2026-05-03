@@ -19,6 +19,7 @@ import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
+import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
 import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
@@ -136,6 +137,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         unregisterEditorRef(registeredAgentId)
         registeredAgentId = null
       }
+      if (panelRef)
+        unregisterPanelSend(panelRef)
     })
   })
   createEffect(on(() => props.agentId, (agentId, prevAgentId) => {
@@ -205,6 +208,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       ref={panelRef}
       class={styles.editorPanelWrapper}
       data-testid="agent-editor-panel"
+      data-chat-panel
     >
       <div
         class={`${styles.editorResizeHandle} ${isDragging() ? styles.editorResizeHandleActive : ''}`}
@@ -256,6 +260,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             sendRef: (fn) => {
               triggerSend = fn
               props.triggerSendRef?.(fn)
+              if (panelRef)
+                registerPanelSend(panelRef, fn)
             },
             focusRef: (fn) => {
               editorFocusFn = fn
