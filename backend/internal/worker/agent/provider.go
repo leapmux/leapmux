@@ -109,6 +109,16 @@ func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
 			Kind: NotificationKindProviderScoped,
 			Key:  "codex:account/rateLimits/updated",
 		}
+	case "skills/changed":
+		return NotificationClassification{
+			Kind: NotificationKindProviderScoped,
+			Key:  "codex:skills/changed",
+		}
+	case "remoteControl/status/changed":
+		return NotificationClassification{
+			Kind: NotificationKindProviderScoped,
+			Key:  "codex:remoteControl/status/changed",
+		}
 	case "mcpServer/startupStatus/updated":
 		name := "unknown"
 		if env.Params != nil && env.Params.Name != "" {

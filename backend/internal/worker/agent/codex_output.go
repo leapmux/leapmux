@@ -13,10 +13,30 @@ import (
 
 var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected before completion(?:$|[^[:alnum:]].*)`)
 
+// codexSystemMetadataMethods are Codex-emitted JSON-RPC notifications that
+// carry agent/system metadata (lifecycle, MCP startup, skills invalidation,
+// remote-control status). They share one handler — persist verbatim as
+// SYSTEM. Methods with extra side effects (rate-limit, token-usage
+// broadcasts) keep dedicated cases below.
+var codexSystemMetadataMethods = map[string]struct{}{
+	"thread/compacted":                {},
+	"thread/name/updated":             {},
+	"skills/changed":                  {},
+	"remoteControl/status/changed":    {},
+	"mcpServer/startupStatus/updated": {},
+}
+
 // handleCodexOutput processes a single parsed JSONL notification from the Codex app-server.
 // Codex messages are stored in their native JSON-RPC format.
 func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	slog.Debug("codex HandleOutput", "agent_id", a.agentID, "method", line.Method, "len", len(line.Raw))
+
+	if _, ok := codexSystemMetadataMethods[line.Method]; ok {
+		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
+			slog.Error("codex persist system metadata", "agent_id", a.agentID, "method", line.Method, "error", err)
+		}
+		return
+	}
 
 	switch line.Method {
 	case "turn/started":
@@ -52,29 +72,11 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	case "item/completed":
 		a.handleItemCompleted(line.Params)
 
-	case "thread/compacted":
-		// Persist the raw JSON-RPC envelope verbatim as SYSTEM. The
-		// consolidator routes by `method:"thread/compacted"` so reconnect
-		// rehydration sees the full Codex-emitted payload (threadId,
-		// turnId, plus any future fields) instead of a synthesized
-		// stripped-down envelope.
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
-			slog.Error("codex persist thread/compacted", "agent_id", a.agentID, "error", err)
-		}
-
 	case "turn/completed":
 		a.handleTurnCompleted(line.Params)
 
 	case "thread/tokenUsage/updated":
 		a.handleTokenUsageUpdated(line.Raw, line.Params)
-
-	case "thread/name/updated":
-		// Codex-emitted lifecycle metadata — persist as SYSTEM so the role
-		// reflects the source (the agent, not LeapMux). Hidden from the
-		// transcript by frontend lifecycle classification.
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
-			slog.Error("codex persist thread/name/updated", "agent_id", a.agentID, "error", err)
-		}
 
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
@@ -90,12 +92,6 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 
 	case "account/rateLimits/updated":
 		a.handleRateLimitsUpdated(line.Raw, line.Params)
-
-	case "mcpServer/startupStatus/updated":
-		// Codex-emitted MCP server status — SYSTEM (agent-sourced metadata).
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
-			slog.Error("codex persist startup status notification", "agent_id", a.agentID, "error", err)
-		}
 
 	case "error":
 		a.handleErrorNotification(line.Params)

@@ -14,6 +14,8 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 	plugin := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 
 	rateLimit := json.RawMessage(`{"method":"account/rateLimits/updated","params":{"foo":"bar"}}`)
+	skillsChanged := json.RawMessage(`{"method":"skills/changed","params":{}}`)
+	remoteControlStatus := json.RawMessage(`{"method":"remoteControl/status/changed","params":{"status":"disabled","environmentId":null}}`)
 	startup := json.RawMessage(`{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":"ready"}}`)
 	threadCompacted := json.RawMessage(`{"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn1"}}`)
 	contextCompactionStart := json.RawMessage(`{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"}}}`)
@@ -23,6 +25,16 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 		Kind: NotificationKindProviderScoped,
 		Key:  "codex:account/rateLimits/updated",
 	}, plugin.Classify(rateLimit))
+
+	assert.Equal(t, NotificationClassification{
+		Kind: NotificationKindProviderScoped,
+		Key:  "codex:skills/changed",
+	}, plugin.Classify(skillsChanged))
+
+	assert.Equal(t, NotificationClassification{
+		Kind: NotificationKindProviderScoped,
+		Key:  "codex:remoteControl/status/changed",
+	}, plugin.Classify(remoteControlStatus))
 
 	assert.Equal(t, NotificationClassification{
 		Kind: NotificationKindProviderScoped,

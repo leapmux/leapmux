@@ -1134,12 +1134,21 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		return err
 	}
 
+	// If a flapping ProviderScoped notification (e.g.
+	// remoteControl/status/changed) collapses into the existing tail and
+	// produces a byte-identical slice, skip the DB write + broadcast.
+	oldMessages := wrapper.Messages
+	nextMessages := append(slices.Clone(oldMessages), contentJSON)
+	nextMessages = consolidateNotificationThread(nextMessages, plugin)
+	if rawMessageSlicesEqual(oldMessages, nextMessages) {
+		return nil
+	}
+
+	wrapper.Messages = nextMessages
 	wrapper.OldSeqs = append(wrapper.OldSeqs, parentRow.Seq)
 	if len(wrapper.OldSeqs) > 16 {
 		wrapper.OldSeqs = wrapper.OldSeqs[len(wrapper.OldSeqs)-16:]
 	}
-	wrapper.Messages = append(wrapper.Messages, contentJSON)
-	wrapper.Messages = consolidateNotificationThread(wrapper.Messages, plugin)
 
 	merged, err := json.Marshal(wrapper)
 	if err != nil {
@@ -1381,6 +1390,21 @@ type indexedRaw struct {
 	idx  int
 	raw  json.RawMessage
 	kind agent.NotificationKind
+}
+
+// rawMessageSlicesEqual reports whether two slices of raw JSON messages have
+// identical bytes at every position. Used to short-circuit no-op writes in
+// the notification-thread append path.
+func rawMessageSlicesEqual(a, b []json.RawMessage) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !bytes.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // consolidateNotificationThread consolidates a notification thread's messages.

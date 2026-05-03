@@ -130,6 +130,9 @@ export function codexNotificationRenderer(
  * recognize, letting the shared switch handle them.
  */
 export function codexNotificationThreadEntry(msg: Record<string, unknown>): NotificationThreadEntry[] | null {
+  if (msg.method === CODEX_METHOD.SKILLS_CHANGED || msg.method === CODEX_METHOD.REMOTE_CONTROL_STATUS_CHANGED)
+    return []
+
   const startup = startupGroupEntry(msg)
   if (startup)
     return [startup]
