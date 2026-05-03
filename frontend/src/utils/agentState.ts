@@ -1,8 +1,10 @@
 import type { AgentChatMessage, AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import { classifyAgentMessage } from '~/components/chat/messageClassification'
 import { allRegisteredProviders, providerFor } from '~/components/chat/providers/registry'
-import { AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { isObject } from '~/lib/jsonPick'
 import { getInnerMessage, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
 import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 // Side-effect import: ensures every provider has registered itself before
@@ -18,10 +20,10 @@ import '~/components/chat/providers'
  * extend this set via `Provider.nonProgressTypes` (e.g. Pi compaction /
  * auto-retry / extension events).
  *
- * `context_cleared` is intentionally absent: for LEAPMUX/SYSTEM it is a
- * turn boundary handled by `containsContextCleared`, and for
- * USER/ASSISTANT it must not be skipped at all (the payload carries
- * user/agent content).
+ * `context_cleared` is intentionally absent: when it appears inside a
+ * notification-thread wrapper it is a turn boundary handled by
+ * `containsContextCleared`; when it appears as a USER/AGENT plain payload
+ * it must not be skipped (the payload carries user/agent content).
  */
 const BASE_NON_PROGRESS_TYPES: ReadonlySet<string> = new Set<string>([
   NOTIFICATION_TYPE.SettingsChanged,
@@ -99,29 +101,32 @@ function isNonProgressInner(inner: Record<string, unknown> | null | undefined): 
 
 /**
  * True if `parsed` carries a `context_cleared` event at top level or anywhere
- * in its wrapper. Only LEAPMUX/SYSTEM-roled messages are platform-emitted
- * turn boundaries; USER/ASSISTANT payloads that happen to surface a
- * top-level `type: "context_cleared"` (e.g. literal user text, a Pi
+ * in its wrapper. Only notification-thread rows (the wrapper format) are
+ * platform-emitted turn boundaries; USER/AGENT plain payloads that happen to
+ * surface a top-level `type: "context_cleared"` (e.g. literal user text, a Pi
  * `default`-handler echo of an unknown event) carry user/agent content and
- * must not be interpreted as turn boundaries.
+ * must not be interpreted as turn boundaries. The wrapper presence is the
+ * right gate because the backend only ever produces the wrapper format from
+ * PersistNotification — never for plain user/agent messages.
  */
-function containsContextCleared(role: MessageRole, parsed: ParsedMessageContent): boolean {
-  if (role !== MessageRole.LEAPMUX && role !== MessageRole.SYSTEM)
+function containsContextCleared(parsed: ParsedMessageContent): boolean {
+  if (parsed.wrapper === null)
     return false
   if (getInnerMessageType(parsed) === NOTIFICATION_TYPE.ContextCleared)
     return true
-  if (parsed.wrapper) {
-    for (const m of parsed.wrapper.messages) {
-      if (typeof m === 'object' && m !== null && (m as Record<string, unknown>).type === NOTIFICATION_TYPE.ContextCleared)
-        return true
-    }
+  for (const m of parsed.wrapper.messages) {
+    if (isObject(m) && m.type === NOTIFICATION_TYPE.ContextCleared)
+      return true
   }
   return false
 }
 
 /**
  * Whether the agent is still working — the last meaningful (non-notification)
- * message is not a TURN_END divider.
+ * message is not a turn-end divider. Turn-end detection is delegated to each
+ * provider's plugin, which classifies its terminal envelope (Claude
+ * `type:"result"`, Codex `turn/completed`, ACP `stopReason`, Pi `agent_end`)
+ * as `result_divider`.
  */
 export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -130,13 +135,13 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
     if (msg.deliveryError)
       continue
 
-    if (msg.role === MessageRole.TURN_END)
-      return false
-
     const parsed = parseMessageContent(msg)
-    // context_cleared in a LEAPMUX/SYSTEM notification means the agent
+    const category = classifyAgentMessage(msg)
+    if (category.kind === 'result_divider')
+      return false
+    // context_cleared in a notification-thread row means the agent
     // restarted with a fresh context and is now idle — stop scanning.
-    if (containsContextCleared(msg.role, parsed))
+    if (containsContextCleared(parsed))
       return false
     // Empty notification wrappers are what the consolidator emits when
     // every threaded message has been superseded — no progress signal.

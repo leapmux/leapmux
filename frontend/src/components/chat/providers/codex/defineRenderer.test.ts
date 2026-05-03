@@ -1,6 +1,6 @@
 import type { CodexItemType } from '~/types/toolMessages'
 import { describe, expect, it } from 'vitest'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+
 import { CODEX_RENDERERS, defineCodexRenderer } from './defineRenderer'
 
 // Tests use synthetic item-type strings (cast through CodexItemType) rather
@@ -19,15 +19,15 @@ describe('defineCodexRenderer', () => {
       },
     })
 
-    Renderer({ parsed: { item: { type: 'fooType' } }, role: MessageRole.ASSISTANT })
+    Renderer({ parsed: { item: { type: 'fooType' } } })
     expect(calls).toBe(1)
 
     // Wrong type — guard returns null without calling render.
-    Renderer({ parsed: { item: { type: 'otherType' } }, role: MessageRole.ASSISTANT })
+    Renderer({ parsed: { item: { type: 'otherType' } } })
     expect(calls).toBe(1)
 
     // No item — guard returns null.
-    Renderer({ parsed: {}, role: MessageRole.ASSISTANT })
+    Renderer({ parsed: {} })
     expect(calls).toBe(1)
   })
 
@@ -40,7 +40,7 @@ describe('defineCodexRenderer', () => {
         return null
       },
     })
-    Renderer({ parsed: { type: 'barType' }, role: MessageRole.ASSISTANT })
+    Renderer({ parsed: { type: 'barType' } })
     expect(calls).toBe(1)
   })
 
@@ -56,8 +56,8 @@ describe('defineCodexRenderer', () => {
     expect(CODEX_RENDERERS.has('typeA')).toBe(true)
     expect(CODEX_RENDERERS.has('typeB')).toBe(true)
 
-    CODEX_RENDERERS.get('typeA')!({ item: { type: 'typeA' }, role: MessageRole.ASSISTANT })
-    CODEX_RENDERERS.get('typeB')!({ item: { type: 'typeB' }, role: MessageRole.ASSISTANT })
+    CODEX_RENDERERS.get('typeA')!({ item: { type: 'typeA' } })
+    CODEX_RENDERERS.get('typeB')!({ item: { type: 'typeB' } })
     expect(calls).toBe(2)
   })
 
@@ -71,7 +71,7 @@ describe('defineCodexRenderer', () => {
       },
     })
     const Inner = CODEX_RENDERERS.get('captureType')!
-    Inner({ item: { type: 'captureType', extra: 42 }, role: MessageRole.ASSISTANT })
+    Inner({ item: { type: 'captureType', extra: 42 } })
     expect(received).toEqual({ type: 'captureType', extra: 42 })
   })
 })

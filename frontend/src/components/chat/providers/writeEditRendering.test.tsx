@@ -3,7 +3,7 @@ import type { RenderContext } from '../messageRenderers'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression } from '~/generated/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import './claude'
 import './codex'
@@ -74,13 +74,13 @@ function makeClaudeToolResultMessage(
 function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: RenderContext) {
   const parsed = makeClaudeToolUseMessage(name, input)
   const category = makeClaudeToolUseCategory(name, input)
-  const result = renderMessageContent(parsed, MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
 }
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(parsed, MessageRole.USER, context, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
 }
 
@@ -106,7 +106,7 @@ function makePiToolEnd(toolName: string, result: Record<string, unknown>, isErro
 function renderPiToolUse(toolName: string, args: Record<string, unknown>, context?: RenderContext) {
   const toolUse = makePiToolStart(toolName, args)
   const category: MessageCategory = { kind: 'tool_use', toolName, toolUse, content: [] }
-  const result = renderMessageContent(toolUse, MessageRole.ASSISTANT, context, category, AgentProvider.PI)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.PI)
   return render(() => result)
 }
 
@@ -114,7 +114,7 @@ function renderPiToolResult(toolName: string, resultPayload: Record<string, unkn
   const start = makePiToolStart(toolName, startArgs)
   const end = makePiToolEnd(toolName, resultPayload, isError)
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(end, MessageRole.ASSISTANT, {
+  const result = renderMessageContent(end, {
     spanType: toolName,
     toolUseParsed: parseMessageContent(makeFakeMessage(start)),
   }, category, AgentProvider.PI)
@@ -418,7 +418,7 @@ function renderCodexFileChange(item: Record<string, unknown>, context?: RenderCo
     toolUse: parsed,
     content: [],
   }
-  const result = renderMessageContent(parsed, MessageRole.ASSISTANT, context, category, AgentProvider.CODEX)
+  const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
   return render(() => result)
 }
 
@@ -489,7 +489,7 @@ function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: Render
     toolUse,
     content: [],
   }
-  const result = renderMessageContent(toolUse, MessageRole.ASSISTANT, context, category, AgentProvider.OPENCODE)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)
 }
 

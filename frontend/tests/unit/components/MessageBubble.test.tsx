@@ -4,7 +4,7 @@ import { MessageBubble } from '~/components/chat/MessageBubble'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
 // jsdom does not provide ResizeObserver or Worker
@@ -89,7 +89,7 @@ describe('askUserQuestion thread rendering', () => {
   it('shows question text for single-question tool_use', () => {
     const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -108,7 +108,7 @@ describe('askUserQuestion thread rendering', () => {
   it('shows question count for multi-question tool_use', () => {
     const parent = askUserQuestionToolUse([{ header: 'Auth' }, { header: 'Database' }])
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -140,7 +140,7 @@ describe('thinking message toolbar buttons', () => {
       message: { content: [{ type: 'thinking', thinking: 'Let me think about this...' }] },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -161,7 +161,7 @@ describe('thinking message toolbar buttons', () => {
       message: { content: [{ type: 'thinking', thinking: thinkingText }] },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -185,7 +185,7 @@ describe('thinking message expansion preference', () => {
       message: { content: [{ type: 'thinking', thinking: thinkingText }] },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -225,7 +225,7 @@ describe('thinking message expansion preference', () => {
       message: { content: [{ type: 'thinking', thinking: thinkingText }] },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -268,7 +268,7 @@ describe('messageBubble rawJson', () => {
     }
     const msg = makeMsg({
       id: 'msg-meta-1',
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       seq: 3n,
       createdAt: '2025-01-15T10:00:00.000Z',
       deliveryError: 'worker offline',
@@ -283,7 +283,7 @@ describe('messageBubble rawJson', () => {
 
     const envelope = await copyRawJson()
     expect(envelope.id).toBe('msg-meta-1')
-    expect(envelope.role).toBe('assistant')
+    expect(envelope.source).toBe('agent')
     expect(envelope.seq).toBe(3)
     expect(envelope.created_at).toBe('2025-01-15T10:00:00.000Z')
     expect(envelope.delivery_error).toBe('worker offline')
@@ -299,7 +299,7 @@ describe('messageBubble rawJson', () => {
     }
     const msg = makeMsg({
       id: 'msg-no-opts',
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       deliveryError: '',
       content: rawContent(innerMsg),
     })
@@ -314,7 +314,7 @@ describe('messageBubble rawJson', () => {
     expect(envelope).not.toHaveProperty('delivery_error')
     // Required fields should still be present.
     expect(envelope.id).toBe('msg-no-opts')
-    expect(envelope.role).toBe('assistant')
+    expect(envelope.source).toBe('agent')
     expect(envelope).toHaveProperty('content')
   })
 
@@ -348,7 +348,7 @@ describe('messageBubble rawJson', () => {
       message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'file.txt' }] },
     }
     const msg = makeMsg({
-      role: MessageRole.LEAPMUX,
+      source: MessageSource.LEAPMUX,
       content: wrapContent([parentMsg, childMsg], [5, 8]),
     })
 
@@ -365,7 +365,7 @@ describe('messageBubble rawJson', () => {
 
   it('uses toolbar copy for hidden raw JSON instead of injecting an inline pre copy button', () => {
     const msg = makeMsg({
-      role: MessageRole.SYSTEM,
+      source: MessageSource.AGENT,
       content: rawContent({ type: 'system', subtype: 'init', cwd: '/repo' }),
     })
 
@@ -415,7 +415,7 @@ describe('todoWrite collapse/expand', () => {
       { content: 'Task C', status: 'pending', activeForm: 'Working on C' },
     ])
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -435,7 +435,7 @@ describe('todoWrite collapse/expand', () => {
       { content: 'Task B', status: 'pending', activeForm: 'Working on B' },
     ])
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -458,7 +458,7 @@ describe('todoWrite collapse/expand', () => {
       { content: 'Task C', status: 'pending', activeForm: 'Working on C' },
     ])
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -480,7 +480,7 @@ describe('todoWrite collapse/expand', () => {
       { content: 'Task B', status: 'in_progress', activeForm: 'Running tests' },
     ])
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -499,7 +499,7 @@ describe('todoWrite collapse/expand', () => {
       { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
     ])
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -541,7 +541,7 @@ describe('taskOutput rendering', () => {
   it('shows waiting state for standalone tool_use', () => {
     const parent = taskOutputToolUse()
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -558,7 +558,7 @@ describe('taskOutput rendering', () => {
   it('hides metadata when no child result', () => {
     const parent = taskOutputToolUse()
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -581,7 +581,7 @@ describe('askUserQuestion left border', () => {
   it('body has left border', () => {
     const parent = askUserQuestionToolUse([{ header: 'Auth' }])
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -614,7 +614,7 @@ describe('header-only renderers', () => {
       },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -641,7 +641,7 @@ describe('header-only renderers', () => {
       },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -668,7 +668,7 @@ describe('header-only renderers', () => {
       },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -702,7 +702,7 @@ describe('grep result summary', () => {
       },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -736,7 +736,7 @@ describe('glob result summary', () => {
       },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -769,7 +769,7 @@ describe('agent stats summary', () => {
       },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -801,7 +801,7 @@ describe('agent stats summary', () => {
       },
     }
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(innerMsg),
     })
 
@@ -820,7 +820,7 @@ describe('pending user bubble state', () => {
   it('stops pulsation when a local user message has a delivery error', () => {
     const msg = makeMsg({
       id: 'local-1',
-      role: MessageRole.USER,
+      source: MessageSource.USER,
       content: rawContent({ content: 'hello' }),
     })
 
@@ -836,7 +836,7 @@ describe('pending user bubble state', () => {
   it('keeps pulsation for a local user message without a delivery error', () => {
     const msg = makeMsg({
       id: 'local-2',
-      role: MessageRole.USER,
+      source: MessageSource.USER,
       content: rawContent({ content: 'hello' }),
     })
 
@@ -890,7 +890,7 @@ describe('edit/write tool_use rendering', () => {
   it('edit shows file path in header', () => {
     const parent = editToolUse('const a = 1', 'const a = 2')
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -907,7 +907,7 @@ describe('edit/write tool_use rendering', () => {
   it('write shows file path in header', () => {
     const parent = writeToolUse('export const hello = "world"')
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 
@@ -924,7 +924,7 @@ describe('edit/write tool_use rendering', () => {
   it('write with empty content renders without error', () => {
     const parent = writeToolUse('')
     const msg = makeMsg({
-      role: MessageRole.ASSISTANT,
+      source: MessageSource.AGENT,
       content: rawContent(parent),
     })
 

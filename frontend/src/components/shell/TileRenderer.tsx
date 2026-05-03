@@ -22,7 +22,7 @@ import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
-import { AgentChatMessageSchema, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
@@ -532,7 +532,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           const localId = `local-${crypto.randomUUID()}`
           const localMsg = create(AgentChatMessageSchema, {
             id: localId,
-            role: MessageRole.USER,
+            source: MessageSource.USER,
             content: new TextEncoder().encode(JSON.stringify(optimisticPayload)),
             contentCompression: ContentCompression.NONE,
             seq: 0n,

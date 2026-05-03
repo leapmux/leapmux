@@ -67,7 +67,7 @@ func TestHandleKiloPromptResponse_PersistsThinkingText(t *testing.T) {
 	require.Equal(t, 3, sink.MessageCount())
 
 	thinkingMsg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, thinkingMsg.Role)
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, thinkingMsg.Source)
 	var thinkingParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(thinkingMsg.Content, &thinkingParsed))
 	require.Equal(t, "agent_thought_chunk", thinkingParsed["sessionUpdate"])
@@ -80,7 +80,7 @@ func TestHandleKiloPromptResponse_PersistsThinkingText(t *testing.T) {
 	require.Equal(t, "agent_message_chunk", assistantParsed["sessionUpdate"])
 
 	resultMsg := sink.Messages()[2]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, resultMsg.Role)
+	require.True(t, resultMsg.TurnEnd, "prompt response must route through PersistTurnEnd")
 
 	agent.mu.Lock()
 	require.Equal(t, "", agent.turnThinkingText.String())
@@ -97,7 +97,7 @@ func TestHandleKiloOutput_ToolCallOpensSpan(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msg.Role)
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	require.Equal(t, "tc-1", msg.SpanID)
 	require.Equal(t, "execute", msg.SpanType)
 
@@ -153,7 +153,7 @@ func TestHandleKiloOutput_Plan(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msg.Role)
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	var plan struct {
 		SessionUpdate string `json:"sessionUpdate"`
 		Entries       []struct {

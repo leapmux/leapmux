@@ -3,7 +3,7 @@ import type { RenderContext } from './messageRenderers'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression } from '~/generated/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { renderMessageContent } from './messageRenderers'
 import './providers'
@@ -34,7 +34,7 @@ function makeToolUseCategory(name: string, input: Record<string, unknown>): Mess
 function renderToolUseText(name: string, input: Record<string, unknown>, context?: RenderContext): string {
   const parsed = makeToolUseMessage(name, input)
   const category = makeToolUseCategory(name, input)
-  const result = renderMessageContent(parsed, MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
@@ -121,7 +121,7 @@ describe('write/edit tool_use messages never render the diff body', () => {
   it('does not render Write file content (no linked tool_result)', () => {
     const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Write', writeInput), MessageRole.ASSISTANT, undefined, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(makeToolUseMessage('Write', writeInput), undefined, category, AgentProvider.CLAUDE_CODE),
     )
     // The diff body lives on the tool_result; tool_use only shows the header.
     expect(container.textContent).not.toContain('package main')
@@ -142,7 +142,7 @@ describe('write/edit tool_use messages never render the diff body', () => {
     const context: RenderContext = { toolResultParsed }
     const category = makeToolUseCategory('Write', writeInput)
     const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Write', writeInput), MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(makeToolUseMessage('Write', writeInput), context, category, AgentProvider.CLAUDE_CODE),
     )
     // Same outcome as the no-linked-result case: never renders content.
     expect(container.textContent).not.toContain('package main')
@@ -156,7 +156,7 @@ describe('write/edit tool_use messages never render the diff body', () => {
     }
     const category = makeToolUseCategory('Edit', editInput)
     const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Edit', editInput), MessageRole.ASSISTANT, undefined, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(makeToolUseMessage('Edit', editInput), undefined, category, AgentProvider.CLAUDE_CODE),
     )
     expect(container.textContent).not.toContain('beforeMarkerXYZ')
     expect(container.textContent).not.toContain('afterMarkerXYZ')
@@ -182,7 +182,7 @@ function makeReadToolResult(resultContent: string, context?: Partial<RenderConte
     parsed,
     render: () => {
       const category: MessageCategory = { kind: 'tool_result' }
-      const result = renderMessageContent(parsed, MessageRole.USER, { spanType: 'Read', ...context }, category, AgentProvider.CLAUDE_CODE)
+      const result = renderMessageContent(parsed, { spanType: 'Read', ...context }, category, AgentProvider.CLAUDE_CODE)
       const { container } = render(() => result)
       return container
     },

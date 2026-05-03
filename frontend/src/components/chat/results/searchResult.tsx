@@ -63,18 +63,31 @@ export function FileListView(props: {
   )
 }
 
+function emptySummaryFor(source: SearchResultSource, marker: string): string {
+  // Empty result: route to a muted prompt summary only when we have positive
+  // evidence (no fallback text or the canonical marker for this variant).
+  // Unknown fallback text falls through to the pre-content body.
+  const fc = source.fallbackContent.trim()
+  if (!fc || fc === marker)
+    return marker
+  return ''
+}
+
 function summaryFor(source: SearchResultSource): string {
   if (source.variant === 'grep') {
+    // Count mode: total occurrences across N files, even when zero.
+    if (source.mode === 'count' && typeof source.numMatches === 'number')
+      return `${pluralize(source.numMatches, 'match', 'matches')} in ${pluralize(source.numFiles, 'file')}`
     if (source.numLines > 0 && source.numFiles > 0)
       return `${pluralize(source.numLines, 'match', 'matches')} in ${pluralize(source.numFiles, 'file')}`
     if (source.numFiles > 0)
       return `Found ${pluralize(source.numFiles, 'file')}`
-    return ''
+    return emptySummaryFor(source, 'No matches found')
   }
   if (source.variant === 'glob') {
     if (source.numFiles > 0)
       return `Found ${pluralize(source.numFiles, 'file')}`
-    return ''
+    return emptySummaryFor(source, 'No files found')
   }
   // ACP search
   if (typeof source.matches === 'number' && source.matches >= 0) {
@@ -83,14 +96,6 @@ function summaryFor(source: SearchResultSource): string {
     return `Found ${pluralize(source.matches, 'match', 'matches')}`
   }
   return ''
-}
-
-function emptyFallback(source: SearchResultSource): string {
-  if (source.variant === 'grep')
-    return source.fallbackContent || 'No matches found'
-  if (source.variant === 'glob')
-    return source.fallbackContent || 'No files found'
-  return source.fallbackContent || ''
 }
 
 export function SearchResultBody(props: {
@@ -116,9 +121,9 @@ export function SearchResultBody(props: {
   }
 
   const fallbackEl = () => {
-    if (props.source.variant === 'search' && summary())
+    if (summary())
       return <div class={toolResultPrompt}>{summary()}</div>
-    return <div class={toolResultContentPre}>{emptyFallback(props.source)}</div>
+    return <div class={toolResultContentPre}>{props.source.fallbackContent}</div>
   }
 
   return (

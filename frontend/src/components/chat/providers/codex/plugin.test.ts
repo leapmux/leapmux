@@ -2,7 +2,7 @@ import type { AskQuestionState, Question } from '../../controls/types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../../controls/CodexControlRequest'
 import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
@@ -427,7 +427,7 @@ describe('codex result divider', () => {
     const parsed = {
       turn: { id: 'turn-1', status: 'completed' },
     }
-    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.TURN_END)
+    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed)
     expect(result).not.toBeNull()
   })
 })

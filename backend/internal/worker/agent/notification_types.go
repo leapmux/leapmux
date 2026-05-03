@@ -2,7 +2,7 @@ package agent
 
 // LeapMux notification-type vocabulary. The platform persists each of
 // these as the inner `type` field on a notification envelope (LEAPMUX
-// role for worker-synthesized events; SYSTEM role for agent-emitted
+// source for worker-synthesized events; AGENT source for agent-emitted
 // metadata that flows through the same renderer). Centralizing the
 // strings turns rename mistakes into compile errors and gives the
 // dispatch switches a single source of truth.

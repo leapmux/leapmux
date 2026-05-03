@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyMessage, messageBubbleClass, messageRowClass } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 
 // ---------------------------------------------------------------------------
 // Helper to build assistant message payloads
@@ -370,30 +370,30 @@ describe('classifyMessage', () => {
 
 describe('messageRowClass', () => {
   it('returns messageRowCenter for notification', () => {
-    expect(messageRowClass('notification', MessageRole.SYSTEM)).toBe(chatStyles.messageRowCenter)
+    expect(messageRowClass('notification', MessageSource.AGENT)).toBe(chatStyles.messageRowCenter)
   })
 
   it('returns messageRowCenter for notification_thread', () => {
-    expect(messageRowClass('notification_thread', MessageRole.SYSTEM)).toBe(chatStyles.messageRowCenter)
+    expect(messageRowClass('notification_thread', MessageSource.AGENT)).toBe(chatStyles.messageRowCenter)
   })
 
   it('returns messageRowEnd for non-meta user messages', () => {
-    expect(messageRowClass('user_text', MessageRole.USER)).toBe(chatStyles.messageRowEnd)
-    expect(messageRowClass('user_content', MessageRole.USER)).toBe(chatStyles.messageRowEnd)
+    expect(messageRowClass('user_text', MessageSource.USER)).toBe(chatStyles.messageRowEnd)
+    expect(messageRowClass('user_content', MessageSource.USER)).toBe(chatStyles.messageRowEnd)
   })
 
   it('returns messageRow for assistant_text', () => {
-    expect(messageRowClass('assistant_text', MessageRole.ASSISTANT)).toBe(chatStyles.messageRow)
+    expect(messageRowClass('assistant_text', MessageSource.AGENT)).toBe(chatStyles.messageRow)
   })
 
   it('returns messageRow for assistant_thinking', () => {
-    expect(messageRowClass('assistant_thinking', MessageRole.ASSISTANT)).toBe(chatStyles.messageRow)
+    expect(messageRowClass('assistant_thinking', MessageSource.AGENT)).toBe(chatStyles.messageRow)
   })
 
-  it('returns messageRow for meta kinds even with USER role', () => {
-    expect(messageRowClass('tool_use', MessageRole.USER)).toBe(chatStyles.messageRow)
-    expect(messageRowClass('tool_result', MessageRole.USER)).toBe(chatStyles.messageRow)
-    expect(messageRowClass('hidden', MessageRole.USER)).toBe(chatStyles.messageRow)
+  it('returns messageRow for meta kinds even with USER source', () => {
+    expect(messageRowClass('tool_use', MessageSource.USER)).toBe(chatStyles.messageRow)
+    expect(messageRowClass('tool_result', MessageSource.USER)).toBe(chatStyles.messageRow)
+    expect(messageRowClass('hidden', MessageSource.USER)).toBe(chatStyles.messageRow)
   })
 })
 
@@ -403,40 +403,40 @@ describe('messageRowClass', () => {
 
 describe('messageBubbleClass', () => {
   it('returns systemMessage for notification', () => {
-    expect(messageBubbleClass('notification', MessageRole.SYSTEM)).toBe(chatStyles.systemMessage)
+    expect(messageBubbleClass('notification', MessageSource.AGENT)).toBe(chatStyles.systemMessage)
   })
 
   it('returns systemMessage for notification_thread', () => {
-    expect(messageBubbleClass('notification_thread', MessageRole.SYSTEM)).toBe(chatStyles.systemMessage)
+    expect(messageBubbleClass('notification_thread', MessageSource.AGENT)).toBe(chatStyles.systemMessage)
   })
 
   it('returns thinkingMessage for assistant_thinking', () => {
-    expect(messageBubbleClass('assistant_thinking', MessageRole.ASSISTANT)).toBe(chatStyles.thinkingMessage)
+    expect(messageBubbleClass('assistant_thinking', MessageSource.AGENT)).toBe(chatStyles.thinkingMessage)
   })
 
   it('returns metaMessage for meta kinds', () => {
-    expect(messageBubbleClass('tool_use', MessageRole.ASSISTANT)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('tool_result', MessageRole.USER)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('hidden', MessageRole.SYSTEM)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('result_divider', MessageRole.SYSTEM)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('control_response', MessageRole.USER)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('compact_summary', MessageRole.SYSTEM)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('task_notification', MessageRole.SYSTEM)).toBe(chatStyles.metaMessage)
+    expect(messageBubbleClass('tool_use', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
+    expect(messageBubbleClass('tool_result', MessageSource.USER)).toBe(chatStyles.metaMessage)
+    expect(messageBubbleClass('hidden', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
+    expect(messageBubbleClass('result_divider', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
+    expect(messageBubbleClass('control_response', MessageSource.USER)).toBe(chatStyles.metaMessage)
+    expect(messageBubbleClass('compact_summary', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
+    expect(messageBubbleClass('task_notification', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
   })
 
-  it('returns assistantMessage for assistant_text with ASSISTANT role', () => {
-    expect(messageBubbleClass('assistant_text', MessageRole.ASSISTANT)).toBe(chatStyles.assistantMessage)
+  it('returns assistantMessage for assistant_text with AGENT source', () => {
+    expect(messageBubbleClass('assistant_text', MessageSource.AGENT)).toBe(chatStyles.assistantMessage)
   })
 
-  it('returns userMessage for user_text with USER role', () => {
-    expect(messageBubbleClass('user_text', MessageRole.USER)).toBe(chatStyles.userMessage)
+  it('returns userMessage for user_text with USER source', () => {
+    expect(messageBubbleClass('user_text', MessageSource.USER)).toBe(chatStyles.userMessage)
   })
 
-  it('returns userMessage for user_content with USER role', () => {
-    expect(messageBubbleClass('user_content', MessageRole.USER)).toBe(chatStyles.userMessage)
+  it('returns userMessage for user_content with USER source', () => {
+    expect(messageBubbleClass('user_content', MessageSource.USER)).toBe(chatStyles.userMessage)
   })
 
-  it('returns systemMessage for unknown kind with unrecognized role', () => {
-    expect(messageBubbleClass('unknown', MessageRole.SYSTEM)).toBe(chatStyles.systemMessage)
+  it('returns systemMessage for unknown kind with LEAPMUX source', () => {
+    expect(messageBubbleClass('unknown', MessageSource.LEAPMUX)).toBe(chatStyles.systemMessage)
   })
 })

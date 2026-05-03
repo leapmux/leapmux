@@ -1,7 +1,7 @@
 import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import './testMocks'
 
 const { renderMessageContent } = await import('../messageRenderers')
@@ -46,7 +46,7 @@ function renderToolUseText(context?: RenderContext): string {
   const msg = makeGlobToolUse()
   const toolUse = (msg.message.content as Array<Record<string, unknown>>)[0]
   const category: MessageCategory = { kind: 'tool_use', toolName: 'Glob', toolUse, content: msg.message.content as Array<Record<string, unknown>> }
-  const result = renderMessageContent(msg, MessageRole.ASSISTANT, context, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
@@ -59,7 +59,7 @@ function renderToolResultContainer(
 ): HTMLElement {
   const msg = makeGlobToolResult(resultContent, toolUseResult)
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(msg, MessageRole.USER, context, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(msg, context, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container
 }

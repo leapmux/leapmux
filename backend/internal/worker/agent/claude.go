@@ -827,7 +827,7 @@ func (a *ClaudeCodeAgent) unregisterPendingControl(requestID string) {
 // channel and returns true (the line should be consumed, not forwarded).
 func (a *ClaudeCodeAgent) handlePendingControlResponse(line *parsedLine) bool {
 	// Quick check using the pre-parsed Type field.
-	if line.Type != "control_response" {
+	if line.Type != claudeMsgTypeControlResponse {
 		return false
 	}
 

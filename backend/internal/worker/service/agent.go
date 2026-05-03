@@ -287,7 +287,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
 			ID:                 messageID,
 			AgentID:            agentID,
-			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+			Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:            compressed,
 			ContentCompression: compressionType,
 			Depth:              0,
@@ -310,7 +310,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		userMsg := &leapmuxv1.AgentChatMessage{
 			Id:                 messageID,
-			Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+			Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 			Content:            compressed,
 			ContentCompression: compressionType,
 			Seq:                seq,
@@ -1673,7 +1673,7 @@ func (svc *Context) persistSyntheticUserMessage(agentID string, provider leapmux
 		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, provider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
 		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
 	}
 }
@@ -1877,7 +1877,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 	seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
 		ID:                 messageID,
 		AgentID:            agentID,
-		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:            compressed,
 		ContentCompression: compressionType,
 		Depth:              0,
@@ -1915,7 +1915,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 
 	userMsg := &leapmuxv1.AgentChatMessage{
 		Id:                 messageID,
-		Role:               leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:            compressed,
 		ContentCompression: compressionType,
 		Seq:                seq,
@@ -2213,7 +2213,7 @@ func (svc *Context) handleControlResponsePlanMode(agentID string, content []byte
 		displayJSON, marshalErr := json.Marshal(displayContent)
 		if marshalErr != nil {
 			slog.Warn("marshal control response notification", "agent_id", agentID, "error", marshalErr)
-		} else if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, displayJSON, agent.SpanInfo{}, nil); err != nil {
+		} else if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, displayJSON, agent.SpanInfo{}, nil); err != nil {
 			slog.Warn("failed to persist control response notification", "agent_id", agentID, "error", err)
 		}
 	}
@@ -2334,7 +2334,7 @@ func (svc *Context) initiatePlanExecution(agentID string, targetMode string) {
 		slog.Warn("plan exec: marshal plan execution message", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
+	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
 		slog.Warn("plan exec: failed to persist plan execution message", "agent_id", agentID, "error", err)
 	}
 }
@@ -2440,7 +2440,7 @@ func broadcastWatchEvent(sender *channel.Sender, resp *leapmuxv1.WatchEventsResp
 func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 	return &leapmuxv1.AgentChatMessage{
 		Id:                 m.ID,
-		Role:               leapmuxv1.MessageRole(m.Role),
+		Source:             m.Source,
 		Content:            m.Content,
 		Seq:                m.Seq,
 		DeliveryError:      m.DeliveryError,

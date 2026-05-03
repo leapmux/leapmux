@@ -1,7 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { FileEditDiffSource } from '../../../results/fileEditDiff'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { createMemo, For, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -16,7 +15,6 @@ import { PI_TOOL } from '../protocol'
 
 interface RendererProps {
   parsed: unknown
-  role: MessageRole
   context?: RenderContext
 }
 

@@ -2,7 +2,7 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { createStore } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
-import { ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { PREFIX_LOCAL_MESSAGES, safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/browserStorage'
 import { extractTodos, findLatestTodos, parseMessageContent } from '~/lib/messageParser'
 
@@ -42,7 +42,7 @@ function removePersistedLocalMessage(agentId: string, messageId: string) {
 }
 
 function extractUserMessagePayload(message: AgentChatMessage): { content: string, attachments?: Array<{ filename?: string, mime_type?: string }> } | null {
-  if (message.role !== MessageRole.USER)
+  if (message.source !== MessageSource.USER)
     return null
   const parsed = parseMessageContent(message)
   const parent = parsed.parentObject
@@ -102,7 +102,7 @@ function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
   return {
     $typeName: 'leapmux.v1.AgentChatMessage' as const,
     id: p.id,
-    role: MessageRole.USER,
+    source: MessageSource.USER,
     content: new TextEncoder().encode(contentJson),
     contentCompression: ContentCompression.NONE,
     seq: 0n,
@@ -383,13 +383,13 @@ export function createChatStore() {
         // Reconcile optimistic local user messages before updating the store,
         // so the localStorage side-effect stays outside the setState updater.
         let reconciledLocalId: string | undefined
-        if (message.role === MessageRole.USER) {
+        if (message.source === MessageSource.USER) {
           const incomingSignature = userMessageSignature(message)
           if (incomingSignature) {
             const current = state.messagesByAgent[agentId] ?? []
             const local = current.find(candidate =>
               candidate.id.startsWith('local-')
-              && candidate.role === MessageRole.USER
+              && candidate.source === MessageSource.USER
               && !candidate.deliveryError
               && userMessageSignature(candidate) === incomingSignature,
             )

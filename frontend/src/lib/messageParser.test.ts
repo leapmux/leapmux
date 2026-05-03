@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { makeMessage, rawContent } from '../../tests/unit/helpers/messageFactory'
 import {
   extractAssistantUsage,
@@ -13,17 +13,18 @@ import {
   findLatestTodos,
   getInnerMessage,
   getInnerMessageType,
+  NOTIFICATION_THREAD_TYPE,
   parseMessageContent,
 } from './messageParser'
 
 /** Build a mock AgentChatMessage with the given JSON content (uncompressed). */
-function makeMsg(role: MessageRole, content: unknown, opts?: { seq?: bigint }) {
-  return makeMessage({ role, content: rawContent(content), seq: opts?.seq })
+function makeMsg(source: MessageSource, content: unknown, opts?: { seq?: bigint }) {
+  return makeMessage({ source, content: rawContent(content), seq: opts?.seq })
 }
 
-/** Wrap inner messages in a notification thread wrapper envelope (LEAPMUX only). */
-function wrap(...messages: unknown[]): { old_seqs: number[], messages: unknown[] } {
-  return { old_seqs: [], messages }
+/** Wrap inner messages in a notification-thread wrapper envelope. */
+function wrap(...messages: unknown[]): { type: typeof NOTIFICATION_THREAD_TYPE, old_seqs: number[], messages: unknown[] } {
+  return { type: NOTIFICATION_THREAD_TYPE, old_seqs: [], messages }
 }
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ function wrap(...messages: unknown[]): { old_seqs: number[], messages: unknown[]
 describe('parseMessageContent', () => {
   it('parses LEAPMUX notification wrapper content', () => {
     const inner = { type: 'settings_changed', changes: {} }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(inner))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(inner))
     const result = parseMessageContent(msg)
 
     expect(result.wrapper).not.toBeNull()
@@ -41,9 +42,9 @@ describe('parseMessageContent', () => {
     expect(result.rawText).toBeTruthy()
   })
 
-  it('parses SYSTEM notification wrapper content (e.g. api_retry)', () => {
+  it('parses AGENT-source notification wrapper content (e.g. api_retry)', () => {
     const inner = { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10 }
-    const msg = makeMsg(MessageRole.SYSTEM, wrap(inner))
+    const msg = makeMsg(MessageSource.AGENT, wrap(inner))
     const result = parseMessageContent(msg)
 
     expect(result.wrapper).not.toBeNull()
@@ -52,7 +53,7 @@ describe('parseMessageContent', () => {
   })
 
   it('handles empty LEAPMUX wrapper messages array', () => {
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap())
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap())
     const result = parseMessageContent(msg)
 
     expect(result.wrapper).not.toBeNull()
@@ -61,7 +62,7 @@ describe('parseMessageContent', () => {
 
   it('parses raw content for non-LEAPMUX messages', () => {
     const content = { type: 'assistant', message: { content: [] } }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = parseMessageContent(msg)
 
     expect(result.wrapper).toBeNull()
@@ -71,7 +72,7 @@ describe('parseMessageContent', () => {
 
   it('parses unwrapped LEAPMUX content (e.g. agent_session_info)', () => {
     const content = { type: 'agent_session_info', info: {} }
-    const msg = makeMsg(MessageRole.LEAPMUX, content)
+    const msg = makeMsg(MessageSource.LEAPMUX, content)
     const result = parseMessageContent(msg)
 
     expect(result.wrapper).toBeNull()
@@ -106,7 +107,7 @@ describe('parseMessageContent', () => {
 describe('getInnerMessage', () => {
   it('returns parentObject for LEAPMUX notification wrapper', () => {
     const inner = { type: 'settings_changed', changes: {} }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(inner))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(inner))
     const parsed = parseMessageContent(msg)
 
     expect(getInnerMessage(parsed)).toEqual(inner)
@@ -114,7 +115,7 @@ describe('getInnerMessage', () => {
 
   it('returns topLevel for raw content', () => {
     const content = { type: 'assistant', message: {} }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const parsed = parseMessageContent(msg)
 
     expect(getInnerMessage(parsed)).toEqual(content)
@@ -123,17 +124,17 @@ describe('getInnerMessage', () => {
 
 describe('getInnerMessageType', () => {
   it('returns type from raw content', () => {
-    const msg = makeMsg(MessageRole.ASSISTANT, { type: 'assistant' })
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant' })
     expect(getInnerMessageType(parseMessageContent(msg))).toBe('assistant')
   })
 
   it('returns type from LEAPMUX content', () => {
-    const msg = makeMsg(MessageRole.LEAPMUX, { type: 'rate_limit' })
+    const msg = makeMsg(MessageSource.LEAPMUX, { type: 'rate_limit' })
     expect(getInnerMessageType(parseMessageContent(msg))).toBe('rate_limit')
   })
 
   it('returns undefined when no type', () => {
-    const msg = makeMsg(MessageRole.ASSISTANT, { message: {} })
+    const msg = makeMsg(MessageSource.AGENT, { message: {} })
     expect(getInnerMessageType(parseMessageContent(msg))).toBeUndefined()
   })
 })
@@ -163,7 +164,7 @@ describe('extractTodos', () => {
   }
 
   it('extracts todos from a valid TodoWrite message', () => {
-    const msg = makeMsg(MessageRole.ASSISTANT, todoContent)
+    const msg = makeMsg(MessageSource.AGENT, todoContent)
     const parsed = parseMessageContent(msg)
     const todos = extractTodos(msg, parsed)
 
@@ -174,8 +175,8 @@ describe('extractTodos', () => {
     ])
   })
 
-  it('returns null for non-ASSISTANT role', () => {
-    const msg = makeMsg(MessageRole.USER, todoContent)
+  it('returns null for non-AGENT source', () => {
+    const msg = makeMsg(MessageSource.USER, todoContent)
     const parsed = parseMessageContent(msg)
     expect(extractTodos(msg, parsed)).toBeNull()
   })
@@ -187,7 +188,7 @@ describe('extractTodos', () => {
         content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls' } }],
       },
     }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const parsed = parseMessageContent(msg)
     expect(extractTodos(msg, parsed)).toBeNull()
   })
@@ -197,7 +198,7 @@ describe('extractTodos', () => {
       type: 'assistant',
       message: { content: [{ type: 'text', text: 'Hello' }] },
     }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const parsed = parseMessageContent(msg)
     expect(extractTodos(msg, parsed)).toBeNull()
   })
@@ -213,14 +214,14 @@ describe('extractTodos', () => {
         }],
       },
     }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const parsed = parseMessageContent(msg)
     const todos = extractTodos(msg, parsed)
     expect(todos![0].status).toBe('pending')
   })
 
   it('extracts todos from a Codex turn/plan/updated message', () => {
-    const msg = makeMsg(MessageRole.ASSISTANT, {
+    const msg = makeMsg(MessageSource.AGENT, {
       method: 'turn/plan/updated',
       params: {
         threadId: 'thread-1',
@@ -250,7 +251,7 @@ describe('extractTodos', () => {
 
 describe('findLatestTodos', () => {
   const makeTodoMsg = (seq: bigint, tasks: Array<{ content: string, status: string, activeForm: string }>) =>
-    makeMsg(MessageRole.ASSISTANT, {
+    makeMsg(MessageSource.AGENT, {
       type: 'assistant',
       message: {
         content: [{
@@ -263,11 +264,11 @@ describe('findLatestTodos', () => {
 
   it('finds the latest TodoWrite scanning backward', () => {
     const messages = [
-      makeMsg(MessageRole.USER, { type: 'user', message: { content: 'hello' } }, { seq: 1n }),
+      makeMsg(MessageSource.USER, { type: 'user', message: { content: 'hello' } }, { seq: 1n }),
       makeTodoMsg(2n, [{ content: 'Old task', status: 'completed', activeForm: 'Old' }]),
-      makeMsg(MessageRole.ASSISTANT, { type: 'assistant', message: { content: [{ type: 'text', text: 'response' }] } }, { seq: 3n }),
+      makeMsg(MessageSource.AGENT, { type: 'assistant', message: { content: [{ type: 'text', text: 'response' }] } }, { seq: 3n }),
       makeTodoMsg(4n, [{ content: 'New task', status: 'in_progress', activeForm: 'New' }]),
-      makeMsg(MessageRole.USER, { type: 'user', message: { content: 'bye' } }, { seq: 5n }),
+      makeMsg(MessageSource.USER, { type: 'user', message: { content: 'bye' } }, { seq: 5n }),
     ]
     const todos = findLatestTodos(messages)
     expect(todos).toEqual([{ content: 'New task', status: 'in_progress', activeForm: 'New' }])
@@ -275,8 +276,8 @@ describe('findLatestTodos', () => {
 
   it('returns null when no TodoWrite exists', () => {
     const messages = [
-      makeMsg(MessageRole.USER, { type: 'user', message: { content: 'hello' } }, { seq: 1n }),
-      makeMsg(MessageRole.ASSISTANT, { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }, { seq: 2n }),
+      makeMsg(MessageSource.USER, { type: 'user', message: { content: 'hello' } }, { seq: 1n }),
+      makeMsg(MessageSource.AGENT, { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }, { seq: 2n }),
     ]
     expect(findLatestTodos(messages)).toBeNull()
   })
@@ -288,7 +289,7 @@ describe('findLatestTodos', () => {
   it('finds the latest Codex turn/plan/updated scanning backward', () => {
     const messages = [
       makeTodoMsg(2n, [{ content: 'Old task', status: 'completed', activeForm: 'Old' }]),
-      makeMsg(MessageRole.ASSISTANT, {
+      makeMsg(MessageSource.AGENT, {
         method: 'turn/plan/updated',
         params: {
           threadId: 'thread-1',
@@ -320,7 +321,7 @@ describe('extractAssistantUsage', () => {
         },
       },
     }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractAssistantUsage(parseMessageContent(msg))
 
     expect(result).toEqual({
@@ -339,14 +340,14 @@ describe('extractAssistantUsage', () => {
       total_cost_usd: 0.01,
       message: { usage: {} },
     }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractAssistantUsage(parseMessageContent(msg))
     expect(result).toEqual({ totalCostUsd: 0.01 })
   })
 
   it('returns null when no usage field', () => {
     const content = { type: 'assistant', message: {} }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     expect(extractAssistantUsage(parseMessageContent(msg))).toBeNull()
   })
 
@@ -372,7 +373,7 @@ describe('extractAssistantUsage', () => {
         },
       },
     }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractAssistantUsage(parseMessageContent(msg))
 
     expect(result).toEqual({
@@ -401,7 +402,7 @@ describe('extractAssistantUsage', () => {
         },
       },
     }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractAssistantUsage(parseMessageContent(msg))
 
     expect(result).toEqual({
@@ -428,7 +429,7 @@ describe('extractAssistantUsage', () => {
         },
       },
     }
-    const msg = makeMsg(MessageRole.ASSISTANT, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     expect(extractAssistantUsage(parseMessageContent(msg))).toBeNull()
   })
 })
@@ -439,7 +440,7 @@ describe('extractAssistantUsage', () => {
 
 describe('extractCodexTokenUsage', () => {
   it('extracts context usage from persisted Codex token usage notifications', () => {
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap({
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap({
       method: 'thread/tokenUsage/updated',
       params: {
         threadId: 'thread-1',
@@ -475,7 +476,7 @@ describe('extractCodexTokenUsage', () => {
   })
 
   it('returns null for unrelated messages', () => {
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap({ method: 'turn/completed', params: {} }))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap({ method: 'turn/completed', params: {} }))
     expect(extractCodexTokenUsage(parseMessageContent(msg))).toBeNull()
   })
 })
@@ -494,7 +495,7 @@ describe('extractResultMetadata', () => {
         'claude-sonnet': { contextWindow: 200000 },
       },
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg))
 
     expect(result).toEqual({
@@ -518,7 +519,7 @@ describe('extractResultMetadata', () => {
       },
       messages: [],
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg))
 
     expect(result).toEqual({
@@ -543,7 +544,7 @@ describe('extractResultMetadata', () => {
         'claude-opus-4-6[1m]': { contextWindow: 1000000 },
       },
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg), 'opus[1m]')
 
     expect(result).toEqual({
@@ -561,7 +562,7 @@ describe('extractResultMetadata', () => {
         'claude-opus-4-6-20251001': { contextWindow: 200000 },
       },
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg), 'opus')
 
     expect(result).toEqual({
@@ -579,7 +580,7 @@ describe('extractResultMetadata', () => {
         'claude-opus-4-6[1m]': { contextWindow: 1000000 },
       },
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg), 'sonnet')
 
     expect(result).toEqual({
@@ -589,13 +590,13 @@ describe('extractResultMetadata', () => {
   })
 
   it('returns null for empty inner message', () => {
-    const msg = makeMsg(MessageRole.TURN_END, {})
+    const msg = makeMsg(MessageSource.AGENT, {})
     expect(extractResultMetadata(parseMessageContent(msg))).toBeNull()
   })
 
   it('extracts only subtype when no modelUsage or cost', () => {
     const content = { type: 'result', subtype: 'turn_end' }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     expect(extractResultMetadata(parseMessageContent(msg))).toEqual({ subtype: 'turn_end' })
   })
 
@@ -609,7 +610,7 @@ describe('extractResultMetadata', () => {
         'claude-sonnet': { contextWindow: 200000 },
       },
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     expect(extractResultMetadata(parseMessageContent(msg))).toBeNull()
   })
 
@@ -619,7 +620,7 @@ describe('extractResultMetadata', () => {
       subtype: 'turn_end',
       num_tool_uses: 5,
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_end', numToolUses: 5 })
   })
@@ -630,7 +631,7 @@ describe('extractResultMetadata', () => {
       subtype: 'turn_end',
       num_tool_uses: 0,
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_end', numToolUses: 0 })
   })
@@ -641,7 +642,7 @@ describe('extractResultMetadata', () => {
       turn: { status: 'completed', usage: { inputTokens: 100, outputTokens: 50 } },
       num_tool_uses: 3,
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 3 })
   })
@@ -651,7 +652,7 @@ describe('extractResultMetadata', () => {
       turn: { status: 'completed', usage: { inputTokens: 100, outputTokens: 50 } },
       num_tool_uses: 0,
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 0 })
   })
@@ -661,7 +662,7 @@ describe('extractResultMetadata', () => {
       turn: { status: 'failed' },
       num_tool_uses: 0,
     }
-    const msg = makeMsg(MessageRole.TURN_END, content)
+    const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractResultMetadata(parseMessageContent(msg))
     expect(result).toEqual({ subtype: 'turn_completed', numToolUses: 0 })
   })
@@ -681,7 +682,7 @@ describe('extractRateLimitInfo', () => {
         utilization: 0.85,
       },
     }
-    const msg = makeMsg(MessageRole.SYSTEM, wrap(content))
+    const msg = makeMsg(MessageSource.AGENT, wrap(content))
     const result = extractRateLimitInfo(parseMessageContent(msg))
 
     expect(result).toEqual([{
@@ -695,20 +696,20 @@ describe('extractRateLimitInfo', () => {
       type: 'rate_limit_event',
       rate_limit_info: { status: 'exceeded' },
     }
-    const msg = makeMsg(MessageRole.SYSTEM, wrap(content))
+    const msg = makeMsg(MessageSource.AGENT, wrap(content))
     const result = extractRateLimitInfo(parseMessageContent(msg))
     expect(result[0].key).toBe('unknown')
   })
 
   it('returns empty array for non-rate_limit_event type', () => {
     const content = { type: 'settings_changed', rate_limit_info: {} }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractRateLimitInfo(parseMessageContent(msg))).toEqual([])
   })
 
   it('returns empty array when rate_limit_info is missing', () => {
     const content = { type: 'rate_limit_event' }
-    const msg = makeMsg(MessageRole.SYSTEM, wrap(content))
+    const msg = makeMsg(MessageSource.AGENT, wrap(content))
     expect(extractRateLimitInfo(parseMessageContent(msg))).toEqual([])
   })
 
@@ -719,7 +720,7 @@ describe('extractRateLimitInfo', () => {
       type: 'rate_limit',
       rate_limit_info: { rateLimitType: 'five_hour', status: 'exceeded' },
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractRateLimitInfo(parseMessageContent(msg))).toEqual([])
   })
 
@@ -733,7 +734,7 @@ describe('extractRateLimitInfo', () => {
         },
       },
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     const result = extractRateLimitInfo(parseMessageContent(msg))
     expect(result).toHaveLength(2)
     expect(result[0].key).toBe('five_hour')
@@ -749,7 +750,7 @@ describe('extractRateLimitInfo', () => {
       method: 'account/rateLimits/updated',
       params: { rateLimits: {} },
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractRateLimitInfo(parseMessageContent(msg))).toEqual([])
   })
 })
@@ -764,7 +765,7 @@ describe('extractSettingsChanges', () => {
       type: 'settings_changed',
       changes: { permissionMode: { old: 'default', new: 'plan' } },
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     const result = extractSettingsChanges(parseMessageContent(msg))
 
     expect(result).toEqual({ permissionMode: { old: 'default', new: 'plan' } })
@@ -772,13 +773,13 @@ describe('extractSettingsChanges', () => {
 
   it('returns null for non-settings_changed type', () => {
     const content = { type: 'rate_limit', changes: {} }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractSettingsChanges(parseMessageContent(msg))).toBeNull()
   })
 
   it('returns null when changes is missing', () => {
     const content = { type: 'settings_changed' }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractSettingsChanges(parseMessageContent(msg))).toBeNull()
   })
 })
@@ -794,7 +795,7 @@ describe('extractPlanUpdated', () => {
       plan_title: 'Add authentication',
       plan_file_path: '/plans/auth.md',
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractPlanUpdated(parseMessageContent(msg))).toEqual({
       planTitle: 'Add authentication',
       planFilePath: '/plans/auth.md',
@@ -809,7 +810,7 @@ describe('extractPlanUpdated', () => {
       plan_file_path: '/plans/auth.md',
       update_agent_title: true,
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     const got = extractPlanUpdated(parseMessageContent(msg))
     expect(got?.updateAgentTitle).toBe(true)
   })
@@ -817,7 +818,7 @@ describe('extractPlanUpdated', () => {
   it('returns the most recent plan_updated entry in a consolidated thread', () => {
     const earlier = { type: 'plan_updated', plan_title: 'old', plan_file_path: '/plans/old.md' }
     const later = { type: 'plan_updated', plan_title: 'new', plan_file_path: '/plans/new.md' }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(earlier, later))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(earlier, later))
     const got = extractPlanUpdated(parseMessageContent(msg))
     expect(got?.planTitle).toBe('new')
     expect(got?.planFilePath).toBe('/plans/new.md')
@@ -829,7 +830,7 @@ describe('extractPlanUpdated', () => {
       plan_title: 'Unwrapped',
       plan_file_path: '/plans/u.md',
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, content)
+    const msg = makeMsg(MessageSource.LEAPMUX, content)
     const got = extractPlanUpdated(parseMessageContent(msg))
     expect(got?.planTitle).toBe('Unwrapped')
     expect(got?.planFilePath).toBe('/plans/u.md')
@@ -837,13 +838,13 @@ describe('extractPlanUpdated', () => {
 
   it('returns undefined for non-plan_updated messages', () => {
     const content = { type: 'settings_changed', plan_title: 'Not a plan update' }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractPlanUpdated(parseMessageContent(msg))).toBeUndefined()
   })
 
   it('returns the payload even when fields are empty strings, leaving consumer to decide', () => {
     const content = { type: 'plan_updated', plan_title: '', plan_file_path: '' }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractPlanUpdated(parseMessageContent(msg))).toEqual({
       planTitle: '',
       planFilePath: '',
@@ -858,7 +859,7 @@ describe('extractPlanUpdated', () => {
       plan_file_path: '/p.md',
       update_agent_title: 'truthy-but-not-true',
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractPlanUpdated(parseMessageContent(msg))?.updateAgentTitle).toBe(false)
   })
 })
@@ -873,7 +874,7 @@ describe('extractPlanFilePath', () => {
       type: 'plan_execution',
       plan_file_path: '/home/user/.claude/plans/plan.md',
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractPlanFilePath(parseMessageContent(msg))).toBe('/home/user/.claude/plans/plan.md')
   })
 
@@ -883,7 +884,7 @@ describe('extractPlanFilePath', () => {
       type: 'plan_execution',
       plan_file_path: '/path/to/plan.md',
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(ccMsg, peMsg))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(ccMsg, peMsg))
     expect(extractPlanFilePath(parseMessageContent(msg))).toBe('/path/to/plan.md')
   })
 
@@ -892,7 +893,7 @@ describe('extractPlanFilePath', () => {
       type: 'plan_execution',
       plan_file_path: '/path/plan.md',
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, content)
+    const msg = makeMsg(MessageSource.LEAPMUX, content)
     expect(extractPlanFilePath(parseMessageContent(msg))).toBe('/path/plan.md')
   })
 
@@ -901,13 +902,13 @@ describe('extractPlanFilePath', () => {
       type: 'plan_execution',
       plan_file_path: '',
     }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractPlanFilePath(parseMessageContent(msg))).toBeUndefined()
   })
 
   it('returns undefined for non-plan_execution messages', () => {
     const content = { type: 'context_cleared' }
-    const msg = makeMsg(MessageRole.LEAPMUX, wrap(content))
+    const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractPlanFilePath(parseMessageContent(msg))).toBeUndefined()
   })
 })

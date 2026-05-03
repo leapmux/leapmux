@@ -5,7 +5,6 @@ import {
   AvailableModelSchema,
   AvailableOptionGroupSchema,
   AvailableOptionSchema,
-  MessageRole,
 } from '~/generated/leapmux/v1/agent_pb'
 
 /** Build a ClassificationInput from a parent object and optional wrapper, for tests. */
@@ -18,7 +17,6 @@ export function input(
     topLevel: parent ?? null,
     parentObject: parent,
     wrapper: wrapper ?? null,
-    messageRole: MessageRole.SYSTEM,
   }
 }
 

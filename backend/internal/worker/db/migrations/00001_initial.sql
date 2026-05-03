@@ -32,7 +32,7 @@ CREATE TABLE messages (
     id                  TEXT PRIMARY KEY,
     agent_id            TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     seq                 INTEGER NOT NULL,
-    role                INTEGER NOT NULL,
+    source              INTEGER NOT NULL,
     content             BLOB NOT NULL,
     content_compression INTEGER NOT NULL,
     depth               INTEGER NOT NULL DEFAULT 0,

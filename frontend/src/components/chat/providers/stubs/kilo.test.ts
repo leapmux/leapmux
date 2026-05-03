@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
 import { acpResultDividerRenderer } from '../acp/renderers'
 import { providerFor } from '../registry'
@@ -239,7 +239,7 @@ describe('kilo result divider renderer', () => {
 
   it('is returned by plugin.renderMessage for result_divider', () => {
     const parsed = { stopReason: 'end_turn' }
-    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed, MessageRole.TURN_END)
+    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed)
     expect(result).not.toBeNull()
   })
 })
@@ -259,7 +259,7 @@ describe('kilo tool_call renderer', () => {
     }
     const category = plugin.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
-    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    const result = plugin.renderMessage!(category, toolUse)
     expect(result).not.toBeNull()
   })
 
@@ -271,7 +271,7 @@ describe('kilo tool_call renderer', () => {
       status: 'pending',
     }
     const category = plugin.classify(input(toolUse))
-    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    const result = plugin.renderMessage!(category, toolUse)
     expect(result).not.toBeNull()
   })
 })
@@ -353,7 +353,7 @@ describe('kilo tool_call_update renderer', () => {
     }
     const category = plugin.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
-    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    const result = plugin.renderMessage!(category, toolUse)
     expect(result).not.toBeNull()
   })
 
@@ -369,7 +369,7 @@ describe('kilo tool_call_update renderer', () => {
       content: [],
     }
     const category = plugin.classify(input(toolUse))
-    const result = plugin.renderMessage!(category, toolUse, MessageRole.ASSISTANT)
+    const result = plugin.renderMessage!(category, toolUse)
     expect(result).not.toBeNull()
   })
 

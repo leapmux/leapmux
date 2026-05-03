@@ -2,7 +2,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import './claude'
 import './opencode'
 import './pi'
@@ -20,7 +20,7 @@ const { renderMessageContent } = await import('../messageRenderers')
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(parsed, MessageRole.USER, context, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
 }
 
@@ -42,7 +42,7 @@ function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: Render
     toolUse,
     content: [],
   }
-  const result = renderMessageContent(toolUse, MessageRole.ASSISTANT, context, category, AgentProvider.OPENCODE)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
   return render(() => result)
 }
 
@@ -69,7 +69,7 @@ function renderPiReadResult(content: string, startArgs: Record<string, unknown> 
     args: startArgs,
   }
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(payload, MessageRole.ASSISTANT, {
+  const result = renderMessageContent(payload, {
     spanType: 'read',
     toolUseParsed: parsed(start),
   }, category, AgentProvider.PI)

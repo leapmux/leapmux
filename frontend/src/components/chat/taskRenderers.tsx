@@ -10,7 +10,7 @@ import {
 
 /** Renders task_notification system messages as a tool-use-style block with Check icon. */
 export const taskNotificationRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
+  render(parsed, context) {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'task_notification')
       return null
 

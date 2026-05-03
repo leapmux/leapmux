@@ -1,6 +1,5 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { renderNotificationThread } from './notificationRenderers'
 import { resultRenderer } from './providers/claude/notifications'
@@ -283,7 +282,7 @@ describe('renderNotificationThread: plan_updated', () => {
 
 /** Render a result message and return trimmed text content. */
 function renderResultText(parsed: Record<string, unknown>): string {
-  const result = resultRenderer.render(parsed, MessageRole.SYSTEM)
+  const result = resultRenderer.render(parsed)
   if (result === null)
     return ''
   const { container } = render(() => result)
@@ -292,7 +291,7 @@ function renderResultText(parsed: Record<string, unknown>): string {
 
 /** Check if the result is rendered with danger color (error style). */
 function isRenderedAsError(parsed: Record<string, unknown>): boolean {
-  const result = resultRenderer.render(parsed, MessageRole.SYSTEM)
+  const result = resultRenderer.render(parsed)
   if (result === null)
     return false
   const { container } = render(() => result)
@@ -302,7 +301,7 @@ function isRenderedAsError(parsed: Record<string, unknown>): boolean {
 
 describe('resultRenderer', () => {
   it('returns null for non-result messages', () => {
-    expect(resultRenderer.render({ type: 'other' }, MessageRole.SYSTEM)).toBeNull()
+    expect(resultRenderer.render({ type: 'other' })).toBeNull()
   })
 
   it('renders is_error=true as error', () => {

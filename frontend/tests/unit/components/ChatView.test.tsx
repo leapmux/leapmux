@@ -5,7 +5,7 @@ import { createSignal } from 'solid-js'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { AgentProvider, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 
 const A_TXT_RE = /a\.txt/
 const B_TXT_RE = /b\.txt/
@@ -82,7 +82,7 @@ function makeCodexCommandMessage(params: {
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id: params.id,
-    role: MessageRole.ASSISTANT,
+    source: MessageSource.AGENT,
     content: new TextEncoder().encode(JSON.stringify({
       item: {
         type: 'commandExecution',
@@ -117,7 +117,7 @@ function makeCodexFileChangeMessage(params: {
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id: params.id,
-    role: MessageRole.ASSISTANT,
+    source: MessageSource.AGENT,
     content: new TextEncoder().encode(JSON.stringify({
       item: {
         type: 'fileChange',
@@ -149,7 +149,7 @@ function makeCodexReasoningMessage(params: {
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id: params.id,
-    role: MessageRole.ASSISTANT,
+    source: MessageSource.AGENT,
     content: new TextEncoder().encode(JSON.stringify({
       item: {
         type: 'reasoning',
@@ -178,7 +178,7 @@ function makeCodexTurnPlanMessage(params: {
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id: params.id,
-    role: MessageRole.ASSISTANT,
+    source: MessageSource.AGENT,
     content: new TextEncoder().encode(JSON.stringify({
       method: 'turn/plan/updated',
       params: {
@@ -206,7 +206,7 @@ function makeCodexWebSearchMessage(params: {
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id: params.id,
-    role: MessageRole.ASSISTANT,
+    source: MessageSource.AGENT,
     content: new TextEncoder().encode(JSON.stringify({
       item: {
         type: 'webSearch',
@@ -231,8 +231,9 @@ function makeCodexHiddenLifecycleMessage(id: string = 'codex-hidden'): AgentChat
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id,
-    role: MessageRole.LEAPMUX,
+    source: MessageSource.LEAPMUX,
     content: new TextEncoder().encode(JSON.stringify({
+      type: 'notification_thread',
       old_seqs: [],
       messages: [
         {
@@ -252,7 +253,7 @@ function makeClaudeEnterPlanModeResultMessage(id: string = 'claude-enter-plan-re
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id,
-    role: MessageRole.USER,
+    source: MessageSource.USER,
     content: new TextEncoder().encode(JSON.stringify({
       type: 'user',
       message: {

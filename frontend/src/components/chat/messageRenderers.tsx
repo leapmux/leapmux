@@ -3,7 +3,6 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { MessageUiKey } from './messageUiKeys'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { CommandStreamSegment } from '~/stores/chat.store'
 import Brain from 'lucide-solid/icons/brain'
@@ -75,7 +74,7 @@ export interface RenderContext {
 
 export interface MessageContentRenderer {
   /** Try to render the parsed JSON content. Return null if this renderer doesn't handle it. */
-  render: (parsed: unknown, role: MessageRole, context?: RenderContext) => JSX.Element | null
+  render: (parsed: unknown, context?: RenderContext) => JSX.Element | null
 }
 
 /**
@@ -227,7 +226,6 @@ export function UserContentMessage(props: { parsed: unknown }): JSX.Element {
  */
 export function renderMessageContent(
   parsedOrRawJson: unknown,
-  role: MessageRole,
   context?: RenderContext,
   category?: MessageCategory,
   agentProvider?: AgentProvider,
@@ -239,7 +237,7 @@ export function renderMessageContent(
 
     const provider = agentProvider ?? AgentProvider.CLAUDE_CODE
     const plugin = providerFor(provider) ?? providerFor(AgentProvider.CLAUDE_CODE)
-    const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, role, context) ?? null
+    const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, context) ?? null
     if (result !== null)
       return result
   }

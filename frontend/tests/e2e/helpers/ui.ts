@@ -41,8 +41,8 @@ export async function waitForControlBanner(page: Page) {
   return banner
 }
 
-/** CSS selector for assistant message bubbles. Exported for use in browser-context code (e.g. waitForFunction). */
-export const ASSISTANT_BUBBLE_SELECTOR = '[data-testid="message-bubble"][data-role="assistant"]'
+/** CSS selector for agent message bubbles. Exported for use in browser-context code (e.g. waitForFunction). */
+export const ASSISTANT_BUBBLE_SELECTOR = '[data-testid="message-bubble"][data-role="agent"]'
 
 /** Return a locator for all assistant message bubbles. */
 export function assistantBubbles(page: Page) {

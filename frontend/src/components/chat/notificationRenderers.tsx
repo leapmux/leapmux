@@ -37,7 +37,7 @@ function displayValue(key: string, value: string): string {
 
 /** Handles settings change notifications: {"type":"settings_changed","changes":{...}} */
 export const settingsChangedRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.SettingsChanged)
       return null
     const changes = parsed.changes as Record<string, { old: string, new: string, label?: string, oldLabel?: string, newLabel?: string }>
@@ -63,7 +63,7 @@ export const settingsChangedRenderer: MessageContentRenderer = {
 
 /** Handles interrupt notifications: {"type":"interrupted"} */
 export const interruptedRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.Interrupted)
       return null
     return <div class={controlResponseMessage}>Interrupted</div>
@@ -75,7 +75,7 @@ export const interruptedRenderer: MessageContentRenderer = {
  * Claude `system` message: `{type:"system",subtype:"status",status:"compacting"}`.
  */
 export const compactingRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed))
       return null
     if (!(parsed.type === 'system' && parsed.subtype === 'status' && parsed.status === NOTIFICATION_TYPE.Compacting))
@@ -90,7 +90,7 @@ export const compactingRenderer: MessageContentRenderer = {
 }
 
 export const contextClearedRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.ContextCleared)
       return null
     return <div class={controlResponseMessage}>Context cleared</div>
@@ -99,7 +99,7 @@ export const contextClearedRenderer: MessageContentRenderer = {
 
 /** Handles agent error notifications: {"type":"agent_error","error":"..."} */
 export const agentErrorRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.AgentError)
       return null
     const error = pickString(parsed, 'error', 'Unknown error')
@@ -116,7 +116,7 @@ export const agentErrorRenderer: MessageContentRenderer = {
  * - Without:                       "Plan updated: <title>".
  */
 export const planUpdatedRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.PlanUpdated)
       return null
     const title = pickString(parsed, 'plan_title')
@@ -152,7 +152,7 @@ function formatApiRetryLabel(data: Record<string, unknown>): string {
 
 /** Handles api_retry notifications: {"type":"system","subtype":"api_retry","attempt":N,"max_retries":N,...} */
 export const apiRetryRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'api_retry')
       return null
     return <div class={controlResponseMessage}>{formatApiRetryLabel(parsed as Record<string, unknown>)}</div>
@@ -169,7 +169,7 @@ export const apiRetryRenderer: MessageContentRenderer = {
  *  - Codex raw JSON-RPC notification: `{method:"thread/compacted",params:{threadId,turnId}}`
  */
 export const compactBoundaryRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed))
       return null
     const isClaude = parsed.type === 'system' && parsed.subtype === 'compact_boundary'
@@ -192,7 +192,7 @@ export const compactBoundaryRenderer: MessageContentRenderer = {
 
 /** Handles microcompact_boundary messages: {"type":"system","subtype":"microcompact_boundary","microcompactMetadata":{"trigger":...,"preTokens":number,"tokensSaved":number,...}} */
 export const microcompactBoundaryRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'microcompact_boundary')
       return null
     const meta = pickFirstObject(parsed, ['microcompactMetadata', 'microcompact_metadata'])
@@ -209,7 +209,7 @@ export const microcompactBoundaryRenderer: MessageContentRenderer = {
 
 /** Handles system init messages: {"type":"system","subtype":"init","session_id":"..."} — hidden at MessageBubble level */
 export const systemInitRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'init')
       return null
     return <span />
@@ -218,7 +218,7 @@ export const systemInitRenderer: MessageContentRenderer = {
 
 /** Handles control response messages: {"isSynthetic":true,"controlResponse":{"action":"approved"|"rejected","comment":"..."}} */
 export const controlResponseRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || !isObject(parsed.controlResponse))
       return null
 

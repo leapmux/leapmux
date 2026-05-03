@@ -16,6 +16,21 @@ import (
 	"github.com/leapmux/leapmux/internal/util/pathutil"
 )
 
+// Claude Code wire-format envelope types. Top-level `type` field on each
+// NDJSON line emitted by the Claude Code SDK. Centralized here so the
+// dispatch switches and downstream branches share a single source of
+// truth and a typo turns into a compile error rather than a silent
+// fall-through.
+const (
+	claudeMsgTypeAssistant            = "assistant"
+	claudeMsgTypeUser                 = "user"
+	claudeMsgTypeSystem               = "system"
+	claudeMsgTypeResult               = "result"
+	claudeMsgTypeControlRequest       = "control_request"
+	claudeMsgTypeControlCancelRequest = "control_cancel_request"
+	claudeMsgTypeControlResponse      = "control_response"
+)
+
 // contextUsageSnapshot tracks token usage for debounced broadcasting.
 type contextUsageSnapshot struct {
 	mu                       sync.Mutex
@@ -48,25 +63,13 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 		msgType = envelope.Type
 	}
 
-	var role leapmuxv1.MessageRole
-	switch msgType {
-	case "user":
-		role = leapmuxv1.MessageRole_MESSAGE_ROLE_USER
-	case "assistant":
-		role = leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT
-	case "system":
-		role = leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM
-	case "result":
-		role = leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END
-	}
-
 	slog.Debug("HandleOutput", "agent_id", a.agentID, "type", msgType, "len", len(content))
 
 	switch msgType {
-	case "assistant", "system", "result":
-		a.handlePersistableMessage(content, msgType, role)
+	case claudeMsgTypeAssistant, claudeMsgTypeSystem, claudeMsgTypeResult:
+		a.handlePersistableMessage(content, msgType)
 
-	case "user":
+	case claudeMsgTypeUser:
 		if isSimpleUserTextEcho(content) {
 			// Reset tool use counter at the start of each user turn.
 			// Only reset for user text echoes, not tool_result messages,
@@ -75,24 +78,24 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 			a.turnToolUses = 0
 			a.mu.Unlock()
 		} else {
-			a.handlePersistableMessage(content, msgType, role)
+			a.handlePersistableMessage(content, msgType)
 		}
 
 	case NotificationTypeContextCleared, NotificationTypeInterrupted, NotificationTypePlanExecution:
 		if msgType == NotificationTypeInterrupted {
 			a.sink.ResetSpans()
 		}
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, content); err != nil {
+		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
 			slog.Error("persist agent notification", "agent_id", a.agentID, "type", msgType, "error", err)
 		}
 
-	case "control_request":
+	case claudeMsgTypeControlRequest:
 		a.claudeCodeHandleControlRequest(content)
 
-	case "control_cancel_request":
+	case claudeMsgTypeControlCancelRequest:
 		a.claudeCodeHandleControlCancel(content)
 
-	case "control_response":
+	case claudeMsgTypeControlResponse:
 		a.claudeCodeHandleControlResponse(content)
 
 	case NotificationTypeRateLimitEvent:
@@ -237,11 +240,22 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 }
 
 // handlePersistableMessage handles assistant, system, user, and result messages.
-func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType string, role leapmuxv1.MessageRole) {
-	if msgType == "system" {
+//
+// Source for persistence is derived from msgType: USER for the `user`
+// envelope (which on the Claude wire includes both human input and
+// tool_result echoes under role:"user"); AGENT for assistant text,
+// system notifications, and the terminal `result` envelope. `result`
+// routes through PersistTurnEnd so its source value is unused.
+func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType string) {
+	source := leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
+	if msgType == claudeMsgTypeUser {
+		source = leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
+	}
+
+	if msgType == claudeMsgTypeSystem {
 		a.claudeCodeHandleSystemInit(content)
 
-		if isNotificationThreadable(content, role) {
+		if isNotificationThreadable(content, source) {
 			if statusVal, ok := extractStatusValue(content); ok {
 				prev := a.lastAgentStatus
 				a.lastAgentStatus = statusVal
@@ -249,12 +263,13 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 					return
 				}
 			}
-			// Persist the raw `system` message verbatim (role is already
-			// SYSTEM here). Includes `compacting` status, api_retry, and
-			// other notification-threaded subtypes — the renderer extracts
-			// `subtype`/`status` from the raw envelope so future fields
-			// like `tokensBefore`/`durationMs` don't get discarded.
-			if err := a.sink.PersistNotification(role, content); err != nil {
+			// Persist the raw `system` message verbatim (source is AGENT
+			// here — system notifications are agent-emitted). Includes
+			// `compacting` status, api_retry, and other notification-
+			// threaded subtypes — the renderer extracts `subtype`/`status`
+			// from the raw envelope so future fields like `tokensBefore`/
+			// `durationMs` don't get discarded.
+			if err := a.sink.PersistNotification(source, content); err != nil {
 				slog.Error("persist notification-threaded system message", "agent_id", a.agentID, "error", err)
 			}
 			return
@@ -271,7 +286,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// Extract agent context metadata from top-level assistant and result
 	// messages. Subagent messages (with parent_tool_use_id) have their own
 	// smaller context and would make the bar show a misleadingly low value.
-	if (msgType == "assistant" || msgType == "result") && env.ParentToolUseID == "" {
+	if (msgType == claudeMsgTypeAssistant || msgType == claudeMsgTypeResult) && env.ParentToolUseID == "" {
 		a.extractAndBroadcastUsage(&env, msgType)
 	}
 
@@ -285,14 +300,14 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// and tool name, for tool_result messages use the tool_use_id reference
 	// and look up the tool name from the span tracker.
 	var spanID, spanType string
-	if msgType == "assistant" {
+	if msgType == claudeMsgTypeAssistant {
 		for _, block := range env.ContentBlocks() {
 			if block.Type == "tool_use" && block.ID != "" {
 				spanID, spanType = block.ID, block.Name
 				break
 			}
 		}
-	} else if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+	} else if msgType == claudeMsgTypeUser {
 		for _, block := range env.ContentBlocks() {
 			if block.Type == "tool_result" && block.ToolUseID != "" {
 				spanID = block.ToolUseID
@@ -305,19 +320,19 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	// Detect plan mode from tool_result messages.
-	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+	if msgType == claudeMsgTypeUser {
 		a.detectPlanModeFromToolResult(&env)
 	}
 
 	// Enrich result messages with num_tool_uses.
-	if msgType == "result" {
+	if msgType == claudeMsgTypeResult {
 		content = a.enrichResultWithToolUses(content)
 	}
 
 	// Reserve the span color for tool_use messages (assistant with a spanID)
 	// so it is available at persist time, before the span is actually opened.
 	var spanColor int32
-	if msgType == "assistant" && spanID != "" {
+	if msgType == claudeMsgTypeAssistant && spanID != "" {
 		spanColor = a.sink.ReserveSpanColor(spanID, parentSpanID)
 	}
 
@@ -325,15 +340,24 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// This MUST happen before processAssistantBlocks (which opens spans)
 	// so the assistant message stays at the parent depth.
 	// closing is true when this is a tool_result that will close its span.
-	closing := role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER && spanID != ""
-	if err := a.sink.PersistMessage(role, content, SpanInfo{
+	closing := msgType == claudeMsgTypeUser && spanID != ""
+	spanInfo := SpanInfo{
 		ParentSpanID: parentSpanID,
 		SpanID:       spanID,
 		SpanType:     spanType,
 		SpanColor:    spanColor,
 		Closing:      closing,
-	}); err != nil {
-		slog.Error("persist agent message", "agent_id", a.agentID, "error", err)
+	}
+	var persistErr error
+	if msgType == claudeMsgTypeResult {
+		// Terminal turn-end envelope — routes through PersistTurnEnd so
+		// the sink fires the git-status auto-broadcast explicitly.
+		persistErr = a.sink.PersistTurnEnd(content, spanInfo)
+	} else {
+		persistErr = a.sink.PersistMessage(source, content, spanInfo)
+	}
+	if persistErr != nil {
+		slog.Error("persist agent message", "agent_id", a.agentID, "error", persistErr)
 	}
 
 	if spanType != "" {
@@ -344,13 +368,13 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	// plan file tracking, tool use counting, and span management.
 	// Runs after persist so spans open AFTER the tool_use message,
 	// keeping it at parent depth while its tool_result is indented.
-	if msgType == "assistant" {
+	if msgType == claudeMsgTypeAssistant {
 		a.processAssistantBlocks(&env)
 	}
 
 	// A single user message may contain multiple tool_result blocks
 	// (parallel tool calls), so close all of them.
-	if role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+	if msgType == claudeMsgTypeUser {
 		for _, block := range env.ContentBlocks() {
 			if block.Type == "tool_result" && block.ToolUseID != "" {
 				a.sink.CloseSpan(block.ToolUseID)
@@ -358,7 +382,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		}
 	}
 
-	if msgType == "result" {
+	if msgType == claudeMsgTypeResult {
 		// Auto-continue on retryable Claude result errors; reset on normal results.
 		if env.IsError && isRetryableClaudeResultError(env.Result) {
 			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
@@ -495,12 +519,12 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		"rate_limits": map[string]any{rlInfo.RateLimitType: tier},
 	})
 
-	// Persist the raw `rate_limit_event` envelope verbatim as SYSTEM. The
-	// frontend's extractRateLimitInfo / notification renderer reads
-	// `rate_limit_info` from this raw Claude-native shape (camelCase) —
-	// the persisted side stays in the SDK's format so notification
-	// rendering remains a passthrough.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, content); err != nil {
+	// Persist the raw `rate_limit_event` envelope verbatim as an
+	// agent-emitted notification. The frontend's extractRateLimitInfo /
+	// notification renderer reads `rate_limit_info` from this raw
+	// Claude-native shape (camelCase) — the persisted side stays in
+	// the SDK's format so notification rendering remains a passthrough.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}
 
@@ -528,7 +552,7 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 
 	snapshot := a.getOrCreateUsageSnapshot()
 
-	if msgType == "assistant" && env.Message.Usage != nil {
+	if msgType == claudeMsgTypeAssistant && env.Message.Usage != nil {
 		u := env.Message.Usage
 		snapshot.mu.Lock()
 		snapshot.InputTokens = u.InputTokens
@@ -538,7 +562,7 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 		snapshot.mu.Unlock()
 	}
 
-	if msgType == "result" && env.ModelUsage != nil {
+	if msgType == claudeMsgTypeResult && env.ModelUsage != nil {
 		// Find the context window for the primary model in the usage map.
 		// Top-level result messages include cumulative session-level usage
 		// that always contains the primary model's entry. Subagent results
@@ -557,7 +581,7 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 		snapshot.CacheCreationInputTokens > 0 || snapshot.CacheReadInputTokens > 0
 	if hasUsage {
 		now := time.Now()
-		shouldBroadcast := msgType == "result" ||
+		shouldBroadcast := msgType == claudeMsgTypeResult ||
 			now.Sub(snapshot.LastBroadcast) >= 10*time.Second
 		if shouldBroadcast {
 			snapshot.LastBroadcast = now
@@ -733,14 +757,19 @@ func extractToolUseResultMessage(raw json.RawMessage) string {
 
 // --- Notification threading helpers ---
 
-func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
-	switch role {
-	case leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX:
+// isNotificationThreadable decides whether a notification envelope can
+// participate in thread consolidation. Only invoked on the
+// PersistNotification path, so the AGENT branch always means
+// "agent-emitted system notification" — never assistant text or tool
+// content (those go through PersistMessage / PersistTurnEnd).
+func isNotificationThreadable(content []byte, source leapmuxv1.MessageSource) bool {
+	switch source {
+	case leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX:
 		var msg struct {
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(content, &msg); err != nil {
-			slog.Warn("notification threadable unmarshal failed", "role", "leapmux", "error", err)
+			slog.Warn("notification threadable unmarshal failed", "source", "leapmux", "error", err)
 			return false
 		}
 		switch msg.Type {
@@ -753,7 +782,7 @@ func isNotificationThreadable(content []byte, role leapmuxv1.MessageRole) bool {
 			return true
 		}
 		return false
-	case leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM:
+	case leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT:
 		return ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).Classify(content).Consolidatable()
 	default:
 		return false
@@ -800,7 +829,7 @@ func isSimpleUserTextEcho(content []byte) bool {
 		slog.Warn("user text echo unmarshal failed", "error", err)
 		return false
 	}
-	if msg.Type != "user" {
+	if msg.Type != claudeMsgTypeUser {
 		return false
 	}
 	trimmed := bytes.TrimSpace(msg.Message.Content)

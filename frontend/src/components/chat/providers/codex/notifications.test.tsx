@@ -1,6 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 
 // Importing the registry side-effect-registers the Codex plugin so the thread
 // renderer can dispatch into `notificationThreadEntry`.
@@ -17,7 +17,7 @@ function renderText(messages: unknown[]): string {
 }
 
 function renderCodexStatusText(parsed: Record<string, unknown>): string {
-  const result = codexNotificationRenderer(parsed, MessageRole.SYSTEM)
+  const result = codexNotificationRenderer(parsed)
   if (result === null)
     return ''
   const { container } = render(() => result)
@@ -68,7 +68,7 @@ describe('codexNotificationRenderer: MCP startup status', () => {
   })
 
   it('returns null for non-Codex notification shapes', () => {
-    expect(codexNotificationRenderer({ type: 'context_cleared' }, MessageRole.SYSTEM)).toBeNull()
+    expect(codexNotificationRenderer({ type: 'context_cleared' })).toBeNull()
   })
 })
 

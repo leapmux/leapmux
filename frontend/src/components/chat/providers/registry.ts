@@ -11,7 +11,7 @@ import type { Component, JSX } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
-import type { AgentInfo, AgentProvider, AvailableModel, AvailableOptionGroup, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider, AvailableModel, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -53,7 +53,6 @@ export interface AttachmentCapabilities {
 }
 
 export interface ClassificationInput extends ParsedMessageContent {
-  messageRole: MessageRole
   agentProvider?: AgentProvider
   spanId?: string
   spanType?: string
@@ -117,7 +116,6 @@ export interface Provider {
   renderMessage?: (
     category: MessageCategory,
     parsed: unknown,
-    role: MessageRole,
     context?: RenderContext,
   ) => JSX.Element | null
 

@@ -176,7 +176,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 		if extra != nil && extra(header.SessionUpdate, update) {
 			return
 		}
-		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{}); err != nil {
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{}); err != nil {
 			slog.Error("persist unknown acp sessionUpdate", "agent_id", b.agentID, "type", header.SessionUpdate, "error", err)
 		}
 	}
@@ -714,7 +714,7 @@ func (b *acpBase) persistTextMessage(sessionUpdate, text string) {
 		slog.Warn("marshal acp text content", "agent_id", b.agentID, "error", err)
 		return
 	}
-	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msgContent, SpanInfo{}); err != nil {
+	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msgContent, SpanInfo{}); err != nil {
 		slog.Error("persist acp text", "agent_id", b.agentID, "session_update", sessionUpdate, "error", err)
 	}
 }
@@ -731,7 +731,7 @@ func (b *acpBase) persistPromptResponse(
 	if enrich != nil {
 		resp = enrich(resp)
 	}
-	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, resp, SpanInfo{}); err != nil {
+	if err := b.sink.PersistTurnEnd(resp, SpanInfo{}); err != nil {
 		slog.Error("persist acp prompt result", "agent_id", b.agentID, "error", err)
 	}
 	b.sink.ResetSpans()
@@ -782,7 +782,7 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	// Tool calls that arrive already terminal (completed/failed/cancelled)
 	// are persisted as closing spans immediately — no open/close cycle.
 	if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
-		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist terminal acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
@@ -791,7 +791,7 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	}
 
 	spanColor := b.sink.ReserveSpanColor(tc.ToolCallID, "")
-	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
+	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 		SpanID: tc.ToolCallID, SpanType: spanType, SpanColor: spanColor,
 	}); err != nil {
 		slog.Error("persist acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "error", err)
@@ -840,7 +840,7 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		if spanType == "" {
 			spanType = acpUpdateToolCall
 		}
-		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 			SpanID: tcu.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
 			slog.Error("persist acp tool_call_update", "agent_id", b.agentID, "status", tcu.Status, "error", err)
@@ -1368,7 +1368,7 @@ func hasACPOption(options []*leapmuxv1.AvailableOption, id string) bool {
 }
 
 func (b *acpBase) handlePlan(update json.RawMessage) {
-	if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, update, SpanInfo{}); err != nil {
+	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{}); err != nil {
 		slog.Error("persist acp plan", "agent_id", b.agentID, "error", err)
 	}
 }
@@ -1406,7 +1406,7 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 		if extraMethod != nil && extraMethod(line) {
 			return
 		}
-		if err := b.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {
+		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw, SpanInfo{}); err != nil {
 			slog.Error("acp persist notification", "agent_id", b.agentID, "method", line.Method, "error", err)
 		}
 	}

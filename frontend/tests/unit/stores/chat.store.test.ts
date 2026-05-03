@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
 
 // Mock workerRpc for loadInitialMessages / loadOlderMessages / loadNewerMessages
@@ -13,7 +13,7 @@ vi.mock('~/api/workerRpc', () => ({
 function makeMessage(id: string, seq: bigint, deliveryError = '') {
   return create(AgentChatMessageSchema, {
     id,
-    role: MessageRole.USER,
+    source: MessageSource.USER,
     content: new TextEncoder().encode(`{"content":"test"}`),
     seq,
     deliveryError,
@@ -23,7 +23,7 @@ function makeMessage(id: string, seq: bigint, deliveryError = '') {
 function makeUserMessage(id: string, seq: bigint, content: string, deliveryError = '', agentProvider?: AgentProvider) {
   return create(AgentChatMessageSchema, {
     id,
-    role: MessageRole.USER,
+    source: MessageSource.USER,
     content: new TextEncoder().encode(JSON.stringify({ content })),
     contentCompression: ContentCompression.NONE,
     seq,
@@ -42,7 +42,7 @@ function makeUserMessageWithAttachments(
 ) {
   return create(AgentChatMessageSchema, {
     id,
-    role: MessageRole.USER,
+    source: MessageSource.USER,
     content: new TextEncoder().encode(JSON.stringify({ content, attachments })),
     contentCompression: ContentCompression.NONE,
     seq,
@@ -69,7 +69,7 @@ function makeTodoWriteMessage(
   }
   return create(AgentChatMessageSchema, {
     id,
-    role: MessageRole.ASSISTANT,
+    source: MessageSource.AGENT,
     content: new TextEncoder().encode(JSON.stringify(raw)),
     contentCompression: ContentCompression.NONE,
     seq,

@@ -6,7 +6,6 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { ContentBlock } from '~/lib/contentBlocks'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -27,20 +26,20 @@ export const ACP_FILE_PATH_KEYS = ['filePath', 'path', 'file_path'] as const
 export const ACP_OLD_TEXT_KEYS = ['oldText', 'oldString', 'old_string'] as const
 export const ACP_NEW_TEXT_KEYS = ['newText', 'newString', 'new_string'] as const
 
-export function renderACPMessage(category: MessageCategory, parsed: unknown, role: MessageRole, context?: RenderContext): JSX.Element | null {
+export function renderACPMessage(category: MessageCategory, parsed: unknown, context?: RenderContext): JSX.Element | null {
   if (category.kind === 'assistant_text')
     return acpAgentMessageRenderer(parsed)
   if (category.kind === 'assistant_thinking')
-    return acpThoughtRenderer(parsed, role, context)
+    return acpThoughtRenderer(parsed, context)
   if (category.kind === 'result_divider')
     return acpResultDividerRenderer(parsed)
   if (category.kind === 'tool_use') {
     const cat = category as { toolName: string, toolUse: Record<string, unknown> }
     if (cat.toolName === ACP_SESSION_UPDATE.PLAN)
-      return acpPlanRenderer(cat.toolUse, role, context)
+      return acpPlanRenderer(cat.toolUse, context)
     if (cat.toolUse.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE)
-      return acpToolCallUpdateRenderer(cat.toolUse, role, context)
-    return acpToolCallRenderer(cat.toolUse, role, context)
+      return acpToolCallUpdateRenderer(cat.toolUse, context)
+    return acpToolCallRenderer(cat.toolUse, context)
   }
   if (category.kind === 'user_content')
     return <UserContentMessage parsed={parsed} />

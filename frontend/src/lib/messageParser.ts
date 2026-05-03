@@ -1,11 +1,18 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { TodoItem } from '~/stores/chat.store'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { decompressContentToString } from '~/lib/decompress'
 import { isObject, pickFirstNumber, pickNumber } from '~/lib/jsonPick'
 import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { normalizeTodoStatus, rawTodosToItems } from '~/stores/chat.store'
+
+/**
+ * Content-type discriminator emitted by the backend's `wrapNotifContent`
+ * for every notification-thread row. Match this constant in lockstep with
+ * `notifThreadWrapperType` in `backend/internal/worker/service/output.go`.
+ */
+export const NOTIFICATION_THREAD_TYPE = 'notification_thread'
 
 /**
  * The result of parsing a compressed AgentChatMessage. Every field is
@@ -40,9 +47,10 @@ const parseCache = new WeakMap<AgentChatMessage, ParsedMessageContent>()
  * Decompress and parse an AgentChatMessage's content in a single pass.
  * Never throws -- returns safe defaults on any failure.
  *
- * Notification-threaded messages use a wrapper format:
- *   {"old_seqs": [...], "messages": [{...}, ...]}
- * Both LEAPMUX and SYSTEM role messages may use this format.
+ * Notification-threaded messages use the wrapper format:
+ *   {"type":"notification_thread","old_seqs":[...],"messages":[{...},...]}
+ * Detection is purely shape-based — `type === 'notification_thread'`
+ * uniquely identifies the wrapper, decoupled from the persisted source.
  * All other messages are stored as raw JSON (no wrapper).
  */
 export function parseMessageContent(message: AgentChatMessage): ParsedMessageContent {
@@ -62,10 +70,12 @@ function parseMessageContentImpl(message: AgentChatMessage): ParsedMessageConten
   try {
     const obj = JSON.parse(text)
 
-    // Notification-threaded messages use the wrapper format for consolidation.
-    // Both LEAPMUX and SYSTEM role messages may use this format (e.g. api_retry,
-    // compact_boundary, microcompact_boundary are stored with SYSTEM role).
-    if ((message.role === MessageRole.LEAPMUX || message.role === MessageRole.SYSTEM) && obj?.messages && Array.isArray(obj.messages)) {
+    // Notification-threaded messages are identified by their explicit
+    // `type: "notification_thread"` discriminator. The discriminator is
+    // emitted by the backend's wrapNotifContent for every notification
+    // thread row regardless of source (AGENT or LEAPMUX), so the parser
+    // does not need to look at message.source.
+    if (obj?.type === NOTIFICATION_THREAD_TYPE && Array.isArray(obj.messages)) {
       const wrapper = { old_seqs: obj.old_seqs ?? [], messages: obj.messages }
 
       if (obj.messages.length === 0)
@@ -145,7 +155,11 @@ export function codexPlanToTodos(plan: unknown[]): TodoItem[] {
 
 /** Extract TodoWrite todos from a parsed assistant message. Returns null if not applicable. */
 export function extractTodos(message: AgentChatMessage, parsed: ParsedMessageContent): TodoItem[] | null {
-  if (message.role !== MessageRole.ASSISTANT)
+  // Source gate: a USER-side row may legitimately echo back an
+  // assistant-shape tool_use envelope (Claude tool_result chunks
+  // arrive with role:"user" on the wire). Treating those as todos
+  // would surface stale TodoWrite contents on the user side.
+  if (message.source !== MessageSource.AGENT)
     return null
   const parent = parsed.parentObject
   if (!parent)

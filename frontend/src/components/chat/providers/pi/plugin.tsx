@@ -5,7 +5,6 @@ import type { RenderContext } from '../../messageRenderers'
 import type { FileEditDiffSource } from '../../results/fileEditDiff'
 import type { ClassificationInput, Provider, ToolResultMeta } from '../registry'
 import type { PiExtensionResponse } from './controlResponse'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -86,24 +85,23 @@ function formatPiDiffSources(sources: FileEditDiffSource[]): string | null {
 type PiRenderer = (
   category: MessageCategory,
   parsed: unknown,
-  role: MessageRole,
   context: RenderContext | undefined,
 ) => JSX.Element | null
 
 const PI_RENDERERS: Partial<Record<MessageCategory['kind'], PiRenderer>> = {
-  assistant_text: (_cat, parsed, role, context) =>
-    <PiAssistantMessage parsed={parsed} role={role} context={context} />,
-  assistant_thinking: (_cat, parsed, role, context) =>
-    <PiAssistantThinking parsed={parsed} role={role} context={context} />,
-  tool_use: (category, _parsed, role, context) => {
+  assistant_text: (_cat, parsed, context) =>
+    <PiAssistantMessage parsed={parsed} context={context} />,
+  assistant_thinking: (_cat, parsed, context) =>
+    <PiAssistantThinking parsed={parsed} context={context} />,
+  tool_use: (category, _parsed, context) => {
     const cat = category as { toolName: string, toolUse: Record<string, unknown> }
-    return <PiToolExecutionRenderer parsed={cat.toolUse} role={role} context={context} />
+    return <PiToolExecutionRenderer parsed={cat.toolUse} context={context} />
   },
-  tool_result: (_cat, parsed, role, context) =>
-    <PiToolResultRenderer parsed={parsed} role={role} context={context} />,
+  tool_result: (_cat, parsed, context) =>
+    <PiToolResultRenderer parsed={parsed} context={context} />,
   result_divider: (_cat, parsed) => renderPiResultDivider(parsed),
   user_content: (_cat, parsed) => <UserContentMessage parsed={parsed} />,
-  plan_execution: (_cat, parsed, _role, context) => {
+  plan_execution: (_cat, parsed, context) => {
     const obj = isObject(parsed) ? parsed : null
     const text = obj && typeof obj.content === 'string' ? obj.content : ''
     return text ? <PlanExecutionMessage text={text} context={context} /> : null
@@ -236,6 +234,9 @@ const piPlugin: Provider = {
       // the synthetic user_content row, and tool results render through the
       // tool_execution_* span. Hide these to avoid duplicates; only the
       // assistant's text/thinking message_end should reach the chat view.
+      // Pi's wire envelope carries the message author under `role` (Anthropic
+      // Messages API style), distinct from the proto-side MessageSource that
+      // describes who persisted the row. Read the wire field by name.
       const messageRole = pickString(pickObject(parent, 'message'), 'role')
       if (messageRole !== 'assistant')
         return { kind: 'hidden' }
@@ -272,8 +273,8 @@ const piPlugin: Provider = {
     return { kind: 'unknown' }
   },
 
-  renderMessage(category: MessageCategory, parsed: unknown, role: MessageRole, context?: RenderContext): JSX.Element | null {
-    return PI_RENDERERS[category.kind]?.(category, parsed, role, context) ?? null
+  renderMessage(category: MessageCategory, parsed: unknown, context?: RenderContext): JSX.Element | null {
+    return PI_RENDERERS[category.kind]?.(category, parsed, context) ?? null
   },
 
   toolResultMeta: piToolResultMeta,

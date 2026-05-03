@@ -51,7 +51,7 @@ func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, msg.Role)
+	assert.True(t, msg.TurnEnd, "agent_end must route through PersistTurnEnd")
 
 	assert.Equal(t, 1, sink.ResetSpanCount(), "agent_end should reset spans")
 	require.Equal(t, 1, sink.SessionInfoCount())
@@ -116,7 +116,7 @@ func TestHandlePiOutput_MessageEnd_PersistsAssistantMessage(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msg.Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	assert.JSONEq(t, string(raw), string(msg.Content))
 }
 
@@ -131,7 +131,7 @@ func TestHandlePiOutput_MessageEnd_AugmentsUsageAndBroadcastsSessionInfo(t *test
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msg.Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 
 	var persisted map[string]any
 	require.NoError(t, json.Unmarshal(msg.Content, &persisted))
@@ -168,7 +168,7 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	msgs := sink.Messages()
 	require.Equal(t, 2, len(msgs))
 	result := msgs[1]
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, result.Role)
+	assert.True(t, result.TurnEnd, "agent_end must route through PersistTurnEnd")
 
 	var persisted map[string]any
 	require.NoError(t, json.Unmarshal(result.Content, &persisted))
@@ -285,7 +285,7 @@ func TestHandlePiOutput_QueueUpdate_BroadcastsDepth(t *testing.T) {
 	assert.Equal(t, 1, info["pi_follow_up_depth"])
 }
 
-func TestHandlePiOutput_CompactionEvents_PersistAsSystemNotification(t *testing.T) {
+func TestHandlePiOutput_CompactionEvents_PersistAsAgentNotification(t *testing.T) {
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -298,12 +298,12 @@ func TestHandlePiOutput_CompactionEvents_PersistAsSystemNotification(t *testing.
 
 	require.Equal(t, 2, sink.NotificationCount())
 	for _, n := range sink.PersistedNotifications() {
-		assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, n.Role,
-			"Pi-emitted lifecycle events must persist as SYSTEM (LEAPMUX is reserved for worker-synthesized envelopes)")
+		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, n.Source,
+			"Pi-emitted lifecycle events must persist as AGENT (LEAPMUX is reserved for worker-synthesized envelopes)")
 	}
 }
 
-func TestHandlePiOutput_AutoRetryEvents_PersistAsSystemNotification(t *testing.T) {
+func TestHandlePiOutput_AutoRetryEvents_PersistAsAgentNotification(t *testing.T) {
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -316,11 +316,11 @@ func TestHandlePiOutput_AutoRetryEvents_PersistAsSystemNotification(t *testing.T
 
 	require.Equal(t, 2, sink.NotificationCount())
 	for _, n := range sink.PersistedNotifications() {
-		assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, n.Role)
+		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, n.Source)
 	}
 }
 
-func TestHandlePiOutput_ExtensionError_PersistAsSystemNotification(t *testing.T) {
+func TestHandlePiOutput_ExtensionError_PersistAsAgentNotification(t *testing.T) {
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -329,7 +329,7 @@ func TestHandlePiOutput_ExtensionError_PersistAsSystemNotification(t *testing.T)
 	)))
 
 	require.Equal(t, 1, sink.NotificationCount())
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, sink.LastNotification().Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, sink.LastNotification().Source)
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_DialogPersistsControlRequest(t *testing.T) {
@@ -392,7 +392,7 @@ func TestHandlePiOutput_ExtensionUIRequest_DialogWithoutIDIsDropped(t *testing.T
 	assert.Empty(t, sink.BroadcastControls())
 }
 
-func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsSystem(t *testing.T) {
+func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsAgent(t *testing.T) {
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -402,8 +402,8 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsSystem(t *testing.
 	// Single raw passthrough — no synthesized agent_notify wrapper.
 	require.Equal(t, 1, sink.NotificationCount(), "single raw extension_ui_request notification persisted")
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
-		"Pi-emitted notify must persist as SYSTEM (the agent is the source)")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+		"Pi-emitted notify must persist as AGENT (the agent is the source)")
 	assert.JSONEq(t, rawLine, string(last.Content),
 		"raw envelope must be preserved verbatim so renderers can read every method-specific field")
 
@@ -425,7 +425,7 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyMissingNotifyTypePreservesRaw(t
 
 	require.Equal(t, 1, sink.NotificationCount())
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
 	// notifyType absent in the raw — renderer is responsible for defaulting to "info".
 	assert.NotContains(t, string(last.Content), `"notifyType"`)
 	assert.Empty(t, sink.Notifications(), "no synthesized agent_notify on the side channel")
@@ -538,12 +538,12 @@ func TestHandlePiOutput_ResponseLineWithoutPendingID_LoggedNotPersisted(t *testi
 	assert.Equal(t, 0, sink.NotificationCount())
 }
 
-func TestHandlePiOutput_UnknownEventType_PersistedAsAssistant(t *testing.T) {
+func TestHandlePiOutput_UnknownEventType_PersistedAsAgent(t *testing.T) {
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
 	handlePiOutput(a, parseLine([]byte(`{"type":"future_event","stuff":1}`)))
 
 	require.Equal(t, 1, sink.MessageCount())
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, sink.Messages()[0].Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, sink.Messages()[0].Source)
 }

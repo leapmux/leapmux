@@ -42,6 +42,42 @@ describe('parseRawGrepGlobResult', () => {
       content: '',
     })
   })
+
+  it('parses count-mode trailing summary "Found N total occurrences across M files."', () => {
+    // Claude's Grep `output_mode: "count"` raw text places per-file `path:count`
+    // lines first and the summary on the last line (separated by a blank line).
+    const raw = 'a/x.ts:5\na/y.ts:2\n\nFound 7 total occurrences across 2 files.'
+    expect(parseRawGrepGlobResult(raw, 'Grep')).toEqual({
+      numFiles: 2,
+      numLines: 0,
+      numMatches: 7,
+      mode: 'count',
+      filenames: [],
+      content: 'a/x.ts:5\na/y.ts:2',
+    })
+  })
+
+  it('parses count-mode trailing summary in singular form', () => {
+    const raw = 'a/x.ts:1\n\nFound 1 total occurrence across 1 file.'
+    expect(parseRawGrepGlobResult(raw, 'Grep')).toEqual({
+      numFiles: 1,
+      numLines: 0,
+      numMatches: 1,
+      mode: 'count',
+      filenames: [],
+      content: 'a/x.ts:1',
+    })
+  })
+
+  it('parses count-mode trailing summary with pagination suffix', () => {
+    const raw = 'a/x.ts:5\na/y.ts:2\n\nFound 7 total occurrences across 2 files. with pagination = limit: 2'
+    const parsed = parseRawGrepGlobResult(raw, 'Grep')
+    expect(parsed.mode).toBe('count')
+    expect(parsed.numFiles).toBe(2)
+    expect(parsed.numMatches).toBe(7)
+    expect(parsed.filenames).toEqual([])
+    expect(parsed.content).toBe('a/x.ts:5\na/y.ts:2')
+  })
 })
 
 describe('claudeGrepFromToolResult', () => {
@@ -75,6 +111,16 @@ describe('claudeGrepFromToolResult', () => {
     const source = claudeGrepFromToolResult(null, 'Found 1 file\n/a.ts')
     expect(source.numFiles).toBe(1)
     expect(source.filenames).toEqual(['/a.ts'])
+  })
+
+  it('threads count-mode mode/numMatches through the subagent fallback', () => {
+    const raw = 'a/x.ts:5\na/y.ts:2\n\nFound 7 total occurrences across 2 files.'
+    const source = claudeGrepFromToolResult(null, raw)
+    expect(source.mode).toBe('count')
+    expect(source.numMatches).toBe(7)
+    expect(source.numFiles).toBe(2)
+    expect(source.filenames).toEqual([])
+    expect(source.content).toBe('a/x.ts:5\na/y.ts:2')
   })
 })
 

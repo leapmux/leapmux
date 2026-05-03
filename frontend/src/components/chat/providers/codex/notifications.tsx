@@ -1,7 +1,5 @@
 import type { JSX, JSXElement } from 'solid-js'
-import type { RenderContext } from '../../messageRenderers'
 import type { NotificationThreadEntry } from '../registry'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CODEX_RATE_LIMITS_METHOD, formatRateLimitMessage, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_METHOD } from '~/types/toolMessages'
@@ -111,8 +109,6 @@ function renderRateLimits(parsed: Record<string, unknown>): JSXElement {
  */
 export function codexNotificationRenderer(
   parsed: unknown,
-  _role: MessageRole,
-  _context?: RenderContext,
 ): JSX.Element | null {
   if (!isObject(parsed))
     return null

@@ -1,7 +1,6 @@
 /* eslint-disable solid/no-innerhtml -- HTML produced via shiki, not arbitrary user input */
 import type { Component, JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Eye from 'lucide-solid/icons/eye'
 import FileEdit from 'lucide-solid/icons/file-edit'
 import FilePlus from 'lucide-solid/icons/file-plus'
@@ -22,7 +21,6 @@ import { PI_TOOL } from '../protocol'
 
 interface RendererProps {
   parsed: unknown
-  role: MessageRole
   context?: RenderContext
 }
 

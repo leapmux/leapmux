@@ -10,10 +10,10 @@ sql:
         emit_json_tags: true
         emit_empty_slices: true
         overrides:
-          - column: "messages.role"
+          - column: "messages.source"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "MessageRole"
+              type: "MessageSource"
           - column: "messages.content_compression"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

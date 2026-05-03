@@ -1,6 +1,6 @@
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, AgentStatus, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
@@ -163,7 +163,7 @@ describe('background agent history trimming', () => {
   function makeUserMessage(id: string, seq: bigint) {
     return {
       id,
-      role: MessageRole.USER,
+      source: MessageSource.USER,
       content: new TextEncoder().encode('{"content":"test"}'),
       seq,
     } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
@@ -275,7 +275,7 @@ describe('codex result replay handling', () => {
 
       const msg = {
         id: 'm1',
-        role: MessageRole.TURN_END,
+        source: MessageSource.AGENT,
         content: new TextEncoder().encode(JSON.stringify({
           num_tool_uses: 2,
           threadId: 'thread-1',
@@ -310,15 +310,13 @@ describe('streaming text preservation', () => {
 
       const echoedUserMessage = {
         id: 'server-user-1',
-        role: MessageRole.USER,
+        source: MessageSource.USER,
         content: new TextEncoder().encode(JSON.stringify({ content: 'follow-up' })),
         contentCompression: ContentCompression.NONE,
         seq: 1n,
       } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
 
       chatStore.addMessage('agent-1', echoedUserMessage)
-      if (echoedUserMessage.role !== MessageRole.USER)
-        chatStore.clearStreamingText('agent-1')
 
       chatStore.setStreamingText('agent-1', `${chatStore.state.streamingText['agent-1'] ?? ''} world`)
 
@@ -338,7 +336,7 @@ describe('streaming text preservation', () => {
 
       const completedAssistantMessage = {
         id: 'assistant-1',
-        role: MessageRole.ASSISTANT,
+        source: MessageSource.AGENT,
         content: new TextEncoder().encode(JSON.stringify({
           item: {
             type: 'agentMessage',
@@ -374,7 +372,7 @@ describe('streaming text preservation', () => {
 
       const completedPlanMessage = {
         id: 'plan-1',
-        role: MessageRole.ASSISTANT,
+        source: MessageSource.AGENT,
         content: new TextEncoder().encode(JSON.stringify({
           item: {
             type: 'plan',
