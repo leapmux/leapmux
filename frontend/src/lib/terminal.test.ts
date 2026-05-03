@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { copySelectionToClipboard, createTerminalInstance, resolveTerminalThemeMode } from './terminal'
+import { KEY_BROWSER_PREFS } from './browserStorage'
+import { copySelectionToClipboard, createTerminalInstance, getTerminalRendererPreference, resolveTerminalRendererPreference, resolveTerminalThemeMode } from './terminal'
 
 // xterm.js requires a DOM element for open(), but we can still test
 // the suppressInput mechanism without rendering.
@@ -88,6 +89,66 @@ describe('resolveTerminalThemeMode', () => {
   it('falls back to OS prefers-color-scheme when both prefs defer to system', () => {
     expect(resolveTerminalThemeMode('match-ui', 'system', true)).toBe('dark')
     expect(resolveTerminalThemeMode('match-ui', 'system', false)).toBe('light')
+  })
+})
+
+describe('getTerminalRendererPreference', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: undefined,
+    })
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15',
+    })
+  })
+
+  it('defaults to auto', () => {
+    expect(getTerminalRendererPreference()).toBe('auto')
+  })
+
+  it('accepts the canvas experiment override', () => {
+    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ terminalRenderer: 'canvas' }))
+
+    expect(getTerminalRendererPreference()).toBe('canvas')
+  })
+
+  it('ignores unknown values', () => {
+    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ terminalRenderer: 'invalid' }))
+
+    expect(getTerminalRendererPreference()).toBe('auto')
+  })
+
+  it('defaults auto to WebGL outside Linux desktop Tauri', () => {
+    expect(resolveTerminalRendererPreference('auto')).toBe('webgl')
+  })
+
+  it('defaults auto to canvas on Linux desktop Tauri', () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15',
+    })
+
+    expect(resolveTerminalRendererPreference('auto')).toBe('canvas')
+  })
+
+  it('allows WebGL override on Linux desktop Tauri', () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15',
+    })
+
+    expect(resolveTerminalRendererPreference('webgl')).toBe('webgl')
   })
 })
 
