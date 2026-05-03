@@ -1202,7 +1202,7 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	gitStatus := gitutil.GetGitStatus(ctx, agentOpts.WorkingDir)
 
 	// Phase 2: spawn the subprocess and run the init handshake.
-	phase2Msg := "Starting " + agent.DisplayName(agentOpts.AgentProvider) + "…"
+	phase2Msg := agentStartupLabel("Starting", agentOpts.AgentProvider)
 	svc.AgentStartup.setMessage(agentID, phase2Msg)
 	svc.broadcastAgentStarting(&dbAgent, phase2Msg, gitStatus)
 	agent.TraceStartupPhase(agentID, "before_start_agent")
@@ -1303,11 +1303,20 @@ func (svc *Context) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmux
 }
 
 // buildAgentInactiveStatus builds an INACTIVE AgentStatusChange. Used by
-// WatchEvents replay when the agent is neither running nor starting up
-// and has no persisted startup_error (deriveAgentStatus would return
-// STARTUP_FAILED otherwise).
+// WatchEvents replay (when the agent is neither running nor starting up
+// and has no persisted startup_error, where deriveAgentStatus would
+// otherwise return STARTUP_FAILED) and by broadcastAgentInactive to
+// revert a transient STARTING after an auto-start failure.
 func buildAgentInactiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
 	return baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, gitStatus)
+}
+
+// agentStartupLabel renders the user-visible "<verb> <provider>…" phase
+// label shown beneath the chat startup banner during cold-start and
+// restart of an agent subprocess. Verb is typically "Starting" or
+// "Restarting".
+func agentStartupLabel(verb string, provider leapmuxv1.AgentProvider) string {
+	return verb + " " + agent.DisplayName(provider) + "…"
 }
 
 // broadcastAgentStarting fans out a STARTING AgentStatusChange to all
@@ -1446,7 +1455,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	// after a worker restart that killed the process) shows no progress
 	// affordance until context_cleared lands — by which point the indicator
 	// is suppressed again because the chat history ends in a turn boundary.
-	startingMsg := "Restarting " + agent.DisplayName(dbAgent.AgentProvider) + "…"
+	startingMsg := agentStartupLabel("Restarting", dbAgent.AgentProvider)
 	svc.broadcastAgentStarting(&dbAgent, startingMsg, nil)
 
 	// Stop the running agent and wait for it to fully exit so that
@@ -1578,7 +1587,7 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// with handleClearContext and runAgentStartup; without this, the
 	// auto-start path (cold subprocess after worker/desktop restart) is
 	// silent — the bubble pulses but no progress affordance is shown.
-	svc.broadcastAgentStarting(&dbAgent, "Starting "+agent.DisplayName(dbAgent.AgentProvider)+"…", nil)
+	svc.broadcastAgentStarting(&dbAgent, agentStartupLabel("Starting", dbAgent.AgentProvider), nil)
 
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
