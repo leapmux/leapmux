@@ -605,6 +605,37 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.cleanupAutoContinue(agentID)
 }
 
+// broadcastControlCancel fans out a single AgentControlCancelRequest to
+// any registered watchers. Shared by ClearAgentRuntimeState and the
+// per-agent sink so the envelope shape lives in one place.
+func (h *OutputHandler) broadcastControlCancel(agentID, requestID string) {
+	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event: &leapmuxv1.AgentEvent_ControlCancel{
+			ControlCancel: &leapmuxv1.AgentControlCancelRequest{
+				AgentId:   agentID,
+				RequestId: requestID,
+			},
+		},
+	})
+}
+
+// ClearAgentRuntimeState removes every piece of state tied to a dying
+// agent process: pending control_requests in the DB plus the in-memory
+// trackers cleared by CleanupAgent. A controlCancel is broadcast for
+// each deleted row so live tabs drop the prompt without waiting for the
+// reconnect-and-replay path.
+func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
+	deletedIDs, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
+	if err != nil {
+		slog.Error("clear runtime state: delete control requests", "agent_id", agentID, "error", err)
+	}
+	for _, requestID := range deletedIDs {
+		h.broadcastControlCancel(agentID, requestID)
+	}
+	h.CleanupAgent(agentID)
+}
+
 // spanTracker returns the per-agent SpanTracker, creating one if needed.
 func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
 	if v, ok := h.spanTrackers.Load(agentID); ok {
@@ -757,15 +788,7 @@ func (s *agentOutputSink) BroadcastControlRequest(requestID string, payload []by
 }
 
 func (s *agentOutputSink) BroadcastControlCancel(requestID string) {
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event: &leapmuxv1.AgentEvent_ControlCancel{
-			ControlCancel: &leapmuxv1.AgentControlCancelRequest{
-				AgentId:   s.agentID,
-				RequestId: requestID,
-			},
-		},
-	})
+	s.h.broadcastControlCancel(s.agentID, requestID)
 }
 
 func (s *agentOutputSink) UpdateSessionID(sessionID string) {

@@ -143,12 +143,49 @@ func (m *WatcherManager) broadcastToWatchers(registry map[string][]*EventWatcher
 		return
 	}
 
+	// Collect dead channel IDs so we can drop them after the send loop. A
+	// SendStream error means the underlying channel-RPC stream cannot
+	// deliver bytes (transport gone, correlation ID closed, peer dropped),
+	// so further broadcasts to this watcher would be lost silently. Drop
+	// the registration; the channel layer's eventual transport-level error
+	// will surface to the frontend as onError/onEnd, which trips the
+	// reconnect loop in useWorkspaceConnection.ts and replays from DB.
+	var deadChannelIDs []string
 	for _, w := range watchers {
 		if err := w.Sender.SendStream(&leapmuxv1.InnerStreamMessage{
 			Payload: payload,
 		}); err != nil {
-			slog.Warn("broadcastToWatchers: SendStream failed",
+			slog.Warn("broadcastToWatchers: SendStream failed; dropping watcher",
 				"entity_id", entityID, "channel_id", w.ChannelID, "error", err)
+			deadChannelIDs = append(deadChannelIDs, w.ChannelID)
 		}
+	}
+
+	if len(deadChannelIDs) > 0 {
+		m.removeWatchersFromRegistry(registry, entityID, deadChannelIDs)
+	}
+}
+
+// removeWatchersFromRegistry drops every watcher whose channel ID is in
+// channelIDs from registry[entityID]. One lock acquisition + one filter
+// pass regardless of how many watchers failed simultaneously.
+func (m *WatcherManager) removeWatchersFromRegistry(registry map[string][]*EventWatcher, entityID string, channelIDs []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dead := make(map[string]bool, len(channelIDs))
+	for _, id := range channelIDs {
+		dead[id] = true
+	}
+	watchers := registry[entityID]
+	filtered := watchers[:0]
+	for _, w := range watchers {
+		if !dead[w.ChannelID] {
+			filtered = append(filtered, w)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(registry, entityID)
+	} else {
+		registry[entityID] = filtered
 	}
 }

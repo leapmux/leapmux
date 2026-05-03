@@ -44,6 +44,17 @@ func NewManager(onExit ExitHandler) *Manager {
 	}
 }
 
+// SetOnExit replaces the exit handler. The runner uses this to wire a
+// service-aware handler (which has access to OutputHandler / DB queries)
+// after the service.Context is constructed. The handler is read inside
+// the per-agent Wait goroutine under m.mu so a concurrent swap is
+// observed atomically by every in-flight exit.
+func (m *Manager) SetOnExit(onExit ExitHandler) {
+	m.mu.Lock()
+	m.onExit = onExit
+	m.mu.Unlock()
+}
+
 // LockAgent acquires a per-agent mutex that serializes multi-step lifecycle
 // operations (typically stop-then-start) against concurrent callers. Without
 // this, a second restart can slip in between the first's stop and start and
@@ -159,8 +170,11 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 			)
 		}
 
-		if m.onExit != nil {
-			m.onExit(opts.AgentID, exitCode, err)
+		m.mu.RLock()
+		onExit := m.onExit
+		m.mu.RUnlock()
+		if onExit != nil {
+			onExit(opts.AgentID, exitCode, err)
 		}
 	}()
 

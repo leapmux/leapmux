@@ -9,6 +9,7 @@ import (
 	"context"
 	"os/exec"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -38,6 +39,34 @@ func (s *stubProvider) UpdateSettings(*leapmuxv1.AgentSettings) bool            
 // startMockAgent wraps mockStart to satisfy the startFunc signature.
 func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	return mockStart(ctx, opts, sink)
+}
+
+func TestManager_SetOnExit_FiresOnStop(t *testing.T) {
+	m := NewManager(func(string, int, error) {
+		// Original handler: should be replaced by SetOnExit below.
+		t.Error("original onExit should not be called after SetOnExit")
+	})
+
+	exited := make(chan string, 1)
+	m.SetOnExit(func(agentID string, _ int, _ error) {
+		exited <- agentID
+	})
+
+	_, err := m.startAgentWith(context.Background(), Options{
+		AgentID:    "s-exit",
+		Model:      "test",
+		WorkingDir: t.TempDir(),
+	}, noopSink{}, startMockAgent)
+	require.NoError(t, err)
+
+	m.StopAgent("s-exit")
+
+	select {
+	case got := <-exited:
+		assert.Equal(t, "s-exit", got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("exit handler did not fire after stop")
+	}
 }
 
 func TestManager_StartAndStop(t *testing.T) {

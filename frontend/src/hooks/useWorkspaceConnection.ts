@@ -13,6 +13,7 @@ import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { waitForStreamCompletion } from '~/hooks/streamCompletion'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 import { extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
@@ -729,42 +730,29 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           terminals,
         })
 
-        // Now that the new stream listener is registered, clean up
-        // the previous one. The server-side sender update (Bug 2 fix)
-        // ensures no more events will arrive on the old request ID
-        // once the server processes this new WatchEvents RPC.
+        // Wire the consumer callbacks before closing the previous handle.
+        // workerRpc.ts buffers any events that arrive before onEvent is
+        // wired; waitForStreamCompletion captures end / error / abort that
+        // fire during the synchronous setup window.
+        handle.onEvent((response) => {
+          backoff = 1000
+          switch (response.event.case) {
+            case 'agentEvent':
+              handleAgentEvent(response.event.value, catchUpPhases, signal)
+              break
+            case 'terminalEvent':
+              handleTerminalEvent(response.event.value)
+              break
+          }
+        })
+
+        // Now that callbacks are wired, clean up the previous stream.
+        // The server-side sender update ensures no more events arrive on
+        // the old request ID once the server processes this WatchEvents.
         previousHandle?.close()
         previousHandle = handle
 
-        // Wait for the stream to end or error using a promise.
-        await new Promise<void>((resolve, reject) => {
-          const onAbort = () => {
-            resolve()
-          }
-          signal.addEventListener('abort', onAbort, { once: true })
-
-          handle.onEvent((response) => {
-            backoff = 1000
-            switch (response.event.case) {
-              case 'agentEvent':
-                handleAgentEvent(response.event.value, catchUpPhases, signal)
-                break
-              case 'terminalEvent':
-                handleTerminalEvent(response.event.value)
-                break
-            }
-          })
-
-          handle.onEnd(() => {
-            signal.removeEventListener('abort', onAbort)
-            resolve()
-          })
-
-          handle.onError((err) => {
-            signal.removeEventListener('abort', onAbort)
-            reject(err)
-          })
-        })
+        await waitForStreamCompletion(handle, signal)
       }
       catch (err) {
         if (signal.aborted)
