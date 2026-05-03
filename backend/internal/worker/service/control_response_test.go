@@ -86,7 +86,7 @@ func TestSendControlResponse_PersistsCodexUserInputAnswer(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, rows[0].Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	assert.Equal(t, "Task: Inspect the renderer\nReason: Need parity with Claude Code", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
 }
 
@@ -145,7 +145,7 @@ func TestSendControlResponse_PersistsCodexFeedbackMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, rows[0].Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	assert.Equal(t, "Please add tests before exiting plan mode.", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
 }
 
@@ -204,7 +204,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionAnswer(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, rows[0].Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	assert.Equal(t, "Task: Build\nEnv: Dev", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
 }
 

@@ -1,12 +1,12 @@
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { isAgentWorking, shouldShowThinkingIndicator } from '~/utils/agentState'
 import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
-function makeMsg(role: MessageRole, content?: Uint8Array, deliveryError?: string) {
-  return makeMessage({ role, content, deliveryError })
+function makeMsg(source: MessageSource, content?: Uint8Array, deliveryError?: string) {
+  return makeMessage({ source, content, deliveryError })
 }
 
 function makeAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
@@ -38,123 +38,99 @@ describe('isAgentWorking', () => {
     expect(isAgentWorking([])).toBe(false)
   })
 
-  it('returns true when last message is USER role', () => {
+  it('returns true when last message is USER source', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.USER),
+      makeMsg(MessageSource.USER),
     ])).toBe(true)
   })
 
-  it('returns true when last message is ASSISTANT role', () => {
+  it('returns true when last message is AGENT source', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
+      makeMsg(MessageSource.AGENT),
     ])).toBe(true)
   })
 
-  it('returns false when last message is TURN_END', () => {
+  it('returns false when last message is a result divider', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.USER),
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageSource.USER),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
     ])).toBe(false)
   })
 
-  it('returns false on TURN_END regardless of inner type (every TURN_END is a real turn end)', () => {
-    // No producer creates TURN_END messages with mid-turn types; the role
-    // alone is the contract. Spot-check with a non-result inner type.
+  it('skips LEAPMUX message and finds result divider underneath', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'interrupted' })),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
     ])).toBe(false)
   })
 
-  it('handles TURN_END with unparseable content as a turn end', () => {
-    const badContent = new TextEncoder().encode('not valid json')
+  it('skips LEAPMUX settings_changed and finds preceding AGENT', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.TURN_END, badContent),
-    ])).toBe(false)
-  })
-
-  it('handles TURN_END with empty content as a turn end', () => {
-    expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.TURN_END),
-    ])).toBe(false)
-  })
-
-  it('skips LEAPMUX message and finds TURN_END underneath', () => {
-    expect(isAgentWorking([
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'result', subtype: 'turn_result' })),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
-    ])).toBe(false)
-  })
-
-  it('skips LEAPMUX settings_changed and finds preceding ASSISTANT', () => {
-    expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
     ])).toBe(true)
   })
 
   it('treats LEAPMUX context_cleared as turn boundary (returns false)', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('skips multiple trailing LEAPMUX messages', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'result', subtype: 'turn_result' })),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('returns false when all messages are LEAPMUX notifications', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'settings_changed' }])),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('skips USER message with deliveryError (agent never received it)', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'result', subtype: 'turn_result' })),
-      makeMsg(MessageRole.USER, undefined, 'connection lost'),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageSource.USER, undefined, 'connection lost'),
     ])).toBe(false)
   })
 
-  it('skips trailing deliveryError messages and finds preceding ASSISTANT', () => {
+  it('skips trailing deliveryError messages and finds preceding AGENT', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.USER, undefined, 'connection lost'),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.USER, undefined, 'connection lost'),
     ])).toBe(true)
   })
 
-  it('skips trailing LEAPMUX context_cleared and stops at preceding TURN_END', () => {
+  it('skips trailing LEAPMUX context_cleared and stops at preceding result divider', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'result', subtype: 'turn_result' })),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('treats LEAPMUX wrapper with [settings_changed, context_cleared] as turn boundary', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'settings_changed' }, { type: 'context_cleared' }])),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'settings_changed' }, { type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
   it('treats LEAPMUX wrapper with [context_cleared, settings_changed] as turn boundary', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([{ type: 'context_cleared' }, { type: 'settings_changed' }])),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([{ type: 'context_cleared' }, { type: 'settings_changed' }])),
     ])).toBe(false)
   })
 
   // ---------------------------------------------------------------------
-  // SYSTEM-role parity: agent-emitted metadata that migrated from LEAPMUX
-  // to SYSTEM must produce the same isAgentWorking outcome.
+  // AGENT-source parity: agent-emitted metadata persisted as AGENT must
+  // produce the same isAgentWorking outcome as the LEAPMUX equivalents.
   // ---------------------------------------------------------------------
 
   it.each([
@@ -167,10 +143,10 @@ describe('isAgentWorking', () => {
     { type: 'auto_retry_end' },
     { type: 'extension_error', error: 'oops' },
     { type: 'extension_ui_request', method: 'notify' },
-  ])('skips SYSTEM-roled non-progress event (%j) and finds preceding ASSISTANT', (payload) => {
+  ])('skips AGENT-source non-progress event (%j) and finds preceding AGENT', (payload) => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.SYSTEM, rawContent(payload)),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.AGENT, rawContent(payload)),
     ])).toBe(true)
   })
 
@@ -187,64 +163,57 @@ describe('isAgentWorking', () => {
     { method: 'thread/compacted', params: {} },
     { method: 'mcpServer/startupStatus/updated', params: {} },
     { method: 'account/rateLimits/updated', params: {} },
-  ])('skips SYSTEM-roled Codex JSON-RPC notification (%j) and finds preceding ASSISTANT', (payload) => {
+  ])('skips AGENT-source Codex JSON-RPC notification (%j) and finds preceding AGENT', (payload) => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.SYSTEM, rawContent(payload)),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.AGENT, rawContent(payload)),
     ])).toBe(true)
   })
 
-  it('skips Claude SYSTEM status message ({type:"system",subtype:"status"}) and finds preceding ASSISTANT', () => {
+  it('skips Claude system status message ({type:"system",subtype:"status"}) and finds preceding AGENT', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.SYSTEM, rawContent({ type: 'system', subtype: 'status', status: 'compacting' })),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'system', subtype: 'status', status: 'compacting' })),
     ])).toBe(true)
   })
 
-  it('skips Claude SYSTEM api_retry message and finds preceding ASSISTANT', () => {
+  it('skips Claude system api_retry message and finds preceding AGENT', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.SYSTEM, rawContent({ type: 'system', subtype: 'api_retry', attempt: 1 })),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'system', subtype: 'api_retry', attempt: 1 })),
     ])).toBe(true)
   })
 
-  it('does NOT skip Claude SYSTEM init (other system subtype is real progress)', () => {
+  it('does NOT skip Claude system init (other system subtype is real progress)', () => {
     // A bare assistant followed by a system init only — system init isn't a
     // notification subtype, so it counts as progress and the agent appears
     // to be working. Sanity check that the subtype filter isn't too broad.
     expect(isAgentWorking([
-      makeMsg(MessageRole.SYSTEM, rawContent({ type: 'system', subtype: 'init', cwd: '/x' })),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'system', subtype: 'init', cwd: '/x' })),
     ])).toBe(true)
   })
 
-  it('treats SYSTEM context_cleared as turn boundary (returns false)', () => {
+  it('treats AGENT-source wrapper containing context_cleared as turn boundary', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.SYSTEM, rawContent({ type: 'context_cleared' })),
+      makeMsg(MessageSource.AGENT),
+      makeMsg(MessageSource.AGENT, wrapContent([{ method: 'thread/tokenUsage/updated' }, { type: 'context_cleared' }])),
     ])).toBe(false)
   })
 
-  it('treats SYSTEM wrapper containing context_cleared as turn boundary', () => {
+  it('skips trailing AGENT-source rate-limit notifications and falls through to result divider', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT),
-      makeMsg(MessageRole.SYSTEM, wrapContent([{ method: 'thread/tokenUsage/updated' }, { type: 'context_cleared' }])),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'rate_limit_event', rate_limit_info: {} })),
+      makeMsg(MessageSource.AGENT, rawContent({ method: 'thread/tokenUsage/updated' })),
     ])).toBe(false)
   })
 
-  it('skips trailing SYSTEM rate-limit notifications and falls through to TURN_END', () => {
-    expect(isAgentWorking([
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'result', subtype: 'turn_result' })),
-      makeMsg(MessageRole.SYSTEM, rawContent({ type: 'rate_limit_event', rate_limit_info: {} })),
-      makeMsg(MessageRole.SYSTEM, rawContent({ method: 'thread/tokenUsage/updated' })),
-    ])).toBe(false)
-  })
-
-  it('returns true when last message is plain SYSTEM content (e.g. unknown notification)', () => {
-    // A SYSTEM message whose inner type/method isn't recognized as
+  it('returns true when last message is plain AGENT content (e.g. unknown notification)', () => {
+    // An AGENT message whose inner type/method isn't recognized as
     // non-progress is treated as activity — better to over-show the
     // thinking indicator than to miss a real-progress signal.
     expect(isAgentWorking([
-      makeMsg(MessageRole.SYSTEM, rawContent({ type: 'unknown_payload', some: 'data' })),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'unknown_payload', some: 'data' })),
     ])).toBe(true)
   })
 
@@ -256,27 +225,27 @@ describe('isAgentWorking', () => {
 
   it('treats LEAPMUX wrapper with empty messages array as non-progress', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'result', subtype: 'turn_result' })),
-      makeMsg(MessageRole.LEAPMUX, wrapContent([])),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([])),
     ])).toBe(false)
   })
 
-  it('treats SYSTEM wrapper with empty messages array as non-progress', () => {
+  it('treats AGENT-source wrapper with empty messages array as non-progress', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.TURN_END, rawContent({ type: 'result', subtype: 'turn_result' })),
-      makeMsg(MessageRole.SYSTEM, wrapContent([])),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
+      makeMsg(MessageSource.AGENT, wrapContent([])),
     ])).toBe(false)
   })
 
   it('returns false when the only message is an empty LEAPMUX wrapper', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.LEAPMUX, wrapContent([])),
+      makeMsg(MessageSource.LEAPMUX, wrapContent([])),
     ])).toBe(false)
   })
 
   // ---------------------------------------------------------------------
-  // context_cleared boundary scope: only LEAPMUX/SYSTEM-roled messages
-  // are emitted by the platform as turn boundaries. USER/ASSISTANT
+  // context_cleared boundary scope: only notification-thread wrapper rows
+  // are emitted by the platform as turn boundaries. USER/AGENT plain
   // payloads that happen to surface a top-level `type: "context_cleared"`
   // (e.g. a Pi `default`-handler echo of an unknown event) must NOT be
   // interpreted as a turn boundary — they carry user/agent content.
@@ -284,13 +253,13 @@ describe('isAgentWorking', () => {
 
   it('does not treat USER message containing type:"context_cleared" as a turn boundary', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.USER, rawContent({ type: 'context_cleared', content: 'literal user text' })),
+      makeMsg(MessageSource.USER, rawContent({ type: 'context_cleared', content: 'literal user text' })),
     ])).toBe(true)
   })
 
-  it('does not treat ASSISTANT message containing type:"context_cleared" as a turn boundary', () => {
+  it('does not treat AGENT message containing type:"context_cleared" as a turn boundary', () => {
     expect(isAgentWorking([
-      makeMsg(MessageRole.ASSISTANT, rawContent({ type: 'context_cleared' })),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'context_cleared' })),
     ])).toBe(true)
   })
 })
@@ -300,7 +269,7 @@ describe('shouldShowThinkingIndicator', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent({ status: AgentStatus.INACTIVE }),
       {},
-      [makeMsg(MessageRole.USER)],
+      [makeMsg(MessageSource.USER)],
       '',
     )).toBe(false)
   })
@@ -309,7 +278,7 @@ describe('shouldShowThinkingIndicator', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent(),
       {},
-      [makeMsg(MessageRole.USER)],
+      [makeMsg(MessageSource.USER)],
       '',
       1,
     )).toBe(false)
@@ -329,7 +298,7 @@ describe('shouldShowThinkingIndicator', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent({ agentProvider: AgentProvider.CODEX }),
       sessionInfo,
-      [makeMsg(MessageRole.ASSISTANT)],
+      [makeMsg(MessageSource.AGENT)],
       '',
     )).toBe(false)
   })
@@ -348,7 +317,7 @@ describe('shouldShowThinkingIndicator', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent({ agentProvider: AgentProvider.CLAUDE_CODE }),
       {},
-      [makeMsg(MessageRole.USER)],
+      [makeMsg(MessageSource.USER)],
       '',
     )).toBe(true)
   })

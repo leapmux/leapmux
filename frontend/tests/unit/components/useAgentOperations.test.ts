@@ -5,7 +5,7 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
-import { AgentInfoSchema, AgentProvider, ContentCompression, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createAgentStore } from '~/stores/agent.store'
@@ -372,7 +372,7 @@ describe('useAgentOperations', () => {
           agentStore.addAgent(agent)
           chatStore.getMessages.mockReturnValue([{
             id: 'local-1',
-            role: MessageRole.USER,
+            source: MessageSource.USER,
             content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
             contentCompression: ContentCompression.NONE,
           }])
@@ -398,7 +398,7 @@ describe('useAgentOperations', () => {
           agentStore.addAgent(agent)
           chatStore.getMessages.mockReturnValue([{
             id: 'local-2',
-            role: MessageRole.USER,
+            source: MessageSource.USER,
             content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
             contentCompression: ContentCompression.NONE,
           }])

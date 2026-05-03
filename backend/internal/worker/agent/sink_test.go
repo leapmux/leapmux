@@ -36,13 +36,17 @@ type testSink struct {
 }
 
 type testSinkMessage struct {
-	Role            leapmuxv1.MessageRole
+	Source          leapmuxv1.MessageSource
 	Content         []byte
 	ParentSpanID    string
 	ConnectorSpanID string
 	SpanID          string
 	SpanType        string
 	Closing         bool
+	// TurnEnd is set on entries recorded by PersistTurnEnd so tests can
+	// distinguish the turn-end divider from regular AGENT messages
+	// without inspecting the inner content.
+	TurnEnd bool
 }
 
 type testSinkStreamChunk struct {
@@ -56,17 +60,33 @@ type testSinkSpanOpen struct {
 	ParentSpanID string
 }
 
-func (s *testSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
+func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Role: role, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing})
+	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing})
 	return nil
 }
 
-func (s *testSink) PersistNotification(role leapmuxv1.MessageRole, content []byte) error {
+func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.notifications = append(s.notifications, testSinkMessage{Role: role, Content: append([]byte(nil), content...)})
+	s.messages = append(s.messages, testSinkMessage{
+		Source:          leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:         append([]byte(nil), content...),
+		ParentSpanID:    span.ParentSpanID,
+		ConnectorSpanID: span.ConnectorSpanID,
+		SpanID:          span.SpanID,
+		SpanType:        span.SpanType,
+		Closing:         span.Closing,
+		TurnEnd:         true,
+	})
+	return nil
+}
+
+func (s *testSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifications = append(s.notifications, testSinkMessage{Source: source, Content: append([]byte(nil), content...)})
 	return nil
 }
 
@@ -363,10 +383,11 @@ func (s *testSink) LastAutoCancel() AutoContinueReason {
 // need to verify output.
 type noopSink struct{}
 
-func (noopSink) PersistMessage(leapmuxv1.MessageRole, []byte, SpanInfo) error {
+func (noopSink) PersistMessage(leapmuxv1.MessageSource, []byte, SpanInfo) error {
 	return nil
 }
-func (noopSink) PersistNotification(leapmuxv1.MessageRole, []byte) error          { return nil }
+func (noopSink) PersistTurnEnd([]byte, SpanInfo) error                            { return nil }
+func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) error        { return nil }
 func (noopSink) OpenSpan(string, string)                                          {}
 func (noopSink) CloseSpan(string)                                                 {}
 func (noopSink) ResetSpans()                                                      {}

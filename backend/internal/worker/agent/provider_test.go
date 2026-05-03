@@ -54,7 +54,7 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 		"item/started for a contextCompaction item is the in-progress compacting indicator")
 
 	assert.False(t, plugin.Classify(commandExecutionStart).Consolidatable(),
-		"item/started for non-contextCompaction items must NOT be classified as a notification — those go through PersistMessage as ASSISTANT spans")
+		"item/started for non-contextCompaction items must NOT be classified as a notification — those go through PersistMessage as AGENT spans")
 }
 
 func TestProviderFor_ClaudeClassification(t *testing.T) {
@@ -83,19 +83,19 @@ func TestProviderFor_ClaudeClassification(t *testing.T) {
 	)
 }
 
-func TestIsNotificationThreadable_ClaudeRateLimitEventViaSystem(t *testing.T) {
-	// rate_limit_event arrives as SYSTEM after Phase 4.4. The plugin
-	// classifies it as provider-scoped, so isNotificationThreadable returns
-	// true and it threads with surrounding notifications.
-	assert.True(t, isNotificationThreadable([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"exceeded"}}`), leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM))
+func TestIsNotificationThreadable_ClaudeRateLimitEventAsAgent(t *testing.T) {
+	// rate_limit_event arrives as AGENT. The plugin classifies it as
+	// provider-scoped, so isNotificationThreadable returns true and it
+	// threads with surrounding notifications.
+	assert.True(t, isNotificationThreadable([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"exceeded"}}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
 }
 
-func TestIsNotificationThreadable_ClaudeStatusCompactingViaSystem(t *testing.T) {
-	// After Phase 4.1 the worker persists the raw `system` message as
-	// SYSTEM (not the synthesized `{type:"compacting"}` envelope), and
+func TestIsNotificationThreadable_ClaudeStatusCompactingAsAgent(t *testing.T) {
+	// The worker persists the raw `system` message as AGENT (not a
+	// synthesized `{type:"compacting"}` envelope), and
 	// isNotificationThreadable still returns true because the plugin
 	// classifies it as a Status notification.
-	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"compacting"}`), leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM))
+	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"compacting"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
 }
 
 func TestProviderFor_PiClassification(t *testing.T) {
@@ -211,7 +211,7 @@ func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
 }
 
 func TestIsNotificationThreadable_ClaudeSystemUsesPlugin(t *testing.T) {
-	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"idle"}`), leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM))
-	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`), leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM))
-	assert.False(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"other"}`), leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM))
+	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"idle"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+	assert.False(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"other"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
 }

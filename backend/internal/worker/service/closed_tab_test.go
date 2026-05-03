@@ -192,7 +192,7 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 	_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
 		ID:        "msg-1",
 		AgentID:   "agent-1",
-		Role:      leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:   []byte("hello"),
 		CreatedAt: time.Now(),
 	})
@@ -303,7 +303,7 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 	_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
 		ID:        "msg-1",
 		AgentID:   "agent-closed",
-		Role:      leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:   []byte("hello"),
 		CreatedAt: time.Now(),
 	})

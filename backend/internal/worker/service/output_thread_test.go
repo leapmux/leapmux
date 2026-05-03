@@ -63,8 +63,8 @@ func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
 	secondNotif, err := json.Marshal(map[string]any{"type": "interrupted"})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, firstNotif))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, secondNotif))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, firstNotif))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, secondNotif))
 
 	rows := listRows()
 	require.Len(t, rows, 1)
@@ -72,6 +72,32 @@ func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
 	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
 	require.Len(t, wrapper.Messages, 2)
 	assert.Equal(t, []string{"context_cleared", "interrupted"}, types(t, wrapper.Messages))
+}
+
+// TestNotificationThreading_CrossSourceProducesSeparateThreads verifies
+// that adjacent notifications with different sources do not consolidate
+// into one thread. An AGENT-source system notification followed by a
+// LEAPMUX-source platform notification must produce two separate
+// notification rows, each carrying a truthful per-thread source.
+func TestNotificationThreading_CrossSourceProducesSeparateThreads(t *testing.T) {
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	agentNotif, err := json.Marshal(map[string]any{"type": "system", "subtype": "status", "status": "compacting"})
+	require.NoError(t, err)
+	leapmuxNotif, err := json.Marshal(map[string]any{"type": "context_cleared"})
+	require.NoError(t, err)
+
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agentNotif))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, leapmuxNotif))
+
+	rows := listRows()
+	require.Len(t, rows, 2, "cross-source adjacent notifications must not consolidate")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, rows[1].Source)
+
+	firstWrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
+	secondWrapper := decodeNotifWrapper(t, rows[1].Content, rows[1].ContentCompression)
+	require.Len(t, firstWrapper.Messages, 1)
+	require.Len(t, secondWrapper.Messages, 1)
 }
 
 func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
@@ -88,9 +114,9 @@ func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, firstNotif))
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, assistantMsg, agent.SpanInfo{}))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, secondNotif))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, firstNotif))
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, assistantMsg, agent.SpanInfo{}))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, secondNotif))
 
 	rows := listRows()
 	require.Len(t, rows, 3)
@@ -115,9 +141,9 @@ func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testin
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, starting))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, ready))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, settingsChanged))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, starting))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, ready))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, settingsChanged))
 
 	rows := listRows()
 	require.Len(t, rows, 1)
@@ -132,7 +158,7 @@ func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testin
 	assert.Equal(t, "ready", params["status"])
 }
 
-func TestNotificationThreading_CodexMetadataNotificationsPersistAsSystemWrapper(t *testing.T) {
+func TestNotificationThreading_CodexMetadataNotificationsPersistAsAgentWrapper(t *testing.T) {
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
 	remoteControlChanged := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
@@ -140,12 +166,12 @@ func TestNotificationThreading_CodexMetadataNotificationsPersistAsSystemWrapper(
 		"environmentId": nil,
 	}))
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, skillsChanged))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, remoteControlChanged))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, remoteControlChanged))
 
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, rows[0].Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
 
 	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
 	require.Len(t, wrapper.Messages, 2)
@@ -162,14 +188,14 @@ func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *t
 	}))
 	ready := raw(t, codexStartupStatus("codex_apps", "ready", nil))
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, starting))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, skillsChanged))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, remoteControlChanged))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, ready))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, starting))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, remoteControlChanged))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, ready))
 
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, rows[0].Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
 
 	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
 	require.Len(t, wrapper.Messages, 3)
@@ -195,13 +221,13 @@ func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *test
 		"environmentId": nil,
 	}))
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, payload))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload))
 	rows := listRows()
 	require.Len(t, rows, 1)
 	seqAfterFirst := rows[0].Seq
 
 	for i := 0; i < 5; i++ {
-		require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, payload))
+		require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload))
 	}
 	rows = listRows()
 	require.Len(t, rows, 1)

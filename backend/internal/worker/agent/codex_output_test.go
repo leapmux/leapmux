@@ -16,8 +16,8 @@ type startupStatusGuardSink struct {
 	t *testing.T
 }
 
-func (s *startupStatusGuardSink) PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error {
-	s.t.Fatalf("startup status notification must not be persisted as a regular message: role=%v content=%s", role, string(content))
+func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
+	s.t.Fatalf("startup status notification must not be persisted as a regular message: source=%v content=%s", source, string(content))
 	return nil
 }
 
@@ -162,7 +162,7 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	assert.Equal(t, 0, sink.MessageCount())
 }
 
-func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsSystem(t *testing.T) {
+func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -172,13 +172,13 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsSystem(t *testing.
 	require.Equal(t, 1, sink.NotificationCount())
 	require.Equal(t, 0, sink.MessageCount())
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
-		"contextCompaction must persist as SYSTEM (Codex-emitted, not LeapMux-synthesized)")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+		"contextCompaction must persist as AGENT (Codex-emitted, not LeapMux-synthesized)")
 	assert.JSONEq(t, input, string(last.Content),
 		"raw JSON-RPC envelope must be preserved verbatim — synthesized {type:\"compacting\"} discarded item.id and threadId")
 }
 
-func TestHandleCodexOutput_McpStartupStatusPersistsAsSystem(t *testing.T) {
+func TestHandleCodexOutput_McpStartupStatusPersistsAsAgent(t *testing.T) {
 	sink := &startupStatusGuardSink{t: t}
 	agent := newCodexAgentWithSink(sink)
 
@@ -188,12 +188,12 @@ func TestHandleCodexOutput_McpStartupStatusPersistsAsSystem(t *testing.T) {
 	require.Equal(t, 1, sink.NotificationCount())
 	require.Equal(t, 0, sink.MessageCount())
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
-		"Codex-emitted MCP startup-status updates must persist as SYSTEM (not LEAPMUX)")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+		"Codex-emitted MCP startup-status updates must persist as AGENT (not LEAPMUX)")
 	assert.JSONEq(t, input, string(last.Content), "raw JSON-RPC envelope must be preserved verbatim")
 }
 
-func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsSystem(t *testing.T) {
+func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -203,15 +203,15 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsSystem(t *testing.T) {
 	require.Equal(t, 1, sink.NotificationCount(),
 		"thread/name/updated must persist for reconnect rehydration")
 	require.Equal(t, 0, sink.MessageCount(),
-		"thread/name/updated must NOT fall through to the default ASSISTANT branch")
+		"thread/name/updated must NOT fall through to the default AGENT branch")
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
-		"Codex-emitted lifecycle metadata must persist as SYSTEM")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+		"Codex-emitted lifecycle metadata must persist as AGENT")
 	assert.JSONEq(t, input, string(last.Content),
 		"raw envelope must be preserved so future renderers can read every field")
 }
 
-func TestHandleCodexOutput_MetadataNotificationsPersistRawAsSystem(t *testing.T) {
+func TestHandleCodexOutput_MetadataNotificationsPersistRawAsAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		input string
@@ -233,10 +233,10 @@ func TestHandleCodexOutput_MetadataNotificationsPersistRawAsSystem(t *testing.T)
 
 			require.Equal(t, 1, sink.NotificationCount())
 			require.Equal(t, 0, sink.MessageCount(),
-				"Codex metadata notifications must not fall through to the default ASSISTANT branch")
+				"Codex metadata notifications must not fall through to the default AGENT branch")
 			last := sink.LastNotification()
-			assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
-				"Codex-emitted metadata must persist as SYSTEM")
+			assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+				"Codex-emitted metadata must persist as AGENT")
 			assert.JSONEq(t, tc.input, string(last.Content),
 				"raw JSON-RPC envelope must be preserved verbatim")
 		})
@@ -255,10 +255,10 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	require.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
 	require.True(t, schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()))
 
-	// Raw notification persisted as SYSTEM (agent-emitted metadata).
+	// Raw notification persisted as AGENT (agent-emitted metadata).
 	require.Equal(t, 1, sink.NotificationCount())
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
 	assert.JSONEq(t, input, string(last.Content))
 }
 
@@ -540,7 +540,7 @@ func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFi
 	require.Equal(t, "call-1", closedSpans[0])
 }
 
-func TestHandleCodexOutput_ThreadCompactedPersistsRawAsSystem(t *testing.T) {
+func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -550,8 +550,8 @@ func TestHandleCodexOutput_ThreadCompactedPersistsRawAsSystem(t *testing.T) {
 	require.Equal(t, 1, sink.NotificationCount())
 	require.Equal(t, 0, sink.MessageCount())
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
-		"thread/compacted must persist as SYSTEM (Codex-emitted)")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+		"thread/compacted must persist as AGENT (Codex-emitted)")
 	assert.JSONEq(t, input, string(last.Content),
 		"raw JSON-RPC envelope must be preserved verbatim — frontend keys off `method:\"thread/compacted\"`")
 }
@@ -736,8 +736,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 
 	require.Equal(t, 1, sink.NotificationCount())
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
-		"Codex-emitted thread/tokenUsage/updated must persist as SYSTEM")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+		"Codex-emitted thread/tokenUsage/updated must persist as AGENT")
 	assert.JSONEq(t, input, string(last.Content),
 		"raw envelope must be preserved so reconnect/catch-up sees full token usage detail")
 	require.Equal(t, 1, sink.SessionInfoCount())

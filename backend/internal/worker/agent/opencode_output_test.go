@@ -71,7 +71,7 @@ func TestHandlePromptResponse_PersistsThinkingText(t *testing.T) {
 
 	// First message: thinking text.
 	thinkingMsg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, thinkingMsg.Role)
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, thinkingMsg.Source)
 	var thinkingParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(thinkingMsg.Content, &thinkingParsed))
 	require.Equal(t, "agent_thought_chunk", thinkingParsed["sessionUpdate"])
@@ -86,7 +86,7 @@ func TestHandlePromptResponse_PersistsThinkingText(t *testing.T) {
 
 	// Third message: result divider.
 	resultMsg := sink.Messages()[2]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, resultMsg.Role)
+	require.True(t, resultMsg.TurnEnd, "prompt response must route through PersistTurnEnd")
 
 	// Accumulated text should be reset.
 	agent.mu.Lock()
@@ -104,7 +104,7 @@ func TestHandleOpenCodeOutput_ToolCallOpensSpan(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msg.Role)
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	require.Equal(t, "tc-1", msg.SpanID)
 	require.Equal(t, "execute", msg.SpanType)
 
@@ -215,7 +215,7 @@ func TestHandleOpenCodeOutput_Plan(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msg.Role)
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	// Verify the content contains the plan entries.
 	var plan struct {
 		SessionUpdate string `json:"sessionUpdate"`
@@ -362,7 +362,7 @@ func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, msg.Role)
+	require.True(t, msg.TurnEnd, "wrapped prompt response must route through PersistTurnEnd")
 
 	// The persisted content should have stopReason at the top level.
 	var parsed map[string]interface{}

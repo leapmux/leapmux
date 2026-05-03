@@ -1,7 +1,6 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from '../../messageRenderers'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import Bot from 'lucide-solid/icons/bot'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject } from '~/lib/jsonPick'
@@ -11,7 +10,7 @@ import { getMessageContentArray } from './extractors/assistantContent'
 
 /** Handles assistant messages: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}} */
 export const assistantTextRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     const content = getMessageContentArray(parsed)
     if (!content)
       return null
@@ -24,7 +23,7 @@ export const assistantTextRenderer: MessageContentRenderer = {
 
 /** Handles assistant thinking messages: {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."}]}} */
 export const assistantThinkingRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
+  render(parsed, context) {
     const content = getMessageContentArray(parsed)
     if (!content)
       return null
@@ -37,7 +36,7 @@ export const assistantThinkingRenderer: MessageContentRenderer = {
 
 /** Handles plan execution messages: {"content":"...","planExecution":true} */
 export const planExecutionRenderer: MessageContentRenderer = {
-  render(parsed, _role, context) {
+  render(parsed, context) {
     if (!isObject(parsed) || parsed.planExecution !== true)
       return null
     const content = parsed.content as string | undefined
@@ -49,7 +48,7 @@ export const planExecutionRenderer: MessageContentRenderer = {
 
 /** Renders task_started system messages as a minimal "Task started" line (thread child). */
 export const taskStartedRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'task_started')
       return null
 
@@ -65,7 +64,7 @@ export const taskStartedRenderer: MessageContentRenderer = {
  * as markdown.
  */
 export const userTextContentRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== 'user')
       return null
 
@@ -101,7 +100,7 @@ export const userTextContentRenderer: MessageContentRenderer = {
  * a `type` field (those are routed to other Claude-shaped renderers).
  */
 export const userContentRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || 'type' in parsed)
       return null
     return <UserContentMessage parsed={parsed} />
@@ -116,12 +115,11 @@ export const userContentRenderer: MessageContentRenderer = {
  */
 export function tryClaudeUnknownKindRenderers(
   parsed: unknown,
-  role: MessageRole,
   context: RenderContext | undefined,
 ): JSX.Element | null {
-  return userTextContentRenderer.render(parsed, role, context)
-    ?? assistantTextRenderer.render(parsed, role, context)
-    ?? assistantThinkingRenderer.render(parsed, role, context)
-    ?? userContentRenderer.render(parsed, role, context)
-    ?? taskStartedRenderer.render(parsed, role, context)
+  return userTextContentRenderer.render(parsed, context)
+    ?? assistantTextRenderer.render(parsed, context)
+    ?? assistantThinkingRenderer.render(parsed, context)
+    ?? userContentRenderer.render(parsed, context)
+    ?? taskStartedRenderer.render(parsed, context)
 }

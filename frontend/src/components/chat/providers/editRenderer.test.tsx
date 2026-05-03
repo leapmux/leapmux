@@ -1,7 +1,7 @@
 import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import './claude'
 import './testMocks'
 
@@ -39,7 +39,7 @@ function renderEditToolUse(input: Record<string, unknown>) {
     toolUse,
     content: msg.message.content as Array<Record<string, unknown>>,
   }
-  const result = renderMessageContent(msg, MessageRole.ASSISTANT, undefined, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(msg, undefined, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
 }
 

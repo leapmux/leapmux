@@ -132,17 +132,17 @@ func TestBroadcastGitStatus_RepeatedCallsBroadcastEachTime(t *testing.T) {
 		"BroadcastGitStatus must broadcast each call; debouncing belongs higher in the stack if needed")
 }
 
-// TestPersistMessage_TurnEnd_AutoBroadcastsGitStatus locks in the
-// turn-end contract: every provider's TURN_END-role persist (Codex
-// turn/completed, Claude type:"result", ACP prompt response, Pi
-// agent_end) auto-fires BroadcastGitStatus so providers don't have to.
-// The auto-fire runs on a goroutine to keep the agent's stdout-read
-// loop free of the git-subprocess + DB latency, so the test polls.
-func TestPersistMessage_TurnEnd_AutoBroadcastsGitStatus(t *testing.T) {
+// TestPersistTurnEnd_AutoBroadcastsGitStatus locks in the turn-end
+// contract: every provider's terminal envelope (Codex turn/completed,
+// Claude type:"result", ACP prompt response, Pi agent_end) routes
+// through PersistTurnEnd, which auto-fires BroadcastGitStatus so
+// providers don't have to. The auto-fire runs on a goroutine to keep
+// the agent's stdout-read loop free of the git-subprocess + DB
+// latency, so the test polls.
+func TestPersistTurnEnd_AutoBroadcastsGitStatus(t *testing.T) {
 	sink, mock := newGitStatusFixture(t)
 
-	require.NoError(t, sink.PersistMessage(
-		leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END,
+	require.NoError(t, sink.PersistTurnEnd(
 		[]byte(`{"type":"result","subtype":"success"}`),
 		agent.SpanInfo{},
 	))
@@ -150,29 +150,30 @@ func TestPersistMessage_TurnEnd_AutoBroadcastsGitStatus(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return mock.lastStatus() != nil
 	}, time.Second, 10*time.Millisecond,
-		"TURN_END persist should auto-fire BroadcastGitStatus on a goroutine")
+		"PersistTurnEnd should auto-fire BroadcastGitStatus on a goroutine")
 	sc := mock.lastStatus()
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED, sc.GetStatus(),
 		"auto-fired git-status broadcast must use the partial-update shape")
 }
 
-// TestPersistMessage_NonTurnEnd_DoesNotBroadcastGitStatus confirms the
-// auto-fire is gated on TURN_END only — assistant/system/user persists
-// must not pay the git-status cost on every message.
-func TestPersistMessage_NonTurnEnd_DoesNotBroadcastGitStatus(t *testing.T) {
+// TestPersistMessage_DoesNotBroadcastGitStatus confirms the
+// auto-fire lives on PersistTurnEnd only — regular AGENT/USER
+// PersistMessage calls must not pay the git-status cost on every
+// message.
+func TestPersistMessage_DoesNotBroadcastGitStatus(t *testing.T) {
 	sink, mock := newGitStatusFixture(t)
 
-	for _, role := range []leapmuxv1.MessageRole{
-		leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT,
-		leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
-		leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM,
+	for _, source := range []leapmuxv1.MessageSource{
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
 	} {
-		require.NoError(t, sink.PersistMessage(role, []byte(`{}`), agent.SpanInfo{}))
+		require.NoError(t, sink.PersistMessage(source, []byte(`{}`), agent.SpanInfo{}))
 	}
 
 	// Give any spurious goroutine fire enough time to land. With the
 	// gate working correctly, no goroutine ever starts.
 	time.Sleep(50 * time.Millisecond)
 	sc := mock.lastStatus()
-	assert.Nil(t, sc, "non-TURN_END persists must not auto-broadcast git status")
+	assert.Nil(t, sc, "PersistMessage must not auto-broadcast git status")
 }

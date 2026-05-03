@@ -123,7 +123,7 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 	for i, stream := range w.streams {
 		ev := decodeWatchAgentEvent(t, stream)
 		if msg := ev.GetAgentMessage(); msg != nil {
-			if userIdx == -1 && msg.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+			if userIdx == -1 && msg.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
 				userIdx = i
 			}
 			if contextClearedIdx == -1 {
@@ -191,7 +191,7 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 	for i, stream := range w.streams {
 		ev := decodeWatchAgentEvent(t, stream)
 		if msg := ev.GetAgentMessage(); msg != nil {
-			if userIdx == -1 && msg.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_USER {
+			if userIdx == -1 && msg.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
 				userIdx = i
 			}
 			if contextClearedIdx == -1 {
@@ -311,7 +311,7 @@ func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testin
 	require.Len(t, w.streams, 1)
 
 	msg := decodeWatchAgentMessage(t, w.streams[0])
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, msg.Role)
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, msg.Source)
 	assert.Equal(t, "[Request interrupted by user]", decodeAgentChatMessageContent(t, msg)["content"])
 }
 

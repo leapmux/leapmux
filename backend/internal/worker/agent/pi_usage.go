@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"maps"
 	"time"
-
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 const piSessionStatsMaxWait = 2 * time.Second
@@ -319,7 +317,7 @@ func (a *PiAgent) augmentPiMessageEnd(raw []byte) []byte {
 
 func (a *PiAgent) persistPiAgentEnd(raw []byte, snap piUsageSnapshot) {
 	augmented := piAugmentRawWithSnapshot(raw, snap)
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, augmented, SpanInfo{}); err != nil {
+	if err := a.sink.PersistTurnEnd(augmented, SpanInfo{}); err != nil {
 		slog.Error("pi persist agent_end", "agent_id", a.agentID, "error", err)
 	}
 }

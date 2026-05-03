@@ -13,13 +13,22 @@ const GREP_CONTENT_LINE_RE = /^\d+[:-]|^[^:]+:\d+[:-]/
 const RAW_RESULT_SUMMARY_RE = /^(?:Found (\d+) (?:files?|lines?(?:\s+and\s+\d+\s+files?)?)|(\d+) match(?:es)? in (\d+) files?|No (?:matches|files) found)$/
 
 /**
+ * Trailing summary line emitted by Grep `output_mode: "count"`. Per
+ * claude-code/src/tools/GrepTool/GrepTool.ts the suffix may include
+ * " with pagination = limit: N, offset: N", so we anchor on the prefix only.
+ */
+const RAW_COUNT_TRAILING_SUMMARY_RE = /^Found (\d+) total occurrences? across (\d+) files?\b/
+
+/**
  * Parse raw Grep/Glob result text (without tool_use_result).
- * Strips the leading summary line (if any) and returns structured data
- * matching what tool_use_result would provide.
+ * Strips the leading or trailing summary line (if any) and returns
+ * structured data matching what tool_use_result would provide.
  */
 export function parseRawGrepGlobResult(raw: string, toolName: string): {
   numFiles: number
   numLines: number
+  numMatches?: number
+  mode?: 'count'
   filenames: string[]
   content: string
 } {
@@ -27,9 +36,27 @@ export function parseRawGrepGlobResult(raw: string, toolName: string): {
   const firstLine = lines[0]?.trim() ?? ''
   const summaryMatch = firstLine.match(RAW_RESULT_SUMMARY_RE)
 
-  // Strip the summary line from the data lines.
-  const dataLines = summaryMatch ? lines.slice(1) : lines
-  const nonEmpty = dataLines.filter(l => l.trim())
+  // Strip the leading summary (if any), then look at non-empty data lines.
+  const afterLeading = summaryMatch ? lines.slice(1) : lines
+  const nonEmpty = afterLeading.filter(l => l.trim())
+
+  // Count-mode emits the summary on the *last* non-empty line. Detect and
+  // strip it before classifying the body.
+  const lastLine = nonEmpty[nonEmpty.length - 1]?.trim() ?? ''
+  const trailingMatch = lastLine.match(RAW_COUNT_TRAILING_SUMMARY_RE)
+  if (trailingMatch) {
+    const numMatches = Number.parseInt(trailingMatch[1]!, 10)
+    const numFiles = Number.parseInt(trailingMatch[2]!, 10)
+    const body = nonEmpty.slice(0, -1)
+    return {
+      numFiles,
+      numLines: 0,
+      numMatches,
+      mode: 'count',
+      filenames: [],
+      content: body.join('\n'),
+    }
+  }
 
   // For Grep content mode (lines contain "file:line:match" or "line_num:text"),
   // we check the first few lines to classify the output format.
@@ -116,12 +143,25 @@ export function claudeSearchFromToolResult(
   // Subagent: parse raw resultContent.
   const toolName = variant === 'grep' ? CLAUDE_TOOL.GREP : CLAUDE_TOOL.GLOB
   const raw = parseRawGrepGlobResult(resultContent, toolName)
+  if (variant === 'grep') {
+    return {
+      variant,
+      filenames: raw.filenames,
+      content: raw.content,
+      numFiles: raw.numFiles,
+      numLines: raw.numLines,
+      numMatches: raw.numMatches,
+      mode: raw.mode,
+      truncated: false,
+      fallbackContent: resultContent,
+    }
+  }
   return {
     variant,
     filenames: raw.filenames,
-    content: variant === 'grep' ? raw.content : '',
+    content: '',
     numFiles: raw.numFiles,
-    numLines: variant === 'grep' ? raw.numLines : 0,
+    numLines: 0,
     truncated: false,
     fallbackContent: resultContent,
   }

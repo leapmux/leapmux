@@ -2,8 +2,8 @@
  * LeapMux notification-type vocabulary. Mirrors the backend constants in
  * `backend/internal/worker/agent/notification_types.go`. The platform
  * persists each of these as the inner `type` field on a notification
- * envelope (LEAPMUX role for worker-synthesized events, SYSTEM role for
- * agent-emitted metadata that flows through the same renderer).
+ * envelope (LEAPMUX source for worker-synthesized events, AGENT source
+ * for agent-emitted metadata that flows through the same renderer).
  *
  * Importing the constant from this module instead of inlining the wire
  * string turns rename mistakes into compile errors and gives the

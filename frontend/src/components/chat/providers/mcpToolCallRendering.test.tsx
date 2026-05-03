@@ -2,7 +2,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import './claude'
 import './codex'
 import './testMocks'
@@ -19,7 +19,7 @@ const { renderMessageContent } = await import('../messageRenderers')
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: RenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(parsed, MessageRole.USER, context, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
 }
 
@@ -42,7 +42,7 @@ function renderCodexItem(item: Record<string, unknown>, context?: RenderContext)
     toolUse: parsed,
     content: [],
   }
-  const result = renderMessageContent(parsed, MessageRole.ASSISTANT, context, category, AgentProvider.CODEX)
+  const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
   return render(() => result)
 }
 

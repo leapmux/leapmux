@@ -42,7 +42,7 @@ function cleanAPIErrorMessage(msg: string): string {
 
 /** Handles Claude rate limit notifications: {"type":"rate_limit_event","rate_limit_info":{...}} */
 export const rateLimitRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== 'rate_limit_event')
       return null
     const info = parsed.rate_limit_info
@@ -58,7 +58,7 @@ export const rateLimitRenderer: MessageContentRenderer = {
 
 /** Handles Claude result messages: {"type":"result","duration_ms":865,"num_turns":558,...} */
 export const resultRenderer: MessageContentRenderer = {
-  render(parsed, _role, _context) {
+  render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== 'result')
       return null
 

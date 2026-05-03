@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -57,7 +57,6 @@ describe('pi classify', () => {
     const result = plugin.renderMessage!(
       { kind: 'result_divider' },
       { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] },
-      MessageRole.TURN_END,
     )
     expect(result).not.toBeNull()
   })

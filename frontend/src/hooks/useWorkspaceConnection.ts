@@ -8,9 +8,10 @@ import type { createTabStore, Tab } from '~/stores/tab.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
+import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
-import { AgentProvider, AgentStatus, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { waitForStreamCompletion } from '~/hooks/streamCompletion'
@@ -152,7 +153,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const msg = inner.value
 
         // Single decompress-and-parse pass shared across the metadata,
-        // span-cleanup, assistant-usage, and TURN_END branches below.
+        // span-cleanup, assistant-usage, and result-divider branches below.
         // parseMessageContent never throws — failures yield EMPTY_PARSED
         // (topLevel null), which causes each branch to no-op cleanly.
         const parsed = parseMessageContent(msg)
@@ -185,9 +186,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           break
         }
 
-        // Pull notification metadata out of any message regardless of role —
-        // Codex token-usage / rate-limit notifications now arrive as SYSTEM,
-        // while LeapMux-injected settings_changed / context_cleared remain
+        // Pull notification metadata out of any message regardless of source —
+        // Codex token-usage / rate-limit notifications arrive as AGENT, while
+        // LeapMux-injected settings_changed / context_cleared arrive as
         // LEAPMUX. Each branch is gated on the inner type/method so a Pi
         // assistant message doesn't pay for five sequential extractors that
         // can never match.
@@ -250,17 +251,22 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         ) {
           chatStore.trimOldMessages(agentId, MAX_BACKGROUND_CHAT_MESSAGES)
         }
-        // Any persisted assistant or result message ends the in-flight
-        // streaming text. The streamed deltas have either been promoted
-        // to a persisted text block (Codex agentMessage, Pi message_end,
-        // ACP text) or the agent has transitioned to a tool/span message
-        // that implicitly closes the prior text block — without clearing
-        // here, subsequent text deltas concatenate onto the previous
-        // block into one wall of text.
-        if (msg.role === MessageRole.ASSISTANT || msg.role === MessageRole.TURN_END)
+        // Classify once and reuse across the per-message gates below.
+        const category = classifyAgentMessage(msg)
+
+        // Any persisted assistant text, tool use/result, thinking block,
+        // or turn-end divider ends the in-flight streaming text. The
+        // streamed deltas have either been promoted to a persisted text
+        // block (Codex agentMessage, Pi message_end, ACP text) or the
+        // agent has transitioned to a tool/span message that implicitly
+        // closes the prior text block — without clearing here,
+        // subsequent text deltas concatenate onto the previous block
+        // into one wall of text. Notification-thread rows and meta
+        // categories never close the streaming buffer.
+        if (shouldClearStreamingText(msg, parsed, category))
           chatStore.clearStreamingText(agentId)
 
-        if (msg.spanId && (msg.spanType === 'commandExecution' || msg.spanType === 'fileChange' || msg.spanType === 'reasoning') && msg.role === MessageRole.ASSISTANT) {
+        if (msg.spanId && (msg.spanType === 'commandExecution' || msg.spanType === 'fileChange' || msg.spanType === 'reasoning') && msg.source === MessageSource.AGENT) {
           const item = parsed.parentObject?.item as Record<string, unknown> | undefined
           const isCompletedReasoning = item?.type === 'reasoning'
             && (((item.summary as unknown[] | undefined)?.length ?? 0) > 0 || ((item.content as unknown[] | undefined)?.length ?? 0) > 0)
@@ -272,8 +278,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           }
         }
 
-        // Extract context usage from assistant messages (rehydrates on reconnect).
-        if (msg.role === MessageRole.ASSISTANT) {
+        // Method-specific lifecycle handling and assistant-usage
+        // extraction. Gated on AGENT source rather than category because
+        // some lifecycle items (e.g. Codex `thread/started`) classify as
+        // `hidden` — a category-only gate would silently skip them.
+        if (msg.source === MessageSource.AGENT) {
           const method = parsed.parentObject?.method as string | undefined
           const item = parsed.parentObject?.item as Record<string, unknown> | undefined
           if (method === 'thread/started') {
@@ -282,7 +291,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             // empty state instead of a phantom thinking indicator.
             agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
           }
-          // The general assistant-message clear above already drops the
+          // The general streaming-clear above already drops the
           // streamed text buffer. Plan items additionally clear the
           // streamingType session flag so the plan streaming UI dismisses.
           if (item?.type === 'plan') {
@@ -294,9 +303,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           }
         }
 
-        // Play turn-end sound when a TURN_END divider (with subtype) arrives.
+        // Play turn-end sound when a result divider (with subtype) arrives.
         // Also extract contextWindow and total_cost_usd (rehydrates on reconnect).
-        if (msg.role === MessageRole.TURN_END) {
+        // Each provider plugin classifies its terminal envelope (Claude
+        // type:"result", Codex turn/completed, ACP stopReason, Pi agent_end)
+        // as `result_divider`, so this gate is provider-agnostic.
+        if (category.kind === 'result_divider') {
           const modelId = agentStore.getById(agentId)?.model
           const meta = extractResultMetadata(parsed, modelId)
           if (meta) {

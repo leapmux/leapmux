@@ -343,18 +343,18 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 	testutil.AssertEventually(t, func() bool {
 		msgs := sink.Messages()
 		for _, m := range msgs {
-			if m.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END {
+			if m.TurnEnd {
 				return true
 			}
 		}
 		return false
 	}, "expected result message to be persisted")
 
-	// Find the result message and verify num_tool_uses.
+	// Find the result message (recorded by PersistTurnEnd) and verify num_tool_uses.
 	msgs := sink.Messages()
 	var resultContent []byte
 	for _, m := range msgs {
-		if m.Role == leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END {
+		if m.TurnEnd {
 			resultContent = m.Content
 		}
 	}

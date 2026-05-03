@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -101,7 +100,7 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 	})
 
 	require.Equal(t, 3, sink.MessageCount())
-	require.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, sink.Messages()[2].Role)
+	require.True(t, sink.Messages()[2].TurnEnd, "prompt response must route through PersistTurnEnd")
 	require.Equal(t, 1, sink.SessionInfoCount())
 }
 

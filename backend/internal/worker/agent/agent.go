@@ -38,8 +38,14 @@ type AutoContinueSchedule struct {
 // OutputSink provides generic primitives for persisting and broadcasting
 // agent output. Implemented by the service layer and injected into providers.
 type OutputSink interface {
-	PersistMessage(role leapmuxv1.MessageRole, content []byte, span SpanInfo) error
-	PersistNotification(role leapmuxv1.MessageRole, content []byte) error
+	PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
+	PersistNotification(source leapmuxv1.MessageSource, content []byte) error
+	// PersistTurnEnd persists the agent's turn-end divider envelope and
+	// fires the sink-level git-status auto-broadcast. Each provider's
+	// terminal envelope (Claude type:"result", Codex turn/completed,
+	// ACP prompt response, Pi agent_end) routes here so that turn-end-
+	// specific side effects are explicit at the call site.
+	PersistTurnEnd(content []byte, span SpanInfo) error
 	OpenSpan(spanID string, parentSpanID string)
 	CloseSpan(spanID string)
 	ResetSpans()

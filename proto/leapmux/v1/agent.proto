@@ -26,17 +26,41 @@ enum AgentStatus {
   AGENT_STATUS_STARTUP_FAILED = 4;  // Subprocess launch failed; see startup_error
 }
 
-// MessageRole identifies who produced a chat message.
-enum MessageRole {
-  MESSAGE_ROLE_UNSPECIFIED = 0;
-  MESSAGE_ROLE_USER = 1;
-  MESSAGE_ROLE_ASSISTANT = 2;
-  MESSAGE_ROLE_SYSTEM = 3;
-  // Turn-end divider. Persisted by every provider's terminal envelope
-  // (Claude type:"result", Codex turn/completed, ACP prompt response,
-  // Pi agent_end) and gates the sink-level git-status auto-broadcast.
-  MESSAGE_ROLE_TURN_END = 4;
-  MESSAGE_ROLE_LEAPMUX = 5;  // Platform notifications (settings changes, interrupts)
+// MessageSource identifies which side of the transcript a chat row
+// belongs to. This is a transcript-row classifier, not a strict
+// provenance / "who produced the bytes" classifier.
+enum MessageSource {
+  MESSAGE_SOURCE_UNSPECIFIED = 0;
+
+  // User-side transcript row. Includes:
+  //   - Human-typed input.
+  //   - Synthetic conversational prompts injected by LeapMux that are
+  //     forwarded to the agent's stdin (auto-continue, plan-execution
+  //     prompts).
+  //   - Display-only synthetic rows that mirror a user-side action
+  //     (control-response / approval feedback such as Claude permission
+  //     decisions or Pi extension_ui_response display text; agent
+  //     interrupt display rows that are persisted but not forwarded
+  //     to stdin).
+  //   - Provider transcripts that arrive with a `user` role on the
+  //     wire but represent agent-internal echoes (e.g. Claude tool
+  //     results returned to the agent under role:"user").
+  MESSAGE_SOURCE_USER = 1;
+
+  // Agent-side transcript row. Anything the agent process emits to
+  // its output stream — assistant text, tool calls, thinking blocks,
+  // system notifications (rate limits, compaction, status updates),
+  // and turn-end dividers. The fine-grained per-provider semantics
+  // (assistant vs. system notification vs. terminal envelope) are
+  // recovered by classifying the inner JSON envelope, not by source.
+  MESSAGE_SOURCE_AGENT = 2;
+
+  // LeapMux-synthesized non-conversational platform notification.
+  // These rows are produced by LeapMux itself (never by the agent or
+  // the user) and never reach the agent's stdin. Examples:
+  // settings_changed, plan_execution metadata, context_cleared
+  // markers, interrupt-event metadata.
+  MESSAGE_SOURCE_LEAPMUX = 3;
 }
 
 // ContentCompression identifies the compression algorithm used for message content.
@@ -183,7 +207,7 @@ message SendAgentRawMessageResponse {}
 // AgentChatMessage represents a complete message in the conversation.
 message AgentChatMessage {
   string id = 1;
-  MessageRole role = 2;
+  MessageSource source = 2;
   bytes content = 3; // JSON blob from Claude Code (may be compressed per content_compression)
   int64 seq = 4;
   string created_at = 5;

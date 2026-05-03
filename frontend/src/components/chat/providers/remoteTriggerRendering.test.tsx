@@ -2,7 +2,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { claudeToolResultMeta } from './claude/toolResult'
 import './testMocks'
 
@@ -51,7 +51,7 @@ function renderToolUseText(input: Record<string, unknown>): string {
     toolUse,
     content: msg.message.content as Array<Record<string, unknown>>,
   }
-  const result = renderMessageContent(msg, MessageRole.ASSISTANT, undefined, category, AgentProvider.CLAUDE_CODE)
+  const result = renderMessageContent(msg, undefined, category, AgentProvider.CLAUDE_CODE)
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
@@ -65,7 +65,6 @@ function renderToolResultContainer(
   const category: MessageCategory = { kind: 'tool_result' }
   const result = renderMessageContent(
     msg,
-    MessageRole.USER,
     { spanType: 'RemoteTrigger', ...context },
     category,
     AgentProvider.CLAUDE_CODE,

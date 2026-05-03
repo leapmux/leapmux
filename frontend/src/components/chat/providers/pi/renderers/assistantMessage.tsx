@@ -1,6 +1,5 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import { createMemo, Show } from 'solid-js'
 import { isObject } from '~/lib/jsonPick'
 import { MarkdownText, ThinkingMessage } from '../../../messageRenderers'
@@ -8,7 +7,6 @@ import { piContentText } from '../messageContent'
 
 interface Props {
   parsed: unknown
-  role: MessageRole
   context?: RenderContext
 }
 

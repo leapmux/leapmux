@@ -16,8 +16,8 @@ var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected b
 // codexSystemMetadataMethods are Codex-emitted JSON-RPC notifications that
 // carry agent/system metadata (lifecycle, MCP startup, skills invalidation,
 // remote-control status). They share one handler — persist verbatim as
-// SYSTEM. Methods with extra side effects (rate-limit, token-usage
-// broadcasts) keep dedicated cases below.
+// agent-emitted notifications. Methods with extra side effects
+// (rate-limit, token-usage broadcasts) keep dedicated cases below.
 var codexSystemMetadataMethods = map[string]struct{}{
 	"thread/compacted":                {},
 	"thread/name/updated":             {},
@@ -32,7 +32,7 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	slog.Debug("codex HandleOutput", "agent_id", a.agentID, "method", line.Method, "len", len(line.Raw))
 
 	if _, ok := codexSystemMetadataMethods[line.Method]; ok {
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
+		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
 			slog.Error("codex persist system metadata", "agent_id", a.agentID, "method", line.Method, "error", err)
 		}
 		return
@@ -98,7 +98,7 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 
 	default:
 		// Persist unknown notifications so the frontend can decide how to render them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw, SpanInfo{}); err != nil {
 			slog.Error("codex persist notification", "agent_id", a.agentID, "method", line.Method, "error", err)
 		}
 	}
@@ -240,11 +240,11 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		// No-op for started — wait for completed to persist.
 	case "contextCompaction":
 		// Persist the raw `item/started` JSON-RPC notification verbatim as
-		// SYSTEM. Preserves both `method:"item/started"` (so the
+		// AGENT. Preserves both `method:"item/started"` (so the
 		// notification consolidator and frontend classifier route by
 		// method) and Codex-specific fields under `params.item.*` that a
 		// synthesized `{type:"compacting"}` would discard.
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, raw); err != nil {
+		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("codex persist compacting notification", "agent_id", a.agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
@@ -252,7 +252,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		spanColor := a.sink.ReserveSpanColor(itemID, parentSpanID)
 		// Persist first at parent depth, then open span so the
 		// completed message is indented under the started message.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
 		}); err != nil {
 			slog.Error("codex persist item/started", "agent_id", a.agentID, "type", itemType, "error", err)
@@ -261,7 +261,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		a.sink.OpenSpan(itemID, parentSpanID)
 	case "collabAgentToolCall":
 		spanColor := a.sink.ReserveSpanColor(itemID, parentSpanID)
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
@@ -289,7 +289,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 
 	switch itemType {
 	case "agentMessage":
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage", "agent_id", a.agentID, "error", err)
@@ -314,7 +314,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 			a.turnPlanText = planItem.Text
 			a.mu.Unlock()
 		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
@@ -324,7 +324,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.turnToolUses++
 		a.mu.Unlock()
 		// Persist inside the span (at child depth), then close it.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", a.agentID, "type", itemType, "error", err)
@@ -335,14 +335,14 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.sink.CloseSpan(itemID)
 	case "collabAgentToolCall":
 		closingParentSpanID := a.closingCollabParentSpanID(collab, parentSpanID, true)
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			ParentSpanID: parentSpanID, ConnectorSpanID: closingParentSpanID, SpanID: itemID, SpanType: itemType, Closing: closingParentSpanID != "",
 		}); err != nil {
 			slog.Error("codex persist collabAgentToolCall/completed", "agent_id", a.agentID, "error", err)
 		}
 		a.handleCollabAgentSpan(collab, itemID, parentSpanID, true)
 	case "reasoning":
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
@@ -352,7 +352,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		// No-op: completion is represented by thread/compacted, which is emitted as
 		// a LEAPMUX notification-thread boundary instead of an assistant message.
 	default:
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, params, SpanInfo{
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			ParentSpanID: parentSpanID, SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist unknown item", "agent_id", a.agentID, "type", itemType, "error", err)
@@ -408,7 +408,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	}
 
 	// Persist as a result divider.
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_TURN_END, params, SpanInfo{}); err != nil {
+	if err := a.sink.PersistTurnEnd(params, SpanInfo{}); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
 	}
 
@@ -485,8 +485,8 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 	}
 
 	// Persist the raw Codex notification so reconnect/catch-up can rehydrate
-	// context usage from history. Codex-emitted metadata → SYSTEM role.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, content); err != nil {
+	// context usage from history. Codex-emitted metadata → AGENT source.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
 		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
 	}
 
@@ -559,8 +559,8 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 // The raw content is persisted as-is via PersistNotification, and converted
 // rate limit info is broadcast via BroadcastSessionInfo for the live popover.
 func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMessage) {
-	// Persist the raw Codex notification — agent-emitted metadata, SYSTEM role.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, content); err != nil {
+	// Persist the raw Codex notification — agent-emitted metadata, AGENT source.
+	if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
 		slog.Error("codex persist rateLimits", "agent_id", a.agentID, "error", err)
 	}
 

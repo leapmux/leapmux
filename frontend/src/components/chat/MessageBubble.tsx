@@ -13,7 +13,7 @@ import { createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show } f
 import { render } from 'solid-js/web'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
-import { MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
@@ -21,7 +21,7 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
 import * as styles from './MessageBubble.css'
-import { buildClassificationInput, classifyMessage, messageBubbleClass, messageRowClass } from './messageClassification'
+import { classifyMessage, messageBubbleClass, messageRowClass, toClassificationInput } from './messageClassification'
 import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
@@ -52,14 +52,17 @@ function renderErrorFallback(label: string) {
   }
 }
 
-function roleLabel(role: MessageRole): string {
-  switch (role) {
-    case MessageRole.USER: return 'user'
-    case MessageRole.ASSISTANT: return 'assistant'
-    case MessageRole.SYSTEM: return 'system'
-    case MessageRole.TURN_END: return 'result'
-    case MessageRole.LEAPMUX: return 'leapmux'
-    default: return 'system'
+function sourceLabel(source: MessageSource): string {
+  switch (source) {
+    case MessageSource.USER: return 'user'
+    case MessageSource.AGENT: return 'agent'
+    case MessageSource.LEAPMUX: return 'leapmux'
+    // Default fires only on MESSAGE_SOURCE_UNSPECIFIED (proto 0), which
+    // every persistence path sets to a real value. UNSPECIFIED on a
+    // persisted row represents a misconfigured agent-side persistence
+    // path, not a user-typed input or leapmux notification — fall back
+    // to 'agent'.
+    default: return 'agent'
   }
 }
 
@@ -107,7 +110,7 @@ export function classifyParsedMessage(
   classificationContext?: { hasCommandStream?: boolean, commandStreamLength?: number },
 ) {
   const parsed = parseMessageContent(message)
-  const category = classifyMessage(buildClassificationInput(parsed, message), classificationContext)
+  const category = classifyMessage(toClassificationInput(parsed, message), classificationContext)
   return { parsed, category }
 }
 
@@ -181,7 +184,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const msg = props.message
     const envelope: Record<string, unknown> = {
       id: msg.id,
-      role: roleLabel(msg.role),
+      source: sourceLabel(msg.source),
       seq: Number(msg.seq),
       created_at: msg.createdAt,
     }
@@ -318,12 +321,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
 
   const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => extractQuotableText() ?? undefined)
 
-  const rowClass = () => messageRowClass(category().kind, props.message.role)
+  const rowClass = () => messageRowClass(category().kind, props.message.source)
   const isLocalPending = () => props.message.id.startsWith('local-')
-  const isPendingUserMessage = () => isLocalPending() && props.message.role === MessageRole.USER && !props.error
+  const isPendingUserMessage = () => isLocalPending() && props.message.source === MessageSource.USER && !props.error
   const bubbleClass = () => isPendingUserMessage()
     ? chatStyles.userMessagePending
-    : messageBubbleClass(category().kind, props.message.role)
+    : messageBubbleClass(category().kind, props.message.source)
 
   onMount(() => {
     if (!contentRef)
@@ -344,7 +347,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         <div
           class={bubbleClass()}
           data-testid="message-bubble"
-          data-role={roleLabel(props.message.role)}
+          data-role={sourceLabel(props.message.source)}
         >
           <div ref={contentRef} data-testid="message-content">
             <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
@@ -355,7 +358,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
                   )
                 : category().kind === 'notification_thread'
                   ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages, props.message.agentProvider)
-                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, props.message.role, renderContext, category(), props.message.agentProvider)}
+                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, renderContext, category(), props.message.agentProvider)}
             </ErrorBoundary>
           </div>
         </div>

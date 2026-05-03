@@ -4,7 +4,6 @@ import type { Question } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { PermissionMode } from '~/utils/controlResponse'
 import * as workerRpc from '~/api/workerRpc'
@@ -360,15 +359,15 @@ const codexPlugin: Provider = {
     return { kind: 'unknown' }
   },
 
-  renderMessage(category: MessageCategory, parsed: unknown, role: MessageRole, context?: RenderContext): JSX.Element | null {
+  renderMessage(category: MessageCategory, parsed: unknown, context?: RenderContext): JSX.Element | null {
     if (category.kind === 'assistant_text')
-      return <CodexAgentMessageRenderer parsed={parsed} role={role} context={context} />
+      return <CodexAgentMessageRenderer parsed={parsed} context={context} />
     if (category.kind === 'assistant_thinking')
-      return <CodexReasoningRenderer parsed={parsed} role={role} context={context} />
+      return <CodexReasoningRenderer parsed={parsed} context={context} />
     if (category.kind === 'result_divider')
-      return <CodexTurnCompletedRenderer parsed={parsed} role={role} context={context} />
+      return <CodexTurnCompletedRenderer parsed={parsed} context={context} />
     if (category.kind === 'notification') {
-      const codexResult = codexNotificationRenderer(parsed, role, context)
+      const codexResult = codexNotificationRenderer(parsed)
       if (codexResult !== null)
         return codexResult
       // Fall through to Claude-shaped notification renderers (settings_changed,
@@ -388,7 +387,7 @@ const codexPlugin: Provider = {
       // turnPlan dispatches off `parent.method` (not item.type), so it's
       // not in CODEX_RENDERERS — handle it explicitly.
       if (cat.toolName === CODEX_INTERNAL_TOOL.TURN_PLAN)
-        return <CodexTurnPlanRenderer parsed={cat.toolUse} role={role} context={context} />
+        return <CodexTurnPlanRenderer parsed={cat.toolUse} context={context} />
       // For mcp/dynamic tool calls the toolName comes from item.tool, not
       // item.type. Look up by the actual item type (after unwrapping the
       // optional `{item, threadId}` envelope) and fall back to the generic
@@ -397,8 +396,8 @@ const codexPlugin: Provider = {
       const itemType = item ? pickString(item, 'type', undefined) : undefined
       const Renderer = itemType ? CODEX_RENDERERS.get(itemType) : undefined
       if (Renderer && item)
-        return <Renderer item={item} role={role} context={context} />
-      return <CodexMcpToolCallRenderer parsed={cat.toolUse} role={role} context={context} />
+        return <Renderer item={item} context={context} />
+      return <CodexMcpToolCallRenderer parsed={cat.toolUse} context={context} />
     }
     return null
   },

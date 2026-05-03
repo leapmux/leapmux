@@ -1,6 +1,5 @@
 import type { Component, JSX } from 'solid-js'
 import type { RenderContext } from '../../messageRenderers'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import type { CodexItemType } from '~/types/toolMessages'
 import { Show } from 'solid-js'
 import { extractItem } from './renderHelpers'
@@ -13,7 +12,6 @@ import { extractItem } from './renderHelpers'
  */
 export interface CodexItemRendererProps {
   item: Record<string, unknown>
-  role: MessageRole
   context?: RenderContext
 }
 
@@ -26,7 +24,6 @@ export type CodexItemRenderer = Component<CodexItemRendererProps>
  */
 export interface CodexMessageRendererProps {
   parsed: unknown
-  role: MessageRole
   context?: RenderContext
 }
 
@@ -81,7 +78,7 @@ export function defineCodexRenderer(spec: CodexRendererSpec): CodexMessageRender
     }
     return (
       <Show when={item()}>
-        {unwrapped => <Inner item={unwrapped()} role={props.role} context={props.context} />}
+        {unwrapped => <Inner item={unwrapped()} context={props.context} />}
       </Show>
     )
   }

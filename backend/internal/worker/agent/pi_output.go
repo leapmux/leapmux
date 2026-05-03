@@ -99,9 +99,9 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 	case PiEventCompactionStart, PiEventCompactionEnd,
 		PiEventAutoRetryStart, PiEventAutoRetryEnd,
 		PiEventExtensionError:
-		// Pi-emitted lifecycle / extension events — SYSTEM role per the
+		// Pi-emitted lifecycle / extension events — AGENT source per the
 		// proto rule (LEAPMUX is reserved for worker-synthesized envelopes).
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, line.Raw); err != nil {
+		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
 			slog.Error("pi persist notification", "agent_id", a.agentID, "type", line.Type, "error", err)
 		}
 	case PiEventExtensionUIRequest:
@@ -112,7 +112,7 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 		slog.Warn("pi orphan response line", "agent_id", a.agentID, "len", len(line.Raw))
 	default:
 		// Persist unknown event types so the user can still see them.
-		if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, line.Raw, SpanInfo{}); err != nil {
+		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw, SpanInfo{}); err != nil {
 			slog.Error("pi persist unknown event", "agent_id", a.agentID, "type", line.Type, "error", err)
 		}
 	}
@@ -153,7 +153,7 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 
 func (a *PiAgent) handlePiMessageEnd(raw []byte) {
 	augmented := a.augmentPiMessageEnd(raw)
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, augmented, SpanInfo{}); err != nil {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, augmented, SpanInfo{}); err != nil {
 		slog.Error("pi persist message_end", "agent_id", a.agentID, "error", err)
 	}
 }
@@ -192,7 +192,7 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 	}
 
 	spanColor := a.sink.ReserveSpanColor(env.ToolCallID, "")
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, raw, SpanInfo{
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
 		SpanID:    env.ToolCallID,
 		SpanType:  env.ToolName,
 		SpanColor: spanColor,
@@ -266,7 +266,7 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 	a.mu.Unlock()
 	a.clearCumulativeDelta(env.ToolCallID)
 
-	if err := a.sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, raw, SpanInfo{
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
 		SpanID:   env.ToolCallID,
 		SpanType: env.ToolName,
 		Closing:  true,
@@ -313,10 +313,10 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 
 	switch head.Method {
 	case PiExtensionMethodNotify:
-		// Persist the raw extension_ui_request envelope as SYSTEM. The
+		// Persist the raw extension_ui_request envelope as AGENT. The
 		// frontend's Pi notification renderer derives level/message from
 		// `notifyType`/`message` on the raw payload — no synthesis needed.
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, raw); err != nil {
+		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("pi persist notify", "agent_id", a.agentID, "error", err)
 		}
 	case PiExtensionMethodSetStatus:
@@ -349,8 +349,8 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 		})
 	default:
 		// Unknown extension UI method — record so the user can see it.
-		// Pi-emitted, so SYSTEM role.
-		if err := a.sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, raw); err != nil {
+		// Pi-emitted, so AGENT source.
+		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("pi persist unknown extension_ui_request",
 				"agent_id", a.agentID, "method", head.Method, "error", err)
 		}

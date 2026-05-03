@@ -1,7 +1,7 @@
 import type { MessageCategory } from '../messageClassification'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, MessageRole } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import './testMocks'
 
 const { renderMessageContent } = await import('../messageRenderers')
@@ -57,7 +57,7 @@ describe('mcp tool_use rendering', () => {
     })
 
     const { container } = render(() =>
-      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolUseCategory, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolUseCategory, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
@@ -81,7 +81,7 @@ describe('mcp tool_use rendering', () => {
     }
 
     const { container } = render(() =>
-      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'mcp__github__search__repos' }, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, { spanType: 'mcp__github__search__repos' }, category, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
@@ -105,7 +105,7 @@ describe('mcp tool_use rendering', () => {
     }
 
     const { container } = render(() =>
-      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, category, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
@@ -127,7 +127,7 @@ describe('mcp tool_use rendering', () => {
     }
 
     const { container } = render(() =>
-      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'SomeNewTool' }, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, { spanType: 'SomeNewTool' }, category, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
@@ -149,7 +149,7 @@ describe('mcp tool_use rendering', () => {
     }
 
     const { container } = render(() =>
-      renderMessageContent(parsed, MessageRole.ASSISTANT, { spanType: 'Bash' }, category, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, { spanType: 'Bash' }, category, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''
@@ -164,7 +164,7 @@ describe('mcp tool_result rendering', () => {
     const parsed = makeMcpToolResult('# Research Report\n\nThis is a comparison of Go OIDC libraries.')
 
     const { container } = render(() =>
-      renderMessageContent(parsed, MessageRole.USER, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolResultCategory, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(parsed, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolResultCategory, AgentProvider.CLAUDE_CODE),
     )
 
     const text = container.textContent || ''

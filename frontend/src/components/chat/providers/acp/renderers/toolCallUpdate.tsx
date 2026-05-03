@@ -6,7 +6,6 @@ import type { FileEditDiffSource } from '../../../results/fileEditDiff'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
 import type { SearchResultSource } from '../../../results/searchResult'
 import type { WebFetchResultSource } from '../../../results/webFetchResult'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import { createMemo, Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
@@ -219,6 +218,6 @@ function ToolCallUpdateMessage(props: {
 }
 
 /** Render an ACP tool_call_update (completed/failed) — combined tool_use + tool_result. */
-export function acpToolCallUpdateRenderer(toolUse: Record<string, unknown>, _role: MessageRole, context?: RenderContext): JSX.Element {
+export function acpToolCallUpdateRenderer(toolUse: Record<string, unknown>, context?: RenderContext): JSX.Element {
   return <ToolCallUpdateMessage toolUse={toolUse} context={context} />
 }

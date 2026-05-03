@@ -2,7 +2,6 @@
 import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
-import type { MessageRole } from '~/generated/leapmux/v1/agent_pb'
 import MessageSquare from 'lucide-solid/icons/message-square'
 import { createMemo } from 'solid-js'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
@@ -49,7 +48,6 @@ import { renderClaudeToolUse } from './toolUse'
 export function renderClaudeMessage(
   category: MessageCategory,
   parsed: unknown,
-  role: MessageRole,
   context?: RenderContext,
 ): JSX.Element | null {
   switch (category.kind) {
@@ -60,28 +58,28 @@ export function renderClaudeMessage(
     case 'agent_prompt':
       return renderClaudeAgentPrompt(parsed, context)
     case 'assistant_text':
-      return assistantTextRenderer.render(parsed, role, context)
+      return assistantTextRenderer.render(parsed, context)
     case 'assistant_thinking':
-      return assistantThinkingRenderer.render(parsed, role, context)
+      return assistantThinkingRenderer.render(parsed, context)
     case 'user_text':
-      return userTextContentRenderer.render(parsed, role, context)
+      return userTextContentRenderer.render(parsed, context)
     case 'user_content':
-      return userContentRenderer.render(parsed, role, context)
+      return userContentRenderer.render(parsed, context)
     case 'plan_execution':
-      return planExecutionRenderer.render(parsed, role, context)
+      return planExecutionRenderer.render(parsed, context)
     case 'task_notification':
-      return taskNotificationRenderer.render(parsed, role, context)
+      return taskNotificationRenderer.render(parsed, context)
     case 'notification':
-      return claudeNotificationRenderer(parsed, role, context)
+      return claudeNotificationRenderer(parsed, context)
     case 'result_divider':
-      return resultRenderer.render(parsed, role, context)
+      return resultRenderer.render(parsed, context)
     case 'control_response':
-      return controlResponseRenderer.render(parsed, role, context)
+      return controlResponseRenderer.render(parsed, context)
     case 'compact_summary':
     case 'hidden':
       return <span />
     case 'unknown':
-      return tryClaudeUnknownKindRenderers(parsed, role, context)
+      return tryClaudeUnknownKindRenderers(parsed, context)
     default:
       return null
   }
@@ -94,20 +92,19 @@ export function renderClaudeMessage(
  */
 function claudeNotificationRenderer(
   parsed: unknown,
-  role: MessageRole,
   context: RenderContext | undefined,
 ): JSX.Element | null {
-  return settingsChangedRenderer.render(parsed, role, context)
-    ?? interruptedRenderer.render(parsed, role, context)
-    ?? contextClearedRenderer.render(parsed, role, context)
-    ?? compactingRenderer.render(parsed, role, context)
-    ?? agentErrorRenderer.render(parsed, role, context)
-    ?? planUpdatedRenderer.render(parsed, role, context)
-    ?? rateLimitRenderer.render(parsed, role, context)
-    ?? apiRetryRenderer.render(parsed, role, context)
-    ?? compactBoundaryRenderer.render(parsed, role, context)
-    ?? microcompactBoundaryRenderer.render(parsed, role, context)
-    ?? systemInitRenderer.render(parsed, role, context)
+  return settingsChangedRenderer.render(parsed, context)
+    ?? interruptedRenderer.render(parsed, context)
+    ?? contextClearedRenderer.render(parsed, context)
+    ?? compactingRenderer.render(parsed, context)
+    ?? agentErrorRenderer.render(parsed, context)
+    ?? planUpdatedRenderer.render(parsed, context)
+    ?? rateLimitRenderer.render(parsed, context)
+    ?? apiRetryRenderer.render(parsed, context)
+    ?? compactBoundaryRenderer.render(parsed, context)
+    ?? microcompactBoundaryRenderer.render(parsed, context)
+    ?? systemInitRenderer.render(parsed, context)
 }
 
 /** Collapsed agent prompt view: MessageSquare icon + "Prompt" title + collapsed markdown body. */

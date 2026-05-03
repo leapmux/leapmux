@@ -118,7 +118,7 @@ func TestHandleOutput_AssistantToolUse(t *testing.T) {
 	require.Len(t, msgs, 1)
 
 	msg := msgs[0]
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, msg.Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	assert.Equal(t, "parent-123", msg.ParentSpanID)
 	assert.Equal(t, "tu-001", msg.SpanID)
 	assert.Equal(t, "Read", msg.SpanType)
@@ -182,7 +182,7 @@ func TestHandleOutput_UserToolResult(t *testing.T) {
 	require.Len(t, msgs, 1)
 
 	msg := msgs[0]
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_USER, msg.Role)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, msg.Source)
 	assert.Equal(t, "parent-123", msg.ParentSpanID)
 	assert.Equal(t, "tu-001", msg.SpanID)
 	assert.Equal(t, "Read", msg.SpanType)
@@ -300,12 +300,12 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.DueAt)
 	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000}`, string(schedule.SourcePayload))
 
-	// Persists raw rate_limit_event verbatim as SYSTEM (no longer
+	// Persists raw rate_limit_event verbatim as AGENT (no longer
 	// synthesizes a stripped-down {type:"rate_limit",rate_limit_info}).
 	require.Equal(t, 1, sink.NotificationCount())
 	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
-		"Claude-emitted rate_limit_event must persist as SYSTEM")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
+		"Claude-emitted rate_limit_event must persist as AGENT")
 	assert.JSONEq(t, rawEvent, string(last.Content),
 		"raw envelope must be preserved verbatim so future fields flow through")
 }

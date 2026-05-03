@@ -124,7 +124,7 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 	_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
 		ID:        "msg-1",
 		AgentID:   "agent-clear",
-		Role:      leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:   []byte(`{"content":"hello"}`),
 		CreatedAt: time.Now(),
 	})
@@ -156,7 +156,7 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 	_, err = svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
 		ID:        "msg-2",
 		AgentID:   "agent-clear",
-		Role:      leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:   []byte(`{"content":"world"}`),
 		CreatedAt: time.Now(),
 	})
@@ -199,7 +199,7 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 	_, err = svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
 		ID:        "msg-first",
 		AgentID:   "agent-idle",
-		Role:      leapmuxv1.MessageRole_MESSAGE_ROLE_USER,
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:   []byte(`{"content":"hello"}`),
 		CreatedAt: time.Now(),
 	})
