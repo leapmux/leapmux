@@ -1,13 +1,17 @@
 import type { ITheme } from '@xterm/xterm'
+import type { BrowserPreferences, TerminalRendererPreference } from './browserStorage'
 import type { ThemePreference } from '~/app'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { loadBrowserPrefs } from './browserStorage'
+import { createLogger } from './logger'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
+const log = createLogger('terminal')
 
 export type TerminalThemePreference = 'light' | 'dark' | 'match-ui'
+type ResolvedTerminalRenderer = 'webgl' | 'canvas'
 
 export interface TerminalFontOptions {
   fontFamily?: string
@@ -77,11 +81,37 @@ export const lightTerminalTheme: ITheme = {
 }
 
 /** Get the stored terminal theme preference from localStorage. */
-export function getTerminalThemePreference(): TerminalThemePreference {
-  const stored = loadBrowserPrefs().terminalTheme
+export function getTerminalThemePreference(prefs: BrowserPreferences = loadBrowserPrefs()): TerminalThemePreference {
+  const stored = prefs.terminalTheme
   if (stored === 'light' || stored === 'dark' || stored === 'match-ui')
     return stored
   return 'match-ui'
+}
+
+/** Get the stored terminal renderer preference from localStorage. */
+export function getTerminalRendererPreference(prefs: BrowserPreferences = loadBrowserPrefs()): TerminalRendererPreference {
+  const stored = prefs.terminalRenderer
+  if (stored === 'auto' || stored === 'webgl' || stored === 'canvas')
+    return stored
+  return 'auto'
+}
+
+/** Resolve the renderer preference, defaulting Linux desktop Tauri away from WebGL. */
+export function resolveTerminalRendererPreference(
+  pref: TerminalRendererPreference,
+): ResolvedTerminalRenderer {
+  if (pref === 'canvas' || pref === 'webgl')
+    return pref
+  return isLinuxDesktopTauri() ? 'canvas' : 'webgl'
+}
+
+function isLinuxDesktopTauri(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined')
+    return false
+  if (typeof window.__TAURI_INTERNALS__ === 'undefined')
+    return false
+  // Android UA also contains "Linux", so exclude mobile explicitly.
+  return /\bLinux\b/i.test(navigator.userAgent) && !/android|mobile/i.test(navigator.userAgent)
 }
 
 /**
@@ -178,9 +208,10 @@ export function bufferHasVisibleContent(terminal: Terminal): boolean {
 }
 
 export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: ITheme }): TerminalInstance {
+  const prefs = loadBrowserPrefs()
   const theme = opts?.theme ?? resolveTerminalTheme(
-    getTerminalThemePreference(),
-    (loadBrowserPrefs().theme as ThemePreference) || 'system',
+    getTerminalThemePreference(prefs),
+    (prefs.theme as ThemePreference) || 'system',
     typeof window !== 'undefined'
     && window.matchMedia('(prefers-color-scheme: dark)').matches,
   )
@@ -199,15 +230,23 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   const fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
 
-  try {
-    const webglAddon = new WebglAddon()
-    terminal.loadAddon(webglAddon)
-    webglAddon.onContextLoss(() => {
-      webglAddon.dispose()
-    })
+  const preference = getTerminalRendererPreference(prefs)
+  if (resolveTerminalRendererPreference(preference) === 'canvas') {
+    log.debug('terminal_renderer', { renderer: 'canvas', preference })
   }
-  catch {
-    // WebGL not supported, fall back to canvas renderer
+  else {
+    try {
+      const webglAddon = new WebglAddon()
+      terminal.loadAddon(webglAddon)
+      webglAddon.onContextLoss(() => {
+        log.warn('terminal_renderer_webgl_context_lost')
+        webglAddon.dispose()
+      })
+      log.debug('terminal_renderer', { renderer: 'webgl', preference })
+    }
+    catch (error) {
+      log.warn('terminal_renderer', { renderer: 'canvas', preference, reason: 'webgl_unavailable', error })
+    }
   }
 
   // Web fonts (e.g. Hack NF) are declared with font-display: swap and load

@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 export type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
+export type TerminalRendererPreference = 'auto' | 'webgl' | 'canvas'
 
 /**
  * Browser-level preferences stored as a single JSON object.
@@ -28,6 +29,7 @@ export interface BrowserPreferences {
   expandAgentThoughts?: boolean
   showHiddenMessages?: boolean
   enterKeyMode?: EnterKeyMode
+  terminalRenderer?: TerminalRendererPreference
 }
 
 // ---------------------------------------------------------------------------

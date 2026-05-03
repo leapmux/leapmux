@@ -1926,16 +1926,13 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 fn main() {
-    // Work around known WebKitGTK issues on Linux:
+    // Work around known WebKitGTK DMA-BUF renderer issues on Linux:
     // - DMA-BUF renderer fails with "Failed to create GBM buffer"
-    // - Hardware compositing can trigger Wayland protocol errors
-    //   (tauri-apps/tauri#8541)
-    // Disabling both avoids GPU buffer management issues while
+    // Disabling DMA-BUF avoids GPU buffer management issues while
     // keeping native Wayland support.
     #[cfg(target_os = "linux")]
     {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
 
         // Pin GStreamer's registry cache to a stable per-user file so
         // the plugin scan survives across launches and doesn't collide
