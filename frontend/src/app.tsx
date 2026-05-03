@@ -7,6 +7,7 @@ import { channelManager } from '~/api/workerRpc'
 import { showInfoToast } from '~/components/common/Toast'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { AboutDialog } from '~/components/shell/AboutDialog'
+import { DesktopMinimalChrome, DesktopRouteChrome } from '~/components/shell/DesktopChrome'
 import { UserMenuDialogs } from '~/components/shell/UserMenu'
 import { setShowAboutDialog, setShowPreferencesDialog, showAboutDialog } from '~/components/shell/UserMenuState'
 import { AuthProvider } from '~/context/AuthContext'
@@ -231,7 +232,12 @@ export default function App() {
               <AuthProvider>
                 <PreferencesProvider>
                   <PreferencesApplier>
-                    <Router root={props => <Suspense>{props.children}</Suspense>}>
+                    <Router root={props => (
+                      <Suspense>
+                        <DesktopRouteChrome>{props.children}</DesktopRouteChrome>
+                      </Suspense>
+                    )}
+                    >
                       <FileRoutes />
                     </Router>
                   </PreferencesApplier>
@@ -241,7 +247,9 @@ export default function App() {
             </DesktopFadeIn>
           </Match>
           <Match when={desktopState() === 'launcher'}>
-            <LauncherView onConnected={() => setDesktopState('connected')} />
+            <DesktopMinimalChrome>
+              <LauncherView onConnected={() => setDesktopState('connected')} />
+            </DesktopMinimalChrome>
           </Match>
         </Switch>
         <Show when={showAboutDialog()}>

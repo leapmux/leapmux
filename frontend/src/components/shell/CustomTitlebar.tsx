@@ -9,11 +9,10 @@ import { IconButton } from '~/components/common/IconButton'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import { getPlatform } from '~/lib/shortcuts/platform'
 import { isDesktopApp } from '~/lib/systemInfo'
-import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './CustomTitlebar.css'
 import { OpenInEditorButton } from './OpenInEditorButton'
 import { PanelLeftFilled, PanelRightFilled } from './SidebarIcons'
-import { UserMenuItems } from './UserMenuItems'
+import { AppAboutMenuItem, UserMenuItems } from './UserMenuItems'
 import { WindowCloseIcon, WindowMaximizeIcon, WindowMinimizeIcon, WindowRestoreIcon } from './WindowControlIcons'
 
 const platform = getPlatform()
@@ -24,7 +23,8 @@ const showCustomWindowControls = desktop && (platform === 'linux' || platform ==
 const MAC_TRAFFIC_LIGHT_INSET_PX = 78
 const macPadding = desktop && platform === 'mac' ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px` : undefined
 
-interface CustomTitlebarProps {
+interface WorkspaceCustomTitlebarProps {
+  variant?: 'workspace'
   onToggleLeftSidebar: () => void
   onToggleRightSidebar: () => void
   leftSidebarVisible: boolean
@@ -32,6 +32,33 @@ interface CustomTitlebarProps {
   /** Working directory of the active tab, or undefined when nothing is active. */
   activeWorkingDir?: () => string | undefined
 }
+
+interface MinimalCustomTitlebarProps {
+  variant: 'minimal'
+}
+
+type CustomTitlebarProps = WorkspaceCustomTitlebarProps | MinimalCustomTitlebarProps
+
+const WorkspaceActions: Component<WorkspaceCustomTitlebarProps> = props => (
+  <>
+    <OpenInEditorButton workingDir={() => props.activeWorkingDir?.()} />
+
+    <IconButton
+      icon={props.leftSidebarVisible ? PanelLeftFilled : PanelLeft}
+      iconSize="lg"
+      size="md"
+      title={shortcutHint('Toggle left sidebar', 'app.toggleLeftSidebar')}
+      onClick={() => props.onToggleLeftSidebar()}
+    />
+    <IconButton
+      icon={props.rightSidebarVisible ? PanelRightFilled : PanelRight}
+      iconSize="lg"
+      size="md"
+      title={shortcutHint('Toggle right sidebar', 'app.toggleRightSidebar')}
+      onClick={() => props.onToggleRightSidebar()}
+    />
+  </>
+)
 
 export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
   const [isMaximized, setIsMaximized] = createSignal(false)
@@ -60,10 +87,11 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
         )}
         data-testid="app-menu"
       >
-        <UserMenuItems />
+        <Show when={props.variant !== 'minimal'} fallback={<AppAboutMenuItem />}>
+          <UserMenuItems />
+        </Show>
         <Show when={desktop}>
           <hr />
-          <li class={menuSectionHeader}>Window</li>
           <button role="menuitem" onClick={() => void windowMinimize()}>
             <DropdownMenuItemContent label="Minimize" />
           </button>
@@ -81,22 +109,9 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
       <div class={styles.dragRegion} data-tauri-drag-region />
       <div class={styles.titleText}>LeapMux Desktop</div>
 
-      <OpenInEditorButton workingDir={() => props.activeWorkingDir?.()} />
-
-      <IconButton
-        icon={props.leftSidebarVisible ? PanelLeftFilled : PanelLeft}
-        iconSize="lg"
-        size="md"
-        title={shortcutHint('Toggle left sidebar', 'app.toggleLeftSidebar')}
-        onClick={() => props.onToggleLeftSidebar()}
-      />
-      <IconButton
-        icon={props.rightSidebarVisible ? PanelRightFilled : PanelRight}
-        iconSize="lg"
-        size="md"
-        title={shortcutHint('Toggle right sidebar', 'app.toggleRightSidebar')}
-        onClick={() => props.onToggleRightSidebar()}
-      />
+      <Show when={props.variant !== 'minimal'}>
+        <WorkspaceActions {...(props as WorkspaceCustomTitlebarProps)} />
+      </Show>
 
       <Show when={showCustomWindowControls}>
         <div class={styles.windowControls}>

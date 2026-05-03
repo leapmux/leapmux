@@ -2,7 +2,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { openWebInspector, quitApp, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
+import { openWebInspector, quitApp, windowClose, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
 import { CustomTitlebar } from './CustomTitlebar'
 
 // Hoisted so the vi.mock factories below can close over them — vi.mock
@@ -19,13 +19,9 @@ vi.mock('~/lib/shortcuts/platform', () => ({
   isMac: () => false,
 }))
 
-vi.mock('~/lib/systemInfo', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('~/lib/systemInfo')>()
-  return {
-    ...actual,
-    isDesktopApp: () => true,
-  }
-})
+vi.mock('~/lib/systemInfo', () => ({
+  isDesktopApp: () => true,
+}))
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
@@ -63,6 +59,9 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
 })
 
 vi.mock('~/components/shell/UserMenuItems', () => ({
+  AppAboutMenuItem: () => (
+    <button role="menuitem" onClick={() => setShowAboutDialog(true)}>About LeapMux Desktop...</button>
+  ),
   UserMenuItems: () => (
     <>
       <button role="menuitem">Profile...</button>
@@ -90,6 +89,11 @@ beforeAll(() => {
   }
 })
 
+beforeEach(() => {
+  vi.clearAllMocks()
+  initialMaximized.value = false
+})
+
 function renderTitlebar(activeWorkingDir?: () => string | undefined) {
   return render(() => (
     <CustomTitlebar
@@ -102,11 +106,31 @@ function renderTitlebar(activeWorkingDir?: () => string | undefined) {
   ))
 }
 
-describe('customTitlebar hamburger menu', () => {
-  beforeEach(() => {
-    initialMaximized.value = false
-  })
+function renderMinimalTitlebar() {
+  return render(() => (
+    <CustomTitlebar variant="minimal" />
+  ))
+}
 
+function getMenuItemLabels(container: HTMLElement) {
+  const popover = container.querySelector('[data-testid="app-menu"]')
+  expect(popover).not.toBeNull()
+  const items = popover!.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')
+  return Array.from(items, el => el.textContent?.trim() ?? '')
+}
+
+function clickMenuItem(labelPrefix: string, renderFn = renderTitlebar) {
+  const { container } = renderFn()
+  const popover = container.querySelector('[data-testid="app-menu"]')!
+  const items = Array.from(popover.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
+  const match = items.find(el => (el.textContent ?? '').trim().startsWith(labelPrefix))
+  if (!match)
+    throw new Error(`menuitem not found for "${labelPrefix}"`)
+  fireEvent.click(match)
+  return container
+}
+
+describe('customTitlebar hamburger menu', () => {
   it('renders the hamburger trigger on Linux desktop', () => {
     renderTitlebar()
     expect(screen.getByTestId('app-menu-trigger')).toBeInTheDocument()
@@ -114,10 +138,7 @@ describe('customTitlebar hamburger menu', () => {
 
   it('dropdown exposes merged account and app items', () => {
     const { container } = renderTitlebar()
-    const popover = container.querySelector('[data-testid="app-menu"]')
-    expect(popover).not.toBeNull()
-    const items = popover!.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')
-    const labels = Array.from(items, el => el.textContent?.trim() ?? '')
+    const labels = getMenuItemLabels(container)
     expect(labels).toEqual([
       'Profile...',
       'About LeapMux Desktop...',
@@ -130,16 +151,6 @@ describe('customTitlebar hamburger menu', () => {
       expect.stringMatching(/^Quit/),
     ])
   })
-
-  function clickMenuItem(labelPrefix: string) {
-    const { container } = renderTitlebar()
-    const popover = container.querySelector('[data-testid="app-menu"]')!
-    const items = Array.from(popover.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
-    const match = items.find(el => (el.textContent ?? '').trim().startsWith(labelPrefix))
-    if (!match)
-      throw new Error(`menuitem not found for "${labelPrefix}"`)
-    fireEvent.click(match)
-  }
 
   it('quit invokes quitApp', () => {
     clickMenuItem('Quit')
@@ -170,9 +181,7 @@ describe('customTitlebar hamburger menu', () => {
   it('menu item reads "Restore" when the window is maximized', () => {
     initialMaximized.value = true
     const { container } = renderTitlebar()
-    const popover = container.querySelector('[data-testid="app-menu"]')!
-    const items = Array.from(popover.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
-    const labels = items.map(el => (el.textContent ?? '').trim())
+    const labels = getMenuItemLabels(container)
     expect(labels).toContain('Restore')
     expect(labels).not.toContain('Maximize')
   })
@@ -183,6 +192,61 @@ describe('customTitlebar hamburger menu', () => {
     // The Linux window-controls cluster exposes the maximize/restore button via aria-label.
     expect(screen.getByLabelText('Restore')).toBeInTheDocument()
     expect(screen.queryByLabelText('Maximize')).toBeNull()
+  })
+})
+
+describe('customTitlebar minimal variant', () => {
+  it('renders the minimal app and window menu', () => {
+    const { container } = renderMinimalTitlebar()
+    expect(screen.getByTestId('app-menu-trigger')).toBeInTheDocument()
+    expect(getMenuItemLabels(container)).toEqual([
+      'About LeapMux Desktop...',
+      'Minimize',
+      'Maximize',
+      'Open Web Inspector',
+      expect.stringMatching(/^Quit/),
+    ])
+  })
+
+  it('omits workspace and account actions', () => {
+    const { container } = renderMinimalTitlebar()
+    const text = container.textContent ?? ''
+    expect(text).not.toContain('Switch mode')
+    expect(text).not.toContain('Preferences')
+    expect(text).not.toContain('Profile')
+    expect(text).not.toContain('Log out')
+    expect(container.querySelector('[data-testid="open-in-editor"]')).toBeNull()
+    expect(container.querySelector('button[aria-label^="Toggle left sidebar"]')).toBeNull()
+    expect(container.querySelector('button[aria-label^="Toggle right sidebar"]')).toBeNull()
+  })
+
+  it('about sets the about-dialog signal', () => {
+    clickMenuItem('About LeapMux Desktop', renderMinimalTitlebar)
+    expect(setShowAboutDialog).toHaveBeenCalledWith(true)
+  })
+
+  it('window menu actions invoke desktop APIs', () => {
+    clickMenuItem('Minimize', renderMinimalTitlebar)
+    expect(windowMinimize).toHaveBeenCalledTimes(1)
+
+    clickMenuItem('Maximize', renderMinimalTitlebar)
+    expect(windowToggleMaximize).toHaveBeenCalledTimes(1)
+
+    clickMenuItem('Open Web Inspector', renderMinimalTitlebar)
+    expect(openWebInspector).toHaveBeenCalledTimes(1)
+
+    clickMenuItem('Quit', renderMinimalTitlebar)
+    expect(quitApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('right-side window controls include minimize, maximize, and close', () => {
+    renderMinimalTitlebar()
+    fireEvent.click(screen.getByLabelText('Minimize'))
+    expect(windowMinimize).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByLabelText('Maximize'))
+    expect(windowToggleMaximize).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByLabelText('Close'))
+    expect(windowClose).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -49,11 +49,19 @@ export const titlebarLayout = style({
   flexDirection: 'column',
   height: '100%',
   width: '100%',
+  minHeight: 0,
 })
 
 export const titlebarContent = style({
   flex: 1,
+  minHeight: 0,
   overflow: 'hidden',
+})
+
+export const minimalTitlebarContent = style({
+  flex: 1,
+  minHeight: 0,
+  overflow: 'auto',
 })
 
 // Optical-balance nudge: Lucide's Menu glyph (three horizontal lines) renders

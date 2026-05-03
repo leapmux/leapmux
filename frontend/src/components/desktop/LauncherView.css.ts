@@ -1,15 +1,21 @@
-import { keyframes, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
+import { headerHeightPx } from '~/styles/tokens'
+
+const titlebarCenterOffset = `${headerHeightPx / 2}px`
+const opticalCenterOffset = `calc(${titlebarCenterOffset} + 8px)`
 
 export const container = style({
   '--container-gap': '2rem',
+  'boxSizing': 'border-box',
   'display': 'flex',
   'flexDirection': 'column',
   'alignItems': 'center',
   'justifyContent': 'center',
-  'minHeight': '100vh',
+  'minHeight': '100%',
   'maxWidth': '720px',
   'margin': '0 auto',
-  'padding': '2rem',
+  'paddingBlock': `calc(2rem - ${opticalCenterOffset}) calc(2rem + ${opticalCenterOffset})`,
+  'paddingInline': '2rem',
   'gap': 'var(--container-gap)',
   'transition': 'opacity 0.3s ease',
 } as any)
@@ -149,6 +155,10 @@ export const connectBtn = style({
   fontWeight: 500,
   cursor: 'pointer',
   transition: 'opacity 0.15s',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 'var(--space-2)',
   selectors: {
     '&:hover:not(:disabled)': {
       opacity: 0.9,
@@ -158,19 +168,6 @@ export const connectBtn = style({
       cursor: 'not-allowed',
     },
   },
-})
-
-const spin = keyframes({
-  to: { transform: 'rotate(360deg)' },
-})
-
-export const spinner = style({
-  width: '24px',
-  height: '24px',
-  border: '3px solid var(--border)',
-  borderTopColor: 'var(--primary)',
-  borderRadius: '50%',
-  animation: `${spin} 0.6s linear infinite`,
 })
 
 export const errorText = style({

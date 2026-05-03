@@ -1,8 +1,11 @@
 import type { Component } from 'solid-js'
+import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState, platformBridge, restoreWindowGeometry } from '~/api/platformBridge'
+import { Icon } from '~/components/common/Icon'
 import { createLogger } from '~/lib/logger'
 import { formatVersionLine } from '~/lib/systemInfo'
+import { spinner } from '~/styles/animations.css'
 import * as styles from './LauncherView.css'
 
 const log = createLogger('launcher')
@@ -262,9 +265,9 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
           disabled={!canConnect() || loading()}
           onClick={connect}
         >
+          {loading() && <Icon icon={LoaderCircle} size="sm" class={spinner} />}
           Connect
         </button>
-        {loading() && <div class={styles.spinner} />}
         {/* Collapsible error message */}
         <div class={`${styles.collapsible} ${error() ? styles.collapsibleVisible : ''}`} style={{ 'margin-top': 0 }}>
           <div class={styles.collapsibleInner}>

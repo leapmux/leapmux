@@ -15,6 +15,12 @@ import {
   setShowProfileDialog,
 } from './UserMenuState'
 
+export const AppAboutMenuItem: Component = () => (
+  <button role="menuitem" onClick={() => setShowAboutDialog(true)}>
+    {isDesktopApp() ? 'About LeapMux Desktop...' : 'About...'}
+  </button>
+)
+
 export const UserMenuItems: Component = () => {
   const auth = useAuth()
   const org = useOrg()
@@ -52,15 +58,12 @@ export const UserMenuItems: Component = () => {
 
   return (
     <>
-      <li class={menuSectionHeader}>App</li>
       <Show when={!isSoloMode()}>
         <button role="menuitem" onClick={() => setShowProfileDialog(true)}>
           Profile...
         </button>
       </Show>
-      <button role="menuitem" onClick={() => setShowAboutDialog(true)}>
-        {isDesktopApp() ? 'About LeapMux Desktop...' : 'About...'}
-      </button>
+      <AppAboutMenuItem />
       <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
         <DropdownMenuItemContent label="Preferences..." shortcut={getShortcutHintsText('app.openPreferences')} />
       </button>
@@ -92,7 +95,6 @@ export const UserMenuItems: Component = () => {
 
       <Show when={isDesktopApp()}>
         <hr />
-        <li class={menuSectionHeader}>Desktop</li>
         <button role="menuitem" onClick={handleSwitchMode}>
           Switch mode...
         </button>
