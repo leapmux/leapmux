@@ -24,7 +24,12 @@ func decodeNotifWrapper(t *testing.T, content []byte, compression leapmuxv1.Cont
 	return wrapper
 }
 
-func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
+// setupNotifThreadTest stands up a worker service with one agent and returns
+// the sink + a row-listing helper bound to that agent. Used by the
+// notification-threading tests below to remove repeated CreateAgent /
+// NewSink / ListMessagesByAgentID boilerplate.
+func setupNotifThreadTest(t *testing.T, provider leapmuxv1.AgentProvider) (agent.OutputSink, func() []db.Message) {
+	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, "ws-1")
 	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
@@ -34,10 +39,25 @@ func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
 		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		AgentProvider: provider,
 	}))
 
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := svc.Output.NewSink("agent-1", provider)
+	listRows := func() []db.Message {
+		t.Helper()
+		rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
+			AgentID: "agent-1",
+			Seq:     0,
+			Limit:   20,
+		})
+		require.NoError(t, err)
+		return rows
+	}
+	return sink, listRows
+}
+
+func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	firstNotif, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
 	secondNotif, err := json.Marshal(map[string]any{"type": "interrupted"})
@@ -46,12 +66,7 @@ func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
 	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, firstNotif))
 	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, secondNotif))
 
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
-		AgentID: "agent-1",
-		Seq:     0,
-		Limit:   20,
-	})
-	require.NoError(t, err)
+	rows := listRows()
 	require.Len(t, rows, 1)
 
 	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
@@ -60,19 +75,7 @@ func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
 }
 
 func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
-	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
-
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
-		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
-
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	firstNotif, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
 	secondNotif, err := json.Marshal(map[string]any{"type": "interrupted"})
@@ -89,12 +92,7 @@ func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageRole_MESSAGE_ROLE_ASSISTANT, assistantMsg, agent.SpanInfo{}))
 	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, secondNotif))
 
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
-		AgentID: "agent-1",
-		Seq:     0,
-		Limit:   20,
-	})
-	require.NoError(t, err)
+	rows := listRows()
 	require.Len(t, rows, 3)
 
 	firstWrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
@@ -106,29 +104,9 @@ func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 }
 
 func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testing.T) {
-	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
-
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
-		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}))
-
-	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	starting, err := json.Marshal(map[string]any{
-		"method": "mcpServer/startupStatus/updated",
-		"params": map[string]any{"name": "codex_apps", "status": "starting", "error": nil},
-	})
-	require.NoError(t, err)
-	ready, err := json.Marshal(map[string]any{
-		"method": "mcpServer/startupStatus/updated",
-		"params": map[string]any{"name": "codex_apps", "status": "ready", "error": nil},
-	})
-	require.NoError(t, err)
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	starting := raw(t, codexStartupStatus("codex_apps", "starting", nil))
+	ready := raw(t, codexStartupStatus("codex_apps", "ready", nil))
 	settingsChanged, err := json.Marshal(map[string]any{
 		"type": "settings_changed",
 		"changes": map[string]any{
@@ -141,12 +119,7 @@ func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testin
 	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, ready))
 	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_LEAPMUX, settingsChanged))
 
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
-		AgentID: "agent-1",
-		Seq:     0,
-		Limit:   20,
-	})
-	require.NoError(t, err)
+	rows := listRows()
 	require.Len(t, rows, 1)
 
 	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
@@ -157,4 +130,81 @@ func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testin
 	params := startup["params"].(map[string]interface{})
 	assert.Equal(t, "codex_apps", params["name"])
 	assert.Equal(t, "ready", params["status"])
+}
+
+func TestNotificationThreading_CodexMetadataNotificationsPersistAsSystemWrapper(t *testing.T) {
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
+	remoteControlChanged := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
+		"status":        "disabled",
+		"environmentId": nil,
+	}))
+
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, skillsChanged))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, remoteControlChanged))
+
+	rows := listRows()
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, rows[0].Role)
+
+	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
+	require.Len(t, wrapper.Messages, 2)
+	assert.Equal(t, []string{"skills/changed", "remoteControl/status/changed"}, types(t, wrapper.Messages))
+}
+
+func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *testing.T) {
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	starting := raw(t, codexStartupStatus("codex_apps", "starting", nil))
+	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
+	remoteControlChanged := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
+		"status":        "disabled",
+		"environmentId": nil,
+	}))
+	ready := raw(t, codexStartupStatus("codex_apps", "ready", nil))
+
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, starting))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, skillsChanged))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, remoteControlChanged))
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, ready))
+
+	rows := listRows()
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, rows[0].Role)
+
+	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
+	require.Len(t, wrapper.Messages, 3)
+	assert.Equal(t, []string{
+		"skills/changed",
+		"remoteControl/status/changed",
+		"mcpServer/startupStatus/updated",
+	}, types(t, wrapper.Messages))
+
+	startup := parseRaw(t, wrapper.Messages[2])
+	params := startup["params"].(map[string]interface{})
+	assert.Equal(t, "ready", params["status"])
+}
+
+// TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite verifies
+// that appending a ProviderScoped notification whose consolidation collapses
+// to byte-identical wrapper.Messages does not bump the row's seq. A flapping
+// remoteControl/status/changed should not produce a DB write per arrival.
+func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *testing.T) {
+	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	payload := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
+		"status":        "disabled",
+		"environmentId": nil,
+	}))
+
+	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, payload))
+	rows := listRows()
+	require.Len(t, rows, 1)
+	seqAfterFirst := rows[0].Seq
+
+	for i := 0; i < 5; i++ {
+		require.NoError(t, sink.PersistNotification(leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, payload))
+	}
+	rows = listRows()
+	require.Len(t, rows, 1)
+	assert.Equal(t, seqAfterFirst, rows[0].Seq,
+		"identical ProviderScoped notifications must not bump the row's seq")
 }

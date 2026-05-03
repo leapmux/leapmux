@@ -211,6 +211,38 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsSystem(t *testing.T) {
 		"raw envelope must be preserved so future renderers can read every field")
 }
 
+func TestHandleCodexOutput_MetadataNotificationsPersistRawAsSystem(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "skills changed",
+			input: `{"method":"skills/changed","params":{}}`,
+		},
+		{
+			name:  "remote control status changed",
+			input: `{"method":"remoteControl/status/changed","params":{"status":"disabled","environmentId":null}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &recordingControlSink{}
+			agent := newCodexAgentWithSink(sink)
+
+			handleCodexOutput(agent, parseLine([]byte(tc.input)))
+
+			require.Equal(t, 1, sink.NotificationCount())
+			require.Equal(t, 0, sink.MessageCount(),
+				"Codex metadata notifications must not fall through to the default ASSISTANT branch")
+			last := sink.LastNotification()
+			assert.Equal(t, leapmuxv1.MessageRole_MESSAGE_ROLE_SYSTEM, last.Role,
+				"Codex-emitted metadata must persist as SYSTEM")
+			assert.JSONEq(t, tc.input, string(last.Content),
+				"raw JSON-RPC envelope must be preserved verbatim")
+		})
+	}
+}
+
 func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)

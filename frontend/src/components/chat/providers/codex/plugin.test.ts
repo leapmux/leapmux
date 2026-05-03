@@ -103,6 +103,31 @@ describe('codex classify', () => {
     expect(result).toEqual({ kind: 'hidden' })
   })
 
+  it('hides remoteControl/status/changed notifications', () => {
+    const parent = {
+      method: 'remoteControl/status/changed',
+      params: { status: 'disabled', environmentId: null },
+    }
+    const result = plugin.classify(input(parent))
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
+  it.each([
+    'hook/started',
+    'hook/completed',
+  ])('hides %s notifications', (method) => {
+    const parent = {
+      method,
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        run: { name: 'hook' },
+      },
+    }
+    const result = plugin.classify(input(parent))
+    expect(result).toEqual({ kind: 'hidden' })
+  })
+
   it('classifies mixed wrappers when context_cleared follows a hidden Codex lifecycle event', () => {
     const wrapper = {
       old_seqs: [],
@@ -148,6 +173,32 @@ describe('codex classify', () => {
     // notification thread. Wrapping it must not turn it into a notif thread.
     const result = plugin.classify(input(undefined, wrapper))
     expect(result.kind).not.toBe('notification_thread')
+  })
+
+  it('preserves wrapped skills and remote-control metadata in notification thread messages', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        { method: 'skills/changed', params: {} },
+        { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
+      ],
+    }
+    const result = plugin.classify(input(undefined, wrapper))
+    expect(result).toEqual({ kind: 'notification_thread', messages: wrapper.messages })
+  })
+
+  it('preserves hidden Codex metadata alongside visible notification thread entries', () => {
+    const settingsChanged = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        { method: 'skills/changed', params: {} },
+        settingsChanged,
+        { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
+      ],
+    }
+    const result = plugin.classify(input(undefined, wrapper))
+    expect(result).toEqual({ kind: 'notification_thread', messages: wrapper.messages })
   })
 
   it('classifies wrapped thread/tokenUsage/updated and thread/name/updated as a notification thread', () => {

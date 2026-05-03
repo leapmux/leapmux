@@ -122,6 +122,8 @@ const CODEX_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
  */
 const CODEX_NOTIF_METHODS = new Set<string>([
   CODEX_RATE_LIMITS_METHOD,
+  CODEX_METHOD.SKILLS_CHANGED,
+  CODEX_METHOD.REMOTE_CONTROL_STATUS_CHANGED,
   'thread/compacted',
   'thread/tokenUsage/updated',
   'thread/name/updated',
@@ -214,8 +216,10 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
 }
 
 /**
- * Lifecycle methods that signal turn/thread state transitions but should not
- * appear in the chat. Persisted upstream; classified out here.
+ * Codex-emitted methods that should not appear in the chat: turn/thread
+ * lifecycle, metadata invalidations (skills), connection status
+ * (remoteControl), and hook lifecycle. Persisted upstream; classified out
+ * here.
  *
  * Exported because `agentState.ts`'s working-state heuristic must skip these
  * too — anything we hide from the chat must also be ignored when deciding
@@ -228,6 +232,9 @@ export const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
   CODEX_METHOD.THREAD_NAME_UPDATED,
   CODEX_METHOD.THREAD_TOKEN_USAGE_UPDATED,
   CODEX_METHOD.SKILLS_CHANGED,
+  CODEX_METHOD.REMOTE_CONTROL_STATUS_CHANGED,
+  CODEX_METHOD.HOOK_STARTED,
+  CODEX_METHOD.HOOK_COMPLETED,
 ])
 
 /** LeapMux-side notification `type` values produced by the worker. */

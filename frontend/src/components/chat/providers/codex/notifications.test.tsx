@@ -73,6 +73,23 @@ describe('codexNotificationRenderer: MCP startup status', () => {
 })
 
 describe('renderNotificationThread (Codex provider): MCP startup grouping', () => {
+  it('does not render skills or remote-control metadata entries', () => {
+    const text = renderText([
+      { method: 'skills/changed', params: {} },
+      { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
+    ])
+    expect(text).toBe('')
+  })
+
+  it('ignores skills and remote-control metadata while rendering visible entries', () => {
+    const text = renderText([
+      { method: 'skills/changed', params: {} },
+      { type: 'context_cleared' },
+      { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
+    ])
+    expect(text).toBe('Context cleared')
+  })
+
   it('renders consolidated startup status entries', () => {
     const text = renderText([
       { method: 'mcpServer/startupStatus/updated', params: { name: 'codex_apps', status: 'ready', error: null } },
