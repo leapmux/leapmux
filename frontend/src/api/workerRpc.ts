@@ -60,6 +60,7 @@ import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/ch
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
 import { getCapabilities, isTauriApp, platformBridge } from '~/api/platformBridge'
+import { bufferStreamHandle } from '~/api/streamBuffer'
 import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import {
   CloseAgentRequestSchema,
@@ -553,35 +554,18 @@ export async function watchEventsViaChannel(
 
   const streamHandle = channelManager.stream(channelId, 'WatchEvents', payload)
 
-  let eventCb: ((resp: WatchEventsResponse) => void) | null = null
-  let endCb: (() => void) | null = null
-  let errorCb: ((err: Error) => void) | null = null
-
-  streamHandle.onMessage((msg: InnerStreamMessage) => {
-    if (eventCb) {
-      try {
-        const resp = fromBinary(WatchEventsResponseSchema, msg.payload)
-        log.debug('WatchEvents stream message', { response: toJsonString(WatchEventsResponseSchema, resp) })
-        eventCb(resp)
-      }
-      catch (err) {
-        errorCb?.(err instanceof Error ? err : new Error(String(err)))
-      }
-    }
-  })
-
-  streamHandle.onEnd(() => {
-    endCb?.()
-  })
-
-  streamHandle.onError((err: Error) => {
-    errorCb?.(err)
+  // Buffer messages that arrive before the consumer wires its callbacks.
+  // See streamBuffer.ts for the full rationale.
+  const buffered = bufferStreamHandle<InnerStreamMessage, WatchEventsResponse>(streamHandle, (msg) => {
+    const resp = fromBinary(WatchEventsResponseSchema, msg.payload)
+    log.debug('WatchEvents stream message', { response: toJsonString(WatchEventsResponseSchema, resp) })
+    return resp
   })
 
   return {
-    onEvent: (cb) => { eventCb = cb },
-    onEnd: (cb) => { endCb = cb },
-    onError: (cb) => { errorCb = cb },
+    onEvent: buffered.onEvent,
+    onEnd: buffered.onEnd,
+    onError: buffered.onError,
     close: () => { channelManager.removeStreamListener(channelId, streamHandle.requestId) },
   }
 }

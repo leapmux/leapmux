@@ -108,6 +108,13 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		svcCtx.Send = client.Send
 		svcCtx.Channels = channelMgr
 		svcCtx.Init()
+
+		// Drop pending control_requests on every subprocess exit (graceful
+		// stop, crash, worker tear-down) so request_ids bound to the
+		// exited subprocess don't reappear stale on resume.
+		client.AgentManager().SetOnExit(func(agentID string, _ int, _ error) {
+			svcCtx.Output.ClearAgentRuntimeState(agentID)
+		})
 		// Shutdown must run before client.Stop() so terminal screen snapshots
 		// are persisted while in-memory state is still available.
 		defer svcCtx.Shutdown()

@@ -178,7 +178,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			func() {
 				svc.AgentStartup.cancelAndClear(agentID)
 				svc.Agents.StopAgent(agentID)
-				svc.Output.CleanupAgent(agentID)
+				svc.Output.ClearAgentRuntimeState(agentID)
 			},
 			func() error { return svc.Queries.CloseAgent(bgCtx(), agentID) },
 		)
@@ -1462,6 +1462,8 @@ func (svc *Context) handleClearContext(agentID string) {
 	// StartAgent below doesn't fail with "agent already running".
 	svc.Agents.StopAndWaitAgent(agentID)
 
+	svc.Output.ClearAgentRuntimeState(agentID)
+
 	// Clear span tracking state from the previous session.
 	svc.Output.ResetSpanTracker(agentID)
 
@@ -2347,6 +2349,8 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 	// land in the persisted chat history.
 	svc.Agents.DiscardOutputAndStopAgent(agentID)
 
+	svc.Output.ClearAgentRuntimeState(agentID)
+
 	// Clear span tracking state from the previous session.
 	svc.Output.ResetSpanTracker(agentID)
 
@@ -2359,11 +2363,13 @@ func (svc *Context) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 		"plan_file_path": dbAgent.PlanFilePath,
 	})
 
-	// Restart agent with plan content.
+	// Restart agent with plan content. Use svc.startAgent — the
+	// test-injectable wrapper that forwards to svc.Agents.StartAgent in
+	// production — so unit tests can stub the restart out.
 	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
 	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
+	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
 		AgentID:        agentID,
 		Model:          model,
 		Effort:         dbAgent.Effort,
