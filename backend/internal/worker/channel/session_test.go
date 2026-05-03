@@ -772,6 +772,12 @@ func TestReassembly_E2E(t *testing.T) {
 	data, err := proto.Marshal(envelope)
 	require.NoError(t, err)
 
+	// Snapshot the message count before sending chunks. The dispatcher
+	// runs in a goroutine, so the response may land in the sender buffer
+	// before we reach waitForMessages — capturing the count after the
+	// loop would race with the response and target an unreachable count.
+	msgsBefore := len(sender.messages())
+
 	// Send chunks manually.
 	for offset := 0; offset < len(data); {
 		end := offset + channelwire.MaxPlaintextPerChunk
@@ -799,7 +805,7 @@ func TestReassembly_E2E(t *testing.T) {
 	}
 
 	// Wait for the handler response.
-	msgs := sender.waitForMessages(len(sender.messages()) + 1)
+	msgs := sender.waitForMessages(msgsBefore + 1)
 	_ = msgs // Just ensuring the handler was called.
 
 	// The handler should have received the full payload.
