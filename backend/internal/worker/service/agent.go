@@ -1202,7 +1202,7 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	gitStatus := gitutil.GetGitStatus(ctx, agentOpts.WorkingDir)
 
 	// Phase 2: spawn the subprocess and run the init handshake.
-	phase2Msg := "Starting " + agent.DisplayName(agentOpts.AgentProvider) + "…"
+	phase2Msg := agentStartupLabel("Starting", agentOpts.AgentProvider)
 	svc.AgentStartup.setMessage(agentID, phase2Msg)
 	svc.broadcastAgentStarting(&dbAgent, phase2Msg, gitStatus)
 	agent.TraceStartupPhase(agentID, "before_start_agent")
@@ -1303,11 +1303,20 @@ func (svc *Context) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmux
 }
 
 // buildAgentInactiveStatus builds an INACTIVE AgentStatusChange. Used by
-// WatchEvents replay when the agent is neither running nor starting up
-// and has no persisted startup_error (deriveAgentStatus would return
-// STARTUP_FAILED otherwise).
+// WatchEvents replay (when the agent is neither running nor starting up
+// and has no persisted startup_error, where deriveAgentStatus would
+// otherwise return STARTUP_FAILED) and by broadcastAgentInactive to
+// revert a transient STARTING after an auto-start failure.
 func buildAgentInactiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitStatus) *leapmuxv1.AgentStatusChange {
 	return baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, gitStatus)
+}
+
+// agentStartupLabel renders the user-visible "<verb> <provider>…" phase
+// label shown beneath the chat startup banner during cold-start and
+// restart of an agent subprocess. Verb is typically "Starting" or
+// "Restarting".
+func agentStartupLabel(verb string, provider leapmuxv1.AgentProvider) string {
+	return verb + " " + agent.DisplayName(provider) + "…"
 }
 
 // broadcastAgentStarting fans out a STARTING AgentStatusChange to all
@@ -1333,6 +1342,18 @@ func (svc *Context) broadcastAgentActive(dbAgent *db.Agent, gitStatus *leapmuxv1
 	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
 		AgentId: dbAgent.ID,
 		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: svc.buildAgentActiveStatus(dbAgent, gitStatus)},
+	})
+}
+
+// broadcastAgentInactive fans out an INACTIVE AgentStatusChange. Used to
+// clear a transient STARTING spinner when an auto-start attempt
+// (ensureAgentRunning) fails — the failure surfaces to the user as a
+// per-message delivery_error rather than a permanent STARTUP_FAILED, so
+// the agent stays retryable on the next send.
+func (svc *Context) broadcastAgentInactive(dbAgent *db.Agent) {
+	svc.Watchers.BroadcastAgentEvent(dbAgent.ID, &leapmuxv1.AgentEvent{
+		AgentId: dbAgent.ID,
+		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: buildAgentInactiveStatus(dbAgent, nil)},
 	})
 }
 
@@ -1434,7 +1455,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	// after a worker restart that killed the process) shows no progress
 	// affordance until context_cleared lands — by which point the indicator
 	// is suppressed again because the chat history ends in a turn boundary.
-	startingMsg := "Restarting " + agent.DisplayName(dbAgent.AgentProvider) + "…"
+	startingMsg := agentStartupLabel("Restarting", dbAgent.AgentProvider)
 	svc.broadcastAgentStarting(&dbAgent, startingMsg, nil)
 
 	// Stop the running agent and wait for it to fully exit so that
@@ -1561,8 +1582,15 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
 	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 
+	// Broadcast STARTING so the chat startup banner appears beneath any
+	// just-typed messages while the cold subprocess spins up. Symmetric
+	// with handleClearContext and runAgentStartup; without this, the
+	// auto-start path (cold subprocess after worker/desktop restart) is
+	// silent — the bubble pulses but no progress affordance is shown.
+	svc.broadcastAgentStarting(&dbAgent, agentStartupLabel("Starting", dbAgent.AgentProvider), nil)
+
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.Agents.StartAgent(bgCtx(), agent.Options{
+	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
 		AgentID:         agentID,
 		Model:           model,
 		Effort:          dbAgent.Effort,
@@ -1579,6 +1607,12 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	}, sink)
 	if err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
+		// Revert the STARTING broadcast so the spinner clears. Caller
+		// surfaces the failure as a per-message delivery_error; we don't
+		// broadcast STARTUP_FAILED here because that would make the
+		// agent permanently unusable until the user opens a new one,
+		// while the existing design keeps it retryable on the next send.
+		svc.broadcastAgentInactive(&dbAgent)
 		return err
 	}
 	if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings); err != nil {
