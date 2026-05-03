@@ -30,6 +30,7 @@ import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobile } from '~/hooks/useIsMobile'
 import { useShortcuts } from '~/hooks/useShortcuts'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { createIdentityCache } from '~/lib/identityCache'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
@@ -242,12 +243,7 @@ export const AppShell: ParentComponent = (props) => {
     }
   })
 
-  // Detect if we're on a workspace route
-  const isWorkspaceRoute = createMemo(() => {
-    const path = location.pathname
-    const orgPrefix = `/o/${params.orgSlug}`
-    return path === orgPrefix || path === `${orgPrefix}/` || path.startsWith(`${orgPrefix}/workspace/`)
-  })
+  const isWorkspaceRoute = createMemo(() => hasWorkspaceDesktopChrome(location.pathname))
 
   // True when the URL has a workspace ID but it doesn't exist in the loaded list
   const workspaceNotFound = createMemo(() => {
