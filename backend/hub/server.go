@@ -152,9 +152,32 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	mux := http.NewServeMux()
 
-	mailSender := mail.NewStubSender()
+	// Mail sender: real SMTP when smtp_host is configured, otherwise the
+	// no-op disabledSender that returns ErrEmailDisabled. Validation in
+	// cfg.Validate() prevents email_verification_required=true paired
+	// with an empty smtp_host, so the disabled sender should not be
+	// reached during normal operation; it exists as a loud, matchable
+	// fallback rather than a silent no-op (which is what the previous
+	// StubSender used to do).
+	var mailSender mail.Sender
+	if cfg.SmtpHost != "" {
+		mailSender = mail.NewSMTPSender(mail.SMTPConfig{
+			Host:     cfg.SmtpHost,
+			Port:     cfg.SmtpPort,
+			Username: cfg.SmtpUsername,
+			Password: cfg.SmtpPassword,
+			From:     cfg.SmtpFromAddress,
+			TLSMode:  cfg.SmtpTLSMode,
+		})
+	} else {
+		mailSender = mail.NewDisabledSender()
+	}
+	// Renderer carries the hub's public URL once at construction so the
+	// signup / email-change / resend / worker-registration paths don't
+	// each have to thread cfg.BaseURL() through.
+	mailRenderer := mail.Renderer{HubURL: cfg.BaseURL()}
 
-	authSvc := service.NewAuthService(st, cfg, sessionCache, ks, mailSender)
+	authSvc := service.NewAuthService(st, cfg, sessionCache, ks, mailSender, mailRenderer)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
@@ -164,7 +187,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, shutdownCh)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, cfg)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -184,7 +207,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
-	userSvc := service.NewUserService(st, cfg, sessionCache, mailSender)
+	userSvc := service.NewUserService(st, cfg, sessionCache, mailSender, mailRenderer)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 

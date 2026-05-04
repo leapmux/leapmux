@@ -29,12 +29,14 @@ type AuthService struct {
 	sessionCache *auth.SessionCache
 	keystore     *keystore.Keystore
 	mail         mail.Sender
+	renderer     mail.Renderer
 	hasAnyUser   atomic.Bool // one-way latch: once true, never re-queried
 }
 
-// NewAuthService creates a new AuthService.
-func NewAuthService(st store.Store, cfg *config.Config, sc *auth.SessionCache, ks *keystore.Keystore, sender mail.Sender) *AuthService {
-	return &AuthService{store: st, cfg: cfg, sessionCache: sc, keystore: ks, mail: sender}
+// NewAuthService creates a new AuthService. renderer carries the hub's
+// public URL used to build absolute deep-links in verification emails.
+func NewAuthService(st store.Store, cfg *config.Config, sc *auth.SessionCache, ks *keystore.Keystore, sender mail.Sender, renderer mail.Renderer) *AuthService {
+	return &AuthService{store: st, cfg: cfg, sessionCache: sc, keystore: ks, mail: sender, renderer: renderer}
 }
 
 // checkHasAnyUser returns true if at least one user exists. The result is
@@ -206,7 +208,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		// user: signup succeeds and the frontend surfaces a Resend prompt
 		// driven by verification_email_sent=false. The pending row stays
 		// in place so a future Resend can reuse the same address slot.
-		emailSent, err := issuePendingEmailVerification(ctx, s.store, s.mail, user.ID, email)
+		emailSent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, email)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
@@ -351,6 +353,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		Branch:        version.Branch,
 		OauthEnabled:  len(providers) > 0,
 		WorkerHubUrl:  workerHubURL,
+		EmailEnabled:  s.cfg.SmtpHost != "",
 	}), nil
 }
 
@@ -360,6 +363,11 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// Sourced from cfg directly, not s.renderer.HubURL — the renderer is
+	// the email-templating seam; OAuth login URLs are an unrelated kind
+	// of absolute URL the OAuth flow needs the frontend to redirect to.
+	// They happen to resolve to the same value today, but they're
+	// conceptually different and should not be conflated.
 	baseURL := s.cfg.BaseURL()
 
 	var pbProviders []*leapmuxv1.OAuthProviderInfo
@@ -511,7 +519,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	// SMTP send failed but the row was written.
 	emailSent := false
 	if pendingEmail != "" {
-		sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, user.ID, pendingEmail)
+		sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, pendingEmail)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}

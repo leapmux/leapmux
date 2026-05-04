@@ -37,7 +37,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect
 	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender())
+	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -205,7 +205,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender())
+	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -413,11 +413,11 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	cfg.SignupEnabled = true
 	cfg.EmailVerificationRequired = emailVerificationRequired
 
-	userSvc := service.NewUserService(st, cfg, nil, mail.NewStubSender())
+	userSvc := service.NewUserService(st, cfg, nil, mail.NewStubSender(), mail.Renderer{})
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender())
+	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender(), mail.Renderer{})
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -562,7 +562,7 @@ func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender())
+	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -819,7 +819,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender())
+	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -974,6 +974,30 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)
 		assert.Empty(t, resp.Msg.GetWorkerHubUrl())
+	})
+}
+
+// TestGetSystemInfo_EmailEnabled covers the email_enabled flag the
+// frontend reads to decide whether to render the "Send email" button on
+// the worker registration dialog. We mirror it directly off SmtpHost so
+// admins control it through the same SMTP block they configure for
+// verification emails.
+func TestGetSystemInfo_EmailEnabled(t *testing.T) {
+	t.Run("false when SmtpHost is empty", func(t *testing.T) {
+		client, _ := setupEmptyAuthTestServer(t, testConfig())
+		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		require.NoError(t, err)
+		assert.False(t, resp.Msg.GetEmailEnabled())
+	})
+
+	t.Run("true when SmtpHost is set", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.SmtpHost = "smtp.example.test"
+		cfg.SmtpFromAddress = "hub@example.test"
+		client, _ := setupEmptyAuthTestServer(t, cfg)
+		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		require.NoError(t, err)
+		assert.True(t, resp.Msg.GetEmailEnabled())
 	})
 }
 

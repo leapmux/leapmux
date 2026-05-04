@@ -60,7 +60,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender()), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender(), mail.Renderer{}), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
@@ -68,7 +68,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender()), opts)
+		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender(), mail.Renderer{}, cfg), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs)

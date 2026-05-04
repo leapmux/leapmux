@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 const (
@@ -47,7 +49,7 @@ type Config struct {
 	SmtpUsername                 string        `koanf:"smtp_username"`
 	SmtpPassword                 string        `koanf:"smtp_password"`
 	SmtpFromAddress              string        `koanf:"smtp_from_address"`
-	SmtpUseTLS                   bool          `koanf:"smtp_use_tls"`
+	SmtpTLSMode                  string        `koanf:"smtp_tls_mode"` // See SmtpTLSMode* constants for valid values.
 	APITimeoutSeconds            int           `koanf:"api_timeout_seconds"`
 	AgentStartupTimeoutSeconds   int           `koanf:"agent_startup_timeout_seconds"`
 	WorktreeCreateTimeoutSeconds int           `koanf:"worktree_create_timeout_seconds"`
@@ -58,6 +60,25 @@ type Config struct {
 	DevMode                      bool              // Dev mode: non-solo but with auto-bootstrapped admin
 	Extras                       map[string]string // Extra flag values not in the hub Config struct
 }
+
+// SMTP TLS mode constants for SmtpTLSMode.
+//
+// SmtpTLSModeSTARTTLS is the default and most common production setting:
+// connect in plaintext, then upgrade to TLS via the STARTTLS extension
+// (typically port 587). SmtpTLSModeImplicit dials TLS directly (port 465,
+// the legacy "SMTPS" pattern). SmtpTLSModeNone is plaintext-only and
+// should normally only be used for trusted localhost relays — the
+// validation layer rejects it for non-localhost relays that require auth
+// because Go's smtp.PlainAuth refuses to send credentials over an
+// unencrypted, non-localhost connection.
+const (
+	SmtpTLSModeSTARTTLS = "starttls"
+	SmtpTLSModeImplicit = "implicit"
+	SmtpTLSModeNone     = "none"
+)
+
+// validSmtpTLSModes is the display string for valid smtp_tls_mode values.
+const validSmtpTLSModes = "starttls, implicit, none"
 
 // StorageType identifies a storage backend.
 type StorageType string
@@ -253,7 +274,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		{"smtp-username", "smtp_username", "SMTP username", ptrconv.Ptr(""), nil, nil},
 		{"smtp-password", "smtp_password", "SMTP password", ptrconv.Ptr(""), nil, nil},
 		{"smtp-from-address", "smtp_from_address", "SMTP from address", ptrconv.Ptr(""), nil, nil},
-		{"smtp-use-tls", "smtp_use_tls", "use TLS for SMTP", nil, nil, ptrconv.Ptr(true)},
+		{"smtp-tls-mode", "smtp_tls_mode", "SMTP TLS mode (" + validSmtpTLSModes + ")", ptrconv.Ptr(SmtpTLSModeSTARTTLS), nil, nil},
 		{"api-timeout-seconds", "api_timeout_seconds", "general API timeout in seconds", nil, ptrconv.Ptr(DefaultAPITimeoutSeconds), nil},
 		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "agent startup timeout in seconds", nil, ptrconv.Ptr(DefaultAgentStartupTimeoutSeconds), nil},
 		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "worktree creation timeout in seconds", nil, ptrconv.Ptr(DefaultWorktreeCreateTimeoutSeconds), nil},
@@ -436,7 +457,63 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unsupported storage.type: %q (valid: %s)", c.Storage.Type, validStorageTypes)
 	}
 
+	// SMTP / email configuration. Validation is layered:
+	//   1. Normalize: empty SmtpTLSMode → starttls (handles programmatically
+	//      built configs that bypass flag-parsing defaults).
+	//   2. Always: SmtpTLSMode must be a valid constant — even when SMTP is
+	//      disabled, so a typo in smtp_tls_mode never silently sticks.
+	//   3. SmtpHost set: requires from-address and a valid port. There is no
+	//      "half-configured SMTP" state.
+	//   4. Email verification required: requires SmtpHost (chains through #3).
+	//   5. tls_mode=none + auth + non-localhost is rejected — Go's
+	//      smtp.PlainAuth refuses to send credentials over an unencrypted
+	//      non-localhost connection, so this combo never works in practice.
+	if c.SmtpTLSMode == "" {
+		c.SmtpTLSMode = SmtpTLSModeSTARTTLS
+	}
+	switch c.SmtpTLSMode {
+	case SmtpTLSModeSTARTTLS, SmtpTLSModeImplicit, SmtpTLSModeNone:
+	default:
+		return fmt.Errorf("unsupported smtp_tls_mode: %q (valid: %s)", c.SmtpTLSMode, validSmtpTLSModes)
+	}
+	if c.SmtpHost != "" {
+		if c.SmtpFromAddress == "" {
+			return fmt.Errorf("smtp_from_address is required when smtp_host is set")
+		}
+		if err := validate.ValidateEmail(c.SmtpFromAddress); err != nil {
+			return fmt.Errorf("invalid smtp_from_address: %w", err)
+		}
+		if c.SmtpPort < 1 || c.SmtpPort > 65535 {
+			return fmt.Errorf("smtp_port must be in [1, 65535], got %d", c.SmtpPort)
+		}
+		if c.SmtpTLSMode == SmtpTLSModeNone && c.SmtpUsername != "" && !isLocalhost(c.SmtpHost) {
+			return fmt.Errorf("smtp_tls_mode=none with smtp_username set is rejected for non-localhost smtp_host=%q: "+
+				"Go's smtp.PlainAuth refuses to send credentials over an unencrypted non-localhost connection", c.SmtpHost)
+		}
+	}
+	if c.EmailVerificationRequired && c.SmtpHost == "" {
+		return fmt.Errorf("smtp_host is required when email_verification_required is true")
+	}
+
 	return nil
+}
+
+// isLocalhost reports whether host (a hostname or numeric IP, no port) is a
+// loopback address. Used to relax validation for SMTP relays running on the
+// same machine, where unencrypted credentialed AUTH is acceptable.
+//
+// We accept the literal name "localhost" (a hostname, not an IP — Go's
+// resolver and smtp.PlainAuth both treat it specially) plus anything that
+// parses as a loopback IP, which covers 127.0.0.0/8 and ::1 — matching
+// the criteria smtp.PlainAuth uses.
+func isLocalhost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // DefaultHubDataDir returns the default hub data directory with ~ expanded.

@@ -248,7 +248,7 @@ func ClearCompetingPendingEmails(ctx context.Context, st store.Store, email, own
 // place so signup / OAuth-signup / Resend callers can let the user try
 // again via Resend. Email-change callers should use
 // issuePendingEmailVerificationOrRollback instead.
-func issuePendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, userID, email string) (bool, error) {
+func issuePendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string) (bool, error) {
 	if err := CheckEmailAvailable(ctx, st, email, userID); err != nil {
 		return false, err
 	}
@@ -263,8 +263,7 @@ func issuePendingEmailVerification(ctx context.Context, st store.Store, sender m
 		return false, fmt.Errorf("set pending email: %w", err)
 	}
 
-	link := "/verify-email?code=" + verifycode.Format(storedCode)
-	if err := sender.Send(ctx, mail.RenderVerificationEmail(email, storedCode, link)); err != nil {
+	if err := sender.Send(ctx, renderer.VerificationEmail(email, storedCode)); err != nil {
 		return false, nil
 	}
 	return true, nil
@@ -275,8 +274,8 @@ func issuePendingEmailVerification(ctx context.Context, st store.Store, sender m
 // pending_email row before returning the error so the user can retry
 // from a clean slate. Used by the email-change flow where the failure
 // is surfaced to the user inline.
-func issuePendingEmailVerificationOrRollback(ctx context.Context, st store.Store, sender mail.Sender, userID, email string) error {
-	sent, err := issuePendingEmailVerification(ctx, st, sender, userID, email)
+func issuePendingEmailVerificationOrRollback(ctx context.Context, st store.Store, sender mail.Sender, renderer mail.Renderer, userID, email string) error {
+	sent, err := issuePendingEmailVerification(ctx, st, sender, renderer, userID, email)
 	if err != nil {
 		return err
 	}

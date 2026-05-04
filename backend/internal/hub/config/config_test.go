@@ -371,6 +371,115 @@ func TestValidate(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "solo mode")
 	})
+
+	t.Run("empty SmtpTLSMode is normalized to starttls", func(t *testing.T) {
+		cfg := &Config{Listen: ":4327", DataDir: t.TempDir()}
+		require.NoError(t, cfg.Validate())
+		assert.Equal(t, SmtpTLSModeSTARTTLS, cfg.SmtpTLSMode)
+	})
+
+	t.Run("invalid SmtpTLSMode is rejected even without SmtpHost", func(t *testing.T) {
+		// Validating unconditionally — not gated on SmtpHost — surfaces typos
+		// at startup instead of waiting until someone configures smtp_host.
+		cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SmtpTLSMode: "bogus"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "smtp_tls_mode")
+		assert.Contains(t, err.Error(), validSmtpTLSModes)
+	})
+
+	t.Run("SMTP block rejection cases", func(t *testing.T) {
+		// Valid baseline; each subtest mutates a single field. Pulling
+		// the boilerplate up here is the point of the table — it forces
+		// each row to highlight only the field that triggers rejection.
+		base := func() *Config {
+			return &Config{
+				Listen:          ":4327",
+				DataDir:         t.TempDir(),
+				SmtpHost:        "smtp.example.com",
+				SmtpPort:        587,
+				SmtpFromAddress: "hub@example.test",
+				SmtpTLSMode:     SmtpTLSModeSTARTTLS,
+			}
+		}
+		cases := []struct {
+			name     string
+			mutate   func(*Config)
+			contains string
+		}{
+			{"missing from address", func(c *Config) { c.SmtpFromAddress = "" }, "smtp_from_address is required"},
+			{"malformed from address", func(c *Config) { c.SmtpFromAddress = "not-an-email" }, "invalid smtp_from_address"},
+			{"out-of-range port", func(c *Config) { c.SmtpPort = 0 }, "smtp_port"},
+			{"verification required without host", func(c *Config) {
+				*c = Config{Listen: ":4327", DataDir: t.TempDir(), EmailVerificationRequired: true}
+			}, "smtp_host is required"},
+			{"tls=none + auth on non-localhost", func(c *Config) {
+				c.SmtpTLSMode = SmtpTLSModeNone
+				c.SmtpPort = 25
+				c.SmtpUsername = "user"
+				c.SmtpPassword = "pw"
+			}, "smtp_tls_mode=none"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := base()
+				tc.mutate(cfg)
+				err := cfg.Validate()
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.contains)
+			})
+		}
+	})
+
+	t.Run("tls_mode=none + auth + localhost is accepted", func(t *testing.T) {
+		// Trusted local relay: PlainAuth permits credentials on loopback even
+		// without TLS, so the validation rule must not over-reach.
+		// Includes 127.0.0.2 because Go treats the entire 127.0.0.0/8
+		// range as loopback — verifying we use IsLoopback rather than
+		// hard-coding the canonical addresses.
+		for _, host := range []string{"localhost", "LOCALHOST", "127.0.0.1", "127.0.0.2", "::1", "[::1]"} {
+			cfg := &Config{
+				Listen:          ":4327",
+				DataDir:         t.TempDir(),
+				SmtpHost:        host,
+				SmtpPort:        25,
+				SmtpUsername:    "user",
+				SmtpPassword:    "pw",
+				SmtpFromAddress: "hub@example.test",
+				SmtpTLSMode:     SmtpTLSModeNone,
+			}
+			require.NoError(t, cfg.Validate(), "host=%s", host)
+		}
+	})
+
+	t.Run("tls_mode=none + no auth on non-localhost is accepted", func(t *testing.T) {
+		// No credentials means PlainAuth's localhost-only restriction doesn't
+		// apply; an unauthenticated relay over plaintext is admin's choice.
+		cfg := &Config{
+			Listen:          ":4327",
+			DataDir:         t.TempDir(),
+			SmtpHost:        "relay.example.com",
+			SmtpPort:        25,
+			SmtpFromAddress: "hub@example.test",
+			SmtpTLSMode:     SmtpTLSModeNone,
+		}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("valid SMTP block is accepted", func(t *testing.T) {
+		cfg := &Config{
+			Listen:                    ":4327",
+			DataDir:                   t.TempDir(),
+			SmtpHost:                  "smtp.example.com",
+			SmtpPort:                  587,
+			SmtpUsername:              "user",
+			SmtpPassword:              "pw",
+			SmtpFromAddress:           "hub@example.test",
+			SmtpTLSMode:               SmtpTLSModeSTARTTLS,
+			EmailVerificationRequired: true,
+		}
+		require.NoError(t, cfg.Validate())
+	})
 }
 
 func TestPaths(t *testing.T) {

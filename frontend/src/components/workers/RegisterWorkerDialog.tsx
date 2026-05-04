@@ -9,7 +9,7 @@ import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
 import { useAuth } from '~/context/AuthContext'
 import { useCopyButton } from '~/hooks/useCopyButton'
-import { getWorkerHubUrl, isSoloMode } from '~/lib/systemInfo'
+import { getWorkerHubUrl, isEmailEnabled, isSoloMode } from '~/lib/systemInfo'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './RegisterWorkerDialog.css'
 
@@ -153,8 +153,13 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
         <button type="button" class="outline" onClick={() => props.onClose()}>Cancel</button>
 
         <Show when={registrationKey()}>
-          {/* Solo mode has no SMTP and the bootstrap user has no email — hide the action instead of showing a permanently-disabled button. */}
-          <Show when={!isSoloMode()}>
+          {/* Hide the action when there's no way to send mail: solo mode
+              ships without SMTP and the bootstrap user has no email; on
+              hub mode, an unconfigured smtp_host means the corresponding
+              RPC would return FailedPrecondition. Either way, a
+              permanently-disabled button would mislead users — drop it
+              entirely. */}
+          <Show when={!isSoloMode() && isEmailEnabled()}>
             <button
               type="button"
               data-testid="email-registration-instructions"

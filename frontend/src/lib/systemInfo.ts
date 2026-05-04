@@ -15,6 +15,7 @@ let soloMode = false
 let signupEnabled = false
 let setupRequired = false
 let workerHubUrl = ''
+let emailEnabled = false
 let loaded = false
 
 let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' }
@@ -36,6 +37,7 @@ export async function loadSystemInfo(force = false): Promise<void> {
     signupEnabled = resp.signupEnabled
     setupRequired = resp.setupRequired
     workerHubUrl = resp.workerHubUrl
+    emailEnabled = resp.emailEnabled
     backendBuildInfo = {
       version: resp.version,
       commitHash: resp.commitHash,
@@ -60,6 +62,15 @@ export function isSignupEnabled(): boolean {
 
 export function isSetupRequired(): boolean {
   return setupRequired
+}
+
+// isEmailEnabled returns whether the hub has SMTP configured. Components
+// gate optional email affordances (e.g. the "Send email" button on the
+// worker registration dialog) on this flag — the corresponding RPC
+// returns FailedPrecondition without SMTP, so showing a button that
+// can't possibly work would mislead users.
+export function isEmailEnabled(): boolean {
+  return emailEnabled
 }
 
 // getWorkerHubUrl returns the URL workers should target when registering.

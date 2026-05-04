@@ -315,7 +315,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	// Register AuthService ConnectRPC routes.
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, nil, ks, mail.NewStubSender())
+	authSvc := service.NewAuthService(st, cfg, nil, ks, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
