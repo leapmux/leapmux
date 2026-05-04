@@ -84,3 +84,11 @@ SELECT * FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 
 -- name: DeleteClosedAgentsBefore :execresult
 DELETE FROM agents WHERE rowid IN (SELECT a.rowid FROM agents a WHERE a.closed_at < ? LIMIT 1000);
+
+-- ListAgentIDsWithPlanInDir returns the IDs of agents whose plan_file_path
+-- begins with the provided literal byte sequence. Used by the plan-archive
+-- task to skip year directories that still hold an active agent's plan.
+-- instr() is used (not LIKE / GLOB) so data dirs containing wildcard
+-- metacharacters cannot produce false positives or false negatives.
+-- name: ListAgentIDsWithPlanInDir :many
+SELECT id FROM agents WHERE instr(plan_file_path, ?) = 1;

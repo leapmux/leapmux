@@ -141,6 +141,10 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	// that have been closed for longer than the retention period.
 	service.StartCleanupLoop(ctx, db.New(sqlDB))
 
+	// Start the daily plan-archive loop to roll up old plan year directories
+	// (`<data_dir>/plans/<YYYY>/`) into per-year zip files.
+	service.StartPlanArchiveLoop(ctx, cfg.DataDir, db.New(sqlDB))
+
 	client.ConnectWithReconnect(ctx, cfg.AuthToken)
 	return nil
 }
