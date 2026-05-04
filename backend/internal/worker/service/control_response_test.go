@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -147,6 +148,73 @@ func TestSendControlResponse_PersistsCodexFeedbackMessage(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	assert.Equal(t, "Please add tests before exiting plan mode.", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
+}
+
+func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+		AgentID:   "agent-1",
+		RequestID: "req-1",
+		Payload: []byte(`{
+			"type":"control_request",
+			"request_id":"req-1",
+			"request":{"tool_name":"ExitPlanMode"}
+		}`),
+	}))
+
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:    "agent-1",
+		Model:      "opus",
+		WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent("agent-1")
+
+	svc.Watchers.WatchAgent("agent-1", &EventWatcher{
+		ChannelID: "test-ch",
+		Sender:    channel.NewSender(w),
+	})
+
+	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+		AgentId: "agent-1",
+		Content: []byte(`{
+			"type":"control_response",
+			"response":{
+				"subtype":"success",
+				"request_id":"req-1",
+				"response":{
+					"behavior":"deny",
+					"message":"Please revise the plan."
+				}
+			}
+		}`),
+	}, w)
+
+	require.Empty(t, w.errors)
+
+	var kinds []string
+	for _, stream := range w.streamsSnapshot() {
+		ev := decodeWatchAgentEvent(t, stream)
+		switch ev.GetEvent().(type) {
+		case *leapmuxv1.AgentEvent_ControlCancel:
+			kinds = append(kinds, "cancel")
+		case *leapmuxv1.AgentEvent_AgentMessage:
+			kinds = append(kinds, "message")
+		}
+	}
+	require.GreaterOrEqual(t, len(kinds), 2)
+	assert.Equal(t, []string{"cancel", "message"}, kinds[:2])
 }
 
 func TestSendControlResponse_PersistsOpenCodeQuestionAnswer(t *testing.T) {

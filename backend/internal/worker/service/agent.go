@@ -786,6 +786,17 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// approval or rejection.
 		skipSend := svc.handleControlResponsePlanMode(agentID, content)
 
+		// Drop the prompt before forwarding the response. Claude can emit the
+		// follow-up control_request immediately after it reads the denial; if
+		// the old request is still pending client-side, the revised request can
+		// be hidden behind stale dedup state.
+		reqID := extractControlResponseRequestID(content)
+		if reqID != "" {
+			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+			sink.DeleteControlRequest(reqID)
+			sink.BroadcastControlCancel(reqID)
+		}
+
 		svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, displayText)
 
 		if !skipSend {
@@ -795,16 +806,6 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				sendNotFoundError(sender, "agent not found or not running")
 				return
 			}
-		}
-
-		// Delete the resolved control request from the DB so it is not
-		// replayed on reconnect.  Extract the request ID from the response
-		// content — Claude Code uses response.request_id, OpenCode/ACP uses
-		// the JSON-RPC id field.
-		if reqID := extractControlResponseRequestID(content); reqID != "" {
-			sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-			sink.DeleteControlRequest(reqID)
-			sink.BroadcastControlCancel(reqID)
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})

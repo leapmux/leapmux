@@ -3,8 +3,8 @@ import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createControlStore } from '~/stores/control.store'
 
-function makeRequest(requestId: string, agentId: string): ControlRequest {
-  return { requestId, agentId, payload: { data: requestId } }
+function makeRequest(requestId: string, agentId: string, payload: Record<string, unknown> = { data: requestId }): ControlRequest {
+  return { requestId, agentId, payload }
 }
 
 describe('createControlStore', () => {
@@ -136,6 +136,47 @@ describe('createControlStore', () => {
       // Simulate a replayed controlRequest landing during a reconnect.
       store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       expect(store.getRequests('agent-1')).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  // Claude Code can reuse request_id for a revised ExitPlanMode prompt after
+  // the user rejects a plan with feedback. That is not a stale replay: the
+  // payload changed and the next banner must be shown.
+  it('does not suppress a revised request that reuses requestId within the same agent', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1', {
+        request: { tool_name: 'ExitPlanMode', input: { plan: 'first plan' } },
+      }))
+      store.removeRequest('agent-1', 'r1')
+
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1', {
+        request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
+      }))
+      expect(store.getRequests('agent-1')).toHaveLength(1)
+      expect(store.getRequests('agent-1')[0].payload).toEqual({
+        request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
+      })
+      dispose()
+    })
+  })
+
+  it('keeps a revised same-id request pending when the old cancel arrives late', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      const firstPayload = {
+        request: { tool_name: 'ExitPlanMode', input: { plan: 'first plan' } },
+      }
+      const revisedPayload = {
+        request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
+      }
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1', firstPayload))
+      store.addRequest('agent-1', makeRequest('r1', 'agent-1', revisedPayload))
+
+      store.removeRequest('agent-1', 'r1')
+      expect(store.getRequests('agent-1')).toHaveLength(1)
+      expect(store.getRequests('agent-1')[0].payload).toEqual(revisedPayload)
       dispose()
     })
   })
