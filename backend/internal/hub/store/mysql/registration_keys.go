@@ -105,3 +105,51 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 	}
 	return fromDBRegistrationKey(r), nil
 }
+
+func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
+	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
+		ID:        id,
+		ExpiresAt: time.Now().UTC().Add(store.RegistrationKeySoftDeleteOffset),
+	}))
+}
+
+func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) ([]store.WorkerRegistrationKeyWithCreator, error) {
+	// MySQL has no narg, so each `(? IS NULL OR <col> ?)` pair takes a
+	// presence probe and a column-typed value. parseMySQLCursor returns
+	// that pair for created_at; we mirror its shape for `now` (zero-value
+	// time when including expired rows is fine because the IS NULL probe
+	// short-circuits the comparison).
+	var nowProbe any
+	var nowCompare time.Time
+	if !p.IncludeExpired {
+		nowCompare = time.Now().UTC()
+		nowProbe = nowCompare
+	}
+	cursorProbe, cursorCompare, err := parseMySQLCursor(p.Cursor)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.conn.q.ListRegistrationKeysAdmin(ctx, gendb.ListRegistrationKeysAdminParams{
+		Column1:   nowProbe,
+		ExpiresAt: nowCompare,
+		Column3:   cursorProbe,
+		CreatedAt: cursorCompare,
+		Limit:     int32(p.Limit),
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return store.MapSlice(rows, fromDBListRegistrationKeysAdminRow), nil
+}
+
+func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) store.WorkerRegistrationKeyWithCreator {
+	return store.WorkerRegistrationKeyWithCreator{
+		WorkerRegistrationKey: store.WorkerRegistrationKey{
+			ID:        r.ID,
+			CreatedBy: r.CreatedBy,
+			CreatedAt: r.CreatedAt,
+			ExpiresAt: r.ExpiresAt,
+		},
+		CreatorUsername: r.CreatorUsername,
+	}
+}

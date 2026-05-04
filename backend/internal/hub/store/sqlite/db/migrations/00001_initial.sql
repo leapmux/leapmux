@@ -123,6 +123,7 @@ CREATE TABLE worker_registration_keys (
 );
 CREATE INDEX idx_worker_registration_keys_expires_at ON worker_registration_keys(expires_at);
 CREATE INDEX idx_worker_registration_keys_created_by ON worker_registration_keys(created_by);
+CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys(created_at);
 
 
 -- Sidebar sections (per-user organization of sidebar panels)

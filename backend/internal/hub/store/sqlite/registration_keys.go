@@ -79,3 +79,46 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 	}
 	return fromDBRegistrationKey(r), nil
 }
+
+func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
+	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
+		ID:        id,
+		ExpiresAt: time.Now().UTC().Add(store.RegistrationKeySoftDeleteOffset),
+	}))
+}
+
+func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) ([]store.WorkerRegistrationKeyWithCreator, error) {
+	// `now` is compared against expires_at (driver-serialized time.Time);
+	// `cursor` is compared against created_at (set via SQL DEFAULT strftime
+	// to ms precision), so the cursor must use parseCursorToSQLiteTime to
+	// match that format.
+	var nowArg any
+	if !p.IncludeExpired {
+		nowArg = time.Now().UTC()
+	}
+	cursorArg, err := parseCursorToSQLiteTime(p.Cursor)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.conn.q.ListRegistrationKeysAdmin(ctx, gendb.ListRegistrationKeysAdminParams{
+		Now:    nowArg,
+		Cursor: cursorArg,
+		Limit:  p.Limit,
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return store.MapSlice(rows, fromDBListRegistrationKeysAdminRow), nil
+}
+
+func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) store.WorkerRegistrationKeyWithCreator {
+	return store.WorkerRegistrationKeyWithCreator{
+		WorkerRegistrationKey: store.WorkerRegistrationKey{
+			ID:        r.ID,
+			CreatedBy: r.CreatedBy,
+			CreatedAt: r.CreatedAt,
+			ExpiresAt: r.ExpiresAt,
+		},
+		CreatorUsername: r.CreatorUsername,
+	}
+}

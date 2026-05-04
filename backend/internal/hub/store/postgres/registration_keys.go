@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 )
@@ -78,4 +79,46 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 		return nil, mapErr(err)
 	}
 	return fromDBRegistrationKey(r), nil
+}
+
+func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
+	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
+		ID:        id,
+		ExpiresAt: timeToTs(time.Now().UTC().Add(store.RegistrationKeySoftDeleteOffset)),
+	}))
+}
+
+func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) ([]store.WorkerRegistrationKeyWithCreator, error) {
+	// Leave Valid=false on the pgtype.Timestamptz values so the
+	// `($N::timestamptz IS NULL OR …)` short-circuits keep every row /
+	// start from the head.
+	var nowTs pgtype.Timestamptz
+	if !p.IncludeExpired {
+		nowTs = timeToTs(time.Now().UTC())
+	}
+	cursorTs, err := parseCursorToTs(p.Cursor)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.conn.q.ListRegistrationKeysAdmin(ctx, gendb.ListRegistrationKeysAdminParams{
+		Now:    nowTs,
+		Cursor: cursorTs,
+		Limit:  int32(p.Limit),
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return store.MapSlice(rows, fromDBListRegistrationKeysAdminRow), nil
+}
+
+func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) store.WorkerRegistrationKeyWithCreator {
+	return store.WorkerRegistrationKeyWithCreator{
+		WorkerRegistrationKey: store.WorkerRegistrationKey{
+			ID:        r.ID,
+			CreatedBy: r.CreatedBy,
+			CreatedAt: tsToTime(r.CreatedAt),
+			ExpiresAt: tsToTime(r.ExpiresAt),
+		},
+		CreatorUsername: r.CreatorUsername,
+	}
 }

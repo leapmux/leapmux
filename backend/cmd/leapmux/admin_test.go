@@ -1233,6 +1233,172 @@ func TestCLI_WorkerDeregister_MissingID(t *testing.T) {
 	assert.Contains(t, err.Error(), "--id is required")
 }
 
+// ---- Worker reg-key subcommand tests ----
+
+// createTestRegKey inserts a worker_registration_keys row directly. expiresAt
+// is truncated to ms to match the precision SQLite stores it at.
+func createTestRegKey(t *testing.T, q *gendb.Queries, createdBy string, expiresAt time.Time) string {
+	t.Helper()
+	regID := id.Generate()
+	err := q.CreateRegistrationKey(context.Background(), gendb.CreateRegistrationKeyParams{
+		ID:        regID,
+		CreatedBy: createdBy,
+		ExpiresAt: expiresAt.UTC().Truncate(time.Millisecond),
+	})
+	require.NoError(t, err)
+	return regID
+}
+
+func TestCLI_WorkerRegKeyList_Empty(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	err := runWorkerRegKeyList([]string{"--data-dir", dir})
+	require.NoError(t, err)
+}
+
+func TestCLI_WorkerRegKeyList_HidesExpiredByDefault(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+	_, q := openTestDB(t, dir)
+
+	live := createTestRegKey(t, q, user.ID, time.Now().Add(5*time.Minute))
+	expired := createTestRegKey(t, q, user.ID, time.Now().Add(-1*time.Minute))
+
+	err := runWorkerRegKeyList([]string{"--data-dir", dir})
+	require.NoError(t, err)
+
+	_, q = openTestDB(t, dir)
+	got, err := q.ListRegistrationKeysAdmin(context.Background(), gendb.ListRegistrationKeysAdminParams{
+		Now:   time.Now().UTC(),
+		Limit: 50,
+	})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, live, got[0].ID)
+	assert.NotEqual(t, expired, got[0].ID)
+}
+
+func TestCLI_WorkerRegKeyList_IncludeExpired(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+	_, q := openTestDB(t, dir)
+
+	createTestRegKey(t, q, user.ID, time.Now().Add(5*time.Minute))
+	createTestRegKey(t, q, user.ID, time.Now().Add(-1*time.Minute))
+
+	err := runWorkerRegKeyList([]string{"--include-expired", "--data-dir", dir})
+	require.NoError(t, err)
+
+	_, q = openTestDB(t, dir)
+	got, err := q.ListRegistrationKeysAdmin(context.Background(), gendb.ListRegistrationKeysAdminParams{
+		Limit: 50,
+	})
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+}
+
+func TestCLI_WorkerRegKeyRevoke(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+	_, q := openTestDB(t, dir)
+	regID := createTestRegKey(t, q, user.ID, time.Now().Add(5*time.Minute))
+
+	err := runWorkerRegKeyRevoke([]string{"--id", regID, "--data-dir", dir})
+	require.NoError(t, err)
+
+	// Row still exists, but expires_at is in the past.
+	_, q = openTestDB(t, dir)
+	got, err := q.GetRegistrationKeyByID(context.Background(), regID)
+	require.NoError(t, err)
+	assert.True(t, got.ExpiresAt.Before(time.Now()), "revoked key should have expires_at in the past")
+}
+
+func TestCLI_WorkerRegKeyRevoke_MissingID(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	err := runWorkerRegKeyRevoke([]string{"--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--id is required")
+}
+
+func TestCLI_WorkerRegKeyRevoke_NotFound(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	err := runWorkerRegKeyRevoke([]string{"--id", "nonexistent", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestCLI_WorkerRegKeyPurgeExpired(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+	_, q := openTestDB(t, dir)
+
+	live := createTestRegKey(t, q, user.ID, time.Now().Add(5*time.Minute))
+	expired := createTestRegKey(t, q, user.ID, time.Now().Add(-1*time.Minute))
+
+	err := runWorkerRegKeyPurgeExpired([]string{"--data-dir", dir})
+	require.NoError(t, err)
+
+	// Live row remains; expired row is gone.
+	_, q = openTestDB(t, dir)
+	_, err = q.GetRegistrationKeyByID(context.Background(), live)
+	require.NoError(t, err, "live key should still exist after purge")
+
+	_, err = q.GetRegistrationKeyByID(context.Background(), expired)
+	assert.ErrorIs(t, err, sql.ErrNoRows, "expired key should be hard-deleted")
+}
+
+// ---- User --clear-pending-email tests ----
+
+func TestCLI_UserUpdate_ClearPendingEmail(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+
+	// Stage a pending email verification with a non-zero attempt counter
+	// and a future expiry, then run the admin "reset" path.
+	_, q := openTestDB(t, dir)
+	expires := time.Now().UTC().Add(30 * time.Minute)
+	require.NoError(t, q.SetPendingEmail(context.Background(), gendb.SetPendingEmailParams{
+		ID:                    user.ID,
+		PendingEmail:          "alice-new@example.com",
+		PendingEmailToken:     "ABC123",
+		PendingEmailExpiresAt: sql.NullTime{Time: expires, Valid: true},
+	}))
+
+	// PendingEmail and PendingEmailToken are plain strings in the
+	// SQLite-generated model (NOT NULL columns with empty-string sentinels).
+	pre, err := q.GetUserByID(context.Background(), user.ID)
+	require.NoError(t, err)
+	require.Equal(t, "alice-new@example.com", pre.PendingEmail)
+	require.Equal(t, "ABC123", pre.PendingEmailToken)
+
+	err = runUserUpdate([]string{
+		"--id", user.ID,
+		"--clear-pending-email",
+		"--data-dir", dir,
+	})
+	require.NoError(t, err)
+
+	_, q = openTestDB(t, dir)
+	post, err := q.GetUserByID(context.Background(), user.ID)
+	require.NoError(t, err)
+	assert.Empty(t, post.PendingEmail, "pending_email should be cleared")
+	assert.Empty(t, post.PendingEmailToken, "pending_email_token should be cleared")
+	assert.False(t, post.PendingEmailExpiresAt.Valid, "pending_email_expires_at should be NULL")
+	assert.Equal(t, int64(0), post.PendingEmailAttempts)
+}
+
+func TestCLI_UserUpdate_NoFields(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "alice")
+
+	err := runUserUpdate([]string{"--id", user.ID, "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no fields to update")
+	assert.Contains(t, err.Error(), "--clear-pending-email")
+}
+
 // ---- DB subcommand tests ----
 
 func TestCLI_DBPath(t *testing.T) {

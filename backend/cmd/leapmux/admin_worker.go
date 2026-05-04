@@ -16,7 +16,7 @@ import (
 
 func runAdminWorker(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin worker <command> [flags]\n\nCommands:\n  list              List workers\n  get               Get worker details\n  deregister        Deregister a worker")
+		return fmt.Errorf("usage: leapmux admin worker <command> [flags]\n\nCommands:\n  list              List workers\n  get               Get worker details\n  deregister        Deregister a worker\n  reg-key           Manage worker registration keys")
 	}
 
 	switch args[0] {
@@ -26,6 +26,8 @@ func runAdminWorker(args []string) error {
 		return runWorkerGet(args[1:])
 	case "deregister":
 		return runWorkerDeregister(args[1:])
+	case "reg-key":
+		return runAdminWorkerRegKey(args[1:])
 	default:
 		return fmt.Errorf("unknown worker command: %s", args[0])
 	}
@@ -83,14 +85,14 @@ func runWorkerList(args []string) error {
 			return nil
 		}
 
-		fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n", "ID", "OWNER", "STATUS", "CREATED", "LAST_SEEN")
+		fmt.Printf("%-48s %-20s %-16s %-6s %-24s %-24s\n", "ID", "OWNER", "STATUS", "AUTO", "CREATED", "LAST_SEEN")
 		for _, w := range rows {
 			lastSeen := "-"
 			if w.LastSeenAt != nil {
 				lastSeen = timefmt.Format(*w.LastSeenAt)
 			}
-			fmt.Printf("%-48s %-20s %-16s %-24s %-24s\n",
-				w.ID, w.OwnerUsername, workerStatusString(w.Status), timefmt.Format(w.CreatedAt), lastSeen)
+			fmt.Printf("%-48s %-20s %-16s %-6s %-24s %-24s\n",
+				w.ID, w.OwnerUsername, workerStatusString(w.Status), yesNo(w.AutoRegistered), timefmt.Format(w.CreatedAt), lastSeen)
 		}
 
 		maybePrintNextCursor(rows, *limit, func(w store.WorkerWithOwner) time.Time { return w.CreatedAt })
@@ -125,6 +127,7 @@ func runWorkerGet(args []string) error {
 		fmt.Printf("ID:              %s\n", worker.ID)
 		fmt.Printf("Registered by:   %s\n", worker.RegisteredBy)
 		fmt.Printf("Status:          %s\n", workerStatusString(worker.Status))
+		fmt.Printf("Auto-registered: %s\n", yesNo(worker.AutoRegistered))
 		fmt.Printf("Created at:      %s\n", timefmt.Format(worker.CreatedAt))
 		fmt.Printf("Last seen at:    %s\n", lastSeen)
 

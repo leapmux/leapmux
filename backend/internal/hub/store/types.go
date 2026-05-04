@@ -162,6 +162,14 @@ type WorkerRegistrationKey struct {
 	ExpiresAt time.Time
 }
 
+// WorkerRegistrationKeyWithCreator augments WorkerRegistrationKey with the
+// creator's username (JOINed on users). Soft-deleted creators surface as
+// "(deleted)" so admin listings remain readable after a user is purged.
+type WorkerRegistrationKeyWithCreator struct {
+	WorkerRegistrationKey
+	CreatorUsername string
+}
+
 // Workspace represents a hub-owned workspace.
 type Workspace struct {
 	ID          string
@@ -521,6 +529,12 @@ type ExtendRegistrationKeyParams struct {
 type SoftDeleteRegistrationKeyParams struct {
 	ID        string
 	CreatedBy string
+}
+
+type ListRegistrationKeysAdminParams struct {
+	Cursor         string // RFC3339Nano of created_at; empty = first page
+	Limit          int64
+	IncludeExpired bool // true to surface revoked/expired rows for forensics
 }
 
 type CreateWorkspaceParams struct {

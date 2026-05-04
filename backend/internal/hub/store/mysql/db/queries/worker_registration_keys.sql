@@ -49,3 +49,21 @@ DELETE FROM worker_registration_keys WHERE id IN (
         LIMIT 1000
     ) inner_q
 );
+
+-- The first placeholder in each `(? IS NULL OR …)` pair lets callers opt
+-- out of the active-only / cursor filter (mirrors ListWorkersAdmin*; sqlc's
+-- MySQL engine rejects narg, hence the doubled positional placeholders).
+-- name: ListRegistrationKeysAdmin :many
+SELECT k.id, k.created_by, k.created_at, k.expires_at,
+       COALESCE(u.username, '(deleted)') AS creator_username
+FROM worker_registration_keys k
+LEFT JOIN users u ON k.created_by = u.id AND u.deleted_at IS NULL
+WHERE (? IS NULL OR k.expires_at > ?)
+  AND (? IS NULL OR k.created_at < ?)
+ORDER BY k.created_at DESC
+LIMIT ?;
+
+-- name: AdminSoftDeleteRegistrationKey :execresult
+UPDATE worker_registration_keys
+SET expires_at = ?
+WHERE id = ?;

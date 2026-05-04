@@ -143,4 +143,110 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
 	})
+
+	t.Run("admin soft delete bypasses ownership", func(t *testing.T) {
+		regID := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
+
+		rows, err := st.RegistrationKeys().AdminSoftDelete(ctx, regID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), rows)
+
+		got, err := st.RegistrationKeys().GetByID(ctx, regID)
+		require.NoError(t, err)
+		assert.True(t, got.ExpiresAt.Before(time.Now()), "expires_at should be in past after AdminSoftDelete")
+
+		_, err = st.RegistrationKeys().Consume(ctx, regID)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("admin soft delete missing returns zero rows", func(t *testing.T) {
+		rows, err := st.RegistrationKeys().AdminSoftDelete(ctx, "nonexistent-id")
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), rows)
+	})
+
+	t.Run("list admin hides expired by default", func(t *testing.T) {
+		// Fresh owner per list subtest so the assertions can ignore keys
+		// other subtests left behind on the shared store.
+		listOrgID := SeedOrg(t, st, "regkey-list-org-default", true)
+		owner := SeedUser(t, st, listOrgID, "regkey-list-default")
+
+		live := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(5*time.Minute).UTC())
+		_ = SeedRegistrationKey(t, st, owner.ID, time.Now().Add(-1*time.Minute).UTC())
+
+		rows, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{Limit: 50})
+		require.NoError(t, err)
+
+		ownerRows := filterRowsByCreator(rows, owner.ID)
+		require.Len(t, ownerRows, 1)
+		assert.Equal(t, live, ownerRows[0].ID)
+		assert.Equal(t, owner.Username, ownerRows[0].CreatorUsername)
+	})
+
+	t.Run("list admin include expired surfaces revoked rows", func(t *testing.T) {
+		listOrgID := SeedOrg(t, st, "regkey-list-org-incl", true)
+		owner := SeedUser(t, st, listOrgID, "regkey-list-incl")
+
+		live := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(5*time.Minute).UTC())
+		dead := SeedRegistrationKey(t, st, owner.ID, time.Now().Add(-1*time.Minute).UTC())
+
+		rows, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
+			Limit:          50,
+			IncludeExpired: true,
+		})
+		require.NoError(t, err)
+
+		ownerRows := filterRowsByCreator(rows, owner.ID)
+		ids := make([]string, 0, len(ownerRows))
+		for _, r := range ownerRows {
+			ids = append(ids, r.ID)
+		}
+		assert.ElementsMatch(t, []string{live, dead}, ids)
+	})
+
+	t.Run("list admin paginates by created_at cursor", func(t *testing.T) {
+		listOrgID := SeedOrg(t, st, "regkey-list-org-page", true)
+		owner := SeedUser(t, st, listOrgID, "regkey-list-page")
+
+		// created_at is set by the SQL DEFAULT (strftime ms on SQLite,
+		// CURRENT_TIMESTAMP(3) on MySQL, now() on PG). Consecutive seeds
+		// can land in the same millisecond, which would tie the strict-`<`
+		// cursor — sleep a few ms between seeds to keep the order
+		// deterministic across all three backends.
+		expires := time.Now().Add(5 * time.Minute).UTC()
+		idOld := SeedRegistrationKey(t, st, owner.ID, expires)
+		time.Sleep(5 * time.Millisecond)
+		idMid := SeedRegistrationKey(t, st, owner.ID, expires)
+		time.Sleep(5 * time.Millisecond)
+		idNew := SeedRegistrationKey(t, st, owner.ID, expires)
+
+		full, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{Limit: 100})
+		require.NoError(t, err)
+
+		ownerRows := filterRowsByCreator(full, owner.ID)
+		require.Len(t, ownerRows, 3, "all three seeded keys should be visible without a cursor")
+		assert.Equal(t, []string{idNew, idMid, idOld}, []string{ownerRows[0].ID, ownerRows[1].ID, ownerRows[2].ID},
+			"DESC order should put newest-created first")
+
+		cursor := ownerRows[1].CreatedAt.UTC().Format(time.RFC3339Nano)
+		next, err := st.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
+			Cursor: cursor,
+			Limit:  100,
+		})
+		require.NoError(t, err)
+
+		afterCursor := filterRowsByCreator(next, owner.ID)
+		require.Len(t, afterCursor, 1)
+		assert.Equal(t, idOld, afterCursor[0].ID, "second page should contain only the oldest key")
+	})
+}
+
+func filterRowsByCreator(rows []store.WorkerRegistrationKeyWithCreator, userID string) []store.WorkerRegistrationKeyWithCreator {
+	out := make([]store.WorkerRegistrationKeyWithCreator, 0, len(rows))
+	for _, r := range rows {
+		if r.CreatedBy == userID {
+			out = append(out, r)
+		}
+	}
+	return out
 }

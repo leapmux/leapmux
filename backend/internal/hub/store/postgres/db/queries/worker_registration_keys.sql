@@ -43,3 +43,20 @@ WITH to_delete AS (
     SELECT k.id FROM worker_registration_keys k WHERE k.expires_at < sqlc.arg(cutoff) LIMIT 1000
 )
 DELETE FROM worker_registration_keys WHERE id IN (SELECT id FROM to_delete);
+
+-- The narg(now) probe lets callers opt out of the active-only filter;
+-- pass NULL to surface expired rows for forensics.
+-- name: ListRegistrationKeysAdmin :many
+SELECT k.id, k.created_by, k.created_at, k.expires_at,
+       COALESCE(u.username, '(deleted)') AS creator_username
+FROM worker_registration_keys k
+LEFT JOIN users u ON k.created_by = u.id AND u.deleted_at IS NULL
+WHERE (sqlc.narg(now)::timestamptz IS NULL OR k.expires_at > sqlc.narg(now))
+  AND (sqlc.narg(cursor)::timestamptz IS NULL OR k.created_at < sqlc.narg(cursor))
+ORDER BY k.created_at DESC
+LIMIT sqlc.arg('limit');
+
+-- name: AdminSoftDeleteRegistrationKey :execresult
+UPDATE worker_registration_keys
+SET expires_at = sqlc.arg(expires_at)
+WHERE id = sqlc.arg(id);

@@ -200,10 +200,20 @@ type RegistrationKeyStore interface {
 	// CreatedBy. Returns rows-affected: 0 means missing or not owned
 	// (callers map to NotFound). Idempotent on already-dead rows.
 	SoftDelete(ctx context.Context, p SoftDeleteRegistrationKeyParams) (int64, error)
+	// AdminSoftDelete is the operator-driven counterpart to SoftDelete:
+	// it pushes ExpiresAt into the past without an ownership check.
+	// Returns rows-affected: 0 means missing. Used by `admin worker
+	// reg-key revoke` to defuse a leaked key regardless of its creator.
+	AdminSoftDelete(ctx context.Context, id string) (int64, error)
 	// Consume atomically marks a *live* row as soft-deleted and returns
 	// it. Returns ErrNotFound if the row is missing or already expired
 	// (so callers can map the result to Unauthenticated).
 	Consume(ctx context.Context, id string) (*WorkerRegistrationKey, error)
+	// ListAdmin returns registration keys for `admin worker reg-key list`.
+	// IncludeExpired=false is the default and hides revoked/expired rows;
+	// IncludeExpired=true surfaces the full table for forensics within the
+	// cleanup retention window.
+	ListAdmin(ctx context.Context, p ListRegistrationKeysAdminParams) ([]WorkerRegistrationKeyWithCreator, error)
 }
 
 type WorkspaceStore interface {
