@@ -90,29 +90,39 @@ func extractPlanTitle(content string) string {
 	return line
 }
 
-// SanitizePlanFilenameTitle converts a plan title into a safe, readable
-// filename stem while preserving Unicode text where possible.
+// SanitizePlanFilenameTitle converts a plan title into a kebab-case filename
+// stem: Unicode letters (Latin, CJK, Hangul, Cyrillic, ...) are lowercased
+// and kept, digits are kept, whitespace becomes `-`, and everything else is
+// dropped. Runs of `-` collapse to one, and leading/trailing `-` are trimmed.
 func SanitizePlanFilenameTitle(title string) string {
-	title = strings.Map(func(r rune) rune {
+	var b strings.Builder
+	b.Grow(len(title))
+	prevHyphen := false
+	for _, r := range title {
+		var out rune
 		switch {
-		case r == '/' || r == '\\':
-			return -1
-		case strings.ContainsRune(`<>:"|?*`, r):
-			return -1
-		case unicode.IsControl(r):
-			return -1
-		case unicode.IsSpace(r):
-			return ' '
+		case unicode.IsLetter(r):
+			out = unicode.ToLower(r)
+		case unicode.IsDigit(r):
+			out = r
+		case r == '-' || unicode.IsSpace(r):
+			out = '-'
 		default:
-			return r
+			continue
 		}
-	}, title)
-
-	title = strings.TrimSpace(title)
-	title = strings.Join(strings.Fields(title), " ")
-	title = strings.TrimRight(title, ". ")
-	if title == "" {
-		return "Untitled Plan"
+		if out == '-' {
+			if prevHyphen {
+				continue
+			}
+			prevHyphen = true
+		} else {
+			prevHyphen = false
+		}
+		b.WriteRune(out)
 	}
-	return title
+	stem := strings.Trim(b.String(), "-")
+	if stem == "" {
+		return "untitled-plan"
+	}
+	return stem
 }

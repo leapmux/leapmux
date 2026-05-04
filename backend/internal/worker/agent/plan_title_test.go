@@ -158,29 +158,69 @@ func TestSanitizePlanFilenameTitle(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "removes invalid characters",
-			title: `A/B\C:D*E?F"G<H>I|J`,
-			want:  "ABCDEFGHIJ",
+			name:  "lowercases ASCII and joins with hyphens",
+			title: "Add Login Feature",
+			want:  "add-login-feature",
 		},
 		{
-			name:  "trims trailing dots and spaces",
-			title: "Plan Name.  ",
-			want:  "Plan Name",
+			name:  "drops filesystem-reserved characters",
+			title: `A/B\C:D*E?F"G<H>I|J`,
+			want:  "abcdefghij",
+		},
+		{
+			name:  "drops punctuation without inserting separators",
+			title: "user's plan v2.0",
+			want:  "users-plan-v20",
+		},
+		{
+			name:  "preserves existing hyphens",
+			title: "well-known issue",
+			want:  "well-known-issue",
+		},
+		{
+			name:  "collapses runs of hyphens and spaces",
+			title: "Plan -- foo   bar",
+			want:  "plan-foo-bar",
+		},
+		{
+			name:  "trims leading and trailing separators",
+			title: "  !!! Plan Name.  ",
+			want:  "plan-name",
+		},
+		{
+			name:  "trims leading and trailing hyphens",
+			title: "---plan---",
+			want:  "plan",
+		},
+		{
+			name:  "trims mixed leading and trailing punctuation and hyphens",
+			title: "-!- plan -!-",
+			want:  "plan",
 		},
 		{
 			name:  "falls back when empty",
 			title: " \t\r\n ",
-			want:  "Untitled Plan",
+			want:  "untitled-plan",
 		},
 		{
-			name:  "retains unicode",
+			name:  "falls back when only special characters",
+			title: "!@#$%^&*()",
+			want:  "untitled-plan",
+		},
+		{
+			name:  "preserves CJK letters (no case to fold)",
 			title: "설계 문서 渲染修复",
-			want:  "설계 문서 渲染修复",
+			want:  "설계-문서-渲染修复",
 		},
 		{
-			name:  "collapses whitespace and strips controls",
+			name:  "lowercases non-ASCII letters where applicable",
+			title: "ÄPFEL Über",
+			want:  "äpfel-über",
+		},
+		{
+			name:  "strips control characters",
 			title: "Plan\t\x00  Name\n\r",
-			want:  "Plan Name",
+			want:  "plan-name",
 		},
 	}
 
