@@ -124,6 +124,34 @@ test.describe('Attachment Support', () => {
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
   })
 
+  test('paste image adds attachment when clipboardData.files is empty (Linux/WebKitGTK shape)', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // WebKitGTK exposes pasted clipboard images via items only; synthesize
+    // that shape since Chromium's DataTransfer doesn't reproduce it.
+    await page.evaluate(() => {
+      const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], { type: 'image/png' })
+      const file = new File([blob], '', { type: 'image/png' })
+      const fakeItem = {
+        kind: 'file',
+        type: 'image/png',
+        getAsFile: () => file,
+      } as unknown as DataTransferItem
+      const fakeClipboardData = {
+        files: [] as unknown as FileList,
+        items: [fakeItem] as unknown as DataTransferItemList,
+      }
+      const event = new Event('paste', { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'clipboardData', { value: fakeClipboardData })
+      document.querySelector('[data-testid="chat-editor"]')!.dispatchEvent(event)
+    })
+
+    // An attachment pill should appear.
+    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
+  })
+
   test('unsupported file type rejected with toast', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()

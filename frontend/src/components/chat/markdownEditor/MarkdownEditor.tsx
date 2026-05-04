@@ -349,7 +349,20 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       const onPaste = props.attachments?.onPaste
       if (!onPaste)
         return
-      const files = [...(e.clipboardData?.files ?? [])]
+      const dt = e.clipboardData
+      if (!dt)
+        return
+      // WebKitGTK (Tauri on Linux) exposes pasted clipboard images as
+      // file-kind DataTransferItems but leaves DataTransfer.files empty
+      // when the image has no OS-level path backing it. Fall back to
+      // items so paste-from-clipboard works on Linux as it does on macOS.
+      let files = [...dt.files]
+      if (files.length === 0) {
+        files = [...(dt.items ?? [])]
+          .filter(it => it.kind === 'file')
+          .map(it => it.getAsFile())
+          .filter((f): f is File => f !== null)
+      }
       if (files.length > 0) {
         e.preventDefault()
         e.stopPropagation()
