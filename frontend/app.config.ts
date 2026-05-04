@@ -132,6 +132,7 @@ export default defineConfig({
         // Protobuf / ConnectRPC
         '@bufbuild/protobuf',
         '@bufbuild/protobuf/codegenv2',
+        '@bufbuild/protobuf/wkt',
         '@connectrpc/connect',
         '@connectrpc/connect-web',
         // Encryption
