@@ -13,7 +13,7 @@ func TestAllTestEntitiesAreInSQLTruncateOrder(t *testing.T) {
 		store.EntityUsers,
 		store.EntitySessions,
 		store.EntityWorkers,
-		store.EntityWorkerRegistrations,
+		store.EntityWorkerRegistrationKeys,
 		store.EntityWorkspaces,
 	}
 

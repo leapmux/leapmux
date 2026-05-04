@@ -10,10 +10,10 @@ service AuthService {
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   // Get the currently authenticated user.
   rpc GetCurrentUser(GetCurrentUserRequest) returns (GetCurrentUserResponse);
-  // Register a new account.
+  // Register a new account. SignUp creates a session even when email
+  // verification is required, so the new user can authenticate to
+  // UserService.VerifyEmail with the code from their email.
   rpc SignUp(SignUpRequest) returns (SignUpResponse);
-  // Verify email with a verification token.
-  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
   // Get public system information (no auth required).
   rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse);
   // List enabled OAuth providers (no auth required).
@@ -55,15 +55,11 @@ message SignUpResponse {
   reserved 1; // was: token (now delivered via Set-Cookie)
   User user = 2;
   bool verification_required = 3;
-}
-
-message VerifyEmailRequest {
-  string verification_token = 1;
-}
-
-message VerifyEmailResponse {
-  reserved 1; // was: token (now delivered via Set-Cookie)
-  User user = 2;
+  // True iff the verification email was successfully dispatched. False
+  // means the user account exists but no email was sent (transient mail
+  // outage); the frontend should surface a "Resend" prompt. This flag is
+  // only meaningful when verification_required is true.
+  bool verification_email_sent = 4;
 }
 
 message User {
@@ -97,6 +93,14 @@ message GetSystemInfoResponse {
   bool oauth_enabled = 7; // true if at least one OAuth provider is configured and enabled
   bool setup_required = 8; // true when no users exist (first-time setup needed)
   string branch = 9; // Optional git ref (branch or tag) injected at build time; empty for detached HEAD
+  // URL the `leapmux worker --hub <url>` command should target. The hub
+  // computes this so the frontend doesn't have to guess: when the hub
+  // serves a TCP listener it's the public BaseURL; when TCP is disabled
+  // (desktop app's local-only mode) it's the unix-socket / named-pipe
+  // URL of the local listener. The browser-visible window.location is
+  // unsuitable in the desktop app because it resolves to
+  // `tauri://localhost`.
+  string worker_hub_url = 10;
 }
 
 message GetOAuthProvidersRequest {}
@@ -131,4 +135,13 @@ message CompleteOAuthSignupRequest {
 
 message CompleteOAuthSignupResponse {
   User user = 1;
+  // True when an OAuth provider returned an unverified email and the
+  // account requires email verification. The frontend gates the
+  // verify-email screen on this flag exactly as it does for SignUp.
+  bool verification_required = 2;
+  // True iff the verification email was successfully dispatched. False
+  // means the user account exists but no email was sent (transient mail
+  // outage); the frontend should surface a "Resend" prompt. This flag
+  // is only meaningful when verification_required is true.
+  bool verification_email_sent = 3;
 }

@@ -25,6 +25,7 @@ func fromDBUser(u gendb.User) store.User {
 		PendingEmail:          u.PendingEmail,
 		PendingEmailToken:     u.PendingEmailToken,
 		PendingEmailExpiresAt: tsToTimePtr(u.PendingEmailExpiresAt),
+		PendingEmailAttempts:  int64(u.PendingEmailAttempts),
 		PasswordSet:           u.PasswordSet,
 		IsAdmin:               u.IsAdmin,
 		Prefs:                 u.Prefs,
@@ -116,8 +117,8 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 	return exists, nil
 }
 
-func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
-	u, err := s.conn.q.GetUserByPendingEmailToken(ctx, token)
+func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string) (*store.User, error) {
+	u, err := s.conn.q.ConsumeVerificationAttempt(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}

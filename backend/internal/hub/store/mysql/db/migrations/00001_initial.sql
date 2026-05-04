@@ -28,8 +28,13 @@ CREATE TABLE users (
     email                    VARCHAR(255) NOT NULL DEFAULT '',
     email_verified           BOOLEAN NOT NULL DEFAULT FALSE,
     pending_email            VARCHAR(255) NOT NULL DEFAULT '',
-    pending_email_token      VARCHAR(255) NOT NULL DEFAULT '',
+    -- Stored verification code in raw 6-char form (no hyphen), drawn from
+    -- verifycode.Charset. Empty when no verification is pending.
+    pending_email_token      VARCHAR(16) NOT NULL DEFAULT '',
     pending_email_expires_at DATETIME(3),
+    -- Counts attempts against the active pending_email_token. Reset to 0
+    -- whenever a new token is issued; force-expires the token at >5.
+    pending_email_attempts   INT NOT NULL DEFAULT 0,
     password_set             BOOLEAN NOT NULL DEFAULT TRUE,
     is_admin                 BOOLEAN NOT NULL DEFAULT FALSE,
     prefs          TEXT NOT NULL,
@@ -39,7 +44,6 @@ CREATE TABLE users (
     -- Generated columns for partial unique index emulation
     active_username VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN username ELSE NULL END) STORED,
     active_email    VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND email != '' THEN email ELSE NULL END) STORED,
-    active_pending_email_token VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL AND pending_email_token != '' THEN pending_email_token ELSE NULL END) STORED,
     FOREIGN KEY (org_id) REFERENCES orgs(id)
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
@@ -47,7 +51,9 @@ CREATE UNIQUE INDEX idx_users_active_username ON users(active_username);
 CREATE UNIQUE INDEX idx_users_active_email ON users(active_email);
 CREATE INDEX idx_users_deleted_at ON users(deleted_at);
 CREATE INDEX idx_users_created_at ON users(created_at DESC);
-CREATE INDEX idx_users_active_pending_email_token ON users(active_pending_email_token);
+-- Verification codes are looked up per-user (the session identifies who),
+-- so no global token index is needed. Index expiry instead, for cleanup.
+CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at);
 
 -- Multi-org membership (M:N junction)
 CREATE TABLE org_members (
@@ -86,6 +92,13 @@ CREATE TABLE workers (
     public_key    BLOB NOT NULL,
     mlkem_public_key  BLOB NOT NULL,
     slhdsa_public_key BLOB NOT NULL,
+    -- True for rows created by Server.RegisterWorker, the in-process
+    -- bypass the solo launcher uses to bring up the co-located local
+    -- worker. The deregister handler refuses these so the user can't
+    -- accidentally tear down the bundled desktop worker — it would just
+    -- re-register on next launch and the running process would noisily
+    -- exit with "invalid auth token" in between.
+    auto_registered TINYINT(1) NOT NULL DEFAULT 0,
     deleted_at    DATETIME(3),
     FOREIGN KEY (registered_by) REFERENCES users(id)
 );
@@ -108,22 +121,25 @@ CREATE TABLE worker_notifications (
 );
 CREATE INDEX idx_worker_notifications_worker_status ON worker_notifications(worker_id, status);
 
--- Pending worker registrations
-CREATE TABLE worker_registrations (
+-- Active worker registration keys.
+--
+-- Created by an authenticated user via the frontend. The worker presents
+-- the row's `id` as a bearer credential (Authorization: Bearer <key>) on
+-- the WorkerConnectorService.Register RPC; the hub atomically consumes
+-- the row and creates a workers row in one transaction.
+--
+-- Soft-delete is implemented by setting expires_at to a past instant.
+-- The cleanup loop hard-deletes rows whose expires_at is older than the
+-- retention cutoff.
+CREATE TABLE worker_registration_keys (
     id          VARCHAR(255) PRIMARY KEY,
-    version     VARCHAR(255) NOT NULL DEFAULT '',
-    public_key  BLOB NOT NULL,
-    mlkem_public_key  BLOB NOT NULL,
-    slhdsa_public_key BLOB NOT NULL,
-    status      INT NOT NULL DEFAULT 1,
-    worker_id   VARCHAR(255),
-    approved_by VARCHAR(255),
-    expires_at  DATETIME(3) NOT NULL,
+    created_by  VARCHAR(255) NOT NULL,
     created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE SET NULL,
-    FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
+    expires_at  DATETIME(3) NOT NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
 );
-CREATE INDEX idx_worker_registrations_status ON worker_registrations(status);
+CREATE INDEX idx_worker_registration_keys_expires_at ON worker_registration_keys(expires_at);
+CREATE INDEX idx_worker_registration_keys_created_by ON worker_registration_keys(created_by);
 
 -- Workspaces (hub-owned registry)
 CREATE TABLE workspaces (
@@ -300,7 +316,7 @@ DROP TABLE IF EXISTS worker_access_grants;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
-DROP TABLE IF EXISTS worker_registrations;
+DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS worker_notifications;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;

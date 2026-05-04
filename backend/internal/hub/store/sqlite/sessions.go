@@ -120,5 +120,6 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.
 		Username:      row.Username,
 		IsAdmin:       ptrconv.Int64ToBool(row.IsAdmin),
 		EmailVerified: ptrconv.Int64ToBool(row.EmailVerified),
+		Email:         row.Email,
 	}, nil
 }

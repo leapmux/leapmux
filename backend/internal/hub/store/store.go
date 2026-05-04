@@ -20,7 +20,7 @@ type Store interface {
 	Workers() WorkerStore
 	WorkerAccessGrants() WorkerAccessGrantStore
 	WorkerNotifications() WorkerNotificationStore
-	Registrations() RegistrationStore
+	RegistrationKeys() RegistrationKeyStore
 	Workspaces() WorkspaceStore
 	WorkspaceAccess() WorkspaceAccessStore
 	WorkspaceTabs() WorkspaceTabStore
@@ -83,7 +83,13 @@ type UserStore interface {
 	GetFirstAdmin(ctx context.Context) (*User, error)
 	ExistsByUsername(ctx context.Context, username string) (bool, error)
 	ExistsByEmail(ctx context.Context, email, excludeUserID string) (bool, error)
-	GetByPendingEmailToken(ctx context.Context, token string) (*User, error)
+	// ConsumeVerificationAttempt atomically charges one attempt against
+	// the user's pending verification (force-expiring on the 6th try)
+	// and returns the post-update row. Returns ErrNotFound when there
+	// is no pending verification to charge — callers should map that
+	// to FailedPrecondition. The returned row is the source of truth
+	// for the constant-time code comparison that follows.
+	ConsumeVerificationAttempt(ctx context.Context, id string) (*User, error)
 	GetPrefs(ctx context.Context, id string) (string, error)
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
@@ -166,11 +172,38 @@ type WorkerNotificationStore interface {
 	IncrementAttempts(ctx context.Context, id string) error
 }
 
-type RegistrationStore interface {
-	Create(ctx context.Context, p CreateRegistrationParams) error
-	GetByID(ctx context.Context, id string) (*WorkerRegistration, error)
-	Approve(ctx context.Context, p ApproveRegistrationParams) error
-	ExpirePending(ctx context.Context) error
+// RegistrationKeySoftDeleteOffset is how far into the past SoftDelete
+// pushes a key's expires_at. One second is enough to fail liveness
+// checks while staying well within the cleanup loop's retention window.
+const RegistrationKeySoftDeleteOffset = -time.Second
+
+// RegistrationKeyStore manages short-lived worker registration keys.
+type RegistrationKeyStore interface {
+	Create(ctx context.Context, p CreateRegistrationKeyParams) error
+	// GetByID returns the row regardless of expiry; callers that want
+	// liveness must check ExpiresAt themselves. Returns ErrNotFound when
+	// no row exists with the given id.
+	GetByID(ctx context.Context, id string) (*WorkerRegistrationKey, error)
+	// GetOwned returns the row only if it exists AND was created by
+	// createdBy. Returns ErrNotFound for both "no such id" and "id is
+	// someone else's" — collapsing them avoids leaking an oracle on
+	// other users' keys.
+	GetOwned(ctx context.Context, id, createdBy string) (*WorkerRegistrationKey, error)
+	// Extend atomically rewrites ExpiresAt iff the row is owned by
+	// CreatedBy and still live (current expires_at > now). Returns
+	// rows-affected: 0 means the row is missing, not owned, or was
+	// concurrently consumed/expired — closing the resurrection race
+	// against a concurrent Consume. The caller still owns the
+	// service-level anti-spam buffer check.
+	Extend(ctx context.Context, p ExtendRegistrationKeyParams) (int64, error)
+	// SoftDelete pushes ExpiresAt into the past for a row owned by
+	// CreatedBy. Returns rows-affected: 0 means missing or not owned
+	// (callers map to NotFound). Idempotent on already-dead rows.
+	SoftDelete(ctx context.Context, p SoftDeleteRegistrationKeyParams) (int64, error)
+	// Consume atomically marks a *live* row as soft-deleted and returns
+	// it. Returns ErrNotFound if the row is missing or already expired
+	// (so callers can map the result to Unauthenticated).
+	Consume(ctx context.Context, id string) (*WorkerRegistrationKey, error)
 }
 
 type WorkspaceStore interface {
@@ -283,8 +316,12 @@ type CleanupStore interface {
 	HardDeleteExpiredSessions(ctx context.Context) (int64, error)
 	HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteWorkersBefore(ctx context.Context, cutoff time.Time) (int64, error)
-	HardDeleteExpiredRegistrationsBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// ClearStalePendingEmails wipes pending_email columns for users whose
+	// pending_email_expires_at is older than cutoff. Frees up index slots
+	// and ensures stale codes don't leak into future lookups.
+	ClearStalePendingEmails(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteOrgsBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredOAuthStates(ctx context.Context) (int64, error)
 	DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error)
@@ -294,23 +331,23 @@ type CleanupStore interface {
 type TestEntity string
 
 const (
-	EntityOrgs                TestEntity = "orgs"
-	EntityUsers               TestEntity = "users"
-	EntitySessions            TestEntity = "user_sessions"
-	EntityWorkers             TestEntity = "workers"
-	EntityWorkerRegistrations TestEntity = "worker_registrations"
-	EntityWorkspaces          TestEntity = "workspaces"
+	EntityOrgs                   TestEntity = "orgs"
+	EntityUsers                  TestEntity = "users"
+	EntitySessions               TestEntity = "user_sessions"
+	EntityWorkers                TestEntity = "workers"
+	EntityWorkerRegistrationKeys TestEntity = "worker_registration_keys"
+	EntityWorkspaces             TestEntity = "workspaces"
 )
 
 // validEntities is the set of known TestEntity values, used by
 // ValidateEntity to prevent SQL injection in test helpers.
 var validEntities = map[TestEntity]bool{
-	EntityOrgs:                true,
-	EntityUsers:               true,
-	EntitySessions:            true,
-	EntityWorkers:             true,
-	EntityWorkerRegistrations: true,
-	EntityWorkspaces:          true,
+	EntityOrgs:                   true,
+	EntityUsers:                  true,
+	EntitySessions:               true,
+	EntityWorkers:                true,
+	EntityWorkerRegistrationKeys: true,
+	EntityWorkspaces:             true,
 }
 
 // ValidateEntity returns an error if entity is not a known TestEntity value.

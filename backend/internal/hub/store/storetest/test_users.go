@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/verifycode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -338,7 +339,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		orgID := SeedOrg(t, st, "user-org", true)
 		user := SeedUser(t, st, orgID, "pending-email-user")
 
-		token := id.Generate()
+		token := verifycode.Generate()
 		expires := time.Now().Add(1 * time.Hour)
 		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
@@ -348,11 +349,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		// GetByPendingEmailToken should find the user.
-		found, err := st.Users().GetByPendingEmailToken(ctx, token)
+		// GetByID should expose the pending columns; verification is now
+		// per-user, so there is no global token lookup.
+		found, err := st.Users().GetByID(ctx, user.ID)
 		require.NoError(t, err)
-		assert.Equal(t, user.ID, found.ID)
 		assert.Equal(t, "new-pending@example.com", found.PendingEmail)
+		assert.Equal(t, token, found.PendingEmailToken)
 
 		// PromotePendingEmail should update the email.
 		err = st.Users().PromotePendingEmail(ctx, user.ID)
@@ -370,7 +372,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		orgID := SeedOrg(t, st, "user-org", true)
 		user := SeedUser(t, st, orgID, "clear-pending-user")
 
-		token := id.Generate()
+		token := verifycode.Generate()
 		expires := time.Now().Add(1 * time.Hour)
 		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    user.ID,
@@ -401,7 +403,7 @@ func (s *Suite) testUsers(t *testing.T) {
 			err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 				ID:                    u.ID,
 				PendingEmail:          "contested@example.com",
-				PendingEmailToken:     id.Generate(),
+				PendingEmailToken:     verifycode.Generate(),
 				PendingEmailExpiresAt: &expires,
 			})
 			require.NoError(t, err)
@@ -703,7 +705,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    bob.ID,
 			PendingEmail:          alice.Email,
-			PendingEmailToken:     id.Generate(),
+			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: &expires,
 		})
 		require.NoError(t, err)
@@ -968,7 +970,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		bob := SeedUser(t, st, orgID, "rollback-promote-bob")
 
 		// Set bob's pending email to alice's email.
-		token := id.Generate()
+		token := verifycode.Generate()
 		expires := time.Now().Add(24 * time.Hour)
 		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			ID:                    bob.ID,

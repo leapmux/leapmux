@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
@@ -27,12 +28,13 @@ type AuthService struct {
 	cfg          *config.Config
 	sessionCache *auth.SessionCache
 	keystore     *keystore.Keystore
+	mail         mail.Sender
 	hasAnyUser   atomic.Bool // one-way latch: once true, never re-queried
 }
 
 // NewAuthService creates a new AuthService.
-func NewAuthService(st store.Store, cfg *config.Config, sc *auth.SessionCache, ks *keystore.Keystore) *AuthService {
-	return &AuthService{store: st, cfg: cfg, sessionCache: sc, keystore: ks}
+func NewAuthService(st store.Store, cfg *config.Config, sc *auth.SessionCache, ks *keystore.Keystore, sender mail.Sender) *AuthService {
+	return &AuthService{store: st, cfg: cfg, sessionCache: sc, keystore: ks, mail: sender}
 }
 
 // checkHasAnyUser returns true if at least one user exists. The result is
@@ -200,21 +202,39 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 
-		// Set pending email with verification token (stub: auto-verifies).
-		if err := setPendingEmailWithToken(ctx, s.store, user.ID, email); err != nil {
+		// Issue the verification email. Failure does NOT roll back the
+		// user: signup succeeds and the frontend surfaces a Resend prompt
+		// driven by verification_email_sent=false. The pending row stays
+		// in place so a future Resend can reuse the same address slot.
+		emailSent, err := issuePendingEmailVerification(ctx, s.store, s.mail, user.ID, email)
+		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		if !emailSent {
+			slog.Warn("verification email send failed during signup",
+				"user_id", user.ID,
+			)
+		}
 
-		// Re-fetch user after promotion.
+		// Re-fetch so the User proto reflects the just-set pending fields.
 		updatedUser, err := s.store.Users().GetByID(ctx, user.ID)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 
-		return connect.NewResponse(&leapmuxv1.SignUpResponse{
-			User:                 userToProtoWithOrgName(updatedUser, username),
-			VerificationRequired: true,
-		}), nil
+		// Always create the session — without it, the user can't call the
+		// authenticated VerifyEmail RPC.
+		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, user.ID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+		}
+		resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
+			User:                  userToProtoWithOrgName(updatedUser, username),
+			VerificationRequired:  true,
+			VerificationEmailSent: emailSent,
+		})
+		resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, sessionExpires, s.cfg.SecureCookies).String())
+		return resp, nil
 	}
 
 	// No verification required — email goes directly to email column.
@@ -289,29 +309,6 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User, orgN
 	return resp, nil
 }
 
-func (s *AuthService) VerifyEmail(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailRequest]) (*connect.Response[leapmuxv1.VerifyEmailResponse], error) {
-	updatedUser, err := verifyPendingEmailToken(ctx, s.store, req.Msg.GetVerificationToken())
-	if err != nil {
-		return nil, err
-	}
-
-	sessionID, sessionExpiresAt, sessionErr := auth.CreateSession(ctx, s.store, updatedUser.ID)
-	if sessionErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
-	}
-
-	org, err := s.store.Orgs().GetByID(ctx, updatedUser.OrgID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	resp := connect.NewResponse(&leapmuxv1.VerifyEmailResponse{
-		User: userToProtoWithOrgName(updatedUser, org.Name),
-	})
-	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, sessionExpiresAt, s.cfg.SecureCookies).String())
-	return resp, nil
-}
-
 func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {
 	providers, _ := s.store.OAuthProviders().ListEnabled(ctx)
 
@@ -324,6 +321,20 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		setupRequired = !hasUser
 	}
 
+	// Only emit a worker_hub_url when the hub has no TCP listener (e.g.
+	// the desktop app's NoTCP mode). With TCP enabled, the browser's
+	// window.location.origin is already the right value — and in
+	// reverse-proxied deployments it's *more* correct than what the hub
+	// could reconstruct from cfg.Addr. With TCP disabled, the browser
+	// origin in Tauri is `tauri://localhost`, which is unusable; the
+	// only viable URL is the local unix-socket / named-pipe address.
+	var workerHubURL string
+	if s.cfg.Addr == "" {
+		if u, err := s.cfg.LocalListenURL(); err == nil {
+			workerHubURL = u
+		}
+	}
+
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
 		SignupEnabled: s.cfg.SignupEnabled,
 		SoloMode:      s.cfg.SoloMode,
@@ -334,6 +345,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		BuildTime:     version.BuildTime,
 		Branch:        version.Branch,
 		OauthEnabled:  len(providers) > 0,
+		WorkerHubUrl:  workerHubURL,
 	}), nil
 }
 
@@ -487,10 +499,22 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Handle pending email if needed.
+	// Handle pending email if needed. Send failures during OAuth signup
+	// don't roll back: the OAuth-linked account exists, and the user can
+	// re-trigger verification via Resend later. emailSent flows back to
+	// the response so the frontend can surface a Resend prompt when the
+	// SMTP send failed but the row was written.
+	emailSent := false
 	if pendingEmail != "" {
-		if err := setPendingEmailWithToken(ctx, s.store, user.ID, pendingEmail); err != nil {
+		sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, user.ID, pendingEmail)
+		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		emailSent = sent
+		if !sent {
+			slog.Warn("verification email send failed during oauth signup",
+				"user_id", user.ID,
+			)
 		}
 	}
 
@@ -532,7 +556,9 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.CompleteOAuthSignupResponse{
-		User: userToProtoWithOrgName(finalUser, org.Name),
+		User:                  userToProtoWithOrgName(finalUser, org.Name),
+		VerificationRequired:  pendingEmail != "",
+		VerificationEmailSent: emailSent,
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
 	return resp, nil

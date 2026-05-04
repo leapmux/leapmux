@@ -61,7 +61,14 @@ export const SignupPage: Component = () => {
                 )}
                 onSuccess={(resp, slug) => {
                   if (resp.verificationRequired) {
+                    // The signup RPC now creates a session even when
+                    // verification is required, so the user can hit the
+                    // authenticated VerifyEmail RPC directly. Navigate
+                    // them to the verify page so they can either click
+                    // the link from the email or paste the code.
+                    auth.setAuth(resp.user!)
                     setVerificationSent(true)
+                    navigate('/verify-email', { replace: true })
                   }
                   else {
                     auth.setAuth(resp.user!)

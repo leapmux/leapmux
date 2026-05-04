@@ -7,20 +7,16 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"runtime"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
@@ -450,71 +446,12 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 	assert.Equal(t, string(testData), string(echoed), "expected data echoed through SOCKS5 tunnel")
 }
 
-func TestRegistration_AutoApproveViaUnixSocket_E2E(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix-socket-specific auto-approve path")
-	}
-
-	hubURL, localListenURL, _, _ := startTestSolo(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Connect a WebSocket to /ws/channel (solo mode auto-authenticates).
-	wsURL := "ws" + hubURL[len("http"):] + "/ws/channel"
-	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		Subprotocols: []string{"channel-relay"},
-	})
-	require.NoError(t, err)
-	defer func() { _ = ws.CloseNow() }()
-
-	scheme, _, err := locallisten.Parse(localListenURL)
-	require.NoError(t, err)
-	require.Equal(t, locallisten.SchemeUnix, scheme, "test gated to unix-only above")
-
-	// Register a new worker via Unix socket — should be auto-approved.
-	dial, err := locallisten.Dialer(localListenURL)
-	require.NoError(t, err)
-	unixClient := &http.Client{
-		Transport: &http.Transport{DialContext: locallisten.HTTPDialContext(dial)},
-	}
-	connClient := leapmuxv1connect.NewWorkerConnectorServiceClient(unixClient, "http://localhost")
-
-	regResp, err := connClient.RequestRegistration(ctx, connect.NewRequest(
-		&leapmuxv1.RequestRegistrationRequest{Version: "0.1.0"},
-	))
-	require.NoError(t, err)
-	regToken := regResp.Msg.GetRegistrationToken()
-	require.NotEmpty(t, regToken)
-
-	// Poll should immediately return APPROVED.
-	pollResp, err := connClient.PollRegistration(ctx, connect.NewRequest(
-		&leapmuxv1.PollRegistrationRequest{RegistrationToken: regToken},
-	))
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED, pollResp.Msg.GetStatus())
-	assert.NotEmpty(t, pollResp.Msg.GetWorkerId())
-	assert.NotEmpty(t, pollResp.Msg.GetAuthToken())
-
-	// Read from the WebSocket and verify a HubControlFrame with WORKERS_CHANGED
-	// arrives. The Hub debounces control frames (default 3s), so we wait.
-	var frame leapmuxv1.HubControlFrame
-	for {
-		msg, readErr := channelwire.ReadChannelMessage(ctx, ws)
-		require.NoError(t, readErr, "timeout waiting for control frame on WebSocket")
-
-		if msg.GetChannelId() != channelmgr.HubControlChannelID {
-			continue // skip non-control messages (e.g. channel close notifications)
-		}
-
-		require.NoError(t, proto.Unmarshal(msg.GetCiphertext(), &frame))
-		break
-	}
-
-	assert.Contains(t, frame.GetEvents(), leapmuxv1.HubControlEvent_HUB_CONTROL_EVENT_WORKERS_CHANGED)
-}
+// The legacy Unix-socket auto-approval path is gone. In the new flow,
+// solo mode registers workers through Server.RegisterWorker (in-process,
+// no RPC) — covered by solo's own tests — and external workers must
+// present a registration key minted via WorkerManagementService. The
+// service-level coverage of that flow lives in
+// internal/hub/service/worker_registration_test.go.
 
 func TestChannelMultipleRPCs(t *testing.T) {
 	if testing.Short() {

@@ -93,6 +93,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                     <WorkerContextMenu
                       workerInfo={props.workerInfo(worker.id)}
                       isOwner={worker.registeredBy === props.currentUserId}
+                      autoRegistered={worker.autoRegistered}
                       hasTunnels={workerTunnels().length > 0}
                       onAddTunnel={() => props.onAddTunnel(worker)}
                       onDeleteAllTunnels={() => setDeleteAllTunnelsWorkerId(worker.id)}

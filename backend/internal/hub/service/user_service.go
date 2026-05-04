@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -85,11 +87,12 @@ type UserService struct {
 	store        store.Store
 	cfg          *config.Config
 	sessionCache *auth.SessionCache
+	mail         mail.Sender
 }
 
 // NewUserService creates a new UserService.
-func NewUserService(st store.Store, cfg *config.Config, sc *auth.SessionCache) *UserService {
-	return &UserService{store: st, cfg: cfg, sessionCache: sc}
+func NewUserService(st store.Store, cfg *config.Config, sc *auth.SessionCache, sender mail.Sender) *UserService {
+	return &UserService{store: st, cfg: cfg, sessionCache: sc, mail: sender}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -193,6 +196,10 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, true); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		// UserInfo.Email is cached; flush all sessions so the new value
+		// is observable on the very next request rather than after
+		// sessionCacheTTL.
+		s.sessionCache.EvictByUserID(user.ID)
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
 		}), nil
@@ -203,14 +210,17 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, false); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		s.sessionCache.EvictByUserID(user.ID)
 		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
 		}), nil
 	}
 
-	// Non-admin, verification required: set pending email (stub: auto-verifies).
-	if err := setPendingEmailWithToken(ctx, s.store, user.ID, newEmail); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	// Non-admin, verification required: set pending email and dispatch
+	// the verification mail. On send failure the helper rolls back the
+	// row so the user can retry from a clean slate.
+	if err := issuePendingEmailVerificationOrRollback(ctx, s.store, s.mail, user.ID, newEmail); err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
 
 	return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
@@ -218,30 +228,80 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	}), nil
 }
 
-func (s *UserService) VerifyEmailChange(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailChangeRequest]) (*connect.Response[leapmuxv1.VerifyEmailChangeResponse], error) {
+// resendVerificationCooldown caps how often a user can ask the hub to
+// regenerate-and-resend their pending-email verification. Without this,
+// nothing stops a logged-in user from spamming their own (or someone
+// else's, via email-change) inbox. The cooldown is derived against the
+// previous code's expires_at — since the TTL is constant, "issued_at"
+// is just expires_at - pendingEmailExpiry.
+const resendVerificationCooldown = 60 * time.Second
+
+// ResendVerificationEmail re-issues the verification mail for the
+// session user's pending email. It's authenticated and gated to users
+// who actually have a pending row — there's nothing to re-send
+// otherwise. Cooldown is enforced server-side; frontend rate-limit UI
+// is purely cosmetic.
+func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Request[leapmuxv1.ResendVerificationEmailRequest]) (*connect.Response[leapmuxv1.ResendVerificationEmailResponse], error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	updatedUser, err := verifyPendingEmailToken(ctx, s.store, req.Msg.GetVerificationToken())
+	full, err := s.store.Users().GetByID(ctx, userInfo.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if full.PendingEmail == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
+	}
+
+	// Refuse if the previous code was issued less than the cooldown ago.
+	// The TTL is constant, so the "issued at" time can be reconstructed
+	// from expires_at. A nil expires_at means no live row to throttle
+	// against — fall through.
+	if full.PendingEmailExpiresAt != nil {
+		issuedAt := full.PendingEmailExpiresAt.Add(-pendingEmailExpiry)
+		if time.Since(issuedAt) < resendVerificationCooldown {
+			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("please wait before requesting another verification email"))
+		}
+	}
+
+	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, full.ID, full.PendingEmail)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&leapmuxv1.ResendVerificationEmailResponse{
+		EmailSent: sent,
+	}), nil
+}
+
+// VerifyEmail handles both signup verification and email-change verification.
+// Authenticated; the verification code is matched against the *session
+// user's* pending row, so user B cannot redeem user A's code (the code
+// simply doesn't exist for user B). See verifyPendingEmailToken for the
+// per-user lookup, expiry/mismatch oracle handling, and rate limit.
+func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailRequest]) (*connect.Response[leapmuxv1.VerifyEmailResponse], error) {
+	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	if updatedUser.ID != userInfo.ID {
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("token does not belong to this user"))
+	updatedUser, err := verifyPendingEmailToken(ctx, s.store, userInfo.ID, req.Msg.GetVerificationToken())
+	if err != nil {
+		return nil, err
 	}
 
-	// Evict so the next request picks up the updated EmailVerified status.
-	s.sessionCache.Evict(userInfo.SessionID)
+	// Flush all sessions so the new Email + EmailVerified are picked up
+	// across every device the user is signed in on, not just the one
+	// that hit /verify-email.
+	s.sessionCache.EvictByUserID(userInfo.ID)
 
 	org, err := s.store.Orgs().GetByID(ctx, updatedUser.OrgID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.VerifyEmailChangeResponse{
+	return connect.NewResponse(&leapmuxv1.VerifyEmailResponse{
 		User: userToProtoWithOrgName(updatedUser, org.Name),
 	}), nil
 }

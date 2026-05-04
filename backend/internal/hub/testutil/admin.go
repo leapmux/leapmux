@@ -92,6 +92,46 @@ func CreateTestAdmin(t *testing.T, st store.Store) {
 	}))
 }
 
+// CreateTestUser creates a non-admin user with the given credentials.
+// Mirrors CreateTestAdmin but with IsAdmin=false and the supplied
+// password instead of the cached fixture. Useful for cross-user tests.
+func CreateTestUser(t *testing.T, st store.Store, username, plainPassword string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	hash, err := password.Hash(plainPassword)
+	require.NoError(t, err)
+
+	orgID := id.Generate()
+	userID := id.Generate()
+
+	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+		if err := tx.Orgs().Create(ctx, store.CreateOrgParams{
+			ID:         orgID,
+			Name:       username,
+			IsPersonal: true,
+		}); err != nil {
+			return err
+		}
+		if err := tx.Users().Create(ctx, store.CreateUserParams{
+			ID:           userID,
+			OrgID:        orgID,
+			Username:     username,
+			PasswordHash: hash,
+			DisplayName:  username,
+			PasswordSet:  true,
+		}); err != nil {
+			return err
+		}
+		return tx.OrgMembers().Create(ctx, store.CreateOrgMemberParams{
+			OrgID:  orgID,
+			UserID: userID,
+			Role:   leapmuxv1.OrgMemberRole_ORG_MEMBER_ROLE_OWNER,
+		})
+	}))
+	return userID
+}
+
 // SessionFromCookie extracts the session ID from a Set-Cookie header value.
 func SessionFromCookie(t *testing.T, setCookie string) string {
 	t.Helper()

@@ -35,7 +35,7 @@ func TestMigrateDB(t *testing.T) {
 	require.NoError(t, m.Migrate(context.Background()))
 
 	// Verify tables exist by querying each one.
-	tables := []string{"orgs", "users", "user_sessions", "workers", "worker_registrations", "worker_access_grants"}
+	tables := []string{"orgs", "users", "user_sessions", "workers", "worker_registration_keys", "worker_access_grants"}
 	for _, table := range tables {
 		var count int64
 		err := sqlDB.QueryRow("SELECT count(*) FROM " + table).Scan(&count)

@@ -9,13 +9,16 @@ import { IconButton } from '~/components/common/IconButton'
 import { showInfoToast } from '~/components/common/Toast'
 import { menuTrigger } from '~/components/tree/sidebarActions.css'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 import * as styles from './workerContextMenu.css'
 
 interface WorkerContextMenuProps {
   workerInfo: WorkerInfo | null
   isOwner: boolean
+  // True for the in-process worker the solo launcher auto-registers.
+  // The deregister handler refuses these (it would just re-register on
+  // next start), so the menu item would be a dead-end click.
+  autoRegistered: boolean
   hasTunnels: boolean
   onAddTunnel: () => void
   onDeleteAllTunnels: () => void
@@ -125,7 +128,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
           </button>
         </Show>
       </Show>
-      <Show when={!isSoloMode()}>
+      <Show when={!props.autoRegistered}>
         <hr />
         <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDeregister()}>
           Deregister...

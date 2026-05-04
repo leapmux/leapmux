@@ -22,8 +22,13 @@ CREATE TABLE users (
     email                    TEXT NOT NULL DEFAULT '',
     email_verified           BOOLEAN NOT NULL DEFAULT FALSE,
     pending_email            TEXT NOT NULL DEFAULT '',
-    pending_email_token      TEXT NOT NULL DEFAULT '',
+    -- Stored verification code in raw 6-char form (no hyphen), drawn from
+    -- verifycode.Charset. Empty when no verification is pending.
+    pending_email_token      VARCHAR(16) NOT NULL DEFAULT '',
     pending_email_expires_at TIMESTAMPTZ,
+    -- Counts attempts against the active pending_email_token. Reset to 0
+    -- whenever a new token is issued; force-expires the token at >5.
+    pending_email_attempts   INTEGER NOT NULL DEFAULT 0,
     password_set             BOOLEAN NOT NULL DEFAULT TRUE,
     is_admin                 BOOLEAN NOT NULL DEFAULT FALSE,
     prefs          TEXT NOT NULL DEFAULT '{}',
@@ -36,7 +41,9 @@ CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NU
 CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '' AND deleted_at IS NULL;
 CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_users_pending_email_token ON users(pending_email_token) WHERE pending_email_token != '' AND deleted_at IS NULL;
+-- Verification codes are looked up per-user (the session identifies who),
+-- so no global token index is needed. Index expiry instead, for cleanup.
+CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at) WHERE pending_email_expires_at IS NOT NULL;
 
 -- Multi-org membership (M:N junction)
 CREATE TABLE org_members (
@@ -72,6 +79,13 @@ CREATE TABLE workers (
     public_key    BYTEA NOT NULL DEFAULT '',
     mlkem_public_key  BYTEA NOT NULL DEFAULT '',
     slhdsa_public_key BYTEA NOT NULL DEFAULT '',
+    -- True for rows created by Server.RegisterWorker, the in-process
+    -- bypass the solo launcher uses to bring up the co-located local
+    -- worker. The deregister handler refuses these so the user can't
+    -- accidentally tear down the bundled desktop worker — it would just
+    -- re-register on next launch and the running process would noisily
+    -- exit with "invalid auth token" in between.
+    auto_registered BOOLEAN NOT NULL DEFAULT FALSE,
     deleted_at    TIMESTAMPTZ
 );
 CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC) WHERE deleted_at IS NULL;
@@ -92,20 +106,24 @@ CREATE TABLE worker_notifications (
 );
 CREATE INDEX idx_worker_notifications_worker_status ON worker_notifications(worker_id, status);
 
--- Pending worker registrations
-CREATE TABLE worker_registrations (
+-- Active worker registration keys.
+--
+-- Created by an authenticated user via the frontend. The worker presents
+-- the row's `id` as a bearer credential (Authorization: Bearer <key>) on
+-- the WorkerConnectorService.Register RPC; the hub atomically consumes
+-- the row and creates a workers row in one transaction.
+--
+-- Soft-delete is implemented by setting expires_at to a past instant.
+-- The cleanup loop hard-deletes rows whose expires_at is older than the
+-- retention cutoff.
+CREATE TABLE worker_registration_keys (
     id          TEXT PRIMARY KEY,
-    version     TEXT NOT NULL DEFAULT '',
-    public_key  BYTEA NOT NULL DEFAULT '',
-    mlkem_public_key  BYTEA NOT NULL DEFAULT '',
-    slhdsa_public_key BYTEA NOT NULL DEFAULT '',
-    status      INTEGER NOT NULL DEFAULT 1,
-    worker_id   TEXT REFERENCES workers(id) ON DELETE SET NULL,
-    approved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-    expires_at  TIMESTAMPTZ NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_by  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at  TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX idx_worker_registrations_status ON worker_registrations(status);
+CREATE INDEX idx_worker_registration_keys_expires_at ON worker_registration_keys(expires_at);
+CREATE INDEX idx_worker_registration_keys_created_by ON worker_registration_keys(created_by);
 
 
 -- Sidebar sections (per-user organization of sidebar panels)
@@ -263,7 +281,7 @@ DROP TABLE IF EXISTS worker_access_grants;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
-DROP TABLE IF EXISTS worker_registrations;
+DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS worker_notifications;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
