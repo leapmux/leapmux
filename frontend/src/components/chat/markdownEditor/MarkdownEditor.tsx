@@ -8,6 +8,7 @@ import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { replaceAll } from '@milkdown/utils'
 import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner } from 'solid-js'
 import { createStore } from 'solid-js/store'
+import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
 import { INITIAL_ACTIVE_FORMATTING } from '~/lib/editor/toolbarState'
@@ -18,37 +19,9 @@ import { setupEditorRefHandlers } from './editorRefHandlers'
 import { buildEditor } from './editorSetup'
 import { EditorToolbar } from './EditorToolbar'
 import * as styles from './MarkdownEditor.css'
+import { decidePasteHandling } from './pasteDecision'
 
 export { clearDraft }
-
-function extractPastedImageObjectUrls(html: string): string[] {
-  if (!html.includes('<img'))
-    return []
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  const urls: string[] = []
-  for (const img of doc.querySelectorAll('img')) {
-    const src = img.getAttribute('src') ?? ''
-    if (src.startsWith('blob:') || src.startsWith('data:image/'))
-      urls.push(src)
-  }
-  return urls
-}
-
-// useChatAttachments.addFiles renames pasted files via nextPastedImageName,
-// so the synthesized filename here is overwritten — only the MIME matters.
-async function resolvePastedImageObjectUrls(urls: string[]): Promise<File[]> {
-  const settled = await Promise.all(urls.map(async (url) => {
-    try {
-      const res = await fetch(url)
-      const blob = await res.blob()
-      return new File([blob], 'pasted-image', { type: blob.type || 'image/png' })
-    }
-    catch {
-      return null
-    }
-  }))
-  return settled.filter((f): f is File => f !== null)
-}
 
 /**
  * Identifies the localStorage draft key. Only one of `key` or
@@ -381,37 +354,26 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       const dt = e.clipboardData
       if (!dt)
         return
-      // WebKitGTK (Tauri on Linux) exposes pasted clipboard images as
-      // file-kind DataTransferItems but leaves DataTransfer.files empty
-      // when the image has no OS-level path backing it. Fall back to
-      // items so paste-from-clipboard works on Linux as it does on macOS.
-      let files = [...dt.files]
-      if (files.length === 0) {
-        files = [...(dt.items ?? [])]
-          .filter(it => it.kind === 'file')
-          .map(it => it.getAsFile())
-          .filter((f): f is File => f !== null)
-      }
-      if (files.length > 0) {
+      const action = decidePasteHandling(dt, isTauriApp())
+      if (action.kind === 'forward') {
         e.preventDefault()
         e.stopPropagation()
-        onPaste(files)
+        onPaste(action.files)
         return
       }
-      // Last resort for WebKitGTK on Tauri/Linux: some clipboard images
-      // arrive only as text/html containing <img src="blob:..."> with no
-      // entries in .files or .items. The blob URL is minted against the
-      // page origin so we can fetch it. We must preventDefault
-      // synchronously to stop ProseMirror from inserting the markdown
-      // image, then resolve the blobs into Files asynchronously.
-      const urls = extractPastedImageObjectUrls(dt.getData('text/html'))
-      if (urls.length === 0)
+      if (action.kind === 'defer')
         return
+      // Exhaustiveness guard — a new PasteAction variant must be handled
+      // explicitly above instead of silently falling into this branch.
+      action satisfies { kind: 'tauri-clipboard' }
+      // WebKitGTK (Tauri on Linux) delivers an entirely empty DataTransfer
+      // for image pastes even though the OS clipboard holds a PNG. Bypass
+      // the web layer via the Tauri clipboard plugin.
       e.preventDefault()
       e.stopPropagation()
-      void resolvePastedImageObjectUrls(urls).then((resolved) => {
-        if (resolved.length > 0)
-          onPaste(resolved)
+      void readClipboardImage().then((file) => {
+        if (file)
+          onPaste([file])
       })
     }
     const handleDrop = (e: DragEvent) => {

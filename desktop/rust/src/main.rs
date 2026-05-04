@@ -1962,6 +1962,7 @@ fn main() {
     }
 
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main_window(app);

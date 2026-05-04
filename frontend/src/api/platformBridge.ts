@@ -152,6 +152,7 @@ let cachedTauriCore: Promise<typeof import('@tauri-apps/api/core')> | null = nul
 let cachedTauriEvents: Promise<typeof import('@tauri-apps/api/event')> | null = null
 let cachedTauriDpi: Promise<typeof import('@tauri-apps/api/dpi')> | null = null
 let cachedTauriWindow: Promise<typeof import('@tauri-apps/api/window')> | null = null
+let cachedTauriClipboard: Promise<typeof import('@tauri-apps/plugin-clipboard-manager')> | null = null
 
 function loadTauriCore() {
   return (cachedTauriCore ??= import('@tauri-apps/api/core'))
@@ -167,6 +168,10 @@ function loadTauriDpi() {
 
 function loadTauriWindow() {
   return (cachedTauriWindow ??= import('@tauri-apps/api/window'))
+}
+
+function loadTauriClipboard() {
+  return (cachedTauriClipboard ??= import('@tauri-apps/plugin-clipboard-manager'))
 }
 
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -330,6 +335,61 @@ async function tauriWindowOp(fn: (win: import('@tauri-apps/api/window').Window) 
     return
   const { getCurrentWindow } = await loadTauriWindow()
   await fn(getCurrentWindow())
+}
+
+/**
+ * Reads a PNG image from the OS clipboard via the Tauri clipboard-manager
+ * plugin. Returns null when not running in Tauri, when the clipboard holds
+ * no image, or when encoding fails.
+ *
+ * Needed because WebKitGTK (Tauri's webview on Linux) delivers an empty
+ * `DataTransfer` for image pastes, so the standard `paste` event can't
+ * recover the bytes from the web layer alone.
+ *
+ * The plugin's `Image.rgba()` returns raw RGBA pixels; we encode to PNG
+ * via a canvas so callers get a directly-uploadable `File`.
+ */
+export async function readClipboardImage(): Promise<File | null> {
+  if (!isTauriApp())
+    return null
+  const { readImage } = await loadTauriClipboard()
+  // Image extends Resource — the Rust-side handle must be released
+  // explicitly or it stays alive in the resources_table until app exit.
+  const image = await readImage().catch(() => null)
+  if (!image)
+    return null
+  try {
+    const [rgba, size] = await Promise.all([image.rgba(), image.size()])
+    if (size.width === 0 || size.height === 0)
+      return null
+    const canvas = document.createElement('canvas')
+    canvas.width = size.width
+    canvas.height = size.height
+    const ctx = canvas.getContext('2d')
+    if (!ctx)
+      return null
+    // Alias the plugin's Uint8Array as Uint8ClampedArray (zero-copy). The
+    // cast is needed because the plugin's buffer is typed ArrayBufferLike,
+    // not narrowed to ArrayBuffer as ImageData expects.
+    const clamped = new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength) as Uint8ClampedArray<ArrayBuffer>
+    const imageData = new ImageData(clamped, size.width, size.height)
+    ctx.putImageData(imageData, 0, 0)
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/png')
+    })
+    if (!blob)
+      return null
+    // Filename is overwritten downstream by useChatAttachments.addFiles via
+    // nextPastedImageName; only the MIME survives.
+    return new File([blob], 'pasted-image.png', { type: 'image/png' })
+  }
+  catch (err) {
+    log.warn('readClipboardImage failed', err)
+    return null
+  }
+  finally {
+    await image.close().catch(err => log.warn('clipboard image close failed', err))
+  }
 }
 
 export const windowMinimize = () => tauriWindowOp(w => w.minimize())
