@@ -94,7 +94,7 @@ func createTestAgent(t *testing.T, queries *db.Queries, agentID, title string) {
 	}))
 }
 
-func TestUpdatePlan_FirstWrite_StoresCanonicalPathWithAgentID(t *testing.T) {
+func TestUpdatePlan_FirstWrite_StoresCanonicalPath(t *testing.T) {
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -104,7 +104,7 @@ func TestUpdatePlan_FirstWrite_StoresCanonicalPathWithAgentID(t *testing.T) {
 	row, err := queries.GetAgentByID(context.Background(), "agent-1")
 	require.NoError(t, err)
 
-	wantPath := filepath.Join(dataDir, "plans", "2026", "04", "Rendering fixes.agent-1.md")
+	wantPath := filepath.Join(dataDir, "plans", "2026", "04", "rendering-fixes.md")
 	assert.Equal(t, wantPath, row.PlanFilePath)
 	assert.Equal(t, "Rendering fixes", row.PlanTitle)
 
@@ -145,7 +145,7 @@ func TestUpdatePlan_RewriteSameTitleAndContent_IsNoOp(t *testing.T) {
 	require.NoError(t, err)
 
 	// Second call with byte-identical content and the same title — must not
-	// archive, must not write a new file, and must not emit a notification.
+	// snapshot, must not write a new file, and must not emit a notification.
 	updatePlanHelper(t, h, "agent-1", "Rendering fixes", content)
 
 	rowAfter, err := queries.GetAgentByID(context.Background(), "agent-1")
@@ -154,50 +154,50 @@ func TestUpdatePlan_RewriteSameTitleAndContent_IsNoOp(t *testing.T) {
 
 	dirEntries, err := os.ReadDir(filepath.Dir(rowAfter.PlanFilePath))
 	require.NoError(t, err)
-	assert.Equal(t, 1, len(dirEntries), "no archive file should exist after a no-op rewrite")
+	assert.Equal(t, 1, len(dirEntries), "no snapshot file should exist after a no-op rewrite")
 }
 
-func TestUpdatePlan_RewriteSameTitleNewContent_ArchivesPriorAndWritesCanonical(t *testing.T) {
+func TestUpdatePlan_RewriteSameTitleNewContent_SnapshotsPriorAndWritesCanonical(t *testing.T) {
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
 	v1 := []byte("# Rendering fixes\n\n- item one\n")
 	updatePlanHelper(t, h, "agent-1", "Rendering fixes", v1)
 
-	// Advance the clock so the archive timestamp is distinguishable.
+	// Advance the clock so the snapshot timestamp is distinguishable.
 	h.now = func() time.Time { return time.Date(2026, time.April, 14, 9, 30, 0, 0, time.UTC) }
 	v2 := []byte("# Rendering fixes\n\n- item one\n- item two\n")
 	updatePlanHelper(t, h, "agent-1", "Rendering fixes", v2)
 
 	row, err := queries.GetAgentByID(context.Background(), "agent-1")
 	require.NoError(t, err)
-	canonicalPath := filepath.Join(dataDir, "plans", "2026", "04", "Rendering fixes.agent-1.md")
+	canonicalPath := filepath.Join(dataDir, "plans", "2026", "04", "rendering-fixes.md")
 	assert.Equal(t, canonicalPath, row.PlanFilePath)
 
 	current, err := os.ReadFile(canonicalPath)
 	require.NoError(t, err)
 	assert.Equal(t, string(v2), string(current))
 
-	// Exactly one archive file should sit beside the canonical one, carrying
+	// Exactly one snapshot file should sit beside the canonical one, carrying
 	// the v1 content. Its name embeds the timestamp from the second write.
 	entries, err := os.ReadDir(filepath.Dir(canonicalPath))
 	require.NoError(t, err)
 	require.Equal(t, 2, len(entries))
-	var archiveName string
+	var snapshotName string
 	for _, e := range entries {
-		if e.Name() != "Rendering fixes.agent-1.md" {
-			archiveName = e.Name()
+		if e.Name() != "rendering-fixes.md" {
+			snapshotName = e.Name()
 		}
 	}
-	assert.True(t, strings.HasPrefix(archiveName, "Rendering fixes.agent-1."), "archive name should preserve the original stem: %s", archiveName)
-	assert.True(t, strings.HasSuffix(archiveName, ".md"), "archive name should end in .md: %s", archiveName)
+	assert.True(t, strings.HasPrefix(snapshotName, "rendering-fixes."), "snapshot name should preserve the original stem: %s", snapshotName)
+	assert.True(t, strings.HasSuffix(snapshotName, ".md"), "snapshot name should end in .md: %s", snapshotName)
 
-	archivedContent, err := os.ReadFile(filepath.Join(filepath.Dir(canonicalPath), archiveName))
+	snapshotContent, err := os.ReadFile(filepath.Join(filepath.Dir(canonicalPath), snapshotName))
 	require.NoError(t, err)
-	assert.Equal(t, string(v1), string(archivedContent))
+	assert.Equal(t, string(v1), string(snapshotContent))
 }
 
-func TestUpdatePlan_RewriteWithDifferentTitle_ArchivesUnderOldNameAndWritesNew(t *testing.T) {
+func TestUpdatePlan_RewriteWithDifferentTitle_SnapshotsUnderOldNameAndWritesNew(t *testing.T) {
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -209,20 +209,20 @@ func TestUpdatePlan_RewriteWithDifferentTitle_ArchivesUnderOldNameAndWritesNew(t
 	row, err := queries.GetAgentByID(context.Background(), "agent-1")
 	require.NoError(t, err)
 
-	expectedNewPath := filepath.Join(dataDir, "plans", "2026", "04", "Renamed.agent-1.md")
+	expectedNewPath := filepath.Join(dataDir, "plans", "2026", "04", "renamed.md")
 	assert.Equal(t, expectedNewPath, row.PlanFilePath)
 	assert.Equal(t, "Renamed", row.PlanTitle)
 
 	entries, err := os.ReadDir(filepath.Dir(expectedNewPath))
 	require.NoError(t, err)
 	require.Equal(t, 2, len(entries))
-	var archiveName string
+	var snapshotName string
 	for _, e := range entries {
-		if e.Name() != "Renamed.agent-1.md" {
-			archiveName = e.Name()
+		if e.Name() != "renamed.md" {
+			snapshotName = e.Name()
 		}
 	}
-	assert.True(t, strings.HasPrefix(archiveName, "Original Title.agent-1."), "archive should keep the prior title in its name: %s", archiveName)
+	assert.True(t, strings.HasPrefix(snapshotName, "original-title."), "snapshot should keep the prior title in its name: %s", snapshotName)
 }
 
 func TestUpdatePlan_FirstWriteWins_DirectoryStaysWithFirstMonth(t *testing.T) {
@@ -244,7 +244,7 @@ func TestUpdatePlan_FirstWriteWins_DirectoryStaysWithFirstMonth(t *testing.T) {
 
 	entries, err := os.ReadDir(wantDir)
 	require.NoError(t, err)
-	assert.Equal(t, 2, len(entries), "v1 archive and v2 canonical should both live in the original month directory")
+	assert.Equal(t, 2, len(entries), "v1 snapshot and v2 canonical should both live in the original month directory")
 
 	mayDir := filepath.Join(dataDir, "plans", "2026", "05")
 	_, err = os.Stat(mayDir)
@@ -259,7 +259,7 @@ func TestUpdatePlan_EmptyTitleFallsBackToUntitled(t *testing.T) {
 
 	row, err := queries.GetAgentByID(context.Background(), "agent-1")
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dataDir, "plans", "2026", "04", "Untitled Plan.agent-1.md"), row.PlanFilePath)
+	assert.Equal(t, filepath.Join(dataDir, "plans", "2026", "04", "untitled-plan.md"), row.PlanFilePath)
 }
 
 func TestUpdatePlan_TwoAgentsSameTitleDoNotCollide(t *testing.T) {
@@ -275,8 +275,9 @@ func TestUpdatePlan_TwoAgentsSameTitleDoNotCollide(t *testing.T) {
 	rowB, err := queries.GetAgentByID(context.Background(), "agent-B")
 	require.NoError(t, err)
 
-	assert.Equal(t, filepath.Join(dataDir, "plans", "2026", "04", "Shared Title.agent-A.md"), rowA.PlanFilePath)
-	assert.Equal(t, filepath.Join(dataDir, "plans", "2026", "04", "Shared Title.agent-B.md"), rowB.PlanFilePath)
+	// First agent wins the un-suffixed name; second falls through to .2.
+	assert.Equal(t, filepath.Join(dataDir, "plans", "2026", "04", "shared-title.md"), rowA.PlanFilePath)
+	assert.Equal(t, filepath.Join(dataDir, "plans", "2026", "04", "shared-title.2.md"), rowB.PlanFilePath)
 
 	contentA, err := os.ReadFile(rowA.PlanFilePath)
 	require.NoError(t, err)
@@ -284,6 +285,30 @@ func TestUpdatePlan_TwoAgentsSameTitleDoNotCollide(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "agent A content", string(contentA))
 	assert.Equal(t, "agent B content", string(contentB))
+}
+
+// After a same-title rewrite, the suffixed agent's canonical path should
+// remain the same: the prior file is snapshotted (freeing the slot), and the
+// new write claims that same slot rather than jumping to the next suffix.
+func TestUpdatePlan_RewriteReclaimsOwnCanonicalSlot(t *testing.T) {
+	h, queries, dataDir := newPlanHandler(t)
+	createTestAgent(t, queries, "agent-A", "Agent Alice")
+	createTestAgent(t, queries, "agent-B", "Agent Bob")
+
+	updatePlanHelper(t, h, "agent-A", "Shared Title", []byte("a v1"))
+	updatePlanHelper(t, h, "agent-B", "Shared Title", []byte("b v1"))
+
+	h.now = func() time.Time { return time.Date(2026, time.April, 14, 10, 0, 0, 0, time.UTC) }
+	updatePlanHelper(t, h, "agent-B", "Shared Title", []byte("b v2"))
+
+	rowB, err := queries.GetAgentByID(context.Background(), "agent-B")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dataDir, "plans", "2026", "04", "shared-title.2.md"), rowB.PlanFilePath,
+		"rewrite must reclaim the agent's prior suffix, not jump to .3")
+
+	got, err := os.ReadFile(rowB.PlanFilePath)
+	require.NoError(t, err)
+	assert.Equal(t, "b v2", string(got))
 }
 
 func TestUpdatePlan_NotificationEmittedWithoutAutoRename(t *testing.T) {
@@ -374,7 +399,7 @@ func TestUpdatePlan_StalePriorPathDoesNotCrashRecovery(t *testing.T) {
 	// Manually point the agent at a non-existent prior path. This simulates
 	// the recovery scenario where the previous write succeeded in DB but the
 	// file was later deleted/corrupted out of band.
-	stale := filepath.Join(dataDir, "plans", "2026", "04", "stale.agent-1.md")
+	stale := filepath.Join(dataDir, "plans", "2026", "04", "stale.md")
 	require.NoError(t, queries.UpdateAgentPlan(context.Background(), db.UpdateAgentPlanParams{
 		PlanFilePath: stale,
 		PlanTitle:    "stale",
@@ -385,24 +410,24 @@ func TestUpdatePlan_StalePriorPathDoesNotCrashRecovery(t *testing.T) {
 
 	row, err := queries.GetAgentByID(context.Background(), "agent-1")
 	require.NoError(t, err)
-	want := filepath.Join(dataDir, "plans", "2026", "04", "Recovered.agent-1.md")
+	want := filepath.Join(dataDir, "plans", "2026", "04", "recovered.md")
 	assert.Equal(t, want, row.PlanFilePath)
 	got, err := os.ReadFile(want)
 	require.NoError(t, err)
 	assert.Equal(t, "# Recovered\n", string(got))
 
-	// Stale path must NOT have been recreated as an archive — there was
-	// nothing to archive.
+	// Stale path must NOT have been recreated as a snapshot — there was
+	// nothing to snapshot.
 	_, err = os.Stat(stale)
 	assert.True(t, os.IsNotExist(err))
 }
 
-func TestUpdatePlan_ArchiveCollisionAppendsCounterSuffix(t *testing.T) {
+func TestUpdatePlan_SnapshotCollisionAppendsCounterSuffix(t *testing.T) {
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
-	// Two updates within the same millisecond — archive timestamps collide,
-	// so the second archive must fall back to a counter suffix.
+	// Three updates at the same second — snapshot timestamps collide, so the
+	// second and third snapshots must fall back to counter suffixes.
 	updatePlanHelper(t, h, "agent-1", "Plan", []byte("v1\n"))
 	updatePlanHelper(t, h, "agent-1", "Plan", []byte("v2\n"))
 	updatePlanHelper(t, h, "agent-1", "Plan", []byte("v3\n"))
@@ -410,19 +435,19 @@ func TestUpdatePlan_ArchiveCollisionAppendsCounterSuffix(t *testing.T) {
 	dir := filepath.Join(dataDir, "plans", "2026", "04")
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	require.Equal(t, 3, len(entries), "one canonical + two archives expected")
+	require.Equal(t, 3, len(entries), "one canonical + two snapshots expected")
 
 	canonicalCount := 0
-	archiveCount := 0
+	snapshotCount := 0
 	for _, e := range entries {
-		if e.Name() == "Plan.agent-1.md" {
+		if e.Name() == "plan.md" {
 			canonicalCount++
-		} else if strings.HasPrefix(e.Name(), "Plan.agent-1.") && strings.HasSuffix(e.Name(), ".md") {
-			archiveCount++
+		} else if strings.HasPrefix(e.Name(), "plan.") && strings.HasSuffix(e.Name(), ".md") {
+			snapshotCount++
 		}
 	}
 	assert.Equal(t, 1, canonicalCount)
-	assert.Equal(t, 2, archiveCount)
+	assert.Equal(t, 2, snapshotCount)
 }
 
 func TestUpdatePlan_AutoRename_TitleEqualsPlanTitle(t *testing.T) {

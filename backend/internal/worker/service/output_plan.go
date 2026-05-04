@@ -11,15 +11,21 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// archiveTimestampLayout is the compact RFC3339 format used in archived plan
+// snapshotTimestampLayout is the compact RFC3339 format used in plan-snapshot
 // filenames. Lexicographic sort matches chronological order; no ':' so the
-// names work on Windows; millisecond precision avoids collisions on chatty
-// rewrites within the same second.
-const archiveTimestampLayout = "20060102T150405.000Z"
+// names work on Windows. Within-second collisions are handled by the counter
+// suffix in snapshotPlanFile.
+const snapshotTimestampLayout = "20060102T150405Z"
 
-// planArchiveCollisionRetries bounds the suffix counter used when two
-// archives target the same millisecond stamp.
-const planArchiveCollisionRetries = 1000
+// planSnapshotCollisionRetries bounds the suffix counter used when two
+// snapshots target the same second.
+const planSnapshotCollisionRetries = 1000
+
+// planSuffixCollisionRetries bounds the integer suffix probed when two agents
+// in the same month try to claim the same canonical filename. The first agent
+// wins `<title>.md`; subsequent agents fall through to `<title>.2.md`,
+// `<title>.3.md`, ...
+const planSuffixCollisionRetries = 1000
 
 // resolvePlanDir returns the directory a plan file should live in.
 //
@@ -36,23 +42,15 @@ func (h *OutputHandler) resolvePlanDir(priorPath string, now time.Time) (string,
 	if err != nil {
 		return "", fmt.Errorf("resolve data dir: %w", err)
 	}
-	return filepath.Join(rootDir, "plans", fmt.Sprintf("%04d", now.Year()), fmt.Sprintf("%02d", int(now.Month()))), nil
+	return filepath.Join(rootDir, plansDirName, fmt.Sprintf("%04d", now.Year()), fmt.Sprintf("%02d", int(now.Month()))), nil
 }
 
-// planFilename returns `<sanitized_title>.<agent_id>.md`. The agent id makes
-// the canonical filename collision-free across agents that pick the same
-// plan title, so two agents in the same month never clobber each other's
-// canonical paths.
-func planFilename(title, agentID string) string {
-	return agent.SanitizePlanFilenameTitle(title) + "." + agentID + ".md"
-}
-
-// archivePlanFile renames `currentPath` to `<base>.<timestamp>.md` (preserving
-// the original sanitized-title + agent-id stem) so the new content can take
-// the canonical path. Returns the archive path on success. Errors are logged
-// by the caller; we never want a failed archive to block writing the new
-// plan, since the new content is the user's intent.
-func (h *OutputHandler) archivePlanFile(currentPath string, now time.Time) (string, error) {
+// snapshotPlanFile renames `currentPath` to `<base>.<timestamp>.md` (preserving
+// the original sanitized-title stem) so the new content can take the
+// canonical path. Returns the snapshot path on success. Errors are logged by
+// the caller; we never want a failed snapshot to block writing the new plan,
+// since the new content is the user's intent.
+func (h *OutputHandler) snapshotPlanFile(currentPath string, now time.Time) (string, error) {
 	if currentPath == "" {
 		return "", nil
 	}
@@ -67,51 +65,69 @@ func (h *OutputHandler) archivePlanFile(currentPath string, now time.Time) (stri
 	stem := strings.TrimSuffix(file, ".md")
 	if stem == file {
 		// Defensive: if for some reason the file does not end in .md, fall
-		// back to using the full name as the stem so the archive still
+		// back to using the full name as the stem so the snapshot still
 		// gets a unique suffix.
 		stem = file
 	}
 
-	stamp := now.UTC().Format(archiveTimestampLayout)
-	for counter := 0; counter <= planArchiveCollisionRetries; counter++ {
-		var archivePath string
+	stamp := now.UTC().Format(snapshotTimestampLayout)
+	for counter := 0; counter <= planSnapshotCollisionRetries; counter++ {
+		var snapshotPath string
 		if counter == 0 {
-			archivePath = filepath.Join(dir, stem+"."+stamp+".md")
+			snapshotPath = filepath.Join(dir, stem+"."+stamp+".md")
 		} else {
-			archivePath = filepath.Join(dir, fmt.Sprintf("%s.%s.%d.md", stem, stamp, counter))
+			snapshotPath = filepath.Join(dir, fmt.Sprintf("%s.%s.%d.md", stem, stamp, counter))
 		}
-		if _, err := os.Stat(archivePath); err == nil {
+		if _, err := os.Stat(snapshotPath); err == nil {
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("stat archive target: %w", err)
+			return "", fmt.Errorf("stat snapshot target: %w", err)
 		}
-		if err := os.Rename(currentPath, archivePath); err != nil {
-			return "", fmt.Errorf("archive plan file: %w", err)
+		if err := os.Rename(currentPath, snapshotPath); err != nil {
+			return "", fmt.Errorf("snapshot plan file: %w", err)
 		}
-		return archivePath, nil
+		return snapshotPath, nil
 	}
-	return "", fmt.Errorf("too many archive collisions for %q", currentPath)
+	return "", fmt.Errorf("too many snapshot collisions for %q", currentPath)
 }
 
-// writePlanFile writes content to canonicalPath, creating the parent
-// directory if needed. Uses O_CREATE|O_EXCL so we crash loudly if a file
-// already sits at the canonical path — that would mean archivePlanFile
-// failed silently, which the caller wants to know about.
-func writePlanFile(canonicalPath string, content []byte) error {
-	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
-		return fmt.Errorf("mkdir plan dir: %w", err)
+// writePlanFile writes content to a file under `dir` whose stem is derived
+// from `title`. The first attempt uses `<title>.md`; if O_EXCL fails because
+// another agent already owns that name, subsequent attempts append `.2`,
+// `.3`, ... up to planSuffixCollisionRetries. Returns the path of the file
+// actually written.
+//
+// O_EXCL closes the TOCTOU window: even if two agents probe the same
+// candidate concurrently, exactly one open() succeeds and the loser falls
+// through to the next suffix.
+func writePlanFile(dir, title string, content []byte) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir plan dir: %w", err)
 	}
-	f, err := os.OpenFile(canonicalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return fmt.Errorf("create plan file: %w", err)
+	stem := agent.SanitizePlanFilenameTitle(title)
+	for counter := 1; counter <= planSuffixCollisionRetries; counter++ {
+		var candidate string
+		if counter == 1 {
+			candidate = filepath.Join(dir, stem+".md")
+		} else {
+			candidate = filepath.Join(dir, fmt.Sprintf("%s.%d.md", stem, counter))
+		}
+		f, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return "", fmt.Errorf("create plan file: %w", err)
+		}
+		if _, err := f.Write(content); err != nil {
+			_ = f.Close()
+			_ = os.Remove(candidate)
+			return "", fmt.Errorf("write plan file: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return "", fmt.Errorf("close plan file: %w", err)
+		}
+		return candidate, nil
 	}
-	if _, err := f.Write(content); err != nil {
-		_ = f.Close()
-		_ = os.Remove(canonicalPath)
-		return fmt.Errorf("write plan file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close plan file: %w", err)
-	}
-	return nil
+	return "", fmt.Errorf("too many plan filename collisions in %q for title %q", dir, title)
 }

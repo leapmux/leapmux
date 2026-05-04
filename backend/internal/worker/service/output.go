@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
@@ -1336,12 +1335,13 @@ func (h *OutputHandler) PersistLeapMuxNotification(agentID string, agentProvider
 	}
 }
 
-// updatePlan archives the agent's prior plan file (if any), writes the new
+// updatePlan snapshots the agent's prior plan file (if any), writes the new
 // content to a fresh canonical path, and emits a `plan_updated` notification
 // when the user-visible title or path changed. The on-disk plan file is the
 // sole source of truth for content; the agents row only stores the path and
-// the most recent title. The canonical path is always derived from
-// `<sanitized_title>.<agent_id>.md`.
+// the most recent title. The canonical path is `<sanitized_title>.md` for
+// the first plan with a given title in a month directory, and
+// `<sanitized_title>.<n>.md` for subsequent agents that pick the same title.
 func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compression leapmuxv1.ContentCompression, title string) {
 	agentRow, err := h.queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
@@ -1376,7 +1376,7 @@ func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compressio
 
 	// Disk-based no-op detection. If the canonical content on disk matches
 	// the new payload byte-for-byte and the title is unchanged, there is
-	// nothing to archive, write, or broadcast — short-circuit before any
+	// nothing to snapshot, write, or broadcast — short-circuit before any
 	// filesystem mutation.
 	if title == agentRow.PlanTitle && agentRow.PlanFilePath != "" {
 		if existing, err := os.ReadFile(agentRow.PlanFilePath); err == nil && bytes.Equal(existing, newContent) {
@@ -1389,20 +1389,21 @@ func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compressio
 		slog.Warn("failed to resolve plan dir", "agent_id", agentID, "error", err)
 		return
 	}
-	canonicalPath := filepath.Join(dir, planFilename(title, agentID))
 
-	// Archive whatever the agent's prior plan file is, regardless of
-	// title — option (a) of the title-change semantics. The archive
-	// preserves the prior name + agent id, so historical files retain
-	// the title they had when written.
+	// Snapshot whatever the agent's prior plan file is, regardless of
+	// title — option (a) of the title-change semantics. The snapshot
+	// preserves the prior stem, so historical files retain the title
+	// they had when written. Doing this before writePlanFile frees the
+	// agent's prior canonical slot for reuse on a same-title rewrite.
 	if agentRow.PlanFilePath != "" {
-		if _, err := h.archivePlanFile(agentRow.PlanFilePath, now); err != nil {
-			slog.Warn("failed to archive prior plan file", "agent_id", agentID, "prior_path", agentRow.PlanFilePath, "error", err)
+		if _, err := h.snapshotPlanFile(agentRow.PlanFilePath, now); err != nil {
+			slog.Warn("failed to snapshot prior plan file", "agent_id", agentID, "prior_path", agentRow.PlanFilePath, "error", err)
 		}
 	}
 
-	if err := writePlanFile(canonicalPath, newContent); err != nil {
-		slog.Warn("failed to write plan file", "agent_id", agentID, "path", canonicalPath, "error", err)
+	canonicalPath, err := writePlanFile(dir, title, newContent)
+	if err != nil {
+		slog.Warn("failed to write plan file", "agent_id", agentID, "dir", dir, "title", title, "error", err)
 		return
 	}
 
