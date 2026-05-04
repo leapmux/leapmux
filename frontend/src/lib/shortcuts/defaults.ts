@@ -1,6 +1,21 @@
 import type { Keybinding } from './types'
 
-export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
+// Always-on shortcuts that work outside a workspace (launcher, auth/setup).
+// Bound by useCoreShortcuts at the App root.
+export const CORE_KEYBINDINGS: readonly Keybinding[] = [
+  { key: '$mod+Alt+i', command: 'app.openWebInspector', when: 'isDesktop' },
+  { key: 'F12', command: 'app.openWebInspector', when: 'isDesktop' },
+  { key: '$mod+-', command: 'app.zoomOutWebview', when: 'isDesktop' },
+  { key: '$mod+NumpadSubtract', command: 'app.zoomOutWebview', when: 'isDesktop' },
+  { key: '$mod+=', command: 'app.zoomInWebview', when: 'isDesktop' },
+  { key: '$mod+NumpadAdd', command: 'app.zoomInWebview', when: 'isDesktop' },
+  { key: '$mod+0', command: 'app.resetWebviewZoom', when: 'isDesktop' },
+  { key: '$mod+Numpad0', command: 'app.resetWebviewZoom', when: 'isDesktop' },
+  { key: '$mod+q', command: 'app.quit', when: 'isDesktop' },
+]
+
+// Workspace-scoped shortcuts. Bound by useShortcuts inside AppShell.
+export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
   // --- App-level ---
   { key: '$mod+n', command: 'app.newAgent', when: '!dialogOpen' },
   { key: '$mod+t', command: 'app.newTerminal', when: '!dialogOpen' },
@@ -51,14 +66,6 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
 
   // Preferences
   { key: '$mod+Comma', command: 'app.openPreferences' },
-  { key: '$mod+Alt+i', command: 'app.openWebInspector', when: 'isDesktop' },
-  { key: 'F12', command: 'app.openWebInspector', when: 'isDesktop' },
-  { key: '$mod+-', command: 'app.zoomOutWebview', when: 'isDesktop' },
-  { key: '$mod+NumpadSubtract', command: 'app.zoomOutWebview', when: 'isDesktop' },
-  { key: '$mod+=', command: 'app.zoomInWebview', when: 'isDesktop' },
-  { key: '$mod+NumpadAdd', command: 'app.zoomInWebview', when: 'isDesktop' },
-  { key: '$mod+0', command: 'app.resetWebviewZoom', when: 'isDesktop' },
-  { key: '$mod+Numpad0', command: 'app.resetWebviewZoom', when: 'isDesktop' },
 
   // Dialog close
   { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
@@ -70,7 +77,6 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   { key: 'Alt+ArrowRight', command: 'terminal.wordRight', when: 'terminalFocused && platform == "mac"' },
 
   // Desktop-only
-  { key: '$mod+q', command: 'app.quit', when: 'isDesktop' },
   { key: '$mod+Shift+e', command: 'app.openInExternalEditor', when: '!dialogOpen && isDesktop' },
 
   // Chat input

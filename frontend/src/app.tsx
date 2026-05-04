@@ -12,6 +12,7 @@ import { UserMenuDialogs } from '~/components/shell/UserMenu'
 import { setShowAboutDialog, setShowPreferencesDialog, showAboutDialog } from '~/components/shell/UserMenuState'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
 import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
 import { resolveStack } from '~/lib/resolveStack'
@@ -116,6 +117,8 @@ function AppErrorFallback(error: Error) {
 export default function App() {
   const disposeStorageCleanup = initStorageCleanup()
   onCleanup(disposeStorageCleanup)
+
+  useCoreShortcuts()
 
   type DesktopState = 'loading' | 'launcher' | 'connected'
   const [desktopState, setDesktopState] = createSignal<DesktopState>(isTauriApp() ? 'loading' : 'connected')

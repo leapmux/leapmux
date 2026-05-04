@@ -224,7 +224,7 @@ describe('activateBindings (Mac Option dead-key)', () => {
     resetCommands()
     registerCommand({ id: 'test.deadKey', title: 'Test', handler })
 
-    activateBindings([{ key: 'Alt+n', command: 'test.deadKey' }])
+    activateBindings([{ key: 'Alt+n', command: 'test.deadKey' }], 'workspace')
 
     window.dispatchEvent(new KeyboardEvent('keydown', {
       key: '\u02DC',
@@ -233,6 +233,95 @@ describe('activateBindings (Mac Option dead-key)', () => {
     }))
 
     expect(handler).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('activateBindings (slots)', () => {
+  afterEach(() => {
+    unbindAll()
+    resetCommands()
+  })
+
+  it('lets the core and workspace slots fire independently', () => {
+    const coreHandler = vi.fn()
+    const workspaceHandler = vi.fn()
+    registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
+    registerCommand({ id: 'test.workspace', title: 'Workspace', handler: workspaceHandler })
+
+    activateBindings([{ key: 'F12', command: 'test.core' }], 'core')
+    activateBindings([{ key: '$mod+w', command: 'test.workspace' }], 'workspace')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', ctrlKey: true }))
+
+    expect(coreHandler).toHaveBeenCalledTimes(1)
+    expect(workspaceHandler).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the core slot bound when the workspace slot is unbound', () => {
+    const coreHandler = vi.fn()
+    registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
+
+    activateBindings([{ key: 'F12', command: 'test.core' }], 'core')
+    activateBindings([{ key: '$mod+w', command: 'noop' }], 'workspace')
+    unbindAll('workspace')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
+    expect(coreHandler).toHaveBeenCalledTimes(1)
+  })
+
+  it('unbindAll(slot) leaves the other slot intact', () => {
+    const coreHandler = vi.fn()
+    const wsHandler = vi.fn()
+    registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
+    registerCommand({ id: 'test.ws', title: 'Workspace', handler: wsHandler })
+
+    activateBindings([{ key: 'F12', command: 'test.core' }], 'core')
+    activateBindings([{ key: '$mod+w', command: 'test.ws' }], 'workspace')
+    unbindAll('core')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', ctrlKey: true }))
+
+    expect(coreHandler).not.toHaveBeenCalled()
+    expect(wsHandler).toHaveBeenCalledTimes(1)
+  })
+
+  it('unbindAll() with no slot clears every slot', () => {
+    const coreHandler = vi.fn()
+    const wsHandler = vi.fn()
+    registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
+    registerCommand({ id: 'test.ws', title: 'Workspace', handler: wsHandler })
+
+    activateBindings([{ key: 'F12', command: 'test.core' }], 'core')
+    activateBindings([{ key: '$mod+w', command: 'test.ws' }], 'workspace')
+    unbindAll()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', ctrlKey: true }))
+
+    expect(coreHandler).not.toHaveBeenCalled()
+    expect(wsHandler).not.toHaveBeenCalled()
+  })
+
+  it('replaces a slot in place without affecting the other', () => {
+    const oldCore = vi.fn()
+    const newCore = vi.fn()
+    const ws = vi.fn()
+    registerCommand({ id: 'test.oldCore', title: 'OldCore', handler: oldCore })
+    registerCommand({ id: 'test.newCore', title: 'NewCore', handler: newCore })
+    registerCommand({ id: 'test.ws', title: 'Workspace', handler: ws })
+
+    activateBindings([{ key: 'F12', command: 'test.oldCore' }], 'core')
+    activateBindings([{ key: '$mod+w', command: 'test.ws' }], 'workspace')
+    activateBindings([{ key: 'F12', command: 'test.newCore' }], 'core')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', ctrlKey: true }))
+
+    expect(oldCore).not.toHaveBeenCalled()
+    expect(newCore).toHaveBeenCalledTimes(1)
+    expect(ws).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -247,7 +336,7 @@ describe('activateBindings (IME composition)', () => {
     resetCommands()
     registerCommand({ id: 'test.composing', title: 'Test', handler })
 
-    activateBindings([{ key: '$mod+j', command: 'test.composing' }])
+    activateBindings([{ key: '$mod+j', command: 'test.composing' }], 'workspace')
 
     // Simulate a keydown that fires during CJK composition (e.g. Korean
     // double-consonant input on macOS where event.isComposing is true).
@@ -267,7 +356,7 @@ describe('activateBindings (IME composition)', () => {
     resetCommands()
     registerCommand({ id: 'test.notComposing', title: 'Test', handler })
 
-    activateBindings([{ key: '$mod+j', command: 'test.notComposing' }])
+    activateBindings([{ key: '$mod+j', command: 'test.notComposing' }], 'workspace')
 
     window.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'j',

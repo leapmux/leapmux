@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { DEFAULT_KEYBINDINGS } from '~/lib/shortcuts/defaults'
+import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
 
 // Mock solid-dnd to avoid DragDropProvider context requirement
@@ -99,7 +99,7 @@ beforeEach(() => {
 
 describe('tabBar readOnly prop', () => {
   it('shows shortcut hints on dialog menu items', () => {
-    activateBindings(DEFAULT_KEYBINDINGS)
+    activateBindings(WORKSPACE_KEYBINDINGS, 'workspace')
     render(() => (
       <PreferencesProvider>
         <TabBar

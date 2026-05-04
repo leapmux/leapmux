@@ -1,5 +1,7 @@
 import type { Keybinding } from './types'
+import { isTauriApp, setMenuItemAccelerator } from '~/api/platformBridge'
 import { FUNCTION_KEY_RE } from './keybindings'
+import { getPlatform } from './platform'
 
 const MODIFIER_MAP: Record<string, string> = {
   $mod: 'CmdOrCtrl',
@@ -81,4 +83,13 @@ export function tinykeysToTauriAccelerator(key: string): string | undefined {
 
 export function getPrimaryBindingForCommand(bindings: readonly Keybinding[], commandId: string): string | undefined {
   return bindings.find(binding => binding.command === commandId)?.key
+}
+
+// macOS is the only platform whose Tauri menu owns visible accelerators;
+// Linux/Windows render their own controls via CustomTitlebar instead.
+export function syncMacMenuAccelerator(menuItemId: string, commandId: string, bindings: readonly Keybinding[]): void {
+  if (!isTauriApp() || getPlatform() !== 'mac')
+    return
+  const binding = getPrimaryBindingForCommand(bindings, commandId)
+  setMenuItemAccelerator(menuItemId, binding ? tinykeysToTauriAccelerator(binding) : undefined)
 }

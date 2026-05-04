@@ -152,18 +152,29 @@ export function resolve(bindings: readonly Keybinding[], key: string): string | 
   return null
 }
 
-let currentUnsubscribe: (() => void) | null = null
+// Each slot has its own tinykeys instance so independent activation sites
+// (App root vs AppShell) don't stomp on each other. The merged
+// `activeBindings` signal feeds menu hint lookups across both.
+type BindingSlot = 'core' | 'workspace'
+
+interface SlotState {
+  unsubscribe: () => void
+  bindings: readonly Keybinding[]
+}
+const slotState = new Map<BindingSlot, SlotState>()
 // Reactive so JSX expressions that read bindings (menu shortcut hints,
 // tooltips) update once `activateBindings` runs.
 const [activeBindings, setActiveBindings] = createSignal<readonly Keybinding[]>([])
 
-/**
- * Activate keybindings: store them for tooltip lookup and bind via tinykeys.
- * Call this when the binding table changes (init, user override change).
- */
-export function activateBindings(bindings: readonly Keybinding[]): void {
-  unbindAll()
-  setActiveBindings(bindings)
+function recomputeActiveBindings(): void {
+  const all: Keybinding[] = []
+  for (const state of slotState.values())
+    all.push(...state.bindings)
+  setActiveBindings(all)
+}
+
+export function activateBindings(bindings: readonly Keybinding[], slot: BindingSlot): void {
+  slotState.get(slot)?.unsubscribe()
 
   const groups = groupBindings(bindings)
   const keyMap: Record<string, (e: KeyboardEvent) => void> = {}
@@ -183,14 +194,23 @@ export function activateBindings(bindings: readonly Keybinding[]): void {
     }
   }
 
-  currentUnsubscribe = tinykeys(window, keyMap, { capture: true })
-  log.debug(`Bound ${groups.length} key groups (${bindings.length} bindings)`)
+  const unsubscribe = tinykeys(window, keyMap, { capture: true })
+  slotState.set(slot, { unsubscribe, bindings })
+  recomputeActiveBindings()
+  log.debug(`Bound ${groups.length} key groups (${bindings.length} bindings) for slot=${slot}`)
 }
 
-/** Unbind all current keybindings. */
-export function unbindAll(): void {
-  currentUnsubscribe?.()
-  currentUnsubscribe = null
+export function unbindAll(slot?: BindingSlot): void {
+  if (slot) {
+    slotState.get(slot)?.unsubscribe()
+    slotState.delete(slot)
+  }
+  else {
+    for (const state of slotState.values())
+      state.unsubscribe()
+    slotState.clear()
+  }
+  recomputeActiveBindings()
 }
 
 /** Get all active key strings for a command ID, preferring currently-enabled bindings. */
