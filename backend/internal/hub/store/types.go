@@ -36,6 +36,7 @@ type User struct {
 	PendingEmail          string
 	PendingEmailToken     string
 	PendingEmailExpiresAt *time.Time
+	PendingEmailAttempts  int64
 	PasswordSet           bool
 	IsAdmin               bool
 	Prefs                 string
@@ -62,6 +63,7 @@ type SessionWithUser struct {
 	Username      string
 	IsAdmin       bool
 	EmailVerified bool
+	Email         string
 }
 
 // ActiveSession is a session with the owning username (for admin listing).
@@ -103,7 +105,12 @@ type Worker struct {
 	PublicKey       []byte
 	MlkemPublicKey  []byte
 	SlhdsaPublicKey []byte
-	DeletedAt       *time.Time
+	// AutoRegistered marks rows created by Server.RegisterWorker (the
+	// in-process bypass for the solo launcher's co-located worker).
+	// DeregisterWorker refuses these to keep users from accidentally
+	// tearing down the bundled desktop worker.
+	AutoRegistered bool
+	DeletedAt      *time.Time
 }
 
 // WorkerPublicKeys holds a worker's public key material.
@@ -140,18 +147,27 @@ type WorkerNotification struct {
 	DeliveredAt *time.Time
 }
 
-// WorkerRegistration represents a pending worker registration request.
-type WorkerRegistration struct {
-	ID              string
-	Version         string
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
-	Status          leapmuxv1.RegistrationStatus
-	WorkerID        *string
-	ApprovedBy      *string
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
+// WorkerRegistrationKey is a short-lived bearer credential the user mints
+// from the frontend to authorize a single worker registration. The worker
+// presents the row's ID on WorkerConnectorService.Register and the hub
+// atomically consumes the row to create the workers entry.
+//
+// Soft-deletion is encoded by setting ExpiresAt to a past time; the
+// cleanup loop hard-deletes rows whose ExpiresAt is older than the
+// retention cutoff.
+type WorkerRegistrationKey struct {
+	ID        string
+	CreatedBy string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+// WorkerRegistrationKeyWithCreator augments WorkerRegistrationKey with the
+// creator's username (JOINed on users). Soft-deleted creators surface as
+// "(deleted)" so admin listings remain readable after a user is purged.
+type WorkerRegistrationKeyWithCreator struct {
+	WorkerRegistrationKey
+	CreatorUsername string
 }
 
 // Workspace represents a hub-owned workspace.
@@ -423,6 +439,10 @@ type CreateWorkerParams struct {
 	PublicKey       []byte
 	MlkemPublicKey  []byte
 	SlhdsaPublicKey []byte
+	// AutoRegistered must be true only on the solo launcher's
+	// in-process bypass path (Server.RegisterWorker). All
+	// registration-key driven Register RPCs leave it false.
+	AutoRegistered bool
 }
 
 type SetWorkerStatusParams struct {
@@ -494,19 +514,27 @@ type DeleteWorkerAccessGrantsByUserInOrgParams struct {
 	OrgID  string
 }
 
-type CreateRegistrationParams struct {
-	ID              string
-	Version         string
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
-	ExpiresAt       time.Time
+type CreateRegistrationKeyParams struct {
+	ID        string
+	CreatedBy string
+	ExpiresAt time.Time
 }
 
-type ApproveRegistrationParams struct {
-	ID         string
-	WorkerID   *string
-	ApprovedBy *string
+type ExtendRegistrationKeyParams struct {
+	ID        string
+	CreatedBy string
+	ExpiresAt time.Time
+}
+
+type SoftDeleteRegistrationKeyParams struct {
+	ID        string
+	CreatedBy string
+}
+
+type ListRegistrationKeysAdminParams struct {
+	Cursor         string // RFC3339Nano of created_at; empty = first page
+	Limit          int64
+	IncludeExpired bool // true to surface revoked/expired rows for forensics
 }
 
 type CreateWorkspaceParams struct {

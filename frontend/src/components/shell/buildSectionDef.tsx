@@ -75,6 +75,7 @@ export interface SectionDefContext {
   currentUserId: string
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
+  onRegisterWorker: () => void
 }
 
 /**
@@ -240,6 +241,20 @@ export function buildSectionDef(
       draggable: true,
       defaultSize: 0.15,
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
+      headerActions: (
+        <IconButton
+          icon={Plus}
+          iconSize="sm"
+          size="md"
+          title="Register a new worker"
+          data-testid="sidebar-register-worker"
+          onClick={(e) => {
+            e.stopPropagation()
+            e.preventDefault()
+            ctx.onRegisterWorker()
+          }}
+        />
+      ),
       content: () => (
         <WorkerSectionContent
           workers={ctx.workers}

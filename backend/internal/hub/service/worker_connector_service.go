@@ -20,11 +20,6 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// WorkerConnectorService implements the Hub-side service called by Worker
-// instances for registration and bidirectional streaming.
-// DefaultPollTimeout is the long-poll duration for PollRegistration.
-const DefaultPollTimeout = 30 * time.Second
-
 type WorkerConnectorService struct {
 	store       store.Store
 	workerMgr   *workermgr.Manager
@@ -33,7 +28,6 @@ type WorkerConnectorService struct {
 	pending     *workermgr.PendingRequests
 	notifier    *notifier.Notifier
 	shutdownCh  <-chan struct{}
-	pollTimeout time.Duration
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
@@ -54,29 +48,26 @@ func NewWorkerConnectorService(
 		pending:     pr,
 		notifier:    n,
 		shutdownCh:  shutdownCh,
-		pollTimeout: DefaultPollTimeout,
 	}
 }
 
-// SetPollTimeout overrides the long-poll timeout for PollRegistration.
-func (s *WorkerConnectorService) SetPollTimeout(d time.Duration) {
-	s.pollTimeout = d
-}
-
-func (s *WorkerConnectorService) RequestRegistration(
+// Register handles the worker → hub registration RPC.
+//
+// The session-cookie auth interceptor lets this RPC through (it's in the
+// public allowlist) because workers don't have a hub session — they
+// authenticate by presenting a registration key as a bearer credential
+// in the Authorization header. The hub atomically consumes the key and
+// creates the worker row in one transaction.
+func (s *WorkerConnectorService) Register(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.RequestRegistrationRequest],
-) (*connect.Response[leapmuxv1.RequestRegistrationResponse], error) {
-	// Expire old pending registrations first.
-	if err := s.store.Registrations().ExpirePending(ctx); err != nil {
-		slog.Debug("failed to expire registrations", "error", err)
+	req *connect.Request[leapmuxv1.RegisterRequest],
+) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+	regKey, ok := auth.BearerToken(req.Header().Get("Authorization"))
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("registration key required"))
 	}
 
-	regID := id.Generate()
-	expiresAt := time.Now().Add(10 * time.Minute).UTC()
-
-	version, err := validate.ValidateProperty("version", req.Msg.GetVersion())
-	if err != nil {
+	if _, err := validate.ValidateProperty("version", req.Msg.GetVersion()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -84,158 +75,59 @@ func (s *WorkerConnectorService) RequestRegistration(
 	mlkemPublicKey := ptrconv.OrEmpty(req.Msg.GetMlkemPublicKey())
 	slhdsaPublicKey := ptrconv.OrEmpty(req.Msg.GetSlhdsaPublicKey())
 
-	if err := s.store.Registrations().Create(ctx, store.CreateRegistrationParams{
-		ID:              regID,
-		Version:         version,
-		PublicKey:       publicKey,
-		MlkemPublicKey:  mlkemPublicKey,
-		SlhdsaPublicKey: slhdsaPublicKey,
-		ExpiresAt:       expiresAt,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create registration: %w", err))
-	}
-
-	// Auto-approve registrations via Unix domain socket — the socket is
-	// protected by filesystem permissions (0600), so reaching it implies
-	// the caller is the same OS user.
-	if auth.IsUnixSocket(ctx) {
-		if err := s.autoApproveRegistration(ctx, regID, publicKey, mlkemPublicKey, slhdsaPublicKey); err != nil {
-			return nil, err
-		}
-	}
-
-	return connect.NewResponse(&leapmuxv1.RequestRegistrationResponse{
-		RegistrationToken: regID,
-		RegistrationUrl:   "/register/" + regID,
-	}), nil
-}
-
-// autoApproveRegistration creates a worker record and marks the registration
-// as approved. It resolves the approving user from the request context (set by
-// the auth interceptor in solo mode) or falls back to the "admin" user.
-func (s *WorkerConnectorService) autoApproveRegistration(
-	ctx context.Context, regID string,
-	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
-) error {
-	user := auth.GetUser(ctx)
-	if user == nil {
-		// Non-solo mode: look up the admin user as the approver.
-		adminUser, err := s.store.Users().GetByUsername(ctx, "admin")
-		if err != nil {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("resolve admin user for auto-approval: %w", err))
-		}
-		user = &auth.UserInfo{
-			ID:    adminUser.ID,
-			OrgID: adminUser.OrgID,
-		}
-	}
-
 	workerID := id.Generate()
 	authToken := id.Generate()
 
-	if err := s.store.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       authToken,
-		RegisteredBy:    user.ID,
-		PublicKey:       publicKey,
-		MlkemPublicKey:  mlkemPublicKey,
-		SlhdsaPublicKey: slhdsaPublicKey,
-	}); err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
-	}
-
-	if err := s.store.Registrations().Approve(ctx, store.ApproveRegistrationParams{
-		ID:         regID,
-		WorkerID:   ptrconv.Ptr(workerID),
-		ApprovedBy: ptrconv.Ptr(user.ID),
-	}); err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("approve registration: %w", err))
-	}
-
-	// Wake up the worker's PollRegistration long-poll.
-	s.workerMgr.NotifyRegistrationChange(regID)
-
-	slog.Info("auto-approved registration via unix socket",
-		"registration_id", regID,
-		"worker_id", workerID,
-		"approved_by", user.ID,
-	)
-
-	s.broadcaster.NotifyWorkersChanged(user.ID)
-
-	return nil
-}
-
-func (s *WorkerConnectorService) PollRegistration(
-	ctx context.Context,
-	req *connect.Request[leapmuxv1.PollRegistrationRequest],
-) (*connect.Response[leapmuxv1.PollRegistrationResponse], error) {
-	regID := req.Msg.GetRegistrationToken()
-	if regID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("registration_token is required"))
-	}
-
-	reg, err := s.store.Registrations().GetByID(ctx, regID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("registration not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Long-poll: if still pending, wait for notification or timeout.
-	if reg.Status == leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_PENDING {
-		_ = s.workerMgr.WaitForRegistrationChange(ctx, regID, s.pollTimeout)
-
-		// Re-query after waking up.
-		reg, err = s.store.Registrations().GetByID(ctx, regID)
+	var registeredBy string
+	err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		// Atomic consume: returns the row only if expires_at > now and
+		// flips it into the soft-deleted state. Any concurrent caller
+		// loses the race and sees ErrNotFound.
+		row, err := tx.RegistrationKeys().Consume(ctx, regKey)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("registration not found"))
+				return connect.NewError(connect.CodeUnauthenticated, errors.New("registration key invalid or already consumed"))
 			}
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("consume registration key: %w", err))
 		}
+
+		registeredBy = row.CreatedBy
+		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
+			ID:              workerID,
+			AuthToken:       authToken,
+			RegisteredBy:    registeredBy,
+			PublicKey:       publicKey,
+			MlkemPublicKey:  mlkemPublicKey,
+			SlhdsaPublicKey: slhdsaPublicKey,
+		}); err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	resp := &leapmuxv1.PollRegistrationResponse{}
+	slog.Info("worker registered",
+		"worker_id", workerID,
+		"registered_by", registeredBy,
+	)
+	s.broadcaster.NotifyWorkersChanged(registeredBy)
 
-	switch reg.Status {
-	case leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_PENDING:
-		resp.Status = leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_PENDING
-	case leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED:
-		resp.Status = leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_APPROVED
-		if reg.WorkerID != nil {
-			resp.WorkerId = *reg.WorkerID
-			worker, err := s.store.Workers().GetByID(ctx, *reg.WorkerID)
-			if err == nil {
-				resp.AuthToken = worker.AuthToken
-				resp.RegisteredBy = worker.RegisteredBy
-			}
-		}
-	case leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_EXPIRED:
-		resp.Status = leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_EXPIRED
-	default:
-		resp.Status = leapmuxv1.RegistrationStatus_REGISTRATION_STATUS_UNSPECIFIED
-	}
-
-	return connect.NewResponse(resp), nil
+	return connect.NewResponse(&leapmuxv1.RegisterResponse{
+		WorkerId:     workerID,
+		AuthToken:    authToken,
+		RegisteredBy: registeredBy,
+	}), nil
 }
 
 func (s *WorkerConnectorService) Connect(
 	ctx context.Context,
 	stream *connect.BidiStream[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse],
 ) error {
-	// The worker must authenticate via auth_token in the first message or
-	// via metadata. For now, extract from the request header.
-	authToken := stream.RequestHeader().Get("Authorization")
-	if authToken == "" {
+	token, ok := auth.BearerToken(stream.RequestHeader().Get("Authorization"))
+	if !ok {
 		return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("auth_token required"))
-	}
-
-	token := ""
-	const prefix = "Bearer "
-	if len(authToken) > len(prefix) {
-		token = authToken[len(prefix):]
 	}
 
 	worker, err := s.store.Workers().GetByAuthToken(ctx, token)

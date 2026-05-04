@@ -25,11 +25,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "NotificationStatus"
-          # Worker registration enum
-          - column: "worker_registrations.status"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "RegistrationStatus"
           # Workspace section enums
           - column: "workspace_sections.section_type"
             go_type:

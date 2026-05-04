@@ -79,64 +79,115 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("hard delete expired registrations before cutoff", func(t *testing.T) {
+	t.Run("hard delete expired registration keys before cutoff", func(t *testing.T) {
 		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "cleanup-keys-org", true)
+		user := SeedUser(t, st, orgID, "cleanup-keys-user")
 
+		// Create a key whose expires_at is already in the past — this is
+		// the soft-deleted state our service layer leaves rows in after
+		// either explicit Delete or successful Consume.
 		regID := id.Generate()
-		err := st.Registrations().Create(ctx, store.CreateRegistrationParams{
-			ID:              regID,
-			Version:         "1.0.0",
-			PublicKey:       []byte{},
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
-			ExpiresAt:       time.Now().Add(-48 * time.Hour),
+		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+			ID:        regID,
+			CreatedBy: user.ID,
+			ExpiresAt: time.Now().Add(-48 * time.Hour),
 		})
 		require.NoError(t, err)
 
-		// Expire it first.
-		err = st.Registrations().ExpirePending(ctx)
-		require.NoError(t, err)
-
-		// Backdate created_at so the record falls before the cutoff.
-		err = st.TestHelper().SetCreatedAt(ctx, store.EntityWorkerRegistrations, regID, time.Now().Add(-48*time.Hour))
-		require.NoError(t, err)
-
-		n, err := st.Cleanup().HardDeleteExpiredRegistrationsBefore(ctx, time.Now().Add(-24*time.Hour))
+		n, err := st.Cleanup().HardDeleteExpiredRegistrationKeysBefore(ctx, time.Now().Add(-24*time.Hour))
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
 
-		_, err = st.Registrations().GetByID(ctx, regID)
+		_, err = st.RegistrationKeys().GetByID(ctx, regID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("hard delete registrations skips pending", func(t *testing.T) {
+	t.Run("hard delete registration keys skips live", func(t *testing.T) {
 		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "cleanup-live-keys-org", true)
+		user := SeedUser(t, st, orgID, "cleanup-live-keys-user")
 
-		// Create a pending registration (not yet expired).
+		// Create a live key (expires in the future). Even with an old
+		// created_at it must NOT be deleted: only expires_at controls
+		// retention now.
 		regID := id.Generate()
-		err := st.Registrations().Create(ctx, store.CreateRegistrationParams{
-			ID:              regID,
-			Version:         "1.0.0",
-			PublicKey:       []byte{},
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
-			ExpiresAt:       time.Now().Add(1 * time.Hour),
+		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+			ID:        regID,
+			CreatedBy: user.ID,
+			ExpiresAt: time.Now().Add(1 * time.Hour),
 		})
 		require.NoError(t, err)
 
-		// Backdate created_at so it falls before the cutoff.
-		err = st.TestHelper().SetCreatedAt(ctx, store.EntityWorkerRegistrations, regID, time.Now().Add(-48*time.Hour))
+		err = st.TestHelper().SetCreatedAt(ctx, store.EntityWorkerRegistrationKeys, regID, time.Now().Add(-48*time.Hour))
 		require.NoError(t, err)
 
-		// Cleanup should NOT delete a pending registration, even though
-		// its created_at is before the cutoff.
-		n, err := st.Cleanup().HardDeleteExpiredRegistrationsBefore(ctx, time.Now().Add(-24*time.Hour))
+		n, err := st.Cleanup().HardDeleteExpiredRegistrationKeysBefore(ctx, time.Now().Add(-24*time.Hour))
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n)
 
-		// The pending registration should still exist.
-		_, err = st.Registrations().GetByID(ctx, regID)
+		got, err := st.RegistrationKeys().GetByID(ctx, regID)
 		require.NoError(t, err)
+		assert.Equal(t, regID, got.ID)
+	})
+
+	t.Run("clear stale pending emails", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "cleanup-stale-pending-org", true)
+		user := SeedUser(t, st, orgID, "cleanup-stale-pending-user")
+
+		// Seed a pending verification whose expires_at is in the past.
+		// The cleanup loop frees the row's pending_email slot once the
+		// expires_at is older than retention, so this exercises the
+		// "expired-and-aged-out" path.
+		past := time.Now().Add(-48 * time.Hour).UTC()
+		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "stale@example.com",
+			PendingEmailToken:     "ABC123",
+			PendingEmailExpiresAt: &past,
+		})
+		require.NoError(t, err)
+
+		n, err := st.Cleanup().ClearStalePendingEmails(ctx, time.Now().Add(-24*time.Hour))
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), n)
+
+		// All four pending columns must be reset, including the attempts
+		// counter — otherwise a later issuance starts mid-window.
+		got, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Empty(t, got.PendingEmail)
+		assert.Empty(t, got.PendingEmailToken)
+		assert.Nil(t, got.PendingEmailExpiresAt)
+		assert.Zero(t, got.PendingEmailAttempts)
+	})
+
+	t.Run("clear stale pending emails skips live ones", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "cleanup-live-pending-org", true)
+		user := SeedUser(t, st, orgID, "cleanup-live-pending-user")
+
+		// A live (future-dated) pending verification must NOT be cleared
+		// — the code is still usable and wiping it would silently lock
+		// the user out of completing verification.
+		future := time.Now().Add(15 * time.Minute).UTC()
+		err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                    user.ID,
+			PendingEmail:          "still-valid@example.com",
+			PendingEmailToken:     "LIVE12",
+			PendingEmailExpiresAt: &future,
+		})
+		require.NoError(t, err)
+
+		n, err := st.Cleanup().ClearStalePendingEmails(ctx, time.Now().Add(-24*time.Hour))
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), n)
+
+		got, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "still-valid@example.com", got.PendingEmail)
+		assert.Equal(t, "LIVE12", got.PendingEmailToken)
 	})
 
 	t.Run("hard delete users before cutoff", func(t *testing.T) {
@@ -241,7 +292,11 @@ func (s *Suite) testCleanup(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n)
 
-		n, err = st.Cleanup().HardDeleteExpiredRegistrationsBefore(ctx, cutoff)
+		n, err = st.Cleanup().HardDeleteExpiredRegistrationKeysBefore(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), n)
+
+		n, err = st.Cleanup().ClearStalePendingEmails(ctx, cutoff)
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), n)
 

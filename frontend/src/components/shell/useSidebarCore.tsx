@@ -81,6 +81,8 @@ export interface SidebarCommonProps {
   currentUserId: string
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
+  /** Open the "register a new worker" dialog from the Workers section header. */
+  onRegisterWorker: () => void
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +189,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     currentUserId: props.currentUserId,
     onAddTunnel: props.onAddTunnel,
     onDeregisterWorker: props.onDeregisterWorker,
+    onRegisterWorker: props.onRegisterWorker,
   })
 
   /** Build `SidebarSectionDef[]` from the current section groups. */

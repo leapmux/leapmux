@@ -4,14 +4,6 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { WorkerContextMenu } from './WorkerContextMenu'
 
 // Mock the modules that affect visibility.
-vi.mock('~/lib/systemInfo', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('~/lib/systemInfo')>()
-  return {
-    ...actual,
-    isSoloMode: vi.fn(() => true),
-  }
-})
-
 vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
   return {
@@ -27,7 +19,7 @@ beforeAll(() => {
   HTMLElement.prototype.togglePopover = vi.fn()
 })
 
-function renderMenu(opts?: { isOwner?: boolean, hasTunnels?: boolean }) {
+function renderMenu(opts?: { isOwner?: boolean, hasTunnels?: boolean, autoRegistered?: boolean }) {
   const onAddTunnel = vi.fn()
   const onDeleteAllTunnels = vi.fn()
   const onDeregister = vi.fn()
@@ -36,6 +28,7 @@ function renderMenu(opts?: { isOwner?: boolean, hasTunnels?: boolean }) {
     <WorkerContextMenu
       workerInfo={{ name: 'test', os: 'linux', arch: 'amd64', homeDir: '/home', version: '1.0', commitHash: '', buildTime: '', updatedAt: Date.now() }}
       isOwner={opts?.isOwner ?? true}
+      autoRegistered={opts?.autoRegistered ?? false}
       hasTunnels={opts?.hasTunnels ?? false}
       onAddTunnel={onAddTunnel}
       onDeleteAllTunnels={onDeleteAllTunnels}
@@ -86,5 +79,17 @@ describe('workerContextMenu', () => {
     const { onAddTunnel } = renderMenu({ isOwner: true })
     screen.getByText('Add tunnel...').click()
     expect(onAddTunnel).toHaveBeenCalled()
+  })
+
+  it('"deregister..." visible for manually-registered workers', () => {
+    renderMenu({ autoRegistered: false })
+    expect(screen.getByText('Deregister...')).toBeInTheDocument()
+  })
+
+  it('"deregister..." hidden for the auto-registered local worker', () => {
+    // Tearing down the bundled worker would just trigger a re-register
+    // on next launch — the menu item would be a dead-end click.
+    renderMenu({ autoRegistered: true })
+    expect(screen.queryByText('Deregister...')).not.toBeInTheDocument()
   })
 })

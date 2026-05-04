@@ -73,13 +73,17 @@ func runWorker(args []string) error {
 	}
 
 	if state.AuthToken == "" {
-		// No saved credentials — need to register.
+		// Registration requires a key minted in advance by an authenticated
+		// user via the hub UI; bare workers cannot self-register.
+		if cfg.RegistrationKey == "" {
+			return fmt.Errorf("worker is unregistered: pass --registration-key <key> from the hub UI")
+		}
 		compositeKey, ckErr := state.CompositeKeypair()
 		if ckErr != nil {
 			return fmt.Errorf("restore composite keypair for registration: %w", ckErr)
 		}
 		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
-		result, regErr := hub.Register(ctx, cfg.HubURL, version.Value, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
+		result, regErr := hub.Register(ctx, cfg.HubURL, cfg.RegistrationKey, version.Value, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
 		if regErr != nil {
 			return fmt.Errorf("registration: %w", regErr)
 		}
@@ -91,8 +95,13 @@ func runWorker(args []string) error {
 		if err := cfg.SaveState(state); err != nil {
 			return fmt.Errorf("save state: %w", err)
 		}
-
 		slog.Info("credentials saved", "path", cfg.StatePath())
+	} else if cfg.RegistrationKey != "" {
+		// The worker is already registered. Refusing to consume the key
+		// here protects the user from accidentally burning it on a
+		// machine that's already configured (a fresh `leapmux worker`
+		// command in the wrong terminal, etc.).
+		return fmt.Errorf("worker is already registered; remove --registration-key or wipe local state to re-register")
 	}
 
 	compositeKey, err := state.CompositeKeypair()

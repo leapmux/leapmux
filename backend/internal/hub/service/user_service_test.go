@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -22,6 +24,7 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
 type userTestEnv struct {
@@ -42,7 +45,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), nil)
+	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender())
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
@@ -99,7 +102,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), nil)
+	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender())
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
@@ -466,7 +469,7 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 	cfg := testConfig()
 	cfg.EmailVerificationRequired = true
 
-	userSvc := service.NewUserService(st, cfg, nil)
+	userSvc := service.NewUserService(st, cfg, nil, mail.NewStubSender())
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
@@ -527,22 +530,29 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, resp.Msg.GetVerificationRequired())
 
-	// The stub auto-promotes, so the email should be in the email column.
+	// New flow: the email column stays pinned to the existing verified
+	// address until the user submits the code. The new email lands in
+	// pending_email along with a 6-char token and a 30-minute expiry.
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
-	assert.Equal(t, "pending@example.com", user.Email)
+	assert.Equal(t, "old@example.com", user.Email)
+	assert.True(t, user.EmailVerified)
+	assert.Equal(t, "pending@example.com", user.PendingEmail)
+	assert.Equal(t, verifycode.Length, len(user.PendingEmailToken))
+	require.NotNil(t, user.PendingEmailExpiresAt)
+	assert.True(t, user.PendingEmailExpiresAt.After(time.Now()),
+		"expires_at should be in the future for a fresh code")
 
-	// Verify admin gets immediate change (not pending).
 	_ = adminToken
 }
 
-// --- VerifyEmailChange ---
+// --- VerifyEmail (per-user, authenticated) ---
 
-func TestVerifyEmailChange_Success(t *testing.T) {
+func TestVerifyEmail_Success(t *testing.T) {
 	env := setupUserTest(t)
 
-	// Set pending_email + token via DB directly.
-	verifyToken := id.Generate()
+	// Seed pending_email + a 6-char verifycode-shaped token.
+	verifyToken := verifycode.Generate()
 	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "verified@example.com",
 		PendingEmailToken:     verifyToken,
@@ -551,57 +561,107 @@ func TestVerifyEmailChange_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Call VerifyEmailChange.
-	resp, err := env.client.VerifyEmailChange(context.Background(), authedReq(&leapmuxv1.VerifyEmailChangeRequest{
-		VerificationToken: verifyToken,
+	// User submits the display form; backend Normalize handles the hyphen.
+	resp, err := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifycode.Format(verifyToken),
 	}, env.token))
 	require.NoError(t, err)
 	assert.Equal(t, "verified@example.com", resp.Msg.GetUser().GetEmail())
 
-	// Verify in DB: email promoted, pending cleared, email_verified=1.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "verified@example.com", user.Email)
 	assert.True(t, user.EmailVerified)
 	assert.Empty(t, user.PendingEmail)
 	assert.Empty(t, user.PendingEmailToken)
+	assert.Zero(t, user.PendingEmailAttempts)
 }
 
-func TestVerifyEmailChange_InvalidToken(t *testing.T) {
+// TestVerifyEmail_AcceptsLowercaseInput exercises the contract that the
+// stored verification code is canonical (uppercase, drawn from
+// verifycode.Charset) and that Normalize uppercases user input — so a
+// user typing "abc-def" verifies against a stored "ABCDEF" via
+// constant-time compare without any per-call ToUpper on the stored side.
+func TestVerifyEmail_AcceptsLowercaseInput(t *testing.T) {
 	env := setupUserTest(t)
 
-	_, err := env.client.VerifyEmailChange(context.Background(), authedReq(&leapmuxv1.VerifyEmailChangeRequest{
+	verifyToken := verifycode.Generate()
+	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		PendingEmail:          "lowercase@example.com",
+		PendingEmailToken:     verifyToken,
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                    env.userID,
+	})
+	require.NoError(t, err)
+
+	// Submit the display form lower-cased ("abc-def" instead of "ABC-DEF").
+	resp, err := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: strings.ToLower(verifycode.Format(verifyToken)),
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, "lowercase@example.com", resp.Msg.GetUser().GetEmail())
+}
+
+func TestVerifyEmail_InvalidShape(t *testing.T) {
+	env := setupUserTest(t)
+
+	// Bad shape never makes it past Normalize → InvalidArgument, regardless
+	// of whether a pending row exists for this user.
+	_, err := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
 		VerificationToken: "bogus-token",
 	}, env.token))
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestVerifyEmailChange_ExpiredToken(t *testing.T) {
+func TestVerifyEmail_ExpiredOrMismatchSurfacesIdentically(t *testing.T) {
+	// The whole point of collapsing expiry and mismatch into one error is
+	// that callers can't distinguish them — that closes a timing oracle on
+	// "is there a code at all?". Assert both code AND message are equal.
 	env := setupUserTest(t)
 
-	// Set pending_email with an expired token.
-	verifyToken := id.Generate()
+	expiredToken := verifycode.Generate()
 	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "expired@example.com",
-		PendingEmailToken:     verifyToken,
+		PendingEmailToken:     expiredToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(-1 * time.Hour).UTC()),
 		ID:                    env.userID,
 	})
 	require.NoError(t, err)
 
-	_, err = env.client.VerifyEmailChange(context.Background(), authedReq(&leapmuxv1.VerifyEmailChangeRequest{
-		VerificationToken: verifyToken,
+	_, expiredErr := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifycode.Format(expiredToken),
 	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	require.Error(t, expiredErr)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(expiredErr))
+
+	// Reset to a live token but submit a different valid-shape code.
+	liveToken := verifycode.Generate()
+	wrongToken := verifycode.Generate()
+	for wrongToken == liveToken {
+		wrongToken = verifycode.Generate()
+	}
+	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		PendingEmail:          "live@example.com",
+		PendingEmailToken:     liveToken,
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                    env.userID,
+	}))
+	_, mismatchErr := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifycode.Format(wrongToken),
+	}, env.token))
+	require.Error(t, mismatchErr)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(mismatchErr))
+	assert.Equal(t, expiredErr.Error(), mismatchErr.Error(),
+		"expired and mismatch must be byte-identical to avoid an oracle")
 }
 
-func TestVerifyEmailChange_PendingEmailEmpty(t *testing.T) {
+func TestVerifyEmail_PendingEmailEmpty(t *testing.T) {
 	env := setupUserTest(t)
 
-	// Set a token but with empty pending_email.
-	verifyToken := id.Generate()
+	// Set a token but with empty pending_email — represents a "nothing
+	// to verify" precondition error, distinct from invalid/expired codes.
+	verifyToken := verifycode.Generate()
 	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "",
 		PendingEmailToken:     verifyToken,
@@ -610,18 +670,161 @@ func TestVerifyEmailChange_PendingEmailEmpty(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = env.client.VerifyEmailChange(context.Background(), authedReq(&leapmuxv1.VerifyEmailChangeRequest{
-		VerificationToken: verifyToken,
+	_, err = env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifycode.Format(verifyToken),
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
-func TestVerifyEmailChange_EmailTakenSinceRequest(t *testing.T) {
+func TestVerifyEmail_RateLimitForceExpires(t *testing.T) {
 	env := setupUserTest(t)
 
-	// Set pending_email on the test user.
-	verifyToken := id.Generate()
+	live := verifycode.Generate()
+	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		PendingEmail:          "burned@example.com",
+		PendingEmailToken:     live,
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                    env.userID,
+	}))
+
+	// Five wrong attempts: each one should fail with NotFound but the
+	// row stays alive.
+	for i := 0; i < 5; i++ {
+		bad := verifycode.Generate()
+		for bad == live {
+			bad = verifycode.Generate()
+		}
+		_, err := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+			VerificationToken: verifycode.Format(bad),
+		}, env.token))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	}
+
+	// 6th attempt — even with the *correct* code — must fail with
+	// ResourceExhausted because the previous attempt force-expired the row.
+	_, err := env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifycode.Format(live),
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+}
+
+// --- ResendVerificationEmail ---
+
+// setupResendUserTest provisions a UserService backed by a recordingSender
+// so tests can assert the resent email's recipient + body.
+func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
+	t.Helper()
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	require.NoError(t, st.Migrator().Migrate(context.Background()))
+
+	rec := &recordingSender{}
+	userSvc := service.NewUserService(st, testConfig(), nil, rec)
+
+	mux := http.NewServeMux()
+	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	opts := connect.WithInterceptors(interceptor)
+	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
+	mux.Handle(path, handler)
+
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC())
+
+	orgID := id.Generate()
+	userID := id.Generate()
+	hash, _ := password.Hash("testpass")
+	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "resender"})
+	_ = st.Users().Create(context.Background(), store.CreateUserParams{
+		ID: userID, OrgID: orgID, Username: "resender", PasswordHash: hash,
+		DisplayName: "Resender", PasswordSet: true,
+	})
+	token, _, _, err := auth.Login(context.Background(), st, "resender", "testpass")
+	require.NoError(t, err)
+
+	return &userTestEnv{client: client, store: st, token: token, orgID: orgID, userID: userID}, rec
+}
+
+func TestResendVerificationEmail_RequiresAuth(t *testing.T) {
+	env, _ := setupResendUserTest(t)
+	_, err := env.client.ResendVerificationEmail(context.Background(), connect.NewRequest(&leapmuxv1.ResendVerificationEmailRequest{}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestResendVerificationEmail_RequiresPendingEmail(t *testing.T) {
+	env, _ := setupResendUserTest(t)
+	// User has no pending email — there's nothing to resend.
+	_, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
+	env, sender := setupResendUserTest(t)
+
+	// Seed a pending row with an "old" expires_at far enough back that
+	// the cooldown window has elapsed (TTL is 30min, cooldown 60s — set
+	// expires_at = now+25min so issued_at = now-5min).
+	originalCode := verifycode.Generate()
+	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		ID:                    env.userID,
+		PendingEmail:          "u@example.com",
+		PendingEmailToken:     originalCode,
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(25 * time.Minute).UTC()),
+	}))
+
+	resp, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetEmailSent())
+
+	// A fresh code must replace the original — otherwise users who lost
+	// the email could still verify with the leaked-but-presumed-private
+	// stale code from logs/notifications.
+	got, err := env.store.Users().GetByID(context.Background(), env.userID)
+	require.NoError(t, err)
+	assert.NotEqual(t, originalCode, got.PendingEmailToken,
+		"resend must rotate the code, not reuse the previous one")
+	assert.Equal(t, "u@example.com", got.PendingEmail)
+	assert.Zero(t, got.PendingEmailAttempts, "attempts counter must reset on resend")
+
+	last := sender.last()
+	require.NotNil(t, last)
+	assert.Equal(t, "u@example.com", last.To)
+	assert.Contains(t, last.Body, verifycode.Format(got.PendingEmailToken),
+		"the email body must carry the *new* code")
+}
+
+func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
+	// Seed a pending row whose implied "issued_at" is just now: the
+	// cooldown must reject a back-to-back resend so a runaway client
+	// (or hostile caller) can't flood the user's inbox.
+	env, _ := setupResendUserTest(t)
+
+	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		ID:                    env.userID,
+		PendingEmail:          "u@example.com",
+		PendingEmailToken:     verifycode.Generate(),
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(30 * time.Minute).UTC()),
+	}))
+
+	_, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+}
+
+func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {
+	env := setupUserTest(t)
+
+	verifyToken := verifycode.Generate()
 	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "contested@example.com",
 		PendingEmailToken:     verifyToken,
@@ -650,27 +853,32 @@ func TestVerifyEmailChange_EmailTakenSinceRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try to verify -- should fail because the email is now taken.
-	_, err = env.client.VerifyEmailChange(context.Background(), authedReq(&leapmuxv1.VerifyEmailChangeRequest{
-		VerificationToken: verifyToken,
+	_, err = env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifycode.Format(verifyToken),
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 }
 
-func TestVerifyEmailChange_CrossUser_Rejected(t *testing.T) {
+func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
+	// Per-user lookup: if user B submits user A's code, B's row simply
+	// doesn't have a matching token, so they get the same generic
+	// NotFound as anyone typing a wrong code. There's nothing to leak.
 	env := setupUserTest(t)
 
-	// Set pending_email on the test user.
-	verifyToken := id.Generate()
+	victimToken := verifycode.Generate()
 	err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
 		PendingEmail:          "stolen@example.com",
-		PendingEmailToken:     verifyToken,
+		PendingEmailToken:     victimToken,
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    env.userID,
 	})
 	require.NoError(t, err)
 
-	// Create a different user and log in as them.
+	// Create a different user and log in as them. Important: the
+	// attacker has *no* pending row of their own, so any submission
+	// they make hits the FailedPrecondition path. Give them one too so
+	// we exercise the actual mismatch case.
 	attackerID := id.Generate()
 	attackerHash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
@@ -682,15 +890,22 @@ func TestVerifyEmailChange_CrossUser_Rejected(t *testing.T) {
 		PasswordSet:  true,
 		IsAdmin:      false,
 	})
+	attackerOwnToken := verifycode.Generate()
+	require.NoError(t, env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		PendingEmail:          "attacker@example.com",
+		PendingEmailToken:     attackerOwnToken,
+		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
+		ID:                    attackerID,
+	}))
 	attackerToken, _, _, err := auth.Login(context.Background(), env.store, "attacker", "testpass2")
 	require.NoError(t, err)
 
-	// Attacker tries to verify the first user's email change token.
-	_, err = env.client.VerifyEmailChange(context.Background(), authedReq(&leapmuxv1.VerifyEmailChangeRequest{
-		VerificationToken: verifyToken,
+	_, err = env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
+		VerificationToken: verifycode.Format(victimToken),
 	}, attackerToken))
 	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"cross-user submissions must look identical to plain typos")
 }
 
 func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {

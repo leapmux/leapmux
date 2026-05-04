@@ -51,6 +51,7 @@ export interface SidebarElementsOpts {
   currentUserId: string
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
+  onRegisterWorker: () => void
   onTabClick: (type: number, id: string) => void
   tabItemOps?: TabItemOps
   onExpandWorkspace: (workspaceId: string) => void
@@ -111,6 +112,7 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       currentUserId={opts.currentUserId}
       onAddTunnel={opts.onAddTunnel}
       onDeregisterWorker={opts.onDeregisterWorker}
+      onRegisterWorker={opts.onRegisterWorker}
       tabStore={opts.tabStore}
       registry={opts.registry}
       onTabClick={opts.onTabClick}
@@ -171,6 +173,7 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       currentUserId={opts.currentUserId}
       onAddTunnel={opts.onAddTunnel}
       onDeregisterWorker={opts.onDeregisterWorker}
+      onRegisterWorker={opts.onRegisterWorker}
     />
   )
 }

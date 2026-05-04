@@ -21,6 +21,7 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 		PublicKey:       p.PublicKey,
 		MlkemPublicKey:  p.MlkemPublicKey,
 		SlhdsaPublicKey: p.SlhdsaPublicKey,
+		AutoRegistered:  ptrconv.BoolToInt64(p.AutoRegistered),
 	}))
 }
 
@@ -194,6 +195,7 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 		PublicKey:       w.PublicKey,
 		MlkemPublicKey:  w.MlkemPublicKey,
 		SlhdsaPublicKey: w.SlhdsaPublicKey,
+		AutoRegistered:  ptrconv.Int64ToBool(w.AutoRegistered),
 		DeletedAt:       ptrconv.NullTimeToPtr(w.DeletedAt),
 	}
 }
@@ -214,6 +216,7 @@ func fromDBListWorkersAdminAllRow(r gendb.ListWorkersAdminAllRow) store.WorkerWi
 			PublicKey:       r.PublicKey,
 			MlkemPublicKey:  r.MlkemPublicKey,
 			SlhdsaPublicKey: r.SlhdsaPublicKey,
+			AutoRegistered:  ptrconv.Int64ToBool(r.AutoRegistered),
 			DeletedAt:       ptrconv.NullTimeToPtr(r.DeletedAt),
 		},
 		OwnerUsername: r.OwnerUsername,
@@ -232,6 +235,7 @@ func fromDBListWorkersAdminByStatusRow(r gendb.ListWorkersAdminByStatusRow) stor
 			PublicKey:       r.PublicKey,
 			MlkemPublicKey:  r.MlkemPublicKey,
 			SlhdsaPublicKey: r.SlhdsaPublicKey,
+			AutoRegistered:  ptrconv.Int64ToBool(r.AutoRegistered),
 			DeletedAt:       ptrconv.NullTimeToPtr(r.DeletedAt),
 		},
 		OwnerUsername: r.OwnerUsername,
@@ -250,6 +254,7 @@ func fromDBListWorkersAdminByUserRow(r gendb.ListWorkersAdminByUserRow) store.Wo
 			PublicKey:       r.PublicKey,
 			MlkemPublicKey:  r.MlkemPublicKey,
 			SlhdsaPublicKey: r.SlhdsaPublicKey,
+			AutoRegistered:  ptrconv.Int64ToBool(r.AutoRegistered),
 			DeletedAt:       ptrconv.NullTimeToPtr(r.DeletedAt),
 		},
 		OwnerUsername: r.OwnerUsername,
@@ -268,6 +273,7 @@ func fromDBListWorkersAdminByUserAndStatusRow(r gendb.ListWorkersAdminByUserAndS
 			PublicKey:       r.PublicKey,
 			MlkemPublicKey:  r.MlkemPublicKey,
 			SlhdsaPublicKey: r.SlhdsaPublicKey,
+			AutoRegistered:  ptrconv.Int64ToBool(r.AutoRegistered),
 			DeletedAt:       ptrconv.NullTimeToPtr(r.DeletedAt),
 		},
 		OwnerUsername: r.OwnerUsername,

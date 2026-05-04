@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
@@ -28,7 +29,7 @@ func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1co
 	interceptors := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 	)
-	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil)
+	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 

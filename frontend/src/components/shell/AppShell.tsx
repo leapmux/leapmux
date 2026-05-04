@@ -15,6 +15,7 @@ import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
+import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
 import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
@@ -120,6 +121,7 @@ export const AppShell: ParentComponent = (props) => {
   const [workers, setWorkers] = createSignal<Worker[]>([])
   const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
   const [addTunnelTarget, setAddTunnelTarget] = createSignal<Worker | null>(null)
+  const [showRegisterWorker, setShowRegisterWorker] = createSignal(false)
   const tunnelStore = createTunnelStore()
   // listWorkers() returns freshly-deserialized objects on every call.
   // Stabilize identity by id so the sidebar's <For> doesn't unmount and
@@ -1115,6 +1117,7 @@ export const AppShell: ParentComponent = (props) => {
     currentUserId: auth.user()?.id ?? '',
     onAddTunnel: (worker: Worker) => setAddTunnelTarget(worker),
     onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
+    onRegisterWorker: () => setShowRegisterWorker(true),
     onTabClick: (type: number, id: string) => {
       const tabType = type as TabType
       tabStore.setActiveTab(tabType, id)
@@ -1325,6 +1328,10 @@ export const AppShell: ParentComponent = (props) => {
             onCreated={() => setAddTunnelTarget(null)}
           />
         )}
+      </Show>
+
+      <Show when={showRegisterWorker()}>
+        <RegisterWorkerDialog onClose={() => setShowRegisterWorker(false)} />
       </Show>
     </TunnelProvider>
   )

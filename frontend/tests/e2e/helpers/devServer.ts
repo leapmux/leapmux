@@ -64,7 +64,7 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
   const port = await findFreePort()
   const hubUrl = `http://localhost:${port}`
 
-  const proc = spawn(binaryPath, ['dev', '-addr', `:${port}`, '-data-dir', dataDir], {
+  const proc = spawn(binaryPath, ['dev', '-listen', `:${port}`, '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, ...opts.env },
   })

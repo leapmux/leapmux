@@ -1,23 +1,3 @@
--- name: CreateRegistration :exec
-INSERT INTO worker_registrations (id, version, public_key, mlkem_public_key, slhdsa_public_key, expires_at)
-VALUES (?, ?, ?, ?, ?, ?);
-
--- name: GetRegistrationByID :one
-SELECT * FROM worker_registrations WHERE id = ?;
-
--- name: ApproveRegistration :exec
-UPDATE worker_registrations
-SET status = 2, worker_id = ?, approved_by = ?
-WHERE id = ? AND status = 1;
-
--- name: ExpireRegistrations :exec
-UPDATE worker_registrations
-SET status = 4
-WHERE status = 1 AND expires_at < NOW(3);
-
--- name: HardDeleteExpiredRegistrationsBefore :execresult
-DELETE FROM worker_registrations WHERE id IN (SELECT r.id FROM (SELECT worker_registrations.id FROM worker_registrations WHERE worker_registrations.status = 4 AND worker_registrations.created_at < ? LIMIT 1000) r);
-
 -- name: CreateUserSession :exec
 INSERT INTO user_sessions (id, user_id, expires_at, user_agent, ip_address) VALUES (?, ?, ?, ?, ?);
 
@@ -34,7 +14,7 @@ WHERE id = ? AND last_active_at < ?;
 DELETE FROM user_sessions WHERE id = ?;
 
 -- name: ValidateSessionWithUser :one
-SELECT u.id, u.org_id, u.username, u.is_admin, u.email_verified
+SELECT u.id, u.org_id, u.username, u.is_admin, u.email_verified, u.email
 FROM user_sessions s
 JOIN users u ON s.user_id = u.id
 WHERE s.id = ? AND s.expires_at > NOW(3) AND u.deleted_at IS NULL;

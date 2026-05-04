@@ -27,7 +27,7 @@ type pgStore struct {
 	workers               workerStore
 	workerAccessGrants    workerAccessGrantStore
 	workerNotifications   workerNotificationStore
-	registrations         registrationStore
+	registrationKeys      registrationKeyStore
 	workspaces            workspaceStore
 	workspaceAccess       workspaceAccessStore
 	workspaceTabs         workspaceTabStore
@@ -140,7 +140,7 @@ func initSubStores(s *pgStore) {
 	s.workers = workerStore{conn: s.conn}
 	s.workerAccessGrants = workerAccessGrantStore{conn: s.conn}
 	s.workerNotifications = workerNotificationStore{conn: s.conn}
-	s.registrations = registrationStore{conn: s.conn}
+	s.registrationKeys = registrationKeyStore{conn: s.conn}
 	s.workspaces = workspaceStore{conn: s.conn}
 	s.workspaceAccess = workspaceAccessStore{conn: s.conn}
 	s.workspaceTabs = workspaceTabStore{conn: s.conn}
@@ -162,7 +162,7 @@ func (s *pgStore) OrgMembers() store.OrgMemberStore                   { return &
 func (s *pgStore) Workers() store.WorkerStore                         { return &s.workers }
 func (s *pgStore) WorkerAccessGrants() store.WorkerAccessGrantStore   { return &s.workerAccessGrants }
 func (s *pgStore) WorkerNotifications() store.WorkerNotificationStore { return &s.workerNotifications }
-func (s *pgStore) Registrations() store.RegistrationStore             { return &s.registrations }
+func (s *pgStore) RegistrationKeys() store.RegistrationKeyStore       { return &s.registrationKeys }
 func (s *pgStore) Workspaces() store.WorkspaceStore                   { return &s.workspaces }
 func (s *pgStore) WorkspaceAccess() store.WorkspaceAccessStore        { return &s.workspaceAccess }
 func (s *pgStore) WorkspaceTabs() store.WorkspaceTabStore             { return &s.workspaceTabs }

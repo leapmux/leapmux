@@ -25,8 +25,12 @@ func (s *cleanupStore) HardDeleteWorkersBefore(ctx context.Context, cutoff time.
 	return rowsAffected(s.conn.q.HardDeleteWorkersBefore(ctx, timeToTs(cutoff)))
 }
 
-func (s *cleanupStore) HardDeleteExpiredRegistrationsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteExpiredRegistrationsBefore(ctx, timeToTs(cutoff)))
+func (s *cleanupStore) HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.HardDeleteExpiredRegistrationKeysBefore(ctx, timeToTs(cutoff)))
+}
+
+func (s *cleanupStore) ClearStalePendingEmails(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.ClearStalePendingEmails(ctx, timeToTs(cutoff)))
 }
 
 func (s *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error) {

@@ -192,6 +192,7 @@ func runUserUpdate(args []string) error {
 	var username *string
 	var displayName *string
 	var email *string
+	var clearPendingEmail *bool
 	var emailVerifiedFlag *bool
 	return withAdminStore("user update", args, func(fs *flag.FlagSet) {
 		flagSet = fs
@@ -199,6 +200,7 @@ func runUserUpdate(args []string) error {
 		username = fs.String("username", "", "username (for lookup)")
 		displayName = fs.String("display-name", "", "new display name")
 		email = fs.String("email", "", "new email address")
+		clearPendingEmail = fs.Bool("clear-pending-email", false, "clear any in-flight email verification (token + attempt counter)")
 		fs.Func("email-verified", "mark email as verified (true/false)", func(s string) error {
 			b, err := strconv.ParseBool(s)
 			if err != nil {
@@ -219,9 +221,10 @@ func runUserUpdate(args []string) error {
 		updateDisplayName := setFlags["display-name"]
 		updateEmail := setFlags["email"]
 		updateEmailVerified := emailVerifiedFlag != nil
+		updateClearPendingEmail := *clearPendingEmail
 
-		if !updateDisplayName && !updateEmail && !updateEmailVerified {
-			return fmt.Errorf("no fields to update (use --display-name, --email, or --email-verified)")
+		if !updateDisplayName && !updateEmail && !updateEmailVerified && !updateClearPendingEmail {
+			return fmt.Errorf("no fields to update (use --display-name, --email, --email-verified, or --clear-pending-email)")
 		}
 
 		// Validate inputs before starting the transaction.
@@ -264,6 +267,12 @@ func runUserUpdate(args []string) error {
 					ID:            user.ID,
 				}); err != nil {
 					return fmt.Errorf("update email verified: %w", err)
+				}
+			}
+
+			if updateClearPendingEmail {
+				if err := tx.Users().ClearPendingEmail(ctx, user.ID); err != nil {
+					return fmt.Errorf("clear pending email: %w", err)
 				}
 			}
 

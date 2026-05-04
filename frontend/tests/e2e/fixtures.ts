@@ -58,7 +58,7 @@ export const test = base.extend<
 
     const proc = spawn(globalState.binaryPath, [
       'dev',
-      '-addr',
+      '-listen',
       `:${port}`,
       '-data-dir',
       dataDir,

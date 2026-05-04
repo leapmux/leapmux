@@ -25,7 +25,7 @@ type sqliteStore struct {
 	workers               workerStore
 	workerAccessGrants    workerAccessGrantStore
 	workerNotifications   workerNotificationStore
-	registrations         registrationStore
+	registrationKeys      registrationKeyStore
 	workspaces            workspaceStore
 	workspaceAccess       workspaceAccessStore
 	workspaceTabs         workspaceTabStore
@@ -114,7 +114,7 @@ func initSubStores(s *sqliteStore) {
 	s.workers = workerStore{conn: s.conn}
 	s.workerAccessGrants = workerAccessGrantStore{conn: s.conn}
 	s.workerNotifications = workerNotificationStore{conn: s.conn}
-	s.registrations = registrationStore{conn: s.conn}
+	s.registrationKeys = registrationKeyStore{conn: s.conn}
 	s.workspaces = workspaceStore{conn: s.conn}
 	s.workspaceAccess = workspaceAccessStore{conn: s.conn}
 	s.workspaceTabs = workspaceTabStore{conn: s.conn}
@@ -138,7 +138,7 @@ func (s *sqliteStore) WorkerAccessGrants() store.WorkerAccessGrantStore { return
 func (s *sqliteStore) WorkerNotifications() store.WorkerNotificationStore {
 	return &s.workerNotifications
 }
-func (s *sqliteStore) Registrations() store.RegistrationStore         { return &s.registrations }
+func (s *sqliteStore) RegistrationKeys() store.RegistrationKeyStore   { return &s.registrationKeys }
 func (s *sqliteStore) Workspaces() store.WorkspaceStore               { return &s.workspaces }
 func (s *sqliteStore) WorkspaceAccess() store.WorkspaceAccessStore    { return &s.workspaceAccess }
 func (s *sqliteStore) WorkspaceTabs() store.WorkspaceTabStore         { return &s.workspaceTabs }

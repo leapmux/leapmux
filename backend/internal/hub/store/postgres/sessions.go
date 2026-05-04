@@ -113,5 +113,6 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string) (*store.
 		Username:      row.Username,
 		IsAdmin:       row.IsAdmin,
 		EmailVerified: row.EmailVerified,
+		Email:         row.Email,
 	}, nil
 }

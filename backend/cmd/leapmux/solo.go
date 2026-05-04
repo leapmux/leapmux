@@ -22,19 +22,22 @@ func runSolo(args []string, soloMode bool) error {
 	}
 
 	modeName := "solo"
-	defaultAddr := "127.0.0.1:4327"
+	defaultListen := "127.0.0.1:4327"
 	if !soloMode {
 		modeName = "dev"
-		defaultAddr = ":4327"
+		defaultListen = ":4327"
 	}
 	configDir := "~/.config/leapmux/" + modeName
 	configFile := configDir + "/" + modeName + ".yaml"
 
 	cliFlags := []string{
-		"addr", "data-dir", "dev-frontend",
+		"listen", "data-dir", "dev-frontend",
 		"storage-sqlite-max-conns", "max-message-size", "max-incomplete-chunked",
 		"api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds",
 		"log-level",
+	}
+	if !soloMode {
+		cliFlags = append(cliFlags, "public-url")
 	}
 	extraFlags := []hubconfig.ExtraFlagDef{
 		{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
@@ -44,7 +47,7 @@ func runSolo(args []string, soloMode bool) error {
 	defer stop()
 
 	inst, err := solo.Start(ctx, solo.Config{
-		Addr:       defaultAddr,
+		Listen:     defaultListen,
 		ConfigDir:  configDir,
 		ConfigFile: configFile,
 		Args:       args,

@@ -11,28 +11,34 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
-// publicProcedures lists RPC procedures that do not require authentication.
+// publicProcedures lists RPC procedures that do not require a session
+// cookie. Worker registration (Register) is public from the
+// session-cookie perspective because the worker process has no hub
+// session — the handler validates an Authorization: Bearer <key> header
+// itself. Connect is similarly authenticated by the long-lived
+// auth_token in its own header.
 var publicProcedures = map[string]bool{
-	"/leapmux.v1.AuthService/Login":                          true,
-	"/leapmux.v1.AuthService/SignUp":                         true,
-	"/leapmux.v1.AuthService/VerifyEmail":                    true,
-	"/leapmux.v1.AuthService/GetSystemInfo":                  true,
-	"/leapmux.v1.OrgService/CheckOrgExists":                  true,
-	"/leapmux.v1.WorkerConnectorService/RequestRegistration": true,
-	"/leapmux.v1.WorkerConnectorService/PollRegistration":    true,
-	"/leapmux.v1.WorkerConnectorService/Connect":             true,
-	"/leapmux.v1.AuthService/GetOAuthProviders":              true,
-	"/leapmux.v1.AuthService/GetPendingOAuthSignup":          true,
-	"/leapmux.v1.AuthService/CompleteOAuthSignup":            true,
+	"/leapmux.v1.AuthService/Login":                 true,
+	"/leapmux.v1.AuthService/SignUp":                true,
+	"/leapmux.v1.AuthService/GetSystemInfo":         true,
+	"/leapmux.v1.OrgService/CheckOrgExists":         true,
+	"/leapmux.v1.WorkerConnectorService/Register":   true,
+	"/leapmux.v1.WorkerConnectorService/Connect":    true,
+	"/leapmux.v1.AuthService/GetOAuthProviders":     true,
+	"/leapmux.v1.AuthService/GetPendingOAuthSignup": true,
+	"/leapmux.v1.AuthService/CompleteOAuthSignup":   true,
 }
 
-// unverifiedAllowedProcedures lists RPC procedures that unverified users may call.
+// unverifiedAllowedProcedures lists RPC procedures that authenticated
+// users may call before their email is verified. The verify endpoint
+// itself must be in this list — otherwise an unverified user couldn't
+// complete verification.
 var unverifiedAllowedProcedures = map[string]bool{
-	"/leapmux.v1.AuthService/VerifyEmail":        true,
-	"/leapmux.v1.AuthService/GetCurrentUser":     true,
-	"/leapmux.v1.AuthService/Logout":             true,
-	"/leapmux.v1.UserService/RequestEmailChange": true,
-	"/leapmux.v1.UserService/VerifyEmailChange":  true,
+	"/leapmux.v1.AuthService/GetCurrentUser":          true,
+	"/leapmux.v1.AuthService/Logout":                  true,
+	"/leapmux.v1.UserService/RequestEmailChange":      true,
+	"/leapmux.v1.UserService/VerifyEmail":             true,
+	"/leapmux.v1.UserService/ResendVerificationEmail": true,
 }
 
 // sessionCacheTTL controls how long a validated session is cached in memory.

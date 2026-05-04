@@ -96,20 +96,35 @@ SELECT count(*) FROM users WHERE deleted_at IS NULL;
 SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1);
 
 -- name: SetPendingEmail :exec
-UPDATE users SET pending_email = $1, pending_email_token = $2, pending_email_expires_at = $3, updated_at = NOW()
+UPDATE users SET pending_email = $1, pending_email_token = $2, pending_email_expires_at = $3, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $4;
 
 -- name: ClearPendingEmail :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = NOW()
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $1;
 
 -- name: PromotePendingEmail :exec
-UPDATE users SET email = pending_email, email_verified = TRUE, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = NOW()
+UPDATE users SET email = pending_email, email_verified = TRUE, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $1 AND pending_email != '';
 
--- name: GetUserByPendingEmailToken :one
-SELECT * FROM users WHERE pending_email_token = $1 AND pending_email_token != '' AND deleted_at IS NULL;
+-- ConsumeVerificationAttempt atomically charges one attempt against the
+-- user's pending verification, force-expiring on the 6th try, and
+-- returns the post-update row. Returns no rows when there's no pending
+-- verification — callers map that to FailedPrecondition.
+-- name: ConsumeVerificationAttempt :one
+UPDATE users
+SET pending_email_attempts = pending_email_attempts + 1,
+    pending_email_expires_at = CASE
+        WHEN pending_email_attempts + 1 > 5 THEN NOW()
+        ELSE pending_email_expires_at END,
+    updated_at = NOW()
+WHERE id = $1 AND pending_email_token != ''
+RETURNING *;
 
 -- name: ClearCompetingPendingEmails :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = NOW()
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE pending_email = $1 AND id != $2;
+
+-- name: ClearStalePendingEmails :execresult
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
+WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < $1;

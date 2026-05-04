@@ -71,6 +71,20 @@ func SeedOrgMember(t *testing.T, st store.Store, orgID, userID string, role leap
 	require.NoError(t, err)
 }
 
+// SeedRegistrationKey creates a worker_registration_keys row owned by
+// createdBy with the given expires_at and returns its id.
+func SeedRegistrationKey(t *testing.T, st store.Store, createdBy string, expiresAt time.Time) string {
+	t.Helper()
+	regID := id.Generate()
+	err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID:        regID,
+		CreatedBy: createdBy,
+		ExpiresAt: expiresAt,
+	})
+	require.NoError(t, err)
+	return regID
+}
+
 // SeedWorker creates a worker registered by the given user and returns the fetched worker.
 func SeedWorker(t *testing.T, st store.Store, registeredBy string) *store.Worker {
 	t.Helper()

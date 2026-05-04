@@ -14,6 +14,7 @@ export interface BuildInfo {
 let soloMode = false
 let signupEnabled = false
 let setupRequired = false
+let workerHubUrl = ''
 let loaded = false
 
 let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' }
@@ -34,6 +35,7 @@ export async function loadSystemInfo(force = false): Promise<void> {
     soloMode = resp.soloMode
     signupEnabled = resp.signupEnabled
     setupRequired = resp.setupRequired
+    workerHubUrl = resp.workerHubUrl
     backendBuildInfo = {
       version: resp.version,
       commitHash: resp.commitHash,
@@ -58,6 +60,17 @@ export function isSignupEnabled(): boolean {
 
 export function isSetupRequired(): boolean {
   return setupRequired
+}
+
+// getWorkerHubUrl returns the URL workers should target when registering.
+// Populated when the hub has an explicit --public-url configured (e.g. behind
+// a reverse proxy) or when TCP is disabled (desktop app's local-only mode,
+// where the browser origin resolves to `tauri://localhost` and the only
+// viable URL is the unix-socket / named-pipe address). Empty otherwise — the
+// caller should fall back to `window.location.origin`, which already reflects
+// the public-facing URL the user is connecting through.
+export function getWorkerHubUrl(): string {
+  return workerHubUrl
 }
 
 let cachedOAuthProviders: OAuthProviderInfo[] | null = null

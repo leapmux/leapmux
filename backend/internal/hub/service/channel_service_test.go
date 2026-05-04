@@ -17,6 +17,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -59,7 +60,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(st, cfg, nil, nil), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender()), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
@@ -67,7 +68,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(st, wMgr, nil, nil, false), opts)
+		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender()), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs)
@@ -122,31 +123,23 @@ func (e *channelTestEnv) createWorkerWithKey(t *testing.T, token string, publicK
 	t.Helper()
 	ctx := context.Background()
 
-	regResp, err := e.connectorClient.RequestRegistration(ctx, connect.NewRequest(
-		&leapmuxv1.RequestRegistrationRequest{Version: "v"},
-	))
+	// New flow: authenticated user mints a registration key, then the
+	// worker presents it as a bearer credential. We exercise the actual
+	// RPC path here so the auth interceptor allowlist and the consume
+	// transaction are covered alongside the channel tests.
+	createReq := authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token)
+	createResp, err := e.mgmtClient.CreateRegistrationKey(ctx, createReq)
 	require.NoError(t, err)
 
-	approveReq := authedReq(&leapmuxv1.ApproveRegistrationRequest{
-		RegistrationToken: regResp.Msg.GetRegistrationToken(),
-	}, token)
-	approveResp, err := e.mgmtClient.ApproveRegistration(ctx, approveReq)
+	regReq := connect.NewRequest(&leapmuxv1.RegisterRequest{
+		Version:   "v",
+		PublicKey: publicKey,
+	})
+	regReq.Header().Set("Authorization", "Bearer "+createResp.Msg.GetRegistrationKey())
+	regResp, err := e.connectorClient.Register(ctx, regReq)
 	require.NoError(t, err)
 
-	workerID := approveResp.Msg.GetWorkerId()
-
-	// Set the public key.
-	if len(publicKey) > 0 {
-		err = e.store.Workers().UpdatePublicKey(ctx, store.UpdateWorkerPublicKeyParams{
-			PublicKey:       publicKey,
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
-			ID:              workerID,
-		})
-		require.NoError(t, err)
-	}
-
-	return workerID
+	return regResp.Msg.GetWorkerId()
 }
 
 func registerOnlineWorker(t *testing.T, env *channelTestEnv, workerID string, mode leapmuxv1.EncryptionMode) {
