@@ -18,6 +18,14 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Tauri 2 already pulls these in transitively (it returns
+# `gtk::ApplicationWindow` from `WebviewWindow::gtk_window()`).
+# We name them explicitly so `tabfix_linux.rs` can install a GTK-level
+# Tab key-press handler.
+gtk = "0.18"
+gdk = "0.18"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",

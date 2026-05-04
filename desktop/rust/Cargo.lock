@@ -2001,6 +2001,8 @@ name = "leapmux-desktop"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "gdk",
+ "gtk",
  "prost",
  "prost-build",
  "serde",

@@ -7,6 +7,9 @@ mod proto {
     include!(concat!(env!("OUT_DIR"), "/leapmux.desktop.v1.rs"));
 }
 
+#[cfg(target_os = "linux")]
+mod tabfix_linux;
+
 use base64::Engine;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -2006,6 +2009,14 @@ fn main() {
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_decorations(false);
+            }
+
+            // Work around WebKitGTK's GTK-level Tab focus traversal so
+            // ProseMirror can receive Tab/Shift+Tab keydowns. See
+            // `tabfix_linux.rs` for the rationale.
+            #[cfg(target_os = "linux")]
+            if let Some(w) = app.get_webview_window("main") {
+                tabfix_linux::install(&w);
             }
 
             // Safety net: if the frontend doesn't show the window within 5s
