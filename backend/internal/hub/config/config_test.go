@@ -18,7 +18,8 @@ func TestLoad(t *testing.T) {
 		cfg, showVersion, err := Load(nil)
 		require.NoError(t, err)
 		assert.False(t, showVersion)
-		assert.Equal(t, ":4327", cfg.Addr)
+		assert.Equal(t, ":4327", cfg.Listen)
+		assert.Equal(t, "", cfg.PublicURL)
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/hub"), cfg.DataDir)
 		assert.Equal(t, "", cfg.DevFrontend)
 		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.SQLiteDBConfig().MaxConns)
@@ -30,7 +31,7 @@ func TestLoad(t *testing.T) {
 	t.Run("config file overrides defaults", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "hub.yaml")
-		yamlContent := `addr: ":9999"
+		yamlContent := `listen: ":9999"
 storage:
   sqlite:
     max_conns: 16
@@ -40,7 +41,7 @@ log_level: "debug"
 
 		cfg, _, err := Load([]string{"-config", configPath})
 		require.NoError(t, err)
-		assert.Equal(t, ":9999", cfg.Addr)
+		assert.Equal(t, ":9999", cfg.Listen)
 		assert.Equal(t, 16, cfg.SQLiteDBConfig().MaxConns)
 		assert.Equal(t, "debug", cfg.LogLevel)
 		// data_dir defaults to "." resolved against config file dir.
@@ -50,25 +51,25 @@ log_level: "debug"
 	t.Run("env vars override config file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "hub.yaml")
-		yamlContent := `addr: ":9999"
+		yamlContent := `listen: ":9999"
 log_level: "debug"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		t.Setenv("LEAPMUX_HUB_ADDR", ":7777")
+		t.Setenv("LEAPMUX_HUB_LISTEN", ":7777")
 
 		cfg, _, err := Load([]string{"-config", configPath})
 		require.NoError(t, err)
-		assert.Equal(t, ":7777", cfg.Addr)
+		assert.Equal(t, ":7777", cfg.Listen)
 		assert.Equal(t, "debug", cfg.LogLevel) // from config file
 	})
 
 	t.Run("CLI flags override env vars", func(t *testing.T) {
-		t.Setenv("LEAPMUX_HUB_ADDR", ":7777")
+		t.Setenv("LEAPMUX_HUB_LISTEN", ":7777")
 
-		cfg, _, err := Load([]string{"-addr", ":5555"})
+		cfg, _, err := Load([]string{"-listen", ":5555"})
 		require.NoError(t, err)
-		assert.Equal(t, ":5555", cfg.Addr)
+		assert.Equal(t, ":5555", cfg.Listen)
 	})
 
 	t.Run("version flag", func(t *testing.T) {
@@ -80,7 +81,7 @@ log_level: "debug"
 	t.Run("missing config file silently ignored", func(t *testing.T) {
 		cfg, _, err := Load([]string{"-config", "/nonexistent/hub.yaml"})
 		require.NoError(t, err)
-		assert.Equal(t, ":4327", cfg.Addr) // uses default
+		assert.Equal(t, ":4327", cfg.Listen) // uses default
 	})
 
 	t.Run("invalid YAML returns error", func(t *testing.T) {
@@ -127,12 +128,12 @@ log_level: "debug"
 }
 
 func TestLoadWithOptions(t *testing.T) {
-	t.Run("custom DefaultAddr applied", func(t *testing.T) {
+	t.Run("custom DefaultListen applied", func(t *testing.T) {
 		cfg, _, err := LoadWithOptions(nil, LoadOptions{
-			DefaultAddr: "127.0.0.1:4327",
+			DefaultListen: "127.0.0.1:4327",
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "127.0.0.1:4327", cfg.Addr)
+		assert.Equal(t, "127.0.0.1:4327", cfg.Listen)
 	})
 
 	t.Run("SoloMode set on output", func(t *testing.T) {
@@ -151,17 +152,17 @@ func TestLoadWithOptions(t *testing.T) {
 
 	t.Run("CLIFlags restriction rejects unlisted flags", func(t *testing.T) {
 		_, _, err := LoadWithOptions([]string{"-signup-enabled"}, LoadOptions{
-			CLIFlags: []string{"addr", "data-dir", "log-level"},
+			CLIFlags: []string{"listen", "data-dir", "log-level"},
 		})
 		assert.Error(t, err)
 	})
 
 	t.Run("CLIFlags restriction allows listed flags", func(t *testing.T) {
-		cfg, _, err := LoadWithOptions([]string{"-addr", ":9999"}, LoadOptions{
-			CLIFlags: []string{"addr", "data-dir", "log-level"},
+		cfg, _, err := LoadWithOptions([]string{"-listen", ":9999"}, LoadOptions{
+			CLIFlags: []string{"listen", "data-dir", "log-level"},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, ":9999", cfg.Addr)
+		assert.Equal(t, ":9999", cfg.Listen)
 	})
 
 	t.Run("config file values for all fields work with CLIFlags restriction", func(t *testing.T) {
@@ -174,7 +175,7 @@ signup_enabled: true
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
 		cfg, _, err := LoadWithOptions([]string{"-config", configPath}, LoadOptions{
-			CLIFlags: []string{"addr", "data-dir", "log-level"},
+			CLIFlags: []string{"listen", "data-dir", "log-level"},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, 1024, cfg.MaxMessageSize)
@@ -203,23 +204,126 @@ signup_enabled: true
 
 	t.Run("version flag works with options", func(t *testing.T) {
 		_, showVersion, err := LoadWithOptions([]string{"-version"}, LoadOptions{
-			CLIFlags: []string{"addr"},
+			CLIFlags: []string{"listen"},
 		})
 		require.NoError(t, err)
 		assert.True(t, showVersion)
 	})
 }
 
+func TestLoadPublicURL(t *testing.T) {
+	t.Run("CLI flag accepted and stored verbatim", func(t *testing.T) {
+		cfg, _, err := Load([]string{"-public-url", "https://hub.example.com"})
+		require.NoError(t, err)
+		assert.Equal(t, "https://hub.example.com", cfg.PublicURL)
+	})
+
+	t.Run("trailing slash stripped", func(t *testing.T) {
+		cfg, _, err := Load([]string{"-public-url", "https://hub.example.com/"})
+		require.NoError(t, err)
+		assert.Equal(t, "https://hub.example.com", cfg.PublicURL)
+	})
+
+	t.Run("env var", func(t *testing.T) {
+		t.Setenv("LEAPMUX_HUB_PUBLIC_URL", "https://hub.example.com")
+		cfg, _, err := Load(nil)
+		require.NoError(t, err)
+		assert.Equal(t, "https://hub.example.com", cfg.PublicURL)
+	})
+
+	t.Run("YAML key", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "hub.yaml")
+		yamlContent := `public_url: "https://hub.example.com"
+`
+		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
+		cfg, _, err := Load([]string{"-config", configPath})
+		require.NoError(t, err)
+		assert.Equal(t, "https://hub.example.com", cfg.PublicURL)
+	})
+
+	t.Run("invalid URLs are rejected", func(t *testing.T) {
+		cases := []struct {
+			name, value string
+		}{
+			{"not a URL", "not-a-url"},
+			{"wrong scheme", "ftp://example.com"},
+			{"empty hostname", "https://:443"},
+			{"path", "https://example.com/leapmux"},
+			{"query", "https://example.com?x=1"},
+			{"bare query marker", "https://example.com?"},
+			{"fragment", "https://example.com#frag"},
+			{"userinfo", "https://user@example.com"},
+			{"multiple trailing slashes", "https://example.com///"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				_, _, err := Load([]string{"-public-url", tc.value})
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "public_url")
+			})
+		}
+	})
+
+	t.Run("rejected in solo mode (env)", func(t *testing.T) {
+		t.Setenv("LEAPMUX_HUB_PUBLIC_URL", "https://hub.example.com")
+		_, _, err := LoadWithOptions(nil, LoadOptions{SoloMode: true})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "solo mode")
+	})
+
+	t.Run("rejected in solo mode (YAML)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "solo.yaml")
+		yamlContent := `public_url: "https://hub.example.com"
+`
+		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
+		_, _, err := LoadWithOptions([]string{"-config", configPath}, LoadOptions{SoloMode: true})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "solo mode")
+	})
+
+	t.Run("solo mode allows empty PublicURL", func(t *testing.T) {
+		cfg, _, err := LoadWithOptions(nil, LoadOptions{SoloMode: true})
+		require.NoError(t, err)
+		assert.Empty(t, cfg.PublicURL)
+	})
+}
+
+func TestBaseURL(t *testing.T) {
+	t.Run("derived from listen + http when PublicURL empty", func(t *testing.T) {
+		cfg := &Config{Listen: ":4327"}
+		assert.Equal(t, "http://localhost:4327", cfg.BaseURL())
+	})
+
+	t.Run("derived from listen + https when SecureCookies set", func(t *testing.T) {
+		cfg := &Config{Listen: ":4327", SecureCookies: true}
+		assert.Equal(t, "https://localhost:4327", cfg.BaseURL())
+	})
+
+	t.Run("PublicURL wins over derivation", func(t *testing.T) {
+		cfg := &Config{Listen: ":4327", PublicURL: "https://hub.example.com"}
+		assert.Equal(t, "https://hub.example.com", cfg.BaseURL())
+	})
+
+	t.Run("PublicURL wins even with SecureCookies false", func(t *testing.T) {
+		cfg := &Config{Listen: ":4327", PublicURL: "https://hub.example.com", SecureCookies: false}
+		assert.Equal(t, "https://hub.example.com", cfg.BaseURL())
+	})
+}
+
 func TestValidate(t *testing.T) {
-	t.Run("empty addr returns error", func(t *testing.T) {
-		cfg := &Config{Addr: ""}
+	t.Run("empty data dir returns error", func(t *testing.T) {
+		// MkdirAll("") fails with "no such file or directory"; documents the
+		// requirement that DataDir is set before Validate is called.
+		cfg := &Config{DataDir: ""}
 		assert.Error(t, cfg.Validate())
 	})
 
 	t.Run("removed storage backends are unsupported", func(t *testing.T) {
 		for _, storageType := range []StorageType{"mongodb", "dynamodb"} {
 			cfg := &Config{
-				Addr:    ":4327",
+				Listen:  ":4327",
 				DataDir: t.TempDir(),
 				Storage: StorageConfig{Type: storageType},
 			}
@@ -234,12 +338,38 @@ func TestValidate(t *testing.T) {
 		tmpDir := t.TempDir()
 		dataDir := filepath.Join(tmpDir, "data")
 
-		cfg := &Config{Addr: ":4327", DataDir: dataDir}
+		cfg := &Config{Listen: ":4327", DataDir: dataDir}
 		require.NoError(t, cfg.Validate())
 
 		info, err := os.Stat(dataDir)
 		require.NoError(t, err)
 		assert.True(t, info.IsDir())
+	})
+
+	t.Run("invalid PublicURL caught at Validate", func(t *testing.T) {
+		// Programmatic construction bypasses LoadWithOptions canonicalization.
+		cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), PublicURL: "ftp://example.com"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "public_url")
+	})
+
+	t.Run("PublicURL canonicalized at Validate", func(t *testing.T) {
+		cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), PublicURL: "https://hub.example.com/"}
+		require.NoError(t, cfg.Validate())
+		assert.Equal(t, "https://hub.example.com", cfg.PublicURL)
+	})
+
+	t.Run("PublicURL rejected when SoloMode at Validate", func(t *testing.T) {
+		cfg := &Config{
+			Listen:    ":4327",
+			DataDir:   t.TempDir(),
+			SoloMode:  true,
+			PublicURL: "https://hub.example.com",
+		}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "solo mode")
 	})
 }
 

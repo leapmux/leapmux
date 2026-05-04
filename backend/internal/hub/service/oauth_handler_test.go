@@ -45,7 +45,7 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, store.Store, *keystor
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Addr:          ":4327",
+		Listen:        ":4327",
 		SignupEnabled: true,
 	}
 
@@ -302,7 +302,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Addr:          ":4327",
+		Listen:        ":4327",
 		SignupEnabled: true,
 	}
 
@@ -664,7 +664,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Addr:          ":4327",
+		Listen:        ":4327",
 		SignupEnabled: false, // signup disabled
 	}
 

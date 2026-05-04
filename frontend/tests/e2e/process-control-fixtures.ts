@@ -197,7 +197,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   const hubDataDir = join(serverInfo.dataDir, 'hub')
   const hubProc = spawn(serverInfo.binaryPath, [
     'hub',
-    '-addr',
+    '-listen',
     `:${serverInfo.hubPort}`,
     '-data-dir',
     hubDataDir,
@@ -261,7 +261,7 @@ export const processTest = base.extend<
     // runner's process group don't kill it prematurely.
     const hubProc = spawn(globalState.binaryPath, [
       'hub',
-      '-addr',
+      '-listen',
       `:${hubPort}`,
       '-data-dir',
       hubDataDir,

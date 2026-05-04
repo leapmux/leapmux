@@ -93,13 +93,13 @@ message GetSystemInfoResponse {
   bool oauth_enabled = 7; // true if at least one OAuth provider is configured and enabled
   bool setup_required = 8; // true when no users exist (first-time setup needed)
   string branch = 9; // Optional git ref (branch or tag) injected at build time; empty for detached HEAD
-  // URL the `leapmux worker --hub <url>` command should target. The hub
-  // computes this so the frontend doesn't have to guess: when the hub
-  // serves a TCP listener it's the public BaseURL; when TCP is disabled
-  // (desktop app's local-only mode) it's the unix-socket / named-pipe
-  // URL of the local listener. The browser-visible window.location is
-  // unsuitable in the desktop app because it resolves to
-  // `tauri://localhost`.
+  // URL the `leapmux worker --hub <url>` command should target. Populated
+  // when the hub has either an explicit --public-url configured (e.g. behind
+  // a reverse proxy) or no TCP listener at all (desktop app's local-only
+  // mode, where the browser origin is `tauri://localhost` and the only
+  // viable URL is the unix-socket / named-pipe address). Empty otherwise —
+  // the caller should fall back to window.location.origin, which already
+  // reflects whatever proxy or hostname the user is connecting through.
   string worker_hub_url = 10;
 }
 

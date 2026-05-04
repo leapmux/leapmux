@@ -161,14 +161,29 @@ func PrintRegistrationURL(url string, isRelativePath bool) {
 	}
 }
 
-// PrintAccessURL prints the full access URL to stderr.
+// PrintAccessURL prints the full access URL to stderr, derived from a listen
+// address (e.g. ":4327" → "http://localhost:4327").
 func PrintAccessURL(addr string) {
-	u := addrToURL(addr)
+	PrintURL(addrToURL(addr))
+}
+
+// PrintBannerURL prints the public URL when set, otherwise derives one from
+// the listen address. This is the URL the operator should see at startup.
+func PrintBannerURL(publicURL, listen string) {
+	if publicURL != "" {
+		PrintURL(publicURL)
+		return
+	}
+	PrintAccessURL(listen)
+}
+
+// PrintURL prints an already-normalized URL to stderr.
+func PrintURL(url string) {
 	isTTY := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
 
 	if isTTY {
-		fmt.Fprintf(os.Stderr, "  %s%s➜%s  %s%s%s\n\n", bold, green, reset, bold, u, reset)
+		fmt.Fprintf(os.Stderr, "  %s%s➜%s  %s%s%s\n\n", bold, green, reset, bold, url, reset)
 	} else {
-		fmt.Fprintf(os.Stderr, "  ➜  %s\n\n", u)
+		fmt.Fprintf(os.Stderr, "  ➜  %s\n\n", url)
 	}
 }

@@ -51,7 +51,7 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	t.Setenv(locallisten.EnvLocalListen, uniqueTestListenURL(t))
 
 	inst, err := solo.Start(ctx, solo.Config{
-		Addr:       addr,
+		Listen:     addr,
 		ConfigDir:  dataDir,
 		ConfigFile: dataDir + "/solo.yaml",
 		SkipBanner: true,

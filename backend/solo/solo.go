@@ -32,8 +32,8 @@ const workerSetupPollInterval = 2 * time.Second
 
 // Config configures the solo launcher.
 type Config struct {
-	// Addr is the listen address (default: "127.0.0.1:4327").
-	Addr string
+	// Listen is the TCP listen address (default: "127.0.0.1:4327").
+	Listen string
 	// ConfigDir overrides the default config directory.
 	ConfigDir string
 	// ConfigFile overrides the default config file path.
@@ -102,11 +102,11 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		modeName = "dev"
 	}
 
-	defaultAddr := cfg.Addr
-	if defaultAddr == "" {
-		defaultAddr = "127.0.0.1:4327"
+	defaultListen := cfg.Listen
+	if defaultListen == "" {
+		defaultListen = "127.0.0.1:4327"
 		if cfg.DevMode {
-			defaultAddr = ":4327"
+			defaultListen = ":4327"
 		}
 	}
 
@@ -121,7 +121,10 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	cliFlags := cfg.CLIFlags
 	if cliFlags == nil {
-		cliFlags = []string{"addr", "data-dir", "dev-frontend", "storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level", "use-login-shell"}
+		cliFlags = []string{"listen", "data-dir", "dev-frontend", "storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size", "max-message-size", "max-incomplete-chunked", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level", "use-login-shell"}
+		if cfg.DevMode {
+			cliFlags = append(cliFlags, "public-url")
+		}
 	}
 
 	extraFlags := cfg.ExtraFlags
@@ -133,7 +136,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	}
 
 	hubCfg, _, err := hubconfig.LoadWithOptions(cfg.Args, hubconfig.LoadOptions{
-		DefaultAddr:       defaultAddr,
+		DefaultListen:     defaultListen,
 		DefaultConfigDir:  configDir,
 		DefaultConfigFile: configFile,
 		FlagSetName:       "leapmux",
@@ -153,12 +156,12 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	logging.SetLevel(level)
 
 	if cfg.NoTCP {
-		hubCfg.Addr = ""
+		hubCfg.Listen = ""
 	}
 
 	if !cfg.SkipBanner {
 		logging.PrintBanner(modeName)
-		logging.PrintAccessURL(hubCfg.Addr)
+		logging.PrintBannerURL(hubCfg.PublicURL, hubCfg.Listen)
 	}
 
 	// Split data dir into hub and worker subdirectories.
@@ -241,7 +244,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		return nil, fmt.Errorf("auto-register worker: %w", err)
 	}
 
-	slog.Info("leapmux "+modeName+" listening", "addr", hubCfg.Addr)
+	slog.Info("leapmux "+modeName+" listening", "listen", hubCfg.Listen)
 
 	// If the Hub exits unexpectedly, cancel soloCtx so the worker tears down
 	// promptly instead of looping against a dead endpoint.

@@ -321,15 +321,20 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		setupRequired = !hasUser
 	}
 
-	// Only emit a worker_hub_url when the hub has no TCP listener (e.g.
-	// the desktop app's NoTCP mode). With TCP enabled, the browser's
-	// window.location.origin is already the right value — and in
-	// reverse-proxied deployments it's *more* correct than what the hub
-	// could reconstruct from cfg.Addr. With TCP disabled, the browser
-	// origin in Tauri is `tauri://localhost`, which is unusable; the
-	// only viable URL is the local unix-socket / named-pipe address.
+	// Decide what URL workers should target. Precedence:
+	//   1. An explicit --public-url wins (admin's canonical external URL,
+	//      typically used when the hub is behind a reverse proxy).
+	//   2. If TCP is disabled (desktop's NoTCP mode), the browser origin is
+	//      `tauri://localhost`, which is unusable; emit the local unix-socket
+	//      / named-pipe address so workers can dial the hub locally.
+	//   3. Otherwise leave it empty — the frontend falls back to
+	//      window.location.origin, which already reflects whatever proxy or
+	//      hostname the user is connecting through.
 	var workerHubURL string
-	if s.cfg.Addr == "" {
+	switch {
+	case s.cfg.PublicURL != "":
+		workerHubURL = s.cfg.PublicURL
+	case s.cfg.Listen == "":
 		if u, err := s.cfg.LocalListenURL(); err == nil {
 			workerHubURL = u
 		}

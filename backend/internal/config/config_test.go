@@ -19,13 +19,13 @@ func TestExtractConfigFlag(t *testing.T) {
 	}{
 		{
 			name:     "no flag uses default",
-			args:     []string{"-addr", ":9999"},
+			args:     []string{"-listen", ":9999"},
 			def:      "/default/path.yaml",
 			expected: "/default/path.yaml",
 		},
 		{
 			name:     "-config with space",
-			args:     []string{"-config", "/custom/path.yaml", "-addr", ":9999"},
+			args:     []string{"-config", "/custom/path.yaml", "-listen", ":9999"},
 			def:      "/default/path.yaml",
 			expected: "/custom/path.yaml",
 		},
@@ -49,7 +49,7 @@ func TestExtractConfigFlag(t *testing.T) {
 		},
 		{
 			name:     "-config at end without value uses default",
-			args:     []string{"-addr", ":9999", "-config"},
+			args:     []string{"-listen", ":9999", "-config"},
 			def:      "/default/path.yaml",
 			expected: "/default/path.yaml",
 		},
@@ -72,15 +72,15 @@ func TestExtractConfigFlag(t *testing.T) {
 func TestFlagProvider(t *testing.T) {
 	t.Run("only loads explicitly set flags", func(t *testing.T) {
 		fs := flag.NewFlagSet("test", flag.ContinueOnError)
-		fs.String("addr", ":4327", "listen address")
+		fs.String("listen", ":4327", "listen address")
 		fs.String("data-dir", "/default", "data directory")
 		fs.Int("db-max-conns", 4, "max conns")
 
-		// Only set addr explicitly.
-		require.NoError(t, fs.Parse([]string{"-addr", ":9999"}))
+		// Only set listen explicitly.
+		require.NoError(t, fs.Parse([]string{"-listen", ":9999"}))
 
 		fieldMap := map[string]string{
-			"addr":         "addr",
+			"listen":       "listen",
 			"data-dir":     "data_dir",
 			"db-max-conns": "db_max_conns",
 		}
@@ -89,9 +89,9 @@ func TestFlagProvider(t *testing.T) {
 		m, err := fp.Read()
 		require.NoError(t, err)
 
-		// Only addr should be present.
+		// Only listen should be present.
 		assert.Equal(t, map[string]interface{}{
-			"addr": ":9999",
+			"listen": ":9999",
 		}, m)
 	})
 
@@ -116,13 +116,13 @@ func TestFlagProvider(t *testing.T) {
 
 	t.Run("ignores flags not in field map", func(t *testing.T) {
 		fs := flag.NewFlagSet("test", flag.ContinueOnError)
-		fs.String("addr", ":4327", "listen address")
+		fs.String("listen", ":4327", "listen address")
 		fs.Bool("version", false, "show version")
 
-		require.NoError(t, fs.Parse([]string{"-addr", ":9999", "-version"}))
+		require.NoError(t, fs.Parse([]string{"-listen", ":9999", "-version"}))
 
 		fieldMap := map[string]string{
-			"addr": "addr",
+			"listen": "listen",
 			// version not in map
 		}
 
@@ -131,7 +131,7 @@ func TestFlagProvider(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, map[string]interface{}{
-			"addr": ":9999",
+			"listen": ":9999",
 		}, m)
 	})
 }

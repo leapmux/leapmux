@@ -79,9 +79,9 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// instances (e.g. solo + CLI) fail fast on port conflict without
 	// a TOCTOU window.
 	var tcpLn net.Listener
-	if cfg.Addr != "" {
+	if cfg.Listen != "" {
 		var listenErr error
-		tcpLn, listenErr = net.Listen("tcp", cfg.Addr)
+		tcpLn, listenErr = net.Listen("tcp", cfg.Listen)
 		if listenErr != nil {
 			return nil, fmt.Errorf("listen tcp: %w", listenErr)
 		}
@@ -371,7 +371,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	go func() { errCh <- s.server.Serve(localLn) }()
 
 	if tcpLn != nil {
-		slog.Info("hub listening", "addr", s.cfg.Addr, "local", listenURL)
+		slog.Info("hub listening", "listen", s.cfg.Listen, "local", listenURL)
 	} else {
 		slog.Info("hub listening", "local", listenURL)
 	}

@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ import (
 )
 
 const (
-	defaultAddr       = ":4327"
+	defaultListen     = ":4327"
 	defaultConfigDir  = "~/.config/leapmux/hub"
 	defaultConfigFile = "~/.config/leapmux/hub/hub.yaml"
 	defaultLogLevel   = "info"
@@ -31,8 +32,9 @@ const (
 
 // Config holds the hub's runtime configuration.
 type Config struct {
-	Addr                         string        `koanf:"addr"`
+	Listen                       string        `koanf:"listen"`
 	LocalListen                  string        `koanf:"local_listen"`
+	PublicURL                    string        `koanf:"public_url"`
 	DataDir                      string        `koanf:"data_dir"`
 	DevFrontend                  string        `koanf:"dev_frontend"`
 	MaxMessageSize               int           `koanf:"max_message_size"`
@@ -152,7 +154,7 @@ type ExtraFlagDef struct {
 
 // LoadOptions parameterizes differences between hub and solo/dev mode config loading.
 type LoadOptions struct {
-	DefaultAddr       string         // default listen address (hub: ":4327", solo: "127.0.0.1:4327")
+	DefaultListen     string         // default TCP listen address (hub: ":4327", solo: "127.0.0.1:4327")
 	DefaultConfigDir  string         // for data_dir resolution (e.g. "~/.config/leapmux/solo")
 	DefaultConfigFile string         // default config file path
 	FlagSetName       string         // flag.NewFlagSet name ("hub" vs "leapmux")
@@ -170,9 +172,9 @@ func Load(args []string) (*Config, bool, error) {
 // LoadWithOptions parses hub configuration with customizable options.
 // Zero-value LoadOptions fields fall back to hub defaults.
 func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
-	addr := opts.DefaultAddr
-	if addr == "" {
-		addr = defaultAddr
+	listen := opts.DefaultListen
+	if listen == "" {
+		listen = defaultListen
 	}
 	configDir := opts.DefaultConfigDir
 	if configDir == "" {
@@ -236,8 +238,9 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 
 	allFlags := []flagDef{
-		{"addr", "addr", "listen address", ptrconv.Ptr(addr), nil, nil},
+		{"listen", "listen", "TCP listen address (e.g. ':4327' or '127.0.0.1:4327')", ptrconv.Ptr(listen), nil, nil},
 		{"local-listen", "local_listen", "local IPC listen URL (unix:<path> or npipe:<name>); platform default used if empty", ptrconv.Ptr(""), nil, nil},
+		{"public-url", "public_url", "public base URL when running behind a reverse proxy (e.g. 'https://hub.example.com')", ptrconv.Ptr(""), nil, nil},
 		{"data-dir", "data_dir", "data directory", ptrconv.Ptr("."), nil, nil},
 		{"dev-frontend", "dev_frontend", "Vite dev server URL for reverse proxy (dev mode only)", ptrconv.Ptr(""), nil, nil},
 		{"max-message-size", "max_message_size", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, ptrconv.Ptr(0), nil},
@@ -347,9 +350,25 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		}
 	}
 
+	// Canonicalize and validate --public-url. Sub-path proxying isn't supported
+	// elsewhere in the codebase yet, so reject anything beyond scheme + host.
+	if cfg.PublicURL != "" {
+		canon, err := normalizePublicURL(cfg.PublicURL)
+		if err != nil {
+			return nil, false, err
+		}
+		cfg.PublicURL = canon
+	}
+
 	// Resolve relative data_dir against config file directory.
 	cfg.DataDir = internalconfig.ResolveDataDir(cfg.DataDir, configPath, configDir)
 	cfg.SoloMode = opts.SoloMode
+
+	// Solo mode does not support a public URL: there's no proxy in front of it,
+	// and exposing the option would just create surprising failure modes.
+	if cfg.SoloMode && cfg.PublicURL != "" {
+		return nil, false, fmt.Errorf("public_url is not supported in solo mode")
+	}
 
 	// Populate extra flag values.
 	if len(opts.ExtraFlags) > 0 {
@@ -364,6 +383,20 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 
 // Validate checks the configuration values and ensures required directories exist.
 func (c *Config) Validate() error {
+	// Re-canonicalize PublicURL so programmatic config construction (e.g. tests
+	// instantiating &Config{PublicURL: ...} directly) hits the same gate as
+	// LoadWithOptions. No-op when Load already canonicalized it.
+	if c.PublicURL != "" {
+		canon, err := normalizePublicURL(c.PublicURL)
+		if err != nil {
+			return err
+		}
+		c.PublicURL = canon
+	}
+	if c.SoloMode && c.PublicURL != "" {
+		return fmt.Errorf("public_url is not supported in solo mode")
+	}
+
 	// Ensure data dir exists.
 	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
@@ -437,18 +470,57 @@ func (c *Config) EncryptionKeyFilePath() string {
 	return filepath.Join(c.DataDir, "encryption.key")
 }
 
-// BaseURL returns the scheme+host base URL derived from Addr and SecureCookies.
-// A bare ":port" address is resolved to "localhost:port".
+// BaseURL returns the public base URL of the hub. When PublicURL is set
+// (typically because the hub is fronted by a reverse proxy) it wins; otherwise
+// the URL is derived from Listen + SecureCookies, with a bare ":port" address
+// resolved to "localhost:port".
 func (c *Config) BaseURL() string {
+	if c.PublicURL != "" {
+		return c.PublicURL
+	}
 	scheme := "http"
 	if c.SecureCookies {
 		scheme = "https"
 	}
-	host := c.Addr
+	host := c.Listen
 	if strings.HasPrefix(host, ":") {
 		host = "localhost" + host
 	}
 	return scheme + "://" + host
+}
+
+// normalizePublicURL trims one trailing slash from raw, then validates the
+// result is an absolute http(s) URL with a non-empty host and no userinfo,
+// path, query, or fragment. Returns the canonical (slash-trimmed) string.
+//
+// Sub-path deployments (e.g. "https://example.com/leapmux") are deliberately
+// rejected — the rest of the codebase concatenates this URL with a leading
+// slash and does not yet support a base path.
+func normalizePublicURL(raw string) (string, error) {
+	trimmed := strings.TrimSuffix(raw, "/")
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid public_url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid public_url: scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("invalid public_url: host is required")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("invalid public_url: userinfo is not allowed")
+	}
+	if u.Path != "" {
+		return "", fmt.Errorf("invalid public_url: path is not allowed (sub-path deployments are not supported)")
+	}
+	if u.RawQuery != "" || u.ForceQuery {
+		return "", fmt.Errorf("invalid public_url: query is not allowed")
+	}
+	if u.Fragment != "" {
+		return "", fmt.Errorf("invalid public_url: fragment is not allowed")
+	}
+	return trimmed, nil
 }
 
 // LocalListenURL returns the local IPC listen URL the hub should bind.

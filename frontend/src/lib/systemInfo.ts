@@ -63,12 +63,12 @@ export function isSetupRequired(): boolean {
 }
 
 // getWorkerHubUrl returns the URL workers should target when registering.
-// Empty when the hub serves a TCP listener — the caller should fall back to
-// `window.location.origin`, which already reflects the public-facing URL the
-// user is connecting through (including any reverse proxy). The backend
-// only fills this in when TCP is disabled (desktop app's local-only mode),
-// in which case it returns the unix-socket / named-pipe URL of the hub's
-// local listener.
+// Populated when the hub has an explicit --public-url configured (e.g. behind
+// a reverse proxy) or when TCP is disabled (desktop app's local-only mode,
+// where the browser origin resolves to `tauri://localhost` and the only
+// viable URL is the unix-socket / named-pipe address). Empty otherwise — the
+// caller should fall back to `window.location.origin`, which already reflects
+// the public-facing URL the user is connecting through.
 export function getWorkerHubUrl(): string {
   return workerHubUrl
 }

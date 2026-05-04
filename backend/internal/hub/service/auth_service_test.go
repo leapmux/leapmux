@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -935,6 +936,45 @@ func TestGetSystemInfo_DevModeReportsSetupRequired(t *testing.T) {
 	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err)
 	assert.True(t, resp.Msg.GetSetupRequired(), "dev mode with empty DB should require setup")
+}
+
+func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
+	t.Run("PublicURL wins over Listen", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.Listen = ":4327"
+		cfg.PublicURL = "https://hub.example.com"
+
+		client, _ := setupEmptyAuthTestServer(t, cfg)
+
+		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		require.NoError(t, err)
+		assert.Equal(t, "https://hub.example.com", resp.Msg.GetWorkerHubUrl())
+	})
+
+	t.Run("empty Listen and no PublicURL falls back to LocalListen", func(t *testing.T) {
+		// NoTCP/desktop scenario: empty Listen, no PublicURL → local socket URL.
+		cfg := testConfig()
+		cfg.Listen = ""
+		cfg.LocalListen = "unix:" + filepath.Join(t.TempDir(), "hub.sock")
+
+		client, _ := setupEmptyAuthTestServer(t, cfg)
+
+		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		require.NoError(t, err)
+		assert.Equal(t, cfg.LocalListen, resp.Msg.GetWorkerHubUrl())
+	})
+
+	t.Run("TCP enabled and no PublicURL leaves WorkerHubUrl empty", func(t *testing.T) {
+		// Frontend then falls back to window.location.origin.
+		cfg := testConfig()
+		cfg.Listen = ":4327"
+
+		client, _ := setupEmptyAuthTestServer(t, cfg)
+
+		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		require.NoError(t, err)
+		assert.Empty(t, resp.Msg.GetWorkerHubUrl())
+	})
 }
 
 func TestSignUp_RejectsSoloAlways(t *testing.T) {
