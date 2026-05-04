@@ -115,3 +115,57 @@ describe('claude Bash success hides the success status row', () => {
     expect(container.textContent ?? '').not.toContain('Success')
   })
 })
+
+describe('command result with empty output shows a hint with duration/exit', () => {
+  it('codex commandExecution: empty aggregatedOutput renders [no output] · duration · exit', () => {
+    const { container } = renderCodexItem({
+      type: 'commandExecution',
+      command: 'bun eslint src',
+      aggregatedOutput: null,
+      exitCode: 0,
+      durationMs: 994,
+      status: 'completed',
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('[no output]')
+    expect(text).toContain('994ms')
+    expect(text).toContain('exit 0')
+  })
+
+  it('codex commandExecution: empty output without duration omits the duration part', () => {
+    const { container } = renderCodexItem({
+      type: 'commandExecution',
+      command: 'true',
+      aggregatedOutput: '',
+      exitCode: 0,
+      status: 'completed',
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('[no output]')
+    expect(text).toContain('exit 0')
+    expect(text).not.toContain('ms')
+  })
+
+  it('codex commandExecution: non-empty output does not render [no output]', () => {
+    const { container } = renderCodexItem({
+      type: 'commandExecution',
+      command: 'echo hi',
+      aggregatedOutput: 'hi',
+      exitCode: 0,
+      durationMs: 12,
+      status: 'completed',
+    })
+    const text = container.textContent ?? ''
+    expect(text).not.toContain('[no output]')
+    expect(text).toContain('hi')
+  })
+
+  it('claude Bash: empty stdout renders [no output] hint', () => {
+    const parsed = makeBashResult({
+      tool_name: 'Bash',
+      stdout: '',
+    }, '')
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Bash' })
+    expect(container.textContent ?? '').toContain('[no output]')
+  })
+})

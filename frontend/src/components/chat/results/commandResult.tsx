@@ -4,8 +4,9 @@ import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import { createMemo, Show } from 'solid-js'
 import { getToolResultExpanded } from '../messageRenderers'
+import { formatDuration, joinMetaParts } from '../rendererUtils'
 import { stripLeadingBlankLines } from '../toolRenderers'
-import { toolMessage } from '../toolStyles.css'
+import { toolInputSummary, toolMessage } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ToolStatusHeader } from './ToolStatusHeader'
 import { useCollapsedLines } from './useCollapsedLines'
@@ -70,8 +71,27 @@ export function CommandResultBody(props: {
   const statusLabel = () => commandStatusLabel(props.source)
   const showStatusHeader = () => statusLabel() !== 'Success'
 
+  // When the command produced no output, surface a "[no output]" placeholder
+  // alongside whatever metadata we have (duration, exit code). Without this
+  // the bubble is a visually-empty <div> for any successful command that
+  // wrote nothing to stdout/stderr.
+  const emptyOutputHint = createMemo(() => {
+    if (normalized())
+      return null
+    const dur = props.source.durationMs
+    const exit = props.source.exitCode
+    return joinMetaParts([
+      '[no output]',
+      typeof dur === 'number' && formatDuration(dur),
+      typeof exit === 'number' && `exit ${exit}`,
+    ])
+  })
+
   const content = () => (
-    <Show when={normalized()}>
+    <Show
+      when={normalized()}
+      fallback={<Show when={emptyOutputHint()}>{hint => <div class={toolInputSummary}>{hint()}</div>}</Show>}
+    >
       <CollapsibleContent kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} />
     </Show>
   )
