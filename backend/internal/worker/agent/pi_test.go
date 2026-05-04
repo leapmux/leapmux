@@ -150,10 +150,16 @@ func newPiTestRig(t *testing.T, sink OutputSink) *piTestRig {
 
 	rig.cleanup = func() {
 		cancel()
-		_ = stdinReader.Close()
+		// Close the write ends first. On Windows, os.Pipe is backed by a
+		// synchronous anonymous pipe whose pending ReadFile cannot be
+		// canceled by closing the read handle — File.Close would block in
+		// runtime_Semacquire waiting for the read to drain. Closing the
+		// write end first makes the read return EOF, the scanner loop
+		// exit, and the subsequent read-end close complete promptly.
 		_ = stdinWriter.Close()
-		_ = stdoutReader.Close()
 		_ = stdoutWriter.Close()
+		_ = stdinReader.Close()
+		_ = stdoutReader.Close()
 	}
 	t.Cleanup(rig.cleanup)
 	return rig
