@@ -950,15 +950,17 @@ func (s *agentOutputSink) BroadcastStatusActive(sessionID string) {
 	})
 }
 
-// BroadcastGitStatus emits a partial AgentStatusChange carrying only the
-// agent id and a freshly-computed git status. Auto-fired by
+// BroadcastGitStatus emits a partial AgentStatusChange carrying the
+// agent id, worker liveness, and a freshly-computed git status. Auto-fired by
 // PersistTurnEnd so the working-tree view stays in sync without
 // provider involvement; providers do not call this directly.
 //
 // The frontend's statusChange handler treats events whose Status is
 // UNSPECIFIED as partial updates and applies only the populated fields,
 // so this avoids re-shipping the full catalog/settings payload that
-// BroadcastStatusActive carries.
+// BroadcastStatusActive carries. WorkerOnline is still set because only
+// a live worker can emit this event; leaving it as the proto default false
+// makes older clients interpret a git refresh as an offline transition.
 func (s *agentOutputSink) BroadcastGitStatus() {
 	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
@@ -967,8 +969,9 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 		return
 	}
 	sc := &leapmuxv1.AgentStatusChange{
-		AgentId:   s.agentID,
-		GitStatus: gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
+		AgentId:      s.agentID,
+		WorkerOnline: true,
+		GitStatus:    gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
 	}
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,

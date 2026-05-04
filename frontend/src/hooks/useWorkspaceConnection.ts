@@ -156,9 +156,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
     // Get or initialize catch-up phase for this agent.
     const catchUpPhase = catchUpPhases.get(agentId) ?? 'live'
+    const markLiveAgentActive = () => {
+      if (catchUpPhase !== 'live')
+        return
+      setWorkerOnline(true)
+      const current = agentStore.getById(agentId)
+      if (current?.status === AgentStatus.INACTIVE) {
+        agentStore.updateAgent(agentId, { status: AgentStatus.ACTIVE })
+      }
+    }
 
     switch (inner.case) {
       case 'agentMessage': {
+        markLiveAgentActive()
         const msg = inner.value
 
         // Single decompress-and-parse pass shared across the metadata,
@@ -348,6 +358,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'streamChunk': {
+        markLiveAgentActive()
         const text = TEXT_DECODER.decode(inner.value.delta)
         if (inner.value.spanId) {
           chatStore.appendCommandStream(
@@ -363,6 +374,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'streamEnd':
+        markLiveAgentActive()
         if (inner.value.spanId)
           chatStore.clearCommandStream(agentId, inner.value.spanId)
         else
@@ -373,12 +385,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       case 'statusChange': {
         const sc = inner.value
-        setWorkerOnline(sc.workerOnline)
+        const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
+        // `workerOnline` is only authoritative on full status snapshots.
+        // Status-less partial updates may carry proto3's default `false`
+        // from older backends or other sparse event producers.
+        if (hasStatus)
+          setWorkerOnline(sc.workerOnline)
 
         // Skip events that carry no status, git, or settings payload — they
         // only surface as catch-up sentinels and would otherwise allocate a
         // full updates object and iterate every reactive reader for a no-op.
-        const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
         const hasPayload = hasStatus
           || sc.gitStatus !== undefined
           || Boolean(sc.permissionMode)
@@ -515,11 +531,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
       case 'controlRequest': {
         const cr = inner.value
+        markLiveAgentActive()
         // During catch-up, the INACTIVE statusChange may have already been
         // processed before this replayed controlRequest arrives. Skip adding
         // the request so the user isn't stuck on an unanswerable prompt.
         const agentEntry = agentStore.getById(cr.agentId)
-        if (agentEntry?.status === AgentStatus.INACTIVE)
+        if (catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)
           break
         const payload = JSON.parse(TEXT_DECODER.decode(cr.payload))
         controlStore.addRequest(cr.agentId, {

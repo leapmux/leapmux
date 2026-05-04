@@ -89,10 +89,11 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 
 // TestBroadcastGitStatus_EmitsPartialStatusChange verifies that
 // BroadcastGitStatus produces exactly one AgentStatusChange with
-// Status=UNSPECIFIED (so the frontend treats other fields as
-// "no change") and only AgentId + GitStatus populated. This is the
-// contract that lets per-turn callers refresh git state without
-// re-shipping the full settings/catalog payload.
+// Status=UNSPECIFIED (so the frontend treats status/settings as
+// "no change") with AgentId, WorkerOnline, and GitStatus populated. This
+// is the contract that lets per-turn callers refresh git state without
+// re-shipping the full settings/catalog payload while still making the
+// worker liveness bit truthful for older clients.
 func TestBroadcastGitStatus_EmitsPartialStatusChange(t *testing.T) {
 	sink, mock := newGitStatusFixture(t)
 
@@ -111,7 +112,7 @@ func TestBroadcastGitStatus_EmitsPartialStatusChange(t *testing.T) {
 	assert.Empty(t, sc.GetEffort(), "Effort must not be repopulated on a git-status refresh")
 	assert.Empty(t, sc.GetPermissionMode(), "PermissionMode must not be repopulated on a git-status refresh")
 	assert.Empty(t, sc.GetAgentSessionId(), "AgentSessionId must not be repopulated on a git-status refresh")
-	assert.False(t, sc.GetWorkerOnline(), "WorkerOnline must remain default-false; statusChange handler treats UNSPECIFIED status as a partial update")
+	assert.True(t, sc.GetWorkerOnline(), "WorkerOnline must stay truthful; a git-status refresh is emitted by a live worker")
 	assert.Empty(t, sc.GetAvailableModels(), "AvailableModels must not be re-shipped")
 	assert.Empty(t, sc.GetAvailableOptionGroups(), "AvailableOptionGroups must not be re-shipped")
 	assert.Empty(t, sc.GetExtraSettings(), "ExtraSettings must not be re-shipped")

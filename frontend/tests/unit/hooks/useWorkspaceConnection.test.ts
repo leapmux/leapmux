@@ -14,7 +14,9 @@ import { createTabStore } from '~/stores/tab.store'
  * These tests verify the control-request guard in useWorkspaceConnection's
  * handleAgentEvent. Because handleAgentEvent is a closure that depends on
  * gRPC streams, we simulate its logic with real stores to verify the
- * invariant: control requests must not be added for INACTIVE agents.
+ * invariant: replayed catch-up control requests must not be added for
+ * INACTIVE agents, but live control requests are proof that a stale
+ * INACTIVE status should be corrected.
  */
 describe('controlRequest guard for inactive agents', () => {
   function makeAgent(id: string, status: AgentStatus) {
@@ -25,7 +27,7 @@ describe('controlRequest guard for inactive agents', () => {
     return { requestId, agentId, payload: { method: 'item/commandExecution/requestApproval' } }
   }
 
-  it('should not add control request when agent is INACTIVE', () => {
+  it('should not add catch-up control request when agent is INACTIVE', () => {
     createRoot((dispose) => {
       const agentStore = createAgentStore()
       const controlStore = createControlStore()
@@ -33,14 +35,39 @@ describe('controlRequest guard for inactive agents', () => {
       agentStore.addAgent(makeAgent('agent-1', AgentStatus.INACTIVE))
 
       // Simulate the guard in useWorkspaceConnection's controlRequest handler:
+      // if (catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE) break
+      const catchUpPhase = 'catchingUp'
       // const agentEntry = agentStore.state.agents.find(a => a.id === cr.agentId)
-      // if (agentEntry?.status === AgentStatus.INACTIVE) break
       const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
-      if (agentEntry?.status !== AgentStatus.INACTIVE) {
+      if (!(catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  it('should revive stale INACTIVE state and add live control request', () => {
+    createRoot((dispose) => {
+      const agentStore = createAgentStore()
+      const controlStore = createControlStore()
+
+      agentStore.addAgent(makeAgent('agent-1', AgentStatus.INACTIVE))
+
+      const catchUpPhase = 'live'
+      if (catchUpPhase === 'live') {
+        const current = agentStore.getById('agent-1')
+        if (current?.status === AgentStatus.INACTIVE)
+          agentStore.updateAgent('agent-1', { status: AgentStatus.ACTIVE })
+      }
+      const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
+      if (!(catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)) {
+        controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
+      }
+
+      expect(agentStore.getById('agent-1')?.status).toBe(AgentStatus.ACTIVE)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
       dispose()
     })
   })
@@ -52,8 +79,9 @@ describe('controlRequest guard for inactive agents', () => {
 
       agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
 
+      const catchUpPhase = 'catchingUp'
       const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
-      if (agentEntry?.status !== AgentStatus.INACTIVE) {
+      if (!(catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
@@ -119,9 +147,11 @@ describe('controlRequest guard for inactive agents', () => {
       expect(controlStore.getRequests('agent-1')).toHaveLength(0)
 
       // A replayed controlRequest for the now-INACTIVE agent must be skipped
-      // (guard at useWorkspaceConnection line 351).
+      // by the controlRequest-case guard in useWorkspaceConnection: catch-up
+      // replay + INACTIVE → break.
+      const catchUpPhase = 'catchingUp'
       const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
-      if (agentEntry?.status !== AgentStatus.INACTIVE) {
+      if (!(catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
@@ -557,6 +587,31 @@ describe('startupMessage handling in agent statusChange', () => {
       expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Checking Git status…')
       dispose()
     })
+  })
+})
+
+describe('workerOnline handling in agent statusChange', () => {
+  it('ignores workerOnline=false from status-less git-only updates', () => {
+    let workerOnline = true
+    const applyStatusChange = (sc: { status: AgentStatus, workerOnline: boolean, gitStatus?: unknown }) => {
+      const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
+      if (hasStatus)
+        workerOnline = sc.workerOnline
+      return hasStatus || sc.gitStatus !== undefined
+    }
+
+    expect(applyStatusChange({
+      status: AgentStatus.UNSPECIFIED,
+      workerOnline: false,
+      gitStatus: {},
+    })).toBe(true)
+    expect(workerOnline).toBe(true)
+
+    expect(applyStatusChange({
+      status: AgentStatus.INACTIVE,
+      workerOnline: true,
+    })).toBe(true)
+    expect(workerOnline).toBe(true)
   })
 })
 
