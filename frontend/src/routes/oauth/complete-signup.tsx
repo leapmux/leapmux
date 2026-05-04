@@ -77,7 +77,17 @@ const OAuthCompleteSignupPage: Component = () => {
         displayName: sanitizedDisplayName,
       })
       auth.setAuth(resp.user!)
-      navigate(`/o/${slug}`, { replace: true })
+      // OAuth signup mirrors the SignUp flow: when the provider returned
+      // an unverified email and verification is enabled, send the user
+      // to /verify-email so they can paste the code (or click through).
+      // The session was created server-side, so the authenticated
+      // VerifyEmail RPC is reachable from there.
+      if (resp.verificationRequired) {
+        navigate('/verify-email', { replace: true })
+      }
+      else {
+        navigate(`/o/${slug}`, { replace: true })
+      }
     }
     catch (e) {
       setError(e instanceof Error ? e.message : 'Sign up failed')

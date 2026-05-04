@@ -14,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -53,7 +54,7 @@ func setupOrgTestServer(t *testing.T) *orgTestEnv {
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, opts)
 	mux.Handle(orgPath, orgHandler)
 
-	authSvc := service.NewAuthService(st, cfg, nil, nil)
+	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender())
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 

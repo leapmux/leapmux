@@ -10,8 +10,19 @@ service UserService {
   rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
   // Request an email address change. May require verification.
   rpc RequestEmailChange(RequestEmailChangeRequest) returns (RequestEmailChangeResponse);
-  // Verify a pending email change with a verification token.
-  rpc VerifyEmailChange(VerifyEmailChangeRequest) returns (VerifyEmailChangeResponse);
+  // Verify a pending email — the same RPC handles both signup verification
+  // and email-change verification. Authenticated; the session user must own
+  // the pending email row identified by `verification_token`. The token is
+  // the 6-character display code (with or without hyphen) the user
+  // received in their verification email.
+  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
+  // Re-issue the verification email for the current user's pending
+  // address. Authenticated; requires a pending verification to exist
+  // (FailedPrecondition otherwise). The previous code is invalidated —
+  // a fresh 6-character code with a new 30-minute TTL replaces it. Use
+  // this when the original mail was lost / never arrived, or when
+  // SignUpResponse.verification_email_sent came back false.
+  rpc ResendVerificationEmail(ResendVerificationEmailRequest) returns (ResendVerificationEmailResponse);
   // Change the current user's password. When password_set is false (OAuth-only
   // users), current_password may be empty.
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
@@ -47,12 +58,21 @@ message RequestEmailChangeResponse {
   bool verification_required = 1;
 }
 
-message VerifyEmailChangeRequest {
+message VerifyEmailRequest {
   string verification_token = 1;
 }
 
-message VerifyEmailChangeResponse {
+message VerifyEmailResponse {
   User user = 1;
+}
+
+message ResendVerificationEmailRequest {}
+
+message ResendVerificationEmailResponse {
+  // True iff the verification email was successfully dispatched. False
+  // means the row was refreshed but the mail backend failed; the
+  // frontend should surface a "couldn't send, try again" message.
+  bool email_sent = 1;
 }
 
 message ChangePasswordRequest {

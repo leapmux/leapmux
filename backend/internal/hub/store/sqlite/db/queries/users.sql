@@ -92,20 +92,31 @@ SELECT count(*) FROM users WHERE deleted_at IS NULL;
 SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1);
 
 -- name: SetPendingEmail :exec
-UPDATE users SET pending_email = ?, pending_email_token = ?, pending_email_expires_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET pending_email = ?, pending_email_token = ?, pending_email_expires_at = ?, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
 -- name: ClearPendingEmail :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
 -- name: PromotePendingEmail :exec
-UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ? AND pending_email != '';
 
--- name: GetUserByPendingEmailToken :one
-SELECT * FROM users WHERE pending_email_token = ? AND pending_email_token != '' AND deleted_at IS NULL;
+-- name: ConsumeVerificationAttempt :one
+UPDATE users
+SET pending_email_attempts = pending_email_attempts + 1,
+    pending_email_expires_at = CASE
+        WHEN pending_email_attempts + 1 > 5 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        ELSE pending_email_expires_at END,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ? AND pending_email_token != ''
+RETURNING *;
 
 -- name: ClearCompetingPendingEmails :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE pending_email = ? AND id != ?;
+
+-- name: ClearStalePendingEmails :execresult
+UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < ?;

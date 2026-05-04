@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -314,7 +315,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	// Register AuthService ConnectRPC routes.
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, nil, ks)
+	authSvc := service.NewAuthService(st, cfg, nil, ks, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 

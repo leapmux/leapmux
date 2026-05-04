@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -151,7 +152,9 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	mux := http.NewServeMux()
 
-	authSvc := service.NewAuthService(st, cfg, sessionCache, ks)
+	mailSender := mail.NewStubSender()
+
+	authSvc := service.NewAuthService(st, cfg, sessionCache, ks, mailSender)
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
@@ -161,7 +164,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, shutdownCh)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, cfg.SoloMode)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -181,7 +184,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
-	userSvc := service.NewUserService(st, cfg, sessionCache)
+	userSvc := service.NewUserService(st, cfg, sessionCache, mailSender)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
@@ -247,8 +250,17 @@ type WorkerCredentials struct {
 }
 
 // RegisterWorker creates a worker record directly in the database,
-// bypassing the normal registration flow. This is used by the solo/dev
-// binary to auto-register a local worker.
+// bypassing the normal registration-key flow. This is the in-process
+// path used by the solo/dev binary to auto-register a co-located worker:
+// since the caller is already running inside the same process as the
+// hub, presenting a bearer token to a local RPC would just be
+// security theatre. Outside solo mode, all worker registration must go
+// through WorkerConnectorService.Register with a real registration key.
+//
+// Rows created here are flagged auto_registered so the deregister
+// handler refuses them — re-registration on next launch would just
+// undo the user's action while the running worker process noisily
+// exits with "invalid auth token" in between.
 func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*WorkerCredentials, error) {
 	workerID := id.Generate()
 	authToken := id.Generate()
@@ -260,6 +272,7 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 		PublicKey:       []byte{},
 		MlkemPublicKey:  []byte{},
 		SlhdsaPublicKey: []byte{},
+		AutoRegistered:  true,
 	}); err != nil {
 		return nil, fmt.Errorf("create worker: %w", err)
 	}

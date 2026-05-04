@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -23,6 +24,7 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
 func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
@@ -34,7 +36,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config) (leapmuxv1connect
 	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, sc, nil)
+	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -202,7 +204,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	userSvc := service.NewUserService(st, testConfig(), nil)
+	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -277,7 +279,7 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 		require.NoError(t, err)
 		err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 			PendingEmail:          "shared@example.com",
-			PendingEmailToken:     id.Generate(),
+			PendingEmailToken:     verifycode.Generate(),
 			PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
 			ID:                    userID,
 		})
@@ -339,7 +341,7 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	require.NoError(t, err)
 	err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		PendingEmail:          "race@example.com",
-		PendingEmailToken:     id.Generate(),
+		PendingEmailToken:     verifycode.Generate(),
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(24 * time.Hour).UTC()),
 		ID:                    userAID,
 	})
@@ -410,11 +412,11 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	cfg.SignupEnabled = true
 	cfg.EmailVerificationRequired = emailVerificationRequired
 
-	userSvc := service.NewUserService(st, cfg, nil)
+	userSvc := service.NewUserService(st, cfg, nil, mail.NewStubSender())
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	authSvc := service.NewAuthService(st, cfg, nil, nil)
+	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender())
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -521,18 +523,25 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	// The response should indicate verification was required.
+	// The response should indicate verification was required and that
+	// the (stub) email send succeeded.
 	assert.True(t, resp.Msg.GetVerificationRequired())
+	assert.True(t, resp.Msg.GetVerificationEmailSent())
 	assert.Equal(t, "verifyuser", resp.Msg.GetUser().GetUsername())
 
-	// Because the stub auto-promotes pending_email, the email should end up
-	// in the email column with email_verified=1.
+	// Email stays in the pending column until the user submits the code.
+	// No more stub auto-verify: a real (stub-logged) email was dispatched
+	// and verification waits on UserService.VerifyEmail.
 	user, err := st.Users().GetByUsername(context.Background(), "verifyuser")
 	require.NoError(t, err)
-	assert.Equal(t, "verify@example.com", user.Email)
-	assert.True(t, user.EmailVerified)
-	// pending_email should be cleared after promotion.
-	assert.Empty(t, user.PendingEmail)
+	assert.Empty(t, user.Email)
+	assert.False(t, user.EmailVerified)
+	assert.Equal(t, "verify@example.com", user.PendingEmail)
+	assert.NotEmpty(t, user.PendingEmailToken)
+
+	// Signup must issue a session even when verification is required —
+	// otherwise the user can't authenticate to the verify endpoint.
+	assert.Contains(t, resp.Header().Get("Set-Cookie"), auth.CookieName+"=")
 }
 
 // --- VerifyEmail tests ---
@@ -552,7 +561,7 @@ func setupAuthTestServerWithKeystore(t *testing.T, cfg *config.Config) (leapmuxv
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, nil, nil)
+	authSvc := service.NewAuthService(st, cfg, nil, nil, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -596,61 +605,10 @@ func createTestUserWithPendingEmail(t *testing.T, st store.Store, username, pend
 	return userID
 }
 
-func TestVerifyEmail_PromotesPendingEmail(t *testing.T) {
-	cfg := testConfig()
-	cfg.EmailVerificationRequired = true
-	client, st := setupAuthTestServerWithKeystore(t, cfg)
-
-	verifyToken := id.Generate()
-	userID := createTestUserWithPendingEmail(t, st, "pendinguser", "pending@example.com", verifyToken,
-		ptrTime(time.Now().Add(24*time.Hour).UTC()))
-
-	resp, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
-		VerificationToken: verifyToken,
-	}))
-	require.NoError(t, err)
-
-	// Email should be promoted.
-	assert.Equal(t, "pending@example.com", resp.Msg.GetUser().GetEmail())
-	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
-
-	// Session cookie should be set.
-	setCookie := resp.Header().Get("Set-Cookie")
-	assert.Contains(t, setCookie, auth.CookieName+"=")
-
-	// Verify in DB.
-	user, err := st.Users().GetByID(context.Background(), userID)
-	require.NoError(t, err)
-	assert.Equal(t, "pending@example.com", user.Email)
-	assert.True(t, user.EmailVerified)
-	assert.Empty(t, user.PendingEmail)
-	assert.Empty(t, user.PendingEmailToken)
-}
-
-func TestVerifyEmail_InvalidToken(t *testing.T) {
-	client, _ := setupAuthTestServerWithKeystore(t, testConfig())
-
-	_, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
-		VerificationToken: "nonexistent-token",
-	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
-}
-
-func TestVerifyEmail_ExpiredToken(t *testing.T) {
-	cfg := testConfig()
-	client, st := setupAuthTestServerWithKeystore(t, cfg)
-
-	verifyToken := id.Generate()
-	_ = createTestUserWithPendingEmail(t, st, "expiredverify", "expired@example.com", verifyToken,
-		ptrTime(time.Now().Add(-1*time.Hour).UTC()))
-
-	_, err := client.VerifyEmail(context.Background(), connect.NewRequest(&leapmuxv1.VerifyEmailRequest{
-		VerificationToken: verifyToken,
-	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-}
+// VerifyEmail moved from AuthService to UserService and is now
+// authenticated. The exhaustive coverage lives in user_service_test.go;
+// keeping this file slim avoids accidental drift between two suites
+// testing the same handler.
 
 // --- Verification gating: allowed methods ---
 
@@ -860,7 +818,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, sc, nil)
+	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 

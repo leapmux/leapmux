@@ -23,12 +23,18 @@ type contextKey int
 const userKey contextKey = iota
 
 // UserInfo contains the authenticated user's information.
+//
+// Email and EmailVerified are loaded by ValidateToken from a JOIN on
+// users; they're cached for sessionCacheTTL alongside the rest. Mutating
+// either column on `users` (verify, change, admin reset) requires
+// evicting the user's cached sessions — see SessionCache.EvictByUserID.
 type UserInfo struct {
 	ID            string
 	SessionID     string // session that authenticated this request
 	OrgID         string
 	Username      string
 	IsAdmin       bool
+	Email         string
 	EmailVerified bool
 }
 
@@ -140,6 +146,7 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 		OrgID:         row.OrgID,
 		Username:      row.Username,
 		IsAdmin:       row.IsAdmin,
+		Email:         row.Email,
 		EmailVerified: row.EmailVerified,
 	}, nil
 }

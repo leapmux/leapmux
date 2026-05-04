@@ -8,10 +8,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
-	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
 func setupCreateUserTestDB(t *testing.T) store.Store {
@@ -36,6 +37,7 @@ func createSimpleUser(t *testing.T, st store.Store, username, email string) *sto
 func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
+	sender := mail.NewStubSender()
 
 	// User A has verified email.
 	createSimpleUser(t, st, "user-a", "taken@example.com")
@@ -44,7 +46,7 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 	userB := createSimpleUser(t, st, "user-b", "")
 
 	// User B tries to set pending_email to the already-verified address.
-	err := setPendingEmailWithToken(ctx, st, userB.ID, "taken@example.com")
+	err := issuePendingEmailVerificationOrRollback(ctx, st, sender, userB.ID, "taken@example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already in use")
 
@@ -54,19 +56,23 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 	assert.Empty(t, updated.PendingEmail)
 }
 
-func TestSetPendingEmailWithToken_AllowsUnclaimedEmail(t *testing.T) {
+func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
+	sender := mail.NewStubSender()
 
 	user := createSimpleUser(t, st, "user-a", "")
 
-	err := setPendingEmailWithToken(ctx, st, user.ID, "free@example.com")
+	err := issuePendingEmailVerificationOrRollback(ctx, st, sender, user.ID, "free@example.com")
 	require.NoError(t, err)
 
-	// Stub auto-verifies, so email should be promoted.
+	// The row stays pending until the user submits a code via UserService.VerifyEmail.
 	updated, err := st.Users().GetByID(ctx, user.ID)
 	require.NoError(t, err)
-	assert.Equal(t, "free@example.com", updated.Email)
+	assert.Empty(t, updated.Email)
+	assert.Equal(t, "free@example.com", updated.PendingEmail)
+	assert.Equal(t, verifycode.Length, len(updated.PendingEmailToken))
+	assert.Zero(t, updated.PendingEmailAttempts)
 }
 
 func TestCreateUserWithOrg_ClearsCompetingPendingEmails(t *testing.T) {
@@ -79,7 +85,7 @@ func TestCreateUserWithOrg_ClearsCompetingPendingEmails(t *testing.T) {
 	err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    userA.ID,
 		PendingEmail:          "race@example.com",
-		PendingEmailToken:     id.Generate(),
+		PendingEmailToken:     verifycode.Generate(),
 		PendingEmailExpiresAt: &expiresAt,
 	})
 	require.NoError(t, err)
@@ -111,7 +117,7 @@ func TestSetEmailAndClearCompeting(t *testing.T) {
 	err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    userA.ID,
 		PendingEmail:          "target@example.com",
-		PendingEmailToken:     id.Generate(),
+		PendingEmailToken:     verifycode.Generate(),
 		PendingEmailExpiresAt: &expiresAt,
 	})
 	require.NoError(t, err)

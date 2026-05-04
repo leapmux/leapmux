@@ -12,7 +12,7 @@ describe('hasWorkspaceDesktopChrome', () => {
   it('returns false for non-workspace routes', () => {
     expect(hasWorkspaceDesktopChrome('/login')).toBe(false)
     expect(hasWorkspaceDesktopChrome('/setup')).toBe(false)
-    expect(hasWorkspaceDesktopChrome('/register/token')).toBe(false)
+    expect(hasWorkspaceDesktopChrome('/verify-email')).toBe(false)
     expect(hasWorkspaceDesktopChrome('/oauth/complete-signup')).toBe(false)
     expect(hasWorkspaceDesktopChrome('/o/acme/org')).toBe(false)
     expect(hasWorkspaceDesktopChrome('/unknown')).toBe(false)

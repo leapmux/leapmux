@@ -26,6 +26,7 @@ func fromDBUser(u gendb.User) store.User {
 		PendingEmail:          u.PendingEmail,
 		PendingEmailToken:     u.PendingEmailToken,
 		PendingEmailExpiresAt: ptrconv.NullTimeToPtr(u.PendingEmailExpiresAt),
+		PendingEmailAttempts:  int64(u.PendingEmailAttempts),
 		PasswordSet:           u.PasswordSet,
 		IsAdmin:               u.IsAdmin,
 		Prefs:                 u.Prefs,
@@ -117,8 +118,25 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 	return exists, nil
 }
 
-func (s *userStore) GetByPendingEmailToken(ctx context.Context, token string) (*store.User, error) {
-	u, err := s.conn.q.GetUserByPendingEmailToken(ctx, token)
+// ConsumeVerificationAttempt does the UPDATE then re-reads the row.
+// MySQL has no UPDATE ... RETURNING (Postgres/SQLite do, and skip the
+// follow-up SELECT). The race here is fine: any concurrent attempt
+// going against the same user serializes on the row lock the UPDATE
+// takes, so the SELECT observes the post-increment state we just
+// committed.
+func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string) (*store.User, error) {
+	res, err := s.conn.q.ConsumeVerificationAttempt(ctx, id)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if rows == 0 {
+		return nil, store.ErrNotFound
+	}
+	u, err := s.conn.q.GetUserByID(ctx, id)
 	if err != nil {
 		return nil, mapErr(err)
 	}

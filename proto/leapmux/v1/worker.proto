@@ -1,6 +1,7 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "google/protobuf/timestamp.proto";
 import "leapmux/v1/channel.proto";
 import "leapmux/v1/common.proto";
 import "leapmux/v1/workspace.proto";
@@ -8,60 +9,54 @@ import "leapmux/v1/workspace.proto";
 // WorkerConnectorService is called BY Worker instances on Hub via gRPC.
 // Handles registration and the main bidirectional communication stream.
 service WorkerConnectorService {
-  // Request a unique registration URL/token.
-  rpc RequestRegistration(RequestRegistrationRequest) returns (RequestRegistrationResponse);
-  // Poll until a user approves the registration.
-  rpc PollRegistration(PollRegistrationRequest) returns (PollRegistrationResponse);
+  // Register this worker using a registration key obtained out-of-band
+  // from the hub UI. The key travels in the Authorization: Bearer header
+  // and is consumed atomically; on success the hub returns a long-lived
+  // auth token that the worker uses for subsequent Connect calls.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
   // Main bidirectional stream for lifecycle notifications and E2EE channel management.
   rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
 }
 
 // WorkerManagementService is called BY Frontend on Hub via ConnectRPC.
-// Manages worker registrations and listings.
+// Manages worker registration keys and listings. All RPCs require an
+// authenticated user session.
 service WorkerManagementService {
-  // Approve a pending worker registration.
-  rpc ApproveRegistration(ApproveRegistrationRequest) returns (ApproveRegistrationResponse);
+  // Mint a new registration key. The key expires in 5 minutes and is
+  // automatically extended by the frontend dialog while it stays open.
+  rpc CreateRegistrationKey(CreateRegistrationKeyRequest) returns (CreateRegistrationKeyResponse);
+  // Push a registration key's expires_at out by another 5 minutes. The
+  // hub refuses extensions when more than 2 minutes remain (anti-spam)
+  // and refuses to resurrect already-expired keys.
+  rpc ExtendRegistrationKey(ExtendRegistrationKeyRequest) returns (ExtendRegistrationKeyResponse);
+  // Soft-delete a registration key (sets expires_at into the past). The
+  // dialog calls this on close so the key cannot be used afterwards.
+  rpc DeleteRegistrationKey(DeleteRegistrationKeyRequest) returns (DeleteRegistrationKeyResponse);
+  // Email the registration command to the current user's verified email.
+  rpc EmailRegistrationInstructions(EmailRegistrationInstructionsRequest) returns (EmailRegistrationInstructionsResponse);
   // List registered workers for the user's organization.
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
   // Get a single worker's details.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
   // Deregister a worker (graceful shutdown with notification).
   rpc DeregisterWorker(DeregisterWorkerRequest) returns (DeregisterWorkerResponse);
-  // Get pending registration details (shown on approval page).
-  rpc GetRegistration(GetRegistrationRequest) returns (GetRegistrationResponse);
 }
 
 // --- Registration messages ---
 
-message RequestRegistrationRequest {
+message RegisterRequest {
   string version = 1;
-  bytes public_key = 2;  // Worker's X25519 static public key for E2EE
+  bytes public_key = 2;        // Worker's X25519 static public key for E2EE
   bytes mlkem_public_key = 3;  // Worker's ML-KEM-1024 public key for post-quantum key encapsulation
-  bytes slhdsa_public_key = 4;  // Worker's SLH-DSA-SHAKE-256f public key for post-quantum authentication
+  bytes slhdsa_public_key = 4; // Worker's SLH-DSA-SHAKE-256f public key for post-quantum authentication
 }
 
-message RequestRegistrationResponse {
-  string registration_url = 1;
-  string registration_token = 2;
-}
-
-message PollRegistrationRequest {
-  string registration_token = 1;
-}
-
-message PollRegistrationResponse {
-  RegistrationStatus status = 1;
-  string worker_id = 2;
-  string auth_token = 3;
-  string registered_by = 4; // User ID who approved this worker
-}
-
-enum RegistrationStatus {
-  REGISTRATION_STATUS_UNSPECIFIED = 0;
-  REGISTRATION_STATUS_PENDING = 1;
-  REGISTRATION_STATUS_APPROVED = 2;
-  REGISTRATION_STATUS_REJECTED = 3;
-  REGISTRATION_STATUS_EXPIRED = 4;
+message RegisterResponse {
+  string worker_id = 1;
+  string auth_token = 2;
+  // User ID of the registration key's creator. The worker persists this
+  // alongside auth_token; downstream tunnel authorization needs it.
+  string registered_by = 3;
 }
 
 // WorkerStatus tracks the lifecycle state of a worker.
@@ -86,13 +81,36 @@ enum NotificationStatus {
   NOTIFICATION_STATUS_FAILED = 3;
 }
 
-message ApproveRegistrationRequest {
-  string registration_token = 1;
+message CreateRegistrationKeyRequest {}
+
+message CreateRegistrationKeyResponse {
+  string registration_key = 1;
+  google.protobuf.Timestamp expires_at = 2;
 }
 
-message ApproveRegistrationResponse {
-  string worker_id = 1;
+message ExtendRegistrationKeyRequest {
+  string registration_key = 1;
 }
+
+message ExtendRegistrationKeyResponse {
+  google.protobuf.Timestamp expires_at = 1;
+}
+
+message DeleteRegistrationKeyRequest {
+  string registration_key = 1;
+}
+
+message DeleteRegistrationKeyResponse {}
+
+message EmailRegistrationInstructionsRequest {
+  string registration_key = 1;
+  // Pre-rendered command line built by the frontend. The backend embeds
+  // this into the email body verbatim so the user can copy-paste straight
+  // into a terminal on the worker host.
+  string command = 2;
+}
+
+message EmailRegistrationInstructionsResponse {}
 
 message ListWorkersRequest {
   PageRequest page = 1;
@@ -117,23 +135,18 @@ message DeregisterWorkerRequest {
 
 message DeregisterWorkerResponse {}
 
-message GetRegistrationRequest {
-  string registration_token = 1;
-}
-
-message GetRegistrationResponse {
-  string registration_token = 1;
-  string version = 2;
-  RegistrationStatus status = 3;
-  string public_key_fingerprint = 4;
-}
-
 message Worker {
   string id = 1;
   bool online = 2;
   string created_at = 3;
   string last_seen_at = 4;
   string registered_by = 5;
+  // True for the in-process worker auto-registered by the solo launcher
+  // (Server.RegisterWorker). The deregister handler refuses these to
+  // keep users from accidentally tearing down the bundled desktop
+  // worker; the frontend hides the Deregister... menu item for the same
+  // reason.
+  bool auto_registered = 6;
 }
 
 // --- Bidirectional stream envelope messages ---

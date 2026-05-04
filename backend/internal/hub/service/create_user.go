@@ -2,19 +2,30 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
-const pendingEmailExpiry = 24 * time.Hour
+// pendingEmailExpiry is the lifetime of a freshly issued verification
+// code. 30 minutes is long enough for the recipient to switch to their
+// inbox and back, but short enough that a leaked code becomes useless
+// well before someone could try to brute-force it.
+const pendingEmailExpiry = 30 * time.Minute
+
+// maxVerificationAttempts is the per-code attempt budget. The 6th wrong
+// guess force-expires the code. With a 31-character alphabet this caps
+// the success probability of a remote brute-force at 5/31^6 ≈ 5e-9.
+const maxVerificationAttempts = 5
 
 // CreateUserParams holds the parameters for creating a new user with a
 // personal org and org membership.
@@ -136,27 +147,54 @@ func checkUsernameAvailable(ctx context.Context, st store.Store, username string
 	return nil
 }
 
-// verifyPendingEmailToken validates a pending-email verification token,
-// checks expiry, and promotes the pending email. Returns the updated user.
-func verifyPendingEmailToken(ctx context.Context, st store.Store, token string) (*store.User, error) {
-	if token == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("verification_token is required"))
+// verifyPendingEmailToken validates the verification code submitted by
+// the *session user* against their own pending row. Because the lookup
+// is keyed by the session, no two users can ever collide on the short
+// 6-character code — they each have at most one pending row.
+//
+// Logic:
+//  1. Normalize the input (uppercase, strip hyphens/whitespace). A
+//     malformed shape that can't be charset-checked is rejected as
+//     InvalidArgument; the backend's own charset enforcement is the
+//     source of truth.
+//  2. Atomically charge one attempt and read back the post-update row.
+//     The store helper bumps the counter, force-expires the row when
+//     attempts > maxVerificationAttempts, and returns ErrNotFound when
+//     there's no pending verification at all.
+//  3. Expiry and mismatch collapse into a single NotFound with the
+//     same message — the caller cannot tell which condition failed, so
+//     we don't leak a timing/oracle signal.
+//  4. On match, promote the pending email and return the fresh row.
+func verifyPendingEmailToken(ctx context.Context, st store.Store, userID, submitted string) (*store.User, error) {
+	normalized := verifycode.Normalize(submitted)
+	if normalized == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid verification code"))
 	}
 
-	user, err := st.Users().GetByPendingEmailToken(ctx, token)
+	user, err := st.Users().ConsumeVerificationAttempt(ctx, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid verification token"))
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	if user.PendingEmailExpiresAt != nil && time.Now().UTC().After(*user.PendingEmailExpiresAt) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("verification token expired"))
-	}
-
+	// The store's WHERE filter only checks pending_email_token; an
+	// empty pending_email with a non-empty token shouldn't happen via
+	// the normal SetPendingEmail path but defending here makes the
+	// promotion below safe.
 	if user.PendingEmail == "" {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
+	}
+
+	if int(user.PendingEmailAttempts) > maxVerificationAttempts {
+		return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("too many attempts; request a new code"))
+	}
+
+	expired := user.PendingEmailExpiresAt == nil || !time.Now().UTC().Before(*user.PendingEmailExpiresAt)
+	mismatch := subtle.ConstantTimeCompare([]byte(user.PendingEmailToken), []byte(normalized)) != 1
+	if expired || mismatch {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired verification code"))
 	}
 
 	if err := promotePendingEmail(ctx, st, user.ID, user.PendingEmail); err != nil {
@@ -198,27 +236,53 @@ func ClearCompetingPendingEmails(ctx context.Context, st store.Store, email, own
 	})
 }
 
-// setPendingEmailWithToken sets pending_email with a verification token.
-// It rejects immediately if the email is already verified by another user.
-// Stub: auto-verifies immediately (real email sending TBD).
-func setPendingEmailWithToken(ctx context.Context, st store.Store, userID, email string) error {
+// issuePendingEmailVerification stores a fresh pending_email row and
+// dispatches the verification mail. The token is a 6-character
+// verifycode (stored raw, displayed hyphenated); the mail body carries
+// both the code and a click-through link to /verify-email, which is
+// itself gated by login, so a leaked link alone cannot complete
+// verification.
+//
+// Returns (sent, err): err signals a check or storage failure; sent=false
+// means the row was written but the mail send failed. The row stays in
+// place so signup / OAuth-signup / Resend callers can let the user try
+// again via Resend. Email-change callers should use
+// issuePendingEmailVerificationOrRollback instead.
+func issuePendingEmailVerification(ctx context.Context, st store.Store, sender mail.Sender, userID, email string) (bool, error) {
 	if err := CheckEmailAvailable(ctx, st, email, userID); err != nil {
-		return err
+		return false, err
 	}
-	token := id.Generate()
+	storedCode := verifycode.Generate()
 	expiresAt := time.Now().Add(pendingEmailExpiry).UTC()
 	if err := st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    userID,
 		PendingEmail:          email,
-		PendingEmailToken:     token,
+		PendingEmailToken:     storedCode,
 		PendingEmailExpiresAt: &expiresAt,
 	}); err != nil {
-		return fmt.Errorf("set pending email: %w", err)
+		return false, fmt.Errorf("set pending email: %w", err)
 	}
 
-	// Stub: auto-verify immediately.
-	if err := promotePendingEmail(ctx, st, userID, email); err != nil {
-		slog.Warn("stub auto-verify failed", "user_id", userID, "error", err)
+	link := "/verify-email?code=" + verifycode.Format(storedCode)
+	if err := sender.Send(ctx, mail.RenderVerificationEmail(email, storedCode, link)); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+// issuePendingEmailVerificationOrRollback is like
+// issuePendingEmailVerification but, on send failure, clears the
+// pending_email row before returning the error so the user can retry
+// from a clean slate. Used by the email-change flow where the failure
+// is surfaced to the user inline.
+func issuePendingEmailVerificationOrRollback(ctx context.Context, st store.Store, sender mail.Sender, userID, email string) error {
+	sent, err := issuePendingEmailVerification(ctx, st, sender, userID, email)
+	if err != nil {
+		return err
+	}
+	if !sent {
+		_ = st.Users().ClearPendingEmail(ctx, userID)
+		return fmt.Errorf("send verification email failed")
 	}
 	return nil
 }

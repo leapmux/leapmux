@@ -37,7 +37,11 @@ const (
 
 // Config holds the worker's runtime configuration.
 type Config struct {
-	HubURL                     string `koanf:"hub" json:"hub_url"`
+	HubURL string `koanf:"hub" json:"hub_url"`
+	// RegistrationKey is the bearer credential the worker presents to
+	// WorkerConnectorService.Register. Required on first run; ignored on
+	// subsequent runs if the worker is already registered. Not persisted.
+	RegistrationKey            string `koanf:"registration_key" json:"-"`
 	Name                       string `koanf:"name" json:"name"`
 	DataDir                    string `koanf:"data_dir" json:"data_dir"`
 	DBMaxConns                 int    `koanf:"db_max_conns" json:"db_max_conns"`
@@ -156,6 +160,7 @@ func Load(args []string) (*Config, bool, error) {
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 	fs.String("config", defaultConfigFile, "path to config file")
 	fs.String("hub", defaultHubURL, "Hub server URL (http[s]://..., unix:<socket-path>, or npipe:<pipe-name>)")
+	fs.String("registration-key", "", "registration key from the hub UI (required on first run)")
 	fs.String("name", "", "worker display name (default: hostname)")
 	fs.String("data-dir", ".", "data directory")
 	fs.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
@@ -181,6 +186,7 @@ func Load(args []string) (*Config, bool, error) {
 	// Flag name -> koanf key mapping.
 	fieldMap := map[string]string{
 		"hub":                           "hub",
+		"registration-key":              "registration_key",
 		"name":                          "name",
 		"data-dir":                      "data_dir",
 		"db-max-conns":                  "db_max_conns",
@@ -197,6 +203,7 @@ func Load(args []string) (*Config, bool, error) {
 
 	defaults := map[string]interface{}{
 		"hub":                           defaultHubURL,
+		"registration_key":              "",
 		"name":                          "",
 		"data_dir":                      ".",
 		"db_max_conns":                  sqlitedb.DefaultMaxConns,

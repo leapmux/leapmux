@@ -26,7 +26,7 @@ type mysqlStore struct {
 	workers               workerStore
 	workerAccessGrants    workerAccessGrantStore
 	workerNotifications   workerNotificationStore
-	registrations         registrationStore
+	registrationKeys      registrationKeyStore
 	workspaces            workspaceStore
 	workspaceAccess       workspaceAccessStore
 	workspaceTabs         workspaceTabStore
@@ -138,7 +138,7 @@ func initSubStores(s *mysqlStore) {
 	s.workers = workerStore{conn: s.conn}
 	s.workerAccessGrants = workerAccessGrantStore{conn: s.conn}
 	s.workerNotifications = workerNotificationStore{conn: s.conn}
-	s.registrations = registrationStore{conn: s.conn}
+	s.registrationKeys = registrationKeyStore{conn: s.conn}
 	s.workspaces = workspaceStore{conn: s.conn}
 	s.workspaceAccess = workspaceAccessStore{conn: s.conn}
 	s.workspaceTabs = workspaceTabStore{conn: s.conn}
@@ -162,7 +162,7 @@ func (s *mysqlStore) WorkerAccessGrants() store.WorkerAccessGrantStore { return 
 func (s *mysqlStore) WorkerNotifications() store.WorkerNotificationStore {
 	return &s.workerNotifications
 }
-func (s *mysqlStore) Registrations() store.RegistrationStore         { return &s.registrations }
+func (s *mysqlStore) RegistrationKeys() store.RegistrationKeyStore   { return &s.registrationKeys }
 func (s *mysqlStore) Workspaces() store.WorkspaceStore               { return &s.workspaces }
 func (s *mysqlStore) WorkspaceAccess() store.WorkspaceAccessStore    { return &s.workspaceAccess }
 func (s *mysqlStore) WorkspaceTabs() store.WorkspaceTabStore         { return &s.workspaceTabs }

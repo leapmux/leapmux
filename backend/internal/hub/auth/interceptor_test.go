@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
@@ -33,7 +34,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil)
+	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -106,7 +107,7 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, soloUser, false, false)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{SoloMode: true}, nil, nil)
+	authSvc := service.NewAuthService(st, &config.Config{SoloMode: true}, nil, nil, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -162,7 +163,7 @@ func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthSer
 	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{}, sc, nil)
+	authSvc := service.NewAuthService(st, &config.Config{}, sc, nil, mail.NewStubSender())
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
