@@ -3,10 +3,10 @@ package cleanup
 import (
 	"context"
 	"log/slog"
-	"math/rand/v2"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/periodic"
 )
 
 const (
@@ -17,34 +17,13 @@ const (
 
 // StartLoop starts a background goroutine that periodically hard-deletes
 // soft-deleted records that have been deleted for longer than the
-// retention period. A random jitter of up to 5 minutes is added before
-// each run to avoid contention if multiple instances start simultaneously.
+// retention period. A random jitter of up to cleanupJitter is added
+// before each run to avoid contention if multiple instances start
+// simultaneously.
 func StartLoop(ctx context.Context, st store.Store) {
-	go func() {
-		jitteredRun(ctx, st)
-
-		ticker := time.NewTicker(cleanupInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				jitteredRun(ctx, st)
-			}
-		}
-	}()
-}
-
-func jitteredRun(ctx context.Context, st store.Store) {
-	jitter := time.Duration(rand.Int64N(int64(cleanupJitter)))
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(jitter):
-	}
-	run(ctx, st)
+	periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(ctx context.Context) {
+		run(ctx, st)
+	})
 }
 
 func run(ctx context.Context, st store.Store) {

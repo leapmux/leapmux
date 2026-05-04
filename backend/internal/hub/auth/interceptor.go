@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/periodic"
 )
 
 // publicProcedures lists RPC procedures that do not require a session
@@ -71,7 +72,8 @@ type authInterceptor struct {
 // user; pass nil for normal multi-user auth.
 //
 // The returned SessionCache can be used to evict entries from the in-memory
-// touch throttle (e.g., on logout).
+// touch throttle (e.g., on logout). Call SessionCache.Stop to terminate the
+// background sweep goroutine.
 func NewInterceptor(st store.Store, soloUser *UserInfo, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *SessionCache) {
 	a := &authInterceptor{
 		store:                     st,
@@ -79,8 +81,16 @@ func NewInterceptor(st store.Store, soloUser *UserInfo, secureCookie bool, email
 		emailVerificationRequired: emailVerificationRequired,
 		soloUser:                  soloUser,
 	}
-	sc := &SessionCache{touch: &a.lastTouch, sessions: &a.sessionCache, userSessions: &a.userSessions, stop: make(chan struct{})}
-	go a.sweepCaches(sc.stop)
+	sweepCtx, cancel := context.WithCancel(context.Background())
+	sc := &SessionCache{
+		touch:        &a.lastTouch,
+		sessions:     &a.sessionCache,
+		userSessions: &a.userSessions,
+		cancel:       cancel,
+	}
+	periodic.Start(sweepCtx, periodic.Schedule{Interval: touchSweepInterval, SkipFirstRun: true}, func(context.Context) {
+		a.sweepCachesOnce()
+	})
 	return a, sc
 }
 
@@ -90,7 +100,7 @@ type SessionCache struct {
 	touch        *sync.Map
 	sessions     *sync.Map
 	userSessions *sync.Map // userID → *sync.Map (sessionID → struct{})
-	stop         chan struct{}
+	cancel       context.CancelFunc
 }
 
 // Evict removes a session from all in-memory caches. Call this on logout
@@ -147,13 +157,13 @@ func (c *SessionCache) EvictByUserID(userID string) {
 	})
 }
 
-// Stop terminates the background sweep goroutine. Safe to call multiple times.
+// Stop terminates the background sweep goroutine. Safe to call multiple times
+// and on a nil receiver (matches Evict/EvictByUserID).
 func (c *SessionCache) Stop() {
-	select {
-	case <-c.stop:
-	default:
-		close(c.stop)
+	if c == nil {
+		return
 	}
+	c.cancel()
 }
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -271,36 +281,25 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string) {
 
 const touchSweepInterval = 10 * time.Minute
 
-// sweepCaches periodically removes stale entries from the lastTouch and
-// sessionCache maps. Touch entries older than SessionDuration are removed
-// since those sessions have expired. Session cache entries older than
-// sessionCacheTTL are removed to avoid unbounded growth.
-// The goroutine exits when stop is closed.
-func (a *authInterceptor) sweepCaches(stop <-chan struct{}) {
-	ticker := time.NewTicker(touchSweepInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			now := time.Now()
-			touchCutoff := now.Add(-SessionDuration)
-			a.lastTouch.Range(func(key, value any) bool {
-				if value.(time.Time).Before(touchCutoff) {
-					a.lastTouch.Delete(key)
-				}
-				return true
-			})
-			a.sessionCache.Range(func(key, value any) bool {
-				cached := value.(cachedSession)
-				if now.Sub(cached.cachedAt) > sessionCacheTTL {
-					a.sessionCache.Delete(key)
-					unindexSession(&a.userSessions, cached.user.ID, key.(string))
-				}
-				return true
-			})
+// sweepCachesOnce removes stale entries from the lastTouch and sessionCache
+// maps. Touch entries older than SessionDuration are removed since those
+// sessions have expired. Session cache entries older than sessionCacheTTL
+// are removed to avoid unbounded growth.
+func (a *authInterceptor) sweepCachesOnce() {
+	now := time.Now()
+	touchCutoff := now.Add(-SessionDuration)
+	a.lastTouch.Range(func(key, value any) bool {
+		if value.(time.Time).Before(touchCutoff) {
+			a.lastTouch.Delete(key)
 		}
-	}
+		return true
+	})
+	a.sessionCache.Range(func(key, value any) bool {
+		cached := value.(cachedSession)
+		if now.Sub(cached.cachedAt) > sessionCacheTTL {
+			a.sessionCache.Delete(key)
+			unindexSession(&a.userSessions, cached.user.ID, key.(string))
+		}
+		return true
+	})
 }

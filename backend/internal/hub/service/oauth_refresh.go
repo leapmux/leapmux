@@ -7,26 +7,19 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/periodic"
 )
 
 const tokenRefreshInterval = 1 * time.Minute
 
 // StartTokenRefresh starts a background goroutine that periodically refreshes
 // OAuth tokens that are about to expire. It stops when ctx is cancelled.
+// The first refresh waits for the first interval tick — there is nothing to
+// refresh at startup until tokens have aged.
 func (h *OAuthHandler) StartTokenRefresh(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(tokenRefreshInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				h.refreshExpiringTokens(ctx)
-			}
-		}
-	}()
+	periodic.Start(ctx, periodic.Schedule{Interval: tokenRefreshInterval, SkipFirstRun: true}, func(ctx context.Context) {
+		h.refreshExpiringTokens(ctx)
+	})
 }
 
 func (h *OAuthHandler) refreshExpiringTokens(ctx context.Context) {
