@@ -152,6 +152,45 @@ test.describe('Attachment Support', () => {
     await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
   })
 
+  test('paste image adds attachment when delivered as <img src="blob:..."> in text/html (Linux/WebKitGTK shape)', async ({ page, authenticatedWorkspace }) => {
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // WebKitGTK on Tauri/Linux delivers pasted clipboard images as
+    // text/html containing <img src="blob:...">, with .files empty and
+    // no file-kind entries in .items. The blob URL is minted against the
+    // page origin, so the page can fetch it. Reproduce that shape here.
+    await page.evaluate(() => {
+      // Minimal valid 1×1 PNG (67 bytes).
+      const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=='
+      const bin = atob(pngBase64)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      const blob = new Blob([bytes], { type: 'image/png' })
+      const blobUrl = URL.createObjectURL(blob)
+
+      const html = `<img src="${blobUrl}"/>`
+      const fakeClipboardData = {
+        files: [] as unknown as FileList,
+        items: [] as unknown as DataTransferItemList,
+        types: ['text/html'],
+        getData: (type: string) => (type === 'text/html' ? html : ''),
+      }
+      const event = new Event('paste', { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'clipboardData', { value: fakeClipboardData })
+      document.querySelector('[data-testid="chat-editor"]')!.dispatchEvent(event)
+    })
+
+    // The fetch + onPaste path is async — give it a moment to resolve.
+    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
+
+    // The editor must NOT contain the blob URL — that would mean ProseMirror
+    // processed the HTML before our handler intercepted it.
+    const editorHtml = await editor.innerHTML()
+    expect(editorHtml).not.toContain('blob:')
+  })
+
   test('unsupported file type rejected with toast', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()

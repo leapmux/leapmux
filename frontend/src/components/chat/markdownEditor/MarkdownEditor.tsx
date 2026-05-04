@@ -21,6 +21,35 @@ import * as styles from './MarkdownEditor.css'
 
 export { clearDraft }
 
+function extractPastedImageObjectUrls(html: string): string[] {
+  if (!html.includes('<img'))
+    return []
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const urls: string[] = []
+  for (const img of doc.querySelectorAll('img')) {
+    const src = img.getAttribute('src') ?? ''
+    if (src.startsWith('blob:') || src.startsWith('data:image/'))
+      urls.push(src)
+  }
+  return urls
+}
+
+// useChatAttachments.addFiles renames pasted files via nextPastedImageName,
+// so the synthesized filename here is overwritten — only the MIME matters.
+async function resolvePastedImageObjectUrls(urls: string[]): Promise<File[]> {
+  const settled = await Promise.all(urls.map(async (url) => {
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      return new File([blob], 'pasted-image', { type: blob.type || 'image/png' })
+    }
+    catch {
+      return null
+    }
+  }))
+  return settled.filter((f): f is File => f !== null)
+}
+
 /**
  * Identifies the localStorage draft key. Only one of `key` or
  * (`agentId` + optional `controlRequestId`) needs to be set; if `key` is set
@@ -367,7 +396,23 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         e.preventDefault()
         e.stopPropagation()
         onPaste(files)
+        return
       }
+      // Last resort for WebKitGTK on Tauri/Linux: some clipboard images
+      // arrive only as text/html containing <img src="blob:..."> with no
+      // entries in .files or .items. The blob URL is minted against the
+      // page origin so we can fetch it. We must preventDefault
+      // synchronously to stop ProseMirror from inserting the markdown
+      // image, then resolve the blobs into Files asynchronously.
+      const urls = extractPastedImageObjectUrls(dt.getData('text/html'))
+      if (urls.length === 0)
+        return
+      e.preventDefault()
+      e.stopPropagation()
+      void resolvePastedImageObjectUrls(urls).then((resolved) => {
+        if (resolved.length > 0)
+          onPaste(resolved)
+      })
     }
     const handleDrop = (e: DragEvent) => {
       const onDrop = props.attachments?.onDrop
