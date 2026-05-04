@@ -36,9 +36,11 @@ vi.mock('~/context/AuthContext', () => ({
 
 const mockSoloMode = vi.fn<() => boolean>()
 const mockWorkerHubUrl = vi.fn<() => string>()
+const mockEmailEnabled = vi.fn<() => boolean>()
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockSoloMode(),
   getWorkerHubUrl: () => mockWorkerHubUrl(),
+  isEmailEnabled: () => mockEmailEnabled(),
 }))
 
 // Helpers --------------------------------------------------------------
@@ -72,6 +74,7 @@ beforeEach(() => {
   mockAuthUser.mockReturnValue({ email: 'me@example.com', emailVerified: true })
   mockSoloMode.mockReturnValue(false)
   mockWorkerHubUrl.mockReturnValue('')
+  mockEmailEnabled.mockReturnValue(true)
   mockCreate.mockResolvedValue({
     registrationKey: 'KEY-ABC',
     expiresAt: timestampFromDate(new Date(Date.now() + 5 * 60_000)),
@@ -182,6 +185,18 @@ describe('registerWorkerDialog', () => {
     // A disabled button with a "verify your email" tooltip would be
     // misleading, so the button is omitted from the action row.
     mockSoloMode.mockReturnValue(true)
+    renderDialog()
+
+    await screen.findByTestId('registration-command')
+    expect(screen.queryByTestId('email-registration-instructions')).toBeNull()
+  })
+
+  it('hides the email button when the hub has no SMTP configured', async () => {
+    // Hub mode without smtp_host: the corresponding RPC returns
+    // FailedPrecondition. Surfacing a disabled-on-the-frontend button
+    // would just confuse users — match the solo-mode behavior and omit
+    // the button entirely.
+    mockEmailEnabled.mockReturnValue(false)
     renderDialog()
 
     await screen.findByTestId('registration-command')

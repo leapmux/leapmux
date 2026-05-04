@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -38,11 +39,18 @@ type WorkerManagementService struct {
 	broadcaster *HubEventBroadcaster
 	notifier    *notifier.Notifier
 	mail        mail.Sender
+	renderer    mail.Renderer
+	cfg         *config.Config
 }
 
 // NewWorkerManagementService creates a new WorkerManagementService.
-func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender) *WorkerManagementService {
-	return &WorkerManagementService{store: st, workerMgr: mgr, broadcaster: b, notifier: n, mail: sender}
+//
+// cfg is required so the service can reject EmailRegistrationInstructions
+// when SMTP isn't configured (defense-in-depth — the frontend already
+// hides the button). renderer carries the hub URL used in the
+// registration email's footer.
+func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, cfg *config.Config) *WorkerManagementService {
+	return &WorkerManagementService{store: st, workerMgr: mgr, broadcaster: b, notifier: n, mail: sender, renderer: renderer, cfg: cfg}
 }
 
 func (s *WorkerManagementService) CreateRegistrationKey(
@@ -184,6 +192,15 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("verified email address required to email instructions"))
 	}
 
+	// Defense in depth: reject if SMTP isn't configured. The frontend
+	// hides this button when GetSystemInfo reports email_enabled=false,
+	// but a direct RPC client could still hit us. Returning an explicit
+	// FailedPrecondition is friendlier than the disabledSender's
+	// ErrEmailDisabled bubbling up as a generic Unavailable.
+	if s.cfg == nil || s.cfg.SmtpHost == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("hub is not configured to send email"))
+	}
+
 	// Ownership + liveness checks: never email instructions for a dead
 	// key — the recipient would just be confused.
 	row, err := s.getOwnedKey(ctx, keyID, user.ID)
@@ -194,8 +211,7 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("registration key has expired"))
 	}
 
-	msg := mail.RenderRegistrationInstructions(user.Email, command)
-	if err := s.mail.Send(ctx, msg); err != nil {
+	if err := s.mail.Send(ctx, s.renderer.RegistrationInstructions(user.Email, command)); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("send mail: %w", err))
 	}
 

@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -67,10 +68,18 @@ type regKeyEnv struct {
 
 func setupRegKeyEnv(t *testing.T) *regKeyEnv {
 	t.Helper()
+	return setupRegKeyEnvWithCfg(t, testConfigWithSMTP())
+}
+
+// setupRegKeyEnvWithCfg builds a registration-key test env with a
+// caller-supplied config. Use this when the test cares about
+// email_enabled gating; setupRegKeyEnv (the default) configures SMTP so
+// EmailRegistrationInstructions can run.
+func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
+	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 
-	cfg := testConfig()
 	wMgr := workermgr.New()
 	cMgr := channelmgr.New()
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
@@ -81,7 +90,7 @@ func setupRegKeyEnv(t *testing.T) *regKeyEnv {
 	opts := connect.WithInterceptors(interceptor)
 
 	mailer := &recordingSender{}
-	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender())
+	authSvc := service.NewAuthService(st, cfg, sc, nil, mail.NewStubSender(), mail.Renderer{})
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -90,7 +99,7 @@ func setupRegKeyEnv(t *testing.T) *regKeyEnv {
 	mux.Handle(connectorPath, connectorHandler)
 
 	notif := notifier.New(st, wMgr, pendingReqs, cfg)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, cfg)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -404,6 +413,36 @@ func TestEmailRegistrationInstructions_RequiresVerifiedEmail(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Nil(t, env.mailer.last(), "no mail should be sent without a verified email")
+}
+
+// TestEmailRegistrationInstructions_RejectsWhenSMTPUnconfigured locks
+// in the defense-in-depth precondition: even if a client bypasses the
+// frontend gate (which hides the button when email_enabled=false), the
+// RPC refuses to call the disabled mail backend.
+func TestEmailRegistrationInstructions_RejectsWhenSMTPUnconfigured(t *testing.T) {
+	env := setupRegKeyEnvWithCfg(t, testConfig()) // no SmtpHost set
+	token := env.login(t, "admin", "admin123")
+
+	// Mark the admin's email verified — otherwise the
+	// verified-email check fires first and we couldn't tell which
+	// precondition rejected us.
+	require.NoError(t, env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
+		Email:         "admin@example.com",
+		EmailVerified: true,
+		ID:            env.adminID(t),
+	}))
+
+	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+
+	_, err = env.mgmtClient.EmailRegistrationInstructions(context.Background(), authedReq(&leapmuxv1.EmailRegistrationInstructionsRequest{
+		RegistrationKey: createResp.Msg.GetRegistrationKey(),
+		Command:         "leapmux worker --hub http://x --registration-key abc",
+	}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "not configured to send email")
+	assert.Nil(t, env.mailer.last(), "no mail should be sent when SMTP is unconfigured")
 }
 
 func TestEmailRegistrationInstructions_SendsToVerifiedAddress(t *testing.T) {

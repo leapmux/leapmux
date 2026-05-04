@@ -88,11 +88,14 @@ type UserService struct {
 	cfg          *config.Config
 	sessionCache *auth.SessionCache
 	mail         mail.Sender
+	renderer     mail.Renderer
 }
 
-// NewUserService creates a new UserService.
-func NewUserService(st store.Store, cfg *config.Config, sc *auth.SessionCache, sender mail.Sender) *UserService {
-	return &UserService{store: st, cfg: cfg, sessionCache: sc, mail: sender}
+// NewUserService creates a new UserService. renderer carries the hub's
+// public URL used to build absolute deep-links in the verification
+// emails sent on email-change and resend.
+func NewUserService(st store.Store, cfg *config.Config, sc *auth.SessionCache, sender mail.Sender, renderer mail.Renderer) *UserService {
+	return &UserService{store: st, cfg: cfg, sessionCache: sc, mail: sender, renderer: renderer}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -219,7 +222,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	// Non-admin, verification required: set pending email and dispatch
 	// the verification mail. On send failure the helper rolls back the
 	// row so the user can retry from a clean slate.
-	if err := issuePendingEmailVerificationOrRollback(ctx, s.store, s.mail, user.ID, newEmail); err != nil {
+	if err := issuePendingEmailVerificationOrRollback(ctx, s.store, s.mail, s.renderer, user.ID, newEmail); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
 
@@ -266,7 +269,7 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 		}
 	}
 
-	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, full.ID, full.PendingEmail)
+	sent, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, full.ID, full.PendingEmail)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

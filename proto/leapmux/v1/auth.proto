@@ -101,6 +101,12 @@ message GetSystemInfoResponse {
   // the caller should fall back to window.location.origin, which already
   // reflects whatever proxy or hostname the user is connecting through.
   string worker_hub_url = 10;
+  // True when the hub has SMTP configured (smtp_host non-empty).
+  // Frontend gating: when false, the "Send email" affordance on the
+  // worker registration dialog is hidden — calling
+  // EmailRegistrationInstructions on a hub without SMTP returns
+  // FailedPrecondition, so showing the button would mislead users.
+  bool email_enabled = 11;
 }
 
 message GetOAuthProvidersRequest {}

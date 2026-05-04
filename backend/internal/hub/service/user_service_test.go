@@ -45,7 +45,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender())
+	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender(), mail.Renderer{})
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
@@ -102,7 +102,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender())
+	userSvc := service.NewUserService(st, testConfig(), nil, mail.NewStubSender(), mail.Renderer{})
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
@@ -469,7 +469,7 @@ func setupVerificationUserTestServer(t *testing.T) (leapmuxv1connect.UserService
 	cfg := testConfig()
 	cfg.EmailVerificationRequired = true
 
-	userSvc := service.NewUserService(st, cfg, nil, mail.NewStubSender())
+	userSvc := service.NewUserService(st, cfg, nil, mail.NewStubSender(), mail.Renderer{})
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
@@ -724,7 +724,7 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
 	rec := &recordingSender{}
-	userSvc := service.NewUserService(st, testConfig(), nil, rec)
+	userSvc := service.NewUserService(st, testConfig(), nil, rec, mail.Renderer{})
 
 	mux := http.NewServeMux()
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)

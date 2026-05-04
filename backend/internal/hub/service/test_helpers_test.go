@@ -37,3 +37,16 @@ func testConfigWithSignup() *config.Config {
 	cfg.SignupEnabled = true
 	return cfg
 }
+
+// testConfigWithSMTP returns a Config that looks (to consumers) like the
+// admin configured an SMTP relay. Tests that exercise email-using RPCs
+// like EmailRegistrationInstructions need this so the FailedPrecondition
+// check at the top of the handler doesn't short-circuit them.
+func testConfigWithSMTP() *config.Config {
+	cfg := testConfig()
+	cfg.SmtpHost = "smtp.example.test"
+	cfg.SmtpPort = 587
+	cfg.SmtpFromAddress = "hub@example.test"
+	cfg.SmtpTLSMode = config.SmtpTLSModeSTARTTLS
+	return cfg
+}
