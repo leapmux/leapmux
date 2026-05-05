@@ -63,6 +63,21 @@ type piQueueUpdateEnvelope struct {
 	FollowUp []json.RawMessage `json:"followUp"`
 }
 
+// piAgentEndEnvelope captures the per-message stop info on agent_end so we
+// can inspect the final assistant turn's outcome and decide whether to
+// auto-continue.
+type piAgentEndEnvelope struct {
+	Messages []struct {
+		Role         string `json:"role"`
+		StopReason   string `json:"stopReason"`
+		ErrorMessage string `json:"errorMessage"`
+	} `json:"messages"`
+}
+
+// piRetryableWebSocketError is the exact errorMessage Pi emits for transient
+// WebSocket disconnects that we auto-retry via the auto-continue pipeline.
+const piRetryableWebSocketError = "WebSocket error"
+
 // piDialogMethods is the set of extension UI methods that block waiting for an
 // extension_ui_response. These are surfaced as control requests so the
 // frontend can render a dialog and ship a response back.
@@ -140,6 +155,7 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	// live popover; the stdout read loop must remain free to deliver that RPC
 	// response.
 	a.persistPiAgentEnd(raw, a.currentPiUsageSnapshot())
+	scheduleOrCancelAPIErrorAutoContinue(a.sink, isRetryablePiAgentEndFailure(raw), raw)
 	a.sink.ResetSpans()
 	a.sink.BroadcastSessionInfo(map[string]any{
 		"pi_turn_active": false,
@@ -149,6 +165,23 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 			_, _ = a.refreshPiSessionStats(piSessionStatsTimeout(a.APITimeout()))
 		}()
 	}
+}
+
+func isRetryablePiAgentEndFailure(raw []byte) bool {
+	var env piAgentEndEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return false
+	}
+	// Walk from the end: only the final assistant message reflects the
+	// turn's terminal outcome; earlier assistant entries are intra-turn.
+	for i := len(env.Messages) - 1; i >= 0; i-- {
+		msg := env.Messages[i]
+		if msg.Role != PiRoleAssistant {
+			continue
+		}
+		return msg.StopReason == PiStopReasonError && msg.ErrorMessage == piRetryableWebSocketError
+	}
+	return false
 }
 
 func (a *PiAgent) handlePiMessageEnd(raw []byte) {

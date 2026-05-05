@@ -94,3 +94,13 @@ const PiStreamingBehaviorSteer = "steer"
 // and result envelopes carry an array of typed content blocks; the
 // streaming delta walker concatenates only "text" blocks.
 const PiContentBlockText = "text"
+
+// Pi message roles — the `role` field on entries inside `agent_end.messages`
+// and on `message_end.message`. Only assistant entries carry the terminal
+// stop-reason for a turn.
+const PiRoleAssistant = "assistant"
+
+// Pi assistant stop reasons — the `stopReason` field on the final
+// assistant entry of an `agent_end` envelope. "error" pairs with a
+// non-empty `errorMessage` describing the failure.
+const PiStopReasonError = "error"

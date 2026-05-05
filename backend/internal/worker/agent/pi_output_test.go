@@ -183,6 +183,59 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	assert.Equal(t, float64(200000), usage["context_window"])
 }
 
+func TestHandlePiOutput_AgentEnd_WebSocketErrorSchedulesAutoContinue(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	raw := []byte(`{"type":"agent_end","messages":[{"role":"user"},{"role":"assistant","stopReason":"error","errorMessage":"WebSocket error"}]}`)
+
+	handlePiOutput(a, parseLine(raw))
+
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	schedule := sink.LastAutoSchedule()
+	assert.Equal(t, AutoContinueReasonAPIError, schedule.Reason)
+	assert.False(t, schedule.DueAt.IsZero())
+	assert.JSONEq(t, string(raw), string(schedule.SourcePayload))
+	assert.Equal(t, 0, sink.AutoCancelCount())
+}
+
+func TestHandlePiOutput_AgentEnd_NonRetryableResultCancelsAutoContinue(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	raw := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`)
+
+	handlePiOutput(a, parseLine(raw))
+
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
+	assert.Equal(t, 0, sink.AutoScheduleCount())
+}
+
+func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoContinue(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	raw := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"rate limited"}]}`)
+
+	handlePiOutput(a, parseLine(raw))
+
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
+	assert.Equal(t, 0, sink.AutoScheduleCount())
+}
+
+func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeCancelsAutoContinue(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	// messages is a string instead of an array — the inner unmarshal in
+	// isRetryablePiAgentEndFailure fails, so we fall through to cancel.
+	raw := []byte(`{"type":"agent_end","messages":"unexpected"}`)
+
+	handlePiOutput(a, parseLine(raw))
+
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
+	assert.Equal(t, 0, sink.AutoScheduleCount())
+}
+
 func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)

@@ -417,15 +417,9 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.resetCollabReceivers()
 
 	if turnStatus != "" {
-		if turnStatus == "failed" && (turnErrorInfo == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage)) {
-			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
-				Reason:        AutoContinueReasonAPIError,
-				DueAt:         time.Now().UTC(),
-				SourcePayload: append([]byte(nil), params...),
-			})
-		} else {
-			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
-		}
+		retryable := turnStatus == "failed" &&
+			(turnErrorInfo == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage))
+		scheduleOrCancelAPIErrorAutoContinue(a.sink, retryable, params)
 		if turnStatus == "completed" && collaborationMode == CodexCollaborationPlan && sawPlan && planText != "" {
 			// Persist plan content so initiatePlanExecution can use it.
 			compressed, compression := msgcodec.Compress([]byte(planText))

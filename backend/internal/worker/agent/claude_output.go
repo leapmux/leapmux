@@ -383,16 +383,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	if msgType == claudeMsgTypeResult {
-		// Auto-continue on retryable Claude result errors; reset on normal results.
-		if env.IsError && isRetryableClaudeResultError(env.Result) {
-			a.sink.ScheduleAutoContinue(AutoContinueSchedule{
-				Reason:        AutoContinueReasonAPIError,
-				DueAt:         time.Now().UTC(),
-				SourcePayload: append([]byte(nil), content...),
-			})
-		} else {
-			a.sink.CancelAutoContinue(AutoContinueReasonAPIError)
-		}
+		scheduleOrCancelAPIErrorAutoContinue(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
 
 		// Reset all span tracking so the next turn starts clean.
 		a.sink.ResetSpans()

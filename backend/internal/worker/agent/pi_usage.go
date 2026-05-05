@@ -280,7 +280,7 @@ func (a *PiAgent) augmentPiMessageEnd(raw []byte) []byte {
 	if !ok {
 		return raw
 	}
-	if role, _ := message["role"].(string); role != "assistant" {
+	if role, _ := message["role"].(string); role != PiRoleAssistant {
 		return raw
 	}
 	usageMap, ok := message["usage"].(map[string]any)
