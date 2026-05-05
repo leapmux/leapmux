@@ -1,0 +1,573 @@
+name: Build desktop artifacts
+
+# Reusable build pipeline for the desktop app + CLI server tarballs that get
+# attached to GitHub releases. Called by:
+#   - .github/workflows/ci.yaml      (push to main → prerelease-<ts> release)
+#   - .github/workflows/release.yaml (workflow_dispatch → v<version> release)
+#
+# The macos-sign job is the only place Apple signing/notarization secrets are
+# read. It declares `environment: apple-signing`, whose deployment-branch
+# protection limits secret access to runs targeting `main`. Other jobs do not
+# declare an environment, so they cannot read the Apple secrets.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref (sha or tag) to check out and build from.
+        required: true
+        type: string
+      version:
+        description: Version override (e.g. for tag-triggered runs). Empty → use versions.env.
+        required: false
+        type: string
+        default: ''
+      sign_macos:
+        description: When true, run macos-sign to produce a Developer ID + notarized DMG.
+        required: false
+        type: boolean
+        default: true
+
+env:
+  # Match ci.yaml: keep arduino + bufbuild actions on Node.js 24 until they
+  # ship Node-24 releases. Reusable workflows do not inherit env from the
+  # caller, so this has to be redeclared here.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04${{ matrix.runner_suffix }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner_suffix: ''
+          - arch: arm64
+            runner_suffix: '-arm'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Derive cache epoch
+        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+
+      - name: Load tool versions and apply version override
+        env:
+          VERSION_OVERRIDE: ${{ inputs.version }}
+        run: |
+          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Cache APT packages
+        uses: actions/cache@v5
+        with:
+          path: .apt-cache
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/workflows/ci.yaml') }}
+
+      - name: Configure APT cache directories
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.apt-cache/archives/partial"
+          mkdir -p "$GITHUB_WORKSPACE/.apt-cache/lists/partial"
+          sudo rm -f /etc/apt/apt.conf.d/docker-clean
+          cat <<EOF | sudo tee /etc/apt/apt.conf.d/99github-cache
+          Binary::apt::APT::Keep-Downloaded-Packages "true";
+          Dir::Cache::archives "$GITHUB_WORKSPACE/.apt-cache/archives";
+          Dir::State::lists "$GITHUB_WORKSPACE/.apt-cache/lists";
+          EOF
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libsoup-3.0-dev \
+            protobuf-compiler \
+            xdg-utils \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav \
+            gstreamer1.0-tools \
+            gstreamer1.0-x \
+            gstreamer1.0-alsa \
+            gstreamer1.0-gl \
+            gstreamer1.0-gtk3 \
+            gstreamer1.0-pulseaudio
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache-dependency-path: |
+            backend/go.sum
+            desktop/go/go.sum
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/rust/target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache Tauri downloads
+        # See ci.yaml's matching step for why both patch-linuxdeploy.sh and
+        # linuxdeploy-wrapper.c are hashed into this cache key.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/tauri
+          key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
+
+      - name: Cache awesome-claude-spinners
+        uses: actions/cache@v5
+        with:
+          path: frontend/src/spinners
+          key: spinners-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+
+      - name: Setup buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: ${{ env.TASK_VERSION }}
+
+      - name: Generate code (proto + sqlc)
+        run: task generate
+
+      - name: Install frontend dependencies
+        run: task prepare-frontend
+
+      - name: Build
+        run: task build
+
+      - name: Package CLI server tarball
+        run: |
+          DIR="leapmux_${VERSION}_linux_${{ matrix.arch }}"
+          mkdir -p "dist/${DIR}"
+          cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
+          tar -czf "${DIR}.tar.gz" -C dist "${DIR}"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-${{ matrix.arch }}
+          path: |
+            leapmux_*_linux_${{ matrix.arch }}.tar.gz
+            leapmux-desktop*.AppImage
+            leapmux-desktop*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Derive cache epoch
+        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+
+      - name: Load tool versions and apply version override
+        env:
+          VERSION_OVERRIDE: ${{ inputs.version }}
+        run: |
+          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache-dependency-path: |
+            backend/go.sum
+            desktop/go/go.sum
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/rust/target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache Tauri downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/tauri
+          key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+
+      - name: Cache awesome-claude-spinners
+        uses: actions/cache@v5
+        with:
+          path: frontend/src/spinners
+          key: spinners-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+
+      - name: Setup buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: ${{ env.TASK_VERSION }}
+
+      - name: Generate code (proto + sqlc)
+        run: task generate
+
+      - name: Install frontend dependencies
+        run: task prepare-frontend
+
+      - name: Build
+        # MACOS_CODESIGN_IDENTITY is intentionally unset here. The .app gets
+        # ad-hoc signed by Taskfile.yaml's build-desktop-darwin so it builds
+        # cleanly without secrets; the macos-sign job below downloads the
+        # unsigned .app and re-signs it with the Developer ID identity.
+        run: task build
+
+      - name: Package CLI server tarball
+        run: |
+          DIR="leapmux_${VERSION}_darwin_arm64"
+          mkdir -p "dist/${DIR}"
+          cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
+          tar -czf "${DIR}.tar.gz" -C dist "${DIR}"
+
+      - name: Upload CLI server tarball
+        # The CLI server doesn't need codesigning — users run the Go binary
+        # directly. Goes straight to the release as `desktop-macos-cli`.
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-cli
+          path: leapmux_*_darwin_arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Tar unsigned .app for the signing job
+        # tar preserves symlinks/permissions inside the .app bundle that
+        # actions/upload-artifact's zipping does not. Name does NOT start
+        # with `desktop-` so prerelease/release downloads (pattern: desktop-*)
+        # skip this intermediate.
+        run: tar -cf macos-app-unsigned.tar "LeapMux Desktop.app"
+
+      - name: Upload unsigned .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app-unsigned
+          path: macos-app-unsigned.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  macos-sign:
+    needs: macos
+    if: ${{ inputs.sign_macos }}
+    runs-on: macos-latest
+    environment: apple-signing
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Load tool versions and apply version override
+        env:
+          VERSION_OVERRIDE: ${{ inputs.version }}
+        run: |
+          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup Node.js
+        # create-dmg.sh's generate-dsstore.mjs needs Node + the macos-alias
+        # native module rebuilt for this runner.
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install frontend dependencies (for create-dmg.sh)
+        run: cd frontend && bun install --frozen-lockfile
+
+      - name: Rebuild macos-alias native module
+        run: cd frontend/node_modules/macos-alias && npx --yes node-gyp rebuild 2>/dev/null || true
+
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: ${{ env.TASK_VERSION }}
+
+      - name: Download unsigned .app
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-app-unsigned
+          path: .
+
+      - name: Untar unsigned .app
+        run: |
+          tar -xf macos-app-unsigned.tar
+          rm -f macos-app-unsigned.tar
+
+      - name: Pre-record keychain path for cleanup
+        # Set $KEYCHAIN_PATH BEFORE we try to create/import, so the
+        # `if: always()` cleanup below can still find the keychain even if
+        # the import step fails partway through.
+        run: echo "KEYCHAIN_PATH=${RUNNER_TEMP}/build.keychain-db" >> "$GITHUB_ENV"
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_P12_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="${RUNNER_TEMP}/cert.p12"
+          # Always remove the cert file even if a later command in this step fails.
+          trap 'rm -f "$CERT_PATH"' EXIT
+          KP="${MACOS_KEYCHAIN_PASSWORD:-$(openssl rand -base64 24)}"
+          security create-keychain -p "$KP" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KP" "$KEYCHAIN_PATH"
+          # `--decode` is supported by both BSD (macOS) and GNU base64.
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+      - name: Materialize App Store Connect API key
+        env:
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          P8="${RUNNER_TEMP}/apple_api.p8"
+          printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$P8"
+          chmod 600 "$P8"
+          echo "APPLE_API_KEY_P8_PATH=$P8" >> "$GITHUB_ENV"
+
+      - name: Sign and notarize
+        env:
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_ISSUER_ID: ${{ secrets.APPLE_API_KEY_ISSUER_ID }}
+        run: task sign-and-notarize-darwin
+
+      - name: Upload signed DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-dmg-signed
+          path: LeapMuxDesktop_*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -e "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
+          if [ -n "${APPLE_API_KEY_P8_PATH:-}" ]; then
+            rm -f "$APPLE_API_KEY_P8_PATH"
+          fi
+
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Load tool versions and apply version override
+        # `shell: bash` is mandatory: Windows runners default to pwsh, which
+        # does not understand `grep` or `if [ -n ... ]`.
+        shell: bash
+        env:
+          VERSION_OVERRIDE: ${{ inputs.version }}
+        run: |
+          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
+          fi
+          echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache-dependency-path: |
+            backend/go.sum
+            desktop/go/go.sum
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/rust/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cache Tauri downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/AppData/Local/tauri
+          key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
+
+      - name: Cache awesome-claude-spinners
+        uses: actions/cache@v5
+        with:
+          path: frontend/src/spinners
+          key: spinners-${{ runner.os }}-${{ env.CACHE_WEEK }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('frontend/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Setup buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: ${{ env.TASK_VERSION }}
+
+      - name: Build all modules
+        # Run under pwsh: Git Bash prepends /usr/bin to PATH, and
+        # /usr/bin/link.exe (a Unix hard-link utility) shadows MSVC's
+        # link.exe and breaks the Tauri build.
+        shell: pwsh
+        run: task build
+
+      - name: Package CLI server zip
+        shell: pwsh
+        run: |
+          $dir = "leapmux_${env:VERSION}_windows_amd64"
+          New-Item -ItemType Directory -Path "dist/$dir" -Force | Out-Null
+          Copy-Item leapmux.exe,LICENSE.md,NOTICE.md "dist/$dir"
+          Compress-Archive -Path "dist/$dir" -DestinationPath "${dir}.zip" -Force
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: |
+            leapmux_*_windows_amd64.zip
+            LeapMuxDesktop_*.msi
+          if-no-files-found: error
+          retention-days: 7
