@@ -270,25 +270,6 @@ jobs:
         # flake surface; amd64 still runs the full suite every commit.
         run: task test-no-docker
 
-      - name: Package CLI server tarball
-        run: |
-          DIR="leapmux_${VERSION}_linux_${{ matrix.arch }}"
-          mkdir -p "dist/${DIR}"
-          cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
-          tar -czf "${DIR}.tar.gz" -C dist "${DIR}"
-
-      - name: Upload release artifacts
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-linux-${{ matrix.arch }}
-          path: |
-            leapmux_*_linux_${{ matrix.arch }}.tar.gz
-            leapmux-desktop*.AppImage
-            leapmux-desktop*.deb
-          if-no-files-found: error
-          retention-days: 7
-
   macos:
     runs-on: macos-latest
     steps:
@@ -387,28 +368,12 @@ jobs:
         run: task test-no-docker
 
       - name: Build
-        # MACOS_CODESIGN_IDENTITY is intentionally left unset; the Taskfile
-        # falls back to ad-hoc signing (Taskfile.yaml:308-314). Real notarized
-        # signing for public release is a separate follow-up.
+        # MACOS_CODESIGN_IDENTITY is intentionally unset here. The .app gets
+        # ad-hoc signed by Taskfile.yaml's build-desktop-darwin so the test
+        # job builds cleanly without secrets. Release artifacts (signed +
+        # notarized DMG) come from the desktop-artifacts reusable workflow,
+        # which the desktop-artifacts job below invokes only on push-to-main.
         run: task build
-
-      - name: Package CLI server tarball
-        run: |
-          DIR="leapmux_${VERSION}_darwin_arm64"
-          mkdir -p "dist/${DIR}"
-          cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
-          tar -czf "${DIR}.tar.gz" -C dist "${DIR}"
-
-      - name: Upload release artifacts
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-macos
-          path: |
-            leapmux_*_darwin_arm64.tar.gz
-            LeapMuxDesktop_*.dmg
-          if-no-files-found: error
-          retention-days: 7
 
   windows:
     runs-on: windows-latest
@@ -516,25 +481,6 @@ jobs:
         shell: pwsh
         run: task build
 
-      - name: Package CLI server zip
-        shell: pwsh
-        run: |
-          $dir = "leapmux_${env:VERSION}_windows_amd64"
-          New-Item -ItemType Directory -Path "dist/$dir" -Force | Out-Null
-          Copy-Item leapmux.exe,LICENSE.md,NOTICE.md "dist/$dir"
-          Compress-Archive -Path "dist/$dir" -DestinationPath "${dir}.zip" -Force
-
-      - name: Upload release artifacts
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-windows
-          path: |
-            leapmux_*_windows_amd64.zip
-            LeapMuxDesktop_*.msi
-          if-no-files-found: error
-          retention-days: 7
-
   docker:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -571,8 +517,28 @@ jobs:
           cache-from: type=gha,scope=alpine
           cache-to: type=gha,mode=max,scope=ci-docker
 
-  prerelease:
+  desktop-artifacts:
+    # Build, sign, and notarize the binaries that get attached to the
+    # auto-generated prerelease. Runs only on push-to-main; PR runs do not
+    # trigger this and therefore never request the apple-signing environment
+    # secrets the macos-app-sign step needs.
+    #
+    # `secrets: inherit` is required so the macos-app-sign job in the called
+    # workflow can read the apple-signing environment secrets — without it,
+    # `${{ secrets.X }}` in the called workflow resolves to empty even for
+    # env-scoped secrets, and `security import` fails with errSecParam on
+    # an empty .p12. Env scoping still holds: only jobs that declare
+    # `environment: apple-signing` can read those secrets.
     needs: [linux, macos, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/desktop-artifacts.yaml
+    with:
+      ref: ${{ github.sha }}
+      sign_macos: true
+    secrets: inherit
+
+  prerelease:
+    needs: desktop-artifacts
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

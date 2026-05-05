@@ -20,6 +20,11 @@ env:
 
 jobs:
   release:
+    # Belt-and-braces: the apple-signing environment used by the desktop-artifacts
+    # call below already restricts secrets to runs targeting `main`, but we also
+    # refuse to dispatch any sensitive job from a non-main ref so the entire
+    # release pipeline cannot run from a feature branch by accident.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -60,13 +65,18 @@ jobs:
       - name: Push release commit and tag
         run: git push origin HEAD "v${{ inputs.version }}"
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (draft)
+        # Create as a draft so users don't see a release with missing assets
+        # while desktop builds, signing, notarization, and docker pushes are
+        # still in flight. The publish-release job below flips draft=false
+        # only after all artifacts have been attached and all images pushed.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "v${{ inputs.version }}" \
             --title "v${{ inputs.version }}" \
-            --generate-notes
+            --generate-notes \
+            --draft
 
       - name: Bump to next development version
         run: |
@@ -75,8 +85,57 @@ jobs:
           git commit -m "chore: bump version to ${{ steps.next.outputs.dev_version }}"
           git push origin HEAD
 
+  desktop-artifacts:
+    # Build, sign, and notarize the desktop binaries that get attached to
+    # the v<version> stable release. Reuses the same workflow ci.yaml uses
+    # for prereleases so prerelease and stable end up with identical asset
+    # sets. Apple secrets are scoped to the apple-signing environment used
+    # only by the macos-app-sign job inside this reusable workflow.
+    #
+    # See ci.yaml's matching call site for why `secrets: inherit` is
+    # required — env-scoped secrets do not flow into a `workflow_call`
+    # target without it, even for jobs that declare the environment.
+    needs: release
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/desktop-artifacts.yaml
+    with:
+      ref: v${{ inputs.version }}
+      version: ${{ inputs.version }}
+      sign_macos: true
+    secrets: inherit
+
+  attach-desktop-artifacts:
+    # Upload the built+signed binaries to the (still draft) release.
+    needs: desktop-artifacts
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "v${{ inputs.version }}" \
+            artifacts/*.tar.gz \
+            artifacts/*.zip \
+            artifacts/*.AppImage \
+            artifacts/*.deb \
+            artifacts/*.dmg \
+            artifacts/*.msi \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
   docker:
     needs: release
+    if: github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
     permissions:
       contents: read
@@ -146,6 +205,7 @@ jobs:
 
   docker-merge:
     needs: docker
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -199,3 +259,19 @@ jobs:
             -t "${IMAGE}:${{ steps.tags.outputs.major }}${SUFFIX}" \
             -t "${IMAGE}:latest${SUFFIX}" \
             $DIGESTS
+
+  publish-release:
+    # Flip the v<version> release from draft to published only after BOTH
+    # desktop binaries are attached AND multi-arch container images are
+    # pushed. If either side fails, the release stays draft so users never
+    # see a half-shipped tag.
+    needs: [attach-desktop-artifacts, docker-merge]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "v${{ inputs.version }}" --draft=false --repo "${GITHUB_REPOSITORY}"

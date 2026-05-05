@@ -1,0 +1,122 @@
+name: Apple signing setup
+description: |
+  Verify Apple signing secrets, create a temporary keychain, import the
+  Developer ID certificate, and materialize the App Store Connect API
+  key. Sets `KEYCHAIN_PATH` and `APPLE_API_KEY_P8_PATH` in `$GITHUB_ENV`
+  so the calling job can reference them in subsequent steps. Caller
+  remains responsible for the matching `if: always()` cleanup step that
+  removes the keychain and `.p8` after the signing work finishes.
+
+inputs:
+  certificate-base64:
+    description: Base64-encoded Developer ID Application .p12.
+    required: true
+  certificate-password:
+    description: Passphrase the .p12 was exported with.
+    required: true
+  keychain-password:
+    description: Optional password for the temporary keychain. Random if unset.
+    required: false
+    default: ''
+  codesign-identity:
+    description: 'Full identity, e.g. "Developer ID Application: Foo (TEAMID)".'
+    required: true
+  api-key-base64:
+    description: Base64-encoded App Store Connect API .p8 key.
+    required: true
+  api-key-id:
+    description: App Store Connect Key ID.
+    required: true
+  api-key-issuer-id:
+    description: App Store Connect Issuer ID.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Verify Apple signing secrets are configured
+      # Fail fast with a named list of missing secrets if the apple-signing
+      # environment isn't fully populated. Without this, an empty secret
+      # silently feeds an empty file into `security import` / `notarytool`,
+      # which surface as cryptic errors like "SecKeychainItemImport: One or
+      # more parameters passed to a function were not valid" — leaving the
+      # operator to guess that a secret was missing.
+      shell: bash
+      env:
+        MACOS_CERTIFICATE_P12_BASE64: ${{ inputs.certificate-base64 }}
+        MACOS_CERTIFICATE_P12_PASSWORD: ${{ inputs.certificate-password }}
+        MACOS_CODESIGN_IDENTITY: ${{ inputs.codesign-identity }}
+        APPLE_API_KEY_P8_BASE64: ${{ inputs.api-key-base64 }}
+        APPLE_API_KEY_ID: ${{ inputs.api-key-id }}
+        APPLE_API_KEY_ISSUER_ID: ${{ inputs.api-key-issuer-id }}
+      run: |
+        set -euo pipefail
+        missing=()
+        for name in \
+          MACOS_CERTIFICATE_P12_BASE64 \
+          MACOS_CERTIFICATE_P12_PASSWORD \
+          MACOS_CODESIGN_IDENTITY \
+          APPLE_API_KEY_P8_BASE64 \
+          APPLE_API_KEY_ID \
+          APPLE_API_KEY_ISSUER_ID
+        do
+          if [ -z "${!name:-}" ]; then
+            missing+=("$name")
+          fi
+        done
+        if [ "${#missing[@]}" -gt 0 ]; then
+          echo "::error title=Apple signing secrets missing::Missing in the apple-signing environment: ${missing[*]}"
+          echo "Configure them under Settings → Environments → apple-signing." >&2
+          exit 1
+        fi
+
+    - name: Pre-record keychain path for cleanup
+      # Set $KEYCHAIN_PATH BEFORE we try to create/import, so the caller's
+      # `if: always()` cleanup can still find the keychain even if the
+      # import step fails partway through.
+      shell: bash
+      run: echo "KEYCHAIN_PATH=${RUNNER_TEMP}/build.keychain-db" >> "$GITHUB_ENV"
+
+    - name: Import Developer ID certificate
+      shell: bash
+      env:
+        MACOS_CERTIFICATE_P12_BASE64: ${{ inputs.certificate-base64 }}
+        MACOS_CERTIFICATE_P12_PASSWORD: ${{ inputs.certificate-password }}
+        MACOS_KEYCHAIN_PASSWORD: ${{ inputs.keychain-password }}
+      run: |
+        set -euo pipefail
+        CERT_PATH="${RUNNER_TEMP}/cert.p12"
+        # Always remove the cert file even if a later command in this step fails.
+        trap 'rm -f "$CERT_PATH"' EXIT
+        KP="${MACOS_KEYCHAIN_PASSWORD:-$(openssl rand -base64 24)}"
+        security create-keychain -p "$KP" "$KEYCHAIN_PATH"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+        security unlock-keychain -p "$KP" "$KEYCHAIN_PATH"
+        # `--decode` is supported by both BSD (macOS) and GNU base64.
+        printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+        # Belt-and-braces: if the secret somehow round-tripped to empty or
+        # non-base64 garbage, fail with a clear message instead of letting
+        # `security import` return errSecParam.
+        if [ ! -s "$CERT_PATH" ]; then
+          echo "::error::Decoded p12 is empty — MACOS_CERTIFICATE_P12_BASE64 is missing or not valid base64."
+          exit 1
+        fi
+        security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_P12_PASSWORD" \
+          -T /usr/bin/codesign -T /usr/bin/security
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KEYCHAIN_PATH"
+        security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+    - name: Materialize App Store Connect API key
+      shell: bash
+      env:
+        APPLE_API_KEY_P8_BASE64: ${{ inputs.api-key-base64 }}
+      run: |
+        set -euo pipefail
+        P8="${RUNNER_TEMP}/apple_api.p8"
+        printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$P8"
+        if [ ! -s "$P8" ]; then
+          echo "::error::Decoded .p8 is empty — APPLE_API_KEY_P8_BASE64 is missing or not valid base64."
+          exit 1
+        fi
+        chmod 600 "$P8"
+        echo "APPLE_API_KEY_P8_PATH=$P8" >> "$GITHUB_ENV"

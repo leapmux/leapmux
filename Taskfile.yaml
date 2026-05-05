@@ -292,6 +292,7 @@ tasks:
       - desktop/rust/Cargo.*
       - desktop/rust/capabilities/**/*
       - desktop/rust/tauri.conf.json
+      - desktop/rust/entitlements.plist
       - desktop/rust/icons/icon@2x.png
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
@@ -306,16 +307,12 @@ tasks:
       # Move sidecar from Resources/_up_/go/bin/ to MacOS/ for a cleaner bundle layout.
       - mv "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_/go/bin/"* "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/"
       - rm -rf "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_"
-      - |
-        APP_PATH="desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
-        if [ -n "${MACOS_CODESIGN_IDENTITY:-}" ]; then
-          echo "Signing macOS app with identity: ${MACOS_CODESIGN_IDENTITY}"
-          codesign --force --deep --sign "${MACOS_CODESIGN_IDENTITY}" --timestamp --options runtime "${APP_PATH}"
-        else
-          echo "MACOS_CODESIGN_IDENTITY is not set; using ad hoc signing for the macOS app" >&2
-          codesign --force --deep --sign - "${APP_PATH}"
-        fi
-        codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+      # Sign the .app. With MACOS_CODESIGN_IDENTITY set, sign-macos.sh applies
+      # Developer ID + hardened runtime + entitlements to nested Mach-O code
+      # inside-out; without it, falls back to ad-hoc signing for local dev.
+      # `sign-and-notarize-darwin-app` re-runs this with the same identity later
+      # when notarizing for release.
+      - MACOS_ENTITLEMENTS_PATH="$(pwd)/desktop/rust/entitlements.plist" desktop/rust/scripts/sign-macos.sh "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
       - rsync -a --delete "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/" "LeapMux Desktop.app/"
       - cd frontend/node_modules/macos-alias && npx --yes node-gyp rebuild 2>/dev/null || true
       - mkdir -p desktop/rust/target/release/bundle/dmg
@@ -325,6 +322,75 @@ tasks:
         "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
         "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
       - cp -f "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg" "LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
+
+  sign-and-notarize-darwin-app:
+    desc: Re-sign with Developer ID, notarize the .app and the .dmg, staple both.
+    preconditions:
+      - sh: '[ -n "${MACOS_CODESIGN_IDENTITY:-}" ]'
+        msg: "MACOS_CODESIGN_IDENTITY must be set"
+      - sh: '[ -n "${APPLE_API_KEY_P8_PATH:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_KEY_ISSUER_ID:-}" ]'
+        msg: "APPLE_API_KEY_P8_PATH, APPLE_API_KEY_ID, and APPLE_API_KEY_ISSUER_ID must be set"
+    vars:
+      APP_PATH: '"LeapMux Desktop.app"'
+      DMG_PATH: 'LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg'
+    cmds:
+      # Re-sign every Mach-O inside the .app with Developer ID (replaces the
+      # ad-hoc signature applied during build-desktop-darwin).
+      - MACOS_ENTITLEMENTS_PATH="$(pwd)/desktop/rust/entitlements.plist" desktop/rust/scripts/sign-macos.sh {{.APP_PATH}}
+      # Notarize the .app: notarytool submit needs a flat archive, but
+      # `stapler` cannot staple a .zip — it has to staple the .app itself.
+      # So submit with --no-staple, then staple the bundle directly.
+      - rm -f notarize-app.zip
+      - ditto -c -k --keepParent {{.APP_PATH}} notarize-app.zip
+      - desktop/rust/scripts/notarize-macos.sh --no-staple notarize-app.zip
+      - xcrun stapler staple {{.APP_PATH}}
+      - xcrun stapler validate {{.APP_PATH}}
+      - rm -f notarize-app.zip
+      # Confirm Gatekeeper accepts the now-stapled .app before we wrap it.
+      - spctl --assess --verbose --type exec {{.APP_PATH}}
+      # Rebuild the DMG from the stapled .app, then sign + notarize + staple
+      # the DMG itself so a downloaded image passes Gatekeeper offline.
+      - desktop/rust/scripts/create-dmg.sh "{{.VERSION}}" {{.APP_PATH}} {{.DMG_PATH}}
+      - codesign --force --timestamp --sign "${MACOS_CODESIGN_IDENTITY}" {{.DMG_PATH}}
+      - desktop/rust/scripts/notarize-macos.sh {{.DMG_PATH}}
+      - spctl --assess --verbose --type install {{.DMG_PATH}}
+
+  sign-and-notarize-darwin-cli:
+    desc: Re-sign the leapmux CLI with Developer ID, notarize, and produce the release tarball.
+    preconditions:
+      - sh: '[ -n "${MACOS_CODESIGN_IDENTITY:-}" ]'
+        msg: "MACOS_CODESIGN_IDENTITY must be set"
+      - sh: '[ -n "${APPLE_API_KEY_P8_PATH:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_KEY_ISSUER_ID:-}" ]'
+        msg: "APPLE_API_KEY_P8_PATH, APPLE_API_KEY_ID, and APPLE_API_KEY_ISSUER_ID must be set"
+    vars:
+      BIN: leapmux
+      DIR: 'leapmux_{{.VERSION}}_darwin_{{ARCH}}'
+      TARBALL: 'leapmux_{{.VERSION}}_darwin_{{ARCH}}.tar.gz'
+    cmds:
+      # Sign the bare binary with Developer ID + hardened runtime. No
+      # entitlements: the CLI server doesn't need JIT or unsigned-mem
+      # like the WKWebView desktop app does.
+      - codesign --force --options runtime --timestamp --sign "${MACOS_CODESIGN_IDENTITY}" {{.BIN}}
+      - codesign --verify --strict --verbose=2 {{.BIN}}
+      # Notarize. notarytool needs a flat archive; `stapler` does not
+      # support raw Mach-O binaries, so we always pass --no-staple.
+      # Apple's notary database registers the binary's hash and
+      # Gatekeeper looks it up online at first launch; offline first
+      # launch shows a one-time verify prompt (unavoidable for raw
+      # binaries — only .app/.pkg/.dmg can carry stapled tickets).
+      - rm -f notarize-cli.zip
+      - ditto -c -k {{.BIN}} notarize-cli.zip
+      - desktop/rust/scripts/notarize-macos.sh --no-staple notarize-cli.zip
+      - rm -f notarize-cli.zip
+      # Re-package the signed binary into the release tarball. Explicit
+      # `chmod 0755` is belt-and-braces: codesign / ditto / artifact
+      # round-trips should all preserve the executable bit, but assert
+      # it before tar so the downloaded tarball always launches.
+      - rm -rf dist/{{.DIR}}
+      - mkdir -p dist/{{.DIR}}
+      - cp {{.BIN}} LICENSE.md NOTICE.md dist/{{.DIR}}/
+      - chmod 0755 dist/{{.DIR}}/{{.BIN}}
+      - tar -czf {{.TARBALL}} -C dist {{.DIR}}
 
   build-desktop-linux:
     desc: Build desktop for Linux
