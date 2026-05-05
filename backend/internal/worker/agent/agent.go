@@ -35,6 +35,23 @@ type AutoContinueSchedule struct {
 	SourcePayload []byte
 }
 
+// scheduleOrCancelAPIErrorAutoContinue schedules an immediate API-error
+// auto-continue when retry is true, or cancels any pending API-error
+// schedule otherwise. The payload is defensively copied because the
+// caller's buffer may be reused by the stdout reader before the schedule
+// is consumed.
+func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload []byte) {
+	if !retry {
+		sink.CancelAutoContinue(AutoContinueReasonAPIError)
+		return
+	}
+	sink.ScheduleAutoContinue(AutoContinueSchedule{
+		Reason:        AutoContinueReasonAPIError,
+		DueAt:         time.Now().UTC(),
+		SourcePayload: append([]byte(nil), payload...),
+	})
+}
+
 // OutputSink provides generic primitives for persisting and broadcasting
 // agent output. Implemented by the service layer and injected into providers.
 type OutputSink interface {
