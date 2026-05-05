@@ -440,9 +440,14 @@ jobs:
           MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
+          # Files containing the cert and (briefly) the unencrypted private
+          # key. umask 0077 ensures both land as 0600 so other users on the
+          # ephemeral runner can't read them.
+          umask 0077
           CERT_PATH="${RUNNER_TEMP}/cert.p12"
-          # Always remove the cert file even if a later command in this step fails.
-          trap 'rm -f "$CERT_PATH"' EXIT
+          PEM_PATH="${RUNNER_TEMP}/cert.pem"
+          # Always remove the cert files even if a later command in this step fails.
+          trap 'rm -f "$CERT_PATH" "$PEM_PATH"' EXIT
           KP="${MACOS_KEYCHAIN_PASSWORD:-$(openssl rand -base64 24)}"
           security create-keychain -p "$KP" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -456,23 +461,29 @@ jobs:
             echo "::error::Decoded p12 is empty — MACOS_CERTIFICATE_P12_BASE64 is missing or not valid base64."
             exit 1
           fi
-          # Pre-flight the .p12 with openssl. openssl 3.x reads both legacy
-          # (PBE-SHA1-3DES) and modern (AES-256-CBC + PBKDF2) PKCS12 PBE,
-          # whereas macOS's SecKeychainItemImport rejects the modern variant
-          # with errSecParam ("One or more parameters passed to a function
-          # were not valid"). If openssl can read the file but `security
-          # import` later refuses it, the .p12 was exported with a PBE
-          # macOS won't parse — re-export with `-legacy`.
-          if ! openssl pkcs12 -in "$CERT_PATH" -info -noout -nokeys \
-                -passin "pass:${MACOS_CERTIFICATE_P12_PASSWORD}" >/dev/null 2>&1; then
+          # Re-encode the .p12 with legacy PBE-SHA1-3DES so macOS's
+          # SecKeychainItemImport accepts it. OpenSSL 3.x's default export
+          # uses AES-256-CBC + PBKDF2/HMAC-SHA-256, which `security import`
+          # rejects with errSecParam ("One or more parameters passed to a
+          # function were not valid"). Round-tripping through PEM is a
+          # no-op for already-legacy .p12 files. Both ends use the original
+          # passphrase, so MACOS_CERTIFICATE_P12_PASSWORD still applies.
+          # The intermediate PEM holds the unencrypted private key — it's
+          # written 0600 (umask above) and removed before `security import`
+          # touches the keychain.
+          if ! openssl pkcs12 -in "$CERT_PATH" -nodes \
+                -passin "pass:${MACOS_CERTIFICATE_P12_PASSWORD}" \
+                -out "$PEM_PATH" 2>/dev/null; then
             echo "::error::openssl could not parse the .p12 — wrong MACOS_CERTIFICATE_P12_PASSWORD or malformed export."
             exit 1
           fi
-          if ! security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_P12_PASSWORD" \
-                -T /usr/bin/codesign -T /usr/bin/security; then
-            echo "::error title=security import rejected the .p12::macOS Security parsed the file's structure but rejected its PBE algorithm. Re-export the certificate with 'openssl pkcs12 -export -legacy ...' so it uses PBE-SHA1-3DES, then update MACOS_CERTIFICATE_P12_BASE64."
-            exit 1
-          fi
+          openssl pkcs12 -export -legacy \
+            -in "$PEM_PATH" \
+            -passout "pass:${MACOS_CERTIFICATE_P12_PASSWORD}" \
+            -out "$CERT_PATH"
+          rm -f "$PEM_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
