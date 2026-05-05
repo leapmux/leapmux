@@ -456,8 +456,23 @@ jobs:
             echo "::error::Decoded p12 is empty — MACOS_CERTIFICATE_P12_BASE64 is missing or not valid base64."
             exit 1
           fi
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_P12_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
+          # Pre-flight the .p12 with openssl. openssl 3.x reads both legacy
+          # (PBE-SHA1-3DES) and modern (AES-256-CBC + PBKDF2) PKCS12 PBE,
+          # whereas macOS's SecKeychainItemImport rejects the modern variant
+          # with errSecParam ("One or more parameters passed to a function
+          # were not valid"). If openssl can read the file but `security
+          # import` later refuses it, the .p12 was exported with a PBE
+          # macOS won't parse — re-export with `-legacy`.
+          if ! openssl pkcs12 -in "$CERT_PATH" -info -noout -nokeys \
+                -passin "pass:${MACOS_CERTIFICATE_P12_PASSWORD}" >/dev/null 2>&1; then
+            echo "::error::openssl could not parse the .p12 — wrong MACOS_CERTIFICATE_P12_PASSWORD or malformed export."
+            exit 1
+          fi
+          if ! security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_P12_PASSWORD" \
+                -T /usr/bin/codesign -T /usr/bin/security; then
+            echo "::error title=security import rejected the .p12::macOS Security parsed the file's structure but rejected its PBE algorithm. Re-export the certificate with 'openssl pkcs12 -export -legacy ...' so it uses PBE-SHA1-3DES, then update MACOS_CERTIFICATE_P12_BASE64."
+            exit 1
+          fi
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
