@@ -91,7 +91,8 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 	sink := &testSink{}
 	agent := newGeminiAgentWithSink(sink)
 
-	agent.turnThinkingText.WriteString("thinking")
+	// End-of-turn flush handles only the assistant-text buffer and result
+	// divider. Thought chunks persist per notification, not here.
 	agent.turnAssistantText.WriteString("answer")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn","_meta":{"quota":{"token_count":{"input_tokens":1,"output_tokens":2}}}}`)
@@ -99,8 +100,8 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 		broadcastGeminiQuotaSessionInfo(agent.sink, r)
 	})
 
-	require.Equal(t, 3, sink.MessageCount())
-	require.True(t, sink.Messages()[2].TurnEnd, "prompt response must route through PersistTurnEnd")
+	require.Equal(t, 2, sink.MessageCount())
+	require.True(t, sink.Messages()[1].TurnEnd, "prompt response must route through PersistTurnEnd")
 	require.Equal(t, 1, sink.SessionInfoCount())
 }
 

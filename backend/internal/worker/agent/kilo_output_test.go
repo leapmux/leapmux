@@ -44,46 +44,39 @@ func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "agent_thought_chunk", got.Method)
-	require.Equal(t, "thinking...", string(got.Content))
-	require.Equal(t, 0, sink.MessageCount())
-	agent.mu.Lock()
-	require.Equal(t, "thinking...", agent.turnThinkingText.String())
-	agent.mu.Unlock()
+	// Each agent_thought_chunk persists as its own discrete message.
+	require.Equal(t, 0, sink.StreamChunkCount())
+	require.Equal(t, 1, sink.MessageCount())
+
+	msg := sink.Messages()[0]
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(msg.Content, &parsed))
+	require.Equal(t, "agent_thought_chunk", parsed["sessionUpdate"])
+	content := parsed["content"].(map[string]interface{})
+	require.Equal(t, "thinking...", content["text"])
 }
 
-func TestHandleKiloPromptResponse_PersistsThinkingText(t *testing.T) {
+func TestHandleKiloPromptResponse_PersistsAssistantText(t *testing.T) {
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
-	agent.turnThinkingText.WriteString("let me think about this")
 	agent.turnAssistantText.WriteString("Here is the answer.")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn","usage":{"totalTokens":100}}`)
 	agent.handleACPPromptResponse(resp, nil)
 
-	require.Equal(t, 3, sink.MessageCount())
+	require.Equal(t, 2, sink.MessageCount())
 
-	thinkingMsg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, thinkingMsg.Source)
-	var thinkingParsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(thinkingMsg.Content, &thinkingParsed))
-	require.Equal(t, "agent_thought_chunk", thinkingParsed["sessionUpdate"])
-	content := thinkingParsed["content"].(map[string]interface{})
-	require.Equal(t, "let me think about this", content["text"])
-
-	assistantMsg := sink.Messages()[1]
+	assistantMsg := sink.Messages()[0]
 	var assistantParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(assistantMsg.Content, &assistantParsed))
 	require.Equal(t, "agent_message_chunk", assistantParsed["sessionUpdate"])
 
-	resultMsg := sink.Messages()[2]
+	resultMsg := sink.Messages()[1]
 	require.True(t, resultMsg.TurnEnd, "prompt response must route through PersistTurnEnd")
 
 	agent.mu.Lock()
-	require.Equal(t, "", agent.turnThinkingText.String())
 	require.Equal(t, "", agent.turnAssistantText.String())
 	agent.mu.Unlock()
 }

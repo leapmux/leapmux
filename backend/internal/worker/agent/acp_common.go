@@ -84,7 +84,6 @@ type acpBase struct {
 	availableModes         []*leapmuxv1.AvailableOption
 	availablePrimaryAgents []*leapmuxv1.AvailableOption
 	turnAssistantText      strings.Builder
-	turnThinkingText       strings.Builder
 }
 
 // handleACPPromptResponse extracts accumulated turn text, calls the optional
@@ -95,8 +94,6 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 	}
 
 	b.mu.Lock()
-	thinkingText := b.turnThinkingText.String()
-	b.turnThinkingText.Reset()
 	assistantText := b.turnAssistantText.String()
 	b.turnAssistantText.Reset()
 	b.turnToolUses = 0
@@ -106,7 +103,7 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 		prePersist(resp)
 	}
 
-	b.persistPromptResponse(thinkingText, assistantText, resp, func(resp json.RawMessage) json.RawMessage {
+	b.persistPromptResponse(assistantText, resp, func(resp json.RawMessage) json.RawMessage {
 		return b.enrichWithToolUses(resp)
 	})
 }
@@ -161,7 +158,7 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	case acpUpdateAgentMessageChunk:
 		b.broadcastACPChunk(header.Content, &b.turnAssistantText, acpUpdateAgentMessageChunk)
 	case acpUpdateAgentThoughtChunk:
-		b.broadcastACPChunk(header.Content, &b.turnThinkingText, acpUpdateAgentThoughtChunk)
+		b.handleAgentThoughtChunk(header.Content)
 	case acpUpdateToolCall:
 		b.handleToolCall(update)
 	case acpUpdateToolCallUpdate:
@@ -209,7 +206,6 @@ func (b *acpBase) ClearContext() (string, bool) {
 	b.mu.Lock()
 	b.sessionID = session.SessionID
 	b.turnAssistantText.Reset()
-	b.turnThinkingText.Reset()
 	b.mu.Unlock()
 
 	b.sink.UpdateSessionID(session.SessionID)
@@ -678,24 +674,47 @@ func (b *acpBase) sendPrompt(
 	handleResponse(resp)
 }
 
-// broadcastACPChunk extracts text from a pre-parsed content RawMessage and
-// broadcasts it. The content JSON is already extracted from the header parse,
-// avoiding a full re-unmarshal of the update on the streaming hot path.
-func (b *acpBase) broadcastACPChunk(content json.RawMessage, builder *strings.Builder, eventType string) {
+// extractACPChunkText pulls the `text` field from an ACP content envelope.
+// Returns "" when the field is absent, empty, or the unmarshal fails (a warning
+// is logged in the failure case). The `kind` argument labels the warning so
+// failures can be attributed to a specific session update type.
+func (b *acpBase) extractACPChunkText(content json.RawMessage, kind string) string {
 	var c struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(content, &c); err != nil {
-		slog.Warn("acp broadcast chunk unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
-		return
+		slog.Warn("acp content unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "kind", kind, "error", err)
+		return ""
 	}
-	if c.Text == "" {
+	return c.Text
+}
+
+// broadcastACPChunk extracts text from a pre-parsed content RawMessage and
+// broadcasts it. The content JSON is already extracted from the header parse,
+// avoiding a full re-unmarshal of the update on the streaming hot path.
+func (b *acpBase) broadcastACPChunk(content json.RawMessage, builder *strings.Builder, eventType string) {
+	text := b.extractACPChunkText(content, eventType)
+	if text == "" {
 		return
 	}
 	b.mu.Lock()
-	builder.WriteString(c.Text)
+	builder.WriteString(text)
 	b.mu.Unlock()
-	b.sink.BroadcastStreamChunk([]byte(c.Text), "", eventType)
+	b.sink.BroadcastStreamChunk([]byte(text), "", eventType)
+}
+
+// handleAgentThoughtChunk persists each agent_thought_chunk notification as
+// its own discrete message at its real chronological position. Mirrors the
+// per-item persistence model Codex uses for `reasoning` items: each notification
+// is a complete summary block, so concatenating them across the whole turn
+// (the previous behavior) collapsed section boundaries and pushed thinking
+// past any tool calls that interrupted it.
+func (b *acpBase) handleAgentThoughtChunk(content json.RawMessage) {
+	text := b.extractACPChunkText(content, acpUpdateAgentThoughtChunk)
+	if text == "" {
+		return
+	}
+	b.persistTextMessage(acpUpdateAgentThoughtChunk, text)
 }
 
 func (b *acpBase) persistTextMessage(sessionUpdate, text string) {
@@ -720,11 +739,10 @@ func (b *acpBase) persistTextMessage(sessionUpdate, text string) {
 }
 
 func (b *acpBase) persistPromptResponse(
-	thinkingText, assistantText string,
+	assistantText string,
 	resp json.RawMessage,
 	enrich func(json.RawMessage) json.RawMessage,
 ) {
-	b.persistTextMessage(acpUpdateAgentThoughtChunk, thinkingText)
 	b.persistTextMessage(acpUpdateAgentMessageChunk, assistantText)
 
 	resp = unwrapACPResult(resp)
