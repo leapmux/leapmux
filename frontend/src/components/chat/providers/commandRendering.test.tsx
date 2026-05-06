@@ -169,3 +169,37 @@ describe('command result with empty output shows a hint with duration/exit', () 
     expect(container.textContent ?? '').toContain('[no output]')
   })
 })
+
+describe('command result \\r progress normalization', () => {
+  it('claude Bash: 4 \\r-separated progress segments render verbatim with no ellipsis', () => {
+    // Default 3-row collapse would hide the tail; the threshold widening for
+    // hadCarriageReturns must keep all 4 lines visible.
+    const parsed = makeBashResult({
+      tool_name: 'Bash',
+      stdout: 'Rebasing (1/4)\rRebasing (2/4)\rRebasing (3/4)\rDone',
+    }, '')
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Bash' })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Rebasing (1/4)')
+    expect(text).toContain('Rebasing (2/4)')
+    expect(text).toContain('Rebasing (3/4)')
+    expect(text).toContain('Done')
+    expect(text).not.toContain('…')
+  })
+
+  it('claude Bash: 8 \\r-separated progress segments collapse to head 3 + … + tail 3', () => {
+    const stdout = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'].join('\r')
+    const parsed = makeBashResult({ tool_name: 'Bash', stdout }, '')
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'Bash' })
+    const text = container.textContent ?? ''
+    expect(text).toContain('s1')
+    expect(text).toContain('s2')
+    expect(text).toContain('s3')
+    expect(text).toContain('…')
+    expect(text).toContain('s6')
+    expect(text).toContain('s7')
+    expect(text).toContain('s8')
+    expect(text).not.toContain('s4')
+    expect(text).not.toContain('s5')
+  })
+})

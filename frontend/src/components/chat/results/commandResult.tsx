@@ -3,9 +3,10 @@ import type { RenderContext } from '../messageRenderers'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import { createMemo, Show } from 'solid-js'
+import { normalizeProgressOutput, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
 import { getToolResultExpanded } from '../messageRenderers'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
-import { stripLeadingBlankLines } from '../toolRenderers'
+import { COLLAPSED_RESULT_ROWS, stripLeadingBlankLines } from '../toolRenderers'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ToolStatusHeader } from './ToolStatusHeader'
@@ -64,9 +65,19 @@ export function CommandResultBody(props: {
   source: CommandResultSource
   context?: RenderContext
 }): JSX.Element {
-  const normalized = createMemo(() => stripLeadingBlankLines(props.source.output))
+  // Order matters: normalize CR overwrites first so a leading bare `\r`
+  // becomes a leading `\n`, which `stripLeadingBlankLines` can then trim.
+  const progress = createMemo(() => normalizeProgressOutput(props.source.output))
+  const normalized = createMemo(() => stripLeadingBlankLines(progress().text))
   const expanded = () => getToolResultExpanded(props.context)
-  const { display, isCollapsed } = useCollapsedLines({ text: normalized, expanded })
+  // After CR normalization the output has at most PROGRESS_MAX_ROWS rows
+  // (head + `…` + tail). Widen the row threshold so the default 3-row
+  // collapse doesn't slice the tail/ellipsis we just produced back off.
+  const { display, isCollapsed } = useCollapsedLines({
+    text: normalized,
+    expanded,
+    threshold: () => progress().hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS,
+  })
   const statusIcon = () => props.source.isError ? CircleAlert : Check
   const statusLabel = () => commandStatusLabel(props.source)
   const showStatusHeader = () => statusLabel() !== 'Success'

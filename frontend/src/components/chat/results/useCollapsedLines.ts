@@ -56,8 +56,13 @@ export interface UseCollapsedLinesOptions {
   text: Accessor<string>
   /** Whether the consumer wants the body expanded (no collapse). */
   expanded: Accessor<boolean>
-  /** Row threshold above which the body collapses. Defaults to `COLLAPSED_RESULT_ROWS`. */
-  threshold?: number
+  /**
+   * Row threshold above which the body collapses. Defaults to
+   * `COLLAPSED_RESULT_ROWS`. Accepts a function for callers that need to
+   * change the threshold reactively (e.g., widen it when an upstream
+   * normalization step changes shape mid-stream).
+   */
+  threshold?: number | Accessor<number>
 }
 
 export interface UseCollapsedLinesResult {
@@ -78,13 +83,14 @@ export interface UseCollapsedLinesResult {
  * tool outputs never pay the full `split('\n')` cost.
  */
 export function useCollapsedLines(opts: UseCollapsedLinesOptions): UseCollapsedLinesResult {
-  const threshold = opts.threshold ?? COLLAPSED_RESULT_ROWS
+  const readThreshold = resolveThreshold(opts.threshold)
   const isCollapsed = useCollapsedFlag(opts)
   const display = createMemo(() => {
     if (!isCollapsed())
       return opts.text()
     const text = opts.text()
     const cap = COLLAPSED_LINE_CHAR_CAP
+    const threshold = readThreshold()
     let idx = 0
     let hasLong = false
     for (let i = 0; i < threshold; i++) {
@@ -101,6 +107,14 @@ export function useCollapsedLines(opts: UseCollapsedLinesOptions): UseCollapsedL
   return { isCollapsed, display }
 }
 
+function resolveThreshold(threshold: number | Accessor<number> | undefined): Accessor<number> {
+  if (threshold === undefined)
+    return () => COLLAPSED_RESULT_ROWS
+  if (typeof threshold === 'function')
+    return threshold
+  return () => threshold
+}
+
 /**
  * Memoized collapse-flag for kinds that always render the full text and only
  * flip a fade class (`'markdown-tool-result'`, `'json'`). Equivalent to the
@@ -108,8 +122,8 @@ export function useCollapsedLines(opts: UseCollapsedLinesOptions): UseCollapsedL
  * unused `display` slice.
  */
 export function useCollapsedFlag(opts: UseCollapsedLinesOptions): Accessor<boolean> {
-  const threshold = opts.threshold ?? COLLAPSED_RESULT_ROWS
-  return createMemo(() => !opts.expanded() && hasMoreLinesThan(opts.text(), threshold))
+  const readThreshold = resolveThreshold(opts.threshold)
+  return createMemo(() => !opts.expanded() && hasMoreLinesThan(opts.text(), readThreshold()))
 }
 
 export interface UseCollapsedItemsOptions<T> {
