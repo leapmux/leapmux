@@ -44,53 +44,89 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
 	agent.HandleOutput([]byte(input))
 
-	require.Equal(t, 1, sink.StreamChunkCount())
-	got := sink.LastStreamChunk()
-	require.Equal(t, "agent_thought_chunk", got.Method)
-	require.Equal(t, "thinking...", string(got.Content))
-	// Thought chunks are streamed but not persisted immediately — they accumulate.
-	require.Equal(t, 0, sink.MessageCount())
-	agent.mu.Lock()
-	require.Equal(t, "thinking...", agent.turnThinkingText.String())
-	agent.mu.Unlock()
+	// Each agent_thought_chunk notification persists as its own discrete
+	// message at its real chronological position (matching Codex's per-item
+	// reasoning model). No streaming buffer is used.
+	require.Equal(t, 0, sink.StreamChunkCount())
+	require.Equal(t, 1, sink.MessageCount())
+
+	msg := sink.Messages()[0]
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(msg.Content, &parsed))
+	require.Equal(t, "agent_thought_chunk", parsed["sessionUpdate"])
+	content := parsed["content"].(map[string]interface{})
+	require.Equal(t, "thinking...", content["text"])
 }
 
-func TestHandlePromptResponse_PersistsThinkingText(t *testing.T) {
+func TestHandleOpenCodeOutput_AgentThoughtChunk_MultipleNotifications(t *testing.T) {
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
-	// Simulate accumulated thinking and assistant text.
-	agent.turnThinkingText.WriteString("let me think about this")
+	// Each summary block arrives as a separate agent_thought_chunk
+	// notification. Each must persist as its own message — the previous
+	// behavior of concatenating them into one buffer collapsed section
+	// boundaries (e.g. "structure.**Refining grid mechanics**").
+	first := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"**Analyzing tiles**\n\nbody one"}}}}`
+	second := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"**Refining grid**\n\nbody two"}}}}`
+	agent.HandleOutput([]byte(first))
+	agent.HandleOutput([]byte(second))
+
+	require.Equal(t, 2, sink.MessageCount())
+	for i, want := range []string{"**Analyzing tiles**\n\nbody one", "**Refining grid**\n\nbody two"} {
+		var parsed map[string]interface{}
+		require.NoError(t, json.Unmarshal(sink.Messages()[i].Content, &parsed))
+		require.Equal(t, "agent_thought_chunk", parsed["sessionUpdate"])
+		require.Equal(t, want, parsed["content"].(map[string]interface{})["text"])
+	}
+}
+
+func TestHandleOpenCodeOutput_ThoughtThenToolCallPreservesOrder(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// Mid-turn tool calls used to wipe the in-flight thinking display
+	// because thinking sat in a builder until end-of-turn. Each chunk now
+	// persists immediately, so the chronological order is thought → tool_call.
+	thought := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"about to read a file"}}}}`
+	toolCall := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`
+	agent.HandleOutput([]byte(thought))
+	agent.HandleOutput([]byte(toolCall))
+
+	require.Equal(t, 2, sink.MessageCount())
+
+	var thoughtParsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(sink.Messages()[0].Content, &thoughtParsed))
+	require.Equal(t, "agent_thought_chunk", thoughtParsed["sessionUpdate"])
+
+	require.Equal(t, "tc-1", sink.Messages()[1].SpanID)
+	require.Equal(t, "read", sink.Messages()[1].SpanType)
+}
+
+func TestHandleOpenCodePromptResponse_PersistsAssistantText(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// The end-of-turn flush is responsible only for the assistant-text buffer
+	// and the result divider — thought chunks persist per notification, not here.
 	agent.turnAssistantText.WriteString("Here is the answer.")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn","usage":{"totalTokens":100}}`)
 	agent.handleACPPromptResponse(resp, nil)
 
-	// Expect 3 messages: thinking, assistant text, result divider.
-	require.Equal(t, 3, sink.MessageCount())
+	// Expect 2 messages: assistant text, result divider.
+	require.Equal(t, 2, sink.MessageCount())
 
-	// First message: thinking text.
-	thinkingMsg := sink.Messages()[0]
-	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, thinkingMsg.Source)
-	var thinkingParsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(thinkingMsg.Content, &thinkingParsed))
-	require.Equal(t, "agent_thought_chunk", thinkingParsed["sessionUpdate"])
-	content := thinkingParsed["content"].(map[string]interface{})
-	require.Equal(t, "let me think about this", content["text"])
-
-	// Second message: assistant text.
-	assistantMsg := sink.Messages()[1]
+	assistantMsg := sink.Messages()[0]
+	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, assistantMsg.Source)
 	var assistantParsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(assistantMsg.Content, &assistantParsed))
 	require.Equal(t, "agent_message_chunk", assistantParsed["sessionUpdate"])
 
-	// Third message: result divider.
-	resultMsg := sink.Messages()[2]
+	resultMsg := sink.Messages()[1]
 	require.True(t, resultMsg.TurnEnd, "prompt response must route through PersistTurnEnd")
 
-	// Accumulated text should be reset.
 	agent.mu.Lock()
-	require.Equal(t, "", agent.turnThinkingText.String())
 	require.Equal(t, "", agent.turnAssistantText.String())
 	agent.mu.Unlock()
 }
