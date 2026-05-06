@@ -84,6 +84,12 @@ type acpBase struct {
 	availableModes         []*leapmuxv1.AvailableOption
 	availablePrimaryAgents []*leapmuxv1.AvailableOption
 	turnAssistantText      strings.Builder
+	// turnThoughtText buffers consecutive agent_thought_chunk notifications
+	// so live token-by-token reasoning streams (each delta is its own
+	// notification) coalesce into one message instead of one-message-per-token.
+	// Flushed when interrupted by any non-thought event (preserves chronology
+	// with tool calls) and at end-of-turn.
+	turnThoughtText strings.Builder
 }
 
 // handleACPPromptResponse extracts accumulated turn text, calls the optional
@@ -92,6 +98,11 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 	if resp == nil {
 		return
 	}
+
+	// Flush any buffered thought text before the end-of-turn assistant
+	// message and result divider so trailing thoughts persist in their true
+	// chronological position rather than after the reply.
+	b.flushThoughtBuffer()
 
 	b.mu.Lock()
 	assistantText := b.turnAssistantText.String()
@@ -154,6 +165,21 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 		return
 	}
 
+	// Flush any buffered thought text before handling an event that
+	// produces a visible/persisted message, so coalesced thoughts appear at
+	// their real chronological position relative to tool calls and replies.
+	// Skip the flush for thought chunks themselves and for purely
+	// informational updates (usage, history replay, command list).
+	switch header.SessionUpdate {
+	case acpUpdateAgentThoughtChunk,
+		acpUpdateUsageUpdate,
+		acpUpdateUserMessageChunk,
+		acpUpdateAvailableCommandsUpdate:
+		// no flush
+	default:
+		b.flushThoughtBuffer()
+	}
+
 	switch header.SessionUpdate {
 	case acpUpdateAgentMessageChunk:
 		b.broadcastACPChunk(header.Content, &b.turnAssistantText, acpUpdateAgentMessageChunk)
@@ -206,6 +232,7 @@ func (b *acpBase) ClearContext() (string, bool) {
 	b.mu.Lock()
 	b.sessionID = session.SessionID
 	b.turnAssistantText.Reset()
+	b.turnThoughtText.Reset()
 	b.mu.Unlock()
 
 	b.sink.UpdateSessionID(session.SessionID)
@@ -703,18 +730,175 @@ func (b *acpBase) broadcastACPChunk(content json.RawMessage, builder *strings.Bu
 	b.sink.BroadcastStreamChunk([]byte(text), "", eventType)
 }
 
-// handleAgentThoughtChunk persists each agent_thought_chunk notification as
-// its own discrete message at its real chronological position. Mirrors the
-// per-item persistence model Codex uses for `reasoning` items: each notification
-// is a complete summary block, so concatenating them across the whole turn
-// (the previous behavior) collapsed section boundaries and pushed thinking
-// past any tool calls that interrupted it.
+// handleAgentThoughtChunk buffers an agent_thought_chunk notification's text
+// for later flushing. ACP providers vary in chunk granularity — OpenCode for
+// instance emits one notification per reasoning *delta* token in live
+// streaming (line 513 of opencode/src/acp/agent.ts) but one notification per
+// complete reasoning *part* on session replay (line 1087). Persisting each
+// notification as its own message produces a separate "Thinking" box per
+// token in the live case. We coalesce instead, flushing the buffer when a
+// non-thought event interrupts (preserves chronology with tool calls) or at
+// end-of-turn.
 func (b *acpBase) handleAgentThoughtChunk(content json.RawMessage) {
 	text := b.extractACPChunkText(content, acpUpdateAgentThoughtChunk)
 	if text == "" {
 		return
 	}
+	b.mu.Lock()
+	if b.turnThoughtText.Len() > 0 {
+		if sep := thoughtChunkSeparator(b.turnThoughtText.String(), text); sep != "" {
+			b.turnThoughtText.WriteString(sep)
+		}
+	}
+	b.turnThoughtText.WriteString(text)
+	b.mu.Unlock()
+}
+
+// flushThoughtBuffer persists the buffered thought text (if any) as one
+// agent_thought_chunk message and resets the buffer.
+func (b *acpBase) flushThoughtBuffer() {
+	b.mu.Lock()
+	text := b.turnThoughtText.String()
+	b.turnThoughtText.Reset()
+	b.mu.Unlock()
+	if text == "" {
+		return
+	}
 	b.persistTextMessage(acpUpdateAgentThoughtChunk, text)
+}
+
+// thoughtChunkSeparator returns the string (if any) that should be inserted
+// between an existing buffer and the next chunk to keep paragraph structure
+// intact at chunk seams.
+//
+// The wire format does not expose reasoning-part boundaries (the ACP
+// `agent_thought_chunk` notification only carries `messageId`, never the
+// underlying part ID). When the boundary lines up with a chunk seam — most
+// commonly on session replay, where each complete reasoning part arrives as
+// one notification — naive concatenation glues "previous sentence." onto
+// "**Next title**" or "feedback." onto "The proposed". We detect that with
+// two complementary heuristics:
+//
+//  1. The new chunk's first non-empty line is a markdown bold heading
+//     (^\*\*[^*]+\*\*$) or ATX heading (^#{1,6} ).
+//  2. The seam glues sentence-ending punctuation (.?!) directly onto a
+//     capital letter or `**`, with no whitespace on either side.
+//
+// Live token-by-token deltas usually have whitespace on at least one side of
+// the seam (or split mid-word), so they don't trigger either heuristic.
+func thoughtChunkSeparator(buffer, chunk string) string {
+	if buffer == "" || chunk == "" {
+		return ""
+	}
+	// Already separated by paragraph break across the seam.
+	trailingNL := countTrailing(buffer, '\n')
+	leadingNL := countLeading(chunk, '\n')
+	if trailingNL+leadingNL >= 2 {
+		return ""
+	}
+
+	if looksLikeMarkdownHeading(firstNonEmptyLine(chunk)) {
+		// Pad with whatever newlines the seam doesn't already provide.
+		return strings.Repeat("\n", 2-(trailingNL+leadingNL))
+	}
+
+	// Sentence-end glued to capital letter or bold marker, with no
+	// whitespace at the seam. e.g. "...feedback." + "The proposed..."
+	if trailingNL == 0 && leadingNL == 0 {
+		bufLast := lastRune(buffer)
+		chunkFirst := firstRune(chunk)
+		if isSentenceEnd(bufLast) && (unicode.IsUpper(chunkFirst) || strings.HasPrefix(chunk, "**")) &&
+			!unicode.IsSpace(bufLast) && !unicode.IsSpace(chunkFirst) {
+			return "\n\n"
+		}
+	}
+	return ""
+}
+
+func countTrailing(s string, r byte) int {
+	n := 0
+	for i := len(s) - 1; i >= 0 && s[i] == r; i-- {
+		n++
+	}
+	return n
+}
+
+func countLeading(s string, r byte) int {
+	n := 0
+	for i := 0; i < len(s) && s[i] == r; i++ {
+		n++
+	}
+	return n
+}
+
+func firstNonEmptyLine(s string) string {
+	for {
+		nl := strings.IndexByte(s, '\n')
+		var line string
+		if nl < 0 {
+			line = s
+			s = ""
+		} else {
+			line = s[:nl]
+			s = s[nl+1:]
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			return trimmed
+		}
+		if s == "" {
+			return ""
+		}
+	}
+}
+
+// looksLikeMarkdownHeading recognises a line that is either a fully wrapped
+// markdown bold heading (`**Title**`) or an ATX heading (`# Title`).
+// Inline bold within prose (a delta like just `**` or `**word`) does not
+// match because the line must both start AND end with `**`.
+func looksLikeMarkdownHeading(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**") && len(line) >= 5 {
+		inner := line[2 : len(line)-2]
+		if strings.TrimSpace(inner) != "" && !strings.Contains(inner, "**") {
+			return true
+		}
+	}
+	if strings.HasPrefix(line, "#") {
+		hashes := 0
+		for hashes < len(line) && line[hashes] == '#' {
+			hashes++
+		}
+		if hashes >= 1 && hashes <= 6 && hashes < len(line) && line[hashes] == ' ' {
+			return true
+		}
+	}
+	return false
+}
+
+func isSentenceEnd(r rune) bool {
+	switch r {
+	case '.', '!', '?':
+		return true
+	}
+	return false
+}
+
+func firstRune(s string) rune {
+	for _, r := range s {
+		return r
+	}
+	return 0
+}
+
+func lastRune(s string) rune {
+	var last rune
+	for _, r := range s {
+		last = r
+	}
+	return last
 }
 
 func (b *acpBase) persistTextMessage(sessionUpdate, text string) {

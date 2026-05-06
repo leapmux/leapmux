@@ -41,13 +41,15 @@ func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
+	// Thought chunks are buffered; flushed on interrupting event or end-of-turn.
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}`
 	agent.HandleOutput([]byte(input))
-
-	// Each agent_thought_chunk persists as its own discrete message.
 	require.Equal(t, 0, sink.StreamChunkCount())
-	require.Equal(t, 1, sink.MessageCount())
+	require.Equal(t, 0, sink.MessageCount())
 
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+
+	require.Equal(t, 2, sink.MessageCount())
 	msg := sink.Messages()[0]
 	require.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	var parsed map[string]interface{}
