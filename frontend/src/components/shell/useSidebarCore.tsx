@@ -66,6 +66,13 @@ export interface SidebarCommonProps {
   activeTodos: TodoItem[]
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
+  /**
+   * Whether the active tab's working dir is on disk and safe to query.
+   * Forwarded to the Files section so its directory tree and git status
+   * fetches don't fire while a worktree-creating agent is still in
+   * STARTING. See isTabReadyForGitStatus for the rationale.
+   */
+  activeTabReady: boolean
 
   // Tabs
   tabStore?: ReturnType<typeof createTabStore>
@@ -179,6 +186,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get activeFilePath() { return props.activeFilePath },
     get hasActiveFileTab() { return props.hasActiveFileTab },
     get turnEndTrigger() { return props.turnEndTrigger },
+    get activeTabReady() { return props.activeTabReady },
     filesSectionHandle,
     setFilesSectionHandle,
     get showTodos() { return props.showTodos },

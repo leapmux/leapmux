@@ -672,14 +672,18 @@ describe('isTabReadyForGitStatus', () => {
     expect(isTabReadyForGitStatus(tab, null)).toBe(false)
   })
 
-  it('treats a STARTING terminal tab as ready once startupMessage is set', () => {
+  it('defers a STARTING terminal tab even with a phase-0 startupMessage', () => {
+    // The "Creating worktree …" label is broadcast BEFORE executeGitMode
+    // runs (terminal.go runTerminalPhase0), so a non-empty startupMessage
+    // is not proof that the worktree is on disk. Defer until the tab
+    // leaves STARTING entirely.
     const tab: Tab = {
       type: TabType.TERMINAL,
       id: 't1',
       status: TerminalStatus.STARTING,
       startupMessage: 'Creating worktree "feature"…',
     }
-    expect(isTabReadyForGitStatus(tab, null)).toBe(true)
+    expect(isTabReadyForGitStatus(tab, null)).toBe(false)
   })
 
   it('treats null/undefined tab as ready', () => {
@@ -693,9 +697,7 @@ describe('isTabReadyForGitStatus', () => {
   })
 
   it('defers in the initial STARTING state — no startupMessage and no gitStatus', () => {
-    // This is the window between OpenAgent's response and the phase-1
-    // STARTING broadcast. `git worktree add` may be mid-checkout, so a
-    // status query would mark every in-index file as deleted.
+    // The window between OpenAgent's response and any broadcast.
     expect(
       isTabReadyForGitStatus(
         agentTab,
@@ -704,18 +706,29 @@ describe('isTabReadyForGitStatus', () => {
     ).toBe(false)
   })
 
-  it('is ready once a STARTING broadcast has set startupMessage', () => {
-    // Phase 1's first broadcast: status=STARTING, startupMessage="Checking
-    // Git status…", gitStatus=nil. Phase 0 has finished by this point.
+  it('defers a STARTING agent with a phase-0 startupMessage', () => {
+    // Phase 0 broadcasts "Creating worktree …" BEFORE executeGitMode
+    // runs, so a non-empty startupMessage means nothing about disk state.
+    expect(
+      isTabReadyForGitStatus(
+        agentTab,
+        agent({ status: AgentStatus.STARTING, startupMessage: 'Creating worktree "feature"…' }),
+      ),
+    ).toBe(false)
+  })
+
+  it('defers a STARTING agent in the phase-1 window', () => {
     expect(
       isTabReadyForGitStatus(
         agentTab,
         agent({ status: AgentStatus.STARTING, startupMessage: 'Checking Git status…' }),
       ),
-    ).toBe(true)
+    ).toBe(false)
   })
 
-  it('is ready once gitStatus has been broadcast', () => {
+  it('defers a STARTING agent in the phase-2 window even with gitStatus set', () => {
+    // gitStatus arrives at the start of phase 2, before the worktree is
+    // reliably observable to a separate process — see the helper docstring.
     expect(
       isTabReadyForGitStatus(
         agentTab,
@@ -725,7 +738,7 @@ describe('isTabReadyForGitStatus', () => {
           gitStatus: { branch: 'main' } as AgentInfo['gitStatus'],
         }),
       ),
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it('is ready in any non-STARTING state regardless of message/gitStatus', () => {

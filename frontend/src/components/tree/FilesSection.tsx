@@ -50,6 +50,11 @@ export interface FilesSectionProps {
   hasActiveFileTab: boolean
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
+  /**
+   * When false, the directory tree's initial filesystem fetch is
+   * suppressed. Forwarded to DirectoryTree — see its `enabled` prop.
+   */
+  enabled?: boolean
   /** Ref callback for imperative actions (collapse all). */
   ref?: (handle: FilesSectionHandle) => void
 }
@@ -230,6 +235,7 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
               visiblePaths={visiblePaths()}
               showHiddenFiles={showHiddenFiles()}
               turnEndTrigger={props.turnEndTrigger}
+              enabled={props.enabled}
               ref={(h) => { treeHandle = h }}
             />
           </div>

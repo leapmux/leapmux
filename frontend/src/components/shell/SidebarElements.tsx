@@ -44,6 +44,8 @@ export interface SidebarElementsOpts {
   termOps: ReturnType<typeof useTerminalOperations>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger: number
+  /** Whether the active tab's working dir is on disk and safe to query. */
+  activeTabReady: boolean
   // Worker section
   workers: Worker[]
   workerInfoFn: (id: string) => WorkerInfo | null
@@ -106,6 +108,7 @@ export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: Si
       activeFilePath={opts.activeFilePath}
       hasActiveFileTab={opts.hasActiveFileTab}
       turnEndTrigger={opts.turnEndTrigger}
+      activeTabReady={opts.activeTabReady}
       workers={opts.workers}
       workerInfoFn={opts.workerInfoFn}
       channelStatusFn={opts.channelStatusFn}
@@ -162,6 +165,7 @@ export function createRightSidebarElement(opts: SidebarElementsOpts, display?: S
       activeFilePath={opts.activeFilePath}
       hasActiveFileTab={opts.hasActiveFileTab}
       turnEndTrigger={opts.turnEndTrigger}
+      activeTabReady={opts.activeTabReady}
       tabStore={opts.tabStore}
       registry={opts.registry}
       onTabClick={opts.onTabClick}

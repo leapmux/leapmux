@@ -224,13 +224,20 @@ export function resolveOptimisticGitInfo(
 /**
  * Whether the tab's working tree is in a stable state for `git status`.
  *
- * Returns false during the phase-0 window of a fresh worktree-creating
- * agent or terminal: while `git worktree add` is mid-checkout,
- * `git status` reports every still-unwritten in-index file as deleted,
- * which would otherwise blast bogus diff stats onto the new tab. Phase
- * 1's first STARTING broadcast sets `startupMessage` (and for agents
- * phase 2 also fills `gitStatus`), so the arrival of either signals
- * that phase 0 is done and the working tree is settled.
+ * Defers across the entire STARTING window of a worktree-creating agent
+ * or terminal. While `git worktree add` is still effectively populating
+ * the working tree (or its writes are not yet observable to a separate
+ * process running `git status` — seen in practice on at least one
+ * filesystem setup), a status query reports every still-unwritten
+ * in-index file as deleted, which would otherwise blast bogus diff
+ * stats onto the new tab. Waiting for status to leave STARTING is the
+ * conservative signal that's known to be reliable: by then phase 2's
+ * provider init has completed too, and the worktree has had time to
+ * settle.
+ *
+ * Trade-off: the file tree shows no diff badge for the whole startup
+ * (a few seconds), not just phase 0. Acceptable — users don't expect
+ * meaningful diff stats while "Starting <provider>…" is on screen.
  *
  * File tabs are always treated as ready — they don't go through the
  * worktree-creating startup pipeline.
@@ -244,14 +251,10 @@ export function isTabReadyForGitStatus(
   if (tab.type === TabType.AGENT) {
     if (!agent)
       return true
-    if (agent.status !== AgentStatus.STARTING)
-      return true
-    return Boolean(agent.startupMessage) || agent.gitStatus !== undefined
+    return agent.status !== AgentStatus.STARTING
   }
   if (tab.type === TabType.TERMINAL) {
-    if (tab.status !== TerminalStatus.STARTING)
-      return true
-    return Boolean(tab.startupMessage)
+    return tab.status !== TerminalStatus.STARTING
   }
   return true
 }

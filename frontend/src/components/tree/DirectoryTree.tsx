@@ -11,12 +11,13 @@ import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
 import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import TerminalIcon from 'lucide-solid/icons/terminal'
-import { createContext, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, useContext } from 'solid-js'
+import { createContext, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
+import { StartupSpinner } from '~/components/common/StartupPanel'
 import { Tooltip } from '~/components/common/Tooltip'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, relativizePath, tildify, untildify } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
@@ -51,6 +52,15 @@ export interface DirectoryTreeProps {
   turnEndTrigger?: number
   /** When false, entries with hidden=true are filtered out. Defaults to true. */
   showHiddenFiles?: boolean
+  /**
+   * When false, the initial root-children fetch is suppressed. Used to
+   * defer a directory listing for a tab whose working dir isn't on disk
+   * yet (e.g. a worktree-creating agent during its STARTING window —
+   * fetching now would cache a partial listing that persists until the
+   * user manually refreshes). Flipping back to true triggers the load
+   * effect to run, which then fetches normally.
+   */
+  enabled?: boolean
   /** Ref callback for imperative actions (collapse all, etc.). */
   ref?: (handle: DirectoryTreeHandle) => void
 }
@@ -712,6 +722,8 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     const root = props.rootPath ?? '~'
     if (!workerId)
       return
+    if (props.enabled === false)
+      return
 
     // If we already have cached children (from sessionStorage or previous
     // load), skip fetching — this eliminates flicker on tab switches.
@@ -847,13 +859,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
           )}
         </Show>
         <div class={styles.tree} ref={treeRef}>
-          <Show when={error()}>
-            <div class={styles.errorState}>{error()}</div>
-          </Show>
-          <Show when={loading()}>
-            <div class={styles.loadingState}>Loading...</div>
-          </Show>
-          <Show when={!loading() && !error()}>
+          <Switch fallback={(
             <div class={styles.treeInner}>
               {/* Root directory row */}
               <div
@@ -902,7 +908,20 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                 </div>
               </Show>
             </div>
-          </Show>
+          )}
+          >
+            <Match when={error()}>
+              <div class={styles.errorState}>{error()}</div>
+            </Match>
+            <Match when={props.enabled === false}>
+              <div class={styles.loadingState} data-testid="directory-tree-starting">
+                <StartupSpinner label="Starting…" />
+              </div>
+            </Match>
+            <Match when={loading()}>
+              <div class={styles.loadingState}>Loading...</div>
+            </Match>
+          </Switch>
         </div>
       </div>
     </TreeContext.Provider>

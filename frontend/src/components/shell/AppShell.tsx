@@ -1103,6 +1103,7 @@ export const AppShell: ParentComponent = (props) => {
     termOps,
     gitStatusStore: gitFileStatusStore,
     get turnEndTrigger() { return turnEndTrigger() },
+    get activeTabReady() { return activeTabReady() },
     get activeFilePath() {
       const active = tabStore.activeTab()
       return active?.type === TabType.FILE ? active.filePath : undefined

@@ -61,6 +61,12 @@ export interface SectionDefContext {
   activeFilePath?: string
   hasActiveFileTab?: boolean
   turnEndTrigger?: number
+  /**
+   * Whether the active tab's working dir is settled enough to fetch
+   * directory listings / git status. Mirrors the same gate used for
+   * gitFileStatusStore.refresh in AppShell. See isTabReadyForGitStatus.
+   */
+  activeTabReady: boolean
   filesSectionHandle: Accessor<FilesSectionHandle | undefined>
   setFilesSectionHandle: (handle: FilesSectionHandle | undefined) => void
 
@@ -203,6 +209,7 @@ export function buildSectionDef(
             activeFilePath={ctx.activeFilePath}
             hasActiveFileTab={ctx.hasActiveFileTab ?? false}
             turnEndTrigger={ctx.turnEndTrigger}
+            enabled={ctx.activeTabReady}
             ref={ctx.setFilesSectionHandle}
           />
         </Show>

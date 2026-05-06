@@ -76,6 +76,7 @@ function makeProps() {
     showTodos: false,
     activeTodos: [],
     turnEndTrigger: 0,
+    activeTabReady: true,
     tabStore: undefined,
     registry: undefined,
     onTabClick: vi.fn(),
