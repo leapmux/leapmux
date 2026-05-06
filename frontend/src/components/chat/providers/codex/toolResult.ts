@@ -3,8 +3,7 @@ import type { ToolResultMeta } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { pickString } from '~/lib/jsonPick'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
-import { hasMoreLinesThan } from '../../results/useCollapsedLines'
-import { COLLAPSED_RESULT_ROWS } from '../../toolRenderers'
+import { commandOutputIsCollapsible } from '../../results/commandResult'
 import { extractItem } from './renderHelpers'
 
 const DIFF_HUNK_HEADER = '@@ '
@@ -49,7 +48,7 @@ export function codexToolResultMeta(
 
   if (spanType === CODEX_ITEM.COMMAND_EXECUTION && (item.status === CODEX_STATUS.COMPLETED || item.status === CODEX_STATUS.FAILED)) {
     return {
-      collapsible: hasMoreLinesThan(item.aggregatedOutput, COLLAPSED_RESULT_ROWS),
+      collapsible: commandOutputIsCollapsible(item.aggregatedOutput),
       hasDiff: false,
       hasCopyable: item.aggregatedOutput.length > 0,
       copyableContent: () => item.aggregatedOutput || null,

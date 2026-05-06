@@ -3,6 +3,8 @@ import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { claudeToolResultMeta } from './claude/toolResult'
+import { codexToolResultMeta } from './codex/toolResult'
 import './claude'
 import './codex'
 import './opencode'
@@ -201,5 +203,54 @@ describe('command result \\r progress normalization', () => {
     expect(text).toContain('s8')
     expect(text).not.toContain('s4')
     expect(text).not.toContain('s5')
+  })
+})
+
+// Regression for "no expand/collapse button on rebase output". The body
+// normalizes \r-overwrites into separate lines (so a 3-raw-line stdout can
+// render as 9 lines), but `meta.collapsible` was counting raw \n only — so
+// the toolbar's expand button never appeared over output the body actually
+// clipped. These tests pin the post-normalize line count into the meta so
+// the toolbar and body agree.
+describe('command result collapsibility accounts for \\r-normalized line count', () => {
+  it('claude Bash: rebase progress (3 raw lines, 9 normalized lines) is reported as collapsible', () => {
+    const stdout = 'From github.com:leapmux/leapmux\n * branch              main       -> FETCH_HEAD\nRebasing (1/6)\rRebasing (2/6)\rRebasing (3/6)\rRebasing (4/6)\rRebasing (5/6)\rRebasing (6/6)\rSuccessfully rebased and updated refs/heads/grid-layout.'
+    const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, parsed, 'Bash', undefined)
+    expect(meta?.collapsible).toBe(true)
+  })
+
+  it('claude Bash: short \\r progress (no clip) is NOT reported as collapsible', () => {
+    // 4 \r-segments → 4 normalized lines. Threshold widens to 7 because of
+    // the \r, so 4 ≤ 7 means the body shows everything; meta should agree.
+    const stdout = 'Rebasing (1/4)\rRebasing (2/4)\rRebasing (3/4)\rDone'
+    const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, parsed, 'Bash', undefined)
+    expect(meta?.collapsible).toBe(false)
+  })
+
+  it('claude Bash: plain output preserves the standard 3-row collapse threshold', () => {
+    const stdout = 'a\nb\nc\nd'
+    const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, parsed, 'Bash', undefined)
+    expect(meta?.collapsible).toBe(true)
+  })
+
+  it('claude Bash: plain output at the threshold (3 lines, no \\r) is NOT collapsible', () => {
+    const stdout = 'a\nb\nc'
+    const parsed = makeBashResult({ tool_name: 'Bash', stdout }, stdout)
+    const meta = claudeToolResultMeta({ kind: 'tool_result' }, parsed, 'Bash', undefined)
+    expect(meta?.collapsible).toBe(false)
+  })
+
+  it('codex commandExecution: rebase-style \\r progress is reported as collapsible', () => {
+    const aggregatedOutput = 'From origin\n * branch    main       -> FETCH_HEAD\nRebasing (1/6)\rRebasing (2/6)\rRebasing (3/6)\rRebasing (4/6)\rRebasing (5/6)\rRebasing (6/6)\rDone.'
+    const meta = codexToolResultMeta(
+      { kind: 'tool_use', toolName: 'commandExecution', toolUse: {}, content: [] },
+      { item: { type: 'commandExecution', status: 'completed', aggregatedOutput, exitCode: 0 } },
+      'commandExecution',
+      undefined,
+    )
+    expect(meta?.collapsible).toBe(true)
   })
 })

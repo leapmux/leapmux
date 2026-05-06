@@ -10,7 +10,7 @@ import { COLLAPSED_RESULT_ROWS, stripLeadingBlankLines } from '../toolRenderers'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ToolStatusHeader } from './ToolStatusHeader'
-import { useCollapsedLines } from './useCollapsedLines'
+import { hasMoreLinesThan, useCollapsedLines } from './useCollapsedLines'
 
 /**
  * Provider-neutral source for a command-execution result (Claude `Bash`,
@@ -30,6 +30,20 @@ export interface CommandResultSource {
   interrupted?: boolean
   /** Resolved error state. */
   isError: boolean
+}
+
+/**
+ * Mirror of {@link CommandResultBody}'s collapse decision for tool-meta
+ * `collapsible` checks. `hasMoreLinesThan` against raw `\n`s under-counts
+ * when output contains `\r`-overwrites (progress bars, `git rebase`, etc.)
+ * because the body normalizes those into separate lines at render time —
+ * leaving the toolbar's expand button hidden over output the body actually
+ * clips. Use this helper for any provider feeding `CommandResultBody` so
+ * the meta and the body agree.
+ */
+export function commandOutputIsCollapsible(text: string): boolean {
+  const { text: normalized, hadCarriageReturns } = normalizeProgressOutput(text)
+  return hasMoreLinesThan(normalized, hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS)
 }
 
 /**

@@ -11,8 +11,8 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { formatUnifiedDiffText } from '../../diff'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
+import { commandOutputIsCollapsible } from '../../results/commandResult'
 import { fileEditDiffHunks, fileEditHasDiff } from '../../results/fileEditDiff'
-import { hasMoreLinesThan } from '../../results/useCollapsedLines'
 import { COLLAPSED_RESULT_ROWS } from '../../toolRenderers'
 import { registerProvider } from '../registry'
 import { piQuestionsFromPayload } from './askUserQuestion'
@@ -130,7 +130,7 @@ function piToolResultMeta(
     if (!bash)
       return null
     return {
-      collapsible: hasMoreLinesThan(bash.output, COLLAPSED_RESULT_ROWS),
+      collapsible: commandOutputIsCollapsible(bash.output),
       hasDiff: false,
       hasCopyable: bash.output !== '',
       copyableContent: () => bash.output || null,

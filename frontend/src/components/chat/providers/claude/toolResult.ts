@@ -5,6 +5,7 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { formatUnifiedDiffText } from '../../diff'
+import { commandOutputIsCollapsible } from '../../results/commandResult'
 import { fileEditDiffHunks, fileEditHasDiff } from '../../results/fileEditDiff'
 import { hasMoreLinesThan } from '../../results/useCollapsedLines'
 import { COLLAPSED_RESULT_ROWS } from '../../toolRenderers'
@@ -69,6 +70,12 @@ function isCollapsible(
 
   if (toolName === CLAUDE_TOOL.REMOTE_TRIGGER)
     return claudeRemoteTriggerFromToolResult(toolUseResult, resultText ?? '') !== null
+
+  // Bash flows through CommandResultBody, which normalizes `\r`-overwrites
+  // into separate lines. Counting raw `\n` here would hide the toolbar's
+  // expand button on progress output that the body actually clips.
+  if (toolName === CLAUDE_TOOL.BASH)
+    return resultText != null && commandOutputIsCollapsible(resultText)
 
   return resultText != null && hasMoreLinesThan(resultText, COLLAPSED_RESULT_ROWS)
 }

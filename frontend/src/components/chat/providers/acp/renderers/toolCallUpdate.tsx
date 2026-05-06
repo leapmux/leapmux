@@ -15,7 +15,7 @@ import { useSharedExpandedState } from '../../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../../messageUiKeys'
 import { firstNonEmptyLine } from '../../../rendererUtils'
 import { CollapsibleContent } from '../../../results/CollapsibleContent'
-import { CommandResultBody } from '../../../results/commandResult'
+import { commandOutputIsCollapsible, CommandResultBody } from '../../../results/commandResult'
 import { FileEditDiffBody, pickFileEditDiff } from '../../../results/fileEditDiff'
 import { isMultiLineCommand, MultiLineCommandBody } from '../../../results/multiLineCommandBody'
 import { ReadFileResultBody } from '../../../results/readFileResult'
@@ -167,9 +167,14 @@ function ToolCallUpdateMessage(props: {
     return <div class={toolInputSummary} innerHTML={renderBashHighlight(firstNonEmptyLine(cmd) ?? cmd)} />
   }
 
-  // Expand/collapse
+  // Expand/collapse. For execute kind the body is `CommandResultBody`,
+  // which normalizes `\r`-overwrites into separate lines — match that here
+  // so the toggle button shows over progress output the body would clip.
   const multiLine = createMemo(() => isMultiLineCommand(command()))
-  const hasExpandable = () => multiLine() || hasMoreLinesThan(outputText(), COLLAPSED_RESULT_ROWS)
+  const outputCollapsible = () => kind() === ACP_TOOL_KIND.EXECUTE
+    ? commandOutputIsCollapsible(outputText())
+    : hasMoreLinesThan(outputText(), COLLAPSED_RESULT_ROWS)
+  const hasExpandable = () => multiLine() || outputCollapsible()
   const expandLabel = () => multiLine() ? 'Show full command' : 'Expand output'
 
   // Execute-specific: hide summary when expanded + multi-line command
