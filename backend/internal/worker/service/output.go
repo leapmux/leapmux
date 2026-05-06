@@ -659,6 +659,16 @@ func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
 	return v.(*SpanTracker)
 }
 
+// snapshotPassthroughSpanLines returns the JSON-encoded span lines for a
+// root-level message that is not part of any span (e.g. a user-typed input
+// while a subagent is running). Active spans render as vertical passthrough
+// bars so the surrounding span columns remain visually unbroken across the
+// row. Returns "[]" when no spans are active.
+func (h *OutputHandler) snapshotPassthroughSpanLines(agentID string) string {
+	_, lines, _ := h.spanTracker(agentID).Snapshot("", "", false)
+	return lines
+}
+
 // NewSink creates a per-agent OutputSink backed by this OutputHandler.
 func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.OutputSink {
 	return &agentOutputSink{
@@ -1223,9 +1233,17 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 	}
 
 	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
+
+	// Re-snapshot active spans at append time. The thread row's seq is
+	// bumped to the latest position, so its span_lines must reflect the
+	// spans active *now* — not whatever was active when the thread was
+	// originally created.
+	spanLines := h.snapshotPassthroughSpanLines(agentID)
+
 	newSeq, err := h.queries.UpdateNotificationThread(bgCtx(), db.UpdateNotificationThreadParams{
 		Content:            mergedCompressed,
 		ContentCompression: mergedCompType,
+		SpanLines:          spanLines,
 		ID:                 parentRow.ID,
 		AgentID:            agentID,
 	})
@@ -1244,6 +1262,8 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		Seq:                newSeq,
 		AgentProvider:      agentProvider,
 		CreatedAt:          timefmt.Format(parentRow.CreatedAt),
+		Depth:              0,
+		SpanLines:          spanLines,
 	})
 
 	return nil
@@ -1256,6 +1276,10 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 	compressed, compressionType := msgcodec.Compress(wrapped)
 	now := time.Now()
 
+	// Capture currently-active spans so the notification renders with
+	// passthrough vertical bars instead of breaking the column.
+	spanLines := h.snapshotPassthroughSpanLines(agentID)
+
 	seq, err := h.queries.CreateMessage(bgCtx(), db.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
@@ -1265,7 +1289,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		Depth:              0,
 		SpanID:             "",
 		ParentSpanID:       "",
-		SpanLines:          "[]",
+		SpanLines:          spanLines,
 		SpanColor:          0,
 		AgentProvider:      agentProvider,
 		CreatedAt:          now,
@@ -1288,6 +1312,8 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		Seq:                seq,
 		AgentProvider:      agentProvider,
 		CreatedAt:          timefmt.Format(now),
+		Depth:              0,
+		SpanLines:          spanLines,
 	})
 	return nil
 }

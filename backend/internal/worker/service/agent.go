@@ -283,6 +283,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		compressed, compressionType := msgcodec.Compress(innerJSON)
 
+		// Capture currently-active spans so the user message renders with
+		// passthrough vertical bars instead of breaking the column.
+		spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
+
 		// Persist the user message.
 		seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
 			ID:                 messageID,
@@ -293,7 +297,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Depth:              0,
 			SpanID:             "",
 			ParentSpanID:       "",
-			SpanLines:          "[]",
+			SpanLines:          spanLines,
 			SpanColor:          0,
 			AgentProvider:      dbAgent.AgentProvider,
 			CreatedAt:          now,
@@ -316,6 +320,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Seq:                seq,
 			AgentProvider:      dbAgent.AgentProvider,
 			CreatedAt:          timefmt.Format(now),
+			Depth:              0,
+			SpanLines:          spanLines,
 		}
 
 		// For /clear, broadcast the user message before restarting so live
@@ -1875,6 +1881,10 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 	}
 	compressed, compressionType := msgcodec.Compress(innerJSON)
 
+	// Capture currently-active spans so the user message renders with
+	// passthrough vertical bars instead of breaking the column.
+	spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
+
 	seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
 		ID:                 messageID,
 		AgentID:            agentID,
@@ -1884,7 +1894,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 		Depth:              0,
 		SpanID:             "",
 		ParentSpanID:       "",
-		SpanLines:          "[]",
+		SpanLines:          spanLines,
 		SpanColor:          0,
 		AgentProvider:      dbAgent.AgentProvider,
 		CreatedAt:          now,
@@ -1923,6 +1933,8 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 		DeliveryError:      deliveryError,
 		AgentProvider:      dbAgent.AgentProvider,
 		CreatedAt:          timefmt.Format(now),
+		Depth:              0,
+		SpanLines:          spanLines,
 	}
 	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,

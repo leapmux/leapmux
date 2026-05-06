@@ -51,6 +51,7 @@ UPDATE messages SET delivery_error = ? WHERE id = ? AND agent_id = ?;
 UPDATE messages
 SET content = sqlc.arg(content),
     content_compression = sqlc.arg(content_compression),
+    span_lines = sqlc.arg(span_lines),
     seq = (SELECT COALESCE(MAX(m.seq), 0) + 1 FROM messages m WHERE m.agent_id = sqlc.arg(agent_id))
 WHERE messages.id = sqlc.arg(id) AND messages.agent_id = sqlc.arg(agent_id)
 RETURNING seq;
