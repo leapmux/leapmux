@@ -23,7 +23,7 @@ export const orgItem = style({
     },
     '&[data-active]': {
       color: 'var(--primary)',
-      fontWeight: 400,
+      fontWeight: 'var(--font-normal)',
       backgroundColor: 'var(--secondary)',
     },
     '&[data-active][data-highlighted]': {

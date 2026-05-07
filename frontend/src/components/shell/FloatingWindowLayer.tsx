@@ -1,9 +1,9 @@
 import type { Component, JSX } from 'solid-js'
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
+import type { GridAxis } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
 import { For } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
-import { tabKey } from '~/stores/tab.store'
 import { FloatingWindowContainer } from './FloatingWindowContainer'
 import * as styles from './FloatingWindowContainer.css'
 import { TilingLayout } from './TilingLayout'
@@ -13,6 +13,7 @@ interface FloatingWindowLayerProps {
   tabStore: ReturnType<typeof createTabStore>
   renderTile: (tileId: string) => JSX.Element
   onRatioChange: (windowId: string, splitId: string, ratios: number[]) => void
+  onGridRatiosChange?: (windowId: string, gridId: string, axis: GridAxis, ratios: number[]) => void
   onCloseWindow: (windowId: string) => void
   onActivateWindow?: (windowId: string) => void
   onGeometryChange?: () => void
@@ -21,25 +22,27 @@ interface FloatingWindowLayerProps {
   fileDropDisabled?: boolean
 }
 
+/**
+ * Floor for the inline `z-index` we hand each floating window. Sits well
+ * below CSS `--z-dropdown` and friends so even the topmost floating window
+ * stays under modals / popovers / tooltips. The store doesn't carry a
+ * z-index field — we derive it from the window's position in
+ * `state.windows` (last = topmost) per its `bringToFront` contract.
+ */
+const Z_INDEX_BASE = 1000
+
 export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) => {
   const getWindowTitle = (windowId: string): string => {
     const win = props.floatingWindowStore.getWindow(windowId)
-    if (!win)
+    if (!win?.focusedTileId)
       return 'Window'
-    const focusedTileId = win.focusedTileId
-    if (!focusedTileId)
-      return 'Window'
-    const tileActiveKey = props.tabStore.getActiveTabKeyForTile(focusedTileId)
-    if (!tileActiveKey)
-      return 'Window'
-    const tab = props.tabStore.state.tabs.find(t => tabKey(t) === tileActiveKey)
-    return tab?.title || 'Window'
+    return props.tabStore.getActiveTabForTile(win.focusedTileId)?.title || 'Window'
   }
 
   return (
     <div class={styles.floatingLayer} data-testid="floating-window-layer">
       <For each={props.floatingWindowStore.state.windows}>
-        {win => (
+        {(win, idx) => (
           <FloatingWindowContainer
             windowId={win.id}
             x={win.x}
@@ -47,7 +50,7 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
             width={win.width}
             height={win.height}
             opacity={win.opacity}
-            zIndex={win.zIndex}
+            zIndex={Z_INDEX_BASE + idx()}
             title={getWindowTitle(win.id)}
             floatingWindowStore={props.floatingWindowStore}
             onClose={() => props.onCloseWindow(win.id)}
@@ -59,6 +62,7 @@ export const FloatingWindowLayer: Component<FloatingWindowLayerProps> = (props) 
                 root={win.layoutRoot}
                 renderTile={props.renderTile}
                 onRatioChange={(splitId, ratios) => props.onRatioChange(win.id, splitId, ratios)}
+                onGridRatiosChange={(gridId, axis, ratios) => props.onGridRatiosChange?.(win.id, gridId, axis, ratios)}
               />
               {props.editorPanel?.(win.id)}
             </ChatDropZone>

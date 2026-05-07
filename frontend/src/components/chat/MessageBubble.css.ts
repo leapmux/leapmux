@@ -25,7 +25,7 @@ export const messageErrorDot = style({
 const messageActionButton = {
   all: 'unset' as const,
   cursor: 'pointer',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   fontSize: 'var(--text-8)',
   textDecoration: 'underline',
   textUnderlineOffset: '2px',

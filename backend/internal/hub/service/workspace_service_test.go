@@ -532,6 +532,115 @@ func TestListTabs_BatchAndSilentDrop(t *testing.T) {
 	assert.Equal(t, ws1, resp.Msg.GetTabs()[0].GetWorkspaceId())
 }
 
+// gridNode is a helper for constructing LayoutGrid proto nodes in tests.
+func gridNode(id string, rows, cols uint32, rowRatios, colRatios []float64, cells ...*leapmuxv1.LayoutNode) *leapmuxv1.LayoutNode {
+	return &leapmuxv1.LayoutNode{
+		Node: &leapmuxv1.LayoutNode_Grid{
+			Grid: &leapmuxv1.LayoutGrid{
+				Id:        id,
+				Rows:      rows,
+				Cols:      cols,
+				RowRatios: rowRatios,
+				ColRatios: colRatios,
+				Cells:     cells,
+			},
+		},
+	}
+}
+
+func TestSaveLayout_AcceptsNilLayout(t *testing.T) {
+	// Some callers send only tab updates without touching the layout; the
+	// service must accept a nil/zero LayoutNode in that case.
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+
+	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+		Layout:      nil,
+	}, env.token))
+	require.NoError(t, err)
+}
+
+func TestSaveLayout_RejectsOversizedGrid(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+
+	cells := make([]*leapmuxv1.LayoutNode, 21)
+	for i := range cells {
+		cells[i] = leafNode("c-" + string(rune('A'+i)))
+	}
+	rowRatios := make([]float64, 21)
+	for i := range rowRatios {
+		rowRatios[i] = 1.0 / 21.0
+	}
+	bad := gridNode("g1", 21, 1, rowRatios, []float64{1.0}, cells...)
+
+	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+		Layout:      bad,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestSaveLayout_RejectsCellCountMismatch(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+
+	bad := gridNode("g1", 2, 2, []float64{0.5, 0.5}, []float64{0.5, 0.5},
+		leafNode("A"), leafNode("B"), leafNode("C"),
+	)
+
+	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+		Layout:      bad,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestSaveLayout_RejectsBadRatios(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+
+	// row_ratios sum to 0.6, not ~1.0
+	bad := gridNode("g1", 2, 2, []float64{0.3, 0.3}, []float64{0.5, 0.5},
+		leafNode("A"), leafNode("B"), leafNode("C"), leafNode("D"),
+	)
+
+	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+		Layout:      bad,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestSaveLayout_RejectsMalformedFloatingWindowGrid(t *testing.T) {
+	env := setupWorkspaceTest(t)
+	wsID := env.createWorkspace(t)
+
+	bad := gridNode("g1", 2, 2, []float64{0.5, 0.5}, []float64{0.5, 0.5},
+		leafNode("A"), leafNode("B"), // only 2 cells, not 4
+	)
+
+	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
+		OrgId:       env.orgID,
+		WorkspaceId: wsID,
+		Layout:      leafNode("tile-1"),
+		FloatingWindows: []*leapmuxv1.FloatingWindow{
+			{Id: "fw-1", X: 0.1, Y: 0.1, Width: 0.5, Height: 0.5, Layout: bad},
+		},
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "floating window")
+}
+
 func TestSaveLayout_RollsBackOnTabFailure(t *testing.T) {
 	env := setupWorkspaceTest(t)
 	wsID := env.createWorkspace(t)

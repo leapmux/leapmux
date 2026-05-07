@@ -72,7 +72,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
   }
 
   return (
-    <Dialog title="Workspace Sharing" busy={saving.loading()} onClose={() => props.onClose()}>
+    <Dialog title="Workspace sharing" busy={saving.loading()} onClose={() => props.onClose()}>
       <Show when={!loading()} fallback={<div>Loading...</div>}>
         <section>
           <div class="vstack gap-4">

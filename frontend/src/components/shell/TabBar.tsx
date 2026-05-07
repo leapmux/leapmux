@@ -1,16 +1,15 @@
 import type { Component, JSX } from 'solid-js'
+import type { TileActions } from './TileActionsMenu'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import type { Tab } from '~/stores/tab.store'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
-import Columns2 from 'lucide-solid/icons/columns-2'
 import Ellipsis from 'lucide-solid/icons/ellipsis'
 import FileText from 'lucide-solid/icons/file-text'
 import Menu from 'lucide-solid/icons/menu'
 import PanelRight from 'lucide-solid/icons/panel-right'
 import Plus from 'lucide-solid/icons/plus'
-import Rows2 from 'lucide-solid/icons/rows-2'
 import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
@@ -29,6 +28,7 @@ import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
 import { terminalStatusClassList } from './terminalStatus'
+import { TileActionsMenu } from './TileActionsMenu'
 
 const MENU_CHECK = '\u2713' // ✓
 
@@ -71,52 +71,57 @@ function tabTypeLabel(type: TabType): string {
   }
 }
 
-export interface TileActions {
-  canSplit: boolean
-  canClose: boolean
-  onSplitHorizontal: () => void
-  onSplitVertical: () => void
-  onClose: () => void
+/** New-tab actions surfaced by the Plus button and overflow menu. */
+interface TabBarNewTabProps {
+  showAddButton: boolean
+  onNewAgent: (provider?: AgentProvider) => void
+  onNewTerminal: () => void
+  onNewTerminalWithShell?: (shell: string) => void
+  onNewAgentAdvanced?: () => void
+  onNewTerminalAdvanced?: () => void
+  availableProviders?: AgentProvider[]
+  availableShells?: string[]
+  defaultShell?: string
+  newAgentLoadingProvider?: AgentProvider | null
+  newTerminalLoading?: boolean
+  newShellLoading?: boolean
+  hasActiveTabContext?: boolean
+}
+
+/** Mobile sidebar toggles rendered in the tab bar header. */
+interface TabBarMobileProps {
+  isMobile: boolean
+  onToggleLeftSidebar?: () => void
+  onToggleRightSidebar?: () => void
 }
 
 interface TabBarProps {
   tileId: string
   tabs: Tab[]
   activeTabKey: string | null
-  showAddButton: boolean
+  readOnly?: boolean
+  closingTabKeys?: Set<string>
+  isEditingRef?: (fn: () => boolean) => void
   onSelect: (tab: Tab) => void
   onClose: (tab: Tab) => void
   onRename: (tab: Tab, title: string) => void
-  onNewAgent: (provider?: AgentProvider) => void
-  onNewTerminal: () => void
-  availableProviders?: AgentProvider[]
-  availableShells?: string[]
-  defaultShell?: string
-  onNewTerminalWithShell?: (shell: string) => void
-  onNewAgentAdvanced?: () => void
-  onNewTerminalAdvanced?: () => void
-  newAgentLoadingProvider?: AgentProvider | null
-  newTerminalLoading?: boolean
-  newShellLoading?: boolean
-  hasActiveTabContext?: boolean
-  closingTabKeys?: Set<string>
-  isEditingRef?: (fn: () => boolean) => void
-  isMobile?: boolean
-  onToggleLeftSidebar?: () => void
-  onToggleRightSidebar?: () => void
+  /** New-tab plumbing (loading flags, shell list, advanced dialog hooks). */
+  newTab: TabBarNewTabProps
+  /** Mobile chrome; omit on desktop. */
+  mobile?: TabBarMobileProps
+  /** Tile-level actions in the overflow menu. */
   tileActions?: TileActions
-  readOnly?: boolean
 }
 
 export const TabBar: Component<TabBarProps> = (props) => {
   const prefs = usePreferences()
-  const { mruProviders, recordProviderUse } = useMruProviders(() => props.availableProviders ?? [], 2)
+  const { mruProviders, recordProviderUse } = useMruProviders(() => props.newTab.availableProviders ?? [], 2)
   const handleNewAgent = (provider?: AgentProvider) => {
     if (provider !== undefined)
       recordProviderUse(provider)
-    props.onNewAgent(provider)
+    props.newTab.onNewAgent(provider)
   }
-  const newTerminalLabel = () => props.hasActiveTabContext ? 'New terminal at the current working directory' : 'New terminal...'
+  const newTerminalLabel = () => props.newTab.hasActiveTabContext ? 'New terminal at the current working directory' : 'New terminal...'
 
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
   const [editingValue, setEditingValue] = createSignal('')
@@ -301,9 +306,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const renderMoreMenuItems = () => (
     <>
       <li class={menuSectionHeader}>Agents</li>
-      <Show when={props.availableProviders?.length}>
+      <Show when={props.newTab.availableProviders?.length}>
         <li class={styles.providerIconsRow}>
-          <For each={props.availableProviders}>
+          <For each={props.newTab.availableProviders}>
             {provider => (
               <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
                 <button
@@ -318,7 +323,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           </For>
         </li>
       </Show>
-      <button role="menuitem" onClick={() => props.onNewAgentAdvanced?.()}>
+      <button role="menuitem" onClick={() => props.newTab.onNewAgentAdvanced?.()}>
         <DropdownMenuItemContent
           label="New agent..."
           shortcut={getShortcutHintsText('app.newAgentDialog')}
@@ -326,17 +331,17 @@ export const TabBar: Component<TabBarProps> = (props) => {
       </button>
       <hr />
       <li class={menuSectionHeader}>Terminals</li>
-      <button role="menuitem" onClick={() => props.onNewTerminalAdvanced?.()}>
+      <button role="menuitem" onClick={() => props.newTab.onNewTerminalAdvanced?.()}>
         <DropdownMenuItemContent
           label="New terminal..."
           shortcut={getShortcutHintsText('app.newTerminalDialog')}
         />
       </button>
-      <For each={props.availableShells ?? []}>
+      <For each={props.newTab.availableShells ?? []}>
         {shell => (
-          <button role="menuitem" onClick={() => props.onNewTerminalWithShell?.(shell)}>
+          <button role="menuitem" onClick={() => props.newTab.onNewTerminalWithShell?.(shell)}>
             <code>{shell}</code>
-            <Show when={shell === props.defaultShell}>
+            <Show when={shell === props.newTab.defaultShell}>
               <span class={styles.shellDefault}>(default)</span>
             </Show>
           </button>
@@ -367,13 +372,13 @@ export const TabBar: Component<TabBarProps> = (props) => {
 
   return (
     <div class={styles.tabBar} data-testid="tab-bar">
-      <Show when={props.isMobile}>
+      <Show when={props.mobile?.isMobile}>
         <IconButton
           icon={Menu}
           iconSize="lg"
           size="xl"
           aria-label="Toggle workspaces"
-          onClick={() => props.onToggleLeftSidebar?.()}
+          onClick={() => props.mobile?.onToggleLeftSidebar?.()}
         />
       </Show>
       <div
@@ -389,7 +394,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           const target = e.target as HTMLElement
           if (target.closest('[data-testid="tab"]'))
             return
-          props.onNewAgentAdvanced?.()
+          props.newTab.onNewAgentAdvanced?.()
         }}
       >
         <ErrorBoundary fallback={(
@@ -412,7 +417,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           </SortableProvider>
         </ErrorBoundary>
       </div>
-      <Show when={props.showAddButton}>
+      <Show when={props.newTab.showAddButton}>
         {/* Full / Compact: individual new-tab buttons */}
         <div class={styles.newTabWrapper}>
           <Show
@@ -433,7 +438,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
               {provider => (
                 <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
                   <Show
-                    when={props.newAgentLoadingProvider !== provider}
+                    when={props.newTab.newAgentLoadingProvider !== provider}
                     fallback={(
                       <IconButton
                         icon={Bot}
@@ -462,9 +467,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
               icon={Terminal}
               iconSize="md"
               size="md"
-              state={props.newTerminalLoading ? IconButtonState.Loading : IconButtonState.Enabled}
+              state={props.newTab.newTerminalLoading ? IconButtonState.Loading : IconButtonState.Enabled}
               data-testid="new-terminal-button"
-              onClick={() => props.onNewTerminal()}
+              onClick={() => props.newTab.onNewTerminal()}
             />
           </TabBarTooltip>
           <DropdownMenu
@@ -474,7 +479,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                   icon={Plus}
                   iconSize="md"
                   size="md"
-                  state={props.newShellLoading ? IconButtonState.Loading : IconButtonState.Enabled}
+                  state={props.newTab.newShellLoading ? IconButtonState.Loading : IconButtonState.Enabled}
                   data-testid="tab-more-menu"
                   {...triggerProps}
                 />
@@ -521,50 +526,28 @@ export const TabBar: Component<TabBarProps> = (props) => {
                 <>
                   <hr />
                   <li class={menuSectionHeader}>Tile</li>
-                  <Show when={actions().canSplit}>
-                    <button
-                      role="menuitem"
-                      onClick={() => actions().onSplitHorizontal()}
-                    >
-                      <Icon icon={Columns2} size="sm" />
-                      <DropdownMenuItemContent
-                        label="Split vertical"
-                        shortcut={getShortcutHintsText('app.splitTileHorizontal')}
-                      />
-                    </button>
-                    <button
-                      role="menuitem"
-                      onClick={() => actions().onSplitVertical()}
-                    >
-                      <Icon icon={Rows2} size="sm" />
-                      <DropdownMenuItemContent
-                        label="Split horizontal"
-                        shortcut={getShortcutHintsText('app.splitTileVertical')}
-                      />
-                    </button>
-                  </Show>
-                  <Show when={actions().canClose}>
-                    <button
-                      role="menuitem"
-                      onClick={() => actions().onClose()}
-                    >
-                      <Icon icon={X} size="sm" />
-                      {' Close tile'}
-                    </button>
-                  </Show>
+                  <TileActionsMenu
+                    actions={actions()}
+                    withIcons
+                    // Default size 2×2 from the overflow menu — the micro
+                    // path doesn't have room for a hover-grid. Power users
+                    // can use the full-mode popover.
+                    onMakeGridClick={() => actions().onMakeGrid(2, 2)}
+                    makeGridLabel="Make a 2×2 grid"
+                  />
                 </>
               )}
             </Show>
           </DropdownMenu>
         </div>
       </Show>
-      <Show when={props.isMobile}>
+      <Show when={props.mobile?.isMobile}>
         <IconButton
           icon={PanelRight}
           iconSize="lg"
           size="xl"
           aria-label="Toggle files"
-          onClick={() => props.onToggleRightSidebar?.()}
+          onClick={() => props.mobile?.onToggleRightSidebar?.()}
         />
       </Show>
     </div>

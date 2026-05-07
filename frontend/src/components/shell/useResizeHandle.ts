@@ -1,5 +1,7 @@
 import type { Accessor, Setter } from 'solid-js'
 import { createMemo } from 'solid-js'
+import { rebalancePair } from '~/lib/pairDrag'
+import { useWindowPointerDrag } from './windowPointerDrag'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,7 +38,7 @@ export interface UseResizeHandleReturn {
   /** Normalized fractional sizes for currently expanded sections. */
   expandedSizes: Accessor<Map<string, number>>
   /** Start dragging a resize handle between two adjacent expanded sections. */
-  handleResizeStart: (handleIndex: number, e: MouseEvent) => void
+  handleResizeStart: (handleIndex: number, e: PointerEvent) => void
   /** Reset all expanded sections to equal sizes. */
   handleResetSplit: () => void
 }
@@ -90,12 +92,14 @@ export function useResizeHandle(options: UseResizeHandleOptions): UseResizeHandl
     return result
   })
 
+  const drag = useWindowPointerDrag()
+
   /**
    * Start dragging a resize handle between two adjacent expanded sections.
    * handleIndex: 0-based index among expanded sections -- handle sits between
    * expandedIds[handleIndex] and expandedIds[handleIndex + 1].
    */
-  const handleResizeStart = (handleIndex: number, e: MouseEvent) => {
+  const handleResizeStart = (handleIndex: number, e: PointerEvent) => {
     e.preventDefault()
     const container = containerRef()
     if (!container)
@@ -116,36 +120,38 @@ export function useResizeHandle(options: UseResizeHandleOptions): UseResizeHandl
     const startAboveSize = aboveSize
     const containerHeight = container.getBoundingClientRect().height
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const deltaY = moveEvent.clientY - startY
-      const deltaFraction = deltaY / containerHeight
-
-      const newAboveSize = Math.max(
-        MIN_FRACTION * pairTotal,
-        Math.min(
-          (1 - MIN_FRACTION) * pairTotal,
-          startAboveSize + deltaFraction,
-        ),
-      )
-      const newBelowSize = pairTotal - newAboveSize
-
-      setSectionSizes(prev => ({
-        ...prev,
-        [aboveId]: newAboveSize,
-        [belowId]: newBelowSize,
-      }))
-    }
-
-    const onMouseUp = () => {
-      setDraggingHandleIndex(null)
-      document.body.style.cursor = ''
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-      notifyStateChange()
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
+    drag.start({
+      coalesce: true,
+      onMove: (moveEvent) => {
+        const deltaY = moveEvent.clientY - startY
+        const deltaFraction = deltaY / containerHeight
+        // Floor scales with the pair: each side keeps at least MIN_FRACTION
+        // (15%) of what the pair owns, not 15% of the whole container.
+        const [newAboveSize, newBelowSize] = rebalancePair(
+          startAboveSize,
+          pairTotal,
+          deltaFraction,
+          MIN_FRACTION * pairTotal,
+        )
+        setSectionSizes((prev) => {
+          // Skip the emit + downstream re-render once the drag is pinned
+          // at the floor and producing identical sizes per tick.
+          if (prev[aboveId] === newAboveSize && prev[belowId] === newBelowSize)
+            return prev
+          return { ...prev, [aboveId]: newAboveSize, [belowId]: newBelowSize }
+        })
+      },
+      onUp: () => {
+        notifyStateChange()
+      },
+      // Cursor + dragging-handle reset must fire even on a bare click
+      // (pointerdown → pointerup with no pointermove between). `onUp` is
+      // gated on `moved`, so cleanup goes in `onFinish`.
+      onFinish: () => {
+        setDraggingHandleIndex(null)
+        document.body.style.cursor = ''
+      },
+    })
   }
 
   /** Reset all expanded sections to equal sizes. */

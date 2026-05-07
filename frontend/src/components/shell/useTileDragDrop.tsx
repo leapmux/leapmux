@@ -1,12 +1,12 @@
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
-import { createMemo } from 'solid-js'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { after, mid } from '~/lib/lexorank'
+import { positionAtInsertIdx } from '~/lib/lexorank'
 import { basename } from '~/lib/paths'
-import { tabKey } from '~/stores/tab.store'
+import { parseTabKey, tabKey } from '~/stores/tab.store'
 import * as styles from './AppShell.css'
+import { removeEmptyFloatingWindow } from './tileLifecycle'
 
 interface UseTileDragDropOpts {
   tabStore: ReturnType<typeof createTabStore>
@@ -18,8 +18,6 @@ interface UseTileDragDropOpts {
 export function useTileDragDrop(opts: UseTileDragDropOpts) {
   const { tabStore, layoutStore, floatingWindowStore, persistLayout } = opts
 
-  const hasMultipleTiles = createMemo(() => layoutStore.getAllTileIds().length > 1)
-
   const handleIntraTileReorder = (_tileId: string, fromKey: string, toKey: string) => {
     tabStore.reorderTabs(fromKey, toKey)
     persistLayout()
@@ -28,65 +26,56 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
   const handleCrossTileMove = (fromTileId: string, toTileId: string, draggedTabKey: string, nearTabKey: string | null) => {
     tabStore.moveTabToTile(draggedTabKey, toTileId)
 
+    // Resolve insertion index: when a near-tab is named (drop landed on a
+    // specific tab), the dragged tab takes that slot, displacing the target
+    // right; otherwise append. `positionAtInsertIdx` handles all four edge
+    // cases (head, tail, between, empty list) via `mid`'s documented
+    // empty-string semantics.
     const targetTabs = tabStore.getTabsForTile(toTileId)
-    let newPosition: string
-    if (nearTabKey) {
-      const nearIdx = targetTabs.findIndex(t => tabKey(t) === nearTabKey)
-      if (nearIdx >= 0) {
-        const prevPos = nearIdx > 0 ? targetTabs[nearIdx - 1]?.position ?? '' : ''
-        const nextPos = targetTabs[nearIdx]?.position ?? ''
-        newPosition = mid(prevPos, nextPos)
-      }
-      else {
-        const lastTab = targetTabs.at(-1)
-        newPosition = lastTab?.position ? after(lastTab.position) : 'a'
-      }
-    }
-    else {
-      const lastTab = targetTabs.at(-1)
-      newPosition = lastTab?.position ? after(lastTab.position) : 'a'
-    }
+    const nearIdx = nearTabKey
+      ? targetTabs.findIndex(t => tabKey(t) === nearTabKey)
+      : -1
+    const insertIdx = nearIdx >= 0 ? nearIdx : targetTabs.length
+    const newPosition = positionAtInsertIdx(targetTabs, insertIdx)
     tabStore.setTabPosition(draggedTabKey, newPosition)
 
-    const parts = draggedTabKey.split(':')
-    if (parts.length === 2) {
-      tabStore.setActiveTabForTile(toTileId, Number(parts[0]) as TabType, parts[1])
+    const parsed = parseTabKey(draggedTabKey)
+    if (parsed) {
+      tabStore.setActiveTabForTile(toTileId, parsed.type, parsed.id)
     }
 
     // Remove the source floating window if it's now empty.
-    const srcWindowId = floatingWindowStore.getWindowForTile(fromTileId)
-    if (srcWindowId) {
-      floatingWindowStore.removeIfEmpty(
-        srcWindowId,
-        tId => tabStore.getTabsForTile(tId),
-        layoutStore.focusedTileId(),
-        tId => layoutStore.setFocusedTile(tId),
-        layoutStore.getAllTileIds(),
-      )
-    }
+    removeEmptyFloatingWindow(layoutStore, floatingWindowStore, tabStore, fromTileId)
 
     persistLayout()
   }
 
   const lookupTileIdForTab = (key: string): string | undefined => {
-    const tab = tabStore.state.tabs.find(t => tabKey(t) === key)
-    return tab?.tileId
+    return tabStore.getTabByKey(key)?.tileId
+  }
+
+  const dragLabelFor = (tab: { title?: string, type: TabType, filePath?: string }): string => {
+    if (tab.title)
+      return tab.title
+    if (tab.type === TabType.AGENT)
+      return 'Agent'
+    if (tab.type === TabType.FILE)
+      return (tab.filePath && basename(tab.filePath)) || 'File'
+    return 'Terminal'
   }
 
   const renderDragOverlay = (key: string) => {
-    const tab = tabStore.state.tabs.find(t => tabKey(t) === key)
+    const tab = tabStore.getTabByKey(key)
     if (!tab)
       return <></>
-    const label = tab.title || (tab.type === TabType.AGENT ? 'Agent' : tab.type === TabType.FILE ? ((tab.filePath ? basename(tab.filePath) : '') || 'File') : 'Terminal')
     return (
       <div class={styles.dragPreviewTooltip}>
-        <span>{label}</span>
+        <span>{dragLabelFor(tab)}</span>
       </div>
     )
   }
 
   return {
-    hasMultipleTiles,
     handleIntraTileReorder,
     handleCrossTileMove,
     lookupTileIdForTab,

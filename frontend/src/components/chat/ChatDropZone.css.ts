@@ -34,7 +34,7 @@ export const dropOverlayContent = style({
 
 export const dropOverlayTitle = style({
   fontSize: 'var(--text-4)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   color: 'var(--foreground)',
 })
 

@@ -152,12 +152,17 @@ describe('floatingWindowContainer', () => {
 
   it('mousedown on the window invokes bringToFront and onActivate', () => {
     const onActivate = vi.fn()
-    const { store, windowId } = renderContainer({ zIndex: 100, onActivate })
+    const { store, windowId } = renderContainer({ onActivate })
+    // Add a second window so the rendered one is no longer topmost — without
+    // this, bringToFront short-circuits as a no-op (see floatingWindow.store).
+    store.addWindow()
     const win = screen.getByTestId('floating-window')
-    const zBefore = store.getWindow(windowId)?.zIndex ?? 0
+    // The rendered window was added first, so it's at index 0; the second
+    // (topmost) window sits at index 1.
+    expect(store.state.windows.findIndex(w => w.id === windowId)).toBe(0)
     fireEvent.mouseDown(win)
     expect(onActivate).toHaveBeenCalledTimes(1)
-    const zAfter = store.getWindow(windowId)?.zIndex ?? 0
-    expect(zAfter).toBeGreaterThan(zBefore)
+    // After bringToFront the rendered window must have moved to the end.
+    expect(store.state.windows.findIndex(w => w.id === windowId)).toBe(1)
   })
 })

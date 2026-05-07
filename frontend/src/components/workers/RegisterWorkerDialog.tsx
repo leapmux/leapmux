@@ -130,7 +130,7 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
   }
 
   return (
-    <Dialog title="Register a new worker" class={styles.dialog} onClose={props.onClose}>
+    <Dialog title="Register worker" class={styles.dialog} onClose={props.onClose}>
       <section class={styles.body}>
         <p>
           Run the command below on the machine where the worker should run.

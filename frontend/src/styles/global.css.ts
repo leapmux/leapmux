@@ -1,6 +1,17 @@
-// Base CSS tokens (--space-*, --radius-*, --font-size-*, --line-height-*, etc.)
-// are provided by @knadh/oat — see node_modules/@knadh/oat/css/01-theme.css
-// for the full list of custom properties and their values.
+// Base CSS tokens are provided by @knadh/oat — see
+// node_modules/@knadh/oat/css/01-theme.css for the full list of custom
+// properties and their values. Common ones:
+//   --space-{1..18}                spacing scale
+//   --radius-{small,medium,large,full}
+//   --text-{1..8}, --text-regular  font-size scale
+//   --font-{normal,bold}           font-weight tokens (prefer these over
+//                                  numeric weights; --font-medium and
+//                                  --font-semibold also exist but our
+//                                  convention is normal-or-bold only)
+//   --leading-normal               default line-height
+//   --shadow-{small,medium,large}
+//   --transition, --transition-fast
+//   --z-{dropdown,modal}
 
 import { globalFontFace, globalStyle } from '@vanilla-extract/css'
 

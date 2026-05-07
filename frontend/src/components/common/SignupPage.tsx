@@ -29,7 +29,7 @@ export const SignupPage: Component = () => {
         when={isSignupEnabled()}
         fallback={(
           <NotFoundPage
-            title="Sign Up Disabled"
+            title="Sign-up disabled"
             message="New account registration is not currently available."
             linkHref="/login"
             linkText="Go to login"

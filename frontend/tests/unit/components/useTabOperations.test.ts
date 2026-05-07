@@ -5,6 +5,7 @@ import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createAgentStore } from '~/stores/agent.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
+import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 
@@ -289,6 +290,112 @@ describe('useTabOperations', () => {
       expect(messages[0].seq).toBe(1n)
       expect(messages.at(-1)?.seq).toBe(60n)
       dispose()
+    })
+  })
+})
+
+// --- Floating-window auto-cleanup ---
+//
+// We use FILE tabs to drive these tests because handleTabClose removes
+// FILE tabs synchronously via tabStore.removeTab, so the
+// removeIfEmpty cleanup runs against real tab state. AGENT/TERMINAL
+// closes go through agentOps/termOps mocks that don't update tabStore.
+
+function setupWithFloatingWindow() {
+  const tabStore = createTabStore()
+  const agentStore = createAgentStore()
+  const chatStore = createChatStore()
+  const layoutStore = createLayoutStore()
+  const floatingWindowStore = createFloatingWindowStore()
+
+  const mainTileId = 'main-tile'
+  layoutStore.setLayout({ type: 'leaf', id: mainTileId })
+  layoutStore.setFocusedTile(mainTileId)
+
+  const handleCloseAgent = vi.fn()
+  const handleTerminalClose = vi.fn()
+
+  const ops = useTabOperations({
+    tabStore,
+    agentStore,
+    chatStore,
+    layoutStore,
+    floatingWindowStore,
+    agentOps: { handleCloseAgent } as never,
+    termOps: { handleTerminalClose } as never,
+    activeTab: () => tabStore.activeTab() ?? undefined,
+    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+    focusEditor: vi.fn(),
+    getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+    setFileTreePath: vi.fn(),
+  })
+
+  return { tabStore, layoutStore, floatingWindowStore, ops, mainTileId }
+}
+
+describe('useTabOperations.handleTabClose floating-window cleanup', () => {
+  it('closing the last FILE tab in a single-tile floating window auto-removes the window', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { tabStore, floatingWindowStore, ops } = setupWithFloatingWindow()
+        const { windowId, tileId } = floatingWindowStore.addWindow()
+        tabStore.addTab({ type: TabType.FILE, id: 'f1', tileId, filePath: '/a.txt', workerId: 'w-1' })
+
+        expect(floatingWindowStore.state.windows).toHaveLength(1)
+        const tab = tabStore.state.tabs.find(t => t.id === 'f1')!
+
+        const ok = await ops.handleTabClose(tab)
+        expect(ok).toBe(true)
+        // Auto-cleanup removed the now-empty floating window.
+        expect(floatingWindowStore.state.windows).toHaveLength(0)
+        expect(floatingWindowStore.getWindow(windowId)).toBeUndefined()
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('closing a FILE tab when sibling tiles in the same window still have tabs leaves the window intact', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { tabStore, floatingWindowStore, ops } = setupWithFloatingWindow()
+        const { windowId, tileId } = floatingWindowStore.addWindow()
+        const newTileId = floatingWindowStore.splitTile(windowId, tileId, 'horizontal')!
+        tabStore.addTab({ type: TabType.FILE, id: 'f1', tileId, filePath: '/a.txt', workerId: 'w-1' })
+        tabStore.addTab({ type: TabType.FILE, id: 'f2', tileId: newTileId, filePath: '/b.txt', workerId: 'w-1' })
+
+        const tab = tabStore.state.tabs.find(t => t.id === 'f1')!
+        const ok = await ops.handleTabClose(tab)
+        expect(ok).toBe(true)
+        // Sibling tile still has a tab → window stays.
+        expect(floatingWindowStore.state.windows).toHaveLength(1)
+        expect(floatingWindowStore.getWindow(windowId)).toBeDefined()
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('closing a FILE tab in the main layout never touches floating-window state', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { tabStore, floatingWindowStore, ops, mainTileId } = setupWithFloatingWindow()
+        // Add an unrelated empty floating window — it should NOT be touched
+        // by closes against the main layout.
+        floatingWindowStore.addWindow()
+        const startWindowCount = floatingWindowStore.state.windows.length
+        tabStore.addTab({ type: TabType.FILE, id: 'main-file', tileId: mainTileId, filePath: '/a.txt', workerId: 'w-1' })
+
+        const tab = tabStore.state.tabs.find(t => t.id === 'main-file')!
+        const ok = await ops.handleTabClose(tab)
+        expect(ok).toBe(true)
+        expect(floatingWindowStore.state.windows).toHaveLength(startWindowCount)
+      }
+      finally {
+        dispose()
+      }
     })
   })
 })

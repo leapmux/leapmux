@@ -213,7 +213,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       <div
         class={`${styles.editorResizeHandle} ${isDragging() ? styles.editorResizeHandleActive : ''}`}
         data-testid="editor-resize-handle"
-        on:mousedown={handleResizeStart}
+        on:pointerdown={handleResizeStart}
         on:dblclick={resetEditorHeight}
       />
       <div class={styles.inputArea}>

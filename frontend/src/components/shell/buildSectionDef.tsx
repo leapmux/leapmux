@@ -253,7 +253,7 @@ export function buildSectionDef(
           icon={Plus}
           iconSize="sm"
           size="md"
-          title="Register a new worker"
+          title="Register worker"
           data-testid="sidebar-register-worker"
           onClick={(e) => {
             e.stopPropagation()

@@ -119,7 +119,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   }
 
   return (
-    <Dialog title="New Workspace" tall wide busy={submitting.loading()} onClose={() => props.onClose()}>
+    <Dialog title="New workspace" tall wide busy={submitting.loading()} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">

@@ -3,7 +3,9 @@ import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import X from 'lucide-solid/icons/x'
 import { For, onCleanup, onMount } from 'solid-js'
 import { IconButton } from '~/components/common/IconButton'
+import { MIN_WINDOW_DIMENSION } from '~/stores/floatingWindow.store'
 import * as styles from './FloatingWindowContainer.css'
+import { useWindowPointerDrag } from './windowPointerDrag'
 
 const SNAP_THRESHOLD_PX = 15
 
@@ -77,42 +79,38 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
   let containerRef: HTMLDivElement | undefined
   let titleBarRef: HTMLDivElement | undefined
 
-  // Track active pointer listeners for cleanup on unmount
-  let activeMoveHandler: ((e: PointerEvent) => void) | null = null
-  let activeUpHandler: (() => void) | null = null
-
-  const cleanupPointerListeners = () => {
-    if (activeMoveHandler) {
-      document.removeEventListener('pointermove', activeMoveHandler)
-      activeMoveHandler = null
-    }
-    if (activeUpHandler) {
-      document.removeEventListener('pointerup', activeUpHandler)
-      activeUpHandler = null
-    }
-  }
-
-  onCleanup(cleanupPointerListeners)
+  // Single document-level drag at a time — drag and resize share this
+  // controller, so a fresh pointerdown on the title bar cancels any
+  // in-flight resize and vice-versa. Cleanup on unmount is handled inside.
+  const drag = useWindowPointerDrag()
 
   const getContainerParent = () => containerRef?.parentElement
 
-  const toFractional = (pxX: number, pxY: number) => {
-    const parent = getContainerParent()
-    if (!parent)
-      return { fx: 0, fy: 0 }
-    const rect = parent.getBoundingClientRect()
-    return { fx: pxX / rect.width, fy: pxY / rect.height }
+  /**
+   * Capture the parent's pixel dimensions once at drag-start. Subsequent
+   * pointermove ticks divide by these instead of re-reading
+   * `getBoundingClientRect`, which would force a layout per frame.
+   */
+  const captureParentSize = (): { parentW: number, parentH: number } => {
+    const rect = getContainerParent()?.getBoundingClientRect()
+    return { parentW: rect?.width ?? 1, parentH: rect?.height ?? 1 }
   }
 
   // --- Edge snapping ---
 
   // --- Opacity (scroll on titlebar) ---
+  // The wheel can fire ~60×/sec on a free-spinning trackpad. `updateOpacity`
+  // returns whether the clamped value actually changed so we don't bounce
+  // `onGeometryChange` (debounced persist) on every tick once opacity is
+  // pinned at the clamp floor or ceiling.
   const handleTitleBarWheel = (e: WheelEvent) => {
     e.preventDefault()
+    if (e.deltaY === 0)
+      return
     const delta = e.deltaY > 0 ? -0.05 : 0.05
-    const newOpacity = props.opacity + delta
-    props.floatingWindowStore.updateOpacity(props.windowId, newOpacity)
-    props.onGeometryChange?.()
+    const changed = props.floatingWindowStore.updateOpacity(props.windowId, props.opacity + delta)
+    if (changed)
+      props.onGeometryChange?.()
   }
 
   onMount(() => {
@@ -135,30 +133,20 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     const startFx = props.x
     const startFy = props.y
 
-    const parent = getContainerParent()
-    const parentW = parent?.getBoundingClientRect().width ?? 1
-    const parentH = parent?.getBoundingClientRect().height ?? 1
+    const { parentW, parentH } = captureParentSize()
 
-    const handleMove = (me: PointerEvent) => {
-      const dx = me.clientX - startX
-      const dy = me.clientY - startY
-      const { fx: dfx, fy: dfy } = toFractional(dx, dy)
-      const rawX = startFx + dfx
-      const rawY = startFy + dfy
-      const snapped = snapPosition(rawX, rawY, props.width, props.height, parentW, parentH)
-      props.floatingWindowStore.updatePosition(props.windowId, snapped.x, snapped.y)
-    }
-
-    const handleUp = () => {
-      cleanupPointerListeners()
-      props.onGeometryChange?.()
-    }
-
-    cleanupPointerListeners()
-    activeMoveHandler = handleMove
-    activeUpHandler = handleUp
-    document.addEventListener('pointermove', handleMove)
-    document.addEventListener('pointerup', handleUp)
+    drag.start({
+      coalesce: true,
+      onMove: (me) => {
+        const dfx = (me.clientX - startX) / parentW
+        const dfy = (me.clientY - startY) / parentH
+        const rawX = startFx + dfx
+        const rawY = startFy + dfy
+        const snapped = snapPosition(rawX, rawY, props.width, props.height, parentW, parentH)
+        props.floatingWindowStore.updatePosition(props.windowId, snapped.x, snapped.y)
+      },
+      onUp: () => props.onGeometryChange?.(),
+    })
   }
 
   // --- Resize ---
@@ -175,53 +163,43 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     const startFw = props.width
     const startFh = props.height
 
-    const parent = getContainerParent()
-    const parentW = parent?.getBoundingClientRect().width ?? 1
-    const parentH = parent?.getBoundingClientRect().height ?? 1
+    const { parentW, parentH } = captureParentSize()
 
-    const minW = 0.05
-    const minH = 0.05
+    const minW = MIN_WINDOW_DIMENSION
+    const minH = MIN_WINDOW_DIMENSION
 
-    const handleMove = (me: PointerEvent) => {
-      const dxPx = me.clientX - startX
-      const dyPx = me.clientY - startY
-      const dfx = dxPx / parentW
-      const dfy = dyPx / parentH
+    drag.start({
+      coalesce: true,
+      onMove: (me) => {
+        const dxPx = me.clientX - startX
+        const dyPx = me.clientY - startY
+        const dfx = dxPx / parentW
+        const dfy = dyPx / parentH
 
-      let newX = startFx
-      let newY = startFy
-      let newW = startFw
-      let newH = startFh
+        let newX = startFx
+        let newY = startFy
+        let newW = startFw
+        let newH = startFh
 
-      if (dir.includes('e')) {
-        newW = Math.max(startFw + dfx, minW)
-      }
-      if (dir.includes('w')) {
-        newW = Math.max(startFw - dfx, minW)
-        newX = startFx + startFw - newW
-      }
-      if (dir.includes('s')) {
-        newH = Math.max(startFh + dfy, minH)
-      }
-      if (dir.includes('n')) {
-        newH = Math.max(startFh - dfy, minH)
-        newY = startFy + startFh - newH
-      }
+        if (dir.includes('e')) {
+          newW = Math.max(startFw + dfx, minW)
+        }
+        if (dir.includes('w')) {
+          newW = Math.max(startFw - dfx, minW)
+          newX = startFx + startFw - newW
+        }
+        if (dir.includes('s')) {
+          newH = Math.max(startFh + dfy, minH)
+        }
+        if (dir.includes('n')) {
+          newH = Math.max(startFh - dfy, minH)
+          newY = startFy + startFh - newH
+        }
 
-      props.floatingWindowStore.updatePosition(props.windowId, newX, newY)
-      props.floatingWindowStore.updateSize(props.windowId, newW, newH)
-    }
-
-    const handleUp = () => {
-      cleanupPointerListeners()
-      props.onGeometryChange?.()
-    }
-
-    cleanupPointerListeners()
-    activeMoveHandler = handleMove
-    activeUpHandler = handleUp
-    document.addEventListener('pointermove', handleMove)
-    document.addEventListener('pointerup', handleUp)
+        props.floatingWindowStore.updateGeometry(props.windowId, newX, newY, newW, newH)
+      },
+      onUp: () => props.onGeometryChange?.(),
+    })
   }
 
   return (

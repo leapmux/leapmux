@@ -20,7 +20,7 @@ export const KeyPinMismatchDialog: Component<KeyPinMismatchDialogProps> = (props
   }
 
   return (
-    <Dialog title="Worker Public Key Changed" data-testid="key-pin-mismatch-dialog" onClose={handleReject}>
+    <Dialog title="Worker public key changed" data-testid="key-pin-mismatch-dialog" onClose={handleReject}>
       <section>
         <p>
           The public key for worker

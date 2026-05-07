@@ -16,7 +16,7 @@ export const message = style({
 
 export const link = style({
   'color': 'var(--primary)',
-  'fontWeight': 400,
+  'fontWeight': 'var(--font-normal)',
   'textDecoration': 'none',
   ':hover': {
     textDecoration: 'underline',

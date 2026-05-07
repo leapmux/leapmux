@@ -169,7 +169,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       <Show when={props.confirmDeleteWs}>
         {state => (
           <ConfirmDialog
-            title="Delete Workspace"
+            title="Delete workspace"
             confirmLabel="Delete"
             danger
             onConfirm={() => {
@@ -189,7 +189,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       <Show when={props.confirmArchiveWs}>
         {state => (
           <ConfirmDialog
-            title="Archive Workspace"
+            title="Archive workspace"
             confirmLabel="Archive"
             onConfirm={() => {
               state().resolve(true)
@@ -233,7 +233,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             props.setLastTabConfirm(null)
           }
           return (
-            <Dialog title="Close Last Tab" onClose={handleCancel}>
+            <Dialog title="Close last tab" onClose={handleCancel}>
               <section>
                 <p>
                   <Show

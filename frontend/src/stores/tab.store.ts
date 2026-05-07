@@ -1,10 +1,11 @@
 import type { listTerminals } from '~/api/workerRpc'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { createStore } from 'solid-js/store'
+import { createMemo } from 'solid-js'
+import { createStore, produce } from 'solid-js/store'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { after, first, mid } from '~/lib/lexorank'
+import { after, first, positionAtInsertIdx } from '~/lib/lexorank'
 
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
@@ -269,6 +270,21 @@ export function tabKey(tab: Tab): string {
   return `${tab.type}:${tab.id}`
 }
 
+/**
+ * Inverse of `tabKey`. Returns null when the input is malformed (missing
+ * colon, non-numeric type) so callers can decide how to handle stale or
+ * corrupt persisted keys.
+ */
+export function parseTabKey(key: string): { type: TabType, id: string } | null {
+  const idx = key.indexOf(':')
+  if (idx <= 0 || idx === key.length - 1)
+    return null
+  const typeNum = Number(key.slice(0, idx))
+  if (!Number.isInteger(typeNum))
+    return null
+  return { type: typeNum as TabType, id: key.slice(idx + 1) }
+}
+
 export function canCloseTab(readOnly: boolean | undefined, tab: Tab): boolean {
   return !readOnly || tab.type === TabType.FILE
 }
@@ -308,6 +324,35 @@ export function createTabStore() {
     tileMruOrder: {},
   })
 
+  // Per-tile tab index. The render path filters tabs by tileId 3-4× per
+  // Tile per render (tileAgentTabs / tileFileTabs / tileTerminals + the
+  // TabBar list). Materializing the index in one pass turns those filters
+  // into O(1) Map lookups. The memo tracks `state.tabs` and each tab's
+  // `tileId` reactively, so any membership-changing mutation invalidates
+  // it — no need to bookkeep refresh calls per mutation path.
+  const tabsByTile = createMemo(() => {
+    const map = new Map<string, Tab[]>()
+    for (const tab of state.tabs) {
+      if (!tab.tileId)
+        continue
+      const list = map.get(tab.tileId)
+      if (list)
+        list.push(tab)
+      else
+        map.set(tab.tileId, [tab])
+    }
+    return map
+  })
+
+  // Tab-by-key index. activeTab() and getActiveTabForTile() are called per
+  // Tile per render; without this they degrade to O(N tabs) linear find.
+  const tabsByKey = createMemo(() => {
+    const map = new Map<string, Tab>()
+    for (const tab of state.tabs)
+      map.set(tabKey(tab), tab)
+    return map
+  })
+
   return {
     state,
 
@@ -318,20 +363,11 @@ export function createTabStore() {
         : -1
 
       if (!tab.position) {
-        if (anchorIdx >= 0) {
-          const anchorTab = state.tabs[anchorIdx]
-          const nextTab = state.tabs[anchorIdx + 1]
-          const prevPos = anchorTab.position
-          const nextPos = nextTab?.position ?? ''
-          tab = {
-            ...tab,
-            position: nextPos ? mid(prevPos ?? '', nextPos) : prevPos ? after(prevPos) : first(),
-          }
-        }
-        else {
-          const lastTab = state.tabs.at(-1)
-          tab = { ...tab, position: lastTab?.position ? after(lastTab.position) : first() }
-        }
+        // Insertion index in the resulting array: just after `anchorIdx`
+        // when one was provided, else the end. `positionAtInsertIdx` reads
+        // the surrounding neighbours' positions and folds them through `mid`.
+        const insertIdx = anchorIdx >= 0 ? anchorIdx + 1 : state.tabs.length
+        tab = { ...tab, position: positionAtInsertIdx(state.tabs, insertIdx) }
       }
       const key = tabKey(tab)
       setState('tabs', prev => anchorIdx >= 0
@@ -359,7 +395,7 @@ export function createTabStore() {
 
     removeTab(type: TabType, id: string) {
       const key = tabKey({ type, id })
-      const tab = state.tabs.find(t => tabKey(t) === key)
+      const tab = tabsByKey().get(key)
       const tileId = tab?.tileId
 
       setState('tabs', prev => prev.filter(t => tabKey(t) !== key))
@@ -385,16 +421,20 @@ export function createTabStore() {
     setActiveTab(type: TabType, id: string) {
       const key = tabKey({ type, id })
       setState('activeTabKey', key)
-      setState('mruOrder', prev => [key, ...prev.filter(k => k !== key)])
-      // Clear notification on the newly active tab
-      setState('tabs', t => tabKey(t) === key, 'hasNotification', false)
+      // Skip rewriting mruOrder when key is already at the head — a no-op
+      // write still hands subscribers a new array reference.
+      if (state.mruOrder[0] !== key)
+        setState('mruOrder', prev => [key, ...prev.filter(k => k !== key)])
+      // Clear notification on the newly active tab (only if currently set,
+      // so subscribers aren't notified for a no-op).
+      setState('tabs', t => tabKey(t) === key && !!t.hasNotification, 'hasNotification', false)
     },
 
     activeTab(): Tab | null {
       const key = state.activeTabKey
       if (!key)
         return null
-      return state.tabs.find(t => tabKey(t) === key) ?? null
+      return tabsByKey().get(key) ?? null
     },
 
     updateTabTitle(type: TabType, id: string, title: string) {
@@ -417,14 +457,14 @@ export function createTabStore() {
       const newTabs = state.tabs.map(t => ({ ...t }))
       const [moved] = newTabs.splice(fromIdx, 1)
 
-      // Calculate new LexoRank position
+      // Calculate new LexoRank position. Index in `newTabs` (with the moved
+      // tab already removed) needs to shift left by one when moving forward,
+      // since the splice above shrunk the array.
       const insertIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
-      const prevPos = insertIdx > 0 ? newTabs[insertIdx - 1]?.position ?? '' : ''
-      const nextPos = insertIdx < newTabs.length ? newTabs[insertIdx]?.position ?? '' : ''
-      const newPosition = mid(prevPos, nextPos)
+      const newPosition = positionAtInsertIdx(newTabs, insertIdx)
       moved.position = newPosition
 
-      newTabs.splice(toIdx > fromIdx ? toIdx - 1 + 1 : toIdx, 0, moved)
+      newTabs.splice(insertIdx, 0, moved)
       setState('tabs', newTabs)
       return newPosition
     },
@@ -488,9 +528,9 @@ export function createTabStore() {
       })
     },
 
-    /** Get tabs for a specific tile. */
+    /** Get tabs for a specific tile. O(1) via the `tabsByTile` memo. */
     getTabsForTile(tileId: string): Tab[] {
-      return state.tabs.filter(t => t.tileId === tileId)
+      return tabsByTile().get(tileId) ?? []
     },
 
     /** Get the active tab key for a specific tile. */
@@ -498,20 +538,24 @@ export function createTabStore() {
       return state.tileActiveTabKeys[tileId] ?? null
     },
 
-    /** Get the active tab object for a specific tile. */
+    /** Get the active tab object for a specific tile. O(1) via the `tabsByKey` memo. */
     getActiveTabForTile(tileId: string): Tab | null {
       const key = state.tileActiveTabKeys[tileId]
       if (!key)
         return null
-      return state.tabs.find(t => tabKey(t) === key) ?? null
+      return tabsByKey().get(key) ?? null
     },
 
     /** Set the active tab for a specific tile. */
     setActiveTabForTile(tileId: string, type: TabType, id: string) {
       const key = tabKey({ type, id })
       setState('tileActiveTabKeys', tileId, key)
-      setState('tileMruOrder', tileId, prev => [key, ...(prev ?? []).filter(k => k !== key)])
-      setState('tabs', t => tabKey(t) === key, 'hasNotification', false)
+      // Skip rewriting tileMruOrder when key is already at the head — a
+      // no-op write still hands subscribers a new array reference.
+      if ((state.tileMruOrder[tileId] ?? [])[0] !== key) {
+        setState('tileMruOrder', tileId, prev => [key, ...(prev ?? []).filter(k => k !== key)])
+      }
+      setState('tabs', t => tabKey(t) === key && !!t.hasNotification, 'hasNotification', false)
     },
 
     /** Set the position of a tab by key. */
@@ -543,9 +587,24 @@ export function createTabStore() {
       setState('tabs', t => tabKey(t) === key, prev => ({ ...prev, ...fields }))
     },
 
+    /**
+     * Apply the same `fields` to every tab matching `predicate` in a single
+     * store mutation. Use this when an effect would otherwise call
+     * `updateTab` in a loop — each call walks the tabs array, so batching is
+     * O(N) instead of O(N·K) for K matches.
+     */
+    updateMatchingTabs(predicate: (tab: Tab) => boolean, fields: Partial<Tab>) {
+      setState('tabs', predicate, prev => ({ ...prev, ...fields }))
+    },
+
     /** Find a terminal tab by its terminal id. */
     getTerminalTab(id: string): Tab | undefined {
-      return state.tabs.find(t => t.type === TabType.TERMINAL && t.id === id)
+      return tabsByKey().get(tabKey({ type: TabType.TERMINAL, id }))
+    },
+
+    /** Find a tab by its `tabKey(...)` string. O(1) via the `tabsByKey` memo. */
+    getTabByKey(key: string): Tab | undefined {
+      return tabsByKey().get(key)
     },
 
     /** Downgrade all running terminal tabs on a worker to disconnected in a single pass. */
@@ -611,8 +670,7 @@ export function createTabStore() {
     /** Move a tab to a different tile, cleaning up source tile state. */
     moveTabToTile(key: string, targetTileId: string) {
       // Find the tab's current tile before moving
-      const tab = state.tabs.find(t => tabKey(t) === key)
-      const sourceTileId = tab?.tileId
+      const sourceTileId = tabsByKey().get(key)?.tileId
 
       // Move the tab
       setState('tabs', t => tabKey(t) === key, 'tileId', targetTileId)
@@ -631,25 +689,132 @@ export function createTabStore() {
       }
     },
 
-    /** Remove a tab and update per-tile state. */
-    removeTabFromTile(type: TabType, id: string, tileId: string) {
-      const key = tabKey({ type, id })
-      setState('tabs', prev => prev.filter(t => tabKey(t) !== key))
-      setState('mruOrder', prev => prev.filter(k => k !== key))
-      setState('tileMruOrder', tileId, prev => (prev ?? []).filter(k => k !== key))
+    /**
+     * Reassign every tab whose tileId is in `oldTileIds` to `newTileId`,
+     * merging their per-tile MRU/active state into the new tile and deleting
+     * the source tiles' state. Used by the "Convert to tile" close-grid mode.
+     */
+    reassignTabsToTile(oldTileIds: string[], newTileId: string) {
+      const oldSet = new Set(oldTileIds)
+      // 1. Bulk-update tab.tileId.
+      setState('tabs', tab => tab.tileId !== undefined && oldSet.has(tab.tileId), 'tileId', newTileId)
 
-      // If removed tab was active in the tile, activate MRU for that tile
-      if (state.tileActiveTabKeys[tileId] === key) {
-        const tileMru = state.tileMruOrder[tileId] ?? []
-        const nextKey = tileMru[0] ?? null
-        setState('tileActiveTabKeys', tileId, nextKey)
+      // 2. MRU merge: concatenate in oldTileIds order, dedupe (first-occurrence wins).
+      const seen = new Set<string>()
+      const mergedMru: string[] = []
+      for (const id of oldTileIds) {
+        const list = state.tileMruOrder[id]
+        if (!list)
+          continue
+        for (const k of list) {
+          if (!seen.has(k)) {
+            seen.add(k)
+            mergedMru.push(k)
+          }
+        }
       }
+      setState('tileMruOrder', newTileId, mergedMru)
 
-      // Also update global active tab if needed
-      if (state.activeTabKey === key) {
-        const nextKey = state.mruOrder[0] ?? null
-        setState('activeTabKey', nextKey)
+      // 3. Active tab: first source tile in `oldTileIds` that has one wins.
+      let mergedActive: string | null = null
+      for (const id of oldTileIds) {
+        const a = state.tileActiveTabKeys[id]
+        if (a) {
+          mergedActive = a
+          break
+        }
+      }
+      if (mergedActive == null && mergedMru.length > 0) {
+        mergedActive = mergedMru[0]
+      }
+      setState('tileActiveTabKeys', newTileId, mergedActive)
+
+      // 4. Cleanup of source tile state.
+      this.cleanupTiles(oldTileIds.filter(id => id !== newTileId))
+    },
+
+    /**
+     * Move every tab on `sourceTileId` onto `targetTileId`, appending to the
+     * end of the target's tab list, and clean up the source tile's MRU/active
+     * state. Differs from `reassignTabsToTile` (used for grid → tile merge):
+     * the target here is an existing tile that already has its own active tab
+     * and MRU, both of which are preserved.
+     */
+    mergeTabsIntoTile(sourceTileId: string, targetTileId: string) {
+      if (sourceTileId === targetTileId)
+        return
+      const byTile = tabsByTile()
+      const sourceTabs = byTile.get(sourceTileId) ?? []
+      if (sourceTabs.length > 0) {
+        const targetTabs = byTile.get(targetTileId) ?? []
+        let lastPos = targetTabs.at(-1)?.position ?? ''
+        const sourceKeys = new Set(sourceTabs.map(tabKey))
+        setState('tabs', produce((tabs) => {
+          for (const tab of tabs) {
+            if (sourceKeys.has(tabKey(tab))) {
+              tab.tileId = targetTileId
+              const newPos = lastPos ? after(lastPos) : first()
+              tab.position = newPos
+              lastPos = newPos
+            }
+          }
+        }))
+
+        // Append source MRU to target's, deduped, without overwriting
+        // target's active tab.
+        const sourceMru = state.tileMruOrder[sourceTileId] ?? []
+        if (sourceMru.length > 0) {
+          setState('tileMruOrder', targetTileId, (prev) => {
+            const existing = prev ?? []
+            const seen = new Set(existing)
+            const additions = sourceMru.filter(k => !seen.has(k))
+            return [...existing, ...additions]
+          })
+        }
+        // Adopt source's active only when the target had none.
+        if (state.tileActiveTabKeys[targetTileId] == null) {
+          const sourceActive = state.tileActiveTabKeys[sourceTileId] ?? null
+          if (sourceActive)
+            setState('tileActiveTabKeys', targetTileId, sourceActive)
+        }
+      }
+      this.cleanupTile(sourceTileId)
+    },
+
+    /**
+     * Drop per-tile MRU and active-tab entries for a removed tile. Tile ids
+     * are minted from a monotonic counter and never reused, so without this
+     * the records leak into every snapshot until workspace switch.
+     */
+    cleanupTile(tileId: string) {
+      this.cleanupTiles([tileId])
+    },
+
+    /**
+     * Bulk variant of `cleanupTile`: drops MRU/active-tab entries for every
+     * tile id in `tileIds` using one `produce` per map. Callers closing a
+     * grid or floating window otherwise issue 2 `setState` calls per tile —
+     * the batched form fires each map's reactive notification at most once.
+     */
+    cleanupTiles(tileIds: Iterable<string>) {
+      const ids = [...tileIds]
+      if (ids.length === 0)
+        return
+      const mruIds = ids.filter(id => state.tileMruOrder[id] !== undefined)
+      if (mruIds.length > 0) {
+        setState('tileMruOrder', produce((m) => {
+          for (const id of mruIds)
+            delete m[id]
+        }))
+      }
+      const activeIds = ids.filter(id => state.tileActiveTabKeys[id] !== undefined)
+      if (activeIds.length > 0) {
+        setState('tileActiveTabKeys', produce((m) => {
+          for (const id of activeIds)
+            delete m[id]
+        }))
       }
     },
+
   }
 }

@@ -31,17 +31,17 @@ export const tileContent = style({
   flexDirection: 'column',
   flex: 1,
   overflow: 'hidden',
-})
-
-export const tileContentHidden = style({
-  display: 'none !important',
+  // Positioning context for `tilePane` (in AppShell.css). Tile content
+  // panes (agent / terminal / file) absolutely fill this container so
+  // multiple panes can share the same slot and toggle via
+  // `visibility: hidden` rather than collapsing the layout to zero.
+  position: 'relative',
 })
 
 export const splitActions = style({
   display: 'flex',
   alignItems: 'center',
   gap: '2px',
-  marginLeft: 'var(--space-1)',
   paddingLeft: 'var(--space-1)',
   paddingRight: 'var(--space-1)',
   borderLeft: '1px solid var(--border)',

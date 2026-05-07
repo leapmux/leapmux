@@ -15,6 +15,7 @@ import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
+import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { spinner } from '~/styles/animations.css'
 import { AgentStartupBanner } from './AgentStartupBanner'
@@ -148,30 +149,21 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Throttle streaming text markdown rendering to animation frames to avoid
   // running the full remark+shiki pipeline on every streaming chunk.
   const [renderedStreamHtml, setRenderedStreamHtml] = createSignal('')
-  let streamRafId: number | null = null
+  const streamCoalescer = createRafCoalescer<string>(text =>
+    setRenderedStreamHtml(renderMarkdown(text, true)),
+  )
 
   createEffect(() => {
     const text = props.streamingText
     if (!text) {
-      if (streamRafId !== null) {
-        cancelAnimationFrame(streamRafId)
-        streamRafId = null
-      }
+      streamCoalescer.abort()
       setRenderedStreamHtml('')
       return
     }
-    if (streamRafId !== null)
-      cancelAnimationFrame(streamRafId)
-    streamRafId = requestAnimationFrame(() => {
-      streamRafId = null
-      setRenderedStreamHtml(renderMarkdown(text, true))
-    })
+    streamCoalescer.push(text)
   })
 
-  onCleanup(() => {
-    if (streamRafId !== null)
-      cancelAnimationFrame(streamRafId)
-  })
+  onCleanup(() => streamCoalescer.abort())
 
   let contentRef: HTMLDivElement | undefined
 

@@ -26,7 +26,7 @@ export const header = style({
 
 export const title = style({
   fontSize: '1.75rem',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   marginBottom: '0.25rem',
 })
 
@@ -82,7 +82,7 @@ export const modeIcon = style({
 
 export const modeTitle = style({
   fontSize: '1rem',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   margin: 0,
 })
 
@@ -115,7 +115,7 @@ export const collapsibleInner = style({
 export const label = style({
   display: 'block',
   fontSize: '0.85rem',
-  fontWeight: 500,
+  fontWeight: 'var(--font-normal)',
   marginBottom: '0.4rem',
 })
 
@@ -152,7 +152,7 @@ export const connectBtn = style({
   background: 'var(--primary)',
   color: 'var(--primary-foreground)',
   fontSize: '0.95rem',
-  fontWeight: 500,
+  fontWeight: 'var(--font-normal)',
   cursor: 'pointer',
   transition: 'opacity 0.15s',
   display: 'inline-flex',
@@ -200,7 +200,7 @@ export const fdaIcon = style({
 
 export const fdaTitle = style({
   fontSize: '0.95rem',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
 })
 
 export const fdaBody = style({
@@ -224,7 +224,7 @@ export const fdaButton = style({
   'background': 'var(--secondary)',
   'color': 'var(--secondary-foreground)',
   'fontSize': '0.85rem',
-  'fontWeight': 500,
+  'fontWeight': 'var(--font-normal)',
   'cursor': 'pointer',
   'transition': 'opacity 0.15s',
   'whiteSpace': 'nowrap',

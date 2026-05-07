@@ -149,6 +149,7 @@ export default defineConfig({
         '@tauri-apps/api/event',
         '@tauri-apps/api/webviewWindow',
         '@tauri-apps/api/window',
+        '@tauri-apps/plugin-clipboard-manager',
         'diff',
         'fracturedjsonjs',
         'fzstd',

@@ -26,10 +26,42 @@ interface TerminalViewProps {
 }
 
 const instances = new Map<string, TerminalInstance>()
+// Tracks which terminals have already had their initial screen snapshot
+// applied. This must outlive TerminalContainer mount/unmount because the
+// container re-mounts whenever its surrounding tile is restructured —
+// e.g. converting a tile into a grid, swapping cells, or any other
+// structural edit that changes a node's identity in the layout tree. A
+// local-to-onMount latch would reset on every re-mount and re-apply the
+// snapshot on top of live data.
+const screenApplied = new Set<string>()
 let lastActiveTerminalId: string | null = null
+
+export function disposeTerminalInstance(id: string): void {
+  const instance = instances.get(id)
+  if (!instance)
+    return
+  instance.dispose()
+  instances.delete(id)
+  screenApplied.delete(id)
+}
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
+}
+
+// During Vite HMR the module is re-evaluated, replacing `instances` with a
+// fresh empty Map. Without this hook the previous Terminal objects (and
+// their WebGL contexts, listeners, rAF callbacks) leak: nothing references
+// them anymore but they're still wired into the DOM, and stray refresh
+// callbacks fire against a renderer service that's mid-tear-down — which
+// is the origin of `this._renderer.value.dimensions` crashes seen after
+// HMR reloads.
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    for (const id of [...instances.keys()])
+      disposeTerminalInstance(id)
+    lastActiveTerminalId = null
+  })
 }
 
 if (typeof window !== 'undefined') {
@@ -55,7 +87,13 @@ if (typeof window !== 'undefined') {
   }
 }
 
-/** Per-terminal container that calls terminal.open() exactly once. */
+/**
+ * Per-terminal container. The xterm Terminal is constructed once per id
+ * and stored in the module-level `instances` map; on re-mount the existing
+ * Terminal's DOM element is re-parented into the new container ref rather
+ * than calling `terminal.open()` again (which is no-op-on-second-call and
+ * would leave the canvas detached in the previous, unmounted container).
+ */
 const TerminalContainer: Component<{
   terminalId: string
   active: boolean
@@ -123,7 +161,18 @@ const TerminalContainer: Component<{
       })
     }
 
-    instance.terminal.open(ref)
+    // xterm's `Terminal.open()` is idempotent in a way that breaks
+    // re-mount: on the second call it sees `this.element` already set and
+    // early-returns without re-parenting it to the new container. The
+    // xterm DOM stays inside the previous (now-unmounted) ref, the new
+    // ref is empty, and the canvas ends up detached from the document.
+    // Re-parent the existing element ourselves when we know the instance
+    // was already opened (any layout edit that changes a tile's identity
+    // in the layout tree will remount its TerminalContainer below).
+    if (instance.terminal.element && instance.terminal.element.parentElement !== ref)
+      ref.appendChild(instance.terminal.element)
+    else
+      instance.terminal.open(ref)
 
     // Write screen snapshot if available (restore on refresh). Seed the
     // resume cursor from lastOffset (from the backend, carried through
@@ -133,17 +182,17 @@ const TerminalContainer: Component<{
     //
     // The screen may also arrive *after* mount when ListTerminals is
     // queued behind a worker reconnect, so a reactive effect applies it
-    // the first time it becomes non-empty. `applied` latches per
-    // instance so subsequent reactive prop changes don't re-apply the
-    // same snapshot on top of live data.
-    let applied = false
+    // the first time it becomes non-empty. The `screenApplied` set
+    // latches per instance (not per mount) so subsequent reactive prop
+    // changes — including remounts driven by layout restructuring —
+    // don't re-apply the same snapshot on top of live data.
     createEffect(() => {
-      if (applied)
+      if (screenApplied.has(props.terminalId))
         return
       const screen = props.screen
       if (!screen || screen.length === 0)
         return
-      applied = true
+      screenApplied.add(props.terminalId)
       const termId = props.terminalId
       const reportReady = props.onContentReady
       applyTerminalData(
@@ -279,28 +328,45 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     props.writeRef?.(write)
   })
 
-  // Dispose per-terminal instances as tabs are closed. The `instances`
-  // map deliberately outlives TerminalContainer mount/unmount (status
-  // transitions like STARTING → STARTUP_FAILED → READY swap between the
-  // container and the error pane while keeping the xterm alive), so this
-  // is the authoritative place to release WebGL contexts and listener
-  // refs for removed terminals.
+  // Per-view ownership of terminal ids. The `instances` map is module-
+  // level and shared by every mounted TerminalView (one per tile). Each
+  // view tracks the ids it has rendered so it can dispose them on
+  // unmount without nuking instances owned by sibling views (which would
+  // happen if the dispose effect scanned the global `instances` map).
+  //
+  // Disposal of explicitly closed terminals is owned by
+  // useTerminalOperations.handleTerminalClose, which calls
+  // disposeTerminalInstance directly. This effect only releases ids
+  // from this view's ownership set as they leave `props.terminals` — no
+  // dispose, because the id may have moved to another tile (where the
+  // sibling view will re-parent the existing xterm element).
+  const ownedIds = new Set<string>()
   createEffect(() => {
-    const liveIds = new Set(props.terminals.map(t => t.id))
-    for (const id of [...instances.keys()]) {
-      if (!liveIds.has(id)) {
-        instances.get(id)?.dispose()
-        instances.delete(id)
-      }
+    const currentIds = new Set(props.terminals.map(t => t.id))
+    for (const id of currentIds)
+      ownedIds.add(id)
+    for (const id of [...ownedIds]) {
+      if (!currentIds.has(id))
+        ownedIds.delete(id)
     }
   })
 
-  // Clean up instances when component unmounts
+  // On unmount (e.g. workspace switch, tile becomes empty), dispose
+  // any terminals this view still owns — but defer to a microtask so a
+  // sibling TerminalView that just mounted to take over the same id
+  // (tab moved between tiles) gets first crack at re-parenting the
+  // xterm element. We only dispose if the element is no longer attached
+  // anywhere.
   onCleanup(() => {
-    for (const [, instance] of instances) {
-      instance.dispose()
-    }
-    instances.clear()
+    const toCheck = [...ownedIds]
+    ownedIds.clear()
+    queueMicrotask(() => {
+      for (const id of toCheck) {
+        const inst = instances.get(id)
+        if (inst && !inst.terminal.element?.isConnected)
+          disposeTerminalInstance(id)
+      }
+    })
   })
 
   const terminalTheme = () => resolveTerminalTheme(

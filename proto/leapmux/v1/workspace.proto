@@ -162,6 +162,7 @@ message LayoutNode {
   oneof node {
     LayoutSplit split = 1;
     LayoutLeaf leaf = 2;
+    LayoutGrid grid = 3;
   }
 }
 
@@ -174,6 +175,19 @@ message LayoutSplit {
 
 message LayoutLeaf {
   string id = 1;
+}
+
+// LayoutGrid is a fixed rows×cols grid of cells with shared row heights and
+// column widths (no Pinterest-style masonry). Cells are stored row-major:
+// cells[r * cols + c] is the cell at row r, column c. Each cell is itself a
+// LayoutNode (leaf, split, or nested grid).
+message LayoutGrid {
+  string id = 1;
+  uint32 rows = 2;
+  uint32 cols = 3;
+  repeated double row_ratios = 4;
+  repeated double col_ratios = 5;
+  repeated LayoutNode cells = 6;
 }
 
 // FloatingWindow represents a detached floating window overlay.

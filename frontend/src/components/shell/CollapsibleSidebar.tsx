@@ -304,7 +304,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   <div
                     class={`${styles.paneResizeHandle} ${draggingHandleIndex() === handleIdx() ? styles.paneResizeHandleActive : ''}`}
                     data-testid="pane-resize-handle"
-                    onMouseDown={(e: MouseEvent) => handleResizeStart(handleIdx(), e)}
+                    onPointerDown={(e: PointerEvent) => handleResizeStart(handleIdx(), e)}
                     onDblClick={handleResetSplit}
                   />
                 </Show>

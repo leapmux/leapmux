@@ -55,7 +55,7 @@ export const collapsibleContentInner = style({
 
 export const sidebarTitle = style({
   fontSize: 'var(--text-7)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   color: 'var(--muted-foreground)',
   textTransform: 'uppercase',
   letterSpacing: '0.5px',

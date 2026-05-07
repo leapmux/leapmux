@@ -411,7 +411,7 @@ export const OrgManagementPage: Component = () => {
       <Show when={confirmRemoveMember()}>
         {member => (
           <ConfirmDialog
-            title="Remove Member"
+            title="Remove member"
             confirmLabel="Remove"
             danger
             onConfirm={() => {
@@ -432,7 +432,7 @@ export const OrgManagementPage: Component = () => {
 
       <Show when={confirmDeleteOrg()}>
         <ConfirmDialog
-          title="Delete Organization"
+          title="Delete organization"
           confirmLabel="Delete"
           danger
           onConfirm={() => {

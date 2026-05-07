@@ -13,9 +13,11 @@ import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { tabKey } from '~/stores/tab.store'
+import { removeEmptyFloatingWindow } from './tileLifecycle'
 
 interface UseTabOperationsOpts {
   tabStore: ReturnType<typeof createTabStore>
@@ -135,31 +137,24 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     })
   }
 
-  const removeEmptyFloatingWindow = (tileId: string | undefined) => {
-    if (!tileId || !floatingWindowStore)
-      return
-    const windowId = floatingWindowStore.getWindowForTile(tileId)
-    if (windowId) {
-      floatingWindowStore.removeIfEmpty(
-        windowId,
-        tId => tabStore.getTabsForTile(tId),
-        layoutStore.focusedTileId(),
-        tId => layoutStore.setFocusedTile(tId),
-        layoutStore.getAllTileIds(),
-      )
-    }
-  }
+  const removeEmptyFloatingWindowForTile = (tileId: string | undefined) =>
+    removeEmptyFloatingWindow(layoutStore, floatingWindowStore, tabStore, tileId)
 
-  const handleTabClose = async (tab: Tab) => {
+  /**
+   * Close a tab. Returns true on success, false if the user cancelled the
+   * last-tab/worktree confirmation prompt or an error aborted the close.
+   * Auto-removes the parent floating window if this close empties it.
+   */
+  const handleTabClose = async (tab: Tab): Promise<boolean> => {
     if (tab.type === TabType.FILE) {
-      tabStore.removeTabFromTile(tab.type, tab.id, tab.tileId ?? '')
-      removeEmptyFloatingWindow(tab.tileId)
-      return
+      tabStore.removeTab(tab.type, tab.id)
+      removeEmptyFloatingWindowForTile(tab.tileId)
+      return true
     }
 
     const key = tabKey(tab)
     if (closingTabKeys().has(key))
-      return
+      return false
     addClosingTabKey(key)
 
     // Decide phase: the tab stays visible (with a spinner) while we
@@ -175,7 +170,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       if (status.shouldPrompt) {
         const choice = await askLastTabConfirmation(workerId, tabType, tab.id, status)
         if (choice === 'cancel') {
-          return
+          return false
         }
         if (choice === 'schedule-delete') {
           worktreeAction = WorktreeAction.REMOVE
@@ -185,7 +180,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
     catch (err) {
       showWarnToast('Failed to prepare tab close', err)
-      return
+      return false
     }
     finally {
       removeClosingTabKey(key)
@@ -199,14 +194,13 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       agentOps.handleCloseAgent(tab.id, worktreeAction)
     }
     else {
-      // Instance disposal is owned by TerminalView's reactive effect,
-      // which fires when removeTab evicts the tab from the store.
       termOps.handleTerminalClose(tab.id, worktreeAction)
     }
-    removeEmptyFloatingWindow(tab.tileId)
+    removeEmptyFloatingWindowForTile(tab.tileId)
+    return true
   }
 
-  let fileTabCounter = 0
+  const generateFileTabId = makeIdGenerator('file')
   const handleFileOpen = (path: string, openSource?: FileOpenSource) => {
     const ctx = getCurrentTabContext()
     if (!ctx.workerId)
@@ -238,7 +232,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     const fileName = basename(path) || path
     const tileId = layoutStore.focusedTileId()
     const afterKey = tabStore.getActiveTabKeyForTile(tileId)
-    const tabId = `file-${++fileTabCounter}-${Date.now()}`
+    const tabId = generateFileTabId()
     tabStore.addTab({
       type: TabType.FILE,
       id: tabId,

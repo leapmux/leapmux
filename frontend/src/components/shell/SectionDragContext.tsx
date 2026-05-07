@@ -66,7 +66,18 @@ interface SectionDragProviderProps {
 
 export function SectionDragProvider(props: SectionDragProviderProps) {
   const [draggedSectionId, setDraggedSectionId] = createSignal<string | null>(null)
-  const [dropIndicator, setDropIndicator] = createSignal<DropIndicator | null>(null)
+  // Pointermove updates this on every tick; an `equals` comparator suppresses
+  // notifications when the (targetSectionId, position) pair is unchanged so
+  // downstream consumers don't re-render on every cursor pixel.
+  const [dropIndicator, setDropIndicator] = createSignal<DropIndicator | null>(null, {
+    equals: (a, b) => {
+      if (a === b)
+        return true
+      if (!a || !b)
+        return false
+      return a.targetSectionId === b.targetSectionId && a.position === b.position
+    },
+  })
   const externalHandlers: ExternalDragHandler[] = []
   const externalStartHandlers: ExternalDragStartHandler[] = []
   const externalOverHandlers: ExternalDragOverHandler[] = []
@@ -423,7 +434,7 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
                   'border': '1px solid var(--border)',
                   'border-radius': '4px',
                   'font-size': 'var(--text-7)',
-                  'font-weight': '600',
+                  'font-weight': 'var(--font-bold)',
                   'color': 'var(--muted-foreground)',
                   'text-transform': 'uppercase',
                   'letter-spacing': '0.5px',

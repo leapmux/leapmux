@@ -142,9 +142,13 @@ export function DropdownMenu(props: DropdownMenuProps) {
     reposition()
   }
 
-  const handleToggle = (e: Event) => {
-    const toggleEvent = e as ToggleEvent
-    const opening = toggleEvent.newState === 'open'
+  const handleToggle = (_e: Event) => {
+    // Read the post-transition state from the popover element rather than
+    // ToggleEvent.newState. Spec-wise both are equivalent (the toggle event
+    // fires after the state change), but the jsdom popover stub dispatches
+    // a plain Event without the ToggleEvent shape — checking `:popover-open`
+    // works in both environments.
+    const opening = popoverEl?.matches(':popover-open') ?? false
     setIsOpen(opening)
 
     if (opening) {

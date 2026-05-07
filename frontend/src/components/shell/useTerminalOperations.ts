@@ -9,6 +9,7 @@ import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { toastCloseFailure } from '~/components/shell/closeFailureToast'
+import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -240,13 +241,20 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     try {
       const ws = props.activeWorkspace()
       const tab = props.tabStore.getTerminalTab(terminalId)
-      // Do NOT gate on status === READY: the ResizeObserver's first fit()
-      // fires well before the backend broadcasts READY, and that first
-      // fit is often the only resize event the layout produces. The
-      // backend waits briefly for this during startup so the PTY can be
-      // spawned at the final size rather than SIGWINCHed to it.
       if (!ws || !tab)
         return
+      // Skip the RPC once the PTY can't be the target of a SIGWINCH.
+      // xterm's fitAddon.fit() in TerminalView still runs (frontend-only
+      // reflow of the existing buffer for users reading dead output);
+      // only the worker-side resize is gated. We do NOT gate on
+      // status === READY: the ResizeObserver's first fit() fires before
+      // the backend broadcasts READY, and the backend stashes that
+      // resize so the PTY spawns at the final size.
+      if (tab.status === TerminalStatus.EXITED
+        || tab.status === TerminalStatus.DISCONNECTED
+        || tab.status === TerminalStatus.STARTUP_FAILED) {
+        return
+      }
       await workerRpc.resizeTerminal(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, cols, rows })
     }
     catch {
@@ -263,8 +271,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
     const ws = props.activeWorkspace()
 
-    // Synchronous: tab disappears immediately.
+    // Synchronous: tab disappears immediately, then release the xterm
+    // instance (WebGL context, listeners). TerminalView's per-view
+    // ownership tracking only releases ids on unmount — explicit close
+    // must dispose here so we don't leak instances when the user closes
+    // a terminal whose tile is still on-screen.
     props.tabStore.removeTab(TabType.TERMINAL, terminalId)
+    disposeTerminalInstance(terminalId)
 
     // Background: PTY close, DB close, optional worktree removal.
     if (workerId && ws) {

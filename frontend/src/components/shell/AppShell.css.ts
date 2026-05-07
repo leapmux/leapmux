@@ -46,15 +46,26 @@ export const rightPanel = style({
   overflow: 'hidden',
 })
 
-export const centerContent = style({
+/**
+ * Tile content pane — agent, terminal, or file viewer. Sits in the
+ * `position: relative` slot established by `tileContent` (in Tile.css)
+ * and absolutely fills it. Multiple panes can share the same slot; only
+ * the active one is visible. Keeping inactive panes laid out (instead
+ * of `display: none`) preserves their dimensions across tab switches —
+ * critical for xterm, whose renderer reads container size and can land
+ * in a degenerate state when the parent collapses to zero.
+ */
+export const tilePane = style({
+  position: 'absolute',
+  inset: 0,
   display: 'flex',
   flexDirection: 'column',
-  flex: 1,
   overflow: 'hidden',
 })
 
-export const layoutHidden = style({
-  display: 'none !important',
+export const tilePaneHidden = style({
+  visibility: 'hidden',
+  pointerEvents: 'none',
 })
 
 export const fullWindow = style({

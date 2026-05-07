@@ -12,7 +12,7 @@ export const banner = style({
 
 export const bannerTitle = style({
   fontSize: 'var(--text-7)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   color: 'var(--foreground)',
   marginBottom: 'var(--space-2)',
 })
@@ -38,7 +38,7 @@ export const questionGroup = style({
 
 export const questionLabel = style({
   fontSize: 'var(--text-7)',
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
   color: 'var(--foreground)',
   marginBottom: 'var(--space-1)',
 })
@@ -78,7 +78,7 @@ export const optionContent = style({
 })
 
 export const optionLabel = style({
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
 })
 
 export const optionDescription = style({
@@ -112,7 +112,7 @@ export const paginationItem = style({
   'height': '22px',
   'borderRadius': 'var(--radius-small)',
   'fontSize': 'var(--text-8)',
-  'fontWeight': 400,
+  'fontWeight': 'var(--font-normal)',
   'cursor': 'pointer',
   'border': `1px solid transparent`,
   'color': 'var(--muted-foreground)',
@@ -139,7 +139,7 @@ export const paginationItemCurrent = style({
 
 export const paginationItemAnswered = style({
   color: 'var(--success)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
 })
 
 export const questionPageHeader = style({
@@ -174,7 +174,7 @@ globalStyle(`${controlBanner}:hover .${controlBannerActions}`, {
 
 export const controlBannerTitle = style({
   fontSize: 'var(--text-7)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   color: 'var(--foreground)',
   marginBottom: 'var(--space-1)',
 })

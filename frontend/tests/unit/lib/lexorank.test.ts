@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { after, first, mid } from '~/lib/lexorank'
+import { after, first, mid, positionAtInsertIdx } from '~/lib/lexorank'
 
 describe('lexorank', () => {
   describe('first', () => {
@@ -88,6 +88,39 @@ describe('lexorank', () => {
     it('should handle equal strings', () => {
       const result = mid('nn', 'nn')
       expect(result > 'nn').toBe(true)
+    })
+  })
+
+  describe('positionAtInsertIdx', () => {
+    it('returns first() for an empty list', () => {
+      expect(positionAtInsertIdx([], 0)).toBe(first())
+    })
+
+    it('returns rank before head when inserting at index 0', () => {
+      const items = [{ position: 'n' }, { position: 'p' }]
+      const result = positionAtInsertIdx(items, 0)
+      expect(result < 'n').toBe(true)
+    })
+
+    it('returns rank between neighbours for an interior index', () => {
+      const items = [{ position: 'a' }, { position: 'm' }, { position: 'z' }]
+      const result = positionAtInsertIdx(items, 1)
+      expect(result > 'a').toBe(true)
+      expect(result < 'm').toBe(true)
+    })
+
+    it('returns rank after tail when inserting at length', () => {
+      const items = [{ position: 'b' }, { position: 'n' }]
+      const result = positionAtInsertIdx(items, items.length)
+      expect(result > 'n').toBe(true)
+    })
+
+    it('treats missing positions as empty (head/tail edges)', () => {
+      const itemsHead = [{ position: undefined }, { position: 'n' }]
+      const headResult = positionAtInsertIdx(itemsHead, 1)
+      // prevPos is empty (undefined → ''), nextPos is 'n', so this is mid('', 'n').
+      expect(headResult < 'n').toBe(true)
+      expect(headResult.length).toBeGreaterThan(0)
     })
   })
 })

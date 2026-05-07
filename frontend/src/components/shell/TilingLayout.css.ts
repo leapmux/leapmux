@@ -1,4 +1,4 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
 
 export const tilingRoot = style({
@@ -9,39 +9,53 @@ export const tilingRoot = style({
   flexDirection: 'column',
 })
 
-// Resizable root doesn't set its own height/flex — ensure it fills the tiling root
-// and also fills any parent Panel when nested.
-globalStyle(`${tilingRoot} [data-corvu-resizable-root]`, {
-  flex: 1,
-  minHeight: 0,
-  minWidth: 0,
-})
+// Container + cell styles are shared between SplitRenderer (1D CSS Grid)
+// and GridRenderer (2D CSS Grid) — they apply identical box semantics.
+// Separators differ per renderer because their attribute selectors do.
 
-// Panel elements need to be flex containers so children with height:100% work.
-globalStyle(`${tilingRoot} [data-corvu-resizable-panel]`, {
-  display: 'flex',
-  flexDirection: 'column',
+export const tilingContainer = style({
+  position: 'relative',
+  display: 'grid',
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
   overflow: 'hidden',
 })
 
-export const tileResizeHandle = style({
-  background: 'transparent',
-  borderRadius: 0,
+export const tilingCell = style({
   position: 'relative',
-  flexShrink: 0,
-  zIndex: 5,
+  minWidth: 0,
+  minHeight: 0,
+  overflow: 'hidden',
+  display: 'flex',
+  flexDirection: 'column',
+})
+
+// Shared separator style for both SplitRenderer and GridRenderer. Both
+// emit `data-axis="col"|"row"` on their handles, so one rule covers both.
+export const tilingSeparator = style({
+  position: 'absolute',
+  background: 'transparent',
+  // touchAction:'none' so mobile/touch browsers don't scroll or pinch-zoom
+  // mid-drag despite our preventDefault() on pointerdown.
+  touchAction: 'none',
+  zIndex: 6,
   selectors: {
-    '&[data-direction="horizontal"]': {
+    '&[data-axis="col"]': {
+      top: 0,
+      bottom: 0,
       width: '4px',
+      transform: 'translateX(-2px)',
       cursor: 'col-resize',
-      margin: '0 -2px',
     },
-    '&[data-direction="vertical"]': {
+    '&[data-axis="row"]': {
+      left: 0,
+      right: 0,
       height: '4px',
+      transform: 'translateY(-2px)',
       cursor: 'row-resize',
-      margin: '-2px 0',
     },
-    ...resizeHandleSelectors('horizontal', 'var(--border)', '&[data-direction="horizontal"]'),
-    ...resizeHandleSelectors('vertical', 'var(--border)', '&[data-direction="vertical"]'),
+    ...resizeHandleSelectors('horizontal', 'var(--border)', '&[data-axis="col"]'),
+    ...resizeHandleSelectors('vertical', 'var(--border)', '&[data-axis="row"]'),
   },
 })

@@ -656,9 +656,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // STARTUP_FAILED. READY and STARTUP_FAILED both arrive on
         // normal subscribe via WatchEvents's catch-up, so the race of a
         // late subscriber missing the one-shot broadcast is closed.
-        const existingTab = tabStore.state.tabs.find(
-          t => t.type === TabType.TERMINAL && t.id === terminalId,
-        )
+        const existingTab = tabStore.getTerminalTab(terminalId)
         // Git branch / origin / toplevel are carried on every post-phase-0
         // STARTING broadcast. Update the tab whenever a non-empty value
         // arrives so a reconnect or a late worktree-creation refreshes the

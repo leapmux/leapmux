@@ -33,7 +33,7 @@ export const titleText = style({
   userSelect: 'none',
   WebkitAppRegion: 'drag',
   fontSize: 'var(--text-7)',
-  fontWeight: 'bold',
+  fontWeight: 'var(--font-bold)',
   letterSpacing: '0.02em',
   color: 'var(--text-secondary)',
 } as any)
