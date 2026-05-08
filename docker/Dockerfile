@@ -132,6 +132,4 @@ RUN mkdir -p /data
 EXPOSE 4327
 VOLUME /data
 
-ENV LEAPMUX_DOCKER=1
-
 ENTRYPOINT ["/init"]

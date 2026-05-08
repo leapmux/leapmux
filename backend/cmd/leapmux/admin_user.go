@@ -16,40 +16,11 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-func runAdminUser(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin user <command> [flags]\n\nCommands:\n  list              List users\n  get               Get user details\n  create            Create a new user\n  update            Update user fields\n  delete            Delete a user\n  reset-password    Reset a user's password\n  grant-admin       Grant admin privileges\n  revoke-admin      Revoke admin privileges\n  list-sessions     List a user's active sessions")
-	}
-
-	switch args[0] {
-	case "list":
-		return runUserList(args[1:])
-	case "get":
-		return runUserGet(args[1:])
-	case "create":
-		return runUserCreate(args[1:])
-	case "update":
-		return runUserUpdate(args[1:])
-	case "delete":
-		return runUserDelete(args[1:])
-	case "reset-password":
-		return runUserResetPassword(args[1:])
-	case "grant-admin":
-		return runUserGrantAdmin(args[1:])
-	case "revoke-admin":
-		return runUserRevokeAdmin(args[1:])
-	case "list-sessions":
-		return runUserListSessions(args[1:])
-	default:
-		return fmt.Errorf("unknown user command: %s", args[0])
-	}
-}
-
-func runUserList(args []string) error {
+func runUserList(cmd adminCmdCtx, args []string) error {
 	var query *string
 	var limit *int64
 	var cursor *string
-	return withAdminStore("user list", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		query = fs.String("query", "", "search query (matches username, display name, email)")
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		cursor = fs.String("cursor", "", "cursor for pagination (created_at in RFC3339Nano)")
@@ -89,10 +60,10 @@ func runUserList(args []string) error {
 	})
 }
 
-func runUserGet(args []string) error {
+func runUserGet(cmd adminCmdCtx, args []string) error {
 	var userID *string
 	var username *string
-	return withAdminStore("user get", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
@@ -115,14 +86,14 @@ func runUserGet(args []string) error {
 	})
 }
 
-func runUserCreate(args []string) error {
+func runUserCreate(cmd adminCmdCtx, args []string) error {
 	var username *string
 	var pw *string
 	var displayName *string
 	var email *string
 	var emailVerified *bool
 	var admin *bool
-	return withAdminStore("user create", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		username = fs.String("username", "", "username (required)")
 		pw = fs.String("password", "", "password (prompted if omitted)")
 		displayName = fs.String("display-name", "", "display name")
@@ -186,7 +157,7 @@ func runUserCreate(args []string) error {
 	})
 }
 
-func runUserUpdate(args []string) error {
+func runUserUpdate(cmd adminCmdCtx, args []string) error {
 	var flagSet *flag.FlagSet
 	var userID *string
 	var username *string
@@ -194,7 +165,7 @@ func runUserUpdate(args []string) error {
 	var email *string
 	var clearPendingEmail *bool
 	var emailVerifiedFlag *bool
-	return withAdminStore("user update", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		flagSet = fs
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username (for lookup)")
@@ -282,11 +253,11 @@ func runUserUpdate(args []string) error {
 	})
 }
 
-func runUserDelete(args []string) error {
+func runUserDelete(cmd adminCmdCtx, args []string) error {
 	var userID *string
 	var username *string
 	var force *bool
-	return withAdminStore("user delete", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 		force = fs.Bool("force", false, "required to delete an admin user")
@@ -336,11 +307,11 @@ func runUserDelete(args []string) error {
 	})
 }
 
-func runUserResetPassword(args []string) error {
+func runUserResetPassword(cmd adminCmdCtx, args []string) error {
 	var userID *string
 	var username *string
 	var pw *string
-	return withAdminStore("user reset-password", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 		pw = fs.String("password", "", "new password (prompted if omitted)")
@@ -387,22 +358,18 @@ func runUserResetPassword(args []string) error {
 	})
 }
 
-func runUserGrantAdmin(args []string) error {
-	return runUserSetAdmin(args, true)
+func runUserGrantAdmin(cmd adminCmdCtx, args []string) error {
+	return runUserSetAdmin(cmd, args, true)
 }
 
-func runUserRevokeAdmin(args []string) error {
-	return runUserSetAdmin(args, false)
+func runUserRevokeAdmin(cmd adminCmdCtx, args []string) error {
+	return runUserSetAdmin(cmd, args, false)
 }
 
-func runUserSetAdmin(args []string, admin bool) error {
-	verb := "grant-admin"
-	if !admin {
-		verb = "revoke-admin"
-	}
+func runUserSetAdmin(cmd adminCmdCtx, args []string, admin bool) error {
 	var userID *string
 	var username *string
-	return withAdminStore("user "+verb, args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
@@ -427,10 +394,10 @@ func runUserSetAdmin(args []string, admin bool) error {
 	})
 }
 
-func runUserListSessions(args []string) error {
+func runUserListSessions(cmd adminCmdCtx, args []string) error {
 	var userID *string
 	var username *string
-	return withAdminStore("user list-sessions", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {

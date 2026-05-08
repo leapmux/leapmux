@@ -11,24 +11,11 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
-func runAdminOrg(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin org <command> [flags]\n\nCommands:\n  list              List organizations")
-	}
-
-	switch args[0] {
-	case "list":
-		return runOrgList(args[1:])
-	default:
-		return fmt.Errorf("unknown org command: %s", args[0])
-	}
-}
-
-func runOrgList(args []string) error {
+func runOrgList(cmd adminCmdCtx, args []string) error {
 	var query *string
 	var limit *int64
 	var cursor *string
-	return withAdminStore("org list", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		query = fs.String("query", "", "search query (prefix match on org name)")
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		cursor = fs.String("cursor", "", "cursor for pagination (created_at in RFC3339Nano)")

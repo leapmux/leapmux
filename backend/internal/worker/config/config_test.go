@@ -1,11 +1,15 @@
 package config
 
 import (
+	"errors"
+	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +22,7 @@ func TestLoad(t *testing.T) {
 		cfg, showVersion, err := Load(nil)
 		require.NoError(t, err)
 		assert.False(t, showVersion)
-		assert.Equal(t, "http://localhost:4327", cfg.HubURL)
+		assert.Equal(t, "http://127.0.0.1:4327", cfg.HubURL)
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/worker"), cfg.DataDir)
 		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.DBMaxConns)
 		assert.Equal(t, 0, cfg.MaxMessageSize)
@@ -75,7 +79,7 @@ log_level: "warn"
 	t.Run("missing config file silently ignored", func(t *testing.T) {
 		cfg, _, err := Load([]string{"-config", "/nonexistent/worker.yaml"})
 		require.NoError(t, err)
-		assert.Equal(t, "http://localhost:4327", cfg.HubURL)
+		assert.Equal(t, "http://127.0.0.1:4327", cfg.HubURL)
 	})
 
 	t.Run("invalid YAML returns error", func(t *testing.T) {
@@ -121,6 +125,50 @@ log_level: "warn"
 		require.NoError(t, err)
 		assert.Equal(t, tmpDir, cfg.DataDir)
 	})
+}
+
+func TestLoadRejectsPositionalArguments(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"bare help word", []string{"help"}},
+		{"trailing positional after flag", []string{"-name", "w1", "garbage"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := Load(tc.args)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unexpected argument")
+		})
+	}
+}
+
+func TestWorkerHelpGroupsOptions(t *testing.T) {
+	output := testutil.CaptureStdout(t, func() {
+		_, _, err := Load([]string{"--help"})
+		require.True(t, errors.Is(err, flag.ErrHelp))
+	})
+
+	sections := []string{
+		"\nCommon options:\n",
+		"\nWorker options:\n",
+		"\nTimeout and limit options:\n",
+		"\nSQLite database options:\n",
+	}
+	for _, section := range sections {
+		require.Contains(t, output, section)
+	}
+	for i := 1; i < len(sections); i++ {
+		assert.Less(t, strings.Index(output, sections[i-1]), strings.Index(output, sections[i]))
+	}
+	assert.Contains(t, output, "\nCommon options:\n\n  -config string")
+	assert.Contains(t, output, "\nWorker options:\n\n  -data-dir string")
+	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout-seconds int")
+	assert.Contains(t, output, "\nSQLite database options:\n\n  -db-cache-size int")
+	assert.Contains(t, output, "  -hub string")
+	assert.Contains(t, output, "  -api-timeout-seconds int")
+	assert.Contains(t, output, "  -db-cache-size int")
 }
 
 func TestValidate(t *testing.T) {

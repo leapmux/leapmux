@@ -98,9 +98,12 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	logging.Setup()
 
 	modeName := "solo"
+	description := "Run Hub + Worker locally for single-user use."
 	if cfg.DevMode {
 		modeName = "dev"
+		description = "Run Hub + Worker together for development."
 	}
+	flagSetName := "leapmux " + modeName
 
 	defaultListen := cfg.Listen
 	if defaultListen == "" {
@@ -139,7 +142,8 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		DefaultListen:     defaultListen,
 		DefaultConfigDir:  configDir,
 		DefaultConfigFile: configFile,
-		FlagSetName:       "leapmux",
+		FlagSetName:       flagSetName,
+		Description:       description,
 		CLIFlags:          cliFlags,
 		ExtraFlags:        extraFlags,
 		SoloMode:          !cfg.DevMode,

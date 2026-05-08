@@ -179,6 +179,7 @@ type LoadOptions struct {
 	DefaultConfigDir  string         // for data_dir resolution (e.g. "~/.config/leapmux/solo")
 	DefaultConfigFile string         // default config file path
 	FlagSetName       string         // flag.NewFlagSet name ("hub" vs "leapmux")
+	Description       string         // short command description for help output
 	CLIFlags          []string       // if non-nil, only register these flags (solo exposes a subset)
 	ExtraFlags        []ExtraFlagDef // additional flags not in the hub's allFlags list
 	SoloMode          bool           // set on resulting Config
@@ -207,7 +208,11 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 	fsName := opts.FlagSetName
 	if fsName == "" {
-		fsName = "hub"
+		fsName = "leapmux hub"
+	}
+	description := opts.Description
+	if description == "" && fsName == "leapmux hub" {
+		description = "Run the Hub service."
 	}
 
 	// Pre-scan for -config flag.
@@ -217,6 +222,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	type flagDef struct {
 		name     string
 		koanfKey string
+		category string
 		usage    string
 		// Exactly one of these is set.
 		strDefault  *string
@@ -226,12 +232,13 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 
 	// prefixFlags creates flagDefs by prepending a CLI and koanf prefix to
 	// a set of base definitions, replacing "{name}" in usage strings.
-	prefixFlags := func(cliPrefix, koanfPrefix, displayName string, base []flagDef) []flagDef {
+	prefixFlags := func(cliPrefix, koanfPrefix, displayName, category string, base []flagDef) []flagDef {
 		out := make([]flagDef, len(base))
 		for i, f := range base {
 			out[i] = flagDef{
 				name:        cliPrefix + "-" + f.name,
 				koanfKey:    koanfPrefix + "." + f.koanfKey,
+				category:    category,
 				usage:       strings.Replace(f.usage, "{name}", displayName, 1),
 				strDefault:  f.strDefault,
 				intDefault:  f.intDefault,
@@ -243,56 +250,56 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 
 	// Base flag templates for PostgreSQL-compatible and MySQL-compatible backends.
 	postgresBaseFlags := []flagDef{
-		{"dsn", "dsn", "{name} connection string", ptrconv.Ptr(""), nil, nil},
-		{"max-conns", "max_conns", "{name} maximum open connections", nil, ptrconv.Ptr(25), nil},
-		{"min-conns", "min_conns", "{name} minimum pool connections kept alive", nil, ptrconv.Ptr(5), nil},
-		{"conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "{name} connection max lifetime in seconds", nil, ptrconv.Ptr(3600), nil},
-		{"max-conn-idle-time-seconds", "max_conn_idle_time_seconds", "{name} max idle time per connection in seconds", nil, ptrconv.Ptr(300), nil},
-		{"health-check-period-seconds", "health_check_period_seconds", "{name} pool health check period in seconds", nil, ptrconv.Ptr(30), nil},
+		{"dsn", "dsn", "", "{name} connection string", ptrconv.Ptr(""), nil, nil},
+		{"max-conns", "max_conns", "", "{name} maximum open connections", nil, ptrconv.Ptr(25), nil},
+		{"min-conns", "min_conns", "", "{name} minimum pool connections kept alive", nil, ptrconv.Ptr(5), nil},
+		{"conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "", "{name} connection max lifetime in seconds", nil, ptrconv.Ptr(3600), nil},
+		{"max-conn-idle-time-seconds", "max_conn_idle_time_seconds", "", "{name} max idle time per connection in seconds", nil, ptrconv.Ptr(300), nil},
+		{"health-check-period-seconds", "health_check_period_seconds", "", "{name} pool health check period in seconds", nil, ptrconv.Ptr(30), nil},
 	}
 	mysqlBaseFlags := []flagDef{
-		{"dsn", "dsn", "{name} connection string", ptrconv.Ptr(""), nil, nil},
-		{"max-conns", "max_conns", "{name} maximum open connections", nil, ptrconv.Ptr(25), nil},
-		{"max-idle-conns", "max_idle_conns", "{name} maximum idle connections", nil, ptrconv.Ptr(5), nil},
-		{"conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "{name} connection max lifetime in seconds", nil, ptrconv.Ptr(3600), nil},
-		{"conn-max-idle-time-seconds", "conn_max_idle_time_seconds", "{name} max idle time per connection in seconds", nil, ptrconv.Ptr(300), nil},
+		{"dsn", "dsn", "", "{name} connection string", ptrconv.Ptr(""), nil, nil},
+		{"max-conns", "max_conns", "", "{name} maximum open connections", nil, ptrconv.Ptr(25), nil},
+		{"max-idle-conns", "max_idle_conns", "", "{name} maximum idle connections", nil, ptrconv.Ptr(5), nil},
+		{"conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "", "{name} connection max lifetime in seconds", nil, ptrconv.Ptr(3600), nil},
+		{"conn-max-idle-time-seconds", "conn_max_idle_time_seconds", "", "{name} max idle time per connection in seconds", nil, ptrconv.Ptr(300), nil},
 	}
 
 	allFlags := []flagDef{
-		{"listen", "listen", "TCP listen address (e.g. ':4327' or '127.0.0.1:4327')", ptrconv.Ptr(listen), nil, nil},
-		{"local-listen", "local_listen", "local IPC listen URL (unix:<path> or npipe:<name>); platform default used if empty", ptrconv.Ptr(""), nil, nil},
-		{"public-url", "public_url", "public base URL when running behind a reverse proxy (e.g. 'https://hub.example.com')", ptrconv.Ptr(""), nil, nil},
-		{"data-dir", "data_dir", "data directory", ptrconv.Ptr("."), nil, nil},
-		{"dev-frontend", "dev_frontend", "Vite dev server URL for reverse proxy (dev mode only)", ptrconv.Ptr(""), nil, nil},
-		{"max-message-size", "max_message_size", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, ptrconv.Ptr(0), nil},
-		{"max-incomplete-chunked", "max_incomplete_chunked", "maximum in-flight chunked sequences per channel (default 4)", nil, ptrconv.Ptr(0), nil},
-		{"log-level", "log_level", "log level (debug, info, warn, error)", ptrconv.Ptr(defaultLogLevel), nil, nil},
-		{"signup-enabled", "signup_enabled", "enable user sign-up", nil, nil, ptrconv.Ptr(false)},
-		{"email-verification-required", "email_verification_required", "require email verification on sign-up", nil, nil, ptrconv.Ptr(false)},
-		{"smtp-host", "smtp_host", "SMTP server host", ptrconv.Ptr(""), nil, nil},
-		{"smtp-port", "smtp_port", "SMTP server port", nil, ptrconv.Ptr(587), nil},
-		{"smtp-username", "smtp_username", "SMTP username", ptrconv.Ptr(""), nil, nil},
-		{"smtp-password", "smtp_password", "SMTP password", ptrconv.Ptr(""), nil, nil},
-		{"smtp-from-address", "smtp_from_address", "SMTP from address", ptrconv.Ptr(""), nil, nil},
-		{"smtp-tls-mode", "smtp_tls_mode", "SMTP TLS mode (" + validSmtpTLSModes + ")", ptrconv.Ptr(SmtpTLSModeSTARTTLS), nil, nil},
-		{"api-timeout-seconds", "api_timeout_seconds", "general API timeout in seconds", nil, ptrconv.Ptr(DefaultAPITimeoutSeconds), nil},
-		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "agent startup timeout in seconds", nil, ptrconv.Ptr(DefaultAgentStartupTimeoutSeconds), nil},
-		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "worktree creation timeout in seconds", nil, ptrconv.Ptr(DefaultWorktreeCreateTimeoutSeconds), nil},
+		{"listen", "listen", "Server options", "TCP listen address (e.g. ':4327' or '127.0.0.1:4327')", ptrconv.Ptr(listen), nil, nil},
+		{"local-listen", "local_listen", "Server options", "local IPC listen URL (unix:<path> or npipe:<name>); platform default used if empty", ptrconv.Ptr(""), nil, nil},
+		{"public-url", "public_url", "Server options", "public base URL when running behind a reverse proxy (e.g. 'https://hub.example.com')", ptrconv.Ptr(""), nil, nil},
+		{"data-dir", "data_dir", "Server options", "data directory", ptrconv.Ptr("."), nil, nil},
+		{"dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ptrconv.Ptr(""), nil, nil},
+		{"max-message-size", "max_message_size", "Timeout and limit options", "maximum reassembled channel message size in bytes (default 16 MiB)", nil, ptrconv.Ptr(0), nil},
+		{"max-incomplete-chunked", "max_incomplete_chunked", "Timeout and limit options", "maximum in-flight chunked sequences per channel (default 4)", nil, ptrconv.Ptr(0), nil},
+		{"log-level", "log_level", "Server options", "log level (debug, info, warn, error)", ptrconv.Ptr(defaultLogLevel), nil, nil},
+		{"signup-enabled", "signup_enabled", "Auth options", "enable user sign-up", nil, nil, ptrconv.Ptr(false)},
+		{"email-verification-required", "email_verification_required", "Auth options", "require email verification on sign-up", nil, nil, ptrconv.Ptr(false)},
+		{"smtp-host", "smtp_host", "SMTP options", "SMTP server host", ptrconv.Ptr(""), nil, nil},
+		{"smtp-port", "smtp_port", "SMTP options", "SMTP server port", nil, ptrconv.Ptr(587), nil},
+		{"smtp-username", "smtp_username", "SMTP options", "SMTP username", ptrconv.Ptr(""), nil, nil},
+		{"smtp-password", "smtp_password", "SMTP options", "SMTP password", ptrconv.Ptr(""), nil, nil},
+		{"smtp-from-address", "smtp_from_address", "SMTP options", "SMTP from address", ptrconv.Ptr(""), nil, nil},
+		{"smtp-tls-mode", "smtp_tls_mode", "SMTP options", "SMTP TLS mode (" + validSmtpTLSModes + ")", ptrconv.Ptr(SmtpTLSModeSTARTTLS), nil, nil},
+		{"api-timeout-seconds", "api_timeout_seconds", "Timeout and limit options", "general API timeout in seconds", nil, ptrconv.Ptr(DefaultAPITimeoutSeconds), nil},
+		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "Timeout and limit options", "agent startup timeout in seconds", nil, ptrconv.Ptr(DefaultAgentStartupTimeoutSeconds), nil},
+		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "Timeout and limit options", "worktree creation timeout in seconds", nil, ptrconv.Ptr(DefaultWorktreeCreateTimeoutSeconds), nil},
 		// Storage configuration
-		{"storage-type", "storage.type", "storage backend type (" + validStorageTypes + ")", ptrconv.Ptr(""), nil, nil},
+		{"storage-type", "storage.type", "Storage common options", "storage backend type (" + validStorageTypes + ")", ptrconv.Ptr(""), nil, nil},
 		// SQLite (default)
-		{"storage-sqlite-path", "storage.sqlite.path", "SQLite database file path (default: {data_dir}/hub.db)", ptrconv.Ptr(""), nil, nil},
-		{"storage-sqlite-max-conns", "storage.sqlite.max_conns", "SQLite maximum open connections", nil, ptrconv.Ptr(sqlitedb.DefaultMaxConns), nil},
-		{"storage-sqlite-cache-size", "storage.sqlite.cache_size", "SQLite page cache size (negative = KiB, e.g. -64000 = 64 MiB)", nil, ptrconv.Ptr(0), nil},
-		{"storage-sqlite-mmap-size", "storage.sqlite.mmap_size", "SQLite memory-mapped I/O size in bytes (0 = disabled)", nil, ptrconv.Ptr(0), nil},
+		{"storage-sqlite-path", "storage.sqlite.path", "SQLite storage options", "SQLite database file path (default: {data_dir}/hub.db)", ptrconv.Ptr(""), nil, nil},
+		{"storage-sqlite-max-conns", "storage.sqlite.max_conns", "SQLite storage options", "SQLite maximum open connections", nil, ptrconv.Ptr(sqlitedb.DefaultMaxConns), nil},
+		{"storage-sqlite-cache-size", "storage.sqlite.cache_size", "SQLite storage options", "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB)", nil, ptrconv.Ptr(0), nil},
+		{"storage-sqlite-mmap-size", "storage.sqlite.mmap_size", "SQLite storage options", "SQLite memory-mapped I/O size in bytes (0 = disabled)", nil, ptrconv.Ptr(0), nil},
 	}
 	// PostgreSQL and PostgreSQL-compatible backends.
-	allFlags = append(allFlags, prefixFlags("storage-postgres", "storage.postgres", "PostgreSQL", postgresBaseFlags)...)
-	allFlags = append(allFlags, prefixFlags("storage-cockroachdb", "storage.cockroachdb", "CockroachDB", postgresBaseFlags)...)
-	allFlags = append(allFlags, prefixFlags("storage-yugabytedb", "storage.yugabytedb", "YugabyteDB", postgresBaseFlags)...)
+	allFlags = append(allFlags, prefixFlags("storage-postgres", "storage.postgres", "PostgreSQL", "PostgreSQL storage options", postgresBaseFlags)...)
+	allFlags = append(allFlags, prefixFlags("storage-cockroachdb", "storage.cockroachdb", "CockroachDB", "CockroachDB storage options", postgresBaseFlags)...)
+	allFlags = append(allFlags, prefixFlags("storage-yugabytedb", "storage.yugabytedb", "YugabyteDB", "YugabyteDB storage options", postgresBaseFlags)...)
 	// MySQL and MySQL-compatible backends.
-	allFlags = append(allFlags, prefixFlags("storage-mysql", "storage.mysql", "MySQL", mysqlBaseFlags)...)
-	allFlags = append(allFlags, prefixFlags("storage-tidb", "storage.tidb", "TiDB", mysqlBaseFlags)...)
+	allFlags = append(allFlags, prefixFlags("storage-mysql", "storage.mysql", "MySQL", "MySQL storage options", mysqlBaseFlags)...)
+	allFlags = append(allFlags, prefixFlags("storage-tidb", "storage.tidb", "TiDB", "TiDB storage options", mysqlBaseFlags)...)
 
 	// Build the set of allowed CLI flags.
 	var allowedFlags map[string]bool
@@ -306,6 +313,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	// Define CLI flags and build fieldMap/defaults from the canonical list.
 	fs := flag.NewFlagSet(fsName, flag.ContinueOnError)
 	fs.String("config", configFile, "path to config file")
+	usageCategories := map[string]string{"config": "Common options"}
 	fieldMap := make(map[string]string, len(allFlags))
 	defaults := make(map[string]interface{}, len(allFlags))
 
@@ -325,6 +333,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 			continue
 		}
 		fieldMap[fd.name] = fd.koanfKey
+		usageCategories[fd.name] = fd.category
 		switch {
 		case fd.strDefault != nil:
 			fs.String(fd.name, *fd.strDefault, fd.usage)
@@ -338,12 +347,14 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	for _, ef := range opts.ExtraFlags {
 		fieldMap[ef.Name] = ef.KoanfKey
 		defaults[ef.KoanfKey] = ef.StrDefault
+		usageCategories[ef.Name] = "Server options"
 		fs.String(ef.Name, ef.StrDefault, ef.Usage)
 	}
 
 	showVersion := fs.Bool("version", false, "print version and exit")
+	usageCategories["version"] = "Common options"
 
-	if err := fs.Parse(args); err != nil {
+	if err := internalconfig.ConfigureAndParse(fs, args, description, usageCategories, hubFlagCategoryOrder); err != nil {
 		return nil, false, err
 	}
 
@@ -400,6 +411,21 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 
 	return &cfg, false, nil
+}
+
+var hubFlagCategoryOrder = []string{
+	"Common options",
+	"Server options",
+	"Auth options",
+	"SMTP options",
+	"Timeout and limit options",
+	"Storage common options",
+	"SQLite storage options",
+	"PostgreSQL storage options",
+	"CockroachDB storage options",
+	"YugabyteDB storage options",
+	"MySQL storage options",
+	"TiDB storage options",
 }
 
 // Validate checks the configuration values and ensures required directories exist.

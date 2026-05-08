@@ -56,9 +56,9 @@ Beyond the basics in the pitch above:
 
 LeapMux is built as a Go binary (`leapmux`) that runs in two deployment modes. A native desktop app is also available — it can run solo mode locally or connect to a remote hub.
 
-### Solo Mode (default)
+### Solo Mode
 
-Run `leapmux` with no subcommand for a zero-config, single-user setup. Hub and Worker run in the same process, bound to localhost only. No login is required — the UI opens directly into the workspace.
+Run `leapmux solo` for a zero-config, single-user setup. Hub and Worker run in the same process, bound to localhost only. No login is required — the UI opens directly into the workspace.
 
 ```
                  LeapMux (127.0.0.1:4327)
@@ -115,7 +115,7 @@ LeapMux is a single binary with these subcommands:
 
 | Command | Mode | Description |
 |---------|------|-------------|
-| `leapmux` | Solo | Hub + Worker on `127.0.0.1:4327`, no login, single-user |
+| `leapmux solo` | Solo | Hub + Worker on `127.0.0.1:4327`, no login, single-user |
 | `leapmux hub` | Hub | Central service only (authentication, relay, database) |
 | `leapmux worker` | Worker | Connects to a remote Hub |
 | `leapmux dev` | Dev | Hub + Worker on `:4327` (all interfaces), login required, all features |
@@ -195,7 +195,7 @@ Pre-built images are published to [GHCR](https://github.com/leapmux/leapmux/pkgs
 
 Release tags (`:latest`, `:<version>`, `:<major>`) are published by the release workflow. The `:dev` tag is updated on every push to `main`.
 
-The image runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The `LEAPMUX_MODE` environment variable selects the subcommand (`hub`, `worker`, `dev`, etc.) and is required. Data and configuration are stored under `/data/<mode>/` (e.g. `/data/hub/`) in the `/data` volume.
+The image runs with [s6-overlay](https://github.com/just-containers/s6-overlay) for process supervision. The `LEAPMUX_MODE` environment variable selects the subcommand (`hub`, `worker`, `dev`, or `solo`) and is required. Data and configuration are stored under `/data/<mode>/` (e.g. `/data/hub/`) in the `/data` volume.
 
 ```bash
 # Run as a hub (central service only)
@@ -337,7 +337,7 @@ Each `dev` target generates code and builds prerequisites, then launches `mprocs
 | Command | Processes | Description |
 |---------|-----------|-------------|
 | `task dev` | Go backend (`leapmux dev`) + Bun frontend dev server | Full-featured dev mode on all interfaces, login required |
-| `task dev-solo` | Go backend (`leapmux` solo) + Bun frontend dev server | Localhost-only, no login, single-user |
+| `task dev-solo` | Go backend (`leapmux solo`) + Bun frontend dev server | Localhost-only, no login, single-user |
 | `task dev-desktop` | Bun frontend dev server + Tauri desktop app | Desktop app development (builds sidecar first) |
 
 ## Development
@@ -538,7 +538,7 @@ leapmux/
 │   │   ├── admin*.go            # Admin CLI (org, user, session, worker, oauth, encryption, db)
 │   │   ├── hub.go               # Hub mode
 │   │   ├── main.go              # Subcommand routing (hub, worker, solo, dev, admin)
-│   │   ├── solo.go              # Solo/dev mode (hub + worker, default)
+│   │   ├── solo.go              # Solo/dev mode (hub + worker)
 │   │   └── worker.go            # Worker mode
 │   │
 │   ├── generated/proto/         # Generated Go protobuf code (gitignored)

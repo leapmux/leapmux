@@ -3,12 +3,135 @@ package config
 
 import (
 	"flag"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/knadh/koanf/v2"
 )
+
+// IsHelpArg reports whether arg is one of the recognized help tokens.
+func IsHelpArg(arg string) bool {
+	return arg == "-h" || arg == "-help" || arg == "--help" || arg == "help"
+}
+
+// HasHelpArg reports whether any arg is a recognized help token.
+func HasHelpArg(args []string) bool {
+	for _, arg := range args {
+		if IsHelpArg(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+// RejectPositionalArgs returns an error if fs has any non-flag args remaining
+// after Parse. Use it to fail fast on `command unexpected` invocations rather
+// than silently ignoring trailing tokens.
+func RejectPositionalArgs(fs *flag.FlagSet) error {
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument: %q (use --help for usage)", fs.Arg(0))
+	}
+	return nil
+}
+
+// ConfigureAndParse routes help output to stdout when --help is requested,
+// installs a categorized fs.Usage callback, parses args, and rejects extra
+// positional arguments. Pass nil categories/categoryOrder for a flat
+// "Options:" section. Call after all flag definitions are registered.
+func ConfigureAndParse(fs *flag.FlagSet, args []string, description string, categories map[string]string, categoryOrder []string) error {
+	if HasHelpArg(args) {
+		fs.SetOutput(os.Stdout)
+	}
+	fs.Usage = func() {
+		PrintFlagUsage(fs, description, categories, categoryOrder)
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return RejectPositionalArgs(fs)
+}
+
+// PrintFlagUsage writes a help message for fs to fs.Output(). When categories
+// is nil, flags are printed in a single "Options" section using the standard
+// flag package format. Otherwise, flags are grouped by their category from the
+// map (flag name -> category name); empty/missing categories fall under
+// "Options". Categories listed in categoryOrder appear in that order;
+// categories not listed are appended after.
+func PrintFlagUsage(fs *flag.FlagSet, description string, categories map[string]string, categoryOrder []string) {
+	if description != "" {
+		_, _ = fmt.Fprintf(fs.Output(), "%s\n\n", description)
+	}
+	_, _ = fmt.Fprintf(fs.Output(), "Usage: %s [flags]\n", fs.Name())
+	if categories == nil {
+		_, _ = fmt.Fprint(fs.Output(), "\nOptions:\n")
+		fs.PrintDefaults()
+		return
+	}
+	seen := make(map[string]bool, len(categoryOrder))
+	for _, category := range categoryOrder {
+		seen[category] = true
+		printFlagCategory(fs, categories, category)
+	}
+	printFlagCategory(fs, categories, "")
+	fs.VisitAll(func(f *flag.Flag) {
+		category := categories[f.Name]
+		if category == "" || seen[category] {
+			return
+		}
+		seen[category] = true
+		printFlagCategory(fs, categories, category)
+	})
+}
+
+func printFlagCategory(fs *flag.FlagSet, categories map[string]string, category string) {
+	var flags []*flag.Flag
+	fs.VisitAll(func(f *flag.Flag) {
+		if categories[f.Name] == category {
+			flags = append(flags, f)
+		}
+	})
+	if len(flags) == 0 {
+		return
+	}
+	label := category
+	if label == "" {
+		label = "Options"
+	}
+	_, _ = fmt.Fprintf(fs.Output(), "\n%s:\n\n", label)
+	for _, f := range flags {
+		printFlagDefault(fs.Output(), f)
+	}
+}
+
+func printFlagDefault(w io.Writer, f *flag.Flag) {
+	_, _ = fmt.Fprintf(w, "  -%s", f.Name)
+	name, usage := flag.UnquoteUsage(f)
+	if name != "" {
+		_, _ = fmt.Fprintf(w, " %s", name)
+	}
+	_, _ = fmt.Fprintf(w, "\n    \t%s", usage)
+	if !isZeroValueFlag(f) {
+		_, _ = fmt.Fprintf(w, " (default %s)", defaultValueString(f))
+	}
+	_, _ = fmt.Fprint(w, "\n")
+}
+
+func isZeroValueFlag(f *flag.Flag) bool {
+	return f.DefValue == "" || f.DefValue == "0" || f.DefValue == "false"
+}
+
+func defaultValueString(f *flag.Flag) string {
+	if getter, ok := f.Value.(flag.Getter); ok {
+		if _, ok := getter.Get().(string); ok {
+			return strconv.Quote(f.DefValue)
+		}
+	}
+	return f.DefValue
+}
 
 // ExtractConfigFlag pre-scans args for -config/--config before full flag parsing.
 // Returns the config file path found, or defaultPath if not specified.

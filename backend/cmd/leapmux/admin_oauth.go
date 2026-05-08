@@ -13,28 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
-func runAdminOAuthProvider(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin oauth-provider <command> [flags]\n\nCommands:\n  add               Add an OAuth/OIDC provider\n  list              List configured providers\n  remove            Remove a provider\n  enable            Enable a provider\n  disable           Disable a provider")
-	}
-
-	switch args[0] {
-	case "add":
-		return runAddOAuthProvider(args[1:])
-	case "list":
-		return runListOAuthProviders(args[1:])
-	case "remove":
-		return runRemoveOAuthProvider(args[1:])
-	case "enable":
-		return runSetOAuthProviderEnabled(args[1:], true)
-	case "disable":
-		return runSetOAuthProviderEnabled(args[1:], false)
-	default:
-		return fmt.Errorf("unknown oauth-provider command: %s", args[0])
-	}
-}
-
-func runAddOAuthProvider(args []string) error {
+func runAddOAuthProvider(cmd adminCmdCtx, args []string) error {
 	var providerType *string
 	var name *string
 	var clientID *string
@@ -42,7 +21,7 @@ func runAddOAuthProvider(args []string) error {
 	var issuerURL *string
 	var scopes *string
 	var trustEmailFlag *bool
-	return withAdminStore("oauth-provider add", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		providerType = fs.String("type", "", "provider type (github, google, apple, oidc)")
 		name = fs.String("name", "", "display name")
 		clientID = fs.String("client-id", "", "OAuth client ID")
@@ -143,8 +122,8 @@ func runAddOAuthProvider(args []string) error {
 	})
 }
 
-func runListOAuthProviders(args []string) error {
-	return withAdminStore("oauth-provider list", args, nil, func(ctx context.Context, _ *config.Config, st store.Store) error {
+func runListOAuthProviders(cmd adminCmdCtx, args []string) error {
+	return withAdminStore(cmd, args, nil, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		providers, err := st.OAuthProviders().ListAll(ctx)
 		if err != nil {
 			return fmt.Errorf("list providers: %w", err)
@@ -163,9 +142,9 @@ func runListOAuthProviders(args []string) error {
 	})
 }
 
-func runRemoveOAuthProvider(args []string) error {
+func runRemoveOAuthProvider(cmd adminCmdCtx, args []string) error {
 	var providerID *string
-	return withAdminStore("oauth-provider remove", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		providerID = fs.String("id", "", "provider ID")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *providerID == "" {
@@ -186,9 +165,9 @@ func runRemoveOAuthProvider(args []string) error {
 	})
 }
 
-func runSetOAuthProviderEnabled(args []string, enabled bool) error {
+func runSetOAuthProviderEnabled(cmd adminCmdCtx, args []string, enabled bool) error {
 	var providerID *string
-	return withAdminStore("oauth-provider enable/disable", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		providerID = fs.String("id", "", "provider ID")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *providerID == "" {

@@ -9,25 +9,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
-func runAdminDB(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin db <command> [flags]\n\nCommands:\n  path              Print the database path\n  migrate           Run schema migrations\n  version           Show current schema version")
-	}
-
-	switch args[0] {
-	case "path":
-		return runDBPath(args[1:])
-	case "migrate":
-		return runDBMigrate(args[1:])
-	case "version":
-		return runDBVersion(args[1:])
-	default:
-		return fmt.Errorf("unknown db command: %s", args[0])
-	}
-}
-
-func runDBPath(args []string) error {
-	return withAdminConfig("db path", args, nil, func(cfg *config.Config) error {
+func runDBPath(cmd adminCmdCtx, args []string) error {
+	return withAdminConfig(cmd, args, nil, func(cfg *config.Config) error {
 		fmt.Println(cfg.SQLiteDBPath())
 		return nil
 	})
@@ -44,9 +27,9 @@ func printSchemaVersions(ctx context.Context, m store.Migrator) (current, latest
 	return current, latest, nil
 }
 
-func runDBMigrate(args []string) error {
+func runDBMigrate(cmd adminCmdCtx, args []string) error {
 	var targetVersion *int64
-	return withAdminStore("db migrate", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		targetVersion = fs.Int64("version", -1, "target migration version (-1 for latest)")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		m := st.Migrator()
@@ -84,8 +67,8 @@ func runDBMigrate(args []string) error {
 	})
 }
 
-func runDBVersion(args []string) error {
-	return withAdminStore("db version", args, nil,
+func runDBVersion(cmd adminCmdCtx, args []string) error {
+	return withAdminStore(cmd, args, nil,
 		func(ctx context.Context, _ *config.Config, st store.Store) error {
 			_, _, err := printSchemaVersions(ctx, st.Migrator())
 			return err

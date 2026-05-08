@@ -19,6 +19,11 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
+// testAdminCtx is the dummy adminCmdCtx tests pass to leaf functions. The Path
+// and Description fields only affect --help output, which these tests don't
+// exercise — so an empty ctx is sufficient.
+var testAdminCtx = adminCmdCtx{}
+
 // setupTestDataDir creates a temp dir with an encryption key and migrated hub DB.
 func setupTestDataDir(t *testing.T) string {
 	t.Helper()
@@ -51,7 +56,7 @@ func openTestDB(t *testing.T, dir string) (*sql.DB, *gendb.Queries) {
 // Uses a fixed password "TestPassword1!" to minimize Argon2id hashing calls.
 func createTestUser(t *testing.T, dir, username string) gendb.User {
 	t.Helper()
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", username,
 		"--password", "TestPassword1!",
 		"--data-dir", dir,
@@ -105,7 +110,7 @@ func createTestWorker(t *testing.T, q *gendb.Queries, userID string) string {
 func TestCLI_AddOAuthProvider_GitHub(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runAddOAuthProvider([]string{
+	err := runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "github",
 		"--client-id", "test-gh-client",
 		"--client-secret", "test-gh-secret",
@@ -132,7 +137,7 @@ func TestCLI_AddOAuthProvider_GitHub(t *testing.T) {
 func TestCLI_AddOAuthProvider_OIDC_MissingTrustEmail(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runAddOAuthProvider([]string{
+	err := runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "oidc",
 		"--name", "My OIDC",
 		"--client-id", "test-client",
@@ -146,7 +151,7 @@ func TestCLI_AddOAuthProvider_OIDC_MissingTrustEmail(t *testing.T) {
 func TestCLI_AddOAuthProvider_OIDC_MissingIssuerURL(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runAddOAuthProvider([]string{
+	err := runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "oidc",
 		"--name", "My OIDC",
 		"--client-id", "test-client",
@@ -161,7 +166,7 @@ func TestCLI_AddOAuthProvider_OIDC_MissingIssuerURL(t *testing.T) {
 func TestCLI_AddOAuthProvider_PresetOverride(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runAddOAuthProvider([]string{
+	err := runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "github",
 		"--client-id", "test-client",
 		"--client-secret", "test-secret",
@@ -183,7 +188,7 @@ func TestCLI_ListOAuthProviders(t *testing.T) {
 	dir := setupTestDataDir(t)
 
 	// Add a provider first.
-	_ = runAddOAuthProvider([]string{
+	_ = runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "github",
 		"--client-id", "c1",
 		"--client-secret", "s1",
@@ -191,14 +196,14 @@ func TestCLI_ListOAuthProviders(t *testing.T) {
 	})
 
 	// List should succeed (we can't easily capture stdout, but no error = success).
-	err := runListOAuthProviders([]string{"--data-dir", dir})
+	err := runListOAuthProviders(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }
 
 func TestCLI_RemoveOAuthProvider(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	_ = runAddOAuthProvider([]string{
+	_ = runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "github",
 		"--client-id", "c1",
 		"--client-secret", "s1",
@@ -210,7 +215,7 @@ func TestCLI_RemoveOAuthProvider(t *testing.T) {
 	providers, _ := q.ListAllOAuthProviders(context.Background())
 	require.Len(t, providers, 1)
 
-	err := runRemoveOAuthProvider([]string{"--id", providers[0].ID, "--data-dir", dir})
+	err := runRemoveOAuthProvider(testAdminCtx, []string{"--id", providers[0].ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Verify deleted.
@@ -222,7 +227,7 @@ func TestCLI_RemoveOAuthProvider(t *testing.T) {
 func TestCLI_EnableDisableOAuthProvider(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	_ = runAddOAuthProvider([]string{
+	_ = runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "github",
 		"--client-id", "c1",
 		"--client-secret", "s1",
@@ -234,7 +239,7 @@ func TestCLI_EnableDisableOAuthProvider(t *testing.T) {
 	providerID := providers[0].ID
 
 	// Disable.
-	err := runSetOAuthProviderEnabled([]string{"--id", providerID, "--data-dir", dir}, false)
+	err := runSetOAuthProviderEnabled(testAdminCtx, []string{"--id", providerID, "--data-dir", dir}, false)
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -242,7 +247,7 @@ func TestCLI_EnableDisableOAuthProvider(t *testing.T) {
 	assert.Empty(t, enabled, "no providers should be enabled")
 
 	// Re-enable.
-	err = runSetOAuthProviderEnabled([]string{"--id", providerID, "--data-dir", dir}, true)
+	err = runSetOAuthProviderEnabled(testAdminCtx, []string{"--id", providerID, "--data-dir", dir}, true)
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -256,7 +261,7 @@ func TestCLI_RotateEncryptionKey(t *testing.T) {
 	dir := setupTestDataDir(t)
 	keyPath := filepath.Join(dir, "encryption.key")
 
-	err := runRotateEncryptionKey([]string{"--data-dir", dir})
+	err := runRotateEncryptionKey(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 
 	ks, err := keystore.LoadFromFile(keyPath)
@@ -268,8 +273,8 @@ func TestCLI_RotateEncryptionKey(t *testing.T) {
 func TestCLI_RotateEncryptionKey_TwiceIncrementsVersion(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	_ = runRotateEncryptionKey([]string{"--data-dir", dir})
-	_ = runRotateEncryptionKey([]string{"--data-dir", dir})
+	_ = runRotateEncryptionKey(testAdminCtx, []string{"--data-dir", dir})
+	_ = runRotateEncryptionKey(testAdminCtx, []string{"--data-dir", dir})
 
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
@@ -280,16 +285,16 @@ func TestCLI_RotateEncryptionKey_TwiceIncrementsVersion(t *testing.T) {
 func TestCLI_RemoveEncryptionKey_ActiveVersionFails(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runRemoveEncryptionKey([]string{"--version", "1", "--data-dir", dir})
+	err := runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot remove active")
 }
 
 func TestCLI_RemoveEncryptionKey_OldVersion(t *testing.T) {
 	dir := setupTestDataDir(t)
-	_ = runRotateEncryptionKey([]string{"--data-dir", dir})
+	_ = runRotateEncryptionKey(testAdminCtx, []string{"--data-dir", dir})
 
-	err := runRemoveEncryptionKey([]string{"--version", "1", "--data-dir", dir})
+	err := runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir})
 	require.NoError(t, err)
 
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
@@ -303,7 +308,7 @@ func TestCLI_ReencryptSecrets(t *testing.T) {
 	keyPath := filepath.Join(dir, "encryption.key")
 
 	// Add a provider with encrypted secret.
-	_ = runAddOAuthProvider([]string{
+	_ = runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "github",
 		"--client-id", "c1",
 		"--client-secret", "original-secret",
@@ -311,10 +316,10 @@ func TestCLI_ReencryptSecrets(t *testing.T) {
 	})
 
 	// Rotate key.
-	_ = runRotateEncryptionKey([]string{"--data-dir", dir})
+	_ = runRotateEncryptionKey(testAdminCtx, []string{"--data-dir", dir})
 
 	// Re-encrypt.
-	err := runReencryptSecrets([]string{"--data-dir", dir})
+	err := runReencryptSecrets(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 
 	// Verify the encrypted secret can be decrypted with the new key only.
@@ -338,7 +343,7 @@ func TestCLI_ReencryptSecrets(t *testing.T) {
 func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	_ = runAddOAuthProvider([]string{
+	_ = runAddOAuthProvider(testAdminCtx, []string{
 		"--type", "github",
 		"--client-id", "c1",
 		"--client-secret", "secret",
@@ -346,7 +351,7 @@ func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 	})
 
 	// Running reencrypt without rotation should report 0 re-encrypted.
-	err := runReencryptSecrets([]string{"--data-dir", dir})
+	err := runReencryptSecrets(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -355,7 +360,7 @@ func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 func TestCLI_UserCreate(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "alice",
 		"--password", "TestPassword1!",
 		"--display-name", "Alice Smith",
@@ -382,7 +387,7 @@ func TestCLI_UserCreate(t *testing.T) {
 func TestCLI_UserCreate_MinimalFlags(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "bob",
 		"--password", "TestPassword1!",
 		"--data-dir", dir,
@@ -404,7 +409,7 @@ func TestCLI_UserCreate_MinimalFlags(t *testing.T) {
 func TestCLI_UserCreate_WithEmailVerified(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "carol",
 		"--password", "TestPassword1!",
 		"--email", "carol@example.com",
@@ -424,7 +429,7 @@ func TestCLI_UserCreate_WithEmailVerified(t *testing.T) {
 func TestCLI_UserCreate_EmailWithoutVerified(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "dave",
 		"--password", "TestPassword1!",
 		"--email", "dave@example.com",
@@ -447,7 +452,7 @@ func TestCLI_UserList(t *testing.T) {
 	createTestUser(t, dir, "bob")
 	createTestUser(t, dir, "carol")
 
-	err := runUserList([]string{"--data-dir", dir})
+	err := runUserList(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -469,7 +474,7 @@ func TestCLI_UserList_WithQuery(t *testing.T) {
 	assert.Len(t, users, 2)
 
 	// Also verify the CLI function returns no error.
-	err = runUserList([]string{"--query", "ali", "--data-dir", dir})
+	err = runUserList(testAdminCtx, []string{"--query", "ali", "--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -500,14 +505,14 @@ func TestCLI_UserList_WithLimitAndCursor(t *testing.T) {
 	assert.Len(t, users2, 3)
 
 	// CLI with limit should not error.
-	err = runUserList([]string{"--limit", "2", "--data-dir", dir})
+	err = runUserList(testAdminCtx, []string{"--limit", "2", "--data-dir", dir})
 	require.NoError(t, err)
 }
 
 func TestCLI_UserList_Empty(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserList([]string{"--data-dir", dir})
+	err := runUserList(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -515,7 +520,7 @@ func TestCLI_UserGet_ByID(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserGet([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserGet(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -523,7 +528,7 @@ func TestCLI_UserGet_ByUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 	createTestUser(t, dir, "alice")
 
-	err := runUserGet([]string{"--username", "alice", "--data-dir", dir})
+	err := runUserGet(testAdminCtx, []string{"--username", "alice", "--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -531,7 +536,7 @@ func TestCLI_UserUpdate_DisplayName(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserUpdate([]string{
+	err := runUserUpdate(testAdminCtx, []string{
 		"--id", user.ID,
 		"--display-name", "Alice Updated",
 		"--data-dir", dir,
@@ -549,7 +554,7 @@ func TestCLI_UserUpdate_Email(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserUpdate([]string{
+	err := runUserUpdate(testAdminCtx, []string{
 		"--id", user.ID,
 		"--email", "newalice@example.com",
 		"--data-dir", dir,
@@ -568,7 +573,7 @@ func TestCLI_UserUpdate_EmailVerified(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserUpdate([]string{
+	err := runUserUpdate(testAdminCtx, []string{
 		"--id", user.ID,
 		"--email", "alice@example.com",
 		"--email-verified=true",
@@ -588,7 +593,7 @@ func TestCLI_UserUpdate_ByUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 	createTestUser(t, dir, "alice")
 
-	err := runUserUpdate([]string{
+	err := runUserUpdate(testAdminCtx, []string{
 		"--username", "alice",
 		"--display-name", "Alice Via Username",
 		"--data-dir", dir,
@@ -606,7 +611,7 @@ func TestCLI_UserDelete_ByID(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserDelete(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Verify user is soft-deleted.
@@ -626,7 +631,7 @@ func TestCLI_UserDelete_ByUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserDelete([]string{"--username", "alice", "--data-dir", dir})
+	err := runUserDelete(testAdminCtx, []string{"--username", "alice", "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q := openTestDB(t, dir)
@@ -646,7 +651,7 @@ func TestCLI_UserResetPassword(t *testing.T) {
 	require.NoError(t, err)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 
-	err = runUserResetPassword([]string{
+	err = runUserResetPassword(testAdminCtx, []string{
 		"--id", user.ID,
 		"--password", "NewPassword2!",
 		"--data-dir", dir,
@@ -677,7 +682,7 @@ func TestCLI_UserResetPassword_PreservesOtherUserSessions(t *testing.T) {
 	bobSessionID := createTestSession(t, q, bob.ID, time.Now().UTC().Add(24*time.Hour))
 
 	// Reset alice's password.
-	err := runUserResetPassword([]string{
+	err := runUserResetPassword(testAdminCtx, []string{
 		"--id", alice.ID,
 		"--password", "NewPassword2!",
 		"--data-dir", dir,
@@ -697,7 +702,7 @@ func TestCLI_UserGrantAdmin(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserGrantAdmin([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserGrantAdmin(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q := openTestDB(t, dir)
@@ -711,7 +716,7 @@ func TestCLI_UserGrantAdmin_AlreadyAdmin(t *testing.T) {
 	dir := setupTestDataDir(t)
 
 	// Create as admin.
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "alice",
 		"--password", "TestPassword1!",
 		"--admin",
@@ -724,7 +729,7 @@ func TestCLI_UserGrantAdmin_AlreadyAdmin(t *testing.T) {
 	require.NoError(t, err)
 
 	// Grant admin again -- should not error.
-	err = runUserGrantAdmin([]string{"--id", user.ID, "--data-dir", dir})
+	err = runUserGrantAdmin(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -738,7 +743,7 @@ func TestCLI_UserRevokeAdmin(t *testing.T) {
 	dir := setupTestDataDir(t)
 
 	// Create as admin.
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "alice",
 		"--password", "TestPassword1!",
 		"--admin",
@@ -750,7 +755,7 @@ func TestCLI_UserRevokeAdmin(t *testing.T) {
 	user, err := q.GetUserByUsername(context.Background(), "alice")
 	require.NoError(t, err)
 
-	err = runUserRevokeAdmin([]string{"--id", user.ID, "--data-dir", dir})
+	err = runUserRevokeAdmin(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -765,7 +770,7 @@ func TestCLI_UserRevokeAdmin_AlreadyNonAdmin(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Revoke admin on a non-admin user -- should not error.
-	err := runUserRevokeAdmin([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserRevokeAdmin(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q := openTestDB(t, dir)
@@ -783,7 +788,7 @@ func TestCLI_UserListSessions(t *testing.T) {
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(48*time.Hour))
 
-	err := runUserListSessions([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserListSessions(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -792,7 +797,7 @@ func TestCLI_UserListSessions(t *testing.T) {
 func TestCLI_UserCreate_MissingUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--password", "TestPassword1!",
 		"--data-dir", dir,
 	})
@@ -803,7 +808,7 @@ func TestCLI_UserCreate_MissingUsername(t *testing.T) {
 func TestCLI_UserCreate_MissingPassword(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "alice",
 		"--data-dir", dir,
 	})
@@ -815,7 +820,7 @@ func TestCLI_UserCreate_DuplicateUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 	createTestUser(t, dir, "alice")
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "alice",
 		"--password", "TestPassword1!",
 		"--data-dir", dir,
@@ -827,7 +832,7 @@ func TestCLI_UserCreate_DuplicateUsername(t *testing.T) {
 func TestCLI_UserCreate_DuplicateEmail(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "alice",
 		"--password", "TestPassword1!",
 		"--email", "shared@example.com",
@@ -835,7 +840,7 @@ func TestCLI_UserCreate_DuplicateEmail(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = runUserCreate([]string{
+	err = runUserCreate(testAdminCtx, []string{
 		"--username", "bob",
 		"--password", "TestPassword1!",
 		"--email", "shared@example.com",
@@ -848,7 +853,7 @@ func TestCLI_UserCreate_DuplicateEmail(t *testing.T) {
 func TestCLI_UserGet_NotFound(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserGet([]string{"--id", "nonexistent-id", "--data-dir", dir})
+	err := runUserGet(testAdminCtx, []string{"--id", "nonexistent-id", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -856,7 +861,7 @@ func TestCLI_UserGet_NotFound(t *testing.T) {
 func TestCLI_UserGet_NeitherIDNorUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserGet([]string{"--data-dir", dir})
+	err := runUserGet(testAdminCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--id or --username is required")
 }
@@ -864,7 +869,7 @@ func TestCLI_UserGet_NeitherIDNorUsername(t *testing.T) {
 func TestCLI_UserUpdate_NotFound(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserUpdate([]string{
+	err := runUserUpdate(testAdminCtx, []string{
 		"--id", "nonexistent-id",
 		"--display-name", "Ghost",
 		"--data-dir", dir,
@@ -876,7 +881,7 @@ func TestCLI_UserUpdate_NotFound(t *testing.T) {
 func TestCLI_UserDelete_NotFound(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserDelete([]string{"--id", "nonexistent-id", "--data-dir", dir})
+	err := runUserDelete(testAdminCtx, []string{"--id", "nonexistent-id", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -884,7 +889,7 @@ func TestCLI_UserDelete_NotFound(t *testing.T) {
 func TestCLI_UserDelete_AdminRequiresForce(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserCreate([]string{
+	err := runUserCreate(testAdminCtx, []string{
 		"--username", "adminuser",
 		"--password", "TestPassword1!",
 		"--admin",
@@ -893,12 +898,12 @@ func TestCLI_UserDelete_AdminRequiresForce(t *testing.T) {
 	require.NoError(t, err)
 
 	// Without --force, deleting an admin user should fail.
-	err = runUserDelete([]string{"--username", "adminuser", "--data-dir", dir})
+	err = runUserDelete(testAdminCtx, []string{"--username", "adminuser", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--force")
 
 	// With --force, it should succeed.
-	err = runUserDelete([]string{"--username", "adminuser", "--force", "--data-dir", dir})
+	err = runUserDelete(testAdminCtx, []string{"--username", "adminuser", "--force", "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q := openTestDB(t, dir)
@@ -910,7 +915,7 @@ func TestCLI_UserDelete_InvisibleToLookup(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserDelete(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q := openTestDB(t, dir)
@@ -931,7 +936,7 @@ func TestCLI_UserDelete_WorkersMarkedDeleted(t *testing.T) {
 	_, q := openTestDB(t, dir)
 	workerID := createTestWorker(t, q, user.ID)
 
-	err := runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserDelete(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -957,7 +962,7 @@ func TestCLI_UserDelete_WorkspaceSoftDeleted(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = runUserDelete([]string{"--id", user.ID, "--data-dir", dir})
+	err = runUserDelete(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Read the workspace row directly via raw SQL since GetWorkspaceByID filters deleted ones.
@@ -977,7 +982,7 @@ func TestCLI_UserResetPassword_MissingPassword(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserResetPassword([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserResetPassword(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a terminal")
 }
@@ -985,7 +990,7 @@ func TestCLI_UserResetPassword_MissingPassword(t *testing.T) {
 func TestCLI_UserResetPassword_NotFound(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runUserResetPassword([]string{
+	err := runUserResetPassword(testAdminCtx, []string{
 		"--id", "nonexistent-id",
 		"--password", "NewPassword2!",
 		"--data-dir", dir,
@@ -1005,7 +1010,7 @@ func TestCLI_SessionList(t *testing.T) {
 	createTestSession(t, q, alice.ID, time.Now().UTC().Add(24*time.Hour))
 	createTestSession(t, q, bob.ID, time.Now().UTC().Add(24*time.Hour))
 
-	err := runSessionList([]string{"--data-dir", dir})
+	err := runSessionList(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -1015,7 +1020,7 @@ func TestCLI_SessionRevoke(t *testing.T) {
 	_, q := openTestDB(t, dir)
 	sessionID := createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 
-	err := runSessionRevoke([]string{"--id", sessionID, "--data-dir", dir})
+	err := runSessionRevoke(testAdminCtx, []string{"--id", sessionID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Verify session is gone.
@@ -1033,7 +1038,7 @@ func TestCLI_SessionRevokeUser_ByID(t *testing.T) {
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(48*time.Hour))
 
-	err := runSessionRevokeUser([]string{"--user-id", user.ID, "--data-dir", dir})
+	err := runSessionRevokeUser(testAdminCtx, []string{"--user-id", user.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -1049,7 +1054,7 @@ func TestCLI_SessionRevokeUser_ByUsername(t *testing.T) {
 	_, q := openTestDB(t, dir)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 
-	err := runSessionRevokeUser([]string{"--username", "alice", "--data-dir", dir})
+	err := runSessionRevokeUser(testAdminCtx, []string{"--username", "alice", "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -1069,7 +1074,7 @@ func TestCLI_SessionRevokeUser_PreservesOtherUsers(t *testing.T) {
 	bobSessionID := createTestSession(t, q, bob.ID, time.Now().UTC().Add(24*time.Hour))
 
 	// Revoke alice's sessions.
-	err := runSessionRevokeUser([]string{"--user-id", alice.ID, "--data-dir", dir})
+	err := runSessionRevokeUser(testAdminCtx, []string{"--user-id", alice.ID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -1095,7 +1100,7 @@ func TestCLI_SessionPurgeExpired(t *testing.T) {
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(-24*time.Hour))            // expired
 	activeID := createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour)) // active
 
-	err := runSessionPurgeExpired([]string{"--data-dir", dir})
+	err := runSessionPurgeExpired(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 
 	// Only the active session should remain.
@@ -1112,7 +1117,7 @@ func TestCLI_SessionPurgeExpired(t *testing.T) {
 func TestCLI_SessionRevoke_MissingID(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runSessionRevoke([]string{"--data-dir", dir})
+	err := runSessionRevoke(testAdminCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--id is required")
 }
@@ -1120,7 +1125,7 @@ func TestCLI_SessionRevoke_MissingID(t *testing.T) {
 func TestCLI_SessionRevokeUser_NeitherIDNorUsername(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runSessionRevokeUser([]string{"--data-dir", dir})
+	err := runSessionRevokeUser(testAdminCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--id or --username is required")
 }
@@ -1133,7 +1138,7 @@ func TestCLI_SessionPurgeExpired_NoneExpired(t *testing.T) {
 	_, q := openTestDB(t, dir)
 	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
 
-	err := runSessionPurgeExpired([]string{"--data-dir", dir})
+	err := runSessionPurgeExpired(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 
 	// Session should still be there.
@@ -1153,7 +1158,7 @@ func TestCLI_WorkerList(t *testing.T) {
 	createTestWorker(t, q, user.ID)
 	createTestWorker(t, q, user.ID)
 
-	err := runWorkerList([]string{"--data-dir", dir})
+	err := runWorkerList(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -1165,18 +1170,18 @@ func TestCLI_WorkerList_AllStatuses(t *testing.T) {
 	createTestWorker(t, q, user.ID)
 
 	// Deregister one worker so we have mixed statuses.
-	err := runWorkerDeregister([]string{"--id", w1, "--data-dir", dir})
+	err := runWorkerDeregister(testAdminCtx, []string{"--id", w1, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// List all statuses should succeed.
-	err = runWorkerList([]string{"--status", "all", "--data-dir", dir})
+	err = runWorkerList(testAdminCtx, []string{"--status", "all", "--data-dir", dir})
 	require.NoError(t, err)
 }
 
 func TestCLI_WorkerList_Empty(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runWorkerList([]string{"--data-dir", dir})
+	err := runWorkerList(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -1186,7 +1191,7 @@ func TestCLI_WorkerGet(t *testing.T) {
 	_, q := openTestDB(t, dir)
 	workerID := createTestWorker(t, q, user.ID)
 
-	err := runWorkerGet([]string{"--id", workerID, "--data-dir", dir})
+	err := runWorkerGet(testAdminCtx, []string{"--id", workerID, "--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -1196,7 +1201,7 @@ func TestCLI_WorkerDeregister(t *testing.T) {
 	_, q := openTestDB(t, dir)
 	workerID := createTestWorker(t, q, user.ID)
 
-	err := runWorkerDeregister([]string{"--id", workerID, "--data-dir", dir})
+	err := runWorkerDeregister(testAdminCtx, []string{"--id", workerID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Verify worker status changed.
@@ -1212,7 +1217,7 @@ func TestCLI_WorkerDeregister(t *testing.T) {
 func TestCLI_WorkerGet_NotFound(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runWorkerGet([]string{"--id", "nonexistent-worker", "--data-dir", dir})
+	err := runWorkerGet(testAdminCtx, []string{"--id", "nonexistent-worker", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -1220,7 +1225,7 @@ func TestCLI_WorkerGet_NotFound(t *testing.T) {
 func TestCLI_WorkerGet_MissingID(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runWorkerGet([]string{"--data-dir", dir})
+	err := runWorkerGet(testAdminCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--id is required")
 }
@@ -1228,7 +1233,7 @@ func TestCLI_WorkerGet_MissingID(t *testing.T) {
 func TestCLI_WorkerDeregister_MissingID(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runWorkerDeregister([]string{"--data-dir", dir})
+	err := runWorkerDeregister(testAdminCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--id is required")
 }
@@ -1252,7 +1257,7 @@ func createTestRegKey(t *testing.T, q *gendb.Queries, createdBy string, expiresA
 func TestCLI_WorkerRegKeyList_Empty(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runWorkerRegKeyList([]string{"--data-dir", dir})
+	err := runWorkerRegKeyList(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }
 
@@ -1264,7 +1269,7 @@ func TestCLI_WorkerRegKeyList_HidesExpiredByDefault(t *testing.T) {
 	live := createTestRegKey(t, q, user.ID, time.Now().Add(5*time.Minute))
 	expired := createTestRegKey(t, q, user.ID, time.Now().Add(-1*time.Minute))
 
-	err := runWorkerRegKeyList([]string{"--data-dir", dir})
+	err := runWorkerRegKeyList(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -1286,7 +1291,7 @@ func TestCLI_WorkerRegKeyList_IncludeExpired(t *testing.T) {
 	createTestRegKey(t, q, user.ID, time.Now().Add(5*time.Minute))
 	createTestRegKey(t, q, user.ID, time.Now().Add(-1*time.Minute))
 
-	err := runWorkerRegKeyList([]string{"--include-expired", "--data-dir", dir})
+	err := runWorkerRegKeyList(testAdminCtx, []string{"--include-expired", "--data-dir", dir})
 	require.NoError(t, err)
 
 	_, q = openTestDB(t, dir)
@@ -1303,7 +1308,7 @@ func TestCLI_WorkerRegKeyRevoke(t *testing.T) {
 	_, q := openTestDB(t, dir)
 	regID := createTestRegKey(t, q, user.ID, time.Now().Add(5*time.Minute))
 
-	err := runWorkerRegKeyRevoke([]string{"--id", regID, "--data-dir", dir})
+	err := runWorkerRegKeyRevoke(testAdminCtx, []string{"--id", regID, "--data-dir", dir})
 	require.NoError(t, err)
 
 	// Row still exists, but expires_at is in the past.
@@ -1316,7 +1321,7 @@ func TestCLI_WorkerRegKeyRevoke(t *testing.T) {
 func TestCLI_WorkerRegKeyRevoke_MissingID(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runWorkerRegKeyRevoke([]string{"--data-dir", dir})
+	err := runWorkerRegKeyRevoke(testAdminCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--id is required")
 }
@@ -1324,7 +1329,7 @@ func TestCLI_WorkerRegKeyRevoke_MissingID(t *testing.T) {
 func TestCLI_WorkerRegKeyRevoke_NotFound(t *testing.T) {
 	dir := setupTestDataDir(t)
 
-	err := runWorkerRegKeyRevoke([]string{"--id", "nonexistent", "--data-dir", dir})
+	err := runWorkerRegKeyRevoke(testAdminCtx, []string{"--id", "nonexistent", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -1337,7 +1342,7 @@ func TestCLI_WorkerRegKeyPurgeExpired(t *testing.T) {
 	live := createTestRegKey(t, q, user.ID, time.Now().Add(5*time.Minute))
 	expired := createTestRegKey(t, q, user.ID, time.Now().Add(-1*time.Minute))
 
-	err := runWorkerRegKeyPurgeExpired([]string{"--data-dir", dir})
+	err := runWorkerRegKeyPurgeExpired(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 
 	// Live row remains; expired row is gone.
@@ -1373,7 +1378,7 @@ func TestCLI_UserUpdate_ClearPendingEmail(t *testing.T) {
 	require.Equal(t, "alice-new@example.com", pre.PendingEmail)
 	require.Equal(t, "ABC123", pre.PendingEmailToken)
 
-	err = runUserUpdate([]string{
+	err = runUserUpdate(testAdminCtx, []string{
 		"--id", user.ID,
 		"--clear-pending-email",
 		"--data-dir", dir,
@@ -1393,7 +1398,7 @@ func TestCLI_UserUpdate_NoFields(t *testing.T) {
 	dir := setupTestDataDir(t)
 	user := createTestUser(t, dir, "alice")
 
-	err := runUserUpdate([]string{"--id", user.ID, "--data-dir", dir})
+	err := runUserUpdate(testAdminCtx, []string{"--id", user.ID, "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no fields to update")
 	assert.Contains(t, err.Error(), "--clear-pending-email")
@@ -1405,6 +1410,6 @@ func TestCLI_DBPath(t *testing.T) {
 	dir := setupTestDataDir(t)
 
 	// Verify no error. The printed path should match the expected DB path.
-	err := runDBPath([]string{"--data-dir", dir})
+	err := runDBPath(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
 }

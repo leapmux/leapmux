@@ -12,29 +12,10 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
-func runAdminSession(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin session <command> [flags]\n\nCommands:\n  list              List all active sessions\n  revoke            Revoke a session by ID\n  revoke-user       Revoke all sessions for a user\n  purge-expired     Delete all expired sessions")
-	}
-
-	switch args[0] {
-	case "list":
-		return runSessionList(args[1:])
-	case "revoke":
-		return runSessionRevoke(args[1:])
-	case "revoke-user":
-		return runSessionRevokeUser(args[1:])
-	case "purge-expired":
-		return runSessionPurgeExpired(args[1:])
-	default:
-		return fmt.Errorf("unknown session command: %s", args[0])
-	}
-}
-
-func runSessionList(args []string) error {
+func runSessionList(cmd adminCmdCtx, args []string) error {
 	var limit *int64
 	var cursor *string
-	return withAdminStore("session list", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		cursor = fs.String("cursor", "", "pagination cursor (last_active_at from previous page)")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
@@ -64,9 +45,9 @@ func runSessionList(args []string) error {
 	})
 }
 
-func runSessionRevoke(args []string) error {
+func runSessionRevoke(cmd adminCmdCtx, args []string) error {
 	var sessionID *string
-	return withAdminStore("session revoke", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		sessionID = fs.String("id", "", "session ID (required)")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *sessionID == "" {
@@ -86,10 +67,10 @@ func runSessionRevoke(args []string) error {
 	})
 }
 
-func runSessionRevokeUser(args []string) error {
+func runSessionRevokeUser(cmd adminCmdCtx, args []string) error {
 	var userID *string
 	var username *string
-	return withAdminStore("session revoke-user", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("user-id", "", "user ID")
 		username = fs.String("username", "", "username")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
@@ -107,8 +88,8 @@ func runSessionRevokeUser(args []string) error {
 	})
 }
 
-func runSessionPurgeExpired(args []string) error {
-	return withAdminStore("session purge-expired", args, nil, func(ctx context.Context, _ *config.Config, st store.Store) error {
+func runSessionPurgeExpired(cmd adminCmdCtx, args []string) error {
+	return withAdminStore(cmd, args, nil, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		n, err := st.Cleanup().HardDeleteExpiredSessions(ctx)
 		if err != nil {
 			return fmt.Errorf("purge expired sessions: %w", err)

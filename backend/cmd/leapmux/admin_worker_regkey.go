@@ -11,28 +11,11 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
-func runAdminWorkerRegKey(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin worker reg-key <command> [flags]\n\nCommands:\n  list              List worker registration keys\n  revoke            Revoke a registration key by ID\n  purge-expired     Hard-delete all expired or revoked keys")
-	}
-
-	switch args[0] {
-	case "list":
-		return runWorkerRegKeyList(args[1:])
-	case "revoke":
-		return runWorkerRegKeyRevoke(args[1:])
-	case "purge-expired":
-		return runWorkerRegKeyPurgeExpired(args[1:])
-	default:
-		return fmt.Errorf("unknown reg-key command: %s", args[0])
-	}
-}
-
-func runWorkerRegKeyList(args []string) error {
+func runWorkerRegKeyList(cmd adminCmdCtx, args []string) error {
 	var includeExpired *bool
 	var limit *int64
 	var cursor *string
-	return withAdminStore("worker reg-key list", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		includeExpired = fs.Bool("include-expired", false, "include revoked or expired keys (forensics; default shows only live keys)")
 		limit = fs.Int64("limit", 50, "maximum number of results")
 		cursor = fs.String("cursor", "", "cursor for pagination (created_at in RFC3339Nano)")
@@ -62,9 +45,9 @@ func runWorkerRegKeyList(args []string) error {
 	})
 }
 
-func runWorkerRegKeyRevoke(args []string) error {
+func runWorkerRegKeyRevoke(cmd adminCmdCtx, args []string) error {
 	var id *string
-	return withAdminStore("worker reg-key revoke", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		id = fs.String("id", "", "registration key ID (required)")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *id == "" {
@@ -84,8 +67,8 @@ func runWorkerRegKeyRevoke(args []string) error {
 	})
 }
 
-func runWorkerRegKeyPurgeExpired(args []string) error {
-	return withAdminStore("worker reg-key purge-expired", args, nil, func(ctx context.Context, _ *config.Config, st store.Store) error {
+func runWorkerRegKeyPurgeExpired(cmd adminCmdCtx, args []string) error {
+	return withAdminStore(cmd, args, nil, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		// Cleanup loop uses cleanupRetention (7d) before hard-deleting, but
 		// admin "purge now" wants to drop everything that is no longer live —
 		// pass time.Now so any row whose expires_at is in the past goes.

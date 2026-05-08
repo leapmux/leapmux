@@ -10,25 +10,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
-func runAdminEncryptionKey(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin encryption-key <command> [flags]\n\nCommands:\n  rotate            Generate and add a new encryption key version\n  remove            Remove an old encryption key version\n  reencrypt         Re-encrypt all secrets with the active key")
-	}
-
-	switch args[0] {
-	case "rotate":
-		return runRotateEncryptionKey(args[1:])
-	case "remove":
-		return runRemoveEncryptionKey(args[1:])
-	case "reencrypt":
-		return runReencryptSecrets(args[1:])
-	default:
-		return fmt.Errorf("unknown encryption-key command: %s", args[0])
-	}
-}
-
-func runRotateEncryptionKey(args []string) error {
-	return withAdminConfig("encryption-key rotate", args, nil, func(cfg *config.Config) error {
+func runRotateEncryptionKey(cmd adminCmdCtx, args []string) error {
+	return withAdminConfig(cmd, args, nil, func(cfg *config.Config) error {
 		path := cfg.EncryptionKeyFilePath()
 
 		if _, err := keystore.LoadFromFile(path); err != nil {
@@ -46,9 +29,9 @@ func runRotateEncryptionKey(args []string) error {
 	})
 }
 
-func runRemoveEncryptionKey(args []string) error {
+func runRemoveEncryptionKey(cmd adminCmdCtx, args []string) error {
 	var version *uint
-	return withAdminConfig("encryption-key remove", args, func(fs *flag.FlagSet) {
+	return withAdminConfig(cmd, args, func(fs *flag.FlagSet) {
 		version = fs.Uint("version", 0, "key version to remove")
 	}, func(cfg *config.Config) error {
 		if *version < 1 {
@@ -66,8 +49,8 @@ func runRemoveEncryptionKey(args []string) error {
 	})
 }
 
-func runReencryptSecrets(args []string) error {
-	return withAdminStore("encryption-key reencrypt", args, nil, func(ctx context.Context, cfg *config.Config, st store.Store) error {
+func runReencryptSecrets(cmd adminCmdCtx, args []string) error {
+	return withAdminStore(cmd, args, nil, func(ctx context.Context, cfg *config.Config, st store.Store) error {
 		ks, err := keystore.LoadFromFile(cfg.EncryptionKeyFilePath())
 		if err != nil {
 			return fmt.Errorf("load encryption key: %w", err)

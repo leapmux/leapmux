@@ -31,7 +31,7 @@ type RunConfig struct {
 	WorkerID             string                      // Worker ID (from registration)
 	Name                 string                      // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
 	DBMaxConns           int                         // Maximum number of open database connections (0 = default)
-	DBCacheSize          int                         // SQLite page cache size (negative = KiB; 0 = default)
+	DBCacheSize          int                         // SQLite page cache size (positive = pages, negative = KiB; 0 = default)
 	DBMmapSize           int                         // SQLite memory-mapped I/O size in bytes (0 = disabled)
 	MaxMessageSize       int                         // Maximum reassembled channel message size in bytes (0 = 16 MiB default)
 	MaxIncompleteChunked int                         // Maximum in-flight chunked sequences per channel (0 = 4 default)

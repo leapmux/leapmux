@@ -1,11 +1,15 @@
 package config
 
 import (
+	"errors"
+	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -209,6 +213,52 @@ signup_enabled: true
 		require.NoError(t, err)
 		assert.True(t, showVersion)
 	})
+}
+
+func TestLoadRejectsPositionalArguments(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"bare help word", []string{"help"}},
+		{"trailing positional after flag", []string{"-listen", ":4327", "garbage"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := Load(tc.args)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unexpected argument")
+		})
+	}
+}
+
+func TestHubHelpGroupsStorageOptions(t *testing.T) {
+	output := testutil.CaptureStdout(t, func() {
+		_, _, err := Load([]string{"--help"})
+		require.True(t, errors.Is(err, flag.ErrHelp))
+	})
+
+	sections := []string{
+		"\nCommon options:\n",
+		"\nServer options:\n",
+		"\nTimeout and limit options:\n",
+		"\nStorage common options:\n",
+		"\nSQLite storage options:\n",
+		"\nPostgreSQL storage options:\n",
+		"\nCockroachDB storage options:\n",
+		"\nYugabyteDB storage options:\n",
+		"\nMySQL storage options:\n",
+		"\nTiDB storage options:\n",
+	}
+	for _, section := range sections {
+		require.Contains(t, output, section)
+	}
+	for i := 1; i < len(sections); i++ {
+		assert.Less(t, strings.Index(output, sections[i-1]), strings.Index(output, sections[i]))
+	}
+	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout-seconds int")
+	assert.Contains(t, output, "\nStorage common options:\n\n  -storage-type string")
+	assert.Contains(t, output, "\nSQLite storage options:\n\n  -storage-sqlite-cache-size int")
 }
 
 func TestLoadPublicURL(t *testing.T) {

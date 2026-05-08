@@ -6,39 +6,192 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mattn/go-isatty"
 	"golang.org/x/term"
 
+	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
 )
 
-func runAdmin(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin <group> <command> [flags]\n\nGroups:\n  org               Manage organizations\n  user              Manage users\n  session           Manage sessions\n  worker            Manage workers\n  oauth-provider    Manage OAuth/OIDC providers\n  encryption-key    Manage encryption keys\n  db                Database utilities")
-	}
+type adminCommand struct {
+	Name    string
+	Summary string // shown in parent's command list
+	Run     func(ctx adminCmdCtx, args []string) error
+}
 
-	switch args[0] {
-	case "org":
-		return runAdminOrg(args[1:])
-	case "user":
-		return runAdminUser(args[1:])
-	case "session":
-		return runAdminSession(args[1:])
-	case "worker":
-		return runAdminWorker(args[1:])
-	case "oauth-provider":
-		return runAdminOAuthProvider(args[1:])
-	case "encryption-key":
-		return runAdminEncryptionKey(args[1:])
-	case "db":
-		return runAdminDB(args[1:])
-	default:
+// adminCmdCtx carries the resolved path and description from the dispatcher
+// down into the leaf, so leaves don't have to hand-type their own path or
+// look up their description via a side-channel map.
+type adminCmdCtx struct {
+	Path        string // e.g. "user list", "worker reg-key revoke"
+	Description string
+}
+
+type adminGroup struct {
+	Name      string // empty for the root
+	Summary   string // shown in parent's command list
+	Commands  []adminCommand
+	Subgroups []adminGroup
+}
+
+// rootAdminDescription is the leaf/root description for the bare `admin`
+// group. Other groups derive their description from Summary at render time.
+const rootAdminDescription = "Manage LeapMux resources."
+
+// adminTree is the single source of truth for admin subcommand structure,
+// summaries, and dispatch. Per-group help text and per-leaf descriptions are
+// derived from each entry's Summary at render time.
+var adminTree = adminGroup{
+	Subgroups: []adminGroup{
+		{
+			Name:    "org",
+			Summary: "Manage organizations",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List organizations", Run: runOrgList},
+			},
+		},
+		{
+			Name:    "user",
+			Summary: "Manage users",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List users", Run: runUserList},
+				{Name: "get", Summary: "Get user details", Run: runUserGet},
+				{Name: "create", Summary: "Create a new user", Run: runUserCreate},
+				{Name: "update", Summary: "Update user fields", Run: runUserUpdate},
+				{Name: "delete", Summary: "Delete a user", Run: runUserDelete},
+				{Name: "reset-password", Summary: "Reset a user's password", Run: runUserResetPassword},
+				{Name: "grant-admin", Summary: "Grant admin privileges", Run: runUserGrantAdmin},
+				{Name: "revoke-admin", Summary: "Revoke admin privileges", Run: runUserRevokeAdmin},
+				{Name: "list-sessions", Summary: "List a user's active sessions", Run: runUserListSessions},
+			},
+		},
+		{
+			Name:    "session",
+			Summary: "Manage sessions",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List all active sessions", Run: runSessionList},
+				{Name: "revoke", Summary: "Revoke a session by ID", Run: runSessionRevoke},
+				{Name: "revoke-user", Summary: "Revoke all sessions for a user", Run: runSessionRevokeUser},
+				{Name: "purge-expired", Summary: "Delete all expired sessions", Run: runSessionPurgeExpired},
+			},
+		},
+		{
+			Name:    "worker",
+			Summary: "Manage workers",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List workers", Run: runWorkerList},
+				{Name: "get", Summary: "Get worker details", Run: runWorkerGet},
+				{Name: "deregister", Summary: "Deregister a worker", Run: runWorkerDeregister},
+			},
+			Subgroups: []adminGroup{
+				{
+					Name:    "reg-key",
+					Summary: "Manage worker registration keys",
+					Commands: []adminCommand{
+						{Name: "list", Summary: "List worker registration keys", Run: runWorkerRegKeyList},
+						{Name: "revoke", Summary: "Revoke a registration key by ID", Run: runWorkerRegKeyRevoke},
+						{Name: "purge-expired", Summary: "Hard-delete all expired or revoked keys", Run: runWorkerRegKeyPurgeExpired},
+					},
+				},
+			},
+		},
+		{
+			Name:    "oauth-provider",
+			Summary: "Manage OAuth/OIDC providers",
+			Commands: []adminCommand{
+				{Name: "add", Summary: "Add an OAuth/OIDC provider", Run: runAddOAuthProvider},
+				{Name: "list", Summary: "List configured providers", Run: runListOAuthProviders},
+				{Name: "remove", Summary: "Remove a provider", Run: runRemoveOAuthProvider},
+				{Name: "enable", Summary: "Enable a provider", Run: func(cmd adminCmdCtx, args []string) error { return runSetOAuthProviderEnabled(cmd, args, true) }},
+				{Name: "disable", Summary: "Disable a provider", Run: func(cmd adminCmdCtx, args []string) error { return runSetOAuthProviderEnabled(cmd, args, false) }},
+			},
+		},
+		{
+			Name:    "encryption-key",
+			Summary: "Manage encryption keys",
+			Commands: []adminCommand{
+				{Name: "rotate", Summary: "Generate and add a new encryption key version", Run: runRotateEncryptionKey},
+				{Name: "remove", Summary: "Remove an old encryption key version", Run: runRemoveEncryptionKey},
+				{Name: "reencrypt", Summary: "Re-encrypt all secrets with the active key", Run: runReencryptSecrets},
+			},
+		},
+		{
+			Name:    "db",
+			Summary: "Database utilities",
+			Commands: []adminCommand{
+				{Name: "path", Summary: "Print the database path", Run: runDBPath},
+				{Name: "migrate", Summary: "Run schema migrations", Run: runDBMigrate},
+				{Name: "version", Summary: "Show current schema version", Run: runDBVersion},
+			},
+		},
+	},
+}
+
+func runAdmin(args []string) error {
+	return dispatchAdminGroup(adminTree, args, nil)
+}
+
+// dispatchAdminGroup walks adminTree to invoke a leaf command. path is the
+// fully-qualified group path leading to group (empty for the root), used to
+// build error messages and the leaf's adminCmdCtx.
+func dispatchAdminGroup(group adminGroup, args, path []string) error {
+	if len(args) == 0 {
+		if len(path) == 0 {
+			return fmt.Errorf("admin group is required")
+		}
+		return fmt.Errorf("%s command is required", strings.Join(path, " "))
+	}
+	for i := range group.Subgroups {
+		if group.Subgroups[i].Name == args[0] {
+			return dispatchAdminGroup(group.Subgroups[i], args[1:], append(path, args[0]))
+		}
+	}
+	for i := range group.Commands {
+		c := group.Commands[i]
+		if c.Name == args[0] {
+			ctx := adminCmdCtx{
+				Path:        strings.Join(append(path, c.Name), " "),
+				Description: c.Summary + ".",
+			}
+			return c.Run(ctx, args[1:])
+		}
+	}
+	if len(path) == 0 {
 		return fmt.Errorf("unknown admin group: %s", args[0])
 	}
+	return fmt.Errorf("unknown %s command: %s", strings.Join(path, " "), args[0])
+}
+
+// formatAdminGroupUsage renders the help text for a group. fullPath is the
+// command path beneath the binary (e.g., "admin", "admin user").
+func formatAdminGroupUsage(g adminGroup, fullPath string) string {
+	var sb strings.Builder
+	description := rootAdminDescription
+	if g.Name != "" {
+		description = g.Summary + "."
+	}
+	sb.WriteString(description)
+	sb.WriteString("\n\n")
+	// Only the root admin group requires the user to pick a subgroup.
+	if g.Name == "" {
+		fmt.Fprintf(&sb, "Usage: leapmux %s <group> <command> [flags]\n\n", fullPath)
+		sb.WriteString("Groups:\n")
+	} else {
+		fmt.Fprintf(&sb, "Usage: leapmux %s <command> [flags]\n\n", fullPath)
+		sb.WriteString("Commands:\n")
+	}
+	for _, c := range g.Commands {
+		fmt.Fprintf(&sb, "  %-18s%s\n", c.Name, c.Summary)
+	}
+	for _, sub := range g.Subgroups {
+		fmt.Fprintf(&sb, "  %-18s%s\n", sub.Name, sub.Summary)
+	}
+	return sb.String()
 }
 
 // ---- Helpers ----
@@ -47,14 +200,14 @@ func runAdmin(args []string) error {
 // opens the store, and calls fn. The store is closed after fn returns.
 // When --config is provided, the hub config file is loaded to obtain storage
 // settings. Otherwise, a minimal config is constructed from --data-dir.
-func withAdminStore(name string, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store) error) error {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+func withAdminStore(cmd adminCmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store) error) error {
+	fs := flag.NewFlagSet("leapmux admin "+cmd.Path, flag.ContinueOnError)
 	dataDir := fs.String("data-dir", "", "data directory")
 	configFile := fs.String("config", "", "path to hub config file (loads storage settings)")
 	if setup != nil {
 		setup(fs)
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := internalconfig.ConfigureAndParse(fs, args, cmd.Description, nil, nil); err != nil {
 		return err
 	}
 
@@ -100,13 +253,13 @@ func adminConfig(dataDir string) *config.Config {
 // withAdminConfig creates a flag set with --data-dir, parses args, and
 // calls fn with the resolved config. Use this for commands that need
 // the config but not a database connection.
-func withAdminConfig(name string, args []string, setup func(fs *flag.FlagSet), fn func(cfg *config.Config) error) error {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+func withAdminConfig(cmd adminCmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(cfg *config.Config) error) error {
+	fs := flag.NewFlagSet("leapmux admin "+cmd.Path, flag.ContinueOnError)
 	dataDir := fs.String("data-dir", "", "data directory")
 	if setup != nil {
 		setup(fs)
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := internalconfig.ConfigureAndParse(fs, args, cmd.Description, nil, nil); err != nil {
 		return err
 	}
 	return fn(adminConfig(*dataDir))

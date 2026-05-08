@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	defaultHubURL     = "http://localhost:4327"
+	defaultHubURL     = "http://127.0.0.1:4327"
 	defaultConfigDir  = "~/.config/leapmux/worker"
 	defaultConfigFile = "~/.config/leapmux/worker/worker.yaml"
 	defaultLogLevel   = "info"
@@ -157,14 +157,14 @@ func Load(args []string) (*Config, bool, error) {
 	configPath := internalconfig.ExtractConfigFlag(args, defaultConfigFile)
 
 	// Define CLI flags.
-	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
+	fs := flag.NewFlagSet("leapmux worker", flag.ContinueOnError)
 	fs.String("config", defaultConfigFile, "path to config file")
 	fs.String("hub", defaultHubURL, "Hub server URL (http[s]://..., unix:<socket-path>, or npipe:<pipe-name>)")
 	fs.String("registration-key", "", "registration key from the hub UI (required on first run)")
 	fs.String("name", "", "worker display name (default: hostname)")
 	fs.String("data-dir", ".", "data directory")
 	fs.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
-	fs.Int("db-cache-size", 0, "SQLite page cache size (negative = KiB, e.g. -64000 = 64 MiB; 0 = default)")
+	fs.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
 	fs.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
 	fs.Int("max-message-size", 0, "maximum reassembled channel message size in bytes (default 16 MiB)")
 	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
@@ -174,8 +174,25 @@ func Load(args []string) (*Config, bool, error) {
 	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
 	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")
 	showVersion := fs.Bool("version", false, "print version and exit")
-
-	if err := fs.Parse(args); err != nil {
+	usageCategories := map[string]string{
+		"config":                        "Common options",
+		"version":                       "Common options",
+		"hub":                           "Worker options",
+		"registration-key":              "Worker options",
+		"name":                          "Worker options",
+		"data-dir":                      "Worker options",
+		"log-level":                     "Worker options",
+		"encryption-mode":               "Worker options",
+		"use-login-shell":               "Worker options",
+		"max-message-size":              "Timeout and limit options",
+		"max-incomplete-chunked":        "Timeout and limit options",
+		"agent-startup-timeout-seconds": "Timeout and limit options",
+		"api-timeout-seconds":           "Timeout and limit options",
+		"db-max-conns":                  "SQLite database options",
+		"db-cache-size":                 "SQLite database options",
+		"db-mmap-size":                  "SQLite database options",
+	}
+	if err := internalconfig.ConfigureAndParse(fs, args, "Run a Worker connected to a Hub.", usageCategories, workerFlagCategoryOrder); err != nil {
 		return nil, false, err
 	}
 
@@ -234,6 +251,13 @@ func Load(args []string) (*Config, bool, error) {
 	cfg.DataDir = internalconfig.ResolveDataDir(cfg.DataDir, configPath, defaultConfigDir)
 
 	return &cfg, false, nil
+}
+
+var workerFlagCategoryOrder = []string{
+	"Common options",
+	"Worker options",
+	"Timeout and limit options",
+	"SQLite database options",
 }
 
 // Validate checks the configuration and ensures required directories exist.

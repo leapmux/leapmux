@@ -1,5 +1,16 @@
 #!/bin/sh
-config="/data/${LEAPMUX_MODE}/${LEAPMUX_MODE}.yaml"
+mode="${LEAPMUX_MODE:-}"
+case "$mode" in
+hub|worker|dev|solo) ;;
+*)
+	echo "error: LEAPMUX_MODE must be one of: hub, worker, dev, solo" >&2
+	exit 1
+	;;
+esac
+
+data_dir="${LEAPMUX_DATA_DIR:-/data}"
+bin="${LEAPMUX_BIN:-/usr/local/bin/leapmux}"
+config="${data_dir}/${mode}/${mode}.yaml"
 mkdir -p "$(dirname "$config")"
 [ -f "$config" ] || install -m 0600 /dev/null "$config"
-exec /usr/local/bin/leapmux ${LEAPMUX_MODE} -config "$config"
+exec "$bin" "$mode" -config "$config"

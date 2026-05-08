@@ -14,32 +14,13 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
-func runAdminWorker(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: leapmux admin worker <command> [flags]\n\nCommands:\n  list              List workers\n  get               Get worker details\n  deregister        Deregister a worker\n  reg-key           Manage worker registration keys")
-	}
-
-	switch args[0] {
-	case "list":
-		return runWorkerList(args[1:])
-	case "get":
-		return runWorkerGet(args[1:])
-	case "deregister":
-		return runWorkerDeregister(args[1:])
-	case "reg-key":
-		return runAdminWorkerRegKey(args[1:])
-	default:
-		return fmt.Errorf("unknown worker command: %s", args[0])
-	}
-}
-
-func runWorkerList(args []string) error {
+func runWorkerList(cmd adminCmdCtx, args []string) error {
 	var userID *string
 	var username *string
 	var status *string
 	var limit *int64
 	var cursor *string
-	return withAdminStore("worker list", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("user-id", "", "filter by user ID")
 		username = fs.String("username", "", "filter by username")
 		status = fs.String("status", "active", "filter by status (active, deregistering, deleted, all)")
@@ -100,9 +81,9 @@ func runWorkerList(args []string) error {
 	})
 }
 
-func runWorkerGet(args []string) error {
+func runWorkerGet(cmd adminCmdCtx, args []string) error {
 	var workerID *string
-	return withAdminStore("worker get", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		workerID = fs.String("id", "", "worker ID (required)")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *workerID == "" {
@@ -151,9 +132,9 @@ func runWorkerGet(args []string) error {
 	})
 }
 
-func runWorkerDeregister(args []string) error {
+func runWorkerDeregister(cmd adminCmdCtx, args []string) error {
 	var workerID *string
-	return withAdminStore("worker deregister", args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		workerID = fs.String("id", "", "worker ID (required)")
 	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
 		if *workerID == "" {

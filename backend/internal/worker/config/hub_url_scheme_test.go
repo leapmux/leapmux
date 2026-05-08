@@ -35,6 +35,6 @@ func TestLoad_HubFlagAcceptsAllTransportSchemes(t *testing.T) {
 func TestLoad_HubFlagDefaultRemainsHTTP(t *testing.T) {
 	cfg, _, err := Load(nil)
 	require.NoError(t, err)
-	assert.Equal(t, "http://localhost:4327", cfg.HubURL,
-		"default HubURL should be preserved for backwards compatibility")
+	assert.Equal(t, "http://127.0.0.1:4327", cfg.HubURL,
+		"default HubURL should use an explicit loopback address")
 }
