@@ -46,7 +46,14 @@ import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import { createLayoutStore, firstLeafId } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { createTabStore, isTabReadyForGitStatus, preserveNonEmptyGitFields, protoToTerminalTab, tabKey } from '~/stores/tab.store'
+import {
+  createTabStore,
+  isTabReadyForGitStatus,
+  preserveNonEmptyGitFields,
+  preserveTerminalDisplayFields,
+  protoToTerminalTab,
+  tabKey,
+} from '~/stores/tab.store'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
 import { createWorkerInfoStore } from '~/stores/workerInfo.store'
@@ -539,7 +546,8 @@ export const AppShell: ParentComponent = (props) => {
           for (const t of terminals) {
             const fresh = protoToTerminalTab(workerId, t)
             const previous = previousTabsByKey.get(tabKey(fresh))
-            tabs.push({ ...fresh, ...preserveNonEmptyGitFields(fresh, previous) })
+            const fields = preserveTerminalDisplayFields(preserveNonEmptyGitFields(fresh, previous), previous)
+            tabs.push({ ...fresh, ...fields })
           }
         }
 

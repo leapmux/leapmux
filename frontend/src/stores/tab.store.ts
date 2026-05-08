@@ -107,9 +107,10 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     status,
     startupError: term.startupError || undefined,
     startupMessage: term.startupMessage || undefined,
-    // Any persisted screen → the shell already painted content; skip the
-    // "Starting…" overlay on reconnect to avoid a flash.
-    contentReady: term.screen.length > 0 ? true : undefined,
+    // Any persisted screen means the shell already painted content; an
+    // exited DB-only terminal has no future data source, so it must not
+    // remain covered by the startup overlay either.
+    contentReady: term.screen.length > 0 || term.exited ? true : undefined,
   }
 }
 
@@ -183,6 +184,30 @@ export function preserveNonEmptyGitFields(
     next.gitOriginUrl = previous.gitOriginUrl
   if (!next.gitToplevel && previous.gitToplevel)
     next.gitToplevel = previous.gitToplevel
+  return next
+}
+
+/**
+ * Preserve client-only visual state when a worker rehydration payload has
+ * empty fields because the PTY vanished before shutdown could persist a
+ * final snapshot. This keeps a backend restart from erasing the tab title or
+ * re-showing the startup overlay over an xterm that had already painted.
+ */
+export function preserveTerminalDisplayFields(
+  fresh: Partial<Tab>,
+  previous: Pick<Tab, 'title' | 'screen' | 'lastOffset' | 'contentReady'> | null | undefined,
+): Partial<Tab> {
+  if (!previous)
+    return fresh
+  const next: Partial<Tab> = { ...fresh }
+  if (!next.title && previous.title)
+    next.title = previous.title
+  if (!next.screen && previous.screen && previous.screen.length > 0)
+    next.screen = previous.screen
+  if (next.lastOffset === undefined && previous.lastOffset !== undefined)
+    next.lastOffset = previous.lastOffset
+  if (next.contentReady === undefined && previous.contentReady)
+    next.contentReady = true
   return next
 }
 
@@ -621,9 +646,15 @@ export function createTabStore() {
     markTerminalExited(id: string) {
       setState(
         'tabs',
-        t => t.type === TabType.TERMINAL && t.id === id && t.status !== TerminalStatus.EXITED,
-        'status',
-        TerminalStatus.EXITED,
+        t => t.type === TabType.TERMINAL
+          && t.id === id
+          && (t.status !== TerminalStatus.EXITED || !t.contentReady || t.startupMessage !== undefined),
+        prev => ({
+          ...prev,
+          status: TerminalStatus.EXITED,
+          startupMessage: undefined,
+          contentReady: true,
+        }),
       )
     },
 

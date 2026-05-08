@@ -398,7 +398,9 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                   fontFamily={preferences.monoFontFamily()}
                   fontSize={13}
                   theme={terminalTheme()}
-                  contentReady={terminal.contentReady ?? false}
+                  contentReady={(terminal.contentReady ?? false)
+                    || terminal.status === TerminalStatus.EXITED
+                    || terminal.status === TerminalStatus.DISCONNECTED}
                   startupMessage={terminal.startupMessage}
                   onInput={props.onInput}
                   onResize={props.onResize}

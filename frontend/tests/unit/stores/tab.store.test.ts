@@ -5,7 +5,13 @@ import { describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createTabStore, isTabReadyForGitStatus, tabKey } from '~/stores/tab.store'
+import {
+  createTabStore,
+  isTabReadyForGitStatus,
+  preserveTerminalDisplayFields,
+  protoToTerminalTabFields,
+  tabKey,
+} from '~/stores/tab.store'
 
 describe('tabKey', () => {
   it('should create composite key from type and id', () => {
@@ -663,6 +669,69 @@ describe('createTabStore', () => {
       // tile-2 should now have a3 active (was missing)
       expect(store.getActiveTabKeyForTile('tile-2')).toBe('1:a3')
 
+      dispose()
+    })
+  })
+})
+
+describe('terminal tab hydration fields', () => {
+  it('marks exited DB-only terminals content-ready so the startup overlay cannot stick forever', () => {
+    const fields = protoToTerminalTabFields('worker-1', {
+      terminalId: 'term-1',
+      status: TerminalStatus.READY,
+      exited: true,
+      screen: new Uint8Array(),
+      screenEndOffset: 0n,
+      title: '',
+      workingDir: '/tmp',
+      shellStartDir: '/tmp',
+      cols: 80,
+      rows: 24,
+    } as any)
+
+    expect(fields.status).toBe(TerminalStatus.EXITED)
+    expect(fields.contentReady).toBe(true)
+  })
+
+  it('preserves cached title and painted-content state when rehydration has no snapshot', () => {
+    const fields = preserveTerminalDisplayFields(
+      {
+        title: undefined,
+        screen: undefined,
+        lastOffset: undefined,
+        contentReady: undefined,
+      },
+      {
+        title: 'Terminal Ada',
+        screen: new TextEncoder().encode('cached screen'),
+        lastOffset: 42,
+        contentReady: true,
+      },
+    )
+
+    expect(fields.title).toBe('Terminal Ada')
+    expect(fields.screen && new TextDecoder().decode(fields.screen)).toBe('cached screen')
+    expect(fields.lastOffset).toBe(42)
+    expect(fields.contentReady).toBe(true)
+  })
+
+  it('marks exited tabs content-ready when a close event arrives before visible output was detected', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.TERMINAL,
+        id: 'term-1',
+        status: TerminalStatus.READY,
+        contentReady: false,
+        startupMessage: 'Starting zsh…',
+      })
+
+      store.markTerminalExited('term-1')
+
+      const tab = store.getTerminalTab('term-1')
+      expect(tab?.status).toBe(TerminalStatus.EXITED)
+      expect(tab?.contentReady).toBe(true)
+      expect(tab?.startupMessage).toBeUndefined()
       dispose()
     })
   })

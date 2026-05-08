@@ -169,6 +169,38 @@ describe('terminalView', () => {
     await findByText('Starting terminal…')
   })
 
+  it('does not show the startup overlay for an exited terminal without restored screen bytes', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+
+    const { queryByTestId, queryByText } = render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{
+            id: 'term-exited-empty',
+            workspaceId: 'ws-1',
+            status: TerminalStatus.EXITED,
+            screen: new Uint8Array(),
+          }]}
+          activeTerminalId="term-exited-empty"
+          visible
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => {
+      expect(instance.terminal.open).toHaveBeenCalled()
+    })
+
+    expect(queryByTestId('terminal-startup-overlay')).toBeNull()
+    expect(queryByText('Starting terminal…')).toBeNull()
+  })
+
   // Closing a single tab must dispose exactly that terminal's xterm
   // instance (releasing its WebGL context, scrollback, and listener
   // refs) and leave other tabs' instances intact. The disposal is

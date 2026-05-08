@@ -322,9 +322,13 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 
 		title := r.GetTitle()
 		svc.Terminals.UpdateTitle(terminalID, title)
+		screen := dbTerm.Screen
+		if screen == nil {
+			screen = []byte{}
+		}
 
 		// Persist to DB so it survives restarts.
-		_ = svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
+		if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 			ID:            dbTerm.ID,
 			WorkspaceID:   dbTerm.WorkspaceID,
 			WorkingDir:    dbTerm.WorkingDir,
@@ -333,10 +337,14 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			Title:         title,
 			Cols:          dbTerm.Cols,
 			Rows:          dbTerm.Rows,
-			Screen:        dbTerm.Screen,
+			Screen:        screen,
 			ExitCode:      dbTerm.ExitCode,
 			ClosedAt:      dbTerm.ClosedAt,
-		})
+		}); err != nil {
+			slog.Error("failed to update terminal title", "terminal_id", terminalID, "error", err)
+			sendInternalError(sender, "failed to update terminal title")
+			return
+		}
 
 		sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
 	})
@@ -522,6 +530,15 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", startErr)
 		svc.failTerminalStartup(terminalID, gm, startErr)
 		return
+	}
+
+	// The frontend persists the generated tab title immediately after
+	// OpenTerminal returns, often before StartTerminal has registered
+	// in-memory metadata. Pull that DB value into the Manager now so a
+	// later shell exit or worker shutdown does not overwrite it with the
+	// empty startup-time title.
+	if dbTerm, err := svc.Queries.GetTerminal(bgCtx(), terminalID); err == nil && dbTerm.Title != "" {
+		svc.Terminals.UpdateTitle(terminalID, dbTerm.Title)
 	}
 
 	// Apply any ResizeTerminal that arrived after the pre-spawn wait

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -277,6 +278,93 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 	ti := listResp.GetTerminals()[0]
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, ti.GetStatus())
 	assert.Equal(t, "Starting fish…", ti.GetStartupMessage())
+}
+
+func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	defer drainAllInFlight(svc)
+
+	releaseStart := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseStart:
+		default:
+			close(releaseStart)
+		}
+	}()
+	exitDone := make(chan struct{})
+	svc.startTerminalFn = func(ctx context.Context, opts terminal.Options, outFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
+		<-releaseStart
+		return svc.Terminals.StartTerminal(ctx, opts, outFn, func(id string, code int) {
+			if exitFn != nil {
+				exitFn(id, code)
+			}
+			close(exitDone)
+		})
+	}
+
+	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+		WorkspaceId: "ws-1",
+		WorkingDir:  t.TempDir(),
+		Shell:       testutil.TestShell(),
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenTerminalResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	terminalID := openResp.GetTerminalId()
+	require.NotEmpty(t, terminalID)
+
+	const title = "Terminal Ada"
+	wTitle := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
+		WorkspaceId: "ws-1",
+		TerminalId:  terminalID,
+		Title:       title,
+	}, wTitle)
+	require.Empty(t, wTitle.errors)
+	rowBeforeStart, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	require.Equal(t, title, rowBeforeStart.Title)
+
+	wResize := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "ResizeTerminal", &leapmuxv1.ResizeTerminalRequest{
+		WorkspaceId: "ws-1",
+		TerminalId:  terminalID,
+		Cols:        100,
+		Rows:        40,
+	}, wResize)
+	require.Empty(t, wResize.errors)
+
+	close(releaseStart)
+
+	require.Eventually(t, func() bool {
+		meta, ok := svc.Terminals.GetMeta(terminalID)
+		return ok && meta.Title == title
+	}, 5*time.Second, 20*time.Millisecond,
+		"terminal manager metadata should pick up the DB title written before PTY registration")
+
+	svc.Shutdown()
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, title, row.Title,
+		"shutdown snapshot must not overwrite the pre-start title with empty manager metadata")
+
+	svc.Terminals.StopTerminal(terminalID)
+	require.Eventually(t, func() bool {
+		return svc.Terminals.IsExited(terminalID)
+	}, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		select {
+		case <-exitDone:
+			return true
+		default:
+			return false
+		}
+	}, 5*time.Second, 20*time.Millisecond)
+	svc.Terminals.RemoveTerminal(terminalID)
 }
 
 // TestOpenAgent_CatchUpReplaySurfacesStartupMessage mirrors the

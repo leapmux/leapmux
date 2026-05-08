@@ -15,7 +15,14 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
-import { parseTabKey, preserveNonEmptyGitFields, protoToTerminalTab, protoToTerminalTabFields, tabKey } from '~/stores/tab.store'
+import {
+  parseTabKey,
+  preserveNonEmptyGitFields,
+  preserveTerminalDisplayFields,
+  protoToTerminalTab,
+  protoToTerminalTabFields,
+  tabKey,
+} from '~/stores/tab.store'
 import { fanOutTabsToWorkers } from './workspaceTabHydration'
 
 const log = createLogger('restore')
@@ -86,7 +93,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     // gitBranch/gitOriginUrl. Keep the tab's previous values in that case so
     // the sidebar grouping doesn't flicker out until the next reload.
     const previous = tabStore.getTerminalTab(term.terminalId)
-    tabStore.updateTab(TabType.TERMINAL, term.terminalId, preserveNonEmptyGitFields(fields, previous))
+    tabStore.updateTab(
+      TabType.TERMINAL,
+      term.terminalId,
+      preserveTerminalDisplayFields(preserveNonEmptyGitFields(fields, previous), previous),
+    )
   }
 
   onCleanup(() => {
@@ -251,7 +262,10 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
           let tileId = tabTileMap.get(key) ?? defaultTileId
           if (!validTileIds.has(tileId))
             tileId = defaultTileId
-          tabStore.addTab({ ...protoToTerminalTab(workerId, term), tileId }, { activate: false })
+          const fresh = protoToTerminalTab(workerId, term)
+          const previous = cached?.tabs.find(tab => tabKey(tab) === key)
+          const fields = preserveTerminalDisplayFields(preserveNonEmptyGitFields(fresh, previous), previous)
+          tabStore.addTab({ ...fresh, ...fields, tileId }, { activate: false })
           addedTabKeys.add(key)
         }
       }
