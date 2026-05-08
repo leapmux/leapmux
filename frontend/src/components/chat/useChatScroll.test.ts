@@ -361,7 +361,7 @@ describe('usechatscroll resize sticky-bottom', () => {
       })
     }))
 
-  it('refreshes sticky records when the user scrolls back within the bottom threshold', () =>
+  it('does not snap scrollTop back to bottom when the user scrolls up a few pixels', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
@@ -382,22 +382,16 @@ describe('usechatscroll resize sticky-bottom', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          div.setScrollTop(300)
-          hook.handlers.onScroll()
-          expect(hook.atBottom()).toBe(false)
-
-          // Returning to within the sticky threshold should normalize to the
-          // exact clamped bottom and refresh the sticky record.
-          div.setScrollTop(480)
-          hook.handlers.onScroll()
-          expect(div.getScrollTop()).toBe(500)
-          expect(hook.atBottom()).toBe(true)
-
-          div.setScrollHeight(1500)
+          // User flicks the touchpad up by a handful of pixels — well
+          // within the 32px sticky threshold. The hook must NOT write
+          // scrollTop back to the bottom; the user moved on purpose.
+          div.setScrollTop(495)
           hook.handlers.onScroll()
 
-          expect(div.getScrollTop()).toBe(1000)
-          expect(hook.atBottom()).toBe(true)
+          expect(div.getScrollTop()).toBe(495)
+
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(495)
           dispose()
           resolve()
         }

@@ -100,9 +100,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }
   }
 
+  const distFromBottom = (el: HTMLDivElement) =>
+    el.scrollHeight - el.scrollTop - el.clientHeight
+
   /** Fresh DOM measurement — true if the scroll position is at/near the bottom. */
   const isAtBottom = () =>
-    !!messageListRef && messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight < STICKY_BOTTOM_THRESHOLD_PX
+    !!messageListRef && distFromBottom(messageListRef) < STICKY_BOTTOM_THRESHOLD_PX
 
   const stickToBottom = () => {
     if (!messageListRef || messageListRef.clientHeight === 0)
@@ -122,6 +125,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (!messageListRef || scrollAnimationId !== null)
       return
     const wasSticky = atBottom()
+    // Stale scroll event after content grew: the browser reports the
+    // pre-growth scrollTop matching our last sticky record. Re-stick to
+    // the new visual bottom rather than dropping atBottom.
     if (
       wasSticky
       && stickyScrollTop !== undefined
@@ -131,13 +137,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       stickToBottom()
       return
     }
-    const nextAtBottom = isAtBottom()
-    if (nextAtBottom) {
-      stickToBottom()
-    }
-    else {
-      setAtBottom(false)
-    }
+    setAtBottom(isAtBottom())
   }
 
   const isNearTop = () =>
@@ -253,7 +253,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (!messageListRef || messageListRef.clientHeight === 0)
       return undefined
     return {
-      distFromBottom: messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight,
+      distFromBottom: distFromBottom(messageListRef),
       atBottom: atBottom(),
     }
   }
@@ -413,7 +413,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         scrollAnimationId = null
         return
       }
-      const remaining = messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight
+      const remaining = distFromBottom(messageListRef)
       if (remaining < 1) {
         scrollAnimationId = null
         stickToBottom()
