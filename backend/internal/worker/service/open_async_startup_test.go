@@ -112,6 +112,348 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after delayed startup")
 }
 
+func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	defer drainAllInFlight(svc)
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	startCalled := make(chan agent.Options, 1)
+	releaseStart := make(chan struct{})
+	released := false
+	release := func() {
+		if !released {
+			close(releaseStart)
+			released = true
+		}
+	}
+	defer release()
+
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		startCalled <- opts
+		select {
+		case <-releaseStart:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &leapmuxv1.AgentSettings{
+			Model:          opts.Model,
+			Effort:         opts.Effort,
+			PermissionMode: opts.PermissionMode,
+			ExtraSettings:  opts.ExtraSettings,
+		}, nil
+	}
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+
+	var openResp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	agentID := openResp.GetAgent().GetId()
+	require.NotEmpty(t, agentID)
+
+	var startedOpts agent.Options
+	select {
+	case startedOpts = <-startCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startAgentFn not invoked within 5s")
+	}
+	require.Equal(t, agent.CodexDefaultCollaborationMode, startedOpts.ExtraSettings[agent.CodexExtraCollaborationMode])
+
+	wUpdate := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+		AgentId: agentID,
+		Settings: &leapmuxv1.AgentSettings{
+			ExtraSettings: map[string]string{
+				agent.CodexExtraCollaborationMode: agent.CodexCollaborationPlan,
+			},
+		},
+	}, wUpdate)
+	require.Empty(t, wUpdate.errors)
+
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, agent.CodexCollaborationPlan, loadExtraSettings(row.ExtraSettings, row.AgentProvider)[agent.CodexExtraCollaborationMode])
+
+	wWatch := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
+	}, wWatch)
+
+	release()
+
+	var activeStatus *leapmuxv1.AgentStatusChange
+	require.Eventually(t, func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			sc := resp.GetAgentEvent().GetStatusChange()
+			if sc == nil || sc.GetStatus() != leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+				continue
+			}
+			activeStatus = sc
+			return true
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after releasing startup")
+
+	require.NotNil(t, activeStatus)
+	assert.Equal(t, agent.CodexCollaborationPlan, activeStatus.GetExtraSettings()[agent.CodexExtraCollaborationMode])
+
+	row, err = svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, agent.CodexCollaborationPlan, loadExtraSettings(row.ExtraSettings, row.AgentProvider)[agent.CodexExtraCollaborationMode])
+}
+
+func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	defer drainAllInFlight(svc)
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	startCalled := make(chan agent.Options, 1)
+	releaseStart := make(chan struct{})
+	released := false
+	release := func() {
+		if !released {
+			close(releaseStart)
+			released = true
+		}
+	}
+	defer release()
+
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		startCalled <- opts
+		select {
+		case <-releaseStart:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &leapmuxv1.AgentSettings{
+			Model:          opts.Model,
+			Effort:         opts.Effort,
+			PermissionMode: agent.PermissionModeDefault,
+			ExtraSettings:  opts.ExtraSettings,
+		}, nil
+	}
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+
+	var openResp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	agentID := openResp.GetAgent().GetId()
+	require.NotEmpty(t, agentID)
+
+	select {
+	case <-startCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startAgentFn not invoked within 5s")
+	}
+
+	wRaw := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+		AgentId: agentID,
+		Content: `{"type":"control_request","request_id":"test-set-mode","request":{"subtype":"set_permission_mode","mode":"plan"}}`,
+	}, wRaw)
+	require.Empty(t, wRaw.errors)
+
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.Equal(t, agent.PermissionModePlan, row.PermissionMode)
+
+	wWatch := &testResponseWriter{channelID: "test-ch"}
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
+	}, wWatch)
+
+	release()
+
+	var activeStatus *leapmuxv1.AgentStatusChange
+	require.Eventually(t, func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			sc := resp.GetAgentEvent().GetStatusChange()
+			if sc == nil || sc.GetStatus() != leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE {
+				continue
+			}
+			activeStatus = sc
+			return true
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after releasing startup")
+
+	require.NotNil(t, activeStatus)
+	assert.Equal(t, agent.PermissionModePlan, activeStatus.GetPermissionMode())
+
+	row, err = svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, agent.PermissionModePlan, row.PermissionMode)
+}
+
+func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+	defer drainAllInFlight(svc)
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	agentID := "agent-late-mode"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:             agentID,
+		WorkspaceID:    "ws-1",
+		WorkingDir:     t.TempDir(),
+		HomeDir:        t.TempDir(),
+		Title:          "late mode",
+		Model:          "opus",
+		SystemPrompt:   "",
+		Effort:         "high",
+		PermissionMode: agent.PermissionModeDefault,
+		ExtraSettings:  "{}",
+		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Resumed:        0,
+	}))
+
+	startedOpts := agent.Options{
+		AgentID:        agentID,
+		Model:          "opus",
+		Effort:         "high",
+		PermissionMode: agent.PermissionModeDefault,
+		ExtraSettings:  map[string]string{},
+		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}
+	latestOpts := startedOpts
+
+	require.NoError(t, svc.Queries.SetAgentPermissionMode(ctx, db.SetAgentPermissionModeParams{
+		PermissionMode: agent.PermissionModePlan,
+		ID:             agentID,
+	}))
+
+	activeRow, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(
+		agentID,
+		startedOpts,
+		latestOpts,
+		&leapmuxv1.AgentSettings{PermissionMode: agent.PermissionModeDefault},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, agent.PermissionModePlan, activeRow.PermissionMode)
+
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, agent.PermissionModePlan, row.PermissionMode)
+}
+
+func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, "ws-1")
+	defer drainAllInFlight(svc)
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	agentID := "agent-pre-start-mode"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:             agentID,
+		WorkspaceID:    "ws-1",
+		WorkingDir:     t.TempDir(),
+		HomeDir:        t.TempDir(),
+		Title:          "pre-start mode",
+		Model:          "opus",
+		SystemPrompt:   "",
+		Effort:         "high",
+		PermissionMode: agent.PermissionModePlan,
+		ExtraSettings:  "{}",
+		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Resumed:        0,
+	}))
+
+	initialOpts := agent.Options{
+		AgentID:        agentID,
+		Model:          "opus",
+		Effort:         "high",
+		PermissionMode: agent.PermissionModeDefault,
+		ExtraSettings:  map[string]string{},
+		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}
+	startedOpts := initialOpts
+	startedOpts.PermissionMode = agent.PermissionModePlan
+	latestOpts := startedOpts
+
+	confirmed := confirmedSettingsPreservingStartupChanges(
+		&leapmuxv1.AgentSettings{PermissionMode: agent.PermissionModeDefault},
+		initialOpts,
+		latestOpts,
+	)
+	activeRow, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(
+		agentID,
+		startedOpts,
+		latestOpts,
+		confirmed,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, agent.PermissionModePlan, activeRow.PermissionMode)
+
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, agent.PermissionModePlan, row.PermissionMode)
+}
+
+func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, "ws-1")
+	defer drainAllInFlight(svc)
+	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+
+	startCalled := make(chan agent.Options, 1)
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		startCalled <- opts
+		return &leapmuxv1.AgentSettings{
+			Model:          opts.Model,
+			Effort:         opts.Effort,
+			PermissionMode: opts.PermissionMode,
+			ExtraSettings:  opts.ExtraSettings,
+		}, nil
+	}
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+
+	var openResp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	agentID := openResp.GetAgent().GetId()
+	require.NotEmpty(t, agentID)
+
+	var startedOpts agent.Options
+	select {
+	case startedOpts = <-startCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startAgentFn not invoked within 5s")
+	}
+	assert.Equal(t, agent.CodexDefaultApprovalPolicy, startedOpts.PermissionMode)
+
+	require.Eventually(t, func() bool {
+		row, err := svc.Queries.GetAgentByID(ctx, agentID)
+		return err == nil && row.PermissionMode == agent.CodexDefaultApprovalPolicy
+	}, 5*time.Second, 20*time.Millisecond, "expected Codex permission mode to be stored as provider default")
+}
+
 // TestOpenAgent_ResponseHasNilGitStatus asserts that the immediate
 // OpenAgent response carries no gitStatus — it's deliberately moved
 // off the sync path and emitted via a subsequent STARTING broadcast so

@@ -248,6 +248,28 @@ func TestCurrentSettings_IncludesExtraSettings(t *testing.T) {
 	assert.Equal(t, "off", s.ExtraSettings[ExtraKeyAlwaysThinking])
 }
 
+func TestRefreshSettingsFromAgent_DoesNotReportPermissionMode(t *testing.T) {
+	sink := &testSink{}
+	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
+		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1"},
+		Options{
+			AgentID:    "test-refresh",
+			Model:      "opus[1m]",
+			WorkingDir: t.TempDir(),
+			APITimeout: 5 * time.Second,
+		},
+		sink)
+	require.NoError(t, err)
+	defer stopTestAgent(a)
+
+	a.confirmedPermissionMode = PermissionModeDefault
+	a.refreshSettingsFromAgent(5 * time.Second)
+
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	refresh := sink.LastSettingsRefresh()
+	assert.Empty(t, refresh.PermissionMode, "Claude get_settings does not report permission mode")
+}
+
 // --- Unit tests for UpdateSettings logic (no-op / validation) ---
 
 func TestUpdateSettings_NothingChanged(t *testing.T) {
@@ -306,6 +328,19 @@ func TestUpdateSettings_EffortChange(t *testing.T) {
 	})
 	assert.True(t, result, "should return true for effort change")
 	assert.Equal(t, "low", a.effort, "effort should be updated from get_settings response")
+}
+
+func TestUpdateSettings_PermissionModeChange(t *testing.T) {
+	a := newTestAgentWithControlProtocol(t)
+	defer stopTestAgent(a)
+
+	a.confirmedPermissionMode = PermissionModeDefault
+
+	result := a.UpdateSettings(&leapmuxv1.AgentSettings{
+		PermissionMode: PermissionModePlan,
+	})
+	assert.True(t, result, "should return true for permission mode change")
+	assert.Equal(t, PermissionModePlan, a.confirmedPermissionMode)
 }
 
 // TestUpdateSettings_AutoRequiresRestart verifies that switching effort to
@@ -556,6 +591,7 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 	state := map[string]interface{}{
 		"model":                 "opus[1m]",
 		"effort":                "high",
+		"mode":                  PermissionModeDefault,
 		"outputStyle":           "default",
 		"fastMode":              nil,
 		"alwaysThinkingEnabled": nil,
@@ -575,6 +611,7 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 			RequestID string `json:"request_id"`
 			Request   struct {
 				Subtype  string                 `json:"subtype"`
+				Mode     string                 `json:"mode"`
 				Settings map[string]interface{} `json:"settings"`
 			} `json:"request"`
 		}
@@ -585,6 +622,13 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 
 		var responseBody interface{}
 		switch msg.Request.Subtype {
+		case "set_permission_mode":
+			mode := msg.Request.Mode
+			if mode == "" {
+				mode = PermissionModeDefault
+			}
+			state["mode"] = mode
+			responseBody = map[string]interface{}{"mode": mode}
 		case "apply_flag_settings":
 			for k, v := range msg.Request.Settings {
 				if v == nil {

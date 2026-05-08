@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -89,6 +90,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		model := modelOrDefault(r.GetModel(), agentProvider)
 		effort := effortOrDefault(r.GetEffort(), agentProvider)
+		permissionMode := agent.PermissionModeOrDefault(agentProvider, "")
 		extraSettings := resolveCodexExtras(mergeExtraSettings(nil, r.GetExtraSettings()), agentProvider)
 
 		// Track whether this agent was created via session resume.
@@ -100,17 +102,18 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// a post-refresh read sees the eventual worktree path. The
 		// actual worktree is created later inside runAgentStartup.
 		if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
-			ID:            agentID,
-			WorkspaceID:   r.GetWorkspaceId(),
-			WorkingDir:    plan.PlannedWorkingDir,
-			HomeDir:       svc.HomeDir,
-			Title:         title,
-			Model:         model,
-			SystemPrompt:  r.GetSystemPrompt(),
-			Effort:        effort,
-			ExtraSettings: marshalExtraSettings(extraSettings),
-			AgentProvider: agentProvider,
-			Resumed:       resumed,
+			ID:             agentID,
+			WorkspaceID:    r.GetWorkspaceId(),
+			WorkingDir:     plan.PlannedWorkingDir,
+			HomeDir:        svc.HomeDir,
+			Title:          title,
+			Model:          model,
+			SystemPrompt:   r.GetSystemPrompt(),
+			Effort:         effort,
+			PermissionMode: permissionMode,
+			ExtraSettings:  marshalExtraSettings(extraSettings),
+			AgentProvider:  agentProvider,
+			Resumed:        resumed,
 		}); err != nil {
 			slog.Error("failed to create agent", "error", err)
 			sendInternalError(sender, "failed to create agent")
@@ -133,6 +136,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			Effort:          effort,
 			WorkingDir:      plan.PlannedWorkingDir,
 			ResumeSessionID: r.GetAgentSessionId(),
+			PermissionMode:  permissionMode,
 			ExtraSettings:   extraSettings,
 			StartupTimeout:  svc.agentStartupTimeout(),
 			APITimeout:      svc.agentAPITimeout(),
@@ -640,7 +644,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 		newPermissionMode := s.GetPermissionMode()
 		if newPermissionMode == "" {
-			newPermissionMode = dbAgent.PermissionMode
+			newPermissionMode = agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode)
 		}
 		oldExtraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 		newExtraSettings := resolveCodexExtras(mergeExtraSettings(oldExtraSettings, s.GetExtraSettings()), dbAgent.AgentProvider)
@@ -1151,7 +1155,7 @@ func (svc *Context) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.Agen
 		Model:                 modelOrDefault(a.Model, a.AgentProvider),
 		Status:                status,
 		WorkingDir:            a.WorkingDir,
-		PermissionMode:        a.PermissionMode,
+		PermissionMode:        agent.PermissionModeOrDefault(a.AgentProvider, a.PermissionMode),
 		Effort:                a.Effort,
 		AgentSessionId:        a.AgentSessionID,
 		HomeDir:               a.HomeDir,
@@ -1207,12 +1211,28 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	svc.AgentStartup.setMessage(agentID, phase1Msg)
 	svc.broadcastAgentStarting(&dbAgent, phase1Msg, nil)
 	gitStatus := gitutil.GetGitStatus(ctx, agentOpts.WorkingDir)
+	// initialOpts captures the launch-time settings. applyDBSettingsToAgentOptions
+	// (called below) assigns a fresh ExtraSettings map to agentOpts, so this
+	// snapshot stays valid as long as no caller mutates agentOpts.ExtraSettings
+	// in place between here and the final settings handoff.
+	initialOpts := agentOpts
+
+	// OpenAgent returns before this goroutine starts the subprocess, so a
+	// user can change settings while the agent is still in STARTING.
+	// Re-read here so changes made during phase 0/1 affect startup itself.
+	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil {
+		dbAgent = latest
+		agentOpts = applyDBSettingsToAgentOptions(agentOpts, &dbAgent)
+	} else {
+		slog.Warn("agent startup: failed to refresh settings before start", "agent_id", agentID, "error", err)
+	}
 
 	// Phase 2: spawn the subprocess and run the init handshake.
 	phase2Msg := agentStartupLabel("Starting", agentOpts.AgentProvider)
 	svc.AgentStartup.setMessage(agentID, phase2Msg)
 	svc.broadcastAgentStarting(&dbAgent, phase2Msg, gitStatus)
 	agent.TraceStartupPhase(agentID, "before_start_agent")
+	startedOpts := agentOpts
 	confirmedSettings, startErr := svc.startAgent(ctx, agentOpts, sink)
 	agent.TraceStartupPhase(agentID, "after_start_agent")
 
@@ -1249,15 +1269,107 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 		svc.persistAgentStartupError(agentID, "")
 	}
 
-	activeDbAgent, err := svc.persistConfirmedAgentSettings(agentID, agentOpts.AgentProvider, agentOpts.Model, agentOpts.Effort, agentOpts.PermissionMode, agentOpts.ExtraSettings, confirmedSettings)
+	unlockFinalSettingsHandoff := svc.Agents.LockAgent(agentID)
+	defer unlockFinalSettingsHandoff()
+
+	// A settings update can also land while startAgent is blocked in the
+	// provider handshake, before Manager.HasAgent can accept live updates.
+	// Re-read at the final handoff, then use an atomic preserving UPDATE so
+	// late control requests cannot be overwritten by confirmed startup
+	// defaults while ACTIVE is being persisted.
+	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil {
+		dbAgent = latest
+	} else {
+		slog.Warn("agent startup: failed to refresh settings before active persist", "agent_id", agentID, "error", err)
+	}
+	latestOpts := applyDBSettingsToAgentOptions(startedOpts, &dbAgent)
+	confirmedForPersist := confirmedSettingsPreservingStartupChanges(confirmedSettings, initialOpts, latestOpts)
+
+	activeDbAgent, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(agentID, startedOpts, latestOpts, confirmedForPersist)
 	if err != nil {
 		slog.Warn("failed to persist confirmed agent settings", "agent_id", agentID, "error", err)
 		activeDbAgent = dbAgent
 	}
 
-	slog.Info("agent started", "agent_id", agentID, "model", agentOpts.Model, "permission_mode", confirmedSettings.GetPermissionMode())
+	// Apply startup-time changes after the final DB handoff. For Claude Code
+	// this means set_permission_mode is sent after the initialize/startup
+	// sequence has fully settled, while the ACTIVE broadcast still carries
+	// the preserved DB value.
+	if !agentOptionsSettingsEqual(initialOpts, latestOpts) {
+		updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{
+			Model:          latestOpts.Model,
+			Effort:         latestOpts.Effort,
+			PermissionMode: latestOpts.PermissionMode,
+			ExtraSettings:  latestOpts.ExtraSettings,
+		})
+		if !updated {
+			slog.Warn("agent startup: settings changed during startup but could not be applied live",
+				"agent_id", agentID)
+		}
+	}
+
+	slog.Info("agent started",
+		"agent_id", agentID,
+		"model", modelOrDefault(activeDbAgent.Model, activeDbAgent.AgentProvider),
+		"permission_mode", activeDbAgent.PermissionMode)
 
 	svc.broadcastAgentActive(&activeDbAgent, gitStatus)
+	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil && !agentDBSettingsEqual(activeDbAgent, latest) {
+		svc.broadcastSettingsStatusChange(latest, loadExtraSettings(latest.ExtraSettings, latest.AgentProvider))
+	} else if err != nil {
+		slog.Warn("agent startup: failed to reconcile settings after active broadcast", "agent_id", agentID, "error", err)
+	}
+}
+
+func applyDBSettingsToAgentOptions(opts agent.Options, dbAgent *db.Agent) agent.Options {
+	opts.Model = modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
+	opts.Effort = dbAgent.Effort
+	opts.PermissionMode = agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode)
+	opts.ExtraSettings = loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
+	return opts
+}
+
+func agentOptionsSettingsEqual(a, b agent.Options) bool {
+	return a.Model == b.Model &&
+		a.Effort == b.Effort &&
+		a.PermissionMode == b.PermissionMode &&
+		maps.Equal(a.ExtraSettings, b.ExtraSettings)
+}
+
+func agentDBSettingsEqual(a, b db.Agent) bool {
+	return agentOptionsSettingsEqual(
+		applyDBSettingsToAgentOptions(agent.Options{}, &a),
+		applyDBSettingsToAgentOptions(agent.Options{}, &b),
+	)
+}
+
+func confirmedSettingsPreservingStartupChanges(confirmed *leapmuxv1.AgentSettings, initial, latest agent.Options) *leapmuxv1.AgentSettings {
+	if confirmed == nil {
+		return nil
+	}
+	out, ok := proto.Clone(confirmed).(*leapmuxv1.AgentSettings)
+	if !ok {
+		return nil
+	}
+	if initial.Model != latest.Model {
+		out.Model = ""
+	}
+	if initial.Effort != latest.Effort {
+		out.Effort = ""
+	}
+	if initial.PermissionMode != latest.PermissionMode {
+		out.PermissionMode = ""
+	}
+	if len(out.ExtraSettings) > 0 {
+		extras := mergeExtraSettings(nil, out.ExtraSettings)
+		for _, key := range sortedExtraSettingKeys(initial.ExtraSettings, latest.ExtraSettings) {
+			if initial.ExtraSettings[key] != latest.ExtraSettings[key] {
+				delete(extras, key)
+			}
+		}
+		out.ExtraSettings = extras
+	}
+	return out
 }
 
 // baseAgentStatusChange fills the fields that are identical across every
@@ -1270,7 +1382,7 @@ func baseAgentStatusChange(dbAgent *db.Agent, status leapmuxv1.AgentStatus, gitS
 		Status:         status,
 		AgentSessionId: dbAgent.AgentSessionID,
 		WorkerOnline:   true,
-		PermissionMode: dbAgent.PermissionMode,
+		PermissionMode: agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode),
 		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:         dbAgent.Effort,
 		GitStatus:      gitStatus,
@@ -1410,11 +1522,14 @@ func (svc *Context) persistAgentStartupError(agentID, errMsg string) {
 	}
 }
 
-// persistConfirmedAgentSettings writes the confirmed request settings
-// and the provider-reported catalogs in a single UPDATE … RETURNING *,
-// so callers use the returned row directly instead of issuing a
-// follow-up GetAgentByID to build the ACTIVE broadcast.
-func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapmuxv1.AgentProvider, model, effort, permissionMode string, extraSettings map[string]string, confirmed *leapmuxv1.AgentSettings) (db.Agent, error) {
+type confirmedAgentSettingsValues struct {
+	model          string
+	effort         string
+	permissionMode string
+	extraSettings  map[string]string
+}
+
+func confirmedAgentSettings(provider leapmuxv1.AgentProvider, model, effort, permissionMode string, extraSettings map[string]string, confirmed *leapmuxv1.AgentSettings) confirmedAgentSettingsValues {
 	confirmedModel := model
 	if confirmed != nil && confirmed.GetModel() != "" {
 		confirmedModel = confirmed.GetModel()
@@ -1433,14 +1548,53 @@ func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapm
 	}
 	confirmedExtraSettings = resolveCodexExtras(confirmedExtraSettings, provider)
 
+	return confirmedAgentSettingsValues{
+		model:          confirmedModel,
+		effort:         confirmedEffort,
+		permissionMode: confirmedPermissionMode,
+		extraSettings:  confirmedExtraSettings,
+	}
+}
+
+// persistConfirmedAgentSettings writes the confirmed request settings
+// and the provider-reported catalogs in a single UPDATE … RETURNING *,
+// so callers use the returned row directly instead of issuing a
+// follow-up GetAgentByID to build the ACTIVE broadcast.
+func (svc *Context) persistConfirmedAgentSettings(agentID string, provider leapmuxv1.AgentProvider, model, effort, permissionMode string, extraSettings map[string]string, confirmed *leapmuxv1.AgentSettings) (db.Agent, error) {
+	values := confirmedAgentSettings(provider, model, effort, permissionMode, extraSettings, confirmed)
+
 	return svc.Queries.UpdateAgentConfirmedSettings(bgCtx(), db.UpdateAgentConfirmedSettingsParams{
-		Model:                 confirmedModel,
-		Effort:                confirmedEffort,
-		PermissionMode:        confirmedPermissionMode,
-		ExtraSettings:         marshalExtraSettings(confirmedExtraSettings),
+		Model:                 values.model,
+		Effort:                values.effort,
+		PermissionMode:        values.permissionMode,
+		ExtraSettings:         marshalExtraSettings(values.extraSettings),
 		AvailableModels:       marshalAvailableModels(svc.Agents.AvailableModels(agentID, provider)),
 		AvailableOptionGroups: marshalAvailableOptionGroups(svc.Agents.AvailableOptionGroups(agentID, provider)),
 		ID:                    agentID,
+	})
+}
+
+// persistConfirmedAgentSettingsPreservingStartedSettings is the async
+// startup variant. It lets the provider confirm settings that still
+// match the subprocess launch options, while preserving settings the user
+// changed during startup. The provider is taken from latest.AgentProvider.
+func (svc *Context) persistConfirmedAgentSettingsPreservingStartedSettings(agentID string, started, latest agent.Options, confirmed *leapmuxv1.AgentSettings) (db.Agent, error) {
+	provider := latest.AgentProvider
+	values := confirmedAgentSettings(provider, latest.Model, latest.Effort, latest.PermissionMode, latest.ExtraSettings, confirmed)
+	startedExtraSettings := resolveCodexExtras(mergeExtraSettings(nil, started.ExtraSettings), provider)
+
+	return svc.Queries.UpdateAgentConfirmedSettingsPreservingStartedSettings(bgCtx(), db.UpdateAgentConfirmedSettingsPreservingStartedSettingsParams{
+		StartedModel:            started.Model,
+		ConfirmedModel:          values.model,
+		StartedEffort:           started.Effort,
+		ConfirmedEffort:         values.effort,
+		StartedPermissionMode:   started.PermissionMode,
+		ConfirmedPermissionMode: values.permissionMode,
+		StartedExtraSettings:    marshalExtraSettings(startedExtraSettings),
+		ConfirmedExtraSettings:  marshalExtraSettings(values.extraSettings),
+		AvailableModels:         marshalAvailableModels(svc.Agents.AvailableModels(agentID, provider)),
+		AvailableOptionGroups:   marshalAvailableOptionGroups(svc.Agents.AvailableOptionGroups(agentID, provider)),
+		ID:                      agentID,
 	})
 }
 
@@ -1480,6 +1634,7 @@ func (svc *Context) handleClearContext(agentID string) {
 	// new session ID. On failure, clear it so ensureAgentRunning won't try
 	// to resume a stale session.
 	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
+	permissionMode := agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode)
 	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
 	confirmedSettings, err := svc.startAgent(bgCtx(), agent.Options{
@@ -1487,7 +1642,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		Model:          model,
 		Effort:         dbAgent.Effort,
 		WorkingDir:     dbAgent.WorkingDir,
-		PermissionMode: dbAgent.PermissionMode,
+		PermissionMode: permissionMode,
 		ExtraSettings:  extraSettings,
 		StartupTimeout: svc.agentStartupTimeout(),
 		APITimeout:     svc.agentAPITimeout(),
@@ -1514,7 +1669,7 @@ func (svc *Context) handleClearContext(agentID string) {
 		})
 		return
 	}
-	activeDbAgent, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings)
+	activeDbAgent, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, permissionMode, extraSettings, confirmedSettings)
 	if err != nil {
 		slog.Warn("clear context: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 		activeDbAgent = dbAgent
@@ -1589,6 +1744,7 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 		resumeSessionID = svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 	}
 	model := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
+	permissionMode := agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode)
 	extraSettings := loadExtraSettings(dbAgent.ExtraSettings, dbAgent.AgentProvider)
 
 	// Broadcast STARTING so the chat startup banner appears beneath any
@@ -1605,7 +1761,7 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 		Effort:          dbAgent.Effort,
 		WorkingDir:      dbAgent.WorkingDir,
 		ResumeSessionID: resumeSessionID,
-		PermissionMode:  dbAgent.PermissionMode,
+		PermissionMode:  permissionMode,
 		ExtraSettings:   extraSettings,
 		StartupTimeout:  svc.agentStartupTimeout(),
 		APITimeout:      svc.agentAPITimeout(),
@@ -1624,7 +1780,7 @@ func (svc *Context) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 		svc.broadcastAgentInactive(&dbAgent)
 		return err
 	}
-	if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, dbAgent.PermissionMode, extraSettings, confirmedSettings); err != nil {
+	if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, model, dbAgent.Effort, permissionMode, extraSettings, confirmedSettings); err != nil {
 		slog.Warn("ensureAgentRunning: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 	}
 
@@ -1644,14 +1800,23 @@ func (svc *Context) handleControlRequestMessage(agentID string, provider leapmux
 	// leave the DB stale.
 	mode, isSetMode := parseSetPermissionMode(content)
 	if isSetMode {
+		unlock := svc.Agents.LockAgent(agentID)
+		defer unlock()
+
 		svc.setAgentPermissionMode(agentID, mode)
+
+		if !svc.Agents.HasAgent(agentID) {
+			return
+		}
+
+		if err := svc.Agents.SendRawInput(agentID, []byte(content)); err != nil {
+			slog.Error("failed to send control request to agent", "agent_id", agentID, "error", err)
+		}
+		return
 	}
 
 	// If agent is not running, handle special cases locally.
 	if !svc.Agents.HasAgent(agentID) {
-		if isSetMode {
-			return
-		}
 		if agent.IsInterruptRequest(provider, content) {
 			// Agent is already gone — nothing to interrupt.
 			return
@@ -1694,7 +1859,7 @@ func (svc *Context) broadcastSettingsStatusChange(dbAgent db.Agent, extras map[s
 		Status:         leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
 		AgentSessionId: dbAgent.AgentSessionID,
 		WorkerOnline:   true,
-		PermissionMode: dbAgent.PermissionMode,
+		PermissionMode: agent.PermissionModeOrDefault(dbAgent.AgentProvider, dbAgent.PermissionMode),
 		Model:          modelOrDefault(dbAgent.Model, dbAgent.AgentProvider),
 		Effort:         dbAgent.Effort,
 		GitStatus:      gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),

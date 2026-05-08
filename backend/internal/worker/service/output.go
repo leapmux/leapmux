@@ -904,6 +904,10 @@ func (s *agentOutputSink) PersistSettingsRefresh(model, effort, permissionMode s
 		return
 	}
 
+	if permissionMode == "" {
+		permissionMode = dbAgent.PermissionMode
+	}
+
 	// Skip the DB write and the watcher broadcast when the refresh is a
 	// no-op. Refresh fires after UpdateSettings (which has already
 	// persisted the same values) and after startup-time readbacks that

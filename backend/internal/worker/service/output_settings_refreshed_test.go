@@ -89,3 +89,20 @@ func TestPersistSettingsRefresh_WritesAndBroadcastsOnChange(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "high", dbAgent.Effort, "effort should be persisted")
 }
+
+func TestPersistSettingsRefresh_PreservesPermissionModeWhenUnreported(t *testing.T) {
+	f := newRefreshTestFixture(t, db.UpdateAgentAllSettingsParams{
+		Model:          "opus",
+		Effort:         "auto",
+		PermissionMode: "plan",
+	})
+
+	// Some provider refreshes report model/effort/extras but not permission
+	// mode. Empty means "unreported"; it must not clear a user-selected mode.
+	f.sink.PersistSettingsRefresh("opus", "high", "", nil)
+
+	dbAgent, err := f.svc.Queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, "high", dbAgent.Effort)
+	assert.Equal(t, "plan", dbAgent.PermissionMode)
+}

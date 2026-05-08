@@ -47,6 +47,9 @@ type Provider interface {
 	// plugin's buildInterruptContent — the producer and parser pair live
 	// at opposite ends of the same wire.
 	IsInterrupt(content string) bool
+	// DefaultPermissionMode returns the provider-native default permission
+	// mode/approval policy stored in AgentSettings.permission_mode.
+	DefaultPermissionMode() string
 }
 
 type noopProvider struct{}
@@ -60,6 +63,8 @@ func (noopProvider) Merge(class NotificationClassification, previous, next json.
 }
 
 func (noopProvider) IsInterrupt(string) bool { return false }
+
+func (noopProvider) DefaultPermissionMode() string { return "" }
 
 var (
 	providerMu       sync.RWMutex
@@ -86,6 +91,20 @@ func ProviderFor(provider leapmuxv1.AgentProvider) Provider {
 // both return false.
 func IsInterruptRequest(provider leapmuxv1.AgentProvider, content string) bool {
 	return ProviderFor(provider).IsInterrupt(content)
+}
+
+// PermissionModeOrDefault normalizes an empty permission mode to the
+// provider-native default. It also treats the historical DB schema default
+// "default" as unset for providers whose native default is different.
+func PermissionModeOrDefault(provider leapmuxv1.AgentProvider, mode string) string {
+	defaultMode := ProviderFor(provider).DefaultPermissionMode()
+	if mode == "" {
+		return defaultMode
+	}
+	if mode == PermissionModeDefault && defaultMode != "" && defaultMode != PermissionModeDefault {
+		return defaultMode
+	}
+	return mode
 }
 
 type codexProvider struct{}
@@ -164,6 +183,8 @@ func (codexProvider) IsInterrupt(content string) bool {
 	return msg.Method == "turn/interrupt"
 }
 
+func (codexProvider) DefaultPermissionMode() string { return CodexDefaultApprovalPolicy }
+
 type claudeProvider struct{}
 
 func (claudeProvider) Classify(raw json.RawMessage) NotificationClassification {
@@ -213,6 +234,8 @@ func (claudeProvider) IsInterrupt(content string) bool {
 	return msg.Request.Subtype == "interrupt"
 }
 
+func (claudeProvider) DefaultPermissionMode() string { return PermissionModeDefault }
+
 // piProvider collapses Pi's lifecycle notifications and recognizes
 // Pi's interrupt frame. Pi emits compaction_start/end whenever a turn
 // crosses the compaction threshold; without consolidation, long sessions
@@ -260,6 +283,8 @@ func (piProvider) IsInterrupt(content string) bool {
 	return msg.Type == "abort"
 }
 
+func (piProvider) DefaultPermissionMode() string { return "" }
+
 // acpProvider recognizes ACP's `session/cancel` notification (and
 // the bare `cancel` form retained for legacy producers). Shared across all
 // ACP-based providers (Gemini, Cursor, Copilot, Kilo, OpenCode, Goose).
@@ -267,6 +292,7 @@ func (piProvider) IsInterrupt(content string) bool {
 // the no-op embedding.
 type acpProvider struct {
 	noopProvider
+	defaultPermissionMode string
 }
 
 func (acpProvider) IsInterrupt(content string) bool {
@@ -279,19 +305,18 @@ func (acpProvider) IsInterrupt(content string) bool {
 	return msg.Method == "session/cancel" || msg.Method == "cancel"
 }
 
+func (p acpProvider) DefaultPermissionMode() string {
+	return p.defaultPermissionMode
+}
+
 func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
-	acp := acpProvider{}
-	for _, p := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
-	} {
-		RegisterProvider(p, acp)
-	}
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, acpProvider{defaultPermissionMode: GeminiCLIModeDefault})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{defaultPermissionMode: CursorCLIModeAgent})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{defaultPermissionMode: CopilotCLIModeAgent})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{defaultPermissionMode: GooseCLIModeAuto})
 }

@@ -1043,6 +1043,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 		script        string
 		requested     string
 		wantAuto      bool
+		wantMode      string
 		wantModes     []string
 		wantErrSubstr string // non-empty means the call must fail; checks err contains it
 	}{
@@ -1052,6 +1053,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 			script:    "success",
 			requested: PermissionModeAuto,
 			wantAuto:  true,
+			wantMode:  PermissionModeAuto,
 			wantModes: []string{PermissionModeAuto},
 		},
 		{
@@ -1060,6 +1062,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 			script:    "error:Cannot set permission mode to auto: auto mode disabled by settings|success",
 			requested: PermissionModeAuto,
 			wantAuto:  false,
+			wantMode:  PermissionModeDefault,
 			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
 		},
 		{
@@ -1077,6 +1080,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 			script:    "success|success",
 			requested: PermissionModeDefault,
 			wantAuto:  true,
+			wantMode:  PermissionModeDefault,
 			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
 		},
 		{
@@ -1085,6 +1089,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 			script:    "error:Cannot set permission mode to auto: auto mode disabled by settings|success",
 			requested: PermissionModePlan,
 			wantAuto:  false,
+			wantMode:  PermissionModePlan,
 			wantModes: []string{PermissionModeAuto, PermissionModePlan},
 		},
 		{
@@ -1093,6 +1098,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 			script:    "error:some unrelated runtime error|success",
 			requested: PermissionModeDefault,
 			wantAuto:  false,
+			wantMode:  PermissionModeDefault,
 			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
 		},
 	}
@@ -1109,9 +1115,10 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 			require.NoError(t, err, "mockStartWithResponder")
 			defer func() { agent.Stop(); _ = agent.Wait() }()
 
-			_, err = agent.applyStartupPermissionMode(ctx, tc.requested, 2*time.Second)
+			resp, err := agent.applyStartupPermissionMode(ctx, tc.requested, 2*time.Second)
 			if tc.wantErrSubstr == "" {
 				require.NoError(t, err)
+				assert.Equal(t, tc.wantMode, resp.Mode)
 			} else {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErrSubstr)

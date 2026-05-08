@@ -1,5 +1,5 @@
 -- name: CreateAgent :exec
-INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, model, system_prompt, effort, extra_settings, agent_provider, resumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, model, system_prompt, effort, permission_mode, extra_settings, agent_provider, resumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetAgentByID :one
 SELECT * FROM agents WHERE id = ?;
@@ -56,6 +56,34 @@ UPDATE agents SET
   available_models = ?,
   available_option_groups = ?
 WHERE id = ?
+RETURNING *;
+
+-- UpdateAgentConfirmedSettingsPreservingStartedSettings is used by
+-- asynchronous startup. It persists provider-reported catalogs and
+-- confirmed settings, but only overwrites settings columns that still
+-- match the values used to start the subprocess. If the user changed a
+-- setting while startup was finishing, preserve that newer DB value.
+-- name: UpdateAgentConfirmedSettingsPreservingStartedSettings :one
+UPDATE agents SET
+  model = CASE
+    WHEN model = sqlc.arg(started_model) THEN sqlc.arg(confirmed_model)
+    ELSE model
+  END,
+  effort = CASE
+    WHEN effort = sqlc.arg(started_effort) THEN sqlc.arg(confirmed_effort)
+    ELSE effort
+  END,
+  permission_mode = CASE
+    WHEN permission_mode = sqlc.arg(started_permission_mode) THEN sqlc.arg(confirmed_permission_mode)
+    ELSE permission_mode
+  END,
+  extra_settings = CASE
+    WHEN extra_settings = sqlc.arg(started_extra_settings) THEN sqlc.arg(confirmed_extra_settings)
+    ELSE extra_settings
+  END,
+  available_models = sqlc.arg(available_models),
+  available_option_groups = sqlc.arg(available_option_groups)
+WHERE id = sqlc.arg(id)
 RETURNING *;
 
 -- name: SetAgentStartupError :exec

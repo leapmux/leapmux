@@ -472,6 +472,7 @@ func filterPermissionModeGroup(group *leapmuxv1.AvailableOptionGroup, autoAvail 
 func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	a.mu.Lock()
 	curModel, curEffort := a.model, a.effort
+	curPermissionMode := a.confirmedPermissionMode
 	curOutputStyle, curFastMode, curThinking := a.outputStyle, a.fastMode, a.alwaysThinking
 	availStyles := a.availableOutputStyles
 	a.mu.Unlock()
@@ -507,20 +508,28 @@ func (a *ClaudeCodeAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 		flagSettings[ExtraKeyAlwaysThinking] = flagSettingThinking(v)
 	}
 
-	if len(flagSettings) == 0 {
-		return true
+	if len(flagSettings) > 0 {
+		body, _ := json.Marshal(map[string]interface{}{
+			"subtype":  "apply_flag_settings",
+			"settings": flagSettings,
+		})
+		if _, err := a.sendControlAndWait(a.ctx, string(body), a.APITimeout()); err != nil {
+			slog.Error("apply_flag_settings failed", "agent_id", a.agentID, "error", err)
+			return false
+		}
+		a.refreshSettingsFromAgent(a.APITimeout())
 	}
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"subtype":  "apply_flag_settings",
-		"settings": flagSettings,
-	})
-	if _, err := a.sendControlAndWait(a.ctx, string(body), a.APITimeout()); err != nil {
-		slog.Error("apply_flag_settings failed", "agent_id", a.agentID, "error", err)
-		return false
+	if mode := s.GetPermissionMode(); mode != "" && mode != curPermissionMode {
+		resp, err := a.sendSetPermissionMode(a.ctx, mode, a.APITimeout())
+		if err != nil {
+			slog.Error("set_permission_mode failed", "agent_id", a.agentID, "mode", mode, "error", err)
+			return false
+		}
+		a.mu.Lock()
+		a.confirmedPermissionMode = resp.Mode
+		a.mu.Unlock()
 	}
-
-	a.refreshSettingsFromAgent(a.APITimeout())
 	return true
 }
 
@@ -576,7 +585,7 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 			a.alwaysThinking = AlwaysThinkingOff
 		}
 	}
-	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
+	model, effort := a.model, a.effort
 	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
 	a.mu.Unlock()
 
@@ -589,7 +598,10 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 		"alwaysThinking", thinking,
 	)
 
-	a.sink.PersistSettingsRefresh(model, effort, mode, map[string]string{
+	// get_settings does not report permission mode. Keep that field empty so
+	// the service preserves the DB value, including startup-time raw
+	// set_permission_mode changes that are applied again after startup.
+	a.sink.PersistSettingsRefresh(model, effort, "", map[string]string{
 		ExtraKeyOutputStyle:    outputStyle,
 		ExtraKeyFastMode:       fastMode,
 		ExtraKeyAlwaysThinking: thinking,
@@ -762,13 +774,8 @@ func (a *ClaudeCodeAgent) sendControlAndWait(ctx context.Context, requestBody st
 // intended state. Transient probe errors are treated as unavailable so the
 // UI does not offer a mode the agent cannot enter.
 func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, requested string, timeout time.Duration) (claudeCodeControlResult, error) {
-	setMode := func(m string) (claudeCodeControlResult, error) {
-		return a.sendControlAndWait(ctx,
-			fmt.Sprintf(`{"subtype":"set_permission_mode","mode":"%s"}`, m), timeout)
-	}
-
 	if requested == PermissionModeAuto {
-		resp, err := setMode(PermissionModeAuto)
+		resp, err := a.sendSetPermissionMode(ctx, PermissionModeAuto, timeout)
 		switch {
 		case err == nil:
 			a.setAutoModeAvailable(true)
@@ -777,13 +784,13 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 			slog.Warn("requested auto permission mode is unavailable; falling back to default",
 				"agent_id", a.agentID)
 			a.setAutoModeAvailable(false)
-			return setMode(PermissionModeDefault)
+			return a.sendSetPermissionMode(ctx, PermissionModeDefault, timeout)
 		default:
 			return claudeCodeControlResult{}, err
 		}
 	}
 
-	if _, err := setMode(PermissionModeAuto); err != nil {
+	if _, err := a.sendSetPermissionMode(ctx, PermissionModeAuto, timeout); err != nil {
 		if !isAutoModeUnavailableError(err) {
 			slog.Warn("auto-mode probe failed (transient); treating as unavailable",
 				"agent_id", a.agentID, "error", err)
@@ -792,7 +799,25 @@ func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, reques
 	} else {
 		a.setAutoModeAvailable(true)
 	}
-	return setMode(requested)
+	return a.sendSetPermissionMode(ctx, requested, timeout)
+}
+
+// sendSetPermissionMode issues set_permission_mode and falls back to the
+// requested mode when the response omits the applied mode field, so callers
+// always receive a non-empty resp.Mode on success.
+func (a *ClaudeCodeAgent) sendSetPermissionMode(ctx context.Context, mode string, timeout time.Duration) (claudeCodeControlResult, error) {
+	body, err := json.Marshal(map[string]string{
+		"subtype": "set_permission_mode",
+		"mode":    mode,
+	})
+	if err != nil {
+		return claudeCodeControlResult{}, err
+	}
+	resp, err := a.sendControlAndWait(ctx, string(body), timeout)
+	if err == nil && resp.Mode == "" {
+		resp.Mode = mode
+	}
+	return resp, err
 }
 
 // setAutoModeAvailable stores the auto-mode probe result under a.mu so
