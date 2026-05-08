@@ -16,7 +16,7 @@ vi.mock('~/lib/terminal', async () => {
   }
 })
 
-const { TerminalView, getTerminalInstance } = await import('~/components/terminal/TerminalView')
+const { TerminalView, getTerminalInstance, disposeTerminalInstance } = await import('~/components/terminal/TerminalView')
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -174,7 +174,7 @@ describe('terminalView', () => {
   // refs) and leave other tabs' instances intact. The disposal is
   // driven by TerminalView's tabs-diff effect, not by the full-unmount
   // onCleanup — a workspace switch is a separate path.
-  it('disposes a terminal instance when its tab is closed', async () => {
+  it('disposes a terminal instance when explicitly closed', async () => {
     const instanceA = makeMockTerminalInstance()
     const instanceB = makeMockTerminalInstance()
     // createTerminalInstance is called once per new terminal; return in
@@ -209,12 +209,13 @@ describe('terminalView', () => {
       expect(getTerminalInstance('dispose-test-B')).toBe(instanceB)
     })
 
-    // Close tab A by removing it from the list.
+    // Mirror the production close path: explicit dispose, then drop the
+    // tab from the prop list. With per-view ownership tracking, removing
+    // alone does not auto-dispose (the id may have moved to another tile).
+    disposeTerminalInstance('dispose-test-A')
     setTerminals([{ id: 'dispose-test-B', ...baseTab }])
 
-    await waitFor(() => {
-      expect(getTerminalInstance('dispose-test-A')).toBeUndefined()
-    })
+    expect(getTerminalInstance('dispose-test-A')).toBeUndefined()
     expect(instanceA.dispose).toHaveBeenCalledTimes(1)
     // B stays live — only the closed tab's instance should be disposed.
     expect(getTerminalInstance('dispose-test-B')).toBe(instanceB)

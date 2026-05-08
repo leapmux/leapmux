@@ -1,6 +1,6 @@
 import type { Accessor, Component, JSX } from 'solid-js'
 import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
-import type { createLayoutStore } from '~/stores/layout.store'
+import type { createLayoutStore, GridAxis } from '~/stores/layout.store'
 import type { createSectionStore } from '~/stores/section.store'
 import Plus from 'lucide-solid/icons/plus'
 import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
@@ -13,6 +13,7 @@ import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
 import { TabDragProvider } from './TabDragContext'
 import { TilingLayout } from './TilingLayout'
+import { useWindowPointerDrag } from './windowPointerDrag'
 
 const DEFAULT_SIDEBAR_PX = 250
 const MIN_SIDEBAR_PX = 250
@@ -139,6 +140,7 @@ interface DesktopLayoutProps {
   renderDragOverlay: (key: string) => JSX.Element
   renderTile: (tileId: string) => JSX.Element
   onRatioChange: (splitId: string, ratios: number[]) => void
+  onGridRatiosChange?: (gridId: string, axis: GridAxis, ratios: number[]) => void
   // Sidebar factories
   createLeftSidebar: (opts: SidebarFactoryOpts) => JSX.Element
   createRightSidebar: (opts: SidebarFactoryOpts) => JSX.Element
@@ -158,33 +160,36 @@ function useSidebarDrag(opts: {
   minWidth: number
   direction: 'left' | 'right'
 }) {
-  const onPointerDown = (e: PointerEvent) => {
+  const drag = useWindowPointerDrag()
+  return (e: PointerEvent) => {
     e.preventDefault()
     const handle = e.currentTarget as HTMLElement
-    handle.dataset.dragging = ''
     const startX = e.clientX
     const startWidth = opts.getWidth()
     const sign = opts.direction === 'left' ? 1 : -1
-
-    const onPointerMove = (ev: PointerEvent) => {
-      const delta = (ev.clientX - startX) * sign
-      opts.setWidth(Math.max(opts.minWidth, startWidth + delta))
-    }
-    const onPointerUp = () => {
-      delete handle.dataset.dragging
-      document.removeEventListener('pointermove', onPointerMove)
-      document.removeEventListener('pointerup', onPointerUp)
-      document.removeEventListener('pointercancel', onPointerUp)
-      document.body.style.removeProperty('cursor')
-      document.body.style.removeProperty('user-select')
-    }
-    document.addEventListener('pointermove', onPointerMove)
-    document.addEventListener('pointerup', onPointerUp)
-    document.addEventListener('pointercancel', onPointerUp)
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
+    let claimed = false
+    drag.start({
+      onMove: (ev) => {
+        // Claim the handle/body cursor lazily on first move so a bare click
+        // (no movement → no `onUp`) leaves no dataset/cursor/userSelect
+        // residue. The helper's `onUp` only fires when at least one move
+        // dispatched, so the cleanup symmetry holds.
+        if (!claimed) {
+          claimed = true
+          handle.dataset.dragging = ''
+          document.body.style.cursor = 'col-resize'
+          document.body.style.userSelect = 'none'
+        }
+        const delta = (ev.clientX - startX) * sign
+        opts.setWidth(Math.max(opts.minWidth, startWidth + delta))
+      },
+      onUp: () => {
+        delete handle.dataset.dragging
+        document.body.style.removeProperty('cursor')
+        document.body.style.removeProperty('user-select')
+      },
+    })
   }
-  return onPointerDown
 }
 
 export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
@@ -453,6 +458,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                   root={props.layoutStore.state.root}
                   renderTile={props.renderTile}
                   onRatioChange={props.onRatioChange}
+                  onGridRatiosChange={props.onGridRatiosChange}
                 />
                 {props.editorPanel}
               </ChatDropZone>

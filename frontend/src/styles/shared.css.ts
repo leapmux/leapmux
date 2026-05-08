@@ -33,7 +33,7 @@ export const dangerMenuItem = style({
 
 export const menuSectionHeader = style({
   fontSize: 'var(--text-8)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   color: 'var(--muted-foreground)',
   textTransform: 'uppercase',
   padding: 'var(--space-1) var(--space-3)',

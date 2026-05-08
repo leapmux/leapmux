@@ -77,12 +77,14 @@ const defaultProps = {
   tileId: 'tile-1',
   tabs: [] as any[],
   activeTabKey: null,
-  showAddButton: true,
   onSelect: noop,
   onClose: noop,
   onRename: noop as any,
-  onNewAgent: noop,
-  onNewTerminal: noop,
+  newTab: {
+    showAddButton: true,
+    onNewAgent: noop,
+    onNewTerminal: noop,
+  },
 }
 
 function makeTab(type: TabType, id: string, title?: string) {
@@ -104,7 +106,7 @@ describe('tabBar readOnly prop', () => {
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
-          availableProviders={[]}
+          newTab={{ ...defaultProps.newTab, availableProviders: [] }}
         />
       </PreferencesProvider>
     ))
@@ -212,7 +214,7 @@ describe('tabBar readOnly prop', () => {
           {...defaultProps}
           tabs={[makeTab(TabType.AGENT, 'a1', 'Agent')]}
           readOnly={true}
-          showAddButton={false}
+          newTab={{ ...defaultProps.newTab, showAddButton: false }}
         />
       </PreferencesProvider>
     ))
@@ -251,7 +253,7 @@ describe('tabBar readOnly prop', () => {
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
-          availableProviders={[]}
+          newTab={{ ...defaultProps.newTab, availableProviders: [] }}
         />
       </PreferencesProvider>
     ))
@@ -271,7 +273,7 @@ describe('tabBar readOnly prop', () => {
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
-          availableProviders={[]}
+          newTab={{ ...defaultProps.newTab, availableProviders: [] }}
         />
       </PreferencesProvider>
     ))
@@ -290,5 +292,85 @@ describe('tabBar readOnly prop', () => {
     expect(menuItem).toHaveTextContent('Expand agent thoughts')
     expect(menuItem).toHaveTextContent('✓')
     expect(getBrowserPrefs().expandAgentThoughts).toBeUndefined()
+  })
+})
+
+describe('tabBar tileActions for grid', () => {
+  it('shows Make a 2×2 grid in the micro overflow when canMakeGrid is true', () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tileActions={{
+            canSplit: true,
+            canMakeGrid: true,
+            closeMode: { kind: 'tile' },
+            onSplit: noop,
+            onMakeGrid: noop,
+            onClose: noop,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('make-grid-menu-item')).toBeInTheDocument()
+  })
+
+  it('hides the make-grid menu item when canMakeGrid is false', () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tileActions={{
+            canSplit: true,
+            canMakeGrid: false,
+            closeMode: { kind: 'tile' },
+            onSplit: noop,
+            onMakeGrid: noop,
+            onClose: noop,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.queryByTestId('make-grid-menu-item')).toBeNull()
+  })
+
+  it('renders Close grid label for closeMode=grid', () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tileActions={{
+            canSplit: false,
+            canMakeGrid: false,
+            closeMode: { kind: 'grid', gridId: 'g1' },
+            onSplit: noop,
+            onMakeGrid: noop,
+            onClose: noop,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('close-grid-menu-item')).toHaveTextContent(/Close grid/)
+    expect(screen.queryByTestId('close-tile-menu-item')).toBeNull()
+  })
+
+  it('hides the tile-close menu item entirely for closeMode=none', () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tileActions={{
+            canSplit: false,
+            canMakeGrid: false,
+            closeMode: { kind: 'none' },
+            onSplit: noop,
+            onMakeGrid: noop,
+            onClose: noop,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.queryByTestId('close-grid-menu-item')).toBeNull()
+    expect(screen.queryByTestId('close-tile-menu-item')).toBeNull()
   })
 })

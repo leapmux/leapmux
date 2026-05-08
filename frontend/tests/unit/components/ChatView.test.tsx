@@ -6,31 +6,14 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObservers } from '../helpers/resizeObserverStub'
 
 const A_TXT_RE = /a\.txt/
 const B_TXT_RE = /b\.txt/
-const resizeObserverCallbacks: ResizeObserverCallback[] = []
 
 // jsdom does not provide ResizeObserver or Worker
 beforeAll(() => {
-  globalThis.ResizeObserver = class {
-    private callback: ResizeObserverCallback
-
-    constructor(callback: ResizeObserverCallback) {
-      this.callback = callback
-      resizeObserverCallbacks.push(callback)
-    }
-
-    observe() {}
-
-    unobserve() {}
-
-    disconnect() {
-      const idx = resizeObserverCallbacks.indexOf(this.callback)
-      if (idx >= 0)
-        resizeObserverCallbacks.splice(idx, 1)
-    }
-  } as unknown as typeof ResizeObserver
+  installControllableResizeObserver()
   globalThis.Worker ??= class {
     onmessage: ((e: MessageEvent) => void) | null = null
     onerror: ((e: ErrorEvent) => void) | null = null
@@ -41,16 +24,6 @@ beforeAll(() => {
     dispatchEvent() { return false }
   } as unknown as typeof Worker
 })
-
-async function flushAnimationFrame() {
-  await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
-}
-
-async function triggerResizeObservers() {
-  for (const callback of [...resizeObserverCallbacks])
-    callback([], {} as ResizeObserver)
-  await flushAnimationFrame()
-}
 
 function makeMessage(role: string, text: string, id: string = '1'): AgentChatMessage {
   const content = JSON.stringify({

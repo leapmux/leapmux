@@ -115,4 +115,184 @@ describe('confirmDialog', () => {
     ))
     expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalled()
   })
+
+  it('forwards data-testid to the dialog and confirm/cancel test-ids to their buttons', () => {
+    render(() => (
+      <ConfirmDialog
+        title="Test"
+        data-testid="my-dialog"
+        cancelTestId="my-cancel"
+        confirmTestId="my-confirm"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      >
+        <p>Message</p>
+      </ConfirmDialog>
+    ))
+    expect(screen.getByTestId('my-dialog')).toBeDefined()
+    expect(screen.getByTestId('my-cancel')).toBeDefined()
+    expect(screen.getByTestId('my-confirm')).toBeDefined()
+  })
+
+  it('non-danger primary submits via Enter (form submit handler)', () => {
+    const onConfirm = vi.fn()
+    render(() => (
+      <ConfirmDialog
+        title="Test"
+        confirmTestId="my-confirm"
+        data-testid="my-dialog"
+        onConfirm={onConfirm}
+        onCancel={() => {}}
+      >
+        <p>Message</p>
+      </ConfirmDialog>
+    ))
+    const form = screen.getByTestId('my-dialog').querySelector('form')!
+    fireEvent.submit(form)
+    expect(onConfirm).toHaveBeenCalledOnce()
+  })
+
+  it('danger primary does NOT fire on form submit (ConfirmButton must arm)', () => {
+    const onConfirm = vi.fn()
+    render(() => (
+      <ConfirmDialog
+        title="Test"
+        confirmLabel="Delete"
+        confirmTestId="my-confirm"
+        data-testid="my-dialog"
+        danger
+        onConfirm={onConfirm}
+        onCancel={() => {}}
+      >
+        <p>Message</p>
+      </ConfirmDialog>
+    ))
+    const form = screen.getByTestId('my-dialog').querySelector('form')!
+    fireEvent.submit(form)
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+
+  it('busy disables form submit (Enter cannot bypass)', () => {
+    const onConfirm = vi.fn()
+    render(() => (
+      <ConfirmDialog
+        title="Test"
+        data-testid="my-dialog"
+        busy
+        onConfirm={onConfirm}
+        onCancel={() => {}}
+      >
+        <p>Message</p>
+      </ConfirmDialog>
+    ))
+    const form = screen.getByTestId('my-dialog').querySelector('form')!
+    fireEvent.submit(form)
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+
+  describe('secondary slot', () => {
+    it('renders the secondary button between cancel and primary', () => {
+      render(() => (
+        <ConfirmDialog
+          title="Test"
+          confirmLabel="Convert"
+          confirmTestId="my-confirm"
+          cancelTestId="my-cancel"
+          data-testid="my-dialog"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+          secondary={{
+            label: 'Close all',
+            testId: 'my-secondary',
+            onClick: () => {},
+          }}
+        >
+          <p>Message</p>
+        </ConfirmDialog>
+      ))
+      const footer = screen.getByTestId('my-dialog').querySelector('footer')!
+      const labels = [...footer.querySelectorAll('button')].map(b => b.textContent?.trim())
+      expect(labels).toEqual(['Cancel', 'Close all', 'Convert'])
+      expect(screen.getByTestId('my-secondary')).toBeDefined()
+    })
+
+    it('non-danger secondary fires on a single click', () => {
+      const onSecondary = vi.fn()
+      render(() => (
+        <ConfirmDialog
+          title="Test"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+          secondary={{
+            label: 'Close all',
+            testId: 'my-secondary',
+            onClick: onSecondary,
+          }}
+        >
+          <p>Message</p>
+        </ConfirmDialog>
+      ))
+      fireEvent.click(screen.getByTestId('my-secondary'))
+      expect(onSecondary).toHaveBeenCalledOnce()
+    })
+
+    it('danger secondary requires two clicks (ConfirmButton arming)', () => {
+      const onSecondary = vi.fn()
+      render(() => (
+        <ConfirmDialog
+          title="Test"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+          secondary={{
+            label: 'Close all',
+            testId: 'my-secondary',
+            onClick: onSecondary,
+            danger: true,
+          }}
+        >
+          <p>Message</p>
+        </ConfirmDialog>
+      ))
+      const btn = screen.getByTestId('my-secondary')
+      fireEvent.click(btn)
+      expect(onSecondary).not.toHaveBeenCalled()
+      fireEvent.click(btn)
+      expect(onSecondary).toHaveBeenCalledOnce()
+    })
+
+    it('busy disables the secondary button', () => {
+      render(() => (
+        <ConfirmDialog
+          title="Test"
+          busy
+          onConfirm={() => {}}
+          onCancel={() => {}}
+          secondary={{
+            label: 'Close all',
+            testId: 'my-secondary',
+            onClick: () => {},
+            danger: true,
+          }}
+        >
+          <p>Message</p>
+        </ConfirmDialog>
+      ))
+      expect(screen.getByTestId('my-secondary')).toBeDisabled()
+    })
+
+    it('omits the secondary button when no secondary prop is provided', () => {
+      render(() => (
+        <ConfirmDialog
+          title="Test"
+          data-testid="solo-dialog"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        >
+          <p>Message</p>
+        </ConfirmDialog>
+      ))
+      const footer = screen.getByTestId('solo-dialog').querySelector('footer')!
+      expect(footer.querySelectorAll('button')).toHaveLength(2)
+    })
+  })
 })

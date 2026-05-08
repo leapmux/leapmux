@@ -23,7 +23,7 @@ export const infoRow = style({
 })
 
 export const infoLabel = style({
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
   color: 'var(--muted-foreground)',
   minWidth: '100px',
 })

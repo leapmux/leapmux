@@ -22,7 +22,6 @@
     "@bufbuild/protobuf": "^2.12.0",
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-web": "^2.1.1",
-    "@corvu/resizable": "^0.2.5",
     "@knadh/oat": "^0.6.1",
     "@milkdown/core": "^7.20.0",
     "@milkdown/ctx": "^7.20.0",

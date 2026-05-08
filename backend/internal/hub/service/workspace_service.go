@@ -10,6 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/layout"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/util/validate"
@@ -153,12 +154,23 @@ func (s *WorkspaceService) saveWorkspaceLayoutEntry(
 	ctx context.Context,
 	st store.Store,
 	workspaceID string,
-	layout *leapmuxv1.LayoutNode,
+	layoutNode *leapmuxv1.LayoutNode,
 	floatingWindows []*leapmuxv1.FloatingWindow,
 	tabs []*leapmuxv1.WorkspaceTab,
 	marshaler protojson.MarshalOptions,
 ) error {
-	stored, err := serializeLayoutJSON(marshaler, layout, floatingWindows)
+	if err := layout.Validate(layoutNode); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid layout: %w", err))
+	}
+	for i, fw := range floatingWindows {
+		// Floating windows have historically allowed unlimited nesting depth;
+		// keep that compatibility while still enforcing structural checks.
+		if err := layout.ValidateWithMaxDepth(fw.GetLayout(), layout.UnlimitedDepth); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid floating window %d layout: %w", i, err))
+		}
+	}
+
+	stored, err := serializeLayoutJSON(marshaler, layoutNode, floatingWindows)
 	if err != nil {
 		return err
 	}

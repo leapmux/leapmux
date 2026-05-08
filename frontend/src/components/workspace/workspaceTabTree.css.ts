@@ -57,7 +57,7 @@ export const leafActions = style({
 export const tabRenameInput = style({
   'flex': 1,
   'fontSize': 'var(--text-7)',
-  'fontWeight': 400,
+  'fontWeight': 'var(--font-normal)',
   'color': 'var(--foreground)',
   'backgroundColor': 'var(--background)',
   'border': '1px solid var(--ring)',

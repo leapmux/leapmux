@@ -123,7 +123,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   )
 
   return (
-    <Dialog title="New Terminal" tall wide busy={submitting.loading()} onClose={() => props.onClose()}>
+    <Dialog title="New terminal" tall wide busy={submitting.loading()} onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <section>
           <div class="vstack gap-4">

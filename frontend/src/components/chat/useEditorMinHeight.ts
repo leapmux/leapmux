@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
+import { useWindowPointerDrag } from '~/components/shell/windowPointerDrag'
 import {
   clampEditorHeight,
   clearEditorMinHeight,
@@ -24,7 +25,7 @@ export interface UseEditorMinHeightResult {
   editorMinHeight: Accessor<number | undefined>
   isDragging: Accessor<boolean>
   maxEditorHeight: () => number
-  handleResizeStart: (e: MouseEvent) => void
+  handleResizeStart: (e: PointerEvent) => void
   resetEditorHeight: () => void
 }
 
@@ -36,10 +37,15 @@ export interface UseEditorMinHeightResult {
 export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMinHeightResult {
   const [isDragging, setIsDragging] = createSignal(false)
   const [editorMinHeightSignal, setEditorMinHeightSignal] = createSignal<number | undefined>(undefined)
-  // Holds the in-flight drag teardown so component unmount mid-drag still
-  // detaches the document-level mousemove/mouseup listeners.
-  let activeDragCleanup: (() => void) | null = null
-  onCleanup(() => activeDragCleanup?.())
+  // Single-controller drag: auto-detaches document move listeners on
+  // component unmount so a drag in flight at unmount time can't leak
+  // listeners. The pointerup cleanup listener is tracked separately below.
+  const drag = useWindowPointerDrag()
+  // Active pointerup/pointercancel cleanup for the in-flight drag, if any.
+  // Tracked at hook scope so unmount mid-drag detaches it explicitly — the
+  // `useWindowPointerDrag` helper only owns its own pointermove listener.
+  let detachFinish: (() => void) | null = null
+  onCleanup(() => detachFinish?.())
 
   // Load per-agent height when agentId changes.
   createEffect(on(opts.agentId, (agentId) => {
@@ -63,7 +69,7 @@ export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMi
     return h > 0 ? Math.floor(h * 0.5) : 200
   }
 
-  const handleResizeStart = (e: MouseEvent) => {
+  const handleResizeStart = (e: PointerEvent) => {
     e.preventDefault()
     setIsDragging(true)
     const startY = e.clientY
@@ -77,27 +83,34 @@ export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMi
       ?? EDITOR_MIN_HEIGHT
     document.body.style.cursor = 'row-resize'
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const delta = startY - moveEvent.clientY
-      setEditorMinHeight(clampEditorHeight(startHeight + delta, maxHeight))
-    }
-
-    const onMouseUp = () => {
+    // The helper handles move dispatching + auto-cleanup on unmount, but
+    // its `onUp` is suppressed on bare clicks (no move). The original
+    // behavior persisted unconditionally on mouseup, so we run the
+    // cleanup/persist from a paired pointerup listener instead of the
+    // helper's `onUp`.
+    drag.start({
+      onMove: (moveEvent) => {
+        const delta = startY - moveEvent.clientY
+        setEditorMinHeight(clampEditorHeight(startHeight + delta, maxHeight))
+      },
+    })
+    detachFinish?.()
+    const finish = () => {
+      detachFinish = null
+      document.removeEventListener('pointerup', finish)
+      document.removeEventListener('pointercancel', finish)
       setIsDragging(false)
-      activeDragCleanup?.()
+      document.body.style.cursor = ''
       const id = opts.agentId()
       if (id)
         persistEditorMinHeight(id, editorMinHeightSignal())
     }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-    activeDragCleanup = () => {
-      document.body.style.cursor = ''
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-      activeDragCleanup = null
+    detachFinish = () => {
+      document.removeEventListener('pointerup', finish)
+      document.removeEventListener('pointercancel', finish)
     }
+    document.addEventListener('pointerup', finish, { once: true })
+    document.addEventListener('pointercancel', finish, { once: true })
   }
 
   const resetEditorHeight = () => {

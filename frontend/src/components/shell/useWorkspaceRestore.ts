@@ -15,7 +15,7 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
-import { preserveNonEmptyGitFields, protoToTerminalTab, protoToTerminalTabFields, tabKey } from '~/stores/tab.store'
+import { parseTabKey, preserveNonEmptyGitFields, protoToTerminalTab, protoToTerminalTabFields, tabKey } from '~/stores/tab.store'
 import { fanOutTabsToWorkers } from './workspaceTabHydration'
 
 const log = createLogger('restore')
@@ -85,9 +85,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     // A transient BatchGetGitStatus failure on the worker surfaces as empty
     // gitBranch/gitOriginUrl. Keep the tab's previous values in that case so
     // the sidebar grouping doesn't flicker out until the next reload.
-    const previous = tabStore.state.tabs.find(
-      t => t.type === TabType.TERMINAL && t.id === term.terminalId,
-    )
+    const previous = tabStore.getTerminalTab(term.terminalId)
     tabStore.updateTab(TabType.TERMINAL, term.terminalId, preserveNonEmptyGitFields(fields, previous))
   }
 
@@ -133,12 +131,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
 
       // Activate the tab the user clicked in the sidebar (if any).
       const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
-      if (savedKey && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
-        const parts = savedKey.split(':')
-        const tabType = Number(parts[0]) as TabType
-        const tabId = parts[1]
+      const parsedSaved = savedKey ? parseTabKey(savedKey) : null
+      if (savedKey && parsedSaved && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
+        const { type: tabType, id: tabId } = parsedSaved
         tabStore.setActiveTab(tabType, tabId)
-        const restoredTab = tabStore.state.tabs.find(t => tabKey(t) === savedKey)
+        const restoredTab = tabStore.getTabByKey(savedKey)
         if (restoredTab?.tileId) {
           tabStore.setActiveTabForTile(restoredTab.tileId, tabType, tabId)
         }
@@ -347,9 +344,9 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
         if (tileActiveJson) {
           const tileActiveTabs = JSON.parse(tileActiveJson) as Record<string, string>
           for (const [tileId, key] of Object.entries(tileActiveTabs)) {
-            if (tabStore.state.tabs.some(t => tabKey(t) === key && t.tileId === tileId)) {
-              const parts = key.split(':')
-              tabStore.setActiveTabForTile(tileId, Number(parts[0]) as TabType, parts[1])
+            const parsed = parseTabKey(key)
+            if (parsed && tabStore.state.tabs.some(t => tabKey(t) === key && t.tileId === tileId)) {
+              tabStore.setActiveTabForTile(tileId, parsed.type, parsed.id)
             }
           }
         }
@@ -362,12 +359,11 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       tabStore.initMissingTileActiveTabs()
 
       const savedKey = sessionStorage.getItem(`leapmux:activeTab:${activeId}`)
-      if (savedKey && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
-        const parts = savedKey.split(':')
-        const tabType = Number(parts[0]) as TabType
-        const tabId = parts[1]
+      const parsedSaved = savedKey ? parseTabKey(savedKey) : null
+      if (savedKey && parsedSaved && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
+        const { type: tabType, id: tabId } = parsedSaved
         tabStore.setActiveTab(tabType, tabId)
-        const restoredTab = tabStore.state.tabs.find(t => tabKey(t) === savedKey)
+        const restoredTab = tabStore.getTabByKey(savedKey)
         if (restoredTab?.tileId) {
           tabStore.setActiveTabForTile(restoredTab.tileId, tabType, tabId)
         }

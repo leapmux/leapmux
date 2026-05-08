@@ -38,7 +38,7 @@ export const sectionChevronOpen = style([sectionChevron, {
 export const sectionName = style({
   flex: 1,
   fontSize: 'var(--text-8)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   color: 'var(--muted-foreground)',
   textTransform: 'uppercase',
   letterSpacing: '0.5px',
@@ -145,7 +145,7 @@ export const itemLabel = style({
 
 export const itemTitle = style({
   fontSize: 'var(--text-7)',
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
   color: 'var(--foreground)',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -156,7 +156,7 @@ export const itemTitle = style({
 export const itemRenameInput = style({
   'flex': 1,
   'fontSize': 'var(--text-7)',
-  'fontWeight': 400,
+  'fontWeight': 'var(--font-normal)',
   'color': 'var(--foreground)',
   'backgroundColor': 'var(--background)',
   'border': '1px solid var(--ring)',
@@ -190,7 +190,7 @@ globalStyle(`${item}${itemDropTarget}:hover > ${sidebarActions} ${menuTrigger}`,
 export const sharedBadge = style({
   fontSize: 'var(--text-8)',
   color: 'var(--primary)',
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
   flexShrink: 0,
 })
 
@@ -210,7 +210,7 @@ export const dragOverlay = style({
   padding: 'var(--space-1) var(--space-3)',
   paddingLeft: 'var(--space-4)',
   fontSize: 'var(--text-7)',
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
   color: 'var(--foreground)',
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',

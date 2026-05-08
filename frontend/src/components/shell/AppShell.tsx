@@ -6,7 +6,7 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Tab } from '~/stores/tab.store'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
-import { createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { listTabsForWorkspace } from '~/api/listTabsBatcher'
 import { apiLoadingTimeoutMs } from '~/api/transport'
@@ -23,7 +23,6 @@ import { usePreferences } from '~/context/PreferencesContext'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
 import { HubControlEvent } from '~/generated/leapmux/v1/channel_pb'
-import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -33,10 +32,11 @@ import { useShortcuts } from '~/hooks/useShortcuts'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { createIdentityCache } from '~/lib/identityCache'
+import { createImperativeRef } from '~/lib/imperativeRef'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
-import { detectFlavor, parentDirectory, relativeUnder } from '~/lib/paths'
+import { parentDirectory } from '~/lib/paths'
 import { printConsoleBanner } from '~/lib/systemInfo'
 import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -44,7 +44,7 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
-import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
+import { createLayoutStore, firstLeafId } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { createTabStore, isTabReadyForGitStatus, preserveNonEmptyGitFields, protoToTerminalTab, tabKey } from '~/stores/tab.store'
 import { createTunnelStore } from '~/stores/tunnel.store'
@@ -58,8 +58,11 @@ import { CustomTitlebar } from './CustomTitlebar'
 import * as titlebarStyles from './CustomTitlebar.css'
 import { DesktopLayout } from './DesktopLayout'
 import { FloatingWindowLayer } from './FloatingWindowLayer'
+import { GridPopoverHostProvider } from './GridPopoverHost'
 import { createMobileSidebarToggles, MobileLayout } from './MobileLayout'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
+import { syncGitStatusToTabs } from './syncGitStatusToTabs'
+import { focusTile as focusTileShared, removeEmptyFloatingWindow } from './tileLifecycle'
 import { createTileRenderer } from './TileRenderer'
 import { useAgentOperations } from './useAgentOperations'
 import { useTabOperations } from './useTabOperations'
@@ -381,74 +384,7 @@ export const AppShell: ParentComponent = (props) => {
     },
   ))
 
-  // Sync git file status store to tab-level diff stats so the workspace
-  // tab tree stays consistent with the directory tree after refreshes.
-  // Use untrack for tab/agent reads so this effect only re-runs when the
-  // git store changes — not when tabs change due to a workspace switch,
-  // which would apply stale git data from the previous workspace.
-  //
-  // Why this pushes into tab fields instead of deriving via createMemo:
-  // downstream consumers (WorkspaceTabTree, AppShellDialogs) read the
-  // diff stats off Tab directly via diffStatsFromTabFields, so moving
-  // derivation to a memo would force every consumer to take a dependency
-  // on gitFileStatusStore. The tabAlreadyMatches guard below already
-  // suppresses no-op writes, which is the real cost to avoid.
-  createEffect(() => {
-    const files = gitFileStatusStore.state.files
-    const repoRoot = gitFileStatusStore.state.repoRoot
-    const originUrl = gitFileStatusStore.state.originUrl
-    const currentBranch = gitFileStatusStore.state.currentBranch
-    if (!repoRoot)
-      return
-    let added = 0
-    let deleted = 0
-    let untracked = 0
-    for (const f of files) {
-      if (f.unstagedStatus === GitFileStatusCode.UNTRACKED) {
-        untracked++
-      }
-      else {
-        added += f.linesAdded + f.stagedLinesAdded
-        deleted += f.linesDeleted + f.stagedLinesDeleted
-      }
-    }
-    const gitFields = {
-      gitDiffAdded: added,
-      gitDiffDeleted: deleted,
-      gitDiffUntracked: untracked,
-      gitOriginUrl: originUrl || undefined,
-      gitBranch: currentBranch || undefined,
-    }
-    const tabAlreadyMatches = (tab: Tab): boolean =>
-      tab.gitDiffAdded === gitFields.gitDiffAdded
-      && tab.gitDiffDeleted === gitFields.gitDiffDeleted
-      && tab.gitDiffUntracked === gitFields.gitDiffUntracked
-      && tab.gitOriginUrl === gitFields.gitOriginUrl
-      && tab.gitBranch === gitFields.gitBranch
-    const rootFlavor = detectFlavor(repoRoot)
-    for (const tab of untrack(() => tabStore.state.tabs)) {
-      if (tab.type === TabType.AGENT) {
-        const agent = untrack(() => agentStore.getById(tab.id))
-        if (!agent?.workingDir)
-          continue
-        if (relativeUnder(agent.workingDir, repoRoot, rootFlavor) === null)
-          continue
-        if (tabAlreadyMatches(tab))
-          continue
-        tabStore.updateTab(TabType.AGENT, tab.id, gitFields)
-      }
-      else if (tab.type === TabType.TERMINAL) {
-        const workingDir = tab.workingDir
-        if (!workingDir)
-          continue
-        if (relativeUnder(workingDir, repoRoot, rootFlavor) === null)
-          continue
-        if (tabAlreadyMatches(tab))
-          continue
-        tabStore.updateTab(TabType.TERMINAL, tab.id, gitFields)
-      }
-    }
-  })
+  syncGitStatusToTabs({ gitFileStatusStore, tabStore, agentStore })
 
   // Get working directory and home directory from the MRU agent tab
   const getMruAgentContext = (): Pick<TabContext, 'workingDir' | 'homeDir'> => {
@@ -464,12 +400,13 @@ export const AppShell: ParentComponent = (props) => {
   const [leftSidebarVisible, setLeftSidebarVisible] = createSignal(true)
   const [rightSidebarVisible, setRightSidebarVisible] = createSignal(true)
 
-  // Mutable refs for editor/scroll callbacks
-  const toggleLeftSidebarRef: { current: (() => void) | undefined } = { current: undefined }
-  const toggleRightSidebarRef: { current: (() => void) | undefined } = { current: undefined }
-  const focusEditorRef: { current: (() => void) | undefined } = { current: undefined }
-  const getScrollStateRef: { current: (() => { distFromBottom: number, atBottom: boolean } | undefined) | undefined } = { current: undefined }
-  const forceScrollToBottomRef: { current: (() => void) | undefined } = { current: undefined }
+  // Imperative refs for editor/scroll/sidebar callbacks. Each child
+  // registers its impl via `.set(fn)`; readers invoke via `ref()?.()`.
+  const toggleLeftSidebarRef = createImperativeRef<() => void>()
+  const toggleRightSidebarRef = createImperativeRef<() => void>()
+  const focusEditorRef = createImperativeRef<() => void>()
+  const getScrollStateRef = createImperativeRef<() => { distFromBottom: number, atBottom: boolean } | undefined>()
+  const forceScrollToBottomRef = createImperativeRef<() => void>()
   const [centerPanelHeight, setCenterPanelHeight] = createSignal(0)
 
   // Tab persistence (layout save, sessionStorage effects)
@@ -499,8 +436,8 @@ export const AppShell: ParentComponent = (props) => {
     setShowNewAgentDialog,
     setNewAgentLoadingProvider,
     persistLayout,
-    focusEditor: () => focusEditorRef.current?.(),
-    forceScrollToBottom: () => forceScrollToBottomRef.current?.(),
+    focusEditor: () => focusEditorRef()?.(),
+    forceScrollToBottom: () => forceScrollToBottomRef()?.(),
   })
 
   // Terminal operations hook
@@ -528,8 +465,8 @@ export const AppShell: ParentComponent = (props) => {
     termOps,
     activeTab: () => activeTab() ?? undefined,
     getCurrentTabContext,
-    focusEditor: () => focusEditorRef.current?.(),
-    getScrollState: () => getScrollStateRef.current?.(),
+    focusEditor: () => focusEditorRef()?.(),
+    getScrollState: () => getScrollStateRef()?.(),
     setFileTreePath,
   })
   // Bind the closing-agent check now that tabOps is available.
@@ -657,12 +594,7 @@ export const AppShell: ParentComponent = (props) => {
   // Tile drag-and-drop
   const tileDrag = useTileDragDrop({ tabStore, layoutStore, floatingWindowStore, persistLayout })
 
-  const focusTile = (tileId: string) => {
-    const windowId = floatingWindowStore.getWindowForTile(tileId)
-    if (windowId)
-      floatingWindowStore.setFocusedTile(windowId, tileId)
-    layoutStore.setFocusedTile(tileId)
-  }
+  const focusTile = (tileId: string) => focusTileShared(layoutStore, floatingWindowStore, tileId)
 
   // --- Floating window tab movement operations ---
   const handleDetachTab = (tab: Tab) => {
@@ -671,11 +603,11 @@ export const AppShell: ParentComponent = (props) => {
     tabStore.moveTabToTile(tabKey(tab), tileId)
     tabStore.setActiveTabForTile(tileId, tab.type, tab.id)
     // Close the source tile if it's now empty and the main layout has multiple tiles
-    if (sourceTileId && tabStore.getTabsForTile(sourceTileId).length === 0) {
-      const mainTileIds = layoutStore.getAllTileIds()
-      if (mainTileIds.length > 1) {
-        layoutStore.closeTile(sourceTileId)
-      }
+    if (sourceTileId
+      && tabStore.getTabsForTile(sourceTileId).length === 0
+      && layoutStore.hasMultipleTiles()) {
+      layoutStore.closeTile(sourceTileId)
+      tabStore.cleanupTile(sourceTileId)
     }
     focusTile(tileId)
     persistLayout()
@@ -683,27 +615,17 @@ export const AppShell: ParentComponent = (props) => {
 
   const handleAttachTab = (tab: Tab) => {
     const sourceTileId = tab.tileId
-    if (!sourceTileId)
+    if (!sourceTileId || !floatingWindowStore.getWindowForTile(sourceTileId))
       return
 
-    const sourceWindowId = floatingWindowStore.getWindowForTile(sourceTileId)
-    if (!sourceWindowId)
-      return
-
-    const targetTileId = layoutStore.getAllTileIds()[0]
+    const targetTileId = firstLeafId(layoutStore.state.root)
     if (!targetTileId)
       return
 
     tabStore.moveTabToTile(tabKey(tab), targetTileId)
     tabStore.setActiveTabForTile(targetTileId, tab.type, tab.id)
     layoutStore.setFocusedTile(targetTileId)
-    floatingWindowStore.removeIfEmpty(
-      sourceWindowId,
-      tId => tabStore.getTabsForTile(tId),
-      layoutStore.focusedTileId(),
-      tId => layoutStore.setFocusedTile(tId),
-      layoutStore.getAllTileIds(),
-    )
+    removeEmptyFloatingWindow(layoutStore, floatingWindowStore, tabStore, sourceTileId)
     persistLayout()
   }
 
@@ -716,27 +638,6 @@ export const AppShell: ParentComponent = (props) => {
       handleAttachTab(tab)
     else
       handleDetachTab(tab)
-  }
-
-  const handleCloseFloatingWindow = (windowId: string) => {
-    const tileIds = floatingWindowStore.getWindowTileIds(windowId)
-    // Close all tabs in the window
-    for (const tId of tileIds) {
-      const tileTabs = tabStore.getTabsForTile(tId)
-      for (const t of tileTabs) {
-        void tabOps.handleTabClose(t)
-      }
-    }
-    const windowTileIdSet = new Set(tileIds)
-    floatingWindowStore.removeWindow(windowId)
-    // Reset focus to a main layout tile if it was on the removed window
-    if (windowTileIdSet.has(layoutStore.focusedTileId())) {
-      const mainTileIds = layoutStore.getAllTileIds()
-      if (mainTileIds.length > 0) {
-        layoutStore.setFocusedTile(mainTileIds[0])
-      }
-    }
-    persistLayout()
   }
 
   const handleActivateFloatingWindow = (windowId: string) => {
@@ -765,7 +666,7 @@ export const AppShell: ParentComponent = (props) => {
 
     let tab: Tab | undefined
     if (isSourceActive) {
-      tab = tabStore.state.tabs.find(t => tabKey(t) === draggedKey)
+      tab = tabStore.getTabByKey(draggedKey)
     }
     else {
       const sourceSnap = registry.get(resolvedSourceWsId)
@@ -789,21 +690,8 @@ export const AppShell: ParentComponent = (props) => {
     }
 
     // If the source floating window is now empty, remove it.
-    if (isSourceActive) {
-      const srcTileId = tab.tileId
-      if (srcTileId) {
-        const srcWindowId = floatingWindowStore.getWindowForTile(srcTileId)
-        if (srcWindowId) {
-          floatingWindowStore.removeIfEmpty(
-            srcWindowId,
-            tId => tabStore.getTabsForTile(tId),
-            layoutStore.focusedTileId(),
-            tId => layoutStore.setFocusedTile(tId),
-            layoutStore.getAllTileIds(),
-          )
-        }
-      }
-    }
+    if (isSourceActive)
+      removeEmptyFloatingWindow(layoutStore, floatingWindowStore, tabStore, tab.tileId)
 
     if (isTargetActive) {
       // Use the explicit target tile if provided (e.g. sidebar tab dropped on
@@ -832,10 +720,13 @@ export const AppShell: ParentComponent = (props) => {
         tabsLoaded: false,
       }
 
-      // Use a valid tileId from the target workspace's layout.
-      const targetTileIds = getAllTileIds(targetSnap.layout.root)
-      const targetTileId = targetSnap.layout.focusedTileId ?? targetTileIds[0] ?? ''
-      const newTab = { ...tab, tileId: targetTileId }
+      // Honor the caller-provided tile when given (sidebar drop on a specific
+      // tile); otherwise fall back to the snapshot's focused tile / first leaf.
+      const snapTileId = targetTileId
+        ?? targetSnap.layout.focusedTileId
+        ?? firstLeafId(targetSnap.layout.root)
+        ?? ''
+      const newTab = { ...tab, tileId: snapTileId }
       const key = tabKey(newTab)
       const movedAgent = tab.type === TabType.AGENT
         ? agentStore.getById(tab.id)
@@ -848,8 +739,8 @@ export const AppShell: ParentComponent = (props) => {
         tabs: [...targetSnap.tabs, newTab],
         activeTabKey: key,
         mruOrder: [key, ...(targetSnap.mruOrder ?? [])],
-        tileActiveTabKeys: targetTileId
-          ? { ...(targetSnap.tileActiveTabKeys ?? {}), [targetTileId]: key }
+        tileActiveTabKeys: snapTileId
+          ? { ...(targetSnap.tileActiveTabKeys ?? {}), [snapTileId]: key }
           : targetSnap.tileActiveTabKeys,
         agents: nextAgents,
       })
@@ -901,15 +792,15 @@ export const AppShell: ParentComponent = (props) => {
           const existingKeys = new Set(targetSnap.tabs.map(t => tabKey(t)))
           const extraTabs: Tab[] = []
           for (const t of resp.tabs) {
-            const key = `${t.tabType}:${t.tabId}`
-            if (!existingKeys.has(key)) {
-              extraTabs.push({
-                type: t.tabType as TabType,
-                id: t.tabId,
-                position: t.position,
-                tileId: t.tileId || targetSnap.layout.focusedTileId || '',
-                workerId: t.workerId,
-              })
+            const tab: Tab = {
+              type: t.tabType as TabType,
+              id: t.tabId,
+              position: t.position,
+              tileId: t.tileId || targetSnap.layout.focusedTileId || '',
+              workerId: t.workerId,
+            }
+            if (!existingKeys.has(tabKey(tab))) {
+              extraTabs.push(tab)
             }
           }
           registry.update(resolvedTargetWsId, snap => ({
@@ -1003,42 +894,49 @@ export const AppShell: ParentComponent = (props) => {
 
   // Tile renderer (tab bars, tile content, editor panel)
   const tileRenderer = createTileRenderer({
-    tabStore,
-    agentStore,
-    chatStore,
-    controlStore,
-    layoutStore,
-    agentSessionStore,
-    settingsLoading,
-    agentOps,
-    termOps,
-    hasMultipleTiles: tileDrag.hasMultipleTiles,
-    isActiveWorkspaceMutatable,
-    isActiveWorkspaceArchived,
-    activeWorkspace,
-    getCurrentTabContext,
-    getMruAgentContext,
-    handleTabSelect: tabOps.handleTabSelect,
-    handleTabClose: tabOps.handleTabClose,
-    setIsTabEditing: tabOps.setIsTabEditing,
+    stores: {
+      tabStore,
+      agentStore,
+      chatStore,
+      controlStore,
+      layoutStore,
+      agentSessionStore,
+      gitFileStatusStore,
+    },
+    ops: { agentOps, termOps },
+    workspace: {
+      isActiveWorkspaceMutatable,
+      isActiveWorkspaceArchived,
+      activeWorkspace,
+      getCurrentTabContext,
+      getMruAgentContext,
+    },
+    tab: {
+      handleTabSelect: tabOps.handleTabSelect,
+      handleTabClose: tabOps.handleTabClose,
+      setIsTabEditing: tabOps.setIsTabEditing,
+      closingTabKeys: tabOps.closingTabKeys,
+    },
+    newTab: {
+      newAgentLoadingProvider,
+      newTerminalLoading,
+      newShellLoading,
+      setShowNewAgentDialog,
+      setShowNewTerminalDialog,
+    },
+    chrome: {
+      isMobile,
+      toggleLeftSidebar,
+      toggleRightSidebar,
+    },
+    refs: { focusEditorRef, getScrollStateRef, forceScrollToBottomRef },
+    floatingWindow: {
+      store: floatingWindowStore,
+      onDetachTab: handleDetachTab,
+      onAttachTab: handleAttachTab,
+    },
     persistLayout,
-    closingTabKeys: tabOps.closingTabKeys,
-    newAgentLoadingProvider,
-    newTerminalLoading,
-    newShellLoading,
-    isMobile,
-    toggleLeftSidebar,
-    toggleRightSidebar,
-    setShowNewAgentDialog,
-    setShowNewTerminalDialog,
-    focusEditorRef,
-    getScrollStateRef,
-    forceScrollToBottomRef,
-    gitFileStatusStore,
-    floatingWindowStore,
-    isFloatingWindowTile: (tileId: string) => !!floatingWindowStore.getWindowForTile(tileId),
-    onDetachTab: handleDetachTab,
-    onAttachTab: handleAttachTab,
+    settingsLoading,
   })
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
@@ -1059,10 +957,10 @@ export const AppShell: ParentComponent = (props) => {
         toggleLeftSidebar()
       }
       else {
-        toggleLeftSidebarRef.current?.()
+        toggleLeftSidebarRef()?.()
       }
     },
-    toggleRightSidebar: () => toggleRightSidebarRef.current?.(),
+    toggleRightSidebar: () => toggleRightSidebarRef()?.(),
     activeTabType,
     resolveFocusedTab: tileRenderer.resolveFocusedTab,
     splitFocusedTile: tileRenderer.splitFocusedTile,
@@ -1120,15 +1018,13 @@ export const AppShell: ParentComponent = (props) => {
     onDeregisterWorker: (worker: Worker) => setDeregisterTarget(worker),
     onRegisterWorker: () => setShowRegisterWorker(true),
     onTabClick: (type: number, id: string) => {
-      const tabType = type as TabType
-      tabStore.setActiveTab(tabType, id)
-      const tab = tabStore.state.tabs.find(t => t.type === tabType && t.id === id)
-      if (tab?.tileId) {
-        tabStore.setActiveTabForTile(tab.tileId, tabType, id)
-      }
-      if (tabType === TabType.AGENT) {
-        agentStore.setActiveAgent(id)
-      }
+      // Route through the same handler as the TabBar so the sidebar inherits
+      // its scroll-state save, batching, background-chat trim, and post-
+      // switch focus side effects. Sidebar tabs come straight from the
+      // store, so a missing lookup means the tab raced a close — bail.
+      const tab = tabStore.getTabByKey(tabKey({ type: type as TabType, id }))
+      if (tab)
+        tabOps.handleTabSelect(tab)
     },
     tabItemOps: {
       onClose: tabOps.handleTabClose,
@@ -1181,95 +1077,107 @@ export const AppShell: ParentComponent = (props) => {
         when={isWorkspaceRoute() && !workspaceNotFound()}
         fallback={<Show when={!workspaceNotFound()}><div class={styles.fullWindow}>{props.children}</div></Show>}
       >
-        <div style={{ '--mono-font-family': preferences.monoFontFamily(), '--ui-font-family': preferences.uiFontFamily(), 'position': 'relative', 'height': '100%', 'width': '100%' }}>
-          <Show
-            when={!isMobile()}
-            fallback={(
-              <MobileLayout
-                sectionStore={sectionStore}
-                onMoveSection={handleMoveSection}
-                onMoveSectionServer={handleMoveSectionServer}
-                leftSidebarOpen={leftSidebarOpen()}
-                rightSidebarOpen={rightSidebarOpen()}
-                closeAllSidebars={closeAllSidebars}
-                leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
-                rightSidebarElement={createRightSidebarElement(sidebarOpts())}
-                tabBarElement={tileRenderer.tabBarElement()}
-                tileContent={tileRenderer.renderTileContent(layoutStore.focusedTileId())}
-                editorPanel={
-                  tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
-                  && <tileRenderer.FocusedAgentEditorPanel containerHeight={0} />
-                }
-              />
-            )}
-          >
-            <div class={titlebarStyles.titlebarLayout}>
-              <CustomTitlebar
-                onToggleLeftSidebar={() => toggleLeftSidebarRef.current?.()}
-                onToggleRightSidebar={() => toggleRightSidebarRef.current?.()}
-                leftSidebarVisible={leftSidebarVisible()}
-                rightSidebarVisible={rightSidebarVisible()}
-                activeWorkingDir={() => getCurrentTabContext().workingDir || undefined}
-              />
-              <div class={titlebarStyles.titlebarContent}>
-                <DesktopLayout
-                  setToggleLeftSidebar={fn => toggleLeftSidebarRef.current = fn}
-                  setToggleRightSidebar={fn => toggleRightSidebarRef.current = fn}
-                  setLeftSidebarVisible={setLeftSidebarVisible}
-                  setRightSidebarVisible={setRightSidebarVisible}
+        <GridPopoverHostProvider>
+          <div style={{ '--mono-font-family': preferences.monoFontFamily(), '--ui-font-family': preferences.uiFontFamily(), 'position': 'relative', 'height': '100%', 'width': '100%' }}>
+            <Show
+              when={!isMobile()}
+              fallback={(
+                <MobileLayout
                   sectionStore={sectionStore}
-                  layoutStore={layoutStore}
                   onMoveSection={handleMoveSection}
                   onMoveSectionServer={handleMoveSectionServer}
-                  activeWorkspaceId={workspace.activeWorkspaceId()}
-                  activeWorkspace={activeWorkspace}
-                  workspaceLoading={workspaceLoading()}
-                  getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
-                  onNewWorkspace={() => {
-                    setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
-                    setShowNewWorkspace(true)
-                  }}
-                  setCenterPanelHeight={setCenterPanelHeight}
-                  onIntraTileReorder={tileDrag.handleIntraTileReorder}
-                  onCrossTileMove={tileDrag.handleCrossTileMove}
-                  onCrossWorkspaceMove={handleCrossWorkspaceMove}
-                  lookupTileIdForTab={tileDrag.lookupTileIdForTab}
-                  renderDragOverlay={tileDrag.renderDragOverlay}
-                  renderTile={tileRenderer.renderTile}
-                  onRatioChange={(splitId, ratios) => {
-                    layoutStore.updateRatios(splitId, ratios)
-                    persistLayout()
-                  }}
-                  createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
-                  createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
-                  onFileDrop={tileRenderer.handleFileDrop}
-                  fileDropDisabled={tileRenderer.fileDropDisabled()}
-                  editorPanel={(
+                  leftSidebarOpen={leftSidebarOpen()}
+                  rightSidebarOpen={rightSidebarOpen()}
+                  closeAllSidebars={closeAllSidebars}
+                  leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
+                  rightSidebarElement={createRightSidebarElement(sidebarOpts())}
+                  tabBarElement={tileRenderer.tabBarElement()}
+                  tileContent={tileRenderer.renderTileContent(layoutStore.focusedTileId())}
+                  editorPanel={
                     tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
-                    && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
-                  )}
-                  floatingWindowLayer={(
-                    <FloatingWindowLayer
-                      floatingWindowStore={floatingWindowStore}
-                      tabStore={tabStore}
-                      renderTile={tileRenderer.renderTile}
-                      onRatioChange={(windowId, splitId, ratios) => {
-                        floatingWindowStore.updateRatios(windowId, splitId, ratios)
-                        persistLayout()
-                      }}
-                      onCloseWindow={handleCloseFloatingWindow}
-                      onActivateWindow={handleActivateFloatingWindow}
-                      onGeometryChange={persistLayout}
-                      onFileDrop={tileRenderer.handleFileDrop}
-                      fileDropDisabled={tileRenderer.fileDropDisabled()}
-                    />
-                  )}
+                    && <tileRenderer.FocusedAgentEditorPanel containerHeight={0} />
+                  }
                 />
+              )}
+            >
+              <div class={titlebarStyles.titlebarLayout}>
+                <CustomTitlebar
+                  onToggleLeftSidebar={() => toggleLeftSidebarRef()?.()}
+                  onToggleRightSidebar={() => toggleRightSidebarRef()?.()}
+                  leftSidebarVisible={leftSidebarVisible()}
+                  rightSidebarVisible={rightSidebarVisible()}
+                  activeWorkingDir={() => getCurrentTabContext().workingDir || undefined}
+                />
+                <div class={titlebarStyles.titlebarContent}>
+                  <DesktopLayout
+                    setToggleLeftSidebar={fn => toggleLeftSidebarRef.set(fn)}
+                    setToggleRightSidebar={fn => toggleRightSidebarRef.set(fn)}
+                    setLeftSidebarVisible={setLeftSidebarVisible}
+                    setRightSidebarVisible={setRightSidebarVisible}
+                    sectionStore={sectionStore}
+                    layoutStore={layoutStore}
+                    onMoveSection={handleMoveSection}
+                    onMoveSectionServer={handleMoveSectionServer}
+                    activeWorkspaceId={workspace.activeWorkspaceId()}
+                    activeWorkspace={activeWorkspace}
+                    workspaceLoading={workspaceLoading()}
+                    getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
+                    onNewWorkspace={() => {
+                      setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
+                      setShowNewWorkspace(true)
+                    }}
+                    setCenterPanelHeight={setCenterPanelHeight}
+                    onIntraTileReorder={tileDrag.handleIntraTileReorder}
+                    onCrossTileMove={tileDrag.handleCrossTileMove}
+                    onCrossWorkspaceMove={handleCrossWorkspaceMove}
+                    lookupTileIdForTab={tileDrag.lookupTileIdForTab}
+                    renderDragOverlay={tileDrag.renderDragOverlay}
+                    renderTile={tileRenderer.renderTile}
+                    onRatioChange={(splitId, ratios) => {
+                      if (layoutStore.updateRatios(splitId, ratios))
+                        persistLayout()
+                    }}
+                    onGridRatiosChange={(gridId, axis, ratios) => {
+                      if (layoutStore.updateGridRatios(gridId, axis, ratios))
+                        persistLayout()
+                    }}
+                    createLeftSidebar={displayOpts => createLeftSidebarElement(sidebarOpts(), displayOpts)}
+                    createRightSidebar={displayOpts => createRightSidebarElement(sidebarOpts(), displayOpts)}
+                    onFileDrop={tileRenderer.handleFileDrop}
+                    fileDropDisabled={tileRenderer.fileDropDisabled()}
+                    editorPanel={(
+                      tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
+                      && <tileRenderer.FocusedAgentEditorPanel containerHeight={centerPanelHeight()} />
+                    )}
+                    floatingWindowLayer={(
+                      <FloatingWindowLayer
+                        floatingWindowStore={floatingWindowStore}
+                        tabStore={tabStore}
+                        renderTile={tileRenderer.renderTile}
+                        onRatioChange={(windowId, splitId, ratios) => {
+                          if (floatingWindowStore.updateRatios(windowId, splitId, ratios))
+                            persistLayout()
+                        }}
+                        onGridRatiosChange={(windowId, gridId, axis, ratios) => {
+                          if (floatingWindowStore.updateGridRatios(windowId, gridId, axis, ratios))
+                            persistLayout()
+                        }}
+                        onCloseWindow={tileRenderer.requestCloseFloatingWindow}
+                        onActivateWindow={handleActivateFloatingWindow}
+                        onGeometryChange={persistLayout}
+                        onFileDrop={tileRenderer.handleFileDrop}
+                        fileDropDisabled={tileRenderer.fileDropDisabled()}
+                      />
+                    )}
+                  />
+                </div>
               </div>
-            </div>
-          </Show>
-        </div>
+            </Show>
+          </div>
+        </GridPopoverHostProvider>
       </Show>
+
+      <tileRenderer.CloseDialogs />
 
       <AppShellDialogs
         showNewAgentDialog={showNewAgentDialog()}
@@ -1298,7 +1206,7 @@ export const AppShell: ParentComponent = (props) => {
         layoutStore={layoutStore}
         workspaceStore={workspaceStore}
         persistLayout={persistLayout}
-        focusEditor={() => focusEditorRef.current?.()}
+        focusEditor={() => focusEditorRef()?.()}
         orgSlug={params.orgSlug}
         loadWorkspaces={loadWorkspaces}
         navigate={path => navigate(path)}

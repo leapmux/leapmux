@@ -33,7 +33,7 @@ export const oauthButton = style({
   'color': 'var(--foreground)',
   'textDecoration': 'none',
   'fontSize': 'var(--text-7)',
-  'fontWeight': 500,
+  'fontWeight': 'var(--font-normal)',
   'cursor': 'pointer',
   'transition': 'background-color 0.15s',
   ':hover': {

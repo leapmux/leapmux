@@ -109,8 +109,7 @@ function makeProps() {
     },
     layoutStore: {
       focusedTileId: () => null,
-      splitTileHorizontal: vi.fn(),
-      splitTileVertical: vi.fn(),
+      splitTile: vi.fn(),
     },
     tabOps: {
       handleTabClose: vi.fn(),

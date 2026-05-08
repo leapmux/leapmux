@@ -17,7 +17,7 @@ export const fieldLabel = style({
   flexDirection: 'column',
   gap: 'var(--space-1)',
   fontSize: 'var(--text-7)',
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
   color: 'var(--muted-foreground)',
 })
 
@@ -33,7 +33,7 @@ export const pillOption = style({
   'color': 'var(--muted-foreground)',
   'border': '1px solid var(--border)',
   'borderRadius': 'var(--radius-medium)',
-  'fontWeight': 400,
+  'fontWeight': 'var(--font-normal)',
   'cursor': 'pointer',
   ':hover': {
     backgroundColor: 'var(--card)',
@@ -47,7 +47,7 @@ export const pillOptionActive = style({
   color: '#ffffff',
   border: '1px solid var(--primary)',
   borderRadius: 'var(--radius-medium)',
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
   cursor: 'pointer',
 })
 
@@ -55,7 +55,7 @@ export const toggleLabel = style({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  fontWeight: 400,
+  fontWeight: 'var(--font-normal)',
   color: 'var(--foreground)',
   cursor: 'pointer',
 })

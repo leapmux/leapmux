@@ -139,10 +139,10 @@ describe('collapsibleSidebar', () => {
 
     const handle = screen.getByTestId('pane-resize-handle')
 
-    // Simulate drag: mousedown, mousemove, mouseup
-    fireEvent.mouseDown(handle, { clientY: 100 })
-    fireEvent.mouseMove(document, { clientY: 150 })
-    fireEvent.mouseUp(document)
+    // Simulate drag: pointerdown, pointermove, pointerup
+    fireEvent.pointerDown(handle, { clientY: 100 })
+    fireEvent.pointerMove(document, { clientY: 150 })
+    fireEvent.pointerUp(document)
 
     // onStateChange should have been called (at least for mouseup)
     expect(onStateChange).toHaveBeenCalled()

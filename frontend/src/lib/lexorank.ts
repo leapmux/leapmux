@@ -33,6 +33,25 @@ export function mid(a: string, b: string): string {
   return between(a, b)
 }
 
+/**
+ * Returns a LexoRank position for inserting a new item at index `insertIdx`
+ * within an ordered list of items that each carry an optional `position`.
+ * Reads the previous and next neighbours' positions and folds them through
+ * `mid`, which handles all four edge cases (head, tail, between, empty list)
+ * via the documented semantics of `mid('', x)` / `mid(x, '')` / `mid('', '')`.
+ *
+ * Centralises the "compute LexoRank for an insertion point" pattern used by
+ * tab reorder + cross-tile drop so the two call sites stay consistent.
+ */
+export function positionAtInsertIdx(
+  items: readonly { position?: string }[],
+  insertIdx: number,
+): string {
+  const prevPos = insertIdx > 0 ? items[insertIdx - 1]?.position ?? '' : ''
+  const nextPos = insertIdx < items.length ? items[insertIdx]?.position ?? '' : ''
+  return mid(prevPos, nextPos)
+}
+
 function before(s: string): string {
   if (!s)
     return first()

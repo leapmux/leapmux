@@ -109,7 +109,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
   }
 
   return (
-    <Dialog title="Add Tunnel" busy={submitting.loading()} data-testid="add-tunnel-dialog" onClose={() => props.onClose()}>
+    <Dialog title="Add tunnel" busy={submitting.loading()} data-testid="add-tunnel-dialog" onClose={() => props.onClose()}>
       <form onSubmit={handleSubmit}>
         <div class={styles.typeSelector}>
           <label class={styles.typeOption}>

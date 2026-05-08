@@ -285,7 +285,12 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			// would otherwise see the placeholder 80x24 from the
 			// OpenTerminal request on its first TIOCGWINSZ query.
 			if !svc.TerminalStartup.setPendingResize(terminalID, uint16(cols), uint16(rows)) {
-				slog.Error("failed to resize terminal", "terminal_id", terminalID, "error", err)
+				// Benign TOCTOU: the PTY exited between the frontend's
+				// status check and this RPC arriving. The frontend gates
+				// EXITED/DISCONNECTED/STARTUP_FAILED, so reaching here
+				// means READY at check time and gone now — no PTY to
+				// resize, but not actionable either.
+				slog.Debug("resize on missing terminal", "terminal_id", terminalID, "error", err)
 				sendInternalError(sender, fmt.Sprintf("resize: %v", err))
 				return
 			}

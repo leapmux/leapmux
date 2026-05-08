@@ -35,7 +35,7 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
   }
 
   return (
-    <Dialog title="Deregister Worker" busy={submitting.loading()} data-testid="worker-settings-dialog" onClose={() => props.onClose()}>
+    <Dialog title="Deregister worker" busy={submitting.loading()} data-testid="worker-settings-dialog" onClose={() => props.onClose()}>
       <div class={styles.description}>
         Are you sure you want to deregister this worker?
       </div>

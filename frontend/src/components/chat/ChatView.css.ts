@@ -207,7 +207,7 @@ export const settingsGroupLabel = style({
   display: 'inline-block',
   padding: '0 var(--space-2)',
   fontSize: 'var(--text-8)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   color: 'var(--muted-foreground)',
   textTransform: 'uppercase',
   letterSpacing: '0.05em',
@@ -274,7 +274,7 @@ export const searchableSelectItemHighlighted = style({
 
 // Searchable select: currently selected item
 export const searchableSelectItemSelected = style({
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
 })
 
 // Searchable select: secondary text (right-aligned, muted)
@@ -340,7 +340,7 @@ export const infoRow = style({
 
 export const infoLabel = style({
   fontSize: 'var(--text-8)',
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
   color: 'var(--muted-foreground)',
   whiteSpace: 'nowrap',
 })

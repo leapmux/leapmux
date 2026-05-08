@@ -82,7 +82,7 @@ describe('signupPage', () => {
     renderSignupPage()
 
     await vi.waitFor(() => {
-      expect(screen.getByText(/Sign Up Disabled/i)).toBeInTheDocument()
+      expect(screen.getByText(/Sign-up disabled/i)).toBeInTheDocument()
     })
   })
 })

@@ -4,7 +4,7 @@ import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
-import type { createLayoutStore } from '~/stores/layout.store'
+import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
 import type { createTabStore, Tab } from '~/stores/tab.store'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState, platformBridge } from '~/api/platformBridge'
@@ -37,7 +37,7 @@ interface UseShortcutsProps {
   toggleRightSidebar: () => void
   activeTabType: Accessor<TabType | null>
   resolveFocusedTab: () => Tab | null
-  splitFocusedTile: (direction: 'horizontal' | 'vertical') => void
+  splitFocusedTile: (direction: SplitOrientation) => void
   scrollFocusedTabPage: (direction: -1 | 1) => void
   writeToFocusedTerminal: (data: string) => void
   /**

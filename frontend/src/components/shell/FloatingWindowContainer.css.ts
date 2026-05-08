@@ -31,7 +31,7 @@ export const titleBarDragging = style({
 
 export const titleText = style({
   fontSize: '12px',
-  fontWeight: 500,
+  fontWeight: 'var(--font-normal)',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
