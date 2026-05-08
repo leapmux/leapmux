@@ -116,6 +116,19 @@ func Listen(url string) (net.Listener, error) {
 	}
 }
 
+// CloseAccepted force-closes every connection currently accepted by ln, if
+// the listener implementation supports it. On Windows this releases the
+// per-connection named-pipe instance handles that http.Server.Close() can't
+// reach (h2c-hijacked connections are removed from http.Server.activeConn);
+// otherwise the next ListenPipe(FIRST_PIPE_INSTANCE) on the same name fails
+// with ERROR_ACCESS_DENIED. On Unix it's a no-op — accepted unix-domain
+// sockets release independently of the listener.
+func CloseAccepted(ln net.Listener) {
+	if l, ok := ln.(interface{ CloseAccepted() }); ok {
+		l.CloseAccepted()
+	}
+}
+
 // WaitReady polls until a client can dial the listener at url, or ctx is
 // cancelled.
 func WaitReady(ctx context.Context, url string) error {

@@ -161,8 +161,16 @@ func (a *App) Restart() error {
 func (a *App) SwitchMode() error {
 	a.closeChannelRelay()
 	a.tunnels.CloseAll()
-	a.stopSolo()
+	// Drop idle proxy connections before stopping the Hub so they don't pin
+	// named-pipe handles open across solo.Stop() and block the next ListenPipe.
+	if a.proxy != nil {
+		a.proxy.client.CloseIdleConnections()
+		if a.proxy.wsClient != nil {
+			a.proxy.wsClient.CloseIdleConnections()
+		}
+	}
 	a.proxy = nil
+	a.stopSolo()
 	a.hubURL = ""
 	a.config.Mode = ""
 	if err := SaveConfig(a.config); err != nil {

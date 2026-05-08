@@ -254,6 +254,64 @@ func TestDialer_NpipeAcceptsFullNTPath(t *testing.T) {
 	}
 }
 
+// TestCloseAccepted_FreesPipeNameForRelisten reproduces the Switch-Mode bug:
+// after closing a listener whose accepted server-side handle is still alive,
+// a second ListenPipe on the same name fails with ERROR_ACCESS_DENIED because
+// FILE_FLAG_FIRST_PIPE_INSTANCE refuses to create another instance while one
+// exists. CloseAccepted releases those handles so re-listen succeeds.
+func TestCloseAccepted_FreesPipeNameForRelisten(t *testing.T) {
+	name := uniqueTestPipeName(t)
+	ln, err := Listen("npipe:" + name)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	// Accept loop holds the accepted server-side handle open. This is what
+	// http2.Server does for h2c-hijacked connections: the http.Server lets
+	// go of them, and the underlying pipe handle outlives http.Server.Close.
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		accepted <- c
+	}()
+
+	client, err := winio.DialPipe(`\\.\pipe\`+name, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	var serverConn net.Conn
+	select {
+	case serverConn = <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for accept")
+	}
+
+	// Close the listener but DON'T close serverConn — this is the leak we
+	// reproduce. Re-listen on the same name must fail.
+	if err := ln.Close(); err != nil {
+		t.Fatalf("listener close: %v", err)
+	}
+	leaked, err := Listen("npipe:" + name)
+	if err == nil {
+		_ = leaked.Close()
+		_ = serverConn.Close()
+		t.Fatal("expected re-listen to fail while accepted handle is alive")
+	}
+
+	// CloseAccepted releases the leaked handle, so the next listen succeeds.
+	CloseAccepted(ln)
+	relisten, err := Listen("npipe:" + name)
+	if err != nil {
+		t.Fatalf("re-listen after CloseAccepted: %v", err)
+	}
+	_ = relisten.Close()
+}
+
 // TestNpipeListener_AcceptTranslatesClose verifies that closing the pipe
 // listener surfaces an error satisfying errors.Is(net.ErrClosed) — so shared
 // accept loops can check a single sentinel rather than winio.ErrPipeListenerClosed.

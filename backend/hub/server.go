@@ -57,14 +57,16 @@ type Server struct {
 	oauthHandler *service.OAuthHandler
 	server       *http.Server
 	tcpLn        net.Listener
+	localLn      net.Listener
+	listenURL    string
 	shutdownCh   chan struct{}
 	sessionCache *auth.SessionCache
 	workerMgr    *workermgr.Manager
 }
 
-// NewServer creates a new Hub server. It binds the TCP port (to fail
-// fast on conflicts), opens the database, runs migrations, bootstraps
-// defaults, and wires all services. Call Serve() to start listening.
+// NewServer creates a new Hub server. It binds the TCP port and local IPC
+// listener (to fail fast on conflicts), opens the database, runs migrations,
+// bootstraps defaults, and wires all services. Call Serve() to start listening.
 func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	var so serverOptions
 	for _, opt := range opts {
@@ -75,9 +77,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
-	// Bind the TCP port before any database work so that concurrent
-	// instances (e.g. solo + CLI) fail fast on port conflict without
-	// a TOCTOU window.
+	// Bind both listeners before any database work so that concurrent
+	// instances (e.g. solo + CLI, or two desktop apps sharing the per-user
+	// pipe name) fail fast on conflict without a TOCTOU window. Binding
+	// the local listener here also avoids a race where solo.Start's
+	// dial-based readiness probe could connect to a foreign listener on
+	// the same name (e.g. another running Solo instance) while our own
+	// Serve goroutine is still propagating the bind failure.
 	var tcpLn net.Listener
 	if cfg.Listen != "" {
 		var listenErr error
@@ -93,23 +99,38 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		}
 	}
 
-	st, err := storeopen.Open(context.Background(), cfg)
+	listenURL, err := cfg.LocalListenURL()
 	if err != nil {
 		closeTCP()
+		return nil, fmt.Errorf("resolve local-listen URL: %w", err)
+	}
+	localLn, err := locallisten.Listen(listenURL)
+	if err != nil {
+		closeTCP()
+		return nil, fmt.Errorf("listen local: %w", err)
+	}
+	closeListeners := func() {
+		_ = localLn.Close()
+		closeTCP()
+	}
+
+	st, err := storeopen.Open(context.Background(), cfg)
+	if err != nil {
+		closeListeners()
 		return nil, fmt.Errorf("open store: %w", err)
 	}
 
 	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
 	if err != nil {
 		_ = st.Close()
-		closeTCP()
+		closeListeners()
 		return nil, fmt.Errorf("load encryption keystore: %w", err)
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
 
 	if err := bootstrap.Run(context.Background(), st, cfg.SoloMode); err != nil {
 		_ = st.Close()
-		closeTCP()
+		closeListeners()
 		return nil, fmt.Errorf("bootstrap: %w", err)
 	}
 
@@ -254,6 +275,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		oauthHandler: oauthHandler,
 		server:       server,
 		tcpLn:        tcpLn,
+		localLn:      localLn,
+		listenURL:    listenURL,
 		shutdownCh:   shutdownCh,
 		sessionCache: sessionCache,
 		workerMgr:    wMgr,
@@ -333,28 +356,12 @@ func (s *Server) GetAdminUser(ctx context.Context) (userID, orgID string, err er
 	return user.ID, user.OrgID, nil
 }
 
-// Serve starts the Hub server on TCP and local IPC listeners.
+// Serve starts the Hub server on the listeners that NewServer pre-bound.
 // It blocks until ctx is cancelled, then performs graceful shutdown.
 func (s *Server) Serve(ctx context.Context) error {
 	tcpLn := s.tcpLn
-
-	listenURL, err := s.cfg.LocalListenURL()
-	if err != nil {
-		if tcpLn != nil {
-			_ = tcpLn.Close()
-		}
-		_ = s.store.Close()
-		return fmt.Errorf("resolve local-listen URL: %w", err)
-	}
-
-	localLn, err := locallisten.Listen(listenURL)
-	if err != nil {
-		if tcpLn != nil {
-			_ = tcpLn.Close()
-		}
-		_ = s.store.Close()
-		return fmt.Errorf("listen local: %w", err)
-	}
+	localLn := s.localLn
+	listenURL := s.listenURL
 
 	// Start background OAuth token refresh.
 	s.oauthHandler.StartTokenRefresh(ctx)
@@ -374,10 +381,24 @@ func (s *Server) Serve(ctx context.Context) error {
 		// 2. Notify connected workers to delay reconnection.
 		s.workerMgr.NotifyShutdown(10)
 
-		// 3. Drain in-flight HTTP requests.
+		// 3. Drain in-flight HTTP requests, then force-close any connections
+		// the drain left behind. On Windows each accepted named-pipe
+		// connection is its own pipe instance; if any survive, the next
+		// ListenPipe with FILE_FLAG_FIRST_PIPE_INSTANCE on the same name
+		// fails with ERROR_ACCESS_DENIED.
+		//
+		// http.Server.Close() only iterates net/http's own activeConn map.
+		// h2c-upgraded connections (worker bidi gRPC streams, channel-relay
+		// websockets) are hijacked and handed off to http2.Server, which
+		// removes them from activeConn — so http.Server.Close() can't reach
+		// them. locallisten.CloseAccepted closes the underlying pipe handles
+		// directly via the listener's own accepted-connection tracking,
+		// which is the only level that sees every accepted conn.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = s.server.Shutdown(shutdownCtx)
+		_ = s.server.Close()
+		locallisten.CloseAccepted(s.localLn)
 
 		close(shutdownDone)
 	}()
@@ -408,11 +429,11 @@ func (s *Server) Serve(ctx context.Context) error {
 		<-errCh
 	}
 
-	// 4. Wait for the shutdown goroutine to complete.
+	// 5. Wait for the shutdown goroutine to complete.
 	<-shutdownDone
 
-	// 5. Close store. The local listener cleans up its own endpoint (unix
-	// socket file unlinks itself on Close; named pipes auto-release).
+	// 6. Close store. The local listener and its accepted connections were
+	// released above by Shutdown+Close.
 	_ = s.store.Close()
 	return nil
 }

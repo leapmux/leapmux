@@ -3,6 +3,7 @@ package solo_test
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,14 @@ func TestSoloStart_RespectsExplicitLocalListen(t *testing.T) {
 // default when the caller doesn't override it, and the derived URL is
 // reachable. Inlined setup here because the shared helper auto-injects
 // a unique LocalListen to keep other tests isolated.
+//
+// On Windows the default name is `npipe:leapmux-hub-<SID>`, derived from the
+// current user's SID, so two Solo instances running as the same user on the
+// same machine will collide on it. That's exactly what the default is meant
+// to encode: one Solo per user. When something already holds the pipe — a
+// running Desktop app, or a previous test process whose handles haven't
+// been reclaimed yet — we skip rather than fail; the explicit-listen test
+// already covers the "binding actually works" path with a unique URL.
 func TestSoloStart_DefaultLocalListen(t *testing.T) {
 	locallistentest.SandboxHome(t)
 	t.Setenv(locallisten.EnvLocalListen, "")
@@ -75,6 +84,9 @@ func TestSoloStart_DefaultLocalListen(t *testing.T) {
 		SkipBanner: true,
 		NoTCP:      true,
 	})
+	if err != nil && isDefaultListenerInUse(err) {
+		t.Skipf("default local listener already in use (likely another Solo instance on this user): %v", err)
+	}
 	require.NoError(t, err, "solo.Start with default local-listen")
 	t.Cleanup(inst.Stop)
 
@@ -92,6 +104,21 @@ func TestSoloStart_DefaultLocalListen(t *testing.T) {
 	defer waitCancel()
 	require.NoError(t, locallisten.WaitReady(waitCtx, url),
 		"default hub listener should be dial-able")
+}
+
+// isDefaultListenerInUse reports whether err comes from solo.Start failing
+// because the default local listener (named pipe / unix socket) is already
+// bound by another process. The wrapping is "create hub server: listen
+// local: <transport-specific>"; the transport-specific tail differs across
+// platforms (Windows: "Access is denied" from FILE_FLAG_FIRST_PIPE_INSTANCE;
+// Unix: "address already in use" from bind() against an existing socket).
+func isDefaultListenerInUse(err error) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "listen local:") {
+		return false
+	}
+	return strings.Contains(msg, "Access is denied") ||
+		strings.Contains(msg, "address already in use")
 }
 
 // TestSoloStart_InvalidLocalListenErrors confirms an unparseable URL surfaces
