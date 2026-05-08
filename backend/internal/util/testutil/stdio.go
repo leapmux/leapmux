@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"testing"
@@ -17,16 +18,22 @@ func CaptureStdout(t *testing.T, fn func()) string {
 	r, w, err := os.Pipe()
 	require.NoError(t, err)
 	os.Stdout = w
-	defer func() {
-		os.Stdout = oldStdout
-		_ = w.Close()
-		_ = r.Close()
+
+	// Drain the pipe concurrently so writes never block on a full buffer.
+	// Windows pipe buffers can be as small as ~4 KiB, well below the help
+	// output some callers produce.
+	var buf bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(&buf, r)
+		done <- copyErr
 	}()
 
 	fn()
 
+	os.Stdout = oldStdout
 	require.NoError(t, w.Close())
-	out, err := io.ReadAll(r)
-	require.NoError(t, err)
-	return string(out)
+	require.NoError(t, <-done)
+	require.NoError(t, r.Close())
+	return buf.String()
 }
