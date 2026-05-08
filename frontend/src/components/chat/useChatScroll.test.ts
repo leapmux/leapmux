@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import {
   installControllableResizeObserver,
+  triggerResizeObserverForSync,
   triggerResizeObserversSync,
 } from '../../../tests/unit/helpers/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
@@ -310,6 +311,221 @@ describe('usechatscroll resize sticky-bottom', () => {
           // Hook writes scrollTop = scrollHeight (1100); the fake div clamps
           // to scrollHeight - clientHeight = 600, the new visual bottom.
           expect(div.getScrollTop()).toBe(600)
+          expect(hook.atBottom()).toBe(true)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('preserves sticky bottom across a delayed programmatic scroll event after content grows', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(1000)
+          div.setClientHeight(500)
+          div.setScrollTop(500)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+
+          const hook = useChatScroll({
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Browser scroll events from the prior programmatic bottom write can
+          // arrive after content has already grown. That delayed event should
+          // be treated as stale and re-stick instead of clearing atBottom.
+          div.setScrollHeight(1100)
+          hook.handlers.onScroll()
+
+          expect(div.getScrollTop()).toBe(600)
+          expect(hook.atBottom()).toBe(true)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('refreshes sticky records when the user scrolls back within the bottom threshold', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(1000)
+          div.setClientHeight(500)
+          div.setScrollTop(500)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+
+          const hook = useChatScroll({
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(300)
+          hook.handlers.onScroll()
+          expect(hook.atBottom()).toBe(false)
+
+          // Returning to within the sticky threshold should normalize to the
+          // exact clamped bottom and refresh the sticky record.
+          div.setScrollTop(480)
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(500)
+          expect(hook.atBottom()).toBe(true)
+
+          div.setScrollHeight(1500)
+          hook.handlers.onScroll()
+
+          expect(div.getScrollTop()).toBe(1000)
+          expect(hook.atBottom()).toBe(true)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('sticks to bottom on content-only resize from the observed content element', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          const content = document.createElement('div')
+          div.setScrollHeight(1000)
+          div.setClientHeight(500)
+          div.setClientWidth(800)
+          div.setScrollTop(500)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+
+          const hook = useChatScroll({
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+          hook.attachContentRef(content)
+
+          await Promise.resolve()
+          await Promise.resolve()
+
+          // Only content height changes; the scroll container dimensions stay
+          // fixed. This must still preserve sticky-bottom state.
+          div.setScrollHeight(1100)
+          triggerResizeObserverForSync(content)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(600)
+          expect(hook.atBottom()).toBe(true)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('observes a content ref attached after mount', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          const content = document.createElement('div')
+          div.setScrollHeight(1000)
+          div.setClientHeight(500)
+          div.setScrollTop(500)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+
+          const hook = useChatScroll({
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+
+          await Promise.resolve()
+          await Promise.resolve()
+
+          hook.attachContentRef(content)
+          div.setScrollHeight(1100)
+          triggerResizeObserverForSync(content)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(600)
+          expect(hook.atBottom()).toBe(true)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('preserves sticky bottom through fast growth, delayed scroll, and content resize', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          const content = document.createElement('div')
+          div.setScrollHeight(1000)
+          div.setClientHeight(500)
+          div.setScrollTop(500)
+
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const [streamingText] = createSignal('')
+
+          const hook = useChatScroll({
+            messages,
+            streamingText,
+          })
+          hook.attachListRef(div.el)
+          hook.attachContentRef(content)
+
+          await Promise.resolve()
+          await Promise.resolve()
+
+          hook.forceScrollToBottom()
+          div.setScrollHeight(1100)
+          hook.handlers.onScroll()
+          expect(div.getScrollTop()).toBe(600)
+          expect(hook.atBottom()).toBe(true)
+
+          div.setScrollHeight(1250)
+          triggerResizeObserverForSync(content)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(750)
           expect(hook.atBottom()).toBe(true)
           dispose()
           resolve()

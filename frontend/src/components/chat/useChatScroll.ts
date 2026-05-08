@@ -9,13 +9,7 @@ export interface ChatScrollState {
   atBottom: boolean
 }
 
-// Snap the viewport to the bottom. Writing scrollHeight (rather than
-// scrollHeight - clientHeight) relies on the browser clamping the value;
-// this is the standard "scroll to bottom" idiom and is what the resize
-// and auto-scroll paths use to land at the visual bottom.
-function scrollToBottom(el: HTMLElement) {
-  el.scrollTop = el.scrollHeight
-}
+const STICKY_BOTTOM_THRESHOLD_PX = 32
 
 export interface UseChatScrollOptions {
   messages: Accessor<AgentChatMessage[]>
@@ -91,6 +85,13 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let suppressAutoLoadOlderAfterRestore = false
   let touchOverscrollStartY: number | null = null
   let pointerOverscrollStartY: number | null = null
+  let stickyScrollTop: number | undefined
+  let stickyScrollHeight = -1
+  let autoScrollFirstSeq: bigint | undefined
+  let lastAutoScrollSig: unknown[] = []
+  let resizeObserver: ResizeObserver | undefined
+  let resizeRafId = 0
+  let prevClientHeight = 0
 
   const cancelScrollAnimation = () => {
     if (scrollAnimationId !== null) {
@@ -101,15 +102,42 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   /** Fresh DOM measurement — true if the scroll position is at/near the bottom. */
   const isAtBottom = () =>
-    !!messageListRef && messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight < 32
+    !!messageListRef && messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight < STICKY_BOTTOM_THRESHOLD_PX
+
+  const stickToBottom = () => {
+    if (!messageListRef || messageListRef.clientHeight === 0)
+      return false
+    // Writing scrollHeight relies on browser clamping to the real maximum.
+    // Read scrollTop back afterward so the sticky record stores the clamped
+    // visual bottom, not the unclamped scrollHeight assignment.
+    messageListRef.scrollTop = messageListRef.scrollHeight
+    stickyScrollTop = messageListRef.scrollTop
+    stickyScrollHeight = messageListRef.scrollHeight
+    setAtBottom(true)
+    preserveBrowsingPosition = false
+    return true
+  }
 
   const checkAtBottom = () => {
     if (!messageListRef || scrollAnimationId !== null)
       return
+    const wasSticky = atBottom()
+    if (
+      wasSticky
+      && stickyScrollTop !== undefined
+      && messageListRef.scrollHeight > stickyScrollHeight
+      && messageListRef.scrollTop + 1 >= stickyScrollTop
+    ) {
+      stickToBottom()
+      return
+    }
     const nextAtBottom = isAtBottom()
-    setAtBottom(nextAtBottom)
-    if (nextAtBottom)
-      preserveBrowsingPosition = false
+    if (nextAtBottom) {
+      stickToBottom()
+    }
+    else {
+      setAtBottom(false)
+    }
   }
 
   const isNearTop = () =>
@@ -232,10 +260,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   const forceScrollToBottom = () => {
     cancelScrollAnimation()
-    if (messageListRef)
-      scrollToBottom(messageListRef)
-    setAtBottom(true)
-    preserveBrowsingPosition = false
+    stickToBottom()
   }
 
   const pageScroll = (direction: -1 | 1) => {
@@ -247,10 +272,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     })
     messageListRef.dispatchEvent(new Event('scroll'))
   }
-
-  let autoScrollFirstSeq: bigint | undefined
-  let lastAutoScrollHeight = -1
-  let lastAutoScrollSig: unknown[] = []
 
   // Auto-scroll the message list to the bottom when new content arrives
   // and the user is already at (or near) the bottom.
@@ -293,13 +314,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // Skip the DOM write when scrollHeight hasn't grown — streaming chunks
       // can fire this effect every frame even when the bottom didn't move.
       const currentHeight = messageListRef.scrollHeight
-      if (currentHeight === lastAutoScrollHeight)
+      if (currentHeight === stickyScrollHeight)
         return
-      lastAutoScrollHeight = currentHeight
       // Scroll synchronously — the DOM is already updated by SolidJS,
       // so deferring to rAF would cause one visible frame where the view
       // appears scrolled up before snapping back to bottom.
-      scrollToBottom(messageListRef)
+      stickToBottom()
       if (msgs.length > MAX_LOADED_CHAT_MESSAGES) {
         opts.onTrimOldMessages?.()
       }
@@ -323,85 +343,63 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     cancelScrollAnimation()
   })
 
+  const handleResize = () => {
+    cancelAnimationFrame(resizeRafId)
+    // Capture hidden→visible state and atBottom NOW (in the
+    // ResizeObserver callback), before browser scroll-restoration
+    // events can fire and corrupt the atBottom signal.
+    const ch = messageListRef?.clientHeight ?? 0
+    const wasHidden = prevClientHeight === 0 && ch > 0
+    const savedAtBottom = atBottom()
+    const savedScroll = wasHidden ? opts.savedViewportScroll?.() : undefined
+    resizeRafId = requestAnimationFrame(() => {
+      if (!messageListRef || scrollAnimationId !== null)
+        return
+      prevClientHeight = ch
+      // Hidden→visible with a saved non-bottom scroll: restore exactly,
+      // bypassing the at-bottom unification below.
+      if (wasHidden && savedScroll && !savedScroll.atBottom) {
+        const maxScroll = messageListRef.scrollHeight - messageListRef.clientHeight
+        const clampedToTop = savedScroll.distFromBottom > maxScroll
+        messageListRef.scrollTop = clampedToTop ? 0 : maxScroll - savedScroll.distFromBottom
+        setAtBottom(false)
+        suppressAutoLoadOlderAfterRestore = clampedToTop
+        opts.onClearSavedViewportScroll?.()
+        return
+      }
+      suppressAutoLoadOlderAfterRestore = false
+      // Stick to bottom on any of:
+      //  - hidden→visible with a saved at-bottom scroll (clear the save),
+      //  - hidden→visible without a saved scroll but atBottom captured pre-RO,
+      //  - already-visible resize / content-only resize while atBottom.
+      // contentRef can grow by itself during streaming markdown rendering or
+      // expand/collapse, so we stick even when the container's client size
+      // didn't change.
+      if (savedAtBottom || (wasHidden && savedScroll?.atBottom)) {
+        stickToBottom()
+        if (wasHidden && savedScroll)
+          opts.onClearSavedViewportScroll?.()
+        return
+      }
+      checkAtBottom()
+    })
+  }
+
   // Observe size changes on both the scroll container (editor/window resize)
   // and the content wrapper (silent DOM mutations like expand/collapse).
   // Defer scroll adjustments to a rAF to avoid "ResizeObserver loop completed
   // with undelivered notifications" errors when collapsing large elements.
   onMount(() => {
-    let resizeRafId = 0
-    let prevClientHeight = messageListRef?.clientHeight ?? 0
-    let prevClientWidth = messageListRef?.clientWidth ?? 0
-    const handleResize = () => {
-      cancelAnimationFrame(resizeRafId)
-      // Capture hidden→visible state and atBottom NOW (in the
-      // ResizeObserver callback), before browser scroll-restoration
-      // events can fire and corrupt the atBottom signal.
-      const ch = messageListRef?.clientHeight ?? 0
-      const cw = messageListRef?.clientWidth ?? 0
-      const wasHidden = prevClientHeight === 0 && ch > 0
-      // Width changes (e.g. sidebar toggle) reflow text, growing/shrinking
-      // scrollHeight without touching clientHeight. With overflow-anchor:none
-      // the browser doesn't compensate, so we must re-stick to the bottom
-      // ourselves — track width too, not just height.
-      const sizeChanged = ch !== prevClientHeight || cw !== prevClientWidth
-      const savedAtBottom = atBottom()
-      const savedScroll = wasHidden ? opts.savedViewportScroll?.() : undefined
-      resizeRafId = requestAnimationFrame(() => {
-        if (!messageListRef || scrollAnimationId !== null)
-          return
-        prevClientHeight = ch
-        prevClientWidth = cw
-        if (wasHidden) {
-          // Restore saved viewport scroll if available; otherwise use
-          // the atBottom value captured before scroll events could fire.
-          if (savedScroll) {
-            if (savedScroll.atBottom) {
-              scrollToBottom(messageListRef)
-              setAtBottom(true)
-              suppressAutoLoadOlderAfterRestore = false
-            }
-            else {
-              const maxScroll = messageListRef.scrollHeight - messageListRef.clientHeight
-              const clampedToTop = savedScroll.distFromBottom > maxScroll
-              messageListRef.scrollTop = clampedToTop ? 0 : maxScroll - savedScroll.distFromBottom
-              setAtBottom(false)
-              suppressAutoLoadOlderAfterRestore = clampedToTop
-            }
-            opts.onClearSavedViewportScroll?.()
-            return
-          }
-          if (savedAtBottom) {
-            scrollToBottom(messageListRef)
-            setAtBottom(true)
-            suppressAutoLoadOlderAfterRestore = false
-            return
-          }
-        }
-        // Already-visible resize (editor auto-grow, editor panel mount on
-        // tab-type switch, window resize, sidebar toggle). When the user was
-        // at the bottom before the resize, stick to the bottom —
-        // `overflow-anchor: none` means the browser won't auto-correct, so
-        // without this the viewport visibly slides off the bottom by the
-        // size delta and `atBottom` flips to false, which also disables
-        // future auto-scroll.
-        if (sizeChanged && savedAtBottom) {
-          scrollToBottom(messageListRef)
-          setAtBottom(true)
-          suppressAutoLoadOlderAfterRestore = false
-          return
-        }
-        suppressAutoLoadOlderAfterRestore = false
-        checkAtBottom()
-      })
-    }
-    const observer = new ResizeObserver(handleResize)
+    prevClientHeight = messageListRef?.clientHeight ?? 0
+    resizeObserver = new ResizeObserver(handleResize)
     if (messageListRef)
-      observer.observe(messageListRef)
+      resizeObserver.observe(messageListRef)
     if (contentRef)
-      observer.observe(contentRef)
+      resizeObserver.observe(contentRef)
     onCleanup(() => {
       cancelAnimationFrame(resizeRafId)
-      observer.disconnect()
+      resizeObserver?.disconnect()
+      resizeObserver = undefined
     })
   })
 
@@ -417,10 +415,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       }
       const remaining = messageListRef.scrollHeight - messageListRef.scrollTop - messageListRef.clientHeight
       if (remaining < 1) {
-        scrollToBottom(messageListRef)
         scrollAnimationId = null
-        setAtBottom(true)
-        preserveBrowsingPosition = false
+        stickToBottom()
         return
       }
       const step = remaining > 48 ? remaining * 0.5 : remaining * 0.4
@@ -432,9 +428,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   }
 
   const jumpToBottom = () => {
-    if (!messageListRef)
-      return
-    scrollToBottom(messageListRef)
+    stickToBottom()
   }
 
   return {
@@ -444,7 +438,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       messageListRef = el
     },
     attachContentRef: (el) => {
+      if (contentRef && resizeObserver)
+        resizeObserver.unobserve(contentRef)
       contentRef = el
+      if (contentRef && resizeObserver)
+        resizeObserver.observe(contentRef)
     },
     scrollToBottomAnimated,
     jumpToBottom,
