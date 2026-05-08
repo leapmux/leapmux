@@ -175,6 +175,11 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: ${{ env.TASK_VERSION }}
+          # Authenticate the action's GitHub API calls (listing releases,
+          # downloading assets) so it doesn't hit the 60/hr unauthenticated
+          # rate limit on shared-IP runners — has been failing intermittently
+          # on Windows without it.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -292,6 +297,11 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: ${{ env.TASK_VERSION }}
+          # Authenticate the action's GitHub API calls (listing releases,
+          # downloading assets) so it doesn't hit the 60/hr unauthenticated
+          # rate limit on shared-IP runners — has been failing intermittently
+          # on Windows without it.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -380,6 +390,11 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: ${{ env.TASK_VERSION }}
+          # Authenticate the action's GitHub API calls (listing releases,
+          # downloading assets) so it doesn't hit the 60/hr unauthenticated
+          # rate limit on shared-IP runners — has been failing intermittently
+          # on Windows without it.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Apple signing
         uses: ./.github/actions/apple-signing-setup
@@ -459,6 +474,11 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: ${{ env.TASK_VERSION }}
+          # Authenticate the action's GitHub API calls (listing releases,
+          # downloading assets) so it doesn't hit the 60/hr unauthenticated
+          # rate limit on shared-IP runners — has been failing intermittently
+          # on Windows without it.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Apple signing
         uses: ./.github/actions/apple-signing-setup
@@ -601,6 +621,11 @@ jobs:
         uses: arduino/setup-task@v2
         with:
           version: ${{ env.TASK_VERSION }}
+          # Authenticate the action's GitHub API calls (listing releases,
+          # downloading assets) so it doesn't hit the 60/hr unauthenticated
+          # rate limit on shared-IP runners — has been failing intermittently
+          # on Windows without it.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build all modules
         # Run under pwsh: Git Bash prepends /usr/bin to PATH, and
