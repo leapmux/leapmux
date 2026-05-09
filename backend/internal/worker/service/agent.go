@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -12,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -63,6 +65,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if err != nil {
 			sendInvalidArgument(sender, err.Error())
 			return
+		}
+		// Empty title means "you pick one". Default to a random
+		// "Agent <Name>" from the shared pool so CLI-spawned agents
+		// match the format UI-spawned ones get. Collisions are
+		// allowed (cosmetic; the user can rename either tab).
+		if title == "" {
+			title = pickAgentTitle()
 		}
 
 		agentID := id.Generate()
@@ -130,6 +139,30 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		startupCtx, cancel := context.WithCancel(context.Background())
 		svc.AgentStartup.begin(agentID, cancel)
 
+		var remoteEnvs []string
+		var remoteCleanup func()
+		if svc.RemoteIPC != nil {
+			envs, cleanup, ipErr := svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
+				UserID:        userID,
+				OrgID:         r.GetOrgId(),
+				WorkspaceID:   r.GetWorkspaceId(),
+				WorkerID:      svc.WorkerID,
+				TabID:         agentID,
+				WorkingDir:    plan.PlannedWorkingDir,
+				AgentProvider: agentlabels.CLIAlias(agentProvider),
+			})
+			if ipErr != nil {
+				slog.Warn("remote IPC factory failed; agent will start without remote control", "agent_id", agentID, "error", ipErr)
+			} else {
+				remoteEnvs = envs
+				remoteCleanup = cleanup
+			}
+		}
+		// Track the cleanup so we can fire it on agent close.
+		if remoteCleanup != nil {
+			svc.registerAgentCleanup(agentID, remoteCleanup)
+		}
+
 		agentOpts := agent.Options{
 			AgentID:         agentID,
 			Model:           model,
@@ -144,6 +177,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			LoginShell:      svc.agentLoginShell(),
 			HomeDir:         svc.HomeDir,
 			AgentProvider:   agentProvider,
+			ExtraEnv:        remoteEnvs,
 		}
 
 		agent.TraceStartupPhase(agentID, "before_response")
@@ -183,6 +217,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				svc.AgentStartup.cancelAndClear(agentID)
 				svc.Agents.StopAgent(agentID)
 				svc.Output.ClearAgentRuntimeState(agentID)
+				svc.runAgentCleanup(agentID)
 			},
 			func() error { return svc.Queries.CloseAgent(bgCtx(), agentID) },
 		)
@@ -435,11 +470,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Filter by access control: only return agents in accessible workspaces.
-		var accessibleWsIDs map[string]bool
-		if chID := sender.ChannelID(); chID != "" {
-			accessibleWsIDs = svc.Channels.AccessibleWorkspaceIDs(chID)
-		}
+		// Filter by access control: only return agents in accessible
+		// workspaces. AuthorizerForSender abstracts over E2EE channels and
+		// local-IPC streams (which have no channel id but carry a token
+		// scope registered at request entry).
+		accessibleWsIDs := svc.AuthorizerForSender(sender).AccessibleSet()
 
 		workingDirs := make([]string, len(agents))
 		for i := range agents {
@@ -560,7 +595,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		agentID := r.GetAgentId()
-		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
+		dbAgent, ok := svc.requireAccessibleAgent(sender, agentID)
+		if !ok {
 			return
 		}
 
@@ -571,6 +607,16 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			slog.Error("failed to rename agent", "agent_id", agentID, "error", err)
 			sendInternalError(sender, "failed to rename agent")
 			return
+		}
+
+		// Broadcast over the worker-private E2EE bus so other clients of
+		// the same workspace can update their tab title without the hub
+		// ever seeing the new title string.
+		if svc.PrivateEvents != nil {
+			svc.PrivateEvents.PublishTabRenamed(
+				dbAgent.WorkspaceID, agentID, leapmuxv1.TabType_TAB_TYPE_AGENT,
+				r.GetTitle(), sender.ChannelID(),
+			)
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{})
@@ -821,6 +867,203 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
 	})
 
+	d.Register("InterruptAgent", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.InterruptAgentRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+		agentID := r.GetAgentId()
+		if _, ok := svc.requireAccessibleAgent(sender, agentID); !ok {
+			return
+		}
+		if err := svc.Agents.Interrupt(agentID); err != nil {
+			slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
+			sendNotFoundError(sender, "agent not found or not running")
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
+	})
+
+	// WatchWorkspacePrivateEvents streams worker-private workspace events
+	// (TabRenamed, FileTabPathRegistered, FileTabPathRevoked) over the
+	// existing E2EE channel. The bootstrap-replay sends one
+	// FileTabPathRegistered per row in worker_file_tabs for the
+	// requested workspace before any live events.
+	d.Register("WatchWorkspacePrivateEvents", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.WatchWorkspacePrivateEventsRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+		workspaceID := r.GetWorkspaceId()
+		if workspaceID == "" {
+			sendInvalidArgument(sender, "workspace_id is required")
+			return
+		}
+		if !svc.requireAccessibleWorkspace(sender, workspaceID) {
+			return
+		}
+		if svc.PrivateEvents == nil {
+			return
+		}
+		_ = svc.PrivateEvents.SnapshotAndSubscribe(
+			bgCtx(),
+			workspaceID,
+			func(wsID string) []*leapmuxv1.WorkspacePrivateEvent {
+				if svc.FileTabPaths == nil {
+					return nil
+				}
+				snapshot, err := svc.FileTabPaths.SnapshotForWorkspace(bgCtx(), wsID)
+				if err != nil {
+					return nil
+				}
+				return snapshot
+			},
+			func(evt *leapmuxv1.WorkspacePrivateEvent) error {
+				data, err := proto.Marshal(evt)
+				if err != nil {
+					return err
+				}
+				return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: data})
+			},
+		)
+	})
+
+	d.Register("RegisterFileTabPath", func(_ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.RegisterFileTabPathRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+		if r.GetTabId() == "" || r.GetOrgId() == "" || r.GetWorkspaceId() == "" || r.GetFilePath() == "" {
+			sendInvalidArgument(sender, "tab_id, org_id, workspace_id, file_path are required")
+			return
+		}
+		if !svc.requireAccessibleWorkspace(sender, r.GetWorkspaceId()) {
+			return
+		}
+		if svc.FileTabPaths == nil {
+			sendInternalError(sender, "file tab path store unavailable")
+			return
+		}
+		if err := svc.FileTabPaths.Register(bgCtx(), RegisterFileTabPathParams{
+			OrgID: r.GetOrgId(), TabID: r.GetTabId(),
+			WorkspaceID: r.GetWorkspaceId(), FilePath: r.GetFilePath(),
+		}); err != nil {
+			sendInternalError(sender, err.Error())
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.RegisterFileTabPathResponse{})
+	})
+
+	d.Register("GetFileTabPath", func(_ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.GetFileTabPathRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+		if r.GetTabId() == "" || r.GetOrgId() == "" {
+			sendInvalidArgument(sender, "tab_id and org_id are required")
+			return
+		}
+		if svc.FileTabPaths == nil {
+			sendInternalError(sender, "file tab path store unavailable")
+			return
+		}
+		wsID, path, err := svc.FileTabPaths.Get(bgCtx(), r.GetOrgId(), r.GetTabId())
+		if err != nil {
+			if errors.Is(err, ErrFileTabPathNotFound) {
+				sendNotFoundError(sender, "file tab path not found")
+				return
+			}
+			sendInternalError(sender, err.Error())
+			return
+		}
+		if !svc.requireAccessibleWorkspace(sender, wsID) {
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.GetFileTabPathResponse{
+			WorkspaceId: wsID,
+			FilePath:    path,
+		})
+	})
+
+	d.Register("RevokeFileTabPath", func(_ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.RevokeFileTabPathRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+		if r.GetTabId() == "" || r.GetOrgId() == "" {
+			sendInvalidArgument(sender, "tab_id and org_id are required")
+			return
+		}
+		if svc.FileTabPaths == nil {
+			sendInternalError(sender, "file tab path store unavailable")
+			return
+		}
+		// Workspace auth check uses the tab's currently-stored
+		// workspace_id (rollback path: the CRDT tab may not exist yet).
+		wsID, _, getErr := svc.FileTabPaths.Get(bgCtx(), r.GetOrgId(), r.GetTabId())
+		if getErr != nil {
+			if errors.Is(getErr, ErrFileTabPathNotFound) {
+				// Already revoked — idempotent success.
+				sendProtoResponse(sender, &leapmuxv1.RevokeFileTabPathResponse{})
+				return
+			}
+			sendInternalError(sender, getErr.Error())
+			return
+		}
+		if !svc.requireAccessibleWorkspace(sender, wsID) {
+			return
+		}
+		if err := svc.FileTabPaths.Revoke(bgCtx(), r.GetOrgId(), r.GetTabId()); err != nil {
+			sendInternalError(sender, err.Error())
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.RevokeFileTabPathResponse{})
+	})
+
+	d.Register("RelocateFileTabPath", func(_ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+		var r leapmuxv1.RelocateFileTabPathRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+		if r.GetTabId() == "" || r.GetOrgId() == "" || r.GetNewWorkspaceId() == "" {
+			sendInvalidArgument(sender, "tab_id, org_id, new_workspace_id are required")
+			return
+		}
+		if svc.FileTabPaths == nil {
+			sendInternalError(sender, "file tab path store unavailable")
+			return
+		}
+		// Auth: caller must have access to BOTH the current and the
+		// destination workspaces (mirrors the CRDT's cross-workspace
+		// move auth rule).
+		wsID, _, err := svc.FileTabPaths.Get(bgCtx(), r.GetOrgId(), r.GetTabId())
+		if err != nil {
+			if errors.Is(err, ErrFileTabPathNotFound) {
+				sendNotFoundError(sender, "file tab path not found")
+				return
+			}
+			sendInternalError(sender, err.Error())
+			return
+		}
+		if !svc.requireAccessibleWorkspace(sender, wsID) {
+			return
+		}
+		if !svc.requireAccessibleWorkspace(sender, r.GetNewWorkspaceId()) {
+			return
+		}
+		if err := svc.FileTabPaths.Relocate(bgCtx(), r.GetOrgId(), r.GetTabId(), r.GetNewWorkspaceId()); err != nil {
+			sendInternalError(sender, err.Error())
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.RelocateFileTabPathResponse{})
+	})
+
 	d.Register("ListAvailableProviders", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListAvailableProvidersRequest
 		if err := unmarshalRequest(req, &r); err != nil {
@@ -851,8 +1094,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		channelID := sender.ChannelID()
-		allowedWorkspaces := svc.Channels.AccessibleWorkspaceIDs(channelID)
+		auth := svc.AuthorizerForSender(sender)
+		channelID := auth.SubscriberID()
+		allowedWorkspaces := auth.AccessibleSet()
 
 		// Create an EventWatcher for this stream.
 		watcher := &EventWatcher{
@@ -1435,7 +1679,7 @@ func buildAgentInactiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.AgentGitSt
 // restart of an agent subprocess. Verb is typically "Starting" or
 // "Restarting".
 func agentStartupLabel(verb string, provider leapmuxv1.AgentProvider) string {
-	return verb + " " + agent.DisplayName(provider) + "…"
+	return verb + " " + agentlabels.DisplayName(provider) + "…"
 }
 
 // broadcastAgentStarting fans out a STARTING AgentStatusChange to all

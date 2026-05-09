@@ -26,10 +26,14 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
-    // Wait for the assistant response in the active chat view
+    // Wait for the assistant response in the active chat view. The agent
+    // may emit multiple message-content nodes (thought blocks, final
+    // reply, status text); use `.first()` so the strict-mode check
+    // doesn't trip when more than one bubble matches "2".
     await expect(
       page.locator(`${ASSISTANT_BUBBLE_SELECTOR} [data-testid="message-content"]`)
-        .filter({ hasText: '2' }),
+        .filter({ hasText: '2' })
+        .first(),
     ).toBeVisible({ timeout: 60_000 })
 
     // Wait for the ContextUsageGrid trigger to appear
@@ -106,10 +110,14 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
-    // Wait for the assistant response in the active chat view
+    // Wait for the assistant response in the active chat view. The agent
+    // may emit multiple message-content nodes (thought blocks, final
+    // reply, status text); use `.first()` so the strict-mode check
+    // doesn't trip when more than one bubble matches "2".
     await expect(
       page.locator(`${ASSISTANT_BUBBLE_SELECTOR} [data-testid="message-content"]`)
-        .filter({ hasText: '2' }),
+        .filter({ hasText: '2' })
+        .first(),
     ).toBeVisible({ timeout: 60_000 })
 
     // Wait for the ContextUsageGrid trigger to appear and stabilize.

@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { Tab, TabItemOps } from '~/stores/tab.store'
+import type { Tab, TabItemOps } from '~/stores/tab.types'
 import { createDraggable } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
@@ -14,7 +14,8 @@ import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
-import { canCloseTab, tabKey } from '~/stores/tab.store'
+import { canCloseTab, tabKey } from '~/stores/tab.helpers'
+import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
@@ -69,11 +70,11 @@ const TabLeaf: Component<{
       }}
       data-testid="tab-tree-leaf"
       data-tab-id={props.tab.id}
-      data-terminal-status={props.tab.status}
+      data-terminal-status={isTerminalTab(props.tab) ? props.tab.status : undefined}
     >
       <div class={shared.chevronPlaceholder} />
-      <Show when={props.tab.type === TabType.AGENT} fallback={<Terminal size={14} class={css.tabIcon} />}>
-        <AgentProviderIcon provider={props.tab.agentProvider} size={14} class={css.tabIcon} />
+      <Show when={isAgentTab(props.tab)} fallback={<Terminal size={14} class={css.tabIcon} />}>
+        <AgentProviderIcon provider={isAgentTab(props.tab) ? props.tab.agentProvider : undefined} size={14} class={css.tabIcon} />
       </Show>
       <Show
         when={!props.isEditing}
@@ -107,7 +108,7 @@ const TabLeaf: Component<{
         <Tooltip text={props.tab.title || props.tab.id} showWhen="clipped">
           <span
             class={css.tabLabel}
-            classList={terminalStatusClassList(props.tab.status)}
+            classList={terminalStatusClassList(isTerminalTab(props.tab) ? props.tab.status : undefined)}
           >
             {props.tab.title || props.tab.id}
           </span>

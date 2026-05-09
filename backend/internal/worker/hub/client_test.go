@@ -14,6 +14,8 @@ import (
 	"github.com/cenkalti/backoff/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // TestNew_DispatchesOnURLScheme verifies the scheme-dispatch branches in
@@ -322,5 +324,51 @@ func TestIsCodeUnauthenticated(t *testing.T) {
 	t.Run("non-connect error containing the word unauthenticated", func(t *testing.T) {
 		err := fmt.Errorf("some other unauthenticated failure")
 		assert.False(t, isCodeUnauthenticated(err), "string match must not leak through")
+	})
+}
+
+// TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback pins the
+// dispatch wiring for the hub's reply to the connect-time
+// WorkspaceTabsSync. Without this case, handleMessage falls through
+// to the "unhandled hub message" warn — the response would be wasted
+// protocol and reconnects would have to wait for the orphan
+// reconciler's hourly tick to converge worker state.
+func TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback(t *testing.T) {
+	c := New("http://localhost:0")
+	var captured *leapmuxv1.WorkspaceTabsSyncResponse
+	c.OnTabSyncResponse = func(resp *leapmuxv1.WorkspaceTabsSyncResponse) {
+		captured = resp
+	}
+
+	resp := &leapmuxv1.WorkspaceTabsSyncResponse{
+		OrphanTabIds: []*leapmuxv1.TabIdent{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "orphan-1"},
+		},
+	}
+	c.handleMessage(&leapmuxv1.ConnectResponse{
+		RequestId: "req-7",
+		Payload: &leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp{
+			WorkspaceTabsSyncResp: resp,
+		},
+	})
+
+	require.NotNil(t, captured, "OnTabSyncResponse should be invoked")
+	assert.Same(t, resp, captured, "callback should receive the original response message verbatim")
+}
+
+// TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe documents
+// the optional-callback contract. Clients with no reconciler wired
+// (tests, minimal embeddings) must still consume the response without
+// panicking; the orphan reconciler is the only consumer in production.
+func TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe(t *testing.T) {
+	c := New("http://localhost:0")
+	require.Nil(t, c.OnTabSyncResponse)
+
+	assert.NotPanics(t, func() {
+		c.handleMessage(&leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp{
+				WorkspaceTabsSyncResp: &leapmuxv1.WorkspaceTabsSyncResponse{},
+			},
+		})
 	})
 }

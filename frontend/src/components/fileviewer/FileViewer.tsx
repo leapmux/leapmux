@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { FileViewMode } from '~/lib/fileType'
-import type { FileDiffBase, FileViewMode as TabFileViewMode } from '~/stores/tab.store'
+import type { FileDiffBase, FileViewMode as TabFileViewMode } from '~/stores/tab.types'
 import AtSign from 'lucide-solid/icons/at-sign'
 import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'

@@ -180,6 +180,32 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Equal(t, "in-a", users[0].Username)
 	})
 
+	t.Run("list by ids", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "user-org", true)
+		u1 := SeedUser(t, st, orgID, "byid-1")
+		u2 := SeedUser(t, st, orgID, "byid-2")
+		deleted := SeedUser(t, st, orgID, "byid-deleted")
+		require.NoError(t, st.Users().Delete(ctx, deleted.ID))
+
+		// Empty input: nil result without a DB call.
+		got, err := st.Users().ListByIDs(ctx, nil)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+
+		// Mixed input: live ids return, deleted + missing drop silently.
+		got, err = st.Users().ListByIDs(ctx, []string{u1.ID, u2.ID, deleted.ID, "missing-id"})
+		require.NoError(t, err)
+		ids := make(map[string]struct{}, len(got))
+		for _, u := range got {
+			ids[u.ID] = struct{}{}
+		}
+		assert.Contains(t, ids, u1.ID)
+		assert.Contains(t, ids, u2.ID)
+		assert.NotContains(t, ids, deleted.ID, "deleted users should be excluded")
+		assert.NotContains(t, ids, "missing-id")
+	})
+
 	t.Run("list all", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "user-org", true)

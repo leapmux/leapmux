@@ -8,6 +8,11 @@ SELECT * FROM workspaces WHERE id = $1 AND is_deleted = FALSE;
 -- name: GetWorkspaceByIDIncludeDeleted :one
 SELECT * FROM workspaces WHERE id = $1;
 
+-- name: ListWorkspacesByIDs :many
+SELECT * FROM workspaces
+WHERE id = ANY(sqlc.arg(workspace_ids)::TEXT[])
+  AND is_deleted = FALSE;
+
 -- name: ListAccessibleWorkspaces :many
 SELECT DISTINCT w.* FROM workspaces w
 LEFT JOIN workspace_access wa ON w.id = wa.workspace_id AND wa.user_id = sqlc.arg(user_id)

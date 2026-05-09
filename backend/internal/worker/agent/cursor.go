@@ -31,7 +31,7 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 		ctx, opts.Shell, opts.LoginShell, "cursor-agent", nil, []string{"acp"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = append(cmd.Environ(), "LEAPMUX_WORKER=1")
+	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
 
 	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -40,22 +40,9 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 
 	a := &CursorCLIAgent{
 		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:            opts.AgentID,
-				providerName:       "cursor",
-				cmd:                cmd,
-				stdin:              stdin,
-				ctx:                ctx,
-				cancel:             cancel,
-				stderrDone:         make(chan struct{}),
-				processDone:        make(chan struct{}),
-				preambleDelimiter:  preambleDelimiter,
-				preambleMetaPrefix: metaPrefix,
-				preambleMeta:       make(map[string]string),
-				apiTimeout:         opts.apiTimeout(),
-			}},
-			sink:  sink,
-			model: normalizeCursorModelID(opts.Model),
+			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "cursor", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
+			sink:        sink,
+			model:       normalizeCursorModelID(opts.Model),
 		},
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)

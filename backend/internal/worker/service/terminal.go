@@ -149,12 +149,19 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// Persist the initial terminal record using the planned working
 		// dir, so tab sync and post-refresh reads see the eventual path
 		// even before git-mode execution creates the worktree.
+		// Default a random "Terminal <Name>" title here so all spawn
+		// paths (UI + CLI) get a name from one pool, picked one place.
+		// OpenTerminalRequest has no title field by design — the
+		// frontend used to pick client-side and call UpdateTerminalTitle
+		// afterward; now it just reads `title` from this response.
+		terminalTitle := pickTerminalTitle()
 		if upsertErr := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 			ID:            terminalID,
 			WorkspaceID:   workspaceID,
 			WorkingDir:    plan.PlannedWorkingDir,
 			HomeDir:       svc.HomeDir,
 			ShellStartDir: shellStartDir,
+			Title:         terminalTitle,
 			Cols:          int64(cols),
 			Rows:          int64(rows),
 			Screen:        []byte{},
@@ -162,6 +169,30 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			slog.Error("failed to persist terminal record", "terminal_id", terminalID, "error", upsertErr)
 			sendInternalError(sender, "failed to persist terminal")
 			return
+		}
+
+		// Inject LEAPMUX_REMOTE_* env vars into every spawned shell so
+		// scripts inside can drive LeapMux via `leapmux remote`. The
+		// factory may still return nil envs (e.g. RemoteIPC disabled in
+		// tests / minimal configurations).
+		var remoteEnvs []string
+		if svc.RemoteIPC != nil {
+			envs, cleanup, ipErr := svc.RemoteIPC.TerminalSpawning(TerminalSpawnInfo{
+				UserID:      userID,
+				OrgID:       r.GetOrgId(),
+				WorkspaceID: workspaceID,
+				WorkerID:    svc.WorkerID,
+				TabID:       terminalID,
+				WorkingDir:  plan.PlannedWorkingDir,
+			})
+			if ipErr != nil {
+				slog.Warn("remote IPC factory failed; terminal will start without remote control", "terminal_id", terminalID, "error", ipErr)
+			} else {
+				remoteEnvs = envs
+				if cleanup != nil {
+					svc.registerTerminalCleanup(terminalID, cleanup)
+				}
+			}
 		}
 
 		// Register the startup in the registry with a cancel ctx so
@@ -178,6 +209,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 
 		sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 			TerminalId: terminalID,
+			Title:      terminalTitle,
 		})
 
 		// Kick off git-mode execution + PTY spawn in the background.
@@ -189,6 +221,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			ShellStartDir: shellStartDir,
 			Cols:          uint16(cols),
 			Rows:          uint16(rows),
+			ExtraEnv:      remoteEnvs,
 		}, plan, outputFn, exitFn)
 	})
 
@@ -219,6 +252,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			func() {
 				svc.TerminalStartup.cancelAndClear(terminalID)
 				svc.Terminals.RemoveTerminal(terminalID)
+				svc.runTerminalCleanup(terminalID)
 			},
 			func() error { return svc.Queries.CloseTerminal(bgCtx(), terminalID) },
 		)
@@ -346,6 +380,13 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		if svc.PrivateEvents != nil {
+			svc.PrivateEvents.PublishTabRenamed(
+				dbTerm.WorkspaceID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+				title, sender.ChannelID(),
+			)
+		}
+
 		sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
 	})
 
@@ -366,11 +407,11 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// Filter by access control: only return terminals in accessible workspaces.
-		var accessibleWsIDs map[string]bool
-		if chID := sender.ChannelID(); chID != "" {
-			accessibleWsIDs = svc.Channels.AccessibleWorkspaceIDs(chID)
-		}
+		// Filter by access control: only return terminals in accessible
+		// workspaces. AuthorizerForSender abstracts over E2EE channels and
+		// local-IPC streams (which have no channel id but carry a token
+		// scope registered at request entry).
+		accessibleWsIDs := svc.AuthorizerForSender(sender).AccessibleSet()
 
 		// Collect from the in-memory manager and DB-only rows, recording
 		// each terminal's resolved git directory (see gitutil.ResolveGitDir)

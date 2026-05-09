@@ -9,4 +9,4 @@ SELECT * FROM pending_oauth_signups WHERE token = ?;
 DELETE FROM pending_oauth_signups WHERE token = ?;
 
 -- name: DeleteExpiredPendingOAuthSignups :execresult
-DELETE FROM pending_oauth_signups WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+DELETE FROM pending_oauth_signups WHERE datetime(expires_at) < datetime('now');

@@ -28,14 +28,30 @@ const userKey contextKey = iota
 // users; they're cached for sessionCacheTTL alongside the rest. Mutating
 // either column on `users` (verify, change, admin reset) requires
 // evicting the user's cached sessions — see SessionCache.EvictByUserID.
+//
+// DelegationWorkspaceID is set only when the request was authenticated
+// by a delegation_tokens row (as opposed to a session cookie or an
+// api_tokens bearer). It pins the request to the workspace the
+// delegation was minted for; downstream authorization (notably
+// ChannelService.OpenChannel) MUST narrow accessible-workspace
+// reasoning to this single id rather than the user's full grant set,
+// so a compromised delegation bearer cannot pivot beyond its scope.
+//
+// BearerTokenID is the api_tokens / delegation_tokens primary key
+// when the request was authenticated by an `lmx_…` bearer; empty for
+// cookie-based sessions. ChannelService.OpenChannel records it on
+// the channelmgr entry so revocation paths can force-close every
+// open channel that was authorized by a now-revoked token.
 type UserInfo struct {
-	ID            string
-	SessionID     string // session that authenticated this request
-	OrgID         string
-	Username      string
-	IsAdmin       bool
-	Email         string
-	EmailVerified bool
+	ID                    string
+	SessionID             string // session that authenticated this request
+	OrgID                 string
+	Username              string
+	IsAdmin               bool
+	Email                 string
+	EmailVerified         bool
+	DelegationWorkspaceID string
+	BearerTokenID         string
 }
 
 // WithUser stores a UserInfo in the context.
@@ -57,6 +73,70 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("not authenticated"))
 	}
 	return u, nil
+}
+
+// RevokeAllUserCredentials revokes every active api_tokens and
+// delegation_tokens row for userID and bumps
+// users.tokens_revoked_at. Returns (apiCount, delegationCount) so
+// admin handlers can report what was killed.
+//
+// Caller-side concerns:
+//   - The bearer cache lives in the running hub process; admin CLI
+//     callers don't need to evict it (the revocation watcher closes
+//     the loop). In-process callers should wrap this in
+//     PropagateUserRevocation, which adds cache invalidation.
+//   - Pass a transaction-scoped Store to keep the multi-row update
+//     atomic; admin handlers wrap this in `RunInTransaction`.
+//
+// Returns the first store error and leaves later steps unrun, so a
+// failed api-token revoke aborts before the delegation-token revoke
+// or the watermark bump.
+func RevokeAllUserCredentials(ctx context.Context, st store.Store, userID string) (int64, int64, error) {
+	apiCount, err := st.APITokens().RevokeByUser(ctx, userID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("revoke api tokens: %w", err)
+	}
+	delegationCount, err := st.DelegationTokens().RevokeByUser(ctx, userID)
+	if err != nil {
+		return apiCount, 0, fmt.Errorf("revoke delegation tokens: %w", err)
+	}
+	if _, err := st.Users().BumpTokensRevokedAt(ctx, userID); err != nil {
+		return apiCount, delegationCount, fmt.Errorf("bump user tokens_revoked_at: %w", err)
+	}
+	return apiCount, delegationCount, nil
+}
+
+// PropagateUserRevocation revokes every live api_tokens and
+// delegation_tokens row for userID, bumps users.tokens_revoked_at
+// (so the hub's revocation watcher picks the event up
+// cross-process), and busts the in-memory bearer cache so the
+// revocation is observed immediately rather than after the 30s
+// cache TTL.
+//
+// Hooked from in-process credential-rotation paths
+// (UserService.ChangePassword today; future account-deactivation
+// flows). Admin CLI commands run in a different process; they
+// mutate the same DB rows directly and the watcher closes the
+// loop. The function is idempotent and safe to call repeatedly.
+//
+// Returns the total count of credentials revoked and the first
+// store error if any. Callers tend to treat revoke failures as
+// warnings: the watcher's next sweep retries, and the row's TTL
+// bounds the worst case.
+func PropagateUserRevocation(ctx context.Context, st store.Store, sc *SessionCache, userID string) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	apiCount, delegationCount, revErr := RevokeAllUserCredentials(ctx, st, userID)
+	if sc != nil {
+		// The user-wide sweeps Range every cached entry exactly once,
+		// covering both the rows we just revoked and any issued between
+		// listing and revoking. A prior list-then-evict pass paired with
+		// the sweep was strictly redundant.
+		sc.EvictBearersByUserID(userID)
+		sc.EvictByUserID(userID)
+	}
+	return apiCount + delegationCount, revErr
 }
 
 // LoadSoloUser looks up the bootstrapped solo user and maps it into a

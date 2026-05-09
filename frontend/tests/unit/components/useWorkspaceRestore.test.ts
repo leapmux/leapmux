@@ -1,35 +1,33 @@
-import { createRoot, createSignal } from 'solid-js'
+import { create } from '@bufbuild/protobuf'
+import { createEffect, createRoot, createSignal, untrack } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceRestore } from '~/components/shell/useWorkspaceRestore'
 import { EXPANDED_WORKSPACES_KEY } from '~/components/workspace/expandedWorkspaces'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { HLCSchema, LWWStringSchema, TabRecordSchema } from '~/generated/leapmux/v1/org_crdt_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createAgentStore } from '~/stores/agent.store'
+import { getCRDTBridge, project, setCRDTBridge } from '~/lib/crdt'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
+import { installTestBridge } from '../helpers/crdtBridge'
 
 // Both network calls return unresolved promises: the test only inspects
 // the synchronous fan-out that happens inside the restore effect.
-const mockListTabsForWorkspace = vi.fn(() => new Promise<never>(() => {}))
-const mockGetLayout = vi.fn(() => new Promise<never>(() => {}))
+const mockListTabsForWorkspace = vi.fn<(orgId: string, wsId: string) => Promise<unknown>>(() => new Promise<never>(() => {}))
 const mockListTerminals = vi.fn<(workerId: string, req: { tabIds: string[] }) => Promise<{ terminals: unknown[] }>>(() => new Promise<never>(() => {}))
+const mockListAgents = vi.fn<(workerId: string, req: { tabIds: string[] }) => Promise<{ agents: unknown[] }>>(() => new Promise<never>(() => {}))
 
 vi.mock('~/api/listTabsBatcher', () => ({
-  listTabsForWorkspace: (...args: unknown[]) => mockListTabsForWorkspace(...args as []),
-}))
-
-vi.mock('~/api/clients', () => ({
-  workspaceClient: {
-    getLayout: (...args: unknown[]) => mockGetLayout(...args as []),
-  },
+  listTabsForWorkspace: (...args: unknown[]) => mockListTabsForWorkspace(...args as [string, string]),
 }))
 
 vi.mock('~/api/workerRpc', () => ({
-  listAgents: vi.fn(() => new Promise<never>(() => {})),
+  listAgents: (workerId: string, req: { tabIds: string[] }) => mockListAgents(workerId, req),
   listTerminals: (workerId: string, req: { tabIds: string[] }) => mockListTerminals(workerId, req),
 }))
 
@@ -37,7 +35,6 @@ function makeBaseOpts() {
   const registry = createWorkspaceStoreRegistry()
   const tabStore = createTabStore()
   const layoutStore = createLayoutStore()
-  const agentStore = createAgentStore()
   const chatStore = createChatStore()
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
@@ -46,7 +43,6 @@ function makeBaseOpts() {
     registry,
     tabStore,
     layoutStore,
-    agentStore,
     chatStore,
     controlStore,
     agentSessionStore,
@@ -57,13 +53,16 @@ function makeBaseOpts() {
 beforeEach(() => {
   sessionStorage.clear()
   mockListTabsForWorkspace.mockClear()
-  mockGetLayout.mockClear()
+  mockListTabsForWorkspace.mockImplementation(() => new Promise<never>(() => {}))
   mockListTerminals.mockClear()
   mockListTerminals.mockImplementation(() => new Promise<never>(() => {}))
+  mockListAgents.mockClear()
+  mockListAgents.mockImplementation(() => new Promise<never>(() => {}))
 })
 
 afterEach(() => {
   sessionStorage.clear()
+  setCRDTBridge(null)
 })
 
 // Yields a microtask so Solid flushes queued createEffect invocations.
@@ -121,7 +120,6 @@ describe('useWorkspaceRestore sibling pre-fetch', () => {
         tabs: [],
         activeTabKey: null,
         layout: { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
-        agents: [],
         restored: true,
         tabsLoaded: true,
       })
@@ -195,7 +193,6 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
       }],
       activeTabKey: null,
       layout: { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
-      agents: [],
       restored: true,
       tabsLoaded: true,
     })
@@ -241,7 +238,6 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
       }],
       activeTabKey: null,
       layout: { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
-      agents: [],
       restored: true,
       tabsLoaded: true,
     })
@@ -292,7 +288,6 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
       ],
       activeTabKey: null,
       layout: { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
-      agents: [],
       restored: true,
       tabsLoaded: true,
     })
@@ -317,5 +312,142 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
     expect(mockListTerminals).toHaveBeenCalledWith('worker-1', { tabIds: ['term-missing'] })
 
     dispose()
+  })
+})
+
+// Regression: when multiple AGENT tabs are restored in a single pass, the
+// loop calls `tabStore.addTab` for each agent. `addTab` emits a CRDT op
+// (SetTabRegister) through the bridge, which bumps the pendingVersion
+// signal the AppShell-style projection reconciler subscribes to. Solid's
+// `createEffect` flushes synchronously after the signal write, so the
+// reconciler runs *between* the loop's iterations — after the first
+// agent is in the local store but before the second. It then adds a
+// bare tab (no title, no agentProvider) for the second agent because
+// the projection still says that agent's tab exists. When the loop's
+// next iteration calls `addTab` for that second agent with full
+// metadata, the dedupe guard in `addTab` silently drops the metadata-
+// carrying record in favour of the bare one. Net result: the first tab
+// looks correct (Agent Etta) and every later tab in the same workspace
+// renders as `<raw id>` + the generic bot icon — exactly the symptom
+// reported after a fresh desktop-solo restart.
+describe('useWorkspaceRestore agent hydration race against reconciler', () => {
+  it('keeps full metadata on every agent tab even when the reconciler fires mid-loop', async () => {
+    const orgId = 'org-race'
+    const wsId = 'ws-race'
+    const tileId = 'tile-race'
+    const workerId = 'worker-race'
+
+    await new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          // Real bridge + PendingOpsManager so addTab's emit path drives
+          // the same signal AppShell wires the reconciler to.
+          const harness = installTestBridge({ orgId, workspaceId: wsId, rootTileId: tileId })
+          const hlc = create(HLCSchema, { physical: 10n, logical: 0n, clientId: 'seed' })
+          for (const id of ['etta', 'walker']) {
+            harness.pending.state.confirmedState.tabs[id] = create(TabRecordSchema, {
+              tabType: TabType.AGENT,
+              tabId: id,
+              tileId: create(LWWStringSchema, { value: tileId, hlc }),
+              position: create(LWWStringSchema, { value: id === 'etta' ? 'n' : 'ne', hlc }),
+              workerId: create(LWWStringSchema, { value: workerId, hlc }),
+            })
+          }
+          harness.pending.recomputeSpeculative()
+
+          const opts = makeBaseOpts()
+
+          // Mirror AppShell.tsx's CRDT reconciler effect. The effect
+          // subscribes to the bridge's speculativeState accessor — which
+          // is the same signal `bumpVersion` (called from
+          // PendingOpsManager.submit -> notify) bumps. On every fire,
+          // pushes any projection-known tabs missing from tabStore in
+          // as bare records.
+          createEffect(() => {
+            const bridge = getCRDTBridge()
+            if (!bridge)
+              return
+            const state = bridge.speculativeState()
+            if (!state)
+              return
+            untrack(() => {
+              const proj = project(state)
+              const rendered = proj.renderedTabs.filter(t => t.workspaceId === wsId)
+              opts.tabStore.reconcileFromProjection({
+                workspaceId: wsId,
+                renderedTabs: rendered,
+                crdtKnownTabIds: new Set(Object.keys(state.tabs)),
+              })
+            })
+          })
+
+          // Hub-side ListTabs returns both tabs, the worker-side
+          // ListAgents returns both agents with full metadata.
+          mockListTabsForWorkspace.mockImplementation(async () => ({
+            tabs: [
+              { tabType: TabType.AGENT, tabId: 'etta', tileId, position: 'n', workerId, workspaceId: wsId },
+              { tabType: TabType.AGENT, tabId: 'walker', tileId, position: 'ne', workerId, workspaceId: wsId },
+            ],
+          }))
+          mockListAgents.mockImplementation(async () => ({
+            agents: [
+              {
+                id: 'etta',
+                workspaceId: wsId,
+                workerId,
+                title: 'Agent Etta',
+                agentProvider: AgentProvider.CLAUDE_CODE,
+                workingDir: '/repo',
+              },
+              {
+                id: 'walker',
+                workspaceId: wsId,
+                workerId,
+                title: 'Agent Walker',
+                agentProvider: AgentProvider.CLAUDE_CODE,
+                workingDir: '/repo',
+              },
+            ],
+          }))
+
+          const [getActiveId, setActiveId] = createSignal<string | null>(null)
+          const [getOrgId, setOrgId] = createSignal<string | undefined>(undefined)
+
+          useWorkspaceRestore({
+            ...opts,
+            getActiveWorkspaceId: getActiveId,
+            getOrgId,
+          })
+          setActiveId(wsId)
+          setOrgId(orgId)
+
+          // Drain microtasks until the restore .then() body has run.
+          // The path awaits two promises (tabsLoaded + bootstrap) and
+          // then fanOutTabsToWorkers, so several microtask turns are
+          // needed.
+          for (let i = 0; i < 20; i++) {
+            await Promise.resolve()
+          }
+
+          const ettaTab = opts.tabStore.state.tabs.find(t => t.id === 'etta')
+          const walkerTab = opts.tabStore.state.tabs.find(t => t.id === 'walker')
+          expect(ettaTab, 'etta tab present').toBeDefined()
+          expect(walkerTab, 'walker tab present').toBeDefined()
+          expect(ettaTab?.title).toBe('Agent Etta')
+          expect(ettaTab?.agentProvider).toBe(AgentProvider.CLAUDE_CODE)
+          // The bug: walker comes back as a bare reconciler-added tab.
+          expect(walkerTab?.title).toBe('Agent Walker')
+          expect(walkerTab?.agentProvider).toBe(AgentProvider.CLAUDE_CODE)
+
+          harness.dispose()
+          dispose()
+          resolve()
+        }
+        catch (err) {
+          dispose()
+          reject(err)
+        }
+      })
+    })
   })
 })

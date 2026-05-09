@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/util/procutil"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -37,11 +37,11 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		ctx, opts.Shell, opts.LoginShell, "opencode", []string{"OPENCODE_CLIENT"}, []string{"acp"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = procutil.FilterEnv(cmd.Environ(), "OPENCODE_CLIENT")
-	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
+	cmd.Env = envutil.FilterEnv(cmd.Environ(), "OPENCODE_CLIENT")
 	if opts.LoginShell {
 		cmd.Env = append(cmd.Env, "OPENCODE_CLIENT=1")
 	}
+	cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
 
 	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -50,22 +50,9 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 
 	a := &OpenCodeAgent{
 		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:            opts.AgentID,
-				providerName:       "opencode",
-				cmd:                cmd,
-				stdin:              stdin,
-				ctx:                ctx,
-				cancel:             cancel,
-				stderrDone:         make(chan struct{}),
-				processDone:        make(chan struct{}),
-				preambleDelimiter:  preambleDelimiter,
-				preambleMetaPrefix: metaPrefix,
-				preambleMeta:       make(map[string]string),
-				apiTimeout:         opts.apiTimeout(),
-			}},
-			sink:  sink,
-			model: opts.Model,
+			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "opencode", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
+			sink:        sink,
+			model:       opts.Model,
 		},
 	}
 	a.promptFunc = a.doSendPrompt

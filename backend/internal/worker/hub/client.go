@@ -30,7 +30,9 @@ import (
 // Client manages the connection to the Hub.
 type Client struct {
 	connector  leapmuxv1connect.WorkerConnectorServiceClient
+	reconciler leapmuxv1connect.WorkerReconcilerServiceClient
 	hubURL     string
+	authToken  string
 	agents     *agent.Manager
 	terminals  *terminal.Manager
 	channelMgr *channel.Manager
@@ -38,6 +40,14 @@ type Client struct {
 	// OnDeregister is called when the Hub sends a deregistration notification.
 	// The worker should clear its state and shut down gracefully.
 	OnDeregister func()
+
+	// OnTabSyncResponse is called when the Hub replies to the connect-
+	// time WorkspaceTabsSync with its orphan / reassignment
+	// classification. Wired by the runner to trigger an immediate
+	// orphan-reconciler pass so reconnects converge worker state with
+	// the hub's CRDT-derived `workspace_tab_owned` view without
+	// waiting for the periodic interval.
+	OnTabSyncResponse func(*leapmuxv1.WorkspaceTabsSyncResponse)
 
 	// PublicKey is the Worker's X25519 public key for E2EE channels.
 	// Sent to the Hub with the initial heartbeat.
@@ -79,6 +89,10 @@ func New(hubURL string) *Client {
 			connectURL,
 			connect.WithGRPC(),
 		),
+		reconciler: leapmuxv1connect.NewWorkerReconcilerServiceClient(
+			httpClient,
+			connectURL,
+		),
 		hubURL:    hubURL,
 		terminals: terminal.NewManager(),
 	}
@@ -97,18 +111,20 @@ func New(hubURL string) *Client {
 // placeholder "http://localhost" route (the transport dials the real
 // endpoint); remote URLs pass through to a plain h2c client.
 func clientForHubURL(hubURL string) (*http.Client, string) {
-	if locallisten.IsLocal(hubURL) {
-		dial, _ := locallisten.Dialer(hubURL) // IsLocal guarantees success.
-		return &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}, "http://localhost"
-	}
-	transport := &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, network, addr)
+	return locallisten.SelectClient(
+		hubURL,
+		func() (*http.Client, string, error) { return locallisten.LocalH2CClient(hubURL, 0) },
+		func() (*http.Client, string) {
+			transport := &http2.Transport{
+				AllowHTTP: true,
+				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, network, addr)
+				},
+			}
+			return &http.Client{Transport: transport}, hubURL
 		},
-	}
-	return &http.Client{Transport: transport}, hubURL
+	)
 }
 
 // Stop gracefully stops all managers.
@@ -159,8 +175,31 @@ func (c *Client) Send(msg *leapmuxv1.ConnectRequest) error {
 	return err
 }
 
+// ListOwnedTabsForWorker calls the hub's WorkerReconcilerService.
+// Authenticated by the worker's auth token (last seen on Connect).
+// Returns nil + error if Connect hasn't been called yet.
+func (c *Client) ListOwnedTabsForWorker(ctx context.Context) ([]*leapmuxv1.OwnedTab, error) {
+	c.mu.Lock()
+	token := c.authToken
+	c.mu.Unlock()
+	if token == "" {
+		return nil, errors.New("hub client: no auth token (call Connect first)")
+	}
+	req := connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{})
+	req.Header().Set("Authorization", "Bearer "+token)
+	resp, err := c.reconciler.ListOwnedTabsForWorker(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetTabs(), nil
+}
+
 // Connect establishes the bidirectional streaming connection to the Hub.
 func (c *Client) Connect(ctx context.Context, authToken string) error {
+	c.mu.Lock()
+	c.authToken = authToken
+	c.mu.Unlock()
+
 	// Create a connection-scoped context so that Send failures can
 	// cancel the connection and trigger immediate reconnection.
 	connCtx, connCancel := context.WithCancel(ctx)
@@ -253,6 +292,11 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 
 	case *leapmuxv1.ConnectResponse_ChannelAccessUpdate:
 		c.handleChannelAccessUpdate(msg.GetRequestId(), payload.ChannelAccessUpdate)
+
+	case *leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp:
+		if c.OnTabSyncResponse != nil {
+			c.OnTabSyncResponse(payload.WorkspaceTabsSyncResp)
+		}
 
 	default:
 		slog.Warn("unhandled hub message", "request_id", msg.GetRequestId(), "payload_type", fmt.Sprintf("%T", msg.GetPayload()))

@@ -4,10 +4,10 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { KeyPinDecision } from '~/lib/channel'
-import type { createAgentStore } from '~/stores/agent.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
 import type { createWorkspaceStore } from '~/stores/workspace.store'
+import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, Show } from 'solid-js'
 import { sectionClient } from '~/api/clients'
@@ -24,10 +24,10 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { pluralize } from '~/lib/plural'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
+import { protoToAgentTabFields } from '~/stores/tab.helpers'
 import { spinner } from '~/styles/animations.css'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
-import { pickAgentTitle, pickTerminalTitle } from './tabNames'
 
 type LastTabCloseChoice = 'cancel' | 'schedule-delete' | 'close-anyway'
 
@@ -65,11 +65,10 @@ interface AppShellDialogsProps {
   activeWorkspace: () => { id: string } | null
   getCurrentTabContext: () => TabContext
   agentOps: ReturnType<typeof useAgentOperations>
-  agentStore: ReturnType<typeof createAgentStore>
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   workspaceStore: ReturnType<typeof createWorkspaceStore>
-  persistLayout: () => void
+  registry: WorkspaceStoreRegistryType
   focusEditor: () => void
   orgSlug: string
   loadWorkspaces: () => Promise<void>
@@ -86,25 +85,21 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           workspaceId={props.activeWorkspace()?.id ?? ''}
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
-          defaultTitle={pickAgentTitle(props.tabStore.state.tabs)}
           availableProviders={props.availableProviders}
           onRefreshProviders={props.onRefreshProviders}
           onCreated={(agent) => {
             props.setShowNewAgentDialog(false)
             const tileId = props.layoutStore.focusedTileId()
             const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-            props.agentStore.addAgent(agent)
+            // Full per-agent metadata lives on the Tab record now;
+            // protoToAgentTabFields also primes settingsLabelCache.
             props.tabStore.addTab({
               type: TabType.AGENT,
               id: agent.id,
-              title: agent.title || undefined,
               tileId,
-              workerId: agent.workerId,
-              workingDir: agent.workingDir,
-              agentProvider: agent.agentProvider,
+              ...protoToAgentTabFields(agent.workerId, agent),
             }, { afterKey })
             props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, agent.id)
-            props.persistLayout()
             requestAnimationFrame(() => props.focusEditor())
           }}
           onClose={() => props.setShowNewAgentDialog(false)}
@@ -116,17 +111,15 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           workspaceId={props.activeWorkspace()?.id ?? ''}
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
-          onCreated={(terminalId, workerId, workingDir) => {
+          onCreated={(terminalId, workerId, workingDir, title) => {
             props.setShowNewTerminalDialog(false)
             const ws = props.activeWorkspace()
             if (!ws)
               return
-            const title = pickTerminalTitle(props.tabStore.state.tabs)
             const tileId = props.layoutStore.focusedTileId()
             const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
             props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir, status: TerminalStatus.READY }, { afterKey })
             props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, terminalId)
-            props.persistLayout()
           }}
           onClose={() => props.setShowNewTerminalDialog(false)}
         />
@@ -137,6 +130,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           preselectedWorkerId={props.preselectedWorkerId}
           availableProviders={props.availableProviders}
           onRefreshProviders={props.onRefreshProviders}
+          registry={props.registry}
           onCreated={(workspaceId, _wid) => {
             props.setShowNewWorkspace(false)
             props.setPreselectedWorkerId(undefined)

@@ -1,0 +1,139 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "google/protobuf/timestamp.proto";
+import "leapmux/v1/workspace.proto";
+
+// HLC is a hybrid logical clock value. Total order is lex by
+// (physical, logical, client_id) — physical wall-clock first so the
+// clock advances with real time, logical breaks ties within the same
+// physical millisecond, client_id breaks ties between concurrent
+// clients holding the same (physical, logical).
+message HLC {
+  int64  physical  = 1; // unix milliseconds
+  int64  logical   = 2; // tiebreaker incrementing within same physical ms
+  string client_id = 3; // origin client id (for breaking concurrent ties)
+}
+
+// LWW register types. A register's value is determined by the highest
+// (HLC, origin_client_id) op that touches it.
+message LWWString    { string         value = 1; HLC hlc = 2; }
+message LWWInt32     { int32          value = 1; HLC hlc = 2; }
+message LWWUint32    { uint32         value = 1; HLC hlc = 2; }
+message LWWDouble    { double         value = 1; HLC hlc = 2; }
+message LWWDoubles   { DoubleList     value = 1; HLC hlc = 2; }
+message LWWDirection { SplitDirection value = 1; HLC hlc = 2; }
+message LWWNodeKind  { NodeKind       value = 1; HLC hlc = 2; }
+
+// DoubleList wraps a repeated double so it can be stored as a single
+// LWW value (the value is "the list", not individual entries).
+message DoubleList { repeated double values = 1; }
+
+// NodeKind classifies a layout node. LEAF holds tabs; SPLIT contains
+// children laid out along a SplitDirection with explicit ratios; GRID
+// is a fixed rows×cols layout with row_ratios + col_ratios.
+enum NodeKind {
+  NODE_KIND_UNSPECIFIED = 0;
+  NODE_KIND_LEAF        = 1;
+  NODE_KIND_SPLIT       = 2;
+  NODE_KIND_GRID        = 3;
+}
+
+// NodeRecord is one node in the flat layout graph. parent_id is
+// SET-ONCE: written at creation, never re-parented. The node's owning
+// workspace is derived by walking parent_id to a root and resolving
+// via WorkspaceContentsRecord.root_node_id or
+// FloatingWindowRecord.root_node_id — never stored as a register here.
+message NodeRecord {
+  string       node_id      = 1;  // client-minted at creation
+  LWWNodeKind  kind         = 2;
+  string       parent_id    = 3;  // SET-ONCE; "" only for workspace/floating roots
+  LWWString    position     = 4;  // LexoRank (split) or "r,c" (grid)
+  LWWDirection direction    = 5;  // SPLIT only
+  LWWDoubles   ratios       = 6;  // SPLIT only
+  LWWUint32    rows         = 7;  // GRID only
+  LWWUint32    cols         = 8;  // GRID only
+  LWWDoubles   row_ratios   = 9;  // GRID only
+  LWWDoubles   col_ratios   = 10; // GRID only
+  HLC          tombstone_at = 11; // remove-wins
+}
+
+// TabRecord is a single tab. tab_type is part of identity but the
+// `tabs` map is keyed by tab_id alone — uniqueness across TabTypes is
+// enforced by the validator. The tab's owning workspace is derived
+// from tile_id at projection time.
+message TabRecord {
+  TabType   tab_type        = 1;  // immutable identity
+  string    tab_id          = 2;  // immutable identity
+  LWWString tile_id         = 3;  // mutable; cross-workspace move = single LWW write
+  LWWString position        = 4;  // LexoRank within tile
+  LWWString worker_id       = 5;  // mutable for future failover use
+  LWWInt32  display_mode    = 6;  // FILE only
+  LWWInt32  file_view_mode  = 7;  // FILE only
+  LWWString file_diff_base  = 8;  // FILE only
+  HLC       tombstone_at    = 9;  // remove-wins
+}
+
+// FloatingWindowRecord describes a detached floating-window overlay.
+// workspace_id is the only explicit workspace pointer in the data
+// model — windows are addressed without a tree position and don't
+// participate in any parent_id chain. root_node_id is SET-ONCE and
+// names the root of the window's inner subtree.
+message FloatingWindowRecord {
+  string    window_id    = 1;
+  LWWString workspace_id = 2;
+  LWWDouble x            = 3;
+  LWWDouble y            = 4;
+  LWWDouble width        = 5;
+  LWWDouble height       = 6;
+  LWWDouble opacity      = 7;
+  string    root_node_id = 8;  // SET-ONCE at creation
+  HLC       tombstone_at = 9;
+}
+
+// WorkspaceContentsRecord pairs a workspace_id with its (set-once)
+// root_node_id. Membership in the parent map is owned by the regular
+// CreateWorkspace / DeleteWorkspace lifecycle RPCs; the CRDT manager
+// only learns of workspace lifecycle through that channel.
+message WorkspaceContentsRecord {
+  string workspace_id = 1;
+  string root_node_id = 2;  // SET-ONCE at workspace creation
+}
+
+// OrgCrdtState is the full materialized state for one org. Stored as
+// a single proto blob in org_state. Manager-internal slots
+// (`workspaces` map membership, `current_epoch`, `epoch_started_at`)
+// are mutated outside the op log via lifecycle / epoch rotation.
+message OrgCrdtState {
+  string                                    org_id               = 1;
+  map<string, NodeRecord>                   nodes                = 2;
+  map<string, TabRecord>                    tabs                 = 3;
+  map<string, FloatingWindowRecord>         floating_windows     = 4;
+  map<string, WorkspaceContentsRecord>      workspaces           = 5;
+  HLC                                       compaction_watermark = 6;
+  HLC                                       max_hlc              = 7;
+  int64                                     current_epoch        = 8;
+  google.protobuf.Timestamp                 epoch_started_at     = 9;
+}
+
+// OrgMaterialized is the public projection sent to a subscriber on
+// bootstrap, filtered to the workspace_ids they're authorized to
+// read. compaction_watermark is hub-private and not on the wire.
+message OrgMaterialized {
+  string                                    org_id           = 1;
+  map<string, NodeRecord>                   nodes             = 2;
+  map<string, TabRecord>                    tabs              = 3;
+  map<string, FloatingWindowRecord>         floating_windows  = 4;
+  map<string, WorkspaceContentsRecord>      workspaces        = 5;
+  HLC                                       max_hlc           = 6;
+  int64                                     current_epoch     = 7;
+  // subscriber_client_id is the identity the hub will use for this
+  // subscriber when stamping the active-client gate in
+  // PresenceUpdate events. Derived server-side from the authenticated
+  // session (or bearer token / user id fallback). Clients use this to
+  // compare their own identity against the broadcast active_client_id
+  // — without this, a client cannot tell whether it IS the active
+  // client (its random local nanoid never matches the hub's
+  // session-derived id).
+  string                                    subscriber_client_id = 8;
+}

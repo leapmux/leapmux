@@ -208,6 +208,18 @@ func (m *Manager) SendRawInput(agentID string, data []byte) error {
 	return p.SendRawInput(data)
 }
 
+// Interrupt aborts the agent's current turn using the provider-specific
+// signal. Returns ErrAgentNotFound when the agent isn't running.
+func (m *Manager) Interrupt(agentID string) error {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
+	}
+	return p.Interrupt()
+}
+
 // StopAgent stops the agent with the given agent ID.
 // Returns true if the agent was found (and will eventually trigger onExit),
 // false if the agent had already exited.

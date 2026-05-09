@@ -1,220 +1,94 @@
-import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
-import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
-import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
-import { createEffect, onCleanup } from 'solid-js'
-import { workspaceClient } from '~/api/clients'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { trailingDebounce } from '~/lib/debounce'
-import { floatingWindowsToProto } from '~/stores/floatingWindow.store'
-import { toProto } from '~/stores/layout.store'
+import { createEffect } from 'solid-js'
+import { ACTIVE_WORKSPACE_KEY, activeTabKey, focusedTileKey, tileActiveTabsKey } from './tabPersistenceKeys'
 
-interface UseTabPersistenceOpts {
+/**
+ * Persists the view-state slices that `useWorkspaceRestore` reads back
+ * on workspace activation / page reload to sessionStorage. Without
+ * these writers the restore path's reads are always empty and every
+ * refresh activates the first tab and an arbitrary tile, regardless of
+ * what the user had focused.
+ *
+ * Keys mirror the reads in `useWorkspaceRestore.ts`:
+ *   - `leapmux:activeTab:${wsId}`      → `tabStore.state.activeTabKey`
+ *   - `leapmux:tileActiveTabs:${wsId}` → per-tile active tab keys
+ *   - `leapmux:focusedTile:${wsId}`    → `layoutStore.focusedTileId()`
+ *   - `leapmux:activeWorkspace`        → the currently active workspace id
+ *
+ * `workspaceLoading` gates every write so the brief window during
+ * `useWorkspaceRestore`'s `tabStore.clear()` doesn't blow away a
+ * just-restored key.
+ *
+ * History: the prior `useTabPersistence` was deleted by the CRDT
+ * workspace-sync refactor (commit e8870a1a). The hub-side `SaveLayout`
+ * RPC it also drove is replaced by CRDT op replication; only the
+ * sessionStorage mirror needs to live on for in-tab refresh
+ * continuity.
+ */
+export interface UseTabPersistenceOpts {
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
-  floatingWindowStore?: FloatingWindowStoreType
-  registry: WorkspaceStoreRegistryType
   getActiveWorkspaceId: () => string | null | undefined
-  getOrgId: () => string | undefined
-  activeWorkspace: () => Workspace | null
   workspaceLoading: () => boolean
 }
 
+function writeIfChanged(key: string, value: string, last: Map<string, string>) {
+  if (last.get(key) === value)
+    return
+  sessionStorage.setItem(key, value)
+  last.set(key, value)
+}
+
+function clearIfPresent(key: string, last: Map<string, string>) {
+  if (!last.has(key) && sessionStorage.getItem(key) == null)
+    return
+  sessionStorage.removeItem(key)
+  last.delete(key)
+}
+
 export function useTabPersistence(opts: UseTabPersistenceOpts) {
-  const {
-    tabStore,
-    layoutStore,
-    getActiveWorkspaceId,
-    getOrgId,
-    activeWorkspace,
-    workspaceLoading,
-  } = opts
+  const { tabStore, layoutStore, getActiveWorkspaceId, workspaceLoading } = opts
+  // Cache the last-written value per key. The persistence effects re-fire
+  // whenever any tracked dependency changes, but the underlying string is
+  // often unchanged (e.g. tileActiveTabKeys re-fires on any leaf write).
+  // Skipping equal writes avoids re-serialising and re-storing the JSON
+  // payload on every store mutation.
+  const lastWritten = new Map<string, string>()
 
-  // Debounced layout + tab persistence
-  function doLayoutSave() {
-    const ws = activeWorkspace()
-    if (!ws || workspaceLoading())
-      return
-
-    const tabs = tabStore.state.tabs
-      .filter(t => t.type !== TabType.FILE)
-      .map(t => ({
-        tabType: t.type,
-        tabId: t.id,
-        position: t.position ?? '',
-        tileId: t.tileId ?? '',
-        workerId: t.workerId ?? '',
-      }))
-
-    workspaceClient.saveLayout({
-      orgId: getOrgId(),
-      workspaceId: ws.id,
-      layout: layoutStore.toProto(),
-      tabs,
-      floatingWindows: opts.floatingWindowStore?.toProto() ?? [],
-    }).then(() => {
-      // Dispatch a custom event so E2E tests can detect layout save completion.
-      window.dispatchEvent(new CustomEvent('leapmux:layout-saved'))
-    }).catch(() => {})
-  }
-
-  const persistLayout = trailingDebounce(doLayoutSave, 500)
-
-  // Persist active tab to sessionStorage
   createEffect(() => {
+    const wsId = getActiveWorkspaceId()
     const activeKey = tabStore.state.activeTabKey
-    const wsId = getActiveWorkspaceId()
-    if (wsId && activeKey && !workspaceLoading()) {
-      sessionStorage.setItem(`leapmux:activeTab:${wsId}`, activeKey)
-    }
+    if (!wsId || workspaceLoading() || !activeKey)
+      return
+    writeIfChanged(activeTabKey(wsId), activeKey, lastWritten)
   })
 
-  // Persist per-tile active tabs to sessionStorage
   createEffect(() => {
+    const wsId = getActiveWorkspaceId()
     const tileActiveTabKeys = tabStore.state.tileActiveTabKeys
-    const wsId = getActiveWorkspaceId()
-    if (wsId && !workspaceLoading()) {
-      const entries = Object.entries(tileActiveTabKeys).filter(([, v]) => v != null)
-      if (entries.length > 0) {
-        sessionStorage.setItem(`leapmux:tileActiveTabs:${wsId}`, JSON.stringify(Object.fromEntries(entries)))
-      }
-      else {
-        sessionStorage.removeItem(`leapmux:tileActiveTabs:${wsId}`)
-      }
-    }
-  })
-
-  // Persist focused tile to sessionStorage
-  createEffect(() => {
-    const focusedTileId = layoutStore.focusedTileId()
-    const wsId = getActiveWorkspaceId()
-    if (wsId && focusedTileId && !workspaceLoading()) {
-      sessionStorage.setItem(`leapmux:focusedTile:${wsId}`, focusedTileId)
-    }
-  })
-
-  // Persist ephemeral (local) tabs to sessionStorage
-  createEffect(() => {
-    const wsId = getActiveWorkspaceId()
-    const tabs = tabStore.state.tabs
     if (!wsId || workspaceLoading())
       return
-    const localTabs = tabs
-      .filter(t => t.type === TabType.FILE)
-      .map(t => ({
-        type: t.type,
-        id: t.id,
-        filePath: t.filePath,
-        workerId: t.workerId,
-        position: t.position,
-        tileId: t.tileId,
-        title: t.title,
-        displayMode: t.displayMode,
-        fileViewMode: t.fileViewMode,
-        fileDiffBase: t.fileDiffBase,
-      }))
-    if (localTabs.length > 0) {
-      sessionStorage.setItem(`leapmux:localTabs:${wsId}`, JSON.stringify(localTabs))
-    }
-    else {
-      sessionStorage.removeItem(`leapmux:localTabs:${wsId}`)
-    }
+    const key = tileActiveTabsKey(wsId)
+    const entries = Object.entries(tileActiveTabKeys).filter(([, v]) => v != null)
+    if (entries.length > 0)
+      writeIfChanged(key, JSON.stringify(Object.fromEntries(entries)), lastWritten)
+    else
+      clearIfPresent(key, lastWritten)
   })
 
-  // Persist active workspace to sessionStorage
   createEffect(() => {
     const wsId = getActiveWorkspaceId()
-    if (wsId && !workspaceLoading()) {
-      sessionStorage.setItem('leapmux:activeWorkspace', wsId)
-    }
+    const focusedTileId = layoutStore.focusedTileId()
+    if (!wsId || workspaceLoading() || !focusedTileId)
+      return
+    writeIfChanged(focusedTileKey(wsId), focusedTileId, lastWritten)
   })
 
-  // Multi-workspace layout persistence: saves layout + tabs for all
-  // workspaces that have cached snapshots in the registry, plus the
-  // active workspace.
-  function doMultiSave() {
-    const orgId = getOrgId()
-    if (!orgId || workspaceLoading())
+  createEffect(() => {
+    const wsId = getActiveWorkspaceId()
+    if (!wsId || workspaceLoading())
       return
-
-    const { registry } = opts
-    const entries: Array<{
-      workspaceId: string
-      layout: ReturnType<typeof layoutStore.toProto>
-      tabs: Array<{ tabType: number, tabId: string, position: string, tileId: string, workerId: string }>
-      floatingWindows?: ReturnType<NonNullable<typeof opts.floatingWindowStore>['toProto']>
-    }> = []
-
-    // Active workspace: use live stores
-    const ws = activeWorkspace()
-    if (ws) {
-      entries.push({
-        workspaceId: ws.id,
-        layout: layoutStore.toProto(),
-        tabs: tabStore.state.tabs
-          .filter(t => t.type !== TabType.FILE)
-          .map(t => ({
-            tabType: t.type,
-            tabId: t.id,
-            position: t.position ?? '',
-            tileId: t.tileId ?? '',
-            workerId: t.workerId ?? '',
-          })),
-        floatingWindows: opts.floatingWindowStore?.toProto() ?? [],
-      })
-    }
-
-    // Other cached workspaces from registry (include both restored and
-    // tabsLoaded snapshots — cross-workspace moves add tabs to non-restored
-    // snapshots that still need to be persisted to the hub).
-    for (const snap of registry.all()) {
-      if (ws && snap.workspaceId === ws.id)
-        continue
-      if (!snap.restored && !snap.tabsLoaded)
-        continue
-      const snapLayout = snap.layout
-      // Convert floating windows from snapshot to proto
-      const snapFloatingWindows = snap.floatingWindows
-        ? floatingWindowsToProto(snap.floatingWindows.windows)
-        : []
-      entries.push({
-        workspaceId: snap.workspaceId,
-        layout: toProto(snapLayout.root),
-        tabs: snap.tabs
-          .filter(t => t.type !== TabType.FILE)
-          .map(t => ({
-            tabType: t.type,
-            tabId: t.id,
-            position: t.position ?? '',
-            tileId: t.tileId ?? '',
-            workerId: t.workerId ?? '',
-          })),
-        floatingWindows: snapFloatingWindows,
-      })
-    }
-
-    if (entries.length === 0)
-      return
-
-    workspaceClient.saveMultiLayout({
-      orgId,
-      entries,
-    }).then(() => {
-      window.dispatchEvent(new CustomEvent('leapmux:layout-saved'))
-    }).catch(() => {})
-  }
-
-  // Cross-workspace moves are discrete actions that always persist
-  // synchronously — the debounce path is intentionally absent.
-  const persistMultiLayout = doMultiSave
-
-  // Flush any pending layout save on page unload so the active workspace's
-  // in-flight changes aren't lost if the user refreshes before the debounce
-  // fires.
-  const flushOnUnload = () => persistLayout.flush()
-  window.addEventListener('beforeunload', flushOnUnload)
-  onCleanup(() => window.removeEventListener('beforeunload', flushOnUnload))
-
-  return { persistLayout, persistMultiLayout }
+    writeIfChanged(ACTIVE_WORKSPACE_KEY, wsId, lastWritten)
+  })
 }

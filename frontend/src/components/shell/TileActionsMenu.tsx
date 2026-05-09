@@ -23,8 +23,6 @@ export interface SplitActionDef {
   direction: SplitOrientation
   // Lucide icon component shown beside (or as) the action button.
   icon: typeof Columns2
-  // Human label. The mapping is intentionally swapped: a "horizontal" split
-  // produces a vertical divider, hence the "Split vertically" label.
   label: string
   shortcutId: string
   testId: string
@@ -34,21 +32,25 @@ export interface SplitActionDef {
  * Single source of truth for the split-action label/icon/shortcut/test-id
  * mapping. Both the dropdown menu (this file) and the inline IconButton row
  * (`Tile.tsx`) iterate over this so the labels can't drift independently.
+ *
+ * direction names the divider line: 'vertical' makes a `|` divider with two
+ * side-by-side panes (icon: Columns2); 'horizontal' makes a `-` divider with
+ * two stacked panes (icon: Rows2).
  */
 export const SPLIT_ACTIONS: readonly SplitActionDef[] = [
   {
-    direction: 'horizontal',
+    direction: 'vertical',
     icon: Columns2,
     label: 'Split vertically',
-    shortcutId: 'app.splitTileHorizontal',
-    testId: 'split-horizontal',
-  },
-  {
-    direction: 'vertical',
-    icon: Rows2,
-    label: 'Split horizontally',
     shortcutId: 'app.splitTileVertical',
     testId: 'split-vertical',
+  },
+  {
+    direction: 'horizontal',
+    icon: Rows2,
+    label: 'Split horizontally',
+    shortcutId: 'app.splitTileHorizontal',
+    testId: 'split-horizontal',
   },
 ]
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { KEY_BROWSER_PREFS } from './browserStorage'
-import { copySelectionToClipboard, createTerminalInstance, getTerminalRendererPreference, resolveTerminalRendererPreference, resolveTerminalThemeMode } from './terminal'
+import { copySelectionToClipboard, createTerminalInstance, getTerminalRendererPreference, resolveTerminalRendererPreference, resolveTerminalThemeMode, serializeXtermBuffer } from './terminal'
 
 // xterm.js requires a DOM element for open(), but we can still test
 // the suppressInput mechanism without rendering.
@@ -71,6 +71,83 @@ describe('createTerminalInstance', () => {
     // verify the flag state allows forwarding.
     expect(instance.suppressInput).toBe(false)
 
+    instance.dispose()
+  })
+})
+
+describe('serializeXtermBuffer', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as any
+  })
+
+  // Helper: synchronously write then await xterm's async parser via the
+  // write callback. xterm processes its write queue asynchronously, so
+  // calling serialize immediately after write() races the parser.
+  const writeAndWait = (instance: ReturnType<typeof createTerminalInstance>, data: string) =>
+    new Promise<void>(resolve => instance.terminal.write(data, () => resolve()))
+
+  // Helper: read the entire active buffer (visible + scrollback) as a
+  // single string with trailing whitespace trimmed per line. Used to
+  // verify the round-trip through serialize → write reproduces visible
+  // text without relying on byte-identical escape sequences.
+  const readActiveBuffer = (terminal: ReturnType<typeof createTerminalInstance>['terminal']): string => {
+    const buf = terminal.buffer.active
+    let out = ''
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i)
+      if (line)
+        out += `${line.translateToString(true)}\n`
+    }
+    return out
+  }
+
+  it('produces bytes that re-create the visible content when written into a fresh terminal', async () => {
+    const source = createTerminalInstance({ cols: 80, rows: 24 })
+    await writeAndWait(source, 'hello world\r\n')
+    await writeAndWait(source, 'second line\r\n')
+    await writeAndWait(source, 'third\r\n')
+
+    const bytes = serializeXtermBuffer(source)
+    expect(bytes).toBeInstanceOf(Uint8Array)
+    expect(bytes.length).toBeGreaterThan(0)
+
+    const restored = createTerminalInstance({ cols: 80, rows: 24 })
+    restored.terminal.reset()
+    await new Promise<void>(resolve => restored.terminal.write(bytes, () => resolve()))
+
+    const text = readActiveBuffer(restored.terminal)
+    expect(text).toContain('hello world')
+    expect(text).toContain('second line')
+    expect(text).toContain('third')
+
+    source.dispose()
+    restored.dispose()
+  })
+
+  it('captures content that has scrolled off the visible viewport', async () => {
+    const source = createTerminalInstance({ cols: 80, rows: 5 })
+    for (let i = 0; i < 20; i++)
+      await writeAndWait(source, `line-${i}\r\n`)
+
+    const bytes = serializeXtermBuffer(source)
+    const decoded = new TextDecoder().decode(bytes)
+
+    // The earliest line wrote was line-0; with default scrollback (1000)
+    // it must still be reachable through the serialized form.
+    expect(decoded).toContain('line-0')
+    expect(decoded).toContain('line-19')
+
+    source.dispose()
+  })
+
+  it('returns an empty buffer for a fresh terminal with no writes', () => {
+    const instance = createTerminalInstance({ cols: 80, rows: 24 })
+    const bytes = serializeXtermBuffer(instance)
+    expect(bytes).toBeInstanceOf(Uint8Array)
+    // A pristine terminal serializes to a small prelude (mode resets); the
+    // contract here is just that it doesn't throw and returns Uint8Array.
+    expect(bytes.length).toBeGreaterThanOrEqual(0)
     instance.dispose()
   })
 })

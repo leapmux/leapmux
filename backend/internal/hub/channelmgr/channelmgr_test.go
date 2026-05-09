@@ -521,3 +521,113 @@ func TestSendToUser_UnknownUser(t *testing.T) {
 	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
 	m.SendToUser("nonexistent", msg)
 }
+
+// --- CloseByBearer / CloseByUser tests ---
+
+// TestCloseByBearer_DropsOnlyMatchingChannels verifies the bearer-keyed
+// teardown that fires alongside delegation-token revocation: only the
+// channels authenticated by the revoked token go away. Cookie
+// channels and channels held by other bearers are unaffected.
+func TestCloseByBearer_DropsOnlyMatchingChannels(t *testing.T) {
+	m := New()
+	var bearerCancelled, otherCancelled, cookieCancelled bool
+
+	m.RegisterWithBearer("ch-bearer", "w1", "u1", "tok-revoke-me", func() { bearerCancelled = true })
+	m.RegisterWithBearer("ch-other", "w1", "u1", "tok-keep", func() { otherCancelled = true })
+	m.Register("ch-cookie", "w1", "u1", func() { cookieCancelled = true }) // no bearer
+
+	closed := m.CloseByBearer("tok-revoke-me")
+	closedIDs := make([]string, 0, len(closed))
+	for _, cc := range closed {
+		closedIDs = append(closedIDs, cc.ChannelID)
+	}
+	assert.ElementsMatch(t, []string{"ch-bearer"}, closedIDs)
+	assert.True(t, bearerCancelled, "bearer's channel cancel must fire")
+	assert.False(t, otherCancelled, "other bearer's channel must survive")
+	assert.False(t, cookieCancelled, "cookie channel must survive")
+	assert.False(t, m.Exists("ch-bearer"))
+	assert.True(t, m.Exists("ch-other"))
+	assert.True(t, m.Exists("ch-cookie"))
+}
+
+// TestCloseByBearer_EmptyTokenIDIsNoop locks down the safety check:
+// a buggy revoke path that passes "" must NOT match every cookie
+// channel (which all have an empty BearerTokenID).
+func TestCloseByBearer_EmptyTokenIDIsNoop(t *testing.T) {
+	m := New()
+	m.Register("ch-cookie", "w1", "u1", nil)
+	closed := m.CloseByBearer("")
+	assert.Empty(t, closed)
+	assert.True(t, m.Exists("ch-cookie"))
+}
+
+// TestCloseByUser_DropsAllChannelsForUser verifies the user-wide
+// teardown used by credential rotation: every channel the user owns
+// goes away regardless of which bearer authorized it; other users'
+// channels are untouched.
+func TestCloseByUser_DropsAllChannelsForUser(t *testing.T) {
+	m := New()
+	var u1aCancelled, u1bCancelled, u2Cancelled bool
+
+	m.RegisterWithBearer("ch-u1-a", "w1", "u1", "tok-A", func() { u1aCancelled = true })
+	m.RegisterWithBearer("ch-u1-b", "w2", "u1", "tok-B", func() { u1bCancelled = true })
+	m.Register("ch-u2", "w1", "u2", func() { u2Cancelled = true })
+
+	closed := m.CloseByUser("u1")
+	ids := make([]string, 0, len(closed))
+	workers := make(map[string]string, len(closed))
+	for _, cc := range closed {
+		ids = append(ids, cc.ChannelID)
+		workers[cc.ChannelID] = cc.WorkerID
+	}
+	assert.ElementsMatch(t, []string{"ch-u1-a", "ch-u1-b"}, ids)
+	assert.Equal(t, "w1", workers["ch-u1-a"])
+	assert.Equal(t, "w2", workers["ch-u1-b"], "WorkerID must be returned so the caller can notify each worker")
+	assert.True(t, u1aCancelled)
+	assert.True(t, u1bCancelled)
+	assert.False(t, u2Cancelled)
+	assert.False(t, m.Exists("ch-u1-a"))
+	assert.False(t, m.Exists("ch-u1-b"))
+	assert.True(t, m.Exists("ch-u2"))
+}
+
+// TestCloseByUser_EmptyUserIDIsNoop matches CloseByBearer's safety:
+// "" must NOT match every entry. Critical because a stray
+// PropagateUserRevocation(ctx, "") must not nuke unrelated channels.
+func TestCloseByUser_EmptyUserIDIsNoop(t *testing.T) {
+	m := New()
+	m.Register("ch", "w", "u1", nil)
+	assert.Empty(t, m.CloseByUser(""))
+	assert.True(t, m.Exists("ch"))
+}
+
+// TestCloseByBearer_NotifiesFrontend verifies the close path drives
+// the same CHANNEL_CLOSE notification the frontend receives on a
+// user-initiated CloseChannel. Without this, the browser-side store
+// would keep the channel "open" until its own RPC timed out.
+func TestCloseByBearer_NotifiesFrontend(t *testing.T) {
+	m := New()
+
+	var mu sync.Mutex
+	var msgs []*leapmuxv1.ChannelMessage
+	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
+		mu.Lock()
+		defer mu.Unlock()
+		msgs = append(msgs, msg)
+		return nil
+	}, nil)
+	m.RegisterWithBearer("ch", "w1", "u1", "tok", nil)
+	m.SetChannelConn("ch", "conn1")
+
+	closed := m.CloseByBearer("tok")
+	assert.Len(t, closed, 1)
+	mu.Lock()
+	defer mu.Unlock()
+	closeFrames := 0
+	for _, m := range msgs {
+		if m.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE && m.GetChannelId() == "ch" {
+			closeFrames++
+		}
+	}
+	assert.Equal(t, 1, closeFrames, "frontend must receive a CHANNEL_MESSAGE_FLAGS_CLOSE for the dropped channel")
+}

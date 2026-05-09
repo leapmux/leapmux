@@ -7,7 +7,8 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { TodoItem } from '~/stores/chat.store'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
-import type { createTabStore, TabItemOps } from '~/stores/tab.store'
+import type { createTabStore } from '~/stores/tab.store'
+import type { TabItemOps } from '~/stores/tab.types'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { LeftSidebar } from '~/components/shell/LeftSidebar'
@@ -68,116 +69,73 @@ interface SidebarDisplayOpts {
   onStateChange?: (open: Record<string, boolean>, sizes: Record<string, number>) => void
 }
 
+// buildCommonSidebarProps builds the prop bag shared by both
+// LeftSidebar and RightSidebar. The two components accept the same
+// ~30 props (worker/tab context, file-tree handlers, sidebar
+// collapse state, workspace store wiring, etc.); collecting them
+// here means a new shared prop is added in one place, and the call
+// sites JSX-spread the result.
+function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: SidebarDisplayOpts) {
+  const ctx = opts.getCurrentTabContext()
+  const archived = opts.isActiveWorkspaceArchived
+  return {
+    workspaces: opts.workspaces,
+    activeWorkspaceId: opts.activeWorkspaceId,
+    sectionStore: opts.sectionStore,
+    loadSections: opts.loadSections,
+    onSelectWorkspace: opts.onSelectWorkspace,
+    onNewWorkspace: opts.onNewWorkspace,
+    onRefreshWorkspaces: opts.onRefreshWorkspaces,
+    onDeleteWorkspace: opts.onDeleteWorkspace,
+    onConfirmDelete: opts.onConfirmDelete,
+    onConfirmArchive: opts.onConfirmArchive,
+    onPostArchiveWorkspace: opts.onPostArchiveWorkspace,
+    isCollapsed: display?.isCollapsed() ?? false,
+    onExpand: display?.onExpand ?? (() => {}),
+    initialOpenSections: display?.initialOpenSections,
+    initialSectionSizes: display?.initialSectionSizes,
+    onSectionStateChange: display?.onStateChange,
+    workerId: ctx.workerId,
+    workingDir: ctx.workingDir,
+    homeDir: ctx.homeDir,
+    fileTreePath: opts.fileTreePath,
+    onFileSelect: opts.onFileSelect,
+    onFileOpen: opts.onFileOpen,
+    onFileMention: archived
+      ? undefined
+      : (path: string) => {
+          const mru = opts.getMruAgentContext()
+          insertIntoMruAgentEditor(opts.tabStore, formatFileMention(relativizePath(path, mru.workingDir, mru.homeDir)), 'inline')
+        },
+    onOpenTerminal: archived
+      ? undefined
+      : (dirPath: string) => opts.termOps.handleOpenTerminal(dirPath),
+    showTodos: opts.showTodos,
+    activeTodos: opts.activeTodos,
+    gitStatusStore: opts.gitStatusStore,
+    activeFilePath: opts.activeFilePath,
+    hasActiveFileTab: opts.hasActiveFileTab,
+    turnEndTrigger: opts.turnEndTrigger,
+    activeTabReady: opts.activeTabReady,
+    workers: opts.workers,
+    workerInfoFn: opts.workerInfoFn,
+    channelStatusFn: opts.channelStatusFn,
+    currentUserId: opts.currentUserId,
+    onAddTunnel: opts.onAddTunnel,
+    onDeregisterWorker: opts.onDeregisterWorker,
+    onRegisterWorker: opts.onRegisterWorker,
+    tabStore: opts.tabStore,
+    registry: opts.registry,
+    onTabClick: opts.onTabClick,
+    tabItemOps: opts.tabItemOps,
+    onExpandWorkspace: opts.onExpandWorkspace,
+  }
+}
+
 export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: SidebarDisplayOpts): JSX.Element {
-  return (
-    <LeftSidebar
-      workspaces={opts.workspaces}
-      activeWorkspaceId={opts.activeWorkspaceId}
-      sectionStore={opts.sectionStore}
-      loadSections={opts.loadSections}
-      onSelectWorkspace={opts.onSelectWorkspace}
-      onNewWorkspace={opts.onNewWorkspace}
-      onRefreshWorkspaces={opts.onRefreshWorkspaces}
-      onDeleteWorkspace={opts.onDeleteWorkspace}
-      onConfirmDelete={opts.onConfirmDelete}
-      onConfirmArchive={opts.onConfirmArchive}
-      onPostArchiveWorkspace={opts.onPostArchiveWorkspace}
-      isCollapsed={display?.isCollapsed() ?? false}
-      onExpand={display?.onExpand ?? (() => {})}
-      initialOpenSections={display?.initialOpenSections}
-      initialSectionSizes={display?.initialSectionSizes}
-      onSectionStateChange={display?.onStateChange}
-      workerId={opts.getCurrentTabContext().workerId}
-      workingDir={opts.getCurrentTabContext().workingDir}
-      homeDir={opts.getCurrentTabContext().homeDir}
-      fileTreePath={opts.fileTreePath}
-      onFileSelect={opts.onFileSelect}
-      onFileOpen={opts.onFileOpen}
-      onFileMention={opts.isActiveWorkspaceArchived
-        ? undefined
-        : (path) => {
-            const ctx = opts.getMruAgentContext()
-            insertIntoMruAgentEditor(opts.tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
-          }}
-      onOpenTerminal={opts.isActiveWorkspaceArchived
-        ? undefined
-        : dirPath => opts.termOps.handleOpenTerminal(dirPath)}
-      showTodos={opts.showTodos}
-      activeTodos={opts.activeTodos}
-      gitStatusStore={opts.gitStatusStore}
-      activeFilePath={opts.activeFilePath}
-      hasActiveFileTab={opts.hasActiveFileTab}
-      turnEndTrigger={opts.turnEndTrigger}
-      activeTabReady={opts.activeTabReady}
-      workers={opts.workers}
-      workerInfoFn={opts.workerInfoFn}
-      channelStatusFn={opts.channelStatusFn}
-      currentUserId={opts.currentUserId}
-      onAddTunnel={opts.onAddTunnel}
-      onDeregisterWorker={opts.onDeregisterWorker}
-      onRegisterWorker={opts.onRegisterWorker}
-      tabStore={opts.tabStore}
-      registry={opts.registry}
-      onTabClick={opts.onTabClick}
-      tabItemOps={opts.tabItemOps}
-      onExpandWorkspace={opts.onExpandWorkspace}
-    />
-  )
+  return <LeftSidebar {...buildCommonSidebarProps(opts, display)} />
 }
 
 export function createRightSidebarElement(opts: SidebarElementsOpts, display?: SidebarDisplayOpts): JSX.Element {
-  return (
-    <RightSidebar
-      workerId={opts.getCurrentTabContext().workerId}
-      workingDir={opts.getCurrentTabContext().workingDir}
-      homeDir={opts.getCurrentTabContext().homeDir}
-      showTodos={opts.showTodos}
-      activeTodos={opts.activeTodos}
-      fileTreePath={opts.fileTreePath}
-      onFileSelect={opts.onFileSelect}
-      onFileOpen={opts.onFileOpen}
-      onFileMention={opts.isActiveWorkspaceArchived
-        ? undefined
-        : (path) => {
-            const ctx = opts.getMruAgentContext()
-            insertIntoMruAgentEditor(opts.tabStore, formatFileMention(relativizePath(path, ctx.workingDir, ctx.homeDir)), 'inline')
-          }}
-      onOpenTerminal={opts.isActiveWorkspaceArchived
-        ? undefined
-        : dirPath => opts.termOps.handleOpenTerminal(dirPath)}
-      sectionStore={opts.sectionStore}
-      isCollapsed={display?.isCollapsed() ?? false}
-      onExpand={display?.onExpand ?? (() => {})}
-      initialOpenSections={display?.initialOpenSections}
-      initialSectionSizes={display?.initialSectionSizes}
-      onSectionStateChange={display?.onStateChange}
-      workspaces={opts.workspaces}
-      activeWorkspaceId={opts.activeWorkspaceId}
-      loadSections={opts.loadSections}
-      onSelectWorkspace={opts.onSelectWorkspace}
-      onNewWorkspace={opts.onNewWorkspace}
-      onRefreshWorkspaces={opts.onRefreshWorkspaces}
-      onDeleteWorkspace={opts.onDeleteWorkspace}
-      onConfirmDelete={opts.onConfirmDelete}
-      onConfirmArchive={opts.onConfirmArchive}
-      onPostArchiveWorkspace={opts.onPostArchiveWorkspace}
-      gitStatusStore={opts.gitStatusStore}
-      activeFilePath={opts.activeFilePath}
-      hasActiveFileTab={opts.hasActiveFileTab}
-      turnEndTrigger={opts.turnEndTrigger}
-      activeTabReady={opts.activeTabReady}
-      tabStore={opts.tabStore}
-      registry={opts.registry}
-      onTabClick={opts.onTabClick}
-      tabItemOps={opts.tabItemOps}
-      onExpandWorkspace={opts.onExpandWorkspace}
-      workers={opts.workers}
-      workerInfoFn={opts.workerInfoFn}
-      channelStatusFn={opts.channelStatusFn}
-      currentUserId={opts.currentUserId}
-      onAddTunnel={opts.onAddTunnel}
-      onDeregisterWorker={opts.onDeregisterWorker}
-      onRegisterWorker={opts.onRegisterWorker}
-    />
-  )
+  return <RightSidebar {...buildCommonSidebarProps(opts, display)} />
 }

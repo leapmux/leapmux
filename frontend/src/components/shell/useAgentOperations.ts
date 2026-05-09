@@ -1,7 +1,6 @@
 import type { TabContext } from './tabContext'
 import type { ProviderSettingChange } from '~/components/chat/providers/registry'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
-import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
@@ -10,7 +9,6 @@ import type { createTabStore } from '~/stores/tab.store'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 import { createEffect, createSignal, on } from 'solid-js'
-import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
 import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex/settings'
@@ -25,15 +23,13 @@ import { base64ToUint8Array } from '~/lib/base64'
 import { createLogger } from '~/lib/logger'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
-import { resolveOptimisticGitInfo } from '~/stores/tab.store'
+import { protoToAgentTabFields, resolveOptimisticGitInfo } from '~/stores/tab.helpers'
 import { defaultEffortForProvider, defaultModelForProvider } from '~/utils/controlResponse'
-import { pickAgentTitle } from './tabNames'
 import '~/components/chat/providers'
 
 const logger = createLogger('useAgentOperations')
 
 export interface UseAgentOperationsProps {
-  agentStore: ReturnType<typeof createAgentStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
   chatStore: ReturnType<typeof createChatStore>
   controlStore: ReturnType<typeof createControlStore>
@@ -45,7 +41,6 @@ export interface UseAgentOperationsProps {
   getCurrentTabContext: () => Pick<TabContext, 'workerId' | 'workingDir'>
   setShowNewAgentDialog: (show: boolean) => void
   setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
-  persistLayout?: () => void
   focusEditor?: () => void
   forceScrollToBottom?: () => void
 }
@@ -79,9 +74,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     },
   ))
 
-  /** Look up the workerId for a given agent from the agent store. */
+  /** Look up the workerId for a given agent from the tab store. */
   const getAgentWorkerId = (agentId: string): string => {
-    return props.agentStore.getById(agentId)?.workerId ?? ''
+    return props.tabStore.getAgentTab(agentId)?.workerId ?? ''
   }
 
   const resolvePreferredProvider = (): AgentProvider | null => {
@@ -107,12 +102,13 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Open a new agent in the given workspace
   const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE) => {
     try {
-      const title = pickAgentTitle(props.tabStore.state.tabs)
+      // Title left empty: the worker picks "Agent <Name>" server-side
+      // so CLI and UI paths share one pool (see worker/service/
+      // tab_names.go). The response carries the resolved title back.
       const resp = await workerRpc.openAgent(workerId, {
         workspaceId,
         agentProvider,
         model: '',
-        title,
         systemPrompt: '',
         workerId,
         workingDir,
@@ -122,29 +118,30 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       if (resp.agent) {
         const tileId = props.layoutStore.focusedTileId()
         const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-        props.agentStore.addAgent(resp.agent)
+        // Build the agent tab from the OpenAgent response. protoToAgent
+        // TabFields populates every per-agent column on the tab record
+        // and primes the settings-label cache with the agent's catalogs.
+        const agentFields = protoToAgentTabFields(resp.agent.workerId, resp.agent)
         // Seed git branch / origin from the active tab when both resolve to
         // the same directory; the authoritative values arrive later on the
-        // agent's first status update.
-        const newTab = {
+        // agent's first status update. Agent tabs have no shellStartDir —
+        // effectiveGitDir collapses to workingDir for them.
+        const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), {
+          workingDir: agentFields.workingDir,
+        })
+        props.tabStore.addTab({
           type: TabType.AGENT,
           id: resp.agent.id,
-          title,
           tileId,
-          workerId: resp.agent.workerId,
-          workingDir: resp.agent.workingDir,
-          agentProvider: resp.agent.agentProvider,
-        }
-        const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), newTab)
-        props.tabStore.addTab({ ...newTab, ...seed }, { afterKey })
+          ...agentFields,
+          ...seed,
+        }, { afterKey })
         props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, resp.agent.id)
-        props.agentStore.setActiveAgent(resp.agent.id)
-        props.persistLayout?.()
-        // Register tab with hub.
-        workspaceClient.addTab({
-          workspaceId,
-          tab: { tabType: TabType.AGENT, tabId: resp.agent.id, tileId, workerId },
-        }).catch(() => {})
+        // `tabStore.addTab` emits the CRDT op batch (SetTabRegister
+        // tile_id + position + worker_id) via the bridge so peer
+        // clients pick the tab up via /ws/orgevents.
+        void workspaceId
+        void workerId
         // Focus the editor after the reactive updates propagate to the DOM.
         requestAnimationFrame(() => props.focusEditor?.())
       }
@@ -208,16 +205,17 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
 
   // Change model or effort for the given agent (requires agent restart)
   const handleModelOrEffortChange = async (agentId: string, field: 'model' | 'effort', value: string) => {
-    const agent = props.agentStore.getById(agentId)
-    if (!agent)
+    const agent = props.tabStore.getAgentTab(agentId)
+    if (!agent || !agent.workerId)
       return
     if (!agent.availableModels || agent.availableModels.length === 0)
       return
+    const provider = agent.agentProvider ?? AgentProvider.CLAUDE_CODE
     const previous = agent[field] || (field === 'model'
-      ? defaultModelForProvider(agent.agentProvider)
-      : defaultEffortForProvider(agent.agentProvider))
+      ? defaultModelForProvider(provider)
+      : defaultEffortForProvider(provider))
     // Optimistic update
-    props.agentStore.updateAgent(agentId, { [field]: value })
+    props.tabStore.updateTab(TabType.AGENT, agentId, { [field]: value })
     props.settingsLoading.start()
     try {
       await workerRpc.updateAgentSettings(agent.workerId, {
@@ -227,30 +225,20 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.settingsLoading.stop()
     }
     catch (err) {
-      props.agentStore.updateAgent(agentId, { [field]: previous })
+      props.tabStore.updateTab(TabType.AGENT, agentId, { [field]: previous })
       props.settingsLoading.stop()
       showWarnToast(`Failed to change ${field}`, err)
     }
   }
 
-  // Interrupt the given agent's current turn
+  // Interrupt the given agent's current turn. The worker dispatches
+  // the provider-specific signal (Codex turn/cancel, Claude Code
+  // interrupt control payload, etc.), so the frontend doesn't have
+  // to synthesize provider JSON.
   const handleInterrupt = async (agentId: string) => {
     try {
-      const agent = props.agentStore.getById(agentId)
       const workerId = getAgentWorkerId(agentId)
-      const plugin = agent ? providerFor(agent.agentProvider) : undefined
-      if (!plugin?.buildInterruptContent) {
-        logger.error('No interrupt handler for provider', agent?.agentProvider)
-        return
-      }
-
-      const sessionId = agent?.agentSessionId || ''
-      const turnId = props.agentSessionStore.getInfo(agentId).codexTurnId || ''
-      const content = plugin.buildInterruptContent(sessionId, turnId)
-      if (!content)
-        return
-
-      await workerRpc.sendAgentRawMessage(workerId, { agentId, content })
+      await workerRpc.interruptAgent(workerId, { agentId })
     }
     catch (err) {
       showWarnToast('Failed to interrupt', err)
@@ -261,24 +249,25 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Dispatches through the provider plugin — each provider handles this
   // differently (Claude Code: control_request, Codex: UpdateAgentSettings).
   const handlePermissionModeChange = async (agentId: string, mode: PermissionMode) => {
-    const agent = props.agentStore.getById(agentId)
-    if (!agent)
+    const agent = props.tabStore.getAgentTab(agentId)
+    if (!agent || !agent.workerId)
       return
-    const previousMode = (agent.permissionMode || defaultPermissionModeForAgent(agent.agentProvider)) as PermissionMode
-    props.agentStore.updateAgent(agentId, { permissionMode: mode })
+    const provider = agent.agentProvider ?? AgentProvider.CLAUDE_CODE
+    const previousMode = (agent.permissionMode || defaultPermissionModeForAgent(provider)) as PermissionMode
+    props.tabStore.updateTab(TabType.AGENT, agentId, { permissionMode: mode })
     props.settingsLoading.start()
     try {
-      const plugin = providerFor(agent.agentProvider)
+      const plugin = providerFor(provider)
       if (plugin?.changePermissionMode) {
         await plugin.changePermissionMode(agent.workerId, agentId, mode)
       }
       else {
-        logger.error('No changePermissionMode handler for provider', agent.agentProvider)
+        logger.error('No changePermissionMode handler for provider', provider)
       }
       props.settingsLoading.stop()
     }
     catch (err) {
-      props.agentStore.updateAgent(agentId, { permissionMode: previousMode })
+      props.tabStore.updateTab(TabType.AGENT, agentId, { permissionMode: previousMode })
       props.settingsLoading.stop()
       showWarnToast('Failed to change permission mode', err)
     }
@@ -292,11 +281,11 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     defaultValue: string,
     errorLabel: string,
   ) => {
-    const agent = props.agentStore.getById(agentId)
-    if (!agent)
+    const agent = props.tabStore.getAgentTab(agentId)
+    if (!agent || !agent.workerId)
       return
     const previous = agent.extraSettings?.[field] || defaultValue
-    props.agentStore.updateAgent(agentId, { extraSettings: { ...(agent.extraSettings || {}), [field]: value } })
+    props.tabStore.updateTab(TabType.AGENT, agentId, { extraSettings: { ...(agent.extraSettings || {}), [field]: value } })
     props.settingsLoading.start()
     try {
       await workerRpc.updateAgentSettings(agent.workerId, {
@@ -306,15 +295,15 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.settingsLoading.stop()
     }
     catch (err) {
-      const current = props.agentStore.getById(agentId)
-      props.agentStore.updateAgent(agentId, { extraSettings: { ...(current?.extraSettings || {}), [field]: previous } })
+      const current = props.tabStore.getAgentTab(agentId)
+      props.tabStore.updateTab(TabType.AGENT, agentId, { extraSettings: { ...(current?.extraSettings || {}), [field]: previous } })
       props.settingsLoading.stop()
       showWarnToast(`Failed to change ${errorLabel}`, err)
     }
   }
 
   const handleOptionGroupChange = (agentId: string, key: string, value: string) => {
-    const agent = props.agentStore.getById(agentId)
+    const agent = props.tabStore.getAgentTab(agentId)
     const defaultValue = optionGroupDefaultValue(agent?.availableOptionGroups, key) || value
     const label = optionGroupLabel(agent?.availableOptionGroups, key)
     handleOptionGroupSettingChange(agentId, key, value, defaultValue, label)
@@ -415,7 +404,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // Synchronous local cleanup: the tab disappears immediately.
     props.controlStore.clearAgent(agentId)
     clearAttachments(agentId)
-    props.agentStore.removeAgent(agentId)
     props.tabStore.removeTab(TabType.AGENT, agentId)
 
     // Background: kill the subprocess, DB-close the agent, optionally
@@ -429,11 +417,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         })
     }
 
-    // Unregister tab from hub (runs in parallel with the worker close).
-    const ws = props.activeWorkspace()
-    if (ws) {
-      workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.AGENT, tabId: agentId }).catch(() => {})
-    }
+    // `tabStore.removeTab` above emitted the TombstoneTab op via the
+    // CRDT bridge; the hub broadcasts it to peer clients via
+    // /ws/orgevents.
+    void agentId
   }
 
   return {

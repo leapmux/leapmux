@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -20,17 +21,32 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
+// CRDTRegistry is the subset of *crdt.Registry that
+// WorkerConnectorService consumes — used by the worker tab-sync path
+// to fetch a manager and submit hub-internal tombstones for tabs the
+// worker no longer hosts. Modeled as an interface so tests can pass a
+// nil-equivalent stub and so the wiring in hub/server.go doesn't
+// require constructing the full registry before this service is
+// reachable.
+type CRDTRegistry interface {
+	Get(ctx context.Context, orgID string) (*crdt.Manager, error)
+}
+
 type WorkerConnectorService struct {
-	store       store.Store
-	workerMgr   *workermgr.Manager
-	channelMgr  *channelmgr.Manager
-	broadcaster *HubEventBroadcaster
-	pending     *workermgr.PendingRequests
-	notifier    *notifier.Notifier
-	shutdownCh  <-chan struct{}
+	store        store.Store
+	workerMgr    *workermgr.Manager
+	channelMgr   *channelmgr.Manager
+	broadcaster  *HubEventBroadcaster
+	pending      *workermgr.PendingRequests
+	notifier     *notifier.Notifier
+	crdtRegistry CRDTRegistry
+	shutdownCh   <-chan struct{}
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
+// `registry` may be nil in unit tests; production deployments wire in
+// the org-CRDT registry so worker tab-sync can drive manager-side
+// tombstones for orphaned tabs the worker no longer hosts.
 func NewWorkerConnectorService(
 	st store.Store,
 	mgr *workermgr.Manager,
@@ -38,16 +54,18 @@ func NewWorkerConnectorService(
 	b *HubEventBroadcaster,
 	pr *workermgr.PendingRequests,
 	n *notifier.Notifier,
+	registry CRDTRegistry,
 	shutdownCh <-chan struct{},
 ) *WorkerConnectorService {
 	return &WorkerConnectorService{
-		store:       st,
-		workerMgr:   mgr,
-		channelMgr:  cMgr,
-		broadcaster: b,
-		pending:     pr,
-		notifier:    n,
-		shutdownCh:  shutdownCh,
+		store:        st,
+		workerMgr:    mgr,
+		channelMgr:   cMgr,
+		broadcaster:  b,
+		pending:      pr,
+		notifier:     n,
+		crdtRegistry: registry,
+		shutdownCh:   shutdownCh,
 	}
 }
 
@@ -212,26 +230,38 @@ func (s *WorkerConnectorService) Connect(
 	idleTimer := time.NewTimer(workerIdleTimeout)
 	defer idleTimer.Stop()
 
+	// resetIdle stops + drains + re-arms the idle timer. Folded into a
+	// helper so every successful receive (both branches) reuses one
+	// implementation instead of repeating the drain dance.
+	resetIdle := func() {
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		idleTimer.Reset(workerIdleTimeout)
+	}
+
+	handle := func(result receiveResult) error {
+		if result.err != nil {
+			return errWorkerStreamClosed
+		}
+		resetIdle()
+		if err := s.processWorkerMessage(ctx, conn, worker.ID, result.msg); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		return nil
+	}
+
 	for {
 		select {
 		case result := <-msgCh:
-			if result.err != nil {
-				// Connection closed by worker.
-				return nil // Connection closed.
-			}
-
-			// Reset idle timer on every received message.
-			if !idleTimer.Stop() {
-				select {
-				case <-idleTimer.C:
-				default:
+			if err := handle(result); err != nil {
+				if errors.Is(err, errWorkerStreamClosed) {
+					return nil
 				}
-			}
-			idleTimer.Reset(workerIdleTimeout)
-
-			msg := result.msg
-			if err := s.processWorkerMessage(ctx, conn, worker.ID, msg); err != nil {
-				return connect.NewError(connect.CodeInvalidArgument, err)
+				return err
 			}
 
 		case <-idleTimer.C:
@@ -240,12 +270,11 @@ func (s *WorkerConnectorService) Connect(
 			// drain msgCh before deciding to disconnect.
 			select {
 			case result := <-msgCh:
-				if result.err != nil {
-					return nil
-				}
-				idleTimer.Reset(workerIdleTimeout)
-				if err := s.processWorkerMessage(ctx, conn, worker.ID, result.msg); err != nil {
-					return connect.NewError(connect.CodeInvalidArgument, err)
+				if err := handle(result); err != nil {
+					if errors.Is(err, errWorkerStreamClosed) {
+						return nil
+					}
+					return err
 				}
 				continue
 			default:
@@ -259,6 +288,11 @@ func (s *WorkerConnectorService) Connect(
 		}
 	}
 }
+
+// errWorkerStreamClosed is the sentinel `handle` returns on receive
+// error — distinguishes a clean worker disconnect (return nil) from a
+// process-level abort.
+var errWorkerStreamClosed = errors.New("worker stream closed")
 
 // processWorkerMessage handles a single message from the worker stream.
 // Returns a non-nil error to terminate the connection (e.g. invalid config).
@@ -322,9 +356,11 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		}
 	}
 
-	// Handle workspace tab sync from worker.
+	// Handle workspace tab sync from worker. The response is sent
+	// back on the same bidi stream with the matching request_id so
+	// the worker can correlate it with its outbound message.
 	if tabSync := msg.GetWorkspaceTabsSync(); tabSync != nil {
-		s.handleWorkspaceTabsSync(ctx, workerID, tabSync)
+		s.handleWorkspaceTabsSync(ctx, conn, workerID, msg.GetRequestId(), tabSync)
 		return nil
 	}
 
@@ -370,95 +406,138 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	return nil
 }
 
-// handleWorkspaceTabsSync reconciles the hub's workspace_tabs for the connecting worker.
-// It deletes stale hub tabs whose agents or terminals no longer exist on the worker.
-// It does NOT add missing tabs because the hub is the source of truth for tab
-// visibility — a tab absent from the hub may have been explicitly closed by the user.
-func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, workerID string, sync *leapmuxv1.WorkspaceTabsSync) {
-	// Build worker map keyed by tab_type|tab_id → workspace_id.
+// handleWorkspaceTabsSync compares the worker's reported tab state
+// against the CRDT-derived workspace_tab_owned view, computes the
+// authoritative classification, and:
+//
+//   - Emits a WorkspaceTabsSyncResponse on the bidi stream listing
+//     the worker tabs the CRDT no longer knows about (orphans) and
+//     the tabs the CRDT moved to a different workspace
+//     (reassignments). The worker uses this to drop local agent /
+//     terminal / file-tab entities or update their workspace_id.
+//   - For tabs the CRDT knows about that the worker doesn't,
+//     submits a TombstoneTab op via SubmitInternal so the CRDT side
+//     converges to the worker's authoritative view (the worker is
+//     the source of truth for live agent / terminal liveness).
+//
+// `requestID` is the ConnectRequest envelope id; the response carries
+// the same id so the worker correlates it.
+func (s *WorkerConnectorService) handleWorkspaceTabsSync(
+	ctx context.Context,
+	conn *workermgr.Conn,
+	workerID, requestID string,
+	sync *leapmuxv1.WorkspaceTabsSync,
+) {
+	hubTabs, err := s.store.WorkspaceTabIndex().ListOwnedByWorker(ctx, workerID)
+	if err != nil {
+		slog.Error("failed to list hub-owned tabs for worker during sync", "worker_id", workerID, "error", err)
+		return
+	}
 	type tabKey struct {
 		tabType leapmuxv1.TabType
 		tabID   string
 	}
-	workerTabs := make(map[tabKey]string)
-	for _, tab := range sync.GetTabs() {
-		k := tabKey{tabType: tab.GetTabType(), tabID: tab.GetTabId()}
-		workerTabs[k] = tab.GetWorkspaceId()
-	}
-
-	// Get current hub tabs for this worker.
-	hubTabs, err := s.store.WorkspaceTabs().ListByWorker(ctx, workerID)
-	if err != nil {
-		slog.Error("failed to list hub tabs for worker during sync", "worker_id", workerID, "error", err)
-		return
-	}
-
-	// Reconcile hub tabs against worker state.
-	deleted := 0
-	moved := 0
+	// Build a single index keyed by (tab_type, tab_id). Matched entries
+	// are removed during the worker-side scan so the post-scan
+	// leftovers ARE the stale-tombstone set — no third pass over the
+	// worker keys needed.
+	hubByKey := make(map[tabKey]store.WorkspaceTabRow, len(hubTabs))
 	for _, ht := range hubTabs {
-		k := tabKey{tabType: ht.TabType, tabID: ht.TabID}
-		workerWsID, exists := workerTabs[k]
-		if !exists {
-			// Tab no longer exists on worker — delete from hub.
-			if err := s.store.WorkspaceTabs().Delete(ctx, store.DeleteWorkspaceTabParams{
-				WorkspaceID: ht.WorkspaceID,
-				TabType:     ht.TabType,
-				TabID:       ht.TabID,
-			}); err != nil {
-				slog.Error("failed to delete stale tab during sync",
-					"worker_id", workerID,
-					"workspace_id", ht.WorkspaceID,
-					"tab_id", ht.TabID,
-					"error", err,
-				)
-			} else {
-				deleted++
+		hubByKey[tabKey{tabType: ht.TabType, tabID: ht.TabID}] = ht
+	}
+
+	resp := &leapmuxv1.WorkspaceTabsSyncResponse{}
+	for _, t := range sync.GetTabs() {
+		k := tabKey{tabType: t.GetTabType(), tabID: t.GetTabId()}
+		ht, ok := hubByKey[k]
+		if !ok {
+			// Worker hosts a tab the CRDT doesn't know about. Tell
+			// the worker to drop it so its local agents/terminals
+			// stop running.
+			resp.OrphanTabIds = append(resp.OrphanTabIds, &leapmuxv1.TabIdent{
+				TabType: t.GetTabType(),
+				TabId:   t.GetTabId(),
+			})
+			continue
+		}
+		// Matched — fold the worker-side info in and drop from the
+		// stale candidate set.
+		delete(hubByKey, k)
+		if ht.WorkspaceID != t.GetWorkspaceId() {
+			// The CRDT moved the tab to a different workspace
+			// while the worker was disconnected. Tell the worker
+			// to update its local bookkeeping.
+			resp.Reassignments = append(resp.Reassignments, &leapmuxv1.TabReassignment{
+				Tab: &leapmuxv1.TabIdent{
+					TabType: t.GetTabType(),
+					TabId:   t.GetTabId(),
+				},
+				NewWorkspaceId: ht.WorkspaceID,
+			})
+		}
+	}
+
+	// Whatever survived hubByKey above is a CRDT row the worker doesn't
+	// host anymore — tombstone via the manager so subscribers observe a
+	// consistent state.
+	if s.crdtRegistry != nil && len(hubByKey) > 0 {
+		var staleTombstones []*leapmuxv1.OrgOp
+		var staleOrgID string
+		for _, ht := range hubByKey {
+			if staleOrgID == "" {
+				staleOrgID = ht.OrgID
 			}
-		} else if workerWsID != ht.WorkspaceID {
-			// Workspace mismatch — worker is authoritative, update hub.
-			// Delete old row and upsert new row with worker's workspace_id,
-			// preserving position and tile_id.
-			if err := s.store.WorkspaceTabs().Delete(ctx, store.DeleteWorkspaceTabParams{
-				WorkspaceID: ht.WorkspaceID,
-				TabType:     ht.TabType,
-				TabID:       ht.TabID,
-			}); err != nil {
-				slog.Error("failed to delete mismatched tab during sync",
-					"worker_id", workerID,
-					"old_workspace_id", ht.WorkspaceID,
-					"new_workspace_id", workerWsID,
-					"tab_id", ht.TabID,
-					"error", err,
-				)
-				continue
-			}
-			if err := s.store.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
-				WorkspaceID: workerWsID,
-				WorkerID:    ht.WorkerID,
-				TabType:     ht.TabType,
-				TabID:       ht.TabID,
-				Position:    ht.Position,
-				TileID:      ht.TileID,
-			}); err != nil {
-				slog.Error("failed to upsert moved tab during sync",
-					"worker_id", workerID,
-					"workspace_id", workerWsID,
-					"tab_id", ht.TabID,
-					"error", err,
-				)
+			staleTombstones = append(staleTombstones, &leapmuxv1.OrgOp{
+				OpId: id.Generate(),
+				Body: &leapmuxv1.OrgOp_TombstoneTab{
+					TombstoneTab: &leapmuxv1.TombstoneTabOp{
+						TabType: ht.TabType,
+						TabId:   ht.TabID,
+					},
+				},
+			})
+		}
+		if len(staleTombstones) > 0 {
+			mgr, err := s.crdtRegistry.Get(ctx, staleOrgID)
+			if err != nil {
+				slog.Warn("workspace tab sync: get manager failed",
+					"worker_id", workerID, "org_id", staleOrgID, "error", err)
 			} else {
-				moved++
+				batch := &leapmuxv1.OpBatch{
+					BatchId: "worker-sync-" + workerID + "-" + id.Generate(),
+					Ops:     staleTombstones,
+				}
+				if _, err := mgr.SubmitInternal(ctx, crdt.SubmitInput{
+					OrgID:       staleOrgID,
+					Batches:     []*leapmuxv1.OpBatch{batch},
+					PrincipalID: crdt.HubReservedPrincipal,
+				}); err != nil {
+					slog.Warn("workspace tab sync: submit tombstones failed",
+						"worker_id", workerID, "error", err)
+				}
 			}
 		}
 	}
 
-	slog.Info("workspace tab sync completed",
+	// Always send a response even when both lists are empty so the
+	// worker can rely on the round-trip to mark its initial sync
+	// complete.
+	if err := conn.Send(&leapmuxv1.ConnectResponse{
+		RequestId: requestID,
+		Payload: &leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp{
+			WorkspaceTabsSyncResp: resp,
+		},
+	}); err != nil {
+		slog.Debug("failed to send workspace tabs sync response",
+			"worker_id", workerID, "error", err)
+	}
+
+	slog.Info("workspace tab sync handled",
 		"worker_id", workerID,
 		"worker_tabs", len(sync.GetTabs()),
 		"hub_tabs", len(hubTabs),
-		"deleted", deleted,
-		"moved", moved,
+		"orphans", len(resp.OrphanTabIds),
+		"reassignments", len(resp.Reassignments),
 	)
 }
 

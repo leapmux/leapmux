@@ -14,7 +14,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/util/procutil"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 )
 
 // Claude Code permission mode values.
@@ -136,14 +136,15 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		ctx, opts.Shell, opts.LoginShell, "claude", []string{"CLAUDECODE"}, baseArgs, modelEffortArgs, opts.WorkingDir,
 	)
 
-	cmd.Env = procutil.FilterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
-	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1")
+	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=cli")
 	if opts.LoginShell {
 		// Set CLAUDECODE=1 so the user's shell rc files can detect they are
 		// being sourced inside Claude Code and skip conflicting aliases.
 		// The inner command unsets it before invoking claude.
 		cmd.Env = append(cmd.Env, "CLAUDECODE=1")
 	}
+	cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
 
 	// setupProcessPipes configures SIGTERM cancel, WaitDelay, and opens
 	// stdin/stdout/stderr pipes.
@@ -153,20 +154,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 	}
 
 	a := &ClaudeCodeAgent{
-		processBase: processBase{
-			agentID:            opts.AgentID,
-			providerName:       "claude",
-			cmd:                cmd,
-			stdin:              stdin,
-			ctx:                ctx,
-			cancel:             cancel,
-			stderrDone:         make(chan struct{}),
-			processDone:        make(chan struct{}),
-			preambleDelimiter:  preambleDelimiter,
-			preambleMetaPrefix: metaPrefix,
-			preambleMeta:       make(map[string]string),
-			apiTimeout:         opts.apiTimeout(),
-		},
+		processBase:            newProcessBase(opts, "claude", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
 		model:                  opts.Model,
 		effort:                 opts.Effort,
 		workingDir:             opts.WorkingDir,
@@ -267,6 +255,29 @@ func (a *ClaudeCodeAgent) buildStartupFlagSettings(extra map[string]string) map[
 		fs[ExtraKeyAlwaysThinking] = flagSettingThinking(v)
 	}
 	return fs
+}
+
+// Interrupt aborts the current turn by sending the Claude Code
+// interrupt control_request. This matches the wire format the
+// frontend's buildInterruptRequest produced before the dedicated RPC,
+// and the receiving claudeProvider.IsInterrupt detects:
+//
+//	{"type":"control_request","request_id":"...",
+//	 "request":{"subtype":"interrupt"}}
+//
+// The request is best-effort: if the agent has already exited or is
+// mid-stop the call returns the underlying error so the caller can
+// surface it, but a no-active-turn agent won't fail — Claude Code
+// silently ack's interrupts received outside a turn.
+func (a *ClaudeCodeAgent) Interrupt() error {
+	if a.IsStopped() {
+		return fmt.Errorf("agent is stopped")
+	}
+	// Use the agent's own context so a process exit unblocks the
+	// wait. APITimeout caps how long we hold the caller; the control
+	// protocol itself is fast (single round-trip).
+	_, err := a.sendControlAndWait(a.ctx, `{"subtype":"interrupt"}`, a.APITimeout())
+	return err
 }
 
 // SendInput writes a user message to the agent's stdin.

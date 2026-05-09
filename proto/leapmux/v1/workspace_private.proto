@@ -1,0 +1,107 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/workspace.proto";
+
+// WorkspacePrivateService is a worker-side service whose RPCs travel
+// only over an E2EE channel. It carries content the hub deliberately
+// doesn't see (tab titles, file-tab paths). Frontends and the CLI
+// subscribe per worker that hosts tabs in the workspace; titles and
+// paths never traverse the hub.
+service WorkspacePrivateService {
+  // WatchWorkspacePrivateEvents streams private workspace events for
+  // the given workspace. The worker filters by the channel's
+  // accessible workspaces so cross-workspace leakage is impossible.
+  // The worker emits a one-shot bootstrap reply at subscribe time:
+  // one FileTabPathRegistered per row in worker_file_tabs for the
+  // requested workspace, followed by live events.
+  rpc WatchWorkspacePrivateEvents(WatchWorkspacePrivateEventsRequest)
+      returns (stream WorkspacePrivateEvent);
+
+  // RegisterFileTabPath persists (org_id, workspace_id, tab_id, path)
+  // on the worker. Path is plaintext on the wire — this RPC must
+  // travel via E2EE. Emits FileTabPathRegistered.
+  rpc RegisterFileTabPath(RegisterFileTabPathRequest) returns (RegisterFileTabPathResponse);
+
+  // GetFileTabPath returns the worker-stored path for a tab. Used by
+  // late-joining clients that received a TabRecord via the CRDT
+  // before the corresponding FileTabPathRegistered event.
+  rpc GetFileTabPath(GetFileTabPathRequest) returns (GetFileTabPathResponse);
+
+  // RevokeFileTabPath deletes the worker-stored path. Emits
+  // FileTabPathRevoked. Authorization falls back to the row's
+  // workspace_id when the CRDT TabRecord is gone (rollback path).
+  rpc RevokeFileTabPath(RevokeFileTabPathRequest) returns (RevokeFileTabPathResponse);
+
+  // RelocateFileTabPath updates the worker row's workspace_id when a
+  // file tab is moved between workspaces. Emits FileTabPathRevoked
+  // on the SOURCE workspace stream and FileTabPathRegistered on the
+  // DESTINATION workspace stream. Never emits a "Relocated" event so
+  // destination workspace_id is not leaked to source-only watchers.
+  rpc RelocateFileTabPath(RelocateFileTabPathRequest) returns (RelocateFileTabPathResponse);
+}
+
+message WatchWorkspacePrivateEventsRequest {
+  string workspace_id = 1;
+}
+
+message WorkspacePrivateEvent {
+  oneof event {
+    TabRenamed              tab_renamed                = 1;
+    FileTabPathRegistered   file_tab_path_registered   = 2;
+    FileTabPathRevoked      file_tab_path_revoked      = 3;
+  }
+}
+
+message TabRenamed {
+  string tab_id = 1;
+  TabType tab_type = 2;
+  string title = 3;
+  string origin_client_id = 4;
+}
+
+message FileTabPathRegistered {
+  string tab_id       = 1;
+  string workspace_id = 2;
+  string file_path    = 3;
+}
+
+message FileTabPathRevoked {
+  string tab_id = 1;
+}
+
+// --- File-tab path RPC payloads ---
+
+message RegisterFileTabPathRequest {
+  string org_id       = 1;
+  string workspace_id = 2;
+  string tab_id       = 3;
+  string file_path    = 4;
+}
+
+message RegisterFileTabPathResponse {}
+
+message GetFileTabPathRequest {
+  string org_id = 1;
+  string tab_id = 2;
+}
+
+message GetFileTabPathResponse {
+  string workspace_id = 1;
+  string file_path    = 2;
+}
+
+message RevokeFileTabPathRequest {
+  string org_id = 1;
+  string tab_id = 2;
+}
+
+message RevokeFileTabPathResponse {}
+
+message RelocateFileTabPathRequest {
+  string org_id           = 1;
+  string tab_id           = 2;
+  string new_workspace_id = 3;
+}
+
+message RelocateFileTabPathResponse {}

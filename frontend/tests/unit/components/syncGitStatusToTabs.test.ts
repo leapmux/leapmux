@@ -4,9 +4,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { syncGitStatusToTabs } from '~/components/shell/syncGitStatusToTabs'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createAgentStore } from '~/stores/agent.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
-import { createTabStore, tabKey } from '~/stores/tab.store'
+import { tabKey } from '~/stores/tab.helpers'
+import { createTabStore } from '~/stores/tab.store'
 
 const mockGetGitFileStatus = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
@@ -31,13 +31,12 @@ describe('syncGitStatusToTabs', () => {
   it('stamps git fields on terminal tabs whose workingDir sits under repoRoot', async () => {
     await createRoot(async (dispose) => {
       const tabStore = createTabStore()
-      const agentStore = createAgentStore()
       const gitFileStatusStore = createGitFileStatusStore()
 
       tabStore.addTab({ type: TabType.TERMINAL, id: 't1', workingDir: '/repo/sub' })
       tabStore.addTab({ type: TabType.TERMINAL, id: 't2', workingDir: '/elsewhere' })
 
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore, agentStore })
+      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
@@ -67,16 +66,16 @@ describe('syncGitStatusToTabs', () => {
     })
   })
 
-  it('reads agent workingDir from agentStore (not from the agent tab itself)', async () => {
+  // Per-agent metadata lives on the Tab record now, so the agent's
+  // workingDir comes off the tab directly — no separate agentStore.
+  it('reads agent workingDir from the tab record itself', async () => {
     await createRoot(async (dispose) => {
       const tabStore = createTabStore()
-      const agentStore = createAgentStore()
       const gitFileStatusStore = createGitFileStatusStore()
 
-      agentStore.addAgent({ id: 'a1', workingDir: '/repo/agent-cwd' } as Parameters<typeof agentStore.addAgent>[0])
-      tabStore.addTab({ type: TabType.AGENT, id: 'a1' })
+      tabStore.addTab({ type: TabType.AGENT, id: 'a1', workingDir: '/repo/agent-cwd' })
 
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore, agentStore })
+      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
 
       mockGetGitFileStatus.mockResolvedValueOnce({
         repoRoot: '/repo',
@@ -99,12 +98,11 @@ describe('syncGitStatusToTabs', () => {
   it('skips no-op writes when fields already match the resolved git stats', async () => {
     await createRoot(async (dispose) => {
       const tabStore = createTabStore()
-      const agentStore = createAgentStore()
       const gitFileStatusStore = createGitFileStatusStore()
 
       tabStore.addTab({ type: TabType.TERMINAL, id: 't1', workingDir: '/repo' })
 
-      syncGitStatusToTabs({ gitFileStatusStore, tabStore, agentStore })
+      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
 
       mockGetGitFileStatus.mockResolvedValue({
         repoRoot: '/repo',
@@ -127,6 +125,84 @@ describe('syncGitStatusToTabs', () => {
       const after2 = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
       expect(after2?.gitDiffAdded).toBe(3)
       expect(after2).toBe(refBefore)
+
+      dispose()
+    })
+  })
+
+  it('does not stamp the focused repo onto a nested tab that belongs to a different repo', async () => {
+    // Sidebar grouping bug: tab A is rooted at /parent (its own git repo),
+    // tab B's working dir is /parent/sub but it belongs to a *different*
+    // git repo whose toplevel is /parent/sub. When tab A is the focused
+    // repo the directory tree publishes A's repoRoot. The sync effect
+    // must not overwrite tab B's identity just because B's path is
+    // lexically inside A's tree — otherwise the workspace tab tree
+    // groups them under one repo.
+    await createRoot(async (dispose) => {
+      const tabStore = createTabStore()
+      const gitFileStatusStore = createGitFileStatusStore()
+
+      tabStore.addTab({
+        type: TabType.TERMINAL,
+        id: 'a',
+        workingDir: '/parent',
+        gitOriginUrl: 'https://example.com/a.git',
+        gitToplevel: '/parent',
+        gitBranch: 'main',
+      })
+      tabStore.addTab({
+        type: TabType.TERMINAL,
+        id: 'b',
+        workingDir: '/parent/sub',
+        gitOriginUrl: 'https://example.com/b.git',
+        gitToplevel: '/parent/sub',
+        gitBranch: 'feature',
+      })
+
+      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+
+      mockGetGitFileStatus.mockResolvedValueOnce({
+        repoRoot: '/parent',
+        originUrl: 'https://example.com/a.git',
+        currentBranch: 'main',
+        files: [],
+      })
+      await gitFileStatusStore.refresh('worker1', '/parent')
+
+      const tabB = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 'b' }))
+      expect(tabB?.gitOriginUrl).toBe('https://example.com/b.git')
+      expect(tabB?.gitToplevel).toBe('/parent/sub')
+      expect(tabB?.gitBranch).toBe('feature')
+
+      dispose()
+    })
+  })
+
+  it('seeds gitToplevel on a tab that has not yet learned its toplevel', async () => {
+    // First-sync fallback: a freshly-created tab has no gitToplevel yet,
+    // so the path-prefix check is the best we can do. After the first
+    // sync, the tab carries its authoritative gitToplevel for subsequent
+    // runs to compare against.
+    await createRoot(async (dispose) => {
+      const tabStore = createTabStore()
+      const gitFileStatusStore = createGitFileStatusStore()
+
+      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', workingDir: '/repo/nested' })
+
+      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+
+      mockGetGitFileStatus.mockResolvedValueOnce({
+        repoRoot: '/repo',
+        originUrl: 'https://example.com/repo.git',
+        currentBranch: 'main',
+        files: [],
+      })
+      await gitFileStatusStore.refresh('worker1', '/repo')
+
+      const t1 = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
+      expect(t1?.gitOriginUrl).toBe('https://example.com/repo.git')
+      expect(t1?.gitToplevel).toBe('/repo')
+      expect(t1?.gitBranch).toBe('main')
 
       dispose()
     })

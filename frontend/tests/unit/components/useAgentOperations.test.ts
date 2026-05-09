@@ -8,16 +8,17 @@ import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
+import { protoToAgentTabFields } from '~/stores/tab.helpers'
 import { createTabStore } from '~/stores/tab.store'
 
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
 const mockOpenAgent = vi.fn()
 const mockSendAgentRawMessage = vi.fn()
 const mockSendAgentMessage = vi.fn()
+const mockInterruptAgent = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
 const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
@@ -27,6 +28,7 @@ vi.mock('~/api/workerRpc', () => ({
   openAgent: (...args: unknown[]) => mockOpenAgent(...args),
   sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
   sendAgentRawMessage: (...args: unknown[]) => mockSendAgentRawMessage(...args),
+  interruptAgent: (...args: unknown[]) => mockInterruptAgent(...args),
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   retryAgentMessage: vi.fn(),
@@ -46,7 +48,6 @@ vi.mock('~/components/common/Toast', () => ({
 }))
 
 function setup() {
-  const agentStore = createAgentStore()
   const agentSessionStore = createAgentSessionStore()
   const controlStore = createControlStore()
   const tabStore = createTabStore()
@@ -60,7 +61,6 @@ function setup() {
   } as any
 
   const ops = useAgentOperations({
-    agentStore,
     agentSessionStore,
     chatStore,
     controlStore,
@@ -74,7 +74,7 @@ function setup() {
     setNewAgentLoadingProvider: vi.fn(),
   })
 
-  return { agentStore, agentSessionStore, controlStore, tabStore, layoutStore, chatStore, ops }
+  return { tabStore, agentSessionStore, controlStore, layoutStore, chatStore, ops }
 }
 
 async function flushMicrotasks() {
@@ -169,7 +169,6 @@ describe('useAgentOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const setShowNewAgentDialog = vi.fn()
-          const agentStore = createAgentStore()
           const agentSessionStore = createAgentSessionStore()
           const controlStore = createControlStore()
           const tabStore = createTabStore()
@@ -182,7 +181,6 @@ describe('useAgentOperations', () => {
           } as any
 
           const ops = useAgentOperations({
-            agentStore,
             agentSessionStore,
             chatStore,
             controlStore,
@@ -209,24 +207,23 @@ describe('useAgentOperations', () => {
   })
 
   describe('handleInterrupt', () => {
-    it('sends provider interrupt payload via raw agent input', async () => {
+    it('calls the worker-side InterruptAgent RPC', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, agentSessionStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, {
             id: 'codex-1',
             workerId: 'w-1',
             agentProvider: AgentProvider.CODEX,
             agentSessionId: 'thread-1',
           })
-          agentStore.addAgent(agent)
-          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1' })
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          mockInterruptAgent.mockResolvedValue({})
 
           await ops.handleInterrupt('codex-1')
 
-          expect(mockSendAgentRawMessage).toHaveBeenCalledWith('w-1', {
+          expect(mockInterruptAgent).toHaveBeenCalledWith('w-1', {
             agentId: 'codex-1',
-            content: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
           })
         }
         finally {
@@ -240,7 +237,7 @@ describe('useAgentOperations', () => {
     it('uses option-group metadata for default rollback and error labeling', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, {
             id: 'a-1',
             workerId: 'w-1',
@@ -254,7 +251,7 @@ describe('useAgentOperations', () => {
               ],
             }],
           })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
           await ops.handleOptionGroupChange('a-1', 'opencode_mode', 'fast')
@@ -263,7 +260,7 @@ describe('useAgentOperations', () => {
             agentId: 'a-1',
             settings: { extraSettings: { opencode_mode: 'fast' } },
           })
-          expect(agentStore.state.agents.find(a => a.id === 'a-1')?.extraSettings?.opencode_mode).toBe('safe')
+          expect(tabStore.getAgentTab('a-1')?.extraSettings?.opencode_mode).toBe('safe')
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to change Execution Mode', expect.any(Error))
         }
         finally {
@@ -275,7 +272,7 @@ describe('useAgentOperations', () => {
     it('rollback re-reads current state to avoid clobbering concurrent changes', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, {
             id: 'a-concurrent',
             workerId: 'w-1',
@@ -299,7 +296,7 @@ describe('useAgentOperations', () => {
               },
             ],
           })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
 
           // First call will fail; second succeeds.
           let rejectFirst!: (err: Error) => void
@@ -313,7 +310,7 @@ describe('useAgentOperations', () => {
           const p2 = ops.handleOptionGroupChange('a-concurrent', 'network_access', 'enabled')
 
           // Both optimistic updates should be applied.
-          const mid = agentStore.state.agents.find(a => a.id === 'a-concurrent')
+          const mid = tabStore.getAgentTab('a-concurrent')
           expect(mid?.extraSettings?.sandbox_policy).toBe('danger-full-access')
           expect(mid?.extraSettings?.network_access).toBe('enabled')
 
@@ -323,7 +320,7 @@ describe('useAgentOperations', () => {
           await p1
           await p2
 
-          const final = agentStore.state.agents.find(a => a.id === 'a-concurrent')
+          const final = tabStore.getAgentTab('a-concurrent')
           expect(final?.extraSettings?.sandbox_policy).toBe('workspace-write')
           expect(final?.extraSettings?.network_access).toBe('enabled')
         }
@@ -336,7 +333,7 @@ describe('useAgentOperations', () => {
     it('falls back to the first option when no explicit default is marked', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, {
             id: 'a-2',
             workerId: 'w-1',
@@ -349,12 +346,12 @@ describe('useAgentOperations', () => {
               ],
             }],
           })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
           await ops.handleOptionGroupChange('a-2', 'opencode_mode', 'fast')
 
-          expect(agentStore.state.agents.find(a => a.id === 'a-2')?.extraSettings?.opencode_mode).toBe('safe')
+          expect(tabStore.getAgentTab('a-2')?.extraSettings?.opencode_mode).toBe('safe')
         }
         finally {
           dispose()
@@ -367,9 +364,9 @@ describe('useAgentOperations', () => {
     it('clears the delivery error before resending the message', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, chatStore, ops } = setup()
+          const { tabStore, chatStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           chatStore.getMessages.mockReturnValue([{
             id: 'local-1',
             source: MessageSource.USER,
@@ -393,9 +390,9 @@ describe('useAgentOperations', () => {
     it('restores the delivery error if resend fails', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, chatStore, ops } = setup()
+          const { tabStore, chatStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-2', workerId: 'w-1' })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           chatStore.getMessages.mockReturnValue([{
             id: 'local-2',
             source: MessageSource.USER,
@@ -421,9 +418,9 @@ describe('useAgentOperations', () => {
     it('removes agent/tab synchronously BEFORE the close RPC resolves', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, tabStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           tabStore.addTab({ type: TabType.AGENT, id: 'a-1', title: 'Agent Olivia', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
 
           // Never-resolving RPC to prove the UI mutation is synchronous.
@@ -432,7 +429,7 @@ describe('useAgentOperations', () => {
           ops.handleCloseAgent('a-1')
 
           // Store mutations happened synchronously.
-          expect(agentStore.state.agents.find(a => a.id === 'a-1')).toBeUndefined()
+          expect(tabStore.getAgentTab('a-1')).toBeUndefined()
           expect(tabStore.state.tabs.find(t => t.id === 'a-1')).toBeUndefined()
           // RPC was dispatched with KEEP as the default worktree action.
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
@@ -446,9 +443,9 @@ describe('useAgentOperations', () => {
     it('passes through the worktreeAction argument', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, tabStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-remove', workerId: 'w-1' })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           tabStore.addTab({ type: TabType.AGENT, id: 'a-remove', title: 'Agent Remove', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
 
           mockCloseAgent.mockResolvedValueOnce({
@@ -474,9 +471,9 @@ describe('useAgentOperations', () => {
     it('surfaces failure_message + failure_detail via toast when the RPC reports a partial failure', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, tabStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-fail', workerId: 'w-1' })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           tabStore.addTab({ type: TabType.AGENT, id: 'a-fail', title: 'Agent Fail', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
 
           mockCloseAgent.mockResolvedValueOnce({
@@ -504,9 +501,9 @@ describe('useAgentOperations', () => {
     it('surfaces a generic toast when the RPC rejects', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, tabStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-reject', workerId: 'w-1' })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           tabStore.addTab({ type: TabType.AGENT, id: 'a-reject', title: 'Agent Reject', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
 
           const err = new Error('network down')
@@ -527,9 +524,9 @@ describe('useAgentOperations', () => {
     it('skips RPC and still removes tab when workerId is missing', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { agentStore, tabStore, ops } = setup()
+          const { tabStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-2', workerId: '' })
-          agentStore.addAgent(agent)
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           tabStore.addTab({ type: TabType.AGENT, id: 'a-2', title: 'Agent Liam', tileId: 'tile-1', workerId: '', workingDir: '' })
 
           mockCloseAgent.mockClear()
@@ -537,7 +534,7 @@ describe('useAgentOperations', () => {
           ops.handleCloseAgent('a-2')
 
           expect(mockCloseAgent).not.toHaveBeenCalled()
-          expect(agentStore.state.agents.find(a => a.id === 'a-2')).toBeUndefined()
+          expect(tabStore.getAgentTab('a-2')).toBeUndefined()
           expect(tabStore.state.tabs.find(t => t.id === 'a-2')).toBeUndefined()
         }
         finally {

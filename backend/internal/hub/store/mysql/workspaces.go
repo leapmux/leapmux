@@ -51,6 +51,17 @@ func (s *workspaceStore) GetByIDIncludeDeleted(ctx context.Context, id string) (
 	return fromDBWorkspace(w), nil
 }
 
+func (s *workspaceStore) ListByIDs(ctx context.Context, ids []string) ([]store.Workspace, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.conn.q.ListWorkspacesByIDs(ctx, ids)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return store.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
+}
+
 func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessibleWorkspacesParams) ([]store.Workspace, error) {
 	rows, err := s.conn.q.ListAccessibleWorkspaces(ctx, gendb.ListAccessibleWorkspacesParams{
 		UserID: p.UserID,

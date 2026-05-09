@@ -1080,3 +1080,102 @@ func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
+
+// TestUserService_GetUser_Self pins the self-lookup happy path: a
+// caller resolving their own id always succeeds and returns
+// (id, org, username) without consulting the cross-tenant gate.
+// The `leapmux remote` CLI's universal resolver leans on this for
+// `--user-id $LEAPMUX_REMOTE_USER_ID` derivations.
+func TestUserService_GetUser_Self(t *testing.T) {
+	env := setupUserTest(t)
+
+	resp, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
+		UserId: env.userID,
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, env.userID, resp.Msg.GetUserId())
+	assert.Equal(t, env.orgID, resp.Msg.GetOrgId())
+	assert.Equal(t, "testuser", resp.Msg.GetUsername())
+}
+
+// TestUserService_GetUser_SameOrg confirms a caller can resolve a
+// peer in their own org. This is the bread-and-butter path for the
+// resolver — it's how a script that knows only a teammate's user_id
+// gets their org_id for downstream RPCs.
+func TestUserService_GetUser_SameOrg(t *testing.T) {
+	env := setupUserTest(t)
+	peerID := id.Generate()
+	hash, _ := password.Hash("testpass")
+	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
+		ID:           peerID,
+		OrgID:        env.orgID,
+		Username:     "peer",
+		PasswordHash: hash,
+		DisplayName:  "Peer",
+		PasswordSet:  true,
+	})
+
+	resp, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
+		UserId: peerID,
+	}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, peerID, resp.Msg.GetUserId())
+	assert.Equal(t, env.orgID, resp.Msg.GetOrgId())
+	assert.Equal(t, "peer", resp.Msg.GetUsername())
+}
+
+// TestUserService_GetUser_CrossOrgCollapsesToNotFound is the tenancy
+// guard. A caller asking for a user in another org gets NotFound
+// (not PermissionDenied) so we don't leak the existence of accounts
+// across tenants. Returning Denied would let an attacker enumerate
+// the user table by probing for id collisions.
+func TestUserService_GetUser_CrossOrgCollapsesToNotFound(t *testing.T) {
+	env := setupUserTest(t)
+	// User in a different org.
+	otherOrg := id.Generate()
+	otherUser := id.Generate()
+	hash, _ := password.Hash("testpass")
+	require.NoError(t, env.store.Orgs().Create(context.Background(), store.CreateOrgParams{ID: otherOrg, Name: "otherorg"}))
+	require.NoError(t, env.store.Users().Create(context.Background(), store.CreateUserParams{
+		ID:           otherUser,
+		OrgID:        otherOrg,
+		Username:     "outsider",
+		PasswordHash: hash,
+		DisplayName:  "Outsider",
+		PasswordSet:  true,
+	}))
+
+	_, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
+		UserId: otherUser,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"cross-tenant lookup must collapse to NotFound rather than leak existence as PermissionDenied")
+}
+
+// TestUserService_GetUser_RejectsEmptyID covers the invalid-args
+// branch. Empty user_id hard-fails before any DB query, so scripts
+// that pass `$LEAPMUX_REMOTE_USER_ID` from an unset env get a
+// crisp error instead of an unfiltered table scan.
+func TestUserService_GetUser_RejectsEmptyID(t *testing.T) {
+	env := setupUserTest(t)
+	_, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
+		UserId: "",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// TestUserService_GetUser_NotFoundForUnknown covers the "user_id
+// looks valid but no row exists" case. With cross-org collapsing
+// to NotFound, the only behavioural difference between "user
+// exists in another org" and "user does not exist" is what the
+// admin sees in logs — both surface as NotFound to the client.
+func TestUserService_GetUser_NotFoundForUnknown(t *testing.T) {
+	env := setupUserTest(t)
+	_, err := env.client.GetUser(context.Background(), authedReq(&leapmuxv1.GetUserRequest{
+		UserId: id.Generate(),
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}

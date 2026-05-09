@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { DragTeardownHandle } from './dragTeardown'
 import type { GridAxis, GridNode, LayoutNodeLocal, SplitNode } from '~/stores/layout.store'
-import { createMemo, createSignal, For, Index, Match, Switch } from 'solid-js'
+import { createMemo, createSignal, Index, Match, Show, Switch } from 'solid-js'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { createDragTeardownHandle } from './dragTeardown'
 import * as styles from './TilingLayout.css'
@@ -105,7 +105,24 @@ function LayoutNodeRenderer(props: LayoutNodeRendererProps): JSX.Element {
   return (
     <Switch>
       <Match when={node().type === 'leaf' ? node() : null}>
-        {leaf => props.renderTile(leaf().id)}
+        {leaf => (
+          // GridRenderer uses `<Index each={cells}>`, which keeps the
+          // same DOM slot when the underlying cell record mutates
+          // (placeholder leaf -> real materialised leaf as
+          // EntityMaterialized frames arrive). The Match is unkeyed
+          // so its child render function isn't re-invoked on
+          // truthy-to-truthy transitions, and `renderTile(string)`
+          // captures the leaf id as a closure constant — so without
+          // this Show, the Tile stays bound to its first id forever
+          // and lookups like `mainPredicates().get(tileId)` and
+          // `tabStore.getTabsForTile(tileId)` keep targeting the
+          // placeholder. Keying on leaf().id re-mounts the Tile
+          // exactly when the id changes, picking up the freshly
+          // installed predicate and tab list.
+          <Show when={leaf().id} keyed>
+            {id => props.renderTile(id)}
+          </Show>
+        )}
       </Match>
       <Match when={node().type === 'grid' ? node() as GridNode : null}>
         {grid => (
@@ -133,7 +150,14 @@ function LayoutNodeRenderer(props: LayoutNodeRendererProps): JSX.Element {
 
 function SplitRenderer(props: SplitRendererProps): JSX.Element {
   const s = () => props.split
-  const isHorizontal = () => s().direction === 'horizontal'
+  // direction names the orientation of the divider line itself:
+  // 'vertical' = a vertical divider (`|`) between two side-by-side
+  // panes; 'horizontal' = a horizontal divider (`-`) between two
+  // stacked panes. isVerticalDivider() drives every axis-dependent
+  // branch below — grid template, cell placement, separator
+  // orientation — so flipping that one predicate flips the whole
+  // render.
+  const isVerticalDivider = () => s().direction === 'vertical'
 
   let containerRef: HTMLDivElement | undefined
   // Cancel any in-flight drag when the split's structure or persisted
@@ -145,7 +169,7 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
   )
 
   const axis = useAxisRatios(
-    () => isHorizontal() ? 'col' : 'row',
+    () => isVerticalDivider() ? 'col' : 'row',
     () => s().ratios,
     () => containerRef,
     dragTeardown,
@@ -166,41 +190,56 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
       data-direction={s().direction}
       data-testid="tile-split"
       style={{
-        [isHorizontal() ? 'grid-template-columns' : 'grid-template-rows']: axis.gridTemplate(),
+        [isVerticalDivider() ? 'grid-template-columns' : 'grid-template-rows']: axis.gridTemplate(),
       }}
     >
-      <For each={s().children}>
+      {/*
+        Index (not For) here: ratio drags update SetNodeRegister(ratios)
+        on the SPLIT, which bumps pendingVersion, which makes
+        projectedRoot() recompute, which produces a fresh
+        `LayoutNodeLocal` tree with fresh child object references each
+        frame. `<For>` keys by reference and would unmount + remount
+        every child per frame — collapsing every leaf's Tile / TabBar /
+        ChatView, which in turn resets the ThinkingIndicator's
+        wasVisible closure and re-plays the 300ms expand animation on
+        every drop. `<Index>` keys by slot, so the same DOM stays
+        mounted and only the reactive accessor `child()` re-reads the
+        fresh node. Mirrors the rationale already documented in
+        GridRenderer below.
+      */}
+      <Index each={s().children}>
         {(child, i) => (
           <div
             class={styles.tilingCell}
             style={{
-              'grid-column': isHorizontal() ? `${i() + 1}` : '1',
-              'grid-row': isHorizontal() ? '1' : `${i() + 1}`,
+              'grid-column': isVerticalDivider() ? `${i + 1}` : '1',
+              'grid-row': isVerticalDivider() ? '1' : `${i + 1}`,
             }}
           >
             <LayoutNodeRenderer
-              node={child}
+              node={child()}
               renderTile={props.renderTile}
               onRatioChange={props.onRatioChange}
               onGridRatiosChange={props.onGridRatiosChange}
             />
           </div>
         )}
-      </For>
+      </Index>
       <Index each={axis.cumulativeRatios()}>
         {(pos, i) => (
           <div
             class={styles.tilingSeparator}
-            data-axis={isHorizontal() ? 'col' : 'row'}
+            data-axis={isVerticalDivider() ? 'col' : 'row'}
             data-testid="tile-resize-handle"
             // role="separator" + aria-orientation describes the separator
-            // itself, so a horizontal split (side-by-side panels) has a
-            // *vertical* separator. Keyboard resize is intentionally not
-            // implemented; revisit if accessibility audits demand it.
+            // itself: a vertical-divider split has a *vertical* separator
+            // between two side-by-side panes. Keyboard resize is
+            // intentionally not implemented; revisit if accessibility
+            // audits demand it.
             role="separator"
-            aria-orientation={isHorizontal() ? 'vertical' : 'horizontal'}
+            aria-orientation={isVerticalDivider() ? 'vertical' : 'horizontal'}
             style={{
-              [isHorizontal() ? 'left' : 'top']: `${pos() * 100}%`,
+              [isVerticalDivider() ? 'left' : 'top']: `${pos() * 100}%`,
             }}
             onPointerDown={e => axis.startDrag(i, e)}
           />

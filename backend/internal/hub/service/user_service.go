@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -84,11 +85,21 @@ func validateCustomKeybindingsJSON(raw string) error {
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
-	store        store.Store
-	cfg          *config.Config
-	sessionCache *auth.SessionCache
-	mail         mail.Sender
-	renderer     mail.Renderer
+	store         store.Store
+	cfg           *config.Config
+	sessionCache  *auth.SessionCache
+	mail          mail.Sender
+	renderer      mail.Renderer
+	channelCloser UserChannelCloser
+}
+
+// UserChannelCloser is the subset of *ChannelService that user-revocation
+// paths use to tear down any E2EE channels owned by the affected user.
+// Plumbed via WithChannelCloser so credential-rotation paths
+// (ChangePassword) close channels in lock-step with delegation-token
+// revocation rather than letting them outlive the password change.
+type UserChannelCloser interface {
+	CloseChannelsByUser(userID string) int
 }
 
 // NewUserService creates a new UserService. renderer carries the hub's
@@ -96,6 +107,14 @@ type UserService struct {
 // emails sent on email-change and resend.
 func NewUserService(st store.Store, cfg *config.Config, sc *auth.SessionCache, sender mail.Sender, renderer mail.Renderer) *UserService {
 	return &UserService{store: st, cfg: cfg, sessionCache: sc, mail: sender, renderer: renderer}
+}
+
+// WithChannelCloser wires the per-user channel teardown that fires
+// alongside credential rotation. Returns the receiver so the hub
+// bootstrap can chain after construction.
+func (s *UserService) WithChannelCloser(c UserChannelCloser) *UserService {
+	s.channelCloser = c
+	return s
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -361,6 +380,25 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 	// Evict all cached sessions for this user so that deleted sessions
 	s.sessionCache.EvictByUserID(user.ID)
 
+	// Propagate the revocation to the worker layer so spawned-agent
+	// delegation bearers minted under the old password die instead of
+	// outliving it. We deliberately do NOT do this on per-session
+	// Logout — only on credential rotation.
+	if _, err := auth.PropagateUserRevocation(ctx, s.store, s.sessionCache, user.ID); err != nil {
+		// Non-fatal: rows have a TTL, so the worst case is a brief
+		// window where stale delegation bearers still validate. The
+		// password change itself succeeded; surface as a warning.
+		slog.Warn("propagate user revocation after password change", "user_id", user.ID, "error", err)
+	}
+	// Hard-close any open E2EE channels for this user. OpenChannel
+	// validates the bearer once and then rides the Noise session, so
+	// without this step a channel authorized by the just-revoked
+	// delegation row would keep working until the worker process
+	// exited.
+	if s.channelCloser != nil {
+		s.channelCloser.CloseChannelsByUser(user.ID)
+	}
+
 	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
 }
 
@@ -457,6 +495,47 @@ func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leap
 		ApiTimeoutSeconds:            int32(s.cfg.APITimeout().Seconds()),
 		AgentStartupTimeoutSeconds:   int32(s.cfg.AgentStartupTimeout().Seconds()),
 		WorktreeCreateTimeoutSeconds: int32(s.cfg.WorktreeCreateTimeout().Seconds()),
+	}), nil
+}
+
+// GetUser resolves a minimal user record (id, org_id, username) for
+// the caller or for another member of the caller's org. The
+// `leapmux remote` CLI universal resolver uses this to derive
+// org_id from user_id when scripts pass `--user-id`. Cross-org
+// lookups collapse to NotFound rather than PermissionDenied so we
+// don't leak the existence of users in other orgs.
+func (s *UserService) GetUser(ctx context.Context, req *connect.Request[leapmuxv1.GetUserRequest]) (*connect.Response[leapmuxv1.GetUserResponse], error) {
+	caller, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	target := req.Msg.GetUserId()
+	if target == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
+	}
+	// Self-lookups skip the org check (no cross-tenant concern).
+	if target == caller.ID {
+		return connect.NewResponse(&leapmuxv1.GetUserResponse{
+			UserId:   caller.ID,
+			OrgId:    caller.OrgID,
+			Username: caller.Username,
+		}), nil
+	}
+	u, err := s.store.Users().GetByID(ctx, target)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get user: %w", err))
+	}
+	if u.OrgID != caller.OrgID {
+		// Cross-tenant: collapse to NotFound rather than leaking existence.
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("user not found"))
+	}
+	return connect.NewResponse(&leapmuxv1.GetUserResponse{
+		UserId:   u.ID,
+		OrgId:    u.OrgID,
+		Username: u.Username,
 	}), nil
 }
 

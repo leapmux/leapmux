@@ -4,7 +4,7 @@ import type { WorkspaceTab } from '~/generated/leapmux/v1/workspace_pb'
 import { listAgents, listTerminals } from '~/api/workerRpc'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
-import { tabKey } from '~/stores/tab.store'
+import { tabKey } from '~/stores/tab.helpers'
 
 const log = createLogger('tabHydrate')
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/cli/remote"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/util/version"
@@ -21,6 +22,7 @@ Commands:
   worker    Run a Worker connected to a Hub
   dev       Run Hub + Worker for development
   admin     Manage LeapMux resources
+  remote    Drive LeapMux remotely (CLI / spawned agent)
   version   Print version and exit
 
 Common options:
@@ -34,6 +36,7 @@ type cliRunners struct {
 	runWorker func([]string) error
 	runSolo   func([]string, bool) error
 	runAdmin  func([]string) error
+	runRemote func([]string) error
 	version   func() string
 }
 
@@ -44,6 +47,7 @@ func main() {
 		runWorker: runWorker,
 		runSolo:   runSolo,
 		runAdmin:  runAdmin,
+		runRemote: runRemote,
 		version:   version.Format,
 	}))
 }
@@ -88,6 +92,21 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 			return code
 		}
 		if err := runners.runAdmin(args[1:]); err != nil {
+			return handleRunError(stderr, err)
+		}
+		return 0
+	case "remote":
+		if code, handled := handleRemoteArgs(args[1:], stdout, stderr); handled {
+			return code
+		}
+		if err := runners.runRemote(args[1:]); err != nil {
+			// EmitError already wrote the JSON envelope to stdout
+			// via the emittedError marker; suppress the plain-text
+			// "error: …" fallback so the JSON consumer doesn't see
+			// the same failure surfaced twice across two streams.
+			if remote.IsEmitted(err) {
+				return 1
+			}
 			return handleRunError(stderr, err)
 		}
 		return 0

@@ -21,7 +21,7 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
   <a href="https://cursor.com/cli"><img src="icons/agents/cursor.svg" width="64" height="64" title="Cursor"></a>&nbsp;
   <a href="https://github.com/features/copilot/cli"><img src="icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot"></a>&nbsp;
   <a href="https://opencode.ai/"><img src="icons/agents/opencode.svg" width="64" height="64" title="OpenCode"></a>&nbsp;
-  <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" title="Pi Coding Agent"></a>
+  <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" title="Pi"></a>
   <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
   <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" title="Goose"></a>&nbsp;
 </p>

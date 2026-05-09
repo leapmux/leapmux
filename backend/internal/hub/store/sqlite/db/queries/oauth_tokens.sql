@@ -7,7 +7,7 @@ ON CONFLICT (user_id, provider_id) DO UPDATE SET
     token_type = excluded.token_type,
     expires_at = excluded.expires_at,
     key_version = excluded.key_version,
-    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+    updated_at = datetime('now');
 
 -- name: GetOAuthTokens :one
 SELECT * FROM oauth_tokens
@@ -15,7 +15,7 @@ WHERE user_id = ? AND provider_id = ?;
 
 -- name: ListExpiringOAuthTokens :many
 SELECT * FROM oauth_tokens
-WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+5 minutes');
+WHERE datetime(expires_at) <= datetime('now', '+5 minutes');
 
 -- name: DeleteOAuthTokensByProvider :exec
 DELETE FROM oauth_tokens WHERE provider_id = ?;

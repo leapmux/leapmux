@@ -1,4 +1,4 @@
-import type { Tab } from '~/stores/tab.store'
+import type { Tab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createCloseFlow } from '~/components/shell/closeFlow'

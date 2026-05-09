@@ -1,0 +1,60 @@
+# LeapMux
+
+Multi-agent coding assistant platform supporting Claude Code and Codex.
+
+- Backend: Go
+- Frontend: SolidJS with vanilla-extract CSS (`.css.ts` files)
+- E2E: Playwright
+- Desktop: Tauri (Rust + Go sidecar)
+
+## Build system
+
+Use `task` (`Taskfile.yaml`) targets, not the underlying tools directly.
+
+- Frontend package manager: `bun` (lock: `bun.lock`)
+- Proto generation: `buf generate` (via `task generate-proto`)
+- SQL generation: `sqlc generate` (via `task generate-sqlc`)
+
+### sqlc files
+
+`backend/internal/hub/store/{sqlite,postgres,mysql}/db/queries/*.sql` and any other sqlc query files MUST contain only ASCII characters. The sqlc parser falls over on non-ASCII bytes (typically inside comments) with a misleading `mismatched input 'SELECr'`-style error that points at the wrong line. Use `--` (double hyphen) and plain ASCII punctuation instead of `—` (em-dash) or smart quotes.
+
+## Common commands
+
+- `task generate` — proto + sqlc generation
+- `task build` — full build (backend + frontend)
+- `task lint` — all linters
+- `task test` — all tests
+- `task test-e2e -- <files>` — run only the affected E2E specs, not the full suite
+- `task lint-backend` / `task lint-frontend` / `task lint-desktop`
+- `task test-backend` / `task test-frontend`
+
+Lint Rust/desktop code with `task lint-desktop`, not `cargo clippy` directly. The task builds the Go sidecar binary first, which Tauri's bundle resources reference at `../go/bin/*`. Running `cargo clippy` directly fails with a misleading build error.
+
+## Coding conventions
+
+### Tests
+
+- Backend: `testify/assert`, `testify/require`.
+- Frontend: `vitest`. `describe` names must be lowercase.
+- E2E: do NOT pass per-call `{ timeout: … }` overrides to `expect`, `locator.waitFor`, etc. Playwright's global timeout (configured in `playwright.config.ts`) already applies; per-call overrides are redundant noise. If a specific assertion legitimately needs a longer-than-global timeout (e.g. waiting on a slow worker spawn), discuss it before silently adding one.
+- Unused imports cause lint failures (strict).
+
+### Frontend CSS (vanilla-extract)
+
+Prefer `var(--space-N)` design tokens over equivalent pixel literals for `gap`, `margin*`, and `padding*`. The token scale (from `@knadh/oat`):
+
+- `--space-1` = `0.25rem` (4px)
+- `--space-2` = `0.5rem` (8px)
+- `--space-3` = `0.75rem` (12px)
+- …
+
+Does NOT apply to non-spacing px values: `borderRadius`, fixed `width`/`height` (resizers, scrollbars), absolute positioning offsets. Those are magic numbers, unrelated to the spacing scale.
+
+### Imports
+
+Prefer direct imports over re-export aliases. Do NOT add `export { foo as bar } from '...'` in a sibling barrel/style file just to give a symbol a context-specific name — import the canonical name directly at every call site. If the canonical name is too generic, rename the canonical export instead. Existing re-export aliases: leave them unless touching that file for another reason.
+
+## Git
+
+Never commit generated files. Output under `generated/` directories (sqlc, proto stubs, etc.) is gitignored — exclude anything generated when staging.

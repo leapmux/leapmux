@@ -24,8 +24,15 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("registrations", s.testRegistrations)
 	t.Run("workspaces", s.testWorkspaces)
 	t.Run("workspace_access", s.testWorkspaceAccess)
-	t.Run("workspace_tabs", s.testWorkspaceTabs)
-	t.Run("workspace_layouts", s.testWorkspaceLayouts)
+	t.Run("workspace_tab_index", s.testWorkspaceTabIndex)
+	t.Run("org_op_batches", s.testOrgOpBatches)
+	// Note: workspace_tabs / workspace_layouts substores were removed
+	// during the CRDT migration. Their replacements (WorkspaceTabIndex
+	// — bulk read paths covered above; OrgOpBatches has a regression
+	// case for the empty-journal load path that exercised a SQLite
+	// sqlc codegen bug; OrgState / OrgRecentBatchIDs / LifecycleOutbox)
+	// are otherwise exercised via the manager-integration suite rather
+	// than via plain table CRUD.
 	t.Run("workspace_sections", s.testWorkspaceSections)
 	t.Run("workspace_section_items", s.testWorkspaceSectionItems)
 	t.Run("oauth_providers", s.testOAuthProviders)
@@ -35,5 +42,10 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("pending_oauth_signups", s.testPendingOAuthSignups)
 	t.Run("transactions", s.testTransactions)
 	t.Run("cleanup", s.testCleanup)
+	t.Run("token_revocation", s.testTokenRevocation)
+	// `migrator` runs last because its `migrate to zero` subtest leaves
+	// the schema partially dropped, and the suite's per-test re-migrate
+	// trampoline can't always recover the dropped state cleanly. Any
+	// new suite group must therefore land before this line.
 	t.Run("migrator", s.testMigrator)
 }

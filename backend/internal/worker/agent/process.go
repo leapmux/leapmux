@@ -192,6 +192,17 @@ func (p *processBase) IsStopped() bool {
 	return p.stopped
 }
 
+// Interrupt is a default no-op implementation. Providers that have a
+// well-defined "abort current turn" signal (Codex turn/interrupt,
+// Claude Code interrupt control payload, ACP session/cancel, Pi
+// abort) override this with their own logic. The base implementation
+// is reached only by providers with no native interrupt path; rather
+// than fail the RPC we treat it as a no-op so the worker's
+// InterruptAgent handler stays uniform.
+func (p *processBase) Interrupt() error {
+	return nil
+}
+
 // APITimeout returns the configured API timeout, or DefaultAPITimeout if unset.
 func (p *processBase) APITimeout() time.Duration {
 	if p.apiTimeout > 0 {
@@ -332,6 +343,28 @@ func (p *processBase) attachJobObject(cmd *exec.Cmd) {
 		return
 	}
 	p.jobObject = job
+}
+
+// newProcessBase builds the embedded processBase every agent shares.
+// Folded out of each Start* call site so the 11-line struct-literal
+// (Channels, ctx, processDone, preambleDelimiter, metaPrefix,
+// preambleMeta map, apiTimeout) lives in one place. Providers that
+// need to set other processBase fields can do so after construction.
+func newProcessBase(opts Options, providerName string, cmd *exec.Cmd, stdin io.WriteCloser, ctx context.Context, cancel func(), preambleDelimiter, preambleMetaPrefix string) processBase {
+	return processBase{
+		agentID:            opts.AgentID,
+		providerName:       providerName,
+		cmd:                cmd,
+		stdin:              stdin,
+		ctx:                ctx,
+		cancel:             cancel,
+		stderrDone:         make(chan struct{}),
+		processDone:        make(chan struct{}),
+		preambleDelimiter:  preambleDelimiter,
+		preambleMetaPrefix: preambleMetaPrefix,
+		preambleMeta:       make(map[string]string),
+		apiTimeout:         opts.apiTimeout(),
+	}
 }
 
 // startCmd runs cmd.Start and, on success, attaches the process to a Windows

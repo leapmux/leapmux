@@ -17,10 +17,12 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/cleanup"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
+	"github.com/leapmux/leapmux/internal/hub/revocationwatcher"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
@@ -51,17 +53,18 @@ func WithFrontendHandler(h http.Handler) ServerOption {
 
 // Server is a reusable Hub server instance.
 type Server struct {
-	cfg          *config.Config
-	store        store.Store
-	keystore     *keystore.Keystore
-	oauthHandler *service.OAuthHandler
-	server       *http.Server
-	tcpLn        net.Listener
-	localLn      net.Listener
-	listenURL    string
-	shutdownCh   chan struct{}
-	sessionCache *auth.SessionCache
-	workerMgr    *workermgr.Manager
+	cfg               *config.Config
+	store             store.Store
+	keystore          *keystore.Keystore
+	oauthHandler      *service.OAuthHandler
+	server            *http.Server
+	tcpLn             net.Listener
+	localLn           net.Listener
+	listenURL         string
+	shutdownCh        chan struct{}
+	sessionCache      *auth.SessionCache
+	workerMgr         *workermgr.Manager
+	revocationWatcher *revocationwatcher.Watcher
 }
 
 // NewServer creates a new Hub server. It binds the TCP port and local IPC
@@ -163,7 +166,12 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	cMgr := channelmgr.New(cMgrOpts...)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
-	authInterceptor, sessionCache := auth.NewInterceptor(st, soloUser, cfg.SecureCookies, cfg.EmailVerificationRequired)
+	apiTokenPepper := ks.DeriveSubkey("api_tokens.v1")
+	tokenValidator, tvErr := auth.NewTokenValidator(st, apiTokenPepper[:])
+	if tvErr != nil {
+		return nil, fmt.Errorf("create token validator: %w", tvErr)
+	}
+	authInterceptor, sessionCache := auth.NewInterceptorWithTokens(st, soloUser, tokenValidator, cfg.SecureCookies, cfg.EmailVerificationRequired)
 	connectOpts := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
@@ -205,7 +213,23 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
 	notifierSvc := notifier.New(st, wMgr, pendingReqs, cfg)
 
-	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, shutdownCh)
+	// Per-org CRDT manager registry. The factory constructs a fully
+	// bootstrapped manager (state loaded from disk, ops replayed) on
+	// first reference per org. Lifecycle outbox / regular submits
+	// route through the same registry. Built early so it can be
+	// passed by constructor to every service that drives it (no
+	// post-construction injection or initialization-order hazards).
+	crdtJournal := service.NewCRDTJournal(st)
+	crdtAuth := service.NewCRDTAuthChecker(st)
+	crdtRegistry := crdt.NewRegistry(func(ctx context.Context, orgID string) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(orgID, crdtJournal, crdtAuth, slog.Default(), time.Now)
+		if err := mgr.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return mgr, nil
+	}, slog.Default())
+
+	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, crdtRegistry, shutdownCh)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, cfg)
@@ -217,18 +241,42 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle(channelPath, channelHandler)
 
 	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
-	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, soloUser, cfg.SecureCookies)
+	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, soloUser, cfg.SecureCookies).
+		WithTokenValidator(tokenValidator)
 	mux.Handle("/ws/channel", channelRelay)
 
 	// OAuth HTTP endpoints.
 	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
 	oauthHandler.RegisterRoutes(mux)
 
+	// CLI auth HTTP endpoints (PKCE local-redirect + RFC 8628 device code).
+	// The grace cache lets refresh-rotation retries within RefreshReuseGrace
+	// re-emit the previously-issued (access, refresh) pair so a torn
+	// network response is recoverable.
+	graceCache, gcErr := auth.NewRefreshGraceCache(auth.RefreshReuseGrace)
+	if gcErr != nil {
+		return nil, fmt.Errorf("create refresh grace cache: %w", gcErr)
+	}
+	graceCache.StartJanitor(context.Background(), auth.RefreshReuseGrace)
+	apiAuthHandler := service.NewAPIAuthHandler(st, tokenValidator, sessionCache, graceCache, cfg.BaseURL())
+	apiAuthHandler.RegisterRoutes(mux)
+
+	// Worker-issued delegation token mint/revoke endpoints. The
+	// channelSvc closer is wired so revoking a delegation token also
+	// tears down any open E2EE channels that were authorized by it.
+	delegationHandler := service.NewWorkerDelegationHandler(st, tokenValidator, sessionCache).
+		WithChannelCloser(channelSvc)
+	delegationHandler.RegisterRoutes(mux)
+
 	orgSvc := service.NewOrgService(st, cfg.SoloMode)
 	orgPath, orgHandler := leapmuxv1connect.NewOrgServiceHandler(orgSvc, connectOpts)
 	mux.Handle(orgPath, orgHandler)
 
-	userSvc := service.NewUserService(st, cfg, sessionCache, mailSender, mailRenderer)
+	// UserService receives channelSvc so credential-rotation paths
+	// (ChangePassword) can hard-close every channel a user owns
+	// alongside the delegation-token revocation.
+	userSvc := service.NewUserService(st, cfg, sessionCache, mailSender, mailRenderer).
+		WithChannelCloser(channelSvc)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
@@ -236,12 +284,37 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	workspaceSvc := service.NewWorkspaceService(st, cfg.SoloMode)
+	workspaceSvc := service.NewWorkspaceService(st, cfg.SoloMode, crdtRegistry)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 
+	crdtSvc := service.NewCRDTService(st, crdtRegistry, slog.Default())
+	crdtPath, crdtHandler := leapmuxv1connect.NewOrgCRDTHandler(crdtSvc, connectOpts)
+	mux.Handle(crdtPath, crdtHandler)
+
+	// WebSocket endpoint for the CRDT event stream. Frontend opens a
+	// single `/ws/orgevents?org_id=...&workspace_ids=...` connection
+	// per org session and reads length-prefixed `WatchOrgEvent` proto
+	// frames. This is the sole transport for org-event subscriptions
+	// — the OrgCRDT ConnectRPC service exposes unary calls only
+	// (SubmitOps, UpdatePresence). The WS path bypasses HTTP/1.1
+	// chunked-stream buffering hazards (some proxies / Tauri's
+	// buffered fetch) that motivated retiring the streaming RPC.
+	orgEventsHandler := service.NewOrgEventsHandler(st, crdtRegistry, soloUser, cfg.SecureCookies).
+		WithTokenValidator(tokenValidator)
+	mux.Handle("/ws/orgevents", orgEventsHandler)
+
+	reconcilerSvc := service.NewWorkerReconcilerService(st)
+	reconcilerPath, reconcilerHandler := leapmuxv1connect.NewWorkerReconcilerServiceHandler(reconcilerSvc, connectOpts)
+	mux.Handle(reconcilerPath, reconcilerHandler)
+
 	// Prometheus metrics endpoint.
 	mux.Handle("/metrics", promhttp.Handler())
+
+	// Unauthenticated /version endpoint. Exposes the hub's build
+	// identity so `leapmux remote version` can report both CLI and
+	// hub versions without needing an authenticated session.
+	mux.HandleFunc("/version", versionHandler)
 
 	// Frontend handler.
 	if so.frontendHandler != nil {
@@ -268,18 +341,29 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Watcher for cross-process revocations: admin CLI commands
+	// mutate `revoked_at` / `tokens_revoked_at` directly, and the
+	// watcher polls those columns to drive the matching cache
+	// eviction + channel teardown. In-process callers
+	// (UserService.ChangePassword, the per-token revoke handler)
+	// continue to invoke the close paths inline so they observe
+	// zero-latency revocation; the watcher is the cross-process
+	// safety net.
+	revWatcher := revocationwatcher.New(st, sessionCache, channelSvc)
+
 	return &Server{
-		cfg:          cfg,
-		store:        st,
-		keystore:     ks,
-		oauthHandler: oauthHandler,
-		server:       server,
-		tcpLn:        tcpLn,
-		localLn:      localLn,
-		listenURL:    listenURL,
-		shutdownCh:   shutdownCh,
-		sessionCache: sessionCache,
-		workerMgr:    wMgr,
+		cfg:               cfg,
+		store:             st,
+		keystore:          ks,
+		oauthHandler:      oauthHandler,
+		server:            server,
+		tcpLn:             tcpLn,
+		localLn:           localLn,
+		listenURL:         listenURL,
+		shutdownCh:        shutdownCh,
+		sessionCache:      sessionCache,
+		workerMgr:         wMgr,
+		revocationWatcher: revWatcher,
 	}, nil
 }
 
@@ -368,6 +452,17 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	// Start periodic cleanup of soft-deleted records.
 	cleanup.StartLoop(ctx, s.store)
+
+	// Start the revocation watcher: polls api_tokens, delegation_tokens,
+	// and users for newly-revoked rows so admin-CLI mutations land in
+	// the hub's in-memory caches and channelmgr without an IPC.
+	// Seed watermarks past existing historical revocations so the
+	// first sweep skips the redundant teardowns for tokens whose
+	// channels were already torn down before this hub came up.
+	if err := s.revocationWatcher.SeedWatermarks(ctx); err != nil {
+		slog.Warn("revocation watcher: seed failed; falling back to zero watermarks", "error", err)
+	}
+	s.revocationWatcher.StartLoop(ctx)
 
 	shutdownDone := make(chan struct{})
 	go func() {

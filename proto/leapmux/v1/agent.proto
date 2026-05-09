@@ -90,6 +90,7 @@ message OpenAgentRequest {
   string create_branch_base = 15;   // Base branch for "Create new branch" (default: current branch)
   AgentProvider agent_provider = 16; // Coding agent provider (default: CLAUDE_CODE)
   map<string, string> extra_settings = 17; // Provider-specific persisted settings (e.g. Codex extras)
+  string org_id = 18;           // Workspace's org (mirrors OpenTerminalRequest.org_id); used by the worker to inject LEAPMUX_REMOTE_ORG_ID into the spawned process
 }
 
 message OpenAgentResponse {
@@ -351,3 +352,15 @@ message ListAvailableProvidersRequest {}
 message ListAvailableProvidersResponse {
   repeated AgentProvider providers = 1;
 }
+
+// InterruptAgent asks the worker to abort the agent's current turn. The
+// worker dispatches the appropriate provider-specific signal (SIGINT,
+// stream-control payload, etc.); callers (frontend or CLI) never need to
+// synthesize provider JSON.
+message InterruptAgentRequest {
+  string agent_id = 1;
+  // Optional reason for audit/logging; not surfaced to the agent.
+  string reason = 2;
+}
+
+message InterruptAgentResponse {}

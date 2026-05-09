@@ -1,20 +1,23 @@
 import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
-import type { Tab } from '~/stores/tab.store'
+import type { Tab, TerminalTab } from '~/stores/tab.types'
 import { createEffect, createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { isMac } from '~/lib/shortcuts/platform'
-import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, reloadFontsAndClearAtlas, resolveTerminalTheme, resolveTerminalThemeMode } from '~/lib/terminal'
+import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, reloadFontsAndClearAtlas, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
 interface TerminalViewProps {
-  terminals: Tab[]
+  terminals: TerminalTab[]
   activeTerminalId: string | null
   visible: boolean
+  /** Whether the enclosing tile is the layout-focused tile. See TerminalContainer.tileFocused. */
+  tileFocused: boolean
   onInput: (id: string, data: Uint8Array) => void
   onResize: (id: string, cols: number, rows: number) => void
   onTitleChange: (id: string, title: string) => void
@@ -47,6 +50,46 @@ export function disposeTerminalInstance(id: string): void {
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
+}
+
+/**
+ * Walk a tab list and, for each TERMINAL tab whose xterm instance is
+ * still mounted, replace `screen` with a fresh serialization of the
+ * live buffer (visible viewport + scrollback).
+ *
+ * Called from the AppShell snapshot-on-workspace-switch effect: the
+ * tab store's `screen` field is only ever populated by ListTerminals
+ * at first hydration and never refreshed as live PTY bytes arrive, so
+ * without this pass the registry snapshot would forever carry the
+ * initial-load bytes — and the xterm disposal triggered by the
+ * outgoing TerminalView's unmount would erase the live buffer
+ * permanently. Capturing here makes the restore path (which writes
+ * `tab.screen` into a freshly reset Terminal via applyTerminalData
+ * with isSnapshot=true) reproduce whatever was on screen when the
+ * user switched away.
+ *
+ * `lookup` is parameterized for tests; production callers use the
+ * default (the module-level instances map).
+ */
+export function captureTerminalScreens(
+  tabs: Tab[],
+  lookup: (id: string) => TerminalInstance | undefined = getTerminalInstance,
+): Tab[] {
+  return tabs.map((tab) => {
+    if (tab.type !== TabType.TERMINAL)
+      return tab
+    const instance = lookup(tab.id)
+    if (!instance)
+      return tab
+    // A freshly-mounted xterm whose `applyTerminalData(screen, isSnapshot=true)`
+    // is still being parsed by the xterm write queue will look blank to the
+    // serialize addon, and overwriting `tab.screen` with that empty
+    // serialization would erase the bytes `ListTerminals` returned. Skip
+    // the overwrite until the buffer has actually painted something.
+    if (!bufferHasVisibleContent(instance.terminal))
+      return tab
+    return { ...tab, screen: serializeXtermBuffer(instance) }
+  })
 }
 
 // During Vite HMR the module is re-evaluated, replacing `instances` with a
@@ -98,6 +141,17 @@ const TerminalContainer: Component<{
   terminalId: string
   active: boolean
   visible: boolean
+  /**
+   * Whether the enclosing tile is the layout-focused tile. The xterm
+   * focus effect below gates on this so a terminal that becomes the
+   * active tab on its tile as a SIDE EFFECT (e.g. the user dragged a
+   * different tab away and MRU rotated the terminal to the top of
+   * the source tile) doesn't steal keyboard focus from wherever the
+   * user is actually working. Clicking the terminal's tab still moves
+   * `focusedTileId` to its tile first, so the common case still ends
+   * with the cursor blinking in xterm.
+   */
+  tileFocused: boolean
   screen?: Uint8Array
   lastOffset?: number
   cols?: number
@@ -229,16 +283,22 @@ const TerminalContainer: Component<{
     })
   })
 
-  // Re-fit when this terminal becomes active+visible
+  // Re-fit when this terminal becomes active+visible. Focus is gated
+  // on `tileFocused` so an MRU-driven rotation (e.g. user just
+  // dragged the agent off this tile and the terminal got promoted to
+  // the active tab on the now-unfocused source tile) doesn't grab
+  // the keyboard cursor away from where the user is looking.
   createEffect(() => {
     if (props.active && props.visible) {
       const instance = instances.get(props.terminalId)
       if (instance) {
+        const shouldFocus = props.tileFocused
         requestAnimationFrame(() => {
           const prevCols = instance.terminal.cols
           const prevRows = instance.terminal.rows
           instance.fitAddon.fit()
-          instance.terminal.focus()
+          if (shouldFocus)
+            instance.terminal.focus()
           if (instance.terminal.cols !== prevCols || instance.terminal.rows !== prevRows) {
             props.onResize(props.terminalId, instance.terminal.cols, instance.terminal.rows)
           }
@@ -391,6 +451,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                   terminalId={terminal.id}
                   active={terminal.id === props.activeTerminalId}
                   visible={props.visible}
+                  tileFocused={props.tileFocused}
                   screen={terminal.screen}
                   lastOffset={terminal.lastOffset}
                   cols={terminal.cols}

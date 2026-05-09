@@ -10,6 +10,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
@@ -68,6 +69,28 @@ type Options struct {
 	LoginShell      bool                    // If true, use interactive+login shell flags
 	HomeDir         string                  // User's home directory (for reading Claude Code settings)
 	AgentProvider   leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
+	// ExtraEnv is appended verbatim to the spawned process's
+	// environment after the provider-specific env-var setup. The
+	// service.Context populates this with LEAPMUX_REMOTE_* so the
+	// running agent can drive the worker via the leapmux remote CLI.
+	ExtraEnv []string
+}
+
+// FinalizeAgentEnv applies the env-mutations every spawned agent
+// process needs in one place: appends the `LEAPMUX_WORKER=1` marker
+// (downstream CLI/agent code keys off it to detect "running inside a
+// LeapMux worker"), strips any inherited `LEAPMUX_REMOTE_*` values
+// (the new injection wins) and appends `opts.ExtraEnv`.
+//
+// Provider-specific env additions (CLAUDE_CODE_ENTRYPOINT, CODEX_CI,
+// etc.) go BEFORE this call so they survive the LEAPMUX_REMOTE_*
+// strip and stack with the marker.
+func FinalizeAgentEnv(env []string, opts Options) []string {
+	env = append(env, "LEAPMUX_WORKER=1")
+	if len(opts.ExtraEnv) == 0 {
+		return env
+	}
+	return append(envutil.StripByPrefix(env, "LEAPMUX_REMOTE_"), opts.ExtraEnv...)
 }
 
 func (o Options) startupTimeout() time.Duration {
@@ -176,39 +199,6 @@ func FindAvailableModel(models []*leapmuxv1.AvailableModel, id string) *leapmuxv
 // not accept "auto" as a live effortLevel / reasoning_effort value.
 func IsEffortAutoTransition(newEffort, curEffort string) bool {
 	return newEffort == EffortAuto && curEffort != EffortAuto
-}
-
-// DisplayName returns a human-readable label for an AgentProvider (e.g.
-// "Claude Code", "Gemini CLI"). Keep in sync with
-// frontend/src/components/common/AgentProviderIcon.tsx agentProviderLabel.
-//
-// Moving this into the proto via EnumValueOptions custom extensions was
-// considered and rejected: descriptor-introspection plumbing on both Go
-// and TS sides is disproportionate for a handful of labels, and the
-// TestDisplayName coverage catches Go drift before it ships.
-func DisplayName(provider leapmuxv1.AgentProvider) string {
-	switch provider {
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:
-		return "Claude Code"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
-		return "Codex"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
-		return "Gemini CLI"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
-		return "OpenCode"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
-		return "GitHub Copilot"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
-		return "Cursor"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:
-		return "Goose"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:
-		return "Kilo"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:
-		return "Pi Coding Agent"
-	default:
-		return "agent"
-	}
 }
 
 // ListAvailableProviders returns providers whose binary is found in the

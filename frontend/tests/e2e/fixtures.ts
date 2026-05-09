@@ -17,6 +17,7 @@ import {
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
 } from './helpers/api'
+import { closeAllOrgEventsSubscriptions } from './helpers/crdt'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
@@ -85,6 +86,13 @@ export const test = base.extend<
     const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
 
     await use({ hubUrl, adminToken, adminOrgId, workerId, newuserToken, serverProc: proc, dataDir })
+
+    // Close any OrgEvents subscriptions this worker opened. Per-worker
+    // cleanup matters because the singleton cache is keyed by
+    // (hubUrl, orgId, cookie) and the next worker spawns a NEW dev
+    // instance on a different port; leaving WS sockets dangling would
+    // leak file descriptors across the test session.
+    await closeAllOrgEventsSubscriptions()
 
     // Teardown: kill process, clean up data dir
     proc.kill('SIGTERM')

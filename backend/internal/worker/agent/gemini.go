@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/util/procutil"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 )
 
 const (
@@ -30,11 +30,11 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 		ctx, opts.Shell, opts.LoginShell, "gemini", []string{"GEMINI_CLI"}, []string{"--acp"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = procutil.FilterEnv(cmd.Environ(), "GEMINI_CLI", "GEMINI_CLI_NO_RELAUNCH")
-	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
+	cmd.Env = envutil.FilterEnv(cmd.Environ(), "GEMINI_CLI", "GEMINI_CLI_NO_RELAUNCH")
 	if opts.LoginShell {
 		cmd.Env = append(cmd.Env, "GEMINI_CLI=1")
 	}
+	cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
 
 	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -43,22 +43,9 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 
 	a := &GeminiCLIAgent{
 		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:            opts.AgentID,
-				providerName:       "gemini",
-				cmd:                cmd,
-				stdin:              stdin,
-				ctx:                ctx,
-				cancel:             cancel,
-				stderrDone:         make(chan struct{}),
-				processDone:        make(chan struct{}),
-				preambleDelimiter:  preambleDelimiter,
-				preambleMetaPrefix: metaPrefix,
-				preambleMeta:       make(map[string]string),
-				apiTimeout:         opts.apiTimeout(),
-			}},
-			sink:  sink,
-			model: opts.Model,
+			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "gemini", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
+			sink:        sink,
+			model:       opts.Model,
 		},
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate

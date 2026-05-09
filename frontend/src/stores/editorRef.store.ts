@@ -1,6 +1,6 @@
-import type { Tab } from '~/stores/tab.store'
+import type { Tab } from '~/stores/tab.types'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { tabKey } from '~/stores/tab.store'
+import { tabKey } from '~/stores/tab.helpers'
 
 export interface EditorRef {
   get: () => string
@@ -76,16 +76,15 @@ export function appendText(agentId: string, text: string): void {
  */
 export function insertIntoMruAgentEditor(
   tabStore: {
-    state: { mruOrder: string[] }
+    findMruMatching: (predicate: (key: string) => boolean) => string | undefined
     getTabByKey: (key: string) => Tab | undefined
-    setActiveTab: (type: TabType, id: string) => void
-    setActiveTabForTile: (tileId: string, type: TabType, id: string) => void
+    activateTab: (tileId: string, type: TabType, id: string) => void
   },
   text: string,
   mode: 'block' | 'inline' = 'block',
 ): void {
   const agentPrefix = `${TabType.AGENT}:`
-  const mruKey = tabStore.state.mruOrder.find(k => k.startsWith(agentPrefix))
+  const mruKey = tabStore.findMruMatching(k => k.startsWith(agentPrefix))
   if (!mruKey)
     return
   const agentId = mruKey.slice(agentPrefix.length)
@@ -106,9 +105,6 @@ export function insertIntoMruAgentEditor(
   }
 
   // Activate the agent tab (global + per-tile).
-  tabStore.setActiveTab(TabType.AGENT, agentId)
   const tab = tabStore.getTabByKey(tabKey({ type: TabType.AGENT, id: agentId }))
-  if (tab?.tileId) {
-    tabStore.setActiveTabForTile(tab.tileId, TabType.AGENT, agentId)
-  }
+  tabStore.activateTab(tab?.tileId ?? '', TabType.AGENT, agentId)
 }

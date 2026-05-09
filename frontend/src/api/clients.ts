@@ -1,6 +1,7 @@
 import { createClient } from '@connectrpc/connect'
 import { AuthService } from '~/generated/leapmux/v1/auth_pb'
 import { ChannelService } from '~/generated/leapmux/v1/channel_pb'
+import { OrgCRDT } from '~/generated/leapmux/v1/org_ops_pb'
 import { OrgService } from '~/generated/leapmux/v1/org_pb'
 import { SectionService } from '~/generated/leapmux/v1/section_pb'
 import { UserService } from '~/generated/leapmux/v1/user_pb'
@@ -15,3 +16,4 @@ export const userClient = createClient(UserService, transport)
 export const sectionClient = createClient(SectionService, transport)
 export const channelClient = createClient(ChannelService, transport)
 export const workspaceClient = createClient(WorkspaceService, transport)
+export const orgCRDTClient = createClient(OrgCRDT, transport)

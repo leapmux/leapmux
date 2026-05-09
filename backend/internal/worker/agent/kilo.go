@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/util/procutil"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -25,11 +25,11 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error
 		ctx, opts.Shell, opts.LoginShell, "kilo", []string{"KILO_CLIENT"}, []string{"acp"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = procutil.FilterEnv(cmd.Environ(), "KILO_CLIENT")
-	cmd.Env = append(cmd.Env, "LEAPMUX_WORKER=1")
+	cmd.Env = envutil.FilterEnv(cmd.Environ(), "KILO_CLIENT")
 	if opts.LoginShell {
 		cmd.Env = append(cmd.Env, "KILO_CLIENT=1")
 	}
+	cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
 
 	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -38,22 +38,9 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error
 
 	a := &KiloAgent{
 		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:            opts.AgentID,
-				providerName:       "kilo",
-				cmd:                cmd,
-				stdin:              stdin,
-				ctx:                ctx,
-				cancel:             cancel,
-				stderrDone:         make(chan struct{}),
-				processDone:        make(chan struct{}),
-				preambleDelimiter:  preambleDelimiter,
-				preambleMetaPrefix: metaPrefix,
-				preambleMeta:       make(map[string]string),
-				apiTimeout:         opts.apiTimeout(),
-			}},
-			sink:  sink,
-			model: opts.Model,
+			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "kilo", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
+			sink:        sink,
+			model:       opts.Model,
 		},
 	}
 	a.promptFunc = a.doSendPrompt

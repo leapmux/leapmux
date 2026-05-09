@@ -2,6 +2,7 @@ import type { ITheme } from '@xterm/xterm'
 import type { BrowserPreferences, TerminalRendererPreference } from './browserStorage'
 import type { ThemePreference } from '~/app'
 import { FitAddon } from '@xterm/addon-fit'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { loadBrowserPrefs } from './browserStorage'
@@ -23,11 +24,38 @@ export interface TerminalFontOptions {
 export interface TerminalInstance {
   terminal: Terminal
   fitAddon: FitAddon
+  /**
+   * Serializes the current xterm buffer (visible viewport + scrollback)
+   * into an escape-sequence stream that, when written to a freshly reset
+   * Terminal, reproduces the same visible state. Used to capture live
+   * terminal content on workspace switch-away so the post-initial-snapshot
+   * output the user has been watching can be restored on switch-back —
+   * `tab.screen` only carries the initial bytes from `ListTerminals` and
+   * is otherwise never refreshed with live data.
+   */
+  serializeAddon: SerializeAddon
   /** When true, onData responses are suppressed (e.g. during snapshot replay). */
   suppressInput: boolean
   /** Send raw input data to the PTY backing this terminal. */
   sendInput?: (data: Uint8Array) => void
   dispose: () => void
+}
+
+/**
+ * Serialize the current xterm buffer (active viewport + full scrollback)
+ * into a UTF-8 byte stream of ANSI escape sequences. Writing the result
+ * into a freshly `terminal.reset()`-ed instance via `applyTerminalData`
+ * with `isSnapshot=true` reproduces the same visible state — that's the
+ * exact path used on workspace re-entry, so the bytes can be stuffed
+ * straight into `tab.screen` for the registry snapshot.
+ */
+export function serializeXtermBuffer(instance: TerminalInstance): Uint8Array {
+  const encoded = new TextEncoder().encode(instance.serializeAddon.serialize())
+  // Node's TextEncoder (used by jsdom/vitest) returns a Buffer — a
+  // Uint8Array subclass — whose prototype chain doesn't pass
+  // `instanceof Uint8Array` across realms. Wrap as a plain view over the
+  // same bytes so consumers see a predictable type without copying.
+  return new Uint8Array(encoded.buffer, encoded.byteOffset, encoded.byteLength)
 }
 
 const DEFAULT_FONT_SIZE = 13
@@ -230,6 +258,14 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   const fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
 
+  // The serialize addon mirrors writes into an internal buffer so we can
+  // ask xterm for an escape-sequence dump that reproduces the visible
+  // state. Loaded unconditionally — there is no renderer-specific path
+  // to gate on, and the per-write overhead is negligible compared to
+  // the WebGL atlas work.
+  const serializeAddon = new SerializeAddon()
+  terminal.loadAddon(serializeAddon)
+
   const preference = getTerminalRendererPreference(prefs)
   if (resolveTerminalRendererPreference(preference) === 'canvas') {
     log.debug('terminal_renderer', { renderer: 'canvas', preference })
@@ -269,6 +305,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   return {
     terminal,
     fitAddon,
+    serializeAddon,
     suppressInput: false,
     dispose() {
       terminal.dispose()

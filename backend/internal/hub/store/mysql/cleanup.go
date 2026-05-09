@@ -49,3 +49,23 @@ func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, err
 func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error) {
 	return rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx))
 }
+
+func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, cutoff.UTC()))
+}
+
+func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, cutoff.UTC()))
+}
+
+func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteRevokedAPITokensBefore(ctx, sql.NullTime{Time: cutoff.UTC(), Valid: true}))
+}
+
+func (s *cleanupStore) DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteRevokedDelegationTokensBefore(ctx, sql.NullTime{Time: cutoff.UTC(), Valid: true}))
+}
+
+func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, cutoff.UTC()))
+}

@@ -1,0 +1,104 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/workspace.proto";
+
+// RemoteIPCService is the local Unix-socket / npipe surface a worker
+// exposes to processes it spawned (agents, opt-in terminals). The CLI
+// running inside the spawned process speaks ConnectRPC over h2c to this
+// service via LEAPMUX_REMOTE_SOCK; the LEAPMUX_REMOTE_TOKEN env var
+// authenticates the caller.
+//
+// The service is intentionally a thin envelope around InnerRpcRequest /
+// InnerStreamMessage so the worker can multiplex same-worker, cross-
+// worker, and hub-side calls through a single dispatch layer without
+// having to enumerate every method.
+service RemoteIPCService {
+  // CallInner dispatches a unary inner-RPC to the local worker, a sibling
+  // worker (via the cross-worker E2EE channel), or the hub (via the
+  // worker's hub client with a delegation token), depending on the
+  // method's namespace and the resolved tab's worker.
+  rpc CallInner(CallInnerRequest) returns (CallInnerResponse);
+  // StreamInner is the server-streaming counterpart for events / message
+  // tails / WatchEvents-style RPCs.
+  rpc StreamInner(StreamInnerRequest) returns (stream StreamInnerEnvelope);
+  // Whoami returns the resolved identity of the calling process based on
+  // the bearer token.
+  rpc Whoami(WhoamiRequest) returns (WhoamiResponse);
+  // Cancel cancels a still-running streaming RPC by its client request ID.
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+message CallInnerRequest {
+  // Namespaced method name. Examples:
+  //   "worker.OpenAgent" — same-worker / cross-worker (resolved via
+  //   target_worker_id or the tab the request body references).
+  //   "hub.WorkspaceService/ListWorkspaces" — hub-side ConnectRPC.
+  string method = 1;
+  bytes payload = 2;
+  // Optional explicit worker target. When empty the router resolves it
+  // from the request body (agent_id / terminal_id / tab_id) or, for new-
+  // tab ops, from worker_id in the payload.
+  string target_worker_id = 3;
+  // Optional workspace_id for authorization scoping. The router rejects
+  // calls whose resolved workspace doesn't match the bearer token's scope.
+  string workspace_id = 4;
+}
+
+message CallInnerResponse {
+  bytes payload = 1;
+  bool is_error = 2;
+  int32 error_code = 3; // ConnectRPC code
+  string error_message = 4;
+}
+
+message StreamInnerRequest {
+  string method = 1;
+  bytes payload = 2;
+  string target_worker_id = 3;
+  string workspace_id = 4;
+  // Client-assigned identifier so Cancel() can target this stream.
+  string client_request_id = 5;
+}
+
+message StreamInnerEnvelope {
+  // Mirror of InnerStreamMessage with no chunking concerns.
+  bytes payload = 1;
+  bool end = 2;
+  bool is_error = 3;
+  string error_message = 4;
+  int32 error_code = 5;
+}
+
+message WhoamiRequest {}
+
+message WhoamiResponse {
+  string user_id = 1;
+  string username = 2;
+  string workspace_id = 3; // default workspace from spawn context
+  string worker_id = 4;    // spawning worker
+  string tab_id = 5;       // spawning tab id (agent or terminal)
+  TabType tab_type = 6;    // matches the rest of the protos
+  // Effective scope of the bearer.
+  RemoteScope scope = 7;
+  string org_id = 8;       // user's org for the spawn context
+}
+
+message RemoteScope {
+  // Workspace IDs the bearer is allowed to act on.
+  repeated string workspace_ids = 1;
+  // Field 2 was `cross_worker_filesystem`. Removed: workers aren't
+  // shareable, so a bearer that's authorized at all has filesystem
+  // access to every worker the user owns. Standalone CLI bearers
+  // already have the same reach via the API token; gating only the
+  // worker-spawned bearer was theatre. Reserved so re-using the tag
+  // for an unrelated boolean can't ship by accident.
+  reserved 2;
+  reserved "cross_worker_filesystem";
+}
+
+message CancelRequest {
+  string client_request_id = 1;
+}
+
+message CancelResponse {}

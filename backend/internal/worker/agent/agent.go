@@ -111,4 +111,10 @@ type Agent interface {
 	// Returns the new session ID, or ("", false) if the provider does not
 	// support in-place context clearing (caller should restart instead).
 	ClearContext() (sessionID string, ok bool)
+	// Interrupt aborts the agent's current turn using the provider-
+	// specific signal (SIGINT, JSON-RPC stop, control payload, etc.).
+	// Returns nil on success or if the agent is not currently in a turn;
+	// returns a non-nil error only when the interrupt mechanism itself
+	// failed (e.g. stdin write error).
+	Interrupt() error
 }

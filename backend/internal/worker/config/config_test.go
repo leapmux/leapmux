@@ -163,9 +163,15 @@ func TestWorkerHelpGroupsOptions(t *testing.T) {
 		assert.Less(t, strings.Index(output, sections[i-1]), strings.Index(output, sections[i]))
 	}
 	assert.Contains(t, output, "\nCommon options:\n\n  -config string")
-	assert.Contains(t, output, "\nWorker options:\n\n  -data-dir string")
+	// The first flag in each section is alphabetical-by-name; pinning a
+	// specific lead flag would make adding a new option in front of it
+	// (e.g. `--allow-cross-worker-filesystem` ahead of `--data-dir`) a
+	// noisy churn. Assert that the section header is followed by *some*
+	// flag instead.
+	assert.Contains(t, output, "\nWorker options:\n\n  -")
 	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout-seconds int")
 	assert.Contains(t, output, "\nSQLite database options:\n\n  -db-cache-size int")
+	assert.Contains(t, output, "  -data-dir string")
 	assert.Contains(t, output, "  -hub string")
 	assert.Contains(t, output, "  -api-timeout-seconds int")
 	assert.Contains(t, output, "  -db-cache-size int")

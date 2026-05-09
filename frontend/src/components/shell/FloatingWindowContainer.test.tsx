@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
-import { FloatingWindowContainer, snapPosition } from './FloatingWindowContainer'
+import { FloatingWindowContainer, resolveParentSize, snapPosition } from './FloatingWindowContainer'
 
 describe('snapPosition', () => {
   // Use a 1000px parent so the 15px snap threshold equals exactly 0.015 fractional.
@@ -71,12 +71,15 @@ interface ContainerOpts {
 
 function renderContainer(opts: ContainerOpts = {}) {
   const store = createFloatingWindowStore()
-  const { windowId } = store.addWindow({
+  const created = store.addWindow({
     x: opts.x ?? 0.1,
     y: opts.y ?? 0.1,
     width: opts.width ?? 0.4,
     height: opts.height ?? 0.3,
   })
+  if (!created)
+    throw new Error('addWindow returned null — vitest setup should wire a default CRDT bridge')
+  const { windowId } = created
   return {
     store,
     windowId,
@@ -99,6 +102,71 @@ function renderContainer(opts: ContainerOpts = {}) {
     )),
   }
 }
+
+// Regression: when the floating-window container is mid-remount (Solid's
+// `<For>` recreates it on every CRDT tick because the projection used
+// to produce fresh refs), a pointerdown landing on the title bar reads
+// `containerRef.parentElement === null` and `resolveParentSize` used to
+// fall back to `1 × 1`. The drag-math then treated pixel deltas as
+// fractional values, snapping the window to corners on tiny drags.
+// `resolveParentSize` now walks ancestors and falls back to the visual
+// viewport so deltas remain pixel-accurate even mid-remount.
+describe('resolveParentSize', () => {
+  it('returns the immediate parent rect when it has non-zero dimensions', () => {
+    const parent = document.createElement('div')
+    Object.defineProperty(parent, 'getBoundingClientRect', {
+      value: () => ({ width: 800, height: 600, top: 0, left: 0, right: 800, bottom: 600, x: 0, y: 0, toJSON: () => ({}) }),
+    })
+    const child = document.createElement('div')
+    parent.appendChild(child)
+    expect(resolveParentSize(child)).toEqual({ parentW: 800, parentH: 600 })
+  })
+
+  it('walks up the ancestor chain past zero-sized intermediates', () => {
+    const grandparent = document.createElement('div')
+    Object.defineProperty(grandparent, 'getBoundingClientRect', {
+      value: () => ({ width: 1024, height: 768, top: 0, left: 0, right: 1024, bottom: 768, x: 0, y: 0, toJSON: () => ({}) }),
+    })
+    const parent = document.createElement('div')
+    Object.defineProperty(parent, 'getBoundingClientRect', {
+      value: () => ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) }),
+    })
+    grandparent.appendChild(parent)
+    const child = document.createElement('div')
+    parent.appendChild(child)
+    expect(resolveParentSize(child)).toEqual({ parentW: 1024, parentH: 768 })
+  })
+
+  it('falls back to the visual viewport when the element is detached', () => {
+    // Detached element: parentElement is null. The drag-math regression
+    // happens exactly here — `<For>` momentarily detaches the container
+    // on a CRDT-state tick while a pointerdown is being dispatched.
+    const detached = document.createElement('div')
+    const result = resolveParentSize(detached)
+    expect(result.parentW).toBeGreaterThan(1)
+    expect(result.parentH).toBeGreaterThan(1)
+  })
+
+  it('falls back to the visual viewport when every ancestor is zero-sized', () => {
+    const root = document.createElement('div')
+    Object.defineProperty(root, 'getBoundingClientRect', {
+      value: () => ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) }),
+    })
+    const child = document.createElement('div')
+    root.appendChild(child)
+    const result = resolveParentSize(child)
+    expect(result.parentW).toBeGreaterThan(1)
+    expect(result.parentH).toBeGreaterThan(1)
+  })
+
+  it('returns viewport size when the input is null/undefined', () => {
+    const a = resolveParentSize(null)
+    const b = resolveParentSize(undefined)
+    expect(a.parentW).toBeGreaterThan(1)
+    expect(a.parentH).toBeGreaterThan(1)
+    expect(b).toEqual(a)
+  })
+})
 
 describe('floatingWindowContainer', () => {
   it('renders the window with title, content and close button', () => {

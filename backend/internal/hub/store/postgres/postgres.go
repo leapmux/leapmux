@@ -17,29 +17,11 @@ import (
 )
 
 // pgStore implements store.Store backed by PostgreSQL.
+//
+// Sub-stores are constructed on demand by each getter rather than
+// cached on the struct — see sqlite.sqliteStore for the rationale.
 type pgStore struct {
 	conn *pgConn
-
-	orgs                  orgStore
-	users                 userStore
-	sessions              sessionStore
-	orgMembers            orgMemberStore
-	workers               workerStore
-	workerAccessGrants    workerAccessGrantStore
-	workerNotifications   workerNotificationStore
-	registrationKeys      registrationKeyStore
-	workspaces            workspaceStore
-	workspaceAccess       workspaceAccessStore
-	workspaceTabs         workspaceTabStore
-	workspaceLayouts      workspaceLayoutStore
-	workspaceSections     workspaceSectionStore
-	workspaceSectionItems workspaceSectionItemStore
-	oauthProviders        oauthProviderStore
-	oauthStates           oauthStateStore
-	oauthTokens           oauthTokenStore
-	oauthUserLinks        oauthUserLinkStore
-	pendingOAuthSignups   pendingOAuthSignupStore
-	cleanup               cleanupStore
 }
 
 var _ store.Store = (*pgStore)(nil)
@@ -96,7 +78,7 @@ func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
 		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}
 
-	st := &pgStore{
+	return &pgStore{
 		conn: &pgConn{
 			shared: &pgShared{
 				pool:        pool,
@@ -106,9 +88,7 @@ func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
 			exec: pool,
 			q:    gendb.New(pool),
 		},
-	}
-	initSubStores(st)
-	return st, nil
+	}, nil
 }
 
 // newFromPool wraps an existing pool (already migrated) into a Store.
@@ -117,7 +97,7 @@ func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init postgres migrator: %w", err)
 	}
-	st := &pgStore{
+	return &pgStore{
 		conn: &pgConn{
 			shared: &pgShared{
 				pool:        pool,
@@ -127,57 +107,65 @@ func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
 			exec: pool,
 			q:    gendb.New(pool),
 		},
-	}
-	initSubStores(st)
-	return st, nil
+	}, nil
 }
 
-func initSubStores(s *pgStore) {
-	s.orgs = orgStore{conn: s.conn}
-	s.users = userStore{conn: s.conn}
-	s.sessions = sessionStore{conn: s.conn}
-	s.orgMembers = orgMemberStore{conn: s.conn}
-	s.workers = workerStore{conn: s.conn}
-	s.workerAccessGrants = workerAccessGrantStore{conn: s.conn}
-	s.workerNotifications = workerNotificationStore{conn: s.conn}
-	s.registrationKeys = registrationKeyStore{conn: s.conn}
-	s.workspaces = workspaceStore{conn: s.conn}
-	s.workspaceAccess = workspaceAccessStore{conn: s.conn}
-	s.workspaceTabs = workspaceTabStore{conn: s.conn}
-	s.workspaceLayouts = workspaceLayoutStore{conn: s.conn}
-	s.workspaceSections = workspaceSectionStore{conn: s.conn}
-	s.workspaceSectionItems = workspaceSectionItemStore{conn: s.conn}
-	s.oauthProviders = oauthProviderStore{conn: s.conn}
-	s.oauthStates = oauthStateStore{conn: s.conn}
-	s.oauthTokens = oauthTokenStore{conn: s.conn}
-	s.oauthUserLinks = oauthUserLinkStore{conn: s.conn}
-	s.pendingOAuthSignups = pendingOAuthSignupStore{conn: s.conn}
-	s.cleanup = cleanupStore{conn: s.conn}
+func (s *pgStore) Orgs() store.OrgStore             { return &orgStore{conn: s.conn} }
+func (s *pgStore) Users() store.UserStore           { return &userStore{conn: s.conn} }
+func (s *pgStore) Sessions() store.SessionStore     { return &sessionStore{conn: s.conn} }
+func (s *pgStore) OrgMembers() store.OrgMemberStore { return &orgMemberStore{conn: s.conn} }
+func (s *pgStore) Workers() store.WorkerStore       { return &workerStore{conn: s.conn} }
+func (s *pgStore) WorkerAccessGrants() store.WorkerAccessGrantStore {
+	return &workerAccessGrantStore{conn: s.conn}
 }
-
-func (s *pgStore) Orgs() store.OrgStore                               { return &s.orgs }
-func (s *pgStore) Users() store.UserStore                             { return &s.users }
-func (s *pgStore) Sessions() store.SessionStore                       { return &s.sessions }
-func (s *pgStore) OrgMembers() store.OrgMemberStore                   { return &s.orgMembers }
-func (s *pgStore) Workers() store.WorkerStore                         { return &s.workers }
-func (s *pgStore) WorkerAccessGrants() store.WorkerAccessGrantStore   { return &s.workerAccessGrants }
-func (s *pgStore) WorkerNotifications() store.WorkerNotificationStore { return &s.workerNotifications }
-func (s *pgStore) RegistrationKeys() store.RegistrationKeyStore       { return &s.registrationKeys }
-func (s *pgStore) Workspaces() store.WorkspaceStore                   { return &s.workspaces }
-func (s *pgStore) WorkspaceAccess() store.WorkspaceAccessStore        { return &s.workspaceAccess }
-func (s *pgStore) WorkspaceTabs() store.WorkspaceTabStore             { return &s.workspaceTabs }
-func (s *pgStore) WorkspaceLayouts() store.WorkspaceLayoutStore       { return &s.workspaceLayouts }
-func (s *pgStore) WorkspaceSections() store.WorkspaceSectionStore     { return &s.workspaceSections }
+func (s *pgStore) WorkerNotifications() store.WorkerNotificationStore {
+	return &workerNotificationStore{conn: s.conn}
+}
+func (s *pgStore) RegistrationKeys() store.RegistrationKeyStore {
+	return &registrationKeyStore{conn: s.conn}
+}
+func (s *pgStore) Workspaces() store.WorkspaceStore { return &workspaceStore{conn: s.conn} }
+func (s *pgStore) WorkspaceAccess() store.WorkspaceAccessStore {
+	return &workspaceAccessStore{conn: s.conn}
+}
+func (s *pgStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
+	return &workspaceTabIndexStore{conn: s.conn}
+}
+func (s *pgStore) OrgOpBatches() store.OrgOpBatchesStore { return &orgOpBatchesStore{conn: s.conn} }
+func (s *pgStore) OrgState() store.OrgStateStore         { return &orgStateStore{conn: s.conn} }
+func (s *pgStore) OrgRecentBatchIDs() store.OrgRecentBatchIDStore {
+	return &orgRecentBatchIDStore{conn: s.conn}
+}
+func (s *pgStore) LifecycleOutbox() store.LifecycleOutboxStore {
+	return &lifecycleOutboxStore{conn: s.conn}
+}
+func (s *pgStore) WorkspaceSections() store.WorkspaceSectionStore {
+	return &workspaceSectionStore{conn: s.conn}
+}
 func (s *pgStore) WorkspaceSectionItems() store.WorkspaceSectionItemStore {
-	return &s.workspaceSectionItems
+	return &workspaceSectionItemStore{conn: s.conn}
 }
-func (s *pgStore) OAuthProviders() store.OAuthProviderStore           { return &s.oauthProviders }
-func (s *pgStore) OAuthStates() store.OAuthStateStore                 { return &s.oauthStates }
-func (s *pgStore) OAuthTokens() store.OAuthTokenStore                 { return &s.oauthTokens }
-func (s *pgStore) OAuthUserLinks() store.OAuthUserLinkStore           { return &s.oauthUserLinks }
-func (s *pgStore) PendingOAuthSignups() store.PendingOAuthSignupStore { return &s.pendingOAuthSignups }
-func (s *pgStore) Cleanup() store.CleanupStore                        { return &s.cleanup }
-func (s *pgStore) Migrator() store.Migrator                           { return s.conn.shared.migrator }
+func (s *pgStore) OAuthProviders() store.OAuthProviderStore { return &oauthProviderStore{conn: s.conn} }
+func (s *pgStore) OAuthStates() store.OAuthStateStore       { return &oauthStateStore{conn: s.conn} }
+func (s *pgStore) OAuthTokens() store.OAuthTokenStore       { return &oauthTokenStore{conn: s.conn} }
+func (s *pgStore) OAuthUserLinks() store.OAuthUserLinkStore {
+	return &oauthUserLinkStore{conn: s.conn}
+}
+func (s *pgStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
+	return &pendingOAuthSignupStore{conn: s.conn}
+}
+func (s *pgStore) APITokens() store.APITokenStore { return &apiTokenStore{conn: s.conn} }
+func (s *pgStore) DelegationTokens() store.DelegationTokenStore {
+	return &delegationTokenStore{conn: s.conn}
+}
+func (s *pgStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
+	return &deviceAuthorizationStore{conn: s.conn}
+}
+func (s *pgStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
+	return &cliAuthorizationCodeStore{conn: s.conn}
+}
+func (s *pgStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
+func (s *pgStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
 
 func (s *pgStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
 	pgxTx, err := s.conn.shared.pool.Begin(ctx)
@@ -193,7 +181,6 @@ func (s *pgStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) 
 			q:      s.conn.q.WithTx(pgxTx),
 		},
 	}
-	initSubStores(txStore)
 	if err := fn(txStore); err != nil {
 		return err
 	}

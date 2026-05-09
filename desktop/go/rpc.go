@@ -220,6 +220,23 @@ func (s *RPCSession) handleRequest(req *desktoppb.Request) {
 		}
 		s.writeOK(id)
 
+	case *desktoppb.Request_OpenOrgEventsRelay:
+		if err := s.app.OpenOrgEventsRelay(
+			m.OpenOrgEventsRelay.GetOrgId(),
+			m.OpenOrgEventsRelay.GetWorkspaceIds(),
+		); err != nil {
+			s.writeError(id, err)
+			return
+		}
+		s.writeOK(id)
+
+	case *desktoppb.Request_CloseOrgEventsRelay:
+		if err := s.app.CloseOrgEventsRelay(); err != nil {
+			s.writeError(id, err)
+			return
+		}
+		s.writeOK(id)
+
 	case *desktoppb.Request_SwitchMode:
 		if err := s.app.SwitchMode(); err != nil {
 			s.writeError(id, err)

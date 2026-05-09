@@ -38,9 +38,14 @@ message OpenTerminalRequest {
 
 message OpenTerminalResponse {
   string terminal_id = 1;
+  // title is the worker's auto-generated "Terminal <Name>" when the
+  // request didn't supply one (currently always — OpenTerminalRequest
+  // has no title field). Surfaced here so the frontend doesn't have
+  // to round-trip a separate ListTerminals just to render the tab.
   // git_branch and git_origin_url used to live here but are now delivered
   // via the first TerminalStatusChange (gitStatus) after worktree creation
   // finishes on the async startup path.
+  string title = 2;
 }
 
 message CloseTerminalRequest {

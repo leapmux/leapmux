@@ -57,12 +57,28 @@ func TestOpen_FileWithOptions(t *testing.T) {
 
 func TestBuildDSN_Memory(t *testing.T) {
 	dsn := buildDSN(":memory:", Config{})
-	assert.Equal(t, ":memory:?_pragma=foreign_keys(1)", dsn)
+	assert.Equal(t, ":memory:?_pragma=foreign_keys(1)&_time_format=sqlite", dsn)
 }
 
 func TestBuildDSN_AbsolutePath(t *testing.T) {
 	dsn := buildDSN("/home/user/data.db", Config{})
-	assert.Equal(t, "file:/home/user/data.db?_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", dsn)
+	assert.Equal(t, "file:/home/user/data.db?_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_time_format=sqlite", dsn)
+}
+
+// TestBuildDSN_TimeFormatSqliteApplied is a focused regression test
+// for the SQLite time-comparison bug: the modernc driver default
+// stores time.Time using Go's String() output ("YYYY-MM-DD HH:MM:SS
+// +HHMM TZN"), which sorts before strftime('YYYY-MM-DDTHH:MM:SS.SSSZ',
+// 'now') for matching dates. `_time_format=sqlite` writes the
+// canonical "YYYY-MM-DD HH:MM:SS.SSS+HH:MM" form that SQLite's
+// datetime() function parses correctly. If a future refactor drops
+// this query parameter, every same-day TTL comparison silently
+// breaks — make the breakage loud here.
+func TestBuildDSN_TimeFormatSqliteApplied(t *testing.T) {
+	for _, path := range []string{":memory:", "/tmp/test.db"} {
+		dsn := buildDSN(path, Config{})
+		assert.Contains(t, dsn, "_time_format=sqlite", "path=%q must enable canonical time format", path)
+	}
 }
 
 func TestBuildDSN_WithCacheAndMmap(t *testing.T) {

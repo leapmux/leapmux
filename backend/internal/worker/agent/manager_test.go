@@ -35,6 +35,7 @@ func (s *stubProvider) HandleOutput([]byte)                                     
 func (s *stubProvider) AvailableModels() []*leapmuxv1.AvailableModel             { return nil }
 func (s *stubProvider) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup { return s.groups }
 func (s *stubProvider) UpdateSettings(*leapmuxv1.AgentSettings) bool             { return true }
+func (s *stubProvider) Interrupt() error                                         { return nil }
 
 // startMockAgent wraps mockStart to satisfy the startFunc signature.
 func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {

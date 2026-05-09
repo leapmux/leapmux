@@ -26,6 +26,7 @@ type App struct {
 	tunnels        *TunnelManager
 	proxy          *HubProxy
 	relay          *ChannelRelay
+	orgEventsRelay *OrgEventsRelay
 	editors        *EditorRegistry
 	hubURL         string
 	binaryHash     string
@@ -60,6 +61,7 @@ func (a *App) startup() {
 func (a *App) Shutdown() {
 	a.shutdownOnce.Do(func() {
 		a.closeChannelRelay()
+		a.closeOrgEventsRelay()
 		a.tunnels.CloseAll()
 		a.stopSolo()
 		a.cancel()
@@ -160,6 +162,7 @@ func (a *App) Restart() error {
 
 func (a *App) SwitchMode() error {
 	a.closeChannelRelay()
+	a.closeOrgEventsRelay()
 	a.tunnels.CloseAll()
 	// Drop idle proxy connections before stopping the Hub so they don't pin
 	// named-pipe handles open across solo.Stop() and block the next ListenPipe.

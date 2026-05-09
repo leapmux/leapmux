@@ -21,10 +21,16 @@ func (s *workspaceAccessStore) Grant(ctx context.Context, p store.GrantWorkspace
 	}))
 }
 
+// bulkGrantChunkRows caps the per-statement row count. Two
+// placeholders per row × 4096 rows fits well under MySQL's default
+// max_allowed_packet and stays consistent with the tab-index helpers.
+const bulkGrantChunkRows = 4096
+
 func (s *workspaceAccessStore) BulkGrant(ctx context.Context, params []store.GrantWorkspaceAccessParams) error {
-	return sqlutil.BulkGrantWorkspaceAccess(params, func(p store.GrantWorkspaceAccessParams) error {
-		return s.Grant(ctx, p)
-	})
+	return sqlutil.BulkGrantWorkspaceAccess(ctx, s.conn.exec, params, sqlutil.BulkGrantWorkspaceAccessConfig{
+		ConflictSuffix: " ON DUPLICATE KEY UPDATE user_id = user_id",
+		ChunkRows:      bulkGrantChunkRows,
+	}, mapErr)
 }
 
 func (s *workspaceAccessStore) Revoke(ctx context.Context, p store.RevokeWorkspaceAccessParams) error {
@@ -56,6 +62,20 @@ func (s *workspaceAccessStore) HasAccess(ctx context.Context, p store.HasWorkspa
 		UserID:      p.UserID,
 	})
 	return ok, mapErr(err)
+}
+
+func (s *workspaceAccessStore) ListForUserIn(ctx context.Context, userID string, workspaceIDs []string) ([]string, error) {
+	if len(workspaceIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.conn.q.ListWorkspaceAccessForUserIn(ctx, gendb.ListWorkspaceAccessForUserInParams{
+		UserID:       userID,
+		WorkspaceIds: workspaceIDs,
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return rows, nil
 }
 
 func (s *workspaceAccessStore) Clear(ctx context.Context, workspaceID string) error {

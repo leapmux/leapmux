@@ -25,7 +25,7 @@ describe('tilingLayout', () => {
       const root: LayoutNodeLocal = {
         type: 'split',
         id: 'sp',
-        direction: 'horizontal',
+        direction: 'vertical',
         ratios: [0.5, 0.5],
         children: [
           { type: 'leaf', id: 'a' },
@@ -56,11 +56,11 @@ describe('tilingLayout', () => {
       expect(finalRatios[1]).toBeCloseTo(0.3, 9)
     })
 
-    it('renders separator with role="separator" and aria-orientation="vertical" for horizontal splits', () => {
+    it('renders separator with role="separator" and aria-orientation="vertical" for vertical-divider splits', () => {
       const root: LayoutNodeLocal = {
         type: 'split',
         id: 'sp',
-        direction: 'horizontal',
+        direction: 'vertical',
         ratios: [0.5, 0.5],
         children: [
           { type: 'leaf', id: 'a' },
@@ -79,7 +79,7 @@ describe('tilingLayout', () => {
       const [layout, setLayout] = createSignal<LayoutNodeLocal>({
         type: 'split',
         id: 'sp',
-        direction: 'horizontal',
+        direction: 'vertical',
         ratios: [0.5, 0.5],
         children: [
           { type: 'leaf', id: 'a' },
@@ -102,7 +102,7 @@ describe('tilingLayout', () => {
       setLayout({
         type: 'split',
         id: 'sp',
-        direction: 'horizontal',
+        direction: 'vertical',
         ratios: [0.4, 0.6],
         children: [
           { type: 'leaf', id: 'a' },
@@ -120,7 +120,7 @@ describe('tilingLayout', () => {
       const [layout, setLayout] = createSignal<LayoutNodeLocal>({
         type: 'split',
         id: 'sp',
-        direction: 'horizontal',
+        direction: 'vertical',
         ratios: [0.5, 0.5],
         children: [
           { type: 'leaf', id: 'a' },
@@ -143,7 +143,7 @@ describe('tilingLayout', () => {
       setLayout({
         type: 'split',
         id: 'sp',
-        direction: 'horizontal',
+        direction: 'vertical',
         ratios: [0.5, 0.5],
         children: [
           { type: 'leaf', id: 'a' },
@@ -222,7 +222,7 @@ describe('tilingLayout', () => {
     const [layout, setLayout] = createSignal<LayoutNodeLocal>({
       type: 'split',
       id: 'sp',
-      direction: 'horizontal',
+      direction: 'vertical',
       ratios: [0.5, 0.5],
       children: [leafA, leafB],
     })
@@ -240,7 +240,7 @@ describe('tilingLayout', () => {
     setLayout({
       type: 'split',
       id: 'sp',
-      direction: 'horizontal',
+      direction: 'vertical',
       ratios: [0.4, 0.4, 0.2],
       children: [leafA, leafB, leafC],
     })
@@ -257,7 +257,7 @@ describe('tilingLayout', () => {
     const root: LayoutNodeLocal = {
       type: 'split',
       id: 'sp',
-      direction: 'horizontal',
+      direction: 'vertical',
       ratios: [0.5, 0.5],
       children: [
         { type: 'leaf', id: 'a' },

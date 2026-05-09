@@ -3,756 +3,271 @@ package service_test
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
-	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
-	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
-func leafNode(id string) *leapmuxv1.LayoutNode {
-	return &leapmuxv1.LayoutNode{
-		Node: &leapmuxv1.LayoutNode_Leaf{Leaf: &leapmuxv1.LayoutLeaf{Id: id}},
+// TestWorkspaceService_ListWorkspaces_DefaultsOrgIDToUserHome locks in
+// the CLI-friendly default: when the caller doesn't specify an
+// org_id, the handler falls back to the authenticated user's home
+// org rather than asking the SQL layer to match an empty string
+// (which never hits a row). Without this default, `leapmux remote
+// workspace list` returns `null` from inside a tab because the
+// worker-side delegation flow never threads an org_id into the
+// request body.
+func TestWorkspaceService_ListWorkspaces_DefaultsOrgIDToUserHome(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	ws1 := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS1")
+	ws2 := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS2")
+
+	svc := service.NewWorkspaceService(st, false, nil)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:    user.ID,
+		OrgID: orgID,
+	})
+
+	resp, err := svc.ListWorkspaces(ctx, connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{}))
+	require.NoError(t, err)
+	got := make([]string, 0, len(resp.Msg.GetWorkspaces()))
+	for _, w := range resp.Msg.GetWorkspaces() {
+		got = append(got, w.GetId())
 	}
+	assert.ElementsMatch(t, []string{ws1, ws2}, got,
+		"empty org_id must default to user.OrgID, not match the literal empty string")
 }
 
-type workspaceTestEnv struct {
-	client leapmuxv1connect.WorkspaceServiceClient
-	store  store.Store
-	token  string
-	orgID  string
-	userID string
+// TestWorkspaceService_ListWorkspaces_DelegationPinsToScope encodes
+// the documented intent of `auth.UserInfo.DelegationWorkspaceID`: a
+// delegation bearer is pinned to one workspace and MUST NOT
+// enumerate the user's full grant set. ChannelService already
+// enforces this for OpenChannel; ListWorkspaces is the read-side
+// twin — a leaked delegation bearer must not be able to discover
+// every workspace the underlying user owns.
+func TestWorkspaceService_ListWorkspaces_DelegationPinsToScope(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
+	_ = storetest.SeedWorkspace(t, st, orgID, user.ID, "Sibling")
+
+	svc := service.NewWorkspaceService(st, false, nil)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:                    user.ID,
+		OrgID:                 orgID,
+		DelegationWorkspaceID: pinned,
+	})
+
+	resp, err := svc.ListWorkspaces(ctx, connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{}))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetWorkspaces(), 1,
+		"delegation bearer must surface only its pinned workspace, not every accessible one")
+	assert.Equal(t, pinned, resp.Msg.GetWorkspaces()[0].GetId())
 }
 
-func setupWorkspaceTest(t *testing.T) *workspaceTestEnv {
-	t.Helper()
+// TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess
+// catches the "workspace deleted but bearer still alive" edge: a
+// delegation token outlives its workspace when the workspace is
+// soft-deleted while the bearer is still in its TTL. ListWorkspaces
+// must surface this as an empty list rather than returning a
+// tombstoned row.
+func TestWorkspaceService_ListWorkspaces_DelegationVerifiesAccess(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	pinned := storetest.SeedWorkspace(t, st, orgID, user.ID, "Pinned")
+	// Other user owns a workspace `pinned` doesn't have access to —
+	// proves the handler doesn't blindly return whatever id is on
+	// the bearer.
+	other := storetest.SeedUser(t, st, orgID, "bob")
+	otherWS := storetest.SeedWorkspace(t, st, orgID, other.ID, "Other")
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	svc := service.NewWorkspaceService(st, false, nil)
 
-	err = st.Migrator().Migrate(context.Background())
-	require.NoError(t, err)
-
-	workspaceSvc := service.NewWorkspaceService(st, false)
-
-	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
-	opts := connect.WithInterceptors(interceptor)
-	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, opts)
-	mux.Handle(path, handler)
-
-	server := httptest.NewUnstartedServer(mux)
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	t.Cleanup(server.Close)
-
-	client := leapmuxv1connect.NewWorkspaceServiceClient(
-		server.Client(),
-		server.URL,
-		connect.WithGRPC(),
+	// Sanity: the pinned workspace is returned when accessible.
+	resp, err := svc.ListWorkspaces(
+		auth.WithUser(context.Background(), &auth.UserInfo{
+			ID:                    user.ID,
+			OrgID:                 orgID,
+			DelegationWorkspaceID: pinned,
+		}),
+		connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{}),
 	)
-
-	orgID := id.Generate()
-	userID := id.Generate()
-	hash, _ := password.Hash("testpass")
-
-	_ = st.Orgs().Create(context.Background(), store.CreateOrgParams{ID: orgID, Name: "test-org"})
-	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		OrgID:        orgID,
-		Username:     "testuser",
-		PasswordHash: hash,
-		DisplayName:  "Test",
-		PasswordSet:  true,
-		IsAdmin:      true,
-	})
-
-	_ = st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              "w1",
-		AuthToken:       "tok",
-		RegisteredBy:    userID,
-		PublicKey:       []byte("key"),
-		MlkemPublicKey:  []byte{},
-		SlhdsaPublicKey: []byte{},
-	})
-
-	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
 	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetWorkspaces(), 1)
 
-	return &workspaceTestEnv{
-		client: client,
-		store:  st,
-		token:  token,
-		orgID:  orgID,
-		userID: userID,
-	}
+	// A bearer scoped to a workspace owned by someone else must
+	// not surface it.
+	resp, err = svc.ListWorkspaces(
+		auth.WithUser(context.Background(), &auth.UserInfo{
+			ID:                    user.ID,
+			OrgID:                 orgID,
+			DelegationWorkspaceID: otherWS,
+		}),
+		connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{}),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, resp.Msg.GetWorkspaces(),
+		"a delegation bearer pinned to an inaccessible workspace must yield an empty list")
 }
 
-func (env *workspaceTestEnv) createWorkspace(t *testing.T) string {
+// TestWorkspaceService_LocateTile_FindsByWorkspaceRoot exercises the
+// simplest happy path: a tile id that *is* a workspace root resolves
+// to its workspace + org without walking any parent links. This pins
+// the base case of `tileOwningWorkspace` against future regressions
+// where a refactor of the walk loop accidentally skips the
+// "current node is a root" check.
+func TestWorkspaceService_LocateTile_FindsByWorkspaceRoot(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	ws := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS")
+
+	env := setupLocateTileEnv(t, orgID)
+	env.mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+		s.Workspaces[ws] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: ws, RootNodeId: "root-1"}
+		s.Nodes["root-1"] = &leapmuxv1.NodeRecord{NodeId: "root-1"}
+	})
+	svc := service.NewWorkspaceService(st, false, env.registry)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: orgID})
+
+	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "root-1"}))
+	require.NoError(t, err)
+	assert.Equal(t, ws, resp.Msg.GetWorkspaceId())
+	assert.Equal(t, orgID, resp.Msg.GetOrgId())
+}
+
+// TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace pins the
+// transitive walk: a tile nested under a workspace's root must
+// climb parent_id links until a workspace root matches. Without
+// this coverage a regression that only checked direct membership
+// would silently return NotFound for every non-root tile, which
+// includes every tile in a tiled workspace.
+func TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	ws := storetest.SeedWorkspace(t, st, orgID, user.ID, "WS")
+
+	env := setupLocateTileEnv(t, orgID)
+	env.mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+		s.Workspaces[ws] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: ws, RootNodeId: "root-1"}
+		s.Nodes["root-1"] = &leapmuxv1.NodeRecord{NodeId: "root-1"}
+		s.Nodes["mid-1"] = &leapmuxv1.NodeRecord{NodeId: "mid-1", ParentId: "root-1"}
+		s.Nodes["leaf-1"] = &leapmuxv1.NodeRecord{NodeId: "leaf-1", ParentId: "mid-1"}
+	})
+	svc := service.NewWorkspaceService(st, false, env.registry)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: orgID})
+
+	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "leaf-1"}))
+	require.NoError(t, err)
+	assert.Equal(t, ws, resp.Msg.GetWorkspaceId())
+}
+
+// TestWorkspaceService_LocateTile_DelegationCollapsesToNotFound is the
+// scope-leak guard. A delegated bearer pinned to workspace A must
+// not be able to enumerate sibling tiles in workspace B even though
+// both belong to the user's org. We deliberately collapse
+// PermissionDenied to NotFound to avoid leaking existence to the
+// bearer.
+func TestWorkspaceService_LocateTile_DelegationCollapsesToNotFound(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	allowedWS := storetest.SeedWorkspace(t, st, orgID, user.ID, "Allowed")
+	forbiddenWS := storetest.SeedWorkspace(t, st, orgID, user.ID, "Forbidden")
+
+	env := setupLocateTileEnv(t, orgID)
+	env.mgr.MutateInternal(func(s *leapmuxv1.OrgCrdtState) {
+		s.Workspaces[forbiddenWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: forbiddenWS, RootNodeId: "root-forbidden"}
+		s.Nodes["root-forbidden"] = &leapmuxv1.NodeRecord{NodeId: "root-forbidden"}
+	})
+	svc := service.NewWorkspaceService(st, false, env.registry)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:                    user.ID,
+		OrgID:                 orgID,
+		DelegationWorkspaceID: allowedWS,
+	})
+
+	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "root-forbidden"}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"a tile outside the delegation scope must surface as NotFound, not PermissionDenied (existence leak)")
+}
+
+// TestWorkspaceService_LocateTile_RejectsEmptyTileID covers the
+// invalid-args branch. Empty tile_id hard-fails before any auth or
+// CRDT lookup so the error envelope is unambiguous.
+func TestWorkspaceService_LocateTile_RejectsEmptyTileID(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	env := setupLocateTileEnv(t, orgID)
+	svc := service.NewWorkspaceService(st, false, env.registry)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: orgID})
+
+	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: ""}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// TestWorkspaceService_LocateTile_NotFoundForUnknownTile covers the
+// "tile id exists in no workspace" case. The walk terminates at a
+// missing parent node and returns "", which the handler surfaces
+// as NotFound.
+func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	orgID := storetest.SeedOrg(t, st, "primary-org", false)
+	user := storetest.SeedUser(t, st, orgID, "alice")
+	env := setupLocateTileEnv(t, orgID)
+	svc := service.NewWorkspaceService(st, false, env.registry)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: user.ID, OrgID: orgID})
+
+	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "ghost"}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// locateTileEnv bundles a registry-backed manager so each LocateTile
+// test can seed the in-memory state via MutateInternal without
+// driving real lifecycle events through the journal.
+type locateTileEnv struct {
+	mgr      *crdt.Manager
+	registry *crdt.Registry
+}
+
+func setupLocateTileEnv(t *testing.T, orgID string) *locateTileEnv {
 	t.Helper()
-	wsID := id.Generate()
-	err := env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID:          wsID,
-		OrgID:       env.orgID,
-		OwnerUserID: env.userID,
-		Title:       "Test Workspace",
-	})
-	require.NoError(t, err)
-	return wsID
-}
-
-func (env *workspaceTestEnv) createUserAndToken(t *testing.T, username string) (string, string) {
-	t.Helper()
-
-	userID := id.Generate()
-	hash, err := password.Hash("testpass")
-	require.NoError(t, err)
-
-	err = env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		OrgID:        env.orgID,
-		Username:     username,
-		PasswordHash: hash,
-		DisplayName:  username,
-		PasswordSet:  true,
-		IsAdmin:      false,
-	})
-	require.NoError(t, err)
-
-	token, _, _, err := auth.Login(context.Background(), env.store, username, "testpass")
-	require.NoError(t, err)
-	return userID, token
-}
-
-type failingWorkspaceTabStore struct {
-	store.WorkspaceTabStore
-	bulkUpsertErr        error
-	deleteByWorkspaceErr error
-}
-
-func (s failingWorkspaceTabStore) BulkUpsert(ctx context.Context, params []store.UpsertWorkspaceTabParams) error {
-	if s.bulkUpsertErr != nil {
-		return s.bulkUpsertErr
-	}
-	return s.WorkspaceTabStore.BulkUpsert(ctx, params)
-}
-
-func (s failingWorkspaceTabStore) DeleteByWorkspace(ctx context.Context, workspaceID string) error {
-	if s.deleteByWorkspaceErr != nil {
-		return s.deleteByWorkspaceErr
-	}
-	return s.WorkspaceTabStore.DeleteByWorkspace(ctx, workspaceID)
-}
-
-type failingWorkspaceLayoutStore struct {
-	store.WorkspaceLayoutStore
-	deleteErr error
-}
-
-func (s failingWorkspaceLayoutStore) Delete(ctx context.Context, workspaceID string) error {
-	if s.deleteErr != nil {
-		return s.deleteErr
-	}
-	return s.WorkspaceLayoutStore.Delete(ctx, workspaceID)
-}
-
-type wrappedStore struct {
-	store.Store
-	wrapTabs    func(store.WorkspaceTabStore) store.WorkspaceTabStore
-	wrapLayouts func(store.WorkspaceLayoutStore) store.WorkspaceLayoutStore
-}
-
-func (s wrappedStore) WorkspaceTabs() store.WorkspaceTabStore {
-	if s.wrapTabs != nil {
-		return s.wrapTabs(s.Store.WorkspaceTabs())
-	}
-	return s.Store.WorkspaceTabs()
-}
-
-func (s wrappedStore) WorkspaceLayouts() store.WorkspaceLayoutStore {
-	if s.wrapLayouts != nil {
-		return s.wrapLayouts(s.Store.WorkspaceLayouts())
-	}
-	return s.Store.WorkspaceLayouts()
-}
-
-func (s wrappedStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
-	return s.Store.RunInTransaction(ctx, func(tx store.Store) error {
-		return fn(wrappedStore{
-			Store:       tx,
-			wrapTabs:    s.wrapTabs,
-			wrapLayouts: s.wrapLayouts,
+	j := newMemJournal()
+	var (
+		once sync.Once
+		mgr  *crdt.Manager
+	)
+	registry := crdt.NewRegistry(func(ctx context.Context, want string) (*crdt.Manager, error) {
+		if want != orgID {
+			return nil, errors.New("unexpected org")
+		}
+		once.Do(func() {
+			mgr = crdt.NewManager(orgID, j, allowAllAuth{}, nil, time.Now)
+			require.NoError(t, mgr.Bootstrap(ctx))
 		})
-	})
-}
-
-func TestSaveMultiLayout_EmptyEntries(t *testing.T) {
-	env := setupWorkspaceTest(t)
-
-	resp, err := env.client.SaveMultiLayout(context.Background(), authedReq(
-		&leapmuxv1.SaveMultiLayoutRequest{
-			OrgId:   env.orgID,
-			Entries: []*leapmuxv1.WorkspaceLayoutEntry{},
-		}, env.token))
+		return mgr, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+	_, err := registry.Get(context.Background(), orgID)
 	require.NoError(t, err)
-	assert.NotNil(t, resp)
-}
-
-func TestSaveMultiLayout_SingleWorkspace(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	resp, err := env.client.SaveMultiLayout(context.Background(), authedReq(
-		&leapmuxv1.SaveMultiLayoutRequest{
-			OrgId: env.orgID,
-			Entries: []*leapmuxv1.WorkspaceLayoutEntry{
-				{
-					WorkspaceId: wsID,
-					Layout:      leafNode("tile-1"),
-					Tabs: []*leapmuxv1.WorkspaceTab{
-						{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1", Position: "a", TileId: "tile-1", WorkerId: "w1"},
-					},
-				},
-			},
-		}, env.token))
-	require.NoError(t, err)
-	assert.NotNil(t, resp)
-
-	// Verify the tab was saved by loading it back.
-	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
-	require.NoError(t, err)
-	require.Len(t, tabs, 1)
-	assert.Equal(t, "agent-1", tabs[0].TabID)
-}
-
-func TestSaveMultiLayout_TwoWorkspacesAtomic(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	ws1 := env.createWorkspace(t)
-	ws2 := env.createWorkspace(t)
-
-	resp, err := env.client.SaveMultiLayout(context.Background(), authedReq(
-		&leapmuxv1.SaveMultiLayoutRequest{
-			OrgId: env.orgID,
-			Entries: []*leapmuxv1.WorkspaceLayoutEntry{
-				{
-					WorkspaceId: ws1,
-					Layout:      leafNode("tile-1"),
-					Tabs: []*leapmuxv1.WorkspaceTab{
-						{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1", Position: "a", TileId: "tile-1", WorkerId: "w1"},
-					},
-				},
-				{
-					WorkspaceId: ws2,
-					Layout:      leafNode("tile-2"),
-					Tabs: []*leapmuxv1.WorkspaceTab{
-						{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "term-1", Position: "a", TileId: "tile-2", WorkerId: "w1"},
-						{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-2", Position: "b", TileId: "tile-2", WorkerId: "w1"},
-					},
-				},
-			},
-		}, env.token))
-	require.NoError(t, err)
-	assert.NotNil(t, resp)
-
-	// Verify tabs for ws1.
-	tabs1, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ws1)
-	require.NoError(t, err)
-	require.Len(t, tabs1, 1)
-	assert.Equal(t, "agent-1", tabs1[0].TabID)
-
-	// Verify tabs for ws2.
-	tabs2, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ws2)
-	require.NoError(t, err)
-	require.Len(t, tabs2, 2)
-}
-
-func TestSaveMultiLayout_NotOwnedWorkspaceRejected(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	ownedWs := env.createWorkspace(t)
-
-	// Create a workspace owned by another user.
-	otherUserID := id.Generate()
-	hash, _ := password.Hash("testpass")
-	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           otherUserID,
-		OrgID:        env.orgID,
-		Username:     "other",
-		PasswordHash: hash,
-		DisplayName:  "Other",
-		PasswordSet:  true,
-		IsAdmin:      false,
-	})
-	otherWsID := id.Generate()
-	_ = env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID:          otherWsID,
-		OrgID:       env.orgID,
-		OwnerUserID: otherUserID,
-		Title:       "Other's Workspace",
-	})
-
-	// Attempt to save both — should fail because the second workspace is not owned.
-	_, err := env.client.SaveMultiLayout(context.Background(), authedReq(
-		&leapmuxv1.SaveMultiLayoutRequest{
-			OrgId: env.orgID,
-			Entries: []*leapmuxv1.WorkspaceLayoutEntry{
-				{
-					WorkspaceId: ownedWs,
-					Layout:      leafNode("tile-1"),
-					Tabs:        []*leapmuxv1.WorkspaceTab{},
-				},
-				{
-					WorkspaceId: otherWsID,
-					Layout:      leafNode("tile-1"),
-					Tabs:        []*leapmuxv1.WorkspaceTab{},
-				},
-			},
-		}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-
-	// Verify that the owned workspace's tabs were NOT saved (transaction rolled back).
-	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), ownedWs)
-	require.NoError(t, err)
-	assert.Empty(t, tabs)
-}
-
-func TestSaveMultiLayout_TabsReplacedOnUpdate(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	// First save: 2 tabs.
-	_, err := env.client.SaveMultiLayout(context.Background(), authedReq(
-		&leapmuxv1.SaveMultiLayoutRequest{
-			OrgId: env.orgID,
-			Entries: []*leapmuxv1.WorkspaceLayoutEntry{
-				{
-					WorkspaceId: wsID,
-					Layout:      leafNode("tile-1"),
-					Tabs: []*leapmuxv1.WorkspaceTab{
-						{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1", Position: "a", TileId: "tile-1", WorkerId: "w1"},
-						{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "term-1", Position: "b", TileId: "tile-1", WorkerId: "w1"},
-					},
-				},
-			},
-		}, env.token))
-	require.NoError(t, err)
-
-	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
-	require.NoError(t, err)
-	require.Len(t, tabs, 2)
-
-	// Second save: 1 tab (agent-1 moved out, only term-1 remains).
-	_, err = env.client.SaveMultiLayout(context.Background(), authedReq(
-		&leapmuxv1.SaveMultiLayoutRequest{
-			OrgId: env.orgID,
-			Entries: []*leapmuxv1.WorkspaceLayoutEntry{
-				{
-					WorkspaceId: wsID,
-					Layout:      leafNode("tile-1"),
-					Tabs: []*leapmuxv1.WorkspaceTab{
-						{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "term-1", Position: "a", TileId: "tile-1", WorkerId: "w1"},
-					},
-				},
-			},
-		}, env.token))
-	require.NoError(t, err)
-
-	tabs, err = env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
-	require.NoError(t, err)
-	require.Len(t, tabs, 1)
-	assert.Equal(t, "term-1", tabs[0].TabID)
-}
-
-func TestWorkspaceReadAccess_SharedMemberReadOnly(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-	viewerID, viewerToken := env.createUserAndToken(t, "viewer")
-
-	require.NoError(t, env.store.WorkspaceTabs().Upsert(context.Background(), store.UpsertWorkspaceTabParams{
-		WorkspaceID: wsID,
-		WorkerID:    "w1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID:       "agent-1",
-		Position:    "a",
-		TileID:      "tile-1",
-	}))
-	require.NoError(t, env.store.WorkspaceLayouts().Upsert(context.Background(), store.UpsertWorkspaceLayoutParams{
-		WorkspaceID: wsID,
-		LayoutJSON:  `{"layout":{"leaf":{"id":"tile-1"}}}`,
-	}))
-	require.NoError(t, env.store.WorkspaceAccess().Grant(context.Background(), store.GrantWorkspaceAccessParams{
-		WorkspaceID: wsID,
-		UserID:      viewerID,
-	}))
-
-	_, err := env.client.GetWorkspace(context.Background(), authedReq(&leapmuxv1.GetWorkspaceRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-	}, viewerToken))
-	require.NoError(t, err)
-
-	tabsResp, err := env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
-		OrgId:        env.orgID,
-		WorkspaceIds: []string{wsID},
-	}, viewerToken))
-	require.NoError(t, err)
-	require.Len(t, tabsResp.Msg.GetTabs(), 1)
-	assert.Equal(t, wsID, tabsResp.Msg.GetTabs()[0].GetWorkspaceId())
-
-	layoutResp, err := env.client.GetLayout(context.Background(), authedReq(&leapmuxv1.GetLayoutRequest{
-		WorkspaceId: wsID,
-	}, viewerToken))
-	require.NoError(t, err)
-	require.NotNil(t, layoutResp.Msg.GetLayout())
-
-	_, err = env.client.AddTab(context.Background(), authedReq(&leapmuxv1.AddTabRequest{
-		WorkspaceId: wsID,
-		Tab: &leapmuxv1.WorkspaceTab{
-			TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
-			TabId:    "agent-2",
-			Position: "b",
-			TileId:   "tile-1",
-			WorkerId: "w1",
-		},
-	}, viewerToken))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-
-	_, err = env.client.RemoveTab(context.Background(), authedReq(&leapmuxv1.RemoveTabRequest{
-		WorkspaceId: wsID,
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:       "agent-1",
-	}, viewerToken))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-
-	_, err = env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-		Layout:      leafNode("tile-1"),
-	}, viewerToken))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-
-	_, err = env.client.UpdateWorkspaceSharing(context.Background(), authedReq(&leapmuxv1.UpdateWorkspaceSharingRequest{
-		WorkspaceId: wsID,
-		ShareMode:   leapmuxv1.ShareMode_SHARE_MODE_PRIVATE,
-	}, viewerToken))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-}
-
-func TestWorkspaceReadAccess_UnsharedUserDenied(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-	_, outsiderToken := env.createUserAndToken(t, "outsider")
-
-	_, err := env.client.GetWorkspace(context.Background(), authedReq(&leapmuxv1.GetWorkspaceRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-	}, outsiderToken))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-
-	// ListTabs now silently drops workspaces the caller can't read rather than
-	// returning PermissionDenied, so stale sidebar state (e.g. IDs restored
-	// from sessionStorage) doesn't produce noisy 4xx responses.
-	tabsResp, err := env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
-		OrgId:        env.orgID,
-		WorkspaceIds: []string{wsID},
-	}, outsiderToken))
-	require.NoError(t, err)
-	assert.Empty(t, tabsResp.Msg.GetTabs())
-
-	_, err = env.client.GetLayout(context.Background(), authedReq(&leapmuxv1.GetLayoutRequest{
-		WorkspaceId: wsID,
-	}, outsiderToken))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-}
-
-func TestListTabs_BatchAndSilentDrop(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	ws1 := env.createWorkspace(t)
-	ws2 := env.createWorkspace(t)
-
-	for _, wsID := range []string{ws1, ws2} {
-		require.NoError(t, env.store.WorkspaceTabs().Upsert(context.Background(), store.UpsertWorkspaceTabParams{
-			WorkspaceID: wsID,
-			WorkerID:    "w1",
-			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-			TabID:       "agent-" + wsID,
-			Position:    "a",
-			TileID:      "tile-1",
-		}))
-	}
-
-	// Explicit IDs: both workspaces returned, tabs tagged with workspace_id.
-	resp, err := env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
-		OrgId:        env.orgID,
-		WorkspaceIds: []string{ws1, ws2},
-	}, env.token))
-	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetTabs(), 2)
-	got := map[string]string{}
-	for _, tab := range resp.Msg.GetTabs() {
-		got[tab.GetWorkspaceId()] = tab.GetTabId()
-	}
-	assert.Equal(t, "agent-"+ws1, got[ws1])
-	assert.Equal(t, "agent-"+ws2, got[ws2])
-
-	// Empty workspace_ids → all accessible workspaces in the org.
-	resp, err = env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
-		OrgId: env.orgID,
-	}, env.token))
-	require.NoError(t, err)
-	assert.Len(t, resp.Msg.GetTabs(), 2)
-
-	// Unknown / inaccessible IDs silently drop; known IDs still returned.
-	resp, err = env.client.ListTabs(context.Background(), authedReq(&leapmuxv1.ListTabsRequest{
-		OrgId:        env.orgID,
-		WorkspaceIds: []string{ws1, "does-not-exist", ""},
-	}, env.token))
-	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetTabs(), 1)
-	assert.Equal(t, ws1, resp.Msg.GetTabs()[0].GetWorkspaceId())
-}
-
-// gridNode is a helper for constructing LayoutGrid proto nodes in tests.
-func gridNode(id string, rows, cols uint32, rowRatios, colRatios []float64, cells ...*leapmuxv1.LayoutNode) *leapmuxv1.LayoutNode {
-	return &leapmuxv1.LayoutNode{
-		Node: &leapmuxv1.LayoutNode_Grid{
-			Grid: &leapmuxv1.LayoutGrid{
-				Id:        id,
-				Rows:      rows,
-				Cols:      cols,
-				RowRatios: rowRatios,
-				ColRatios: colRatios,
-				Cells:     cells,
-			},
-		},
-	}
-}
-
-func TestSaveLayout_AcceptsNilLayout(t *testing.T) {
-	// Some callers send only tab updates without touching the layout; the
-	// service must accept a nil/zero LayoutNode in that case.
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-		Layout:      nil,
-	}, env.token))
-	require.NoError(t, err)
-}
-
-func TestSaveLayout_RejectsOversizedGrid(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	cells := make([]*leapmuxv1.LayoutNode, 21)
-	for i := range cells {
-		cells[i] = leafNode("c-" + string(rune('A'+i)))
-	}
-	rowRatios := make([]float64, 21)
-	for i := range rowRatios {
-		rowRatios[i] = 1.0 / 21.0
-	}
-	bad := gridNode("g1", 21, 1, rowRatios, []float64{1.0}, cells...)
-
-	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-		Layout:      bad,
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-}
-
-func TestSaveLayout_RejectsCellCountMismatch(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	bad := gridNode("g1", 2, 2, []float64{0.5, 0.5}, []float64{0.5, 0.5},
-		leafNode("A"), leafNode("B"), leafNode("C"),
-	)
-
-	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-		Layout:      bad,
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-}
-
-func TestSaveLayout_RejectsBadRatios(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	// row_ratios sum to 0.6, not ~1.0
-	bad := gridNode("g1", 2, 2, []float64{0.3, 0.3}, []float64{0.5, 0.5},
-		leafNode("A"), leafNode("B"), leafNode("C"), leafNode("D"),
-	)
-
-	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-		Layout:      bad,
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-}
-
-func TestSaveLayout_RejectsMalformedFloatingWindowGrid(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	bad := gridNode("g1", 2, 2, []float64{0.5, 0.5}, []float64{0.5, 0.5},
-		leafNode("A"), leafNode("B"), // only 2 cells, not 4
-	)
-
-	_, err := env.client.SaveLayout(context.Background(), authedReq(&leapmuxv1.SaveLayoutRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-		Layout:      leafNode("tile-1"),
-		FloatingWindows: []*leapmuxv1.FloatingWindow{
-			{Id: "fw-1", X: 0.1, Y: 0.1, Width: 0.5, Height: 0.5, Layout: bad},
-		},
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "floating window")
-}
-
-func TestSaveLayout_RollsBackOnTabFailure(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	require.NoError(t, env.store.WorkspaceLayouts().Upsert(context.Background(), store.UpsertWorkspaceLayoutParams{
-		WorkspaceID: wsID,
-		LayoutJSON:  `{"layout":{"leaf":{"id":"old-tile"}}}`,
-	}))
-	require.NoError(t, env.store.WorkspaceTabs().Upsert(context.Background(), store.UpsertWorkspaceTabParams{
-		WorkspaceID: wsID,
-		WorkerID:    "w1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID:       "old-tab",
-		Position:    "a",
-		TileID:      "old-tile",
-	}))
-
-	svc := service.NewWorkspaceService(wrappedStore{
-		Store: env.store,
-		wrapTabs: func(base store.WorkspaceTabStore) store.WorkspaceTabStore {
-			return failingWorkspaceTabStore{WorkspaceTabStore: base, bulkUpsertErr: errors.New("boom")}
-		},
-	}, false)
-
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: env.userID, OrgID: env.orgID, Username: "testuser", IsAdmin: true})
-	_, err := svc.SaveLayout(ctx, connect.NewRequest(&leapmuxv1.SaveLayoutRequest{
-		OrgId:       env.orgID,
-		WorkspaceId: wsID,
-		Layout:      leafNode("new-tile"),
-		Tabs: []*leapmuxv1.WorkspaceTab{
-			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "new-tab", Position: "b", TileId: "new-tile", WorkerId: "w1"},
-		},
-	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
-
-	layout, err := env.store.WorkspaceLayouts().Get(context.Background(), wsID)
-	require.NoError(t, err)
-	assert.Equal(t, `{"layout":{"leaf":{"id":"old-tile"}}}`, layout.LayoutJSON)
-
-	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
-	require.NoError(t, err)
-	require.Len(t, tabs, 1)
-	assert.Equal(t, "old-tab", tabs[0].TabID)
-}
-
-func TestUpdateWorkspaceSharing_InvalidUserLeavesACLsIntact(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-	viewerID, _ := env.createUserAndToken(t, "existing-viewer")
-
-	require.NoError(t, env.store.WorkspaceAccess().Grant(context.Background(), store.GrantWorkspaceAccessParams{
-		WorkspaceID: wsID,
-		UserID:      viewerID,
-	}))
-
-	svc := service.NewWorkspaceService(env.store, false)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: env.userID, OrgID: env.orgID, Username: "testuser", IsAdmin: true})
-	_, err := svc.UpdateWorkspaceSharing(ctx, connect.NewRequest(&leapmuxv1.UpdateWorkspaceSharingRequest{
-		WorkspaceId: wsID,
-		ShareMode:   leapmuxv1.ShareMode_SHARE_MODE_MEMBERS,
-		UserIds:     []string{viewerID, "missing-user"},
-	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-
-	entries, err := env.store.WorkspaceAccess().ListByWorkspaceID(context.Background(), wsID)
-	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	assert.Equal(t, viewerID, entries[0].UserID)
-}
-
-func TestDeleteWorkspace_RollsBackOnCleanupFailure(t *testing.T) {
-	env := setupWorkspaceTest(t)
-	wsID := env.createWorkspace(t)
-
-	require.NoError(t, env.store.WorkspaceTabs().Upsert(context.Background(), store.UpsertWorkspaceTabParams{
-		WorkspaceID: wsID,
-		WorkerID:    "w1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID:       "tab-1",
-		Position:    "a",
-		TileID:      "tile-1",
-	}))
-	require.NoError(t, env.store.WorkspaceLayouts().Upsert(context.Background(), store.UpsertWorkspaceLayoutParams{
-		WorkspaceID: wsID,
-		LayoutJSON:  `{"layout":{"leaf":{"id":"tile-1"}}}`,
-	}))
-
-	svc := service.NewWorkspaceService(wrappedStore{
-		Store: env.store,
-		wrapLayouts: func(base store.WorkspaceLayoutStore) store.WorkspaceLayoutStore {
-			return failingWorkspaceLayoutStore{WorkspaceLayoutStore: base, deleteErr: errors.New("layout delete failed")}
-		},
-	}, false)
-
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: env.userID, OrgID: env.orgID, Username: "testuser", IsAdmin: true})
-	_, err := svc.DeleteWorkspace(ctx, connect.NewRequest(&leapmuxv1.DeleteWorkspaceRequest{
-		WorkspaceId: wsID,
-	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
-
-	ws, err := env.store.Workspaces().GetByID(context.Background(), wsID)
-	require.NoError(t, err)
-	assert.Equal(t, wsID, ws.ID)
-
-	tabs, err := env.store.WorkspaceTabs().ListByWorkspace(context.Background(), wsID)
-	require.NoError(t, err)
-	require.Len(t, tabs, 1)
-
-	layout, err := env.store.WorkspaceLayouts().Get(context.Background(), wsID)
-	require.NoError(t, err)
-	assert.Equal(t, `{"layout":{"leaf":{"id":"tile-1"}}}`, layout.LayoutJSON)
+	return &locateTileEnv{mgr: mgr, registry: registry}
 }

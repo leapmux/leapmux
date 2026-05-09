@@ -43,3 +43,30 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "TabType"
+          # Force binary token-hash columns to []byte (sqlc would map
+          # MySQL VARBINARY to NullString otherwise, which is awkward
+          # for HMAC bytes).
+          - column: "api_tokens.secret_hash"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "api_tokens.refresh_hash"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "api_tokens.previous_refresh_hash"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "delegation_tokens.secret_hash"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "delegation_tokens.refresh_hash"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "delegation_tokens.previous_refresh_hash"
+            go_type:
+              type: "byte"
+              slice: true

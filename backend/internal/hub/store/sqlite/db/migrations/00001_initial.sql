@@ -35,15 +35,30 @@ CREATE TABLE users (
     prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- High-water mark bumped whenever this user's auth basis is
+    -- bulk-revoked (admin user delete / reset-password / session
+    -- revoke-user, ChangePassword). The hub's revocation watcher
+    -- polls this column to fire `EvictByUserID` +
+    -- `EvictBearersByUserID` + `CloseChannelsByUser` so cookie
+    -- channels and any leftover bearer-cache entries die in
+    -- lock-step with the DB mutation. Without this column, an
+    -- admin command running in a different process would leave
+    -- the hub's in-memory state stale until cache TTL.
+    tokens_revoked_at        DATETIME,
     deleted_at     DATETIME
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '' AND deleted_at IS NULL;
 CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_users_tokens_revoked_at ON users(tokens_revoked_at) WHERE tokens_revoked_at IS NOT NULL;
 -- Verification codes are looked up per-user (the session identifies who),
 -- so no global token index is needed. Index expiry instead, for cleanup.
 CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at) WHERE pending_email_expires_at IS NOT NULL;
+-- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
+-- Partial on (is_admin, deleted_at) keeps the index tiny; indexing on
+-- created_at lets the ORDER BY + LIMIT 1 hit the first leaf directly.
+CREATE INDEX idx_users_is_admin ON users(created_at) WHERE is_admin AND deleted_at IS NULL;
 
 -- Multi-org membership (M:N junction)
 CREATE TABLE org_members (
@@ -89,6 +104,10 @@ CREATE TABLE workers (
     deleted_at    DATETIME
 );
 CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC) WHERE deleted_at IS NULL;
+-- Admin status-only listing (ListWorkersAdminByStatus) cannot use the
+-- (registered_by, status, created_at) index because registered_by is the
+-- leading column.
+CREATE INDEX idx_workers_status_created ON workers(status, created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Worker notifications (persistent queue for reliable delivery)
@@ -180,26 +199,210 @@ CREATE TABLE workspace_access (
     PRIMARY KEY (workspace_id, user_id)
 );
 
--- Workspace tabs (IDs + position/tile_id; paths stay on workers)
-CREATE TABLE workspace_tabs (
+-- CRDT op-batch journal. The per-org CRDT manager appends every committed
+-- batch here in the same transaction that updates the in-memory state and
+-- the derived workspace_tab_owned / workspace_tab_rendered views. One row
+-- per OpBatch (not per OrgOp); ops within a batch share a contiguous
+-- canonical HLC range anchored at (physical_ms, logical) with op_count
+-- ops, so the last op's logical = logical + op_count - 1.
+--
+-- Compaction periodically drops rows whose batch's last canonical HLC ≤
+-- compaction_watermark; the surviving batch_ids move to
+-- org_recent_batch_ids so retries within ~14 days remain idempotent.
+CREATE TABLE org_op_batches (
+    org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    physical_ms   BIGINT NOT NULL,                  -- first op's canonical_hlc.physical (= last op's; ops in a batch share physical_ms)
+    logical       BIGINT NOT NULL,                  -- first op's canonical_hlc.logical
+    last_logical  BIGINT NOT NULL,                  -- last op's canonical_hlc.logical (= logical + op_count - 1); precomputed for compaction filter
+    origin_client TEXT NOT NULL,                    -- canonical_hlc.client_id (hub-stamped; identical for every op in the batch)
+    principal_id  TEXT NOT NULL,                    -- authenticated user; for principal-aware dedup
+    batch_id      TEXT NOT NULL,                    -- client-minted; dedup key
+    body_hash     BLOB NOT NULL,                    -- SHA-256 of OpBatch with per-op HLC/origin fields stripped
+    batch_payload BLOB NOT NULL,                    -- proto-marshalled OpBatch (ops carry per-op canonical_hlc)
+    op_count      INTEGER NOT NULL CHECK (op_count > 0),
+    epoch         BIGINT NOT NULL,                  -- the org's epoch at commit time
+    committed_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (org_id, physical_ms, logical, origin_client)
+);
+CREATE UNIQUE INDEX idx_org_op_batches_dedup ON org_op_batches(org_id, batch_id);
+
+-- One materialized OrgCrdtState blob per org. The manager rewrites this
+-- row only on compaction or lifecycle-outbox processing; per-batch
+-- commits update only org_op_batches + the index views to keep the hot
+-- path off the multi-MB blob.
+CREATE TABLE org_state (
+    org_id           TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    state_payload    BLOB NOT NULL,
+    current_epoch    BIGINT NOT NULL DEFAULT 1,
+    epoch_started_at DATETIME NOT NULL,
+    updated_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Worker-ownership view: every non-tombstoned tab in the org. Worker
+-- reconciliation reads from this view (NOT from _rendered) so a tab
+-- dropped by projection-repair doesn't cause the worker to delete a
+-- still-live agent / terminal / file-tab.
+CREATE TABLE workspace_tab_owned (
+    org_id       TEXT NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    worker_id    TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     tab_type     INTEGER NOT NULL,
     tab_id       TEXT NOT NULL,
-    position     TEXT NOT NULL DEFAULT '',
-    tile_id      TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (workspace_id, tab_type, tab_id)
+    worker_id    TEXT NOT NULL,
+    tile_id      TEXT NOT NULL,
+    position     TEXT NOT NULL,
+    PRIMARY KEY (org_id, tab_id)
 );
-CREATE INDEX idx_workspace_tabs_workspace ON workspace_tabs(workspace_id);
-CREATE INDEX idx_workspace_tabs_worker ON workspace_tabs(worker_id);
+CREATE INDEX idx_workspace_tab_owned_worker    ON workspace_tab_owned(worker_id);
+CREATE INDEX idx_workspace_tab_owned_workspace ON workspace_tab_owned(workspace_id);
 
--- Workspace tiling layouts (JSON tree per workspace)
-CREATE TABLE workspace_layouts (
+-- UI / projection view: subset of workspace_tab_owned whose tab passes
+-- projection (live tile, no duplicate-grid-cell tie-break, no
+-- cycle-break drop). ListTabs / GetTab read from this view.
+CREATE TABLE workspace_tab_rendered (
+    org_id       TEXT NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    layout_json  TEXT NOT NULL DEFAULT '{}',
-    updated_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (workspace_id)
+    tab_type     INTEGER NOT NULL,
+    tab_id       TEXT NOT NULL,
+    worker_id    TEXT NOT NULL,
+    tile_id      TEXT NOT NULL,
+    position     TEXT NOT NULL,
+    PRIMARY KEY (org_id, tab_id)
 );
+CREATE INDEX idx_workspace_tab_rendered_workspace ON workspace_tab_rendered(workspace_id);
+-- LocateAccessibleRenderedTab filters on tab_id alone; the PK has tab_id
+-- as the trailing column so it is not seekable.
+CREATE INDEX idx_workspace_tab_rendered_tab_id ON workspace_tab_rendered(tab_id);
+
+-- Recently-committed batch_ids retained for ~14 days (one full epoch
+-- window) so retries are idempotent without scanning the journal. The
+-- signed-epoch check covers retries older than this window. The canonical
+-- HLC tuple is the batch's first op; combined with op_count it lets the
+-- manager reconstruct every CommittedOp.canonical_hlc for retries
+-- byte-for-byte.
+CREATE TABLE org_recent_batch_ids (
+    org_id                TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    batch_id              TEXT NOT NULL,
+    body_hash             BLOB NOT NULL,
+    principal_id          TEXT NOT NULL,
+    canonical_physical_ms BIGINT NOT NULL,
+    canonical_logical     BIGINT NOT NULL,
+    canonical_client      TEXT NOT NULL,
+    op_count              INTEGER NOT NULL CHECK (op_count > 0),
+    epoch                 BIGINT NOT NULL,
+    expires_at            DATETIME NOT NULL,
+    PRIMARY KEY (org_id, batch_id)
+);
+CREATE INDEX idx_org_recent_batch_ids_expires ON org_recent_batch_ids(expires_at);
+
+-- Transactional outbox for workspace lifecycle events. Lifecycle RPCs
+-- (CreateWorkspace / RenameWorkspace / DeleteWorkspace) write to
+-- `workspaces` and to this table inside the same DB transaction; the
+-- per-org manager goroutine drains the outbox post-commit, applies any
+-- carried CRDT ops, mutates manager-internal state slots, broadcasts the
+-- lifecycle event, and stamps consumed_at. All inside a single
+-- transaction so a mid-process crash is replayable.
+CREATE TABLE lifecycle_outbox (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    op_type     TEXT NOT NULL,                 -- "create" | "rename" | "delete"
+    payload     BLOB NOT NULL,                 -- proto-marshalled lifecycle event + ops
+    enqueued_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    consumed_at DATETIME
+);
+CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(org_id, id) WHERE consumed_at IS NULL;
+
+-- Durable, low-churn API tokens used by the leapmux remote CLI (and any
+-- future mobile / IDE / integration). Each row's id appears verbatim in
+-- the bearer string ("lmx_<id>_<secret>") so verification is a single
+-- primary-key lookup. The secret is HMAC-SHA256(secret, server_pepper)
+-- so a leaked snapshot still requires the pepper to verify.
+--
+-- previous_refresh_hash + previous_refresh_expires_at implement
+-- refresh-token rotation with reuse detection: if a presented refresh
+-- matches previous_refresh_hash within the grace window, we treat it as
+-- a benign client retry and return the same new pair; if it matches
+-- after the window, we treat it as compromise and revoke the row.
+CREATE TABLE api_tokens (
+    id                            TEXT PRIMARY KEY,
+    user_id                       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_type                   TEXT NOT NULL,                 -- 'cli', future: 'mobile', 'desktop', 'integration'
+    client_name                   TEXT NOT NULL,                 -- user-visible (hostname, etc.)
+    secret_hash                   BLOB NOT NULL,
+    refresh_hash                  BLOB,
+    previous_refresh_hash         BLOB,
+    previous_refresh_expires_at   DATETIME,
+    scope                         TEXT NOT NULL DEFAULT 'remote:*',
+    created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    last_used_at                  DATETIME,
+    last_rotated_at               DATETIME,
+    expires_at                    DATETIME,
+    refresh_expires_at            DATETIME,
+    revoked_at                    DATETIME
+);
+CREATE INDEX idx_api_tokens_user ON api_tokens(user_id, client_type);
+CREATE INDEX idx_api_tokens_expires_at ON api_tokens(expires_at);
+CREATE INDEX idx_api_tokens_revoked_at ON api_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
+
+-- Ephemeral, high-churn delegation tokens minted by workers when a
+-- spawned agent (or opt-in terminal) calls into the hub or a sibling
+-- worker on behalf of the spawning user. Scope is (user_id,
+-- workspace_id); issued_for_tab_id is provenance only.
+--
+-- A nightly cleanup hard-deletes revoked rows older than 7d.
+CREATE TABLE delegation_tokens (
+    id                            TEXT PRIMARY KEY,
+    user_id                       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    worker_id                     TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
+    workspace_id                  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    agent_id                      TEXT NOT NULL DEFAULT '',
+    terminal_id                   TEXT NOT NULL DEFAULT '',
+    issued_for_tab_id             TEXT NOT NULL DEFAULT '',
+    issued_for_tab_type           INTEGER NOT NULL DEFAULT 0,
+    secret_hash                   BLOB NOT NULL,
+    refresh_hash                  BLOB,
+    previous_refresh_hash         BLOB,
+    previous_refresh_expires_at   DATETIME,
+    created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    last_used_at                  DATETIME,
+    expires_at                    DATETIME NOT NULL,
+    refresh_expires_at            DATETIME,
+    revoked_at                    DATETIME
+);
+CREATE INDEX idx_delegation_tokens_user ON delegation_tokens(user_id);
+CREATE INDEX idx_delegation_tokens_worker_agent ON delegation_tokens(worker_id, agent_id);
+CREATE INDEX idx_delegation_tokens_workspace ON delegation_tokens(workspace_id);
+CREATE INDEX idx_delegation_tokens_revoked_at ON delegation_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
+
+-- RFC 8628 device authorizations. The CLI starts the flow on a headless
+-- machine, the user activates the user_code from any browser, then the
+-- CLI polls for the result. Rows live for `expires_at`; the cleanup
+-- loop hard-deletes expired rows daily.
+CREATE TABLE device_authorizations (
+    device_code           TEXT PRIMARY KEY,
+    user_code             TEXT NOT NULL UNIQUE,
+    device_name           TEXT NOT NULL DEFAULT '',
+    user_id               TEXT REFERENCES users(id) ON DELETE CASCADE,
+    approved              INTEGER NOT NULL DEFAULT 0,        -- 0 pending, 1 approved, 2 denied
+    last_polled_at        DATETIME,
+    interval_seconds      INTEGER NOT NULL DEFAULT 5,
+    created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    expires_at            DATETIME NOT NULL,
+    consumed_at           DATETIME
+);
+CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
+
+-- One-shot authorization codes for the local-redirect CLI flow. Each row
+-- is consumed exactly once during /auth/cli/token exchange.
+CREATE TABLE cli_authorization_codes (
+    code                  TEXT PRIMARY KEY,
+    user_id               TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_challenge        TEXT NOT NULL,
+    device_name           TEXT NOT NULL DEFAULT '',
+    created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    expires_at            DATETIME NOT NULL,
+    consumed_at           DATETIME
+);
+CREATE INDEX idx_cli_authorization_codes_expires_at ON cli_authorization_codes(expires_at);
 
 -- OAuth identity providers (admin-configured)
 CREATE TABLE oauth_providers (
@@ -273,13 +476,21 @@ CREATE INDEX IF NOT EXISTS idx_workers_created_at ON workers(created_at DESC) WH
 CREATE INDEX IF NOT EXISTS idx_orgs_created_at ON orgs(created_at DESC) WHERE deleted_at IS NULL;
 
 -- +goose Down
+DROP TABLE IF EXISTS cli_authorization_codes;
+DROP TABLE IF EXISTS device_authorizations;
+DROP TABLE IF EXISTS delegation_tokens;
+DROP TABLE IF EXISTS api_tokens;
 DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;
 DROP TABLE IF EXISTS oauth_providers;
-DROP TABLE IF EXISTS workspace_layouts;
-DROP TABLE IF EXISTS workspace_tabs;
+DROP TABLE IF EXISTS lifecycle_outbox;
+DROP TABLE IF EXISTS org_recent_op_ids;
+DROP TABLE IF EXISTS workspace_tab_rendered;
+DROP TABLE IF EXISTS workspace_tab_owned;
+DROP TABLE IF EXISTS org_state;
+DROP TABLE IF EXISTS org_ops;
 DROP TABLE IF EXISTS workspace_access;
 DROP TABLE IF EXISTS worker_access_grants;
 DROP TABLE IF EXISTS workspace_section_items;

@@ -1,17 +1,12 @@
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
-import type { Tab } from '~/stores/tab.store'
+import type { Tab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import {
-  createTabStore,
-  isTabReadyForGitStatus,
-  preserveTerminalDisplayFields,
-  protoToTerminalTabFields,
-  tabKey,
-} from '~/stores/tab.store'
+import { isTabReadyForGitStatus, preserveTerminalDisplayFields, protoToTerminalTabFields, tabKey } from '~/stores/tab.helpers'
+import { createTabStore } from '~/stores/tab.store'
 
 describe('tabKey', () => {
   it('should create composite key from type and id', () => {
@@ -38,6 +33,43 @@ describe('createTabStore', () => {
       expect(store.state.tabs).toMatchObject([{ type: 'agent', id: 'a1' }])
       expect(store.state.activeTabKey).toBe('agent:a1')
       expect(store.activeTab()).toMatchObject({ type: 'agent', id: 'a1' })
+      dispose()
+    })
+  })
+
+  // Regression: HMR reload + concurrent worker-restore-vs-reconciler
+  // races used to produce two `state.tabs` entries with the same key
+  // — one populated by `useWorkspaceRestore` (with title /
+  // agentProvider), one inserted bare by the projection reconciler's
+  // step 2 (just CRDT-driven fields). Both rendered in the sidebar
+  // / tabbar; clicking close on either dropped both because
+  // `removeTab` filters by key. `addTab` now treats a duplicate key
+  // as a no-op so the authoritative first insert (typically the one
+  // with worker-supplied metadata) wins.
+  it('dedupes addTab by (type, id) so duplicate calls do not produce two rows', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'agent-x',
+        title: 'Agent Sullivan',
+        agentProvider: 1,
+        workerId: 'w-1',
+        tileId: 'tile-1',
+      })
+      // Reconciler-style bare re-add for the same id. Must not append
+      // a second row with empty title.
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'agent-x',
+        tileId: 'tile-1',
+      }, { activate: false, silent: true })
+
+      expect(store.state.tabs).toHaveLength(1)
+      const only = store.state.tabs[0]
+      expect(only.title).toBe('Agent Sullivan')
+      expect(only.agentProvider).toBe(1)
+      expect(only.workerId).toBe('w-1')
       dispose()
     })
   })
@@ -440,7 +472,7 @@ describe('createTabStore', () => {
     })
   })
 
-  it('reorderTabs forward (drop after later target) places source before target with consistent position', () => {
+  it('reorderTabs forward (drop onto later target) places source after target with consistent position', () => {
     createRoot((dispose) => {
       const store = createTabStore()
       // Three tabs in a single tile: [a1, a2, a3] at indices 0..2.
@@ -452,7 +484,38 @@ describe('createTabStore', () => {
       const newPosition = store.reorderTabs(`${TabType.AGENT}:a1`, `${TabType.AGENT}:a3`)
       expect(newPosition).not.toBeNull()
 
-      // a1 should land in a3's slot, displacing a3 right: [a2, a1, a3].
+      // Swap-on-cross: a1 crosses a3 and lands after it: [a2, a3, a1].
+      const reordered = store.state.tabs.map(t => `${t.type}:${t.id}`)
+      expect(reordered).toEqual([
+        `${TabType.AGENT}:a2`,
+        `${TabType.AGENT}:a3`,
+        `${TabType.AGENT}:a1`,
+      ])
+
+      // a1's new position must sort strictly after its left neighbour so
+      // the array order matches what `sortByPositions` would produce.
+      const tabs = store.state.tabs
+      const movedPos = tabs[2].position
+      expect(movedPos).toBe(newPosition)
+      expect(movedPos! > tabs[1].position!).toBe(true)
+
+      dispose()
+    })
+  })
+
+  it('reorderTabs forward onto immediate right neighbour swaps the two tabs', () => {
+    // Regression: dragging A onto its immediate right neighbour B in [A, B, C]
+    // previously did nothing because the insert-before semantic reinserted A
+    // at its original slot.
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' })
+      store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-1' })
+
+      const newPosition = store.reorderTabs(`${TabType.AGENT}:a1`, `${TabType.AGENT}:a2`)
+      expect(newPosition).not.toBeNull()
+
       const reordered = store.state.tabs.map(t => `${t.type}:${t.id}`)
       expect(reordered).toEqual([
         `${TabType.AGENT}:a2`,
@@ -460,13 +523,33 @@ describe('createTabStore', () => {
         `${TabType.AGENT}:a3`,
       ])
 
-      // a1's new position must lie strictly between its new neighbours so
-      // the array order matches what `sortByPositions` would produce.
       const tabs = store.state.tabs
       const movedPos = tabs[1].position
       expect(movedPos).toBe(newPosition)
       expect(movedPos! > tabs[0].position!).toBe(true)
       expect(movedPos! < tabs[2].position!).toBe(true)
+
+      dispose()
+    })
+  })
+
+  it('reorderTabs backward onto immediate left neighbour swaps the two tabs', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' })
+      store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-1' })
+
+      // Drag a3 backward onto a2 (fromIdx=2, toIdx=1).
+      const newPosition = store.reorderTabs(`${TabType.AGENT}:a3`, `${TabType.AGENT}:a2`)
+      expect(newPosition).not.toBeNull()
+
+      const reordered = store.state.tabs.map(t => `${t.type}:${t.id}`)
+      expect(reordered).toEqual([
+        `${TabType.AGENT}:a1`,
+        `${TabType.AGENT}:a3`,
+        `${TabType.AGENT}:a2`,
+      ])
 
       dispose()
     })
@@ -911,19 +994,19 @@ describe('reassignTabsToTile', () => {
     })
   })
 
-  it('merges MRU lists in oldTileIds order, dedupe-by-first', () => {
+  it('derives merged MRU from per-tab activation order after reassign', () => {
     createRoot((dispose) => {
       const store = createTabStore()
       // Tile A's MRU: a1, a2 — after addTab calls.
       store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 't-a' }) // a1 active in t-a
       store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 't-a' }) // a2 active, MRU=[a2,a1]
-      // Tile B's MRU: a3, a2-duplicate-key (different tab type to keep distinct).
+      // Tile B has its own MRU.
       store.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 't-b' })
-      // Reassign t-a, t-b → t-merged in that order.
+      // Reassign t-a, t-b → t-merged.
       store.reassignTabsToTile(['t-a', 't-b'], 't-merged')
-      const merged = store.state.tileMruOrder['t-merged']
-      // First t-a's MRU (most-recent first), then t-b's.
-      expect(merged).toEqual(['1:a2', '1:a1', '2:t1'])
+      // Per-tile MRU follows tile_id automatically: every tab is now in
+      // t-merged, ordered by per-tab activation timestamp (latest first).
+      expect(store.getTileMruOrder('t-merged')).toEqual(['2:t1', '1:a2', '1:a1'])
       dispose()
     })
   })
@@ -935,37 +1018,210 @@ describe('reassignTabsToTile', () => {
       store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 't-b' })
       store.reassignTabsToTile(['t-a', 't-b'], 't-merged')
       expect(store.state.tileActiveTabKeys['t-a']).toBeUndefined()
-      expect(store.state.tileMruOrder['t-a']).toBeUndefined()
+      expect(store.getTileMruOrder('t-a')).toEqual([])
       expect(store.state.tileActiveTabKeys['t-b']).toBeUndefined()
-      expect(store.state.tileMruOrder['t-b']).toBeUndefined()
+      expect(store.getTileMruOrder('t-b')).toEqual([])
+      dispose()
+    })
+  })
+
+  // Regression: pre-fix, when the projection-reconciler ran ahead of
+  // reassignTabsToTile and pre-set tileActiveTabKeys[newTileId] = tab
+  // key (the "grid → tile" race that happens because emitReplaceGrid
+  // WithLeaf's bumpPending fires Solid effects synchronously before
+  // the next call returns), reassignTabsToTile then overwrote the
+  // newTile's per-tile state with empty data sourced from the
+  // already-cleaned source cells. Net effect: user converted a grid
+  // back to a tile, agent landed on the parent leaf, but no tab was
+  // focused because tileActiveTabKeys[parent] had been zeroed.
+  it('preserves existing newTileId active/mru when the reconciler set it ahead of us', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      // Simulate the reconciler's effect: tab already on the destination
+      // tile with active/mru registered, while the source cells are
+      // empty placeholders (their tabs were moved out by an earlier
+      // reconcile pass).
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 't-merged' })
+      // Touch source tiles' empty entries so they exist in the maps
+      // (mimics the reconciler's detach step that left them as []/null).
+      store.addTab({ type: TabType.AGENT, id: 'tmp', tileId: 't-a' })
+      store.removeTab(TabType.AGENT, 'tmp')
+
+      store.reassignTabsToTile(['t-a', 't-b'], 't-merged')
+
+      // The existing active key on t-merged survives the reassign.
+      expect(store.state.tileActiveTabKeys['t-merged']).toBe('1:a1')
+      expect(store.getTileMruOrder('t-merged')).toEqual(['1:a1'])
+      dispose()
+    })
+  })
+})
+
+// Regression: pre-fix, `reconcileFromProjection` step 3 updated
+// `tab.tileId` to match the projection but left `tileActiveTabKeys`
+// pinned to the OLD tile. After splitTile migrated a tab from parent
+// to childA, childA's tile-active was empty so `getActiveTabForTile
+// (childA)` returned null and the new leaf rendered no active tab.
+// The fix: per-tile MRU is derived from `tab.tileId`, so it auto-
+// migrates; `getActiveTabKeyForTile` validates the stored active key
+// against the tab's current tile, so a stale entry doesn't leak.
+describe('reconcileFromProjection tile MRU migration', () => {
+  it('migrates per-tile active/mru when a tab tileId changes', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'parent' })
+      expect(store.state.tileActiveTabKeys.parent).toBe('1:a1')
+
+      store.reconcileFromProjection({
+        workspaceId: 'ws-1',
+        renderedTabs: [{
+          tabType: TabType.AGENT,
+          tabId: 'a1',
+          tileId: 'childA',
+          position: 'M',
+          workerId: '',
+        }],
+        crdtKnownTabIds: new Set(['a1']),
+      })
+
+      const moved = store.state.tabs.find(t => t.id === 'a1')
+      expect(moved?.tileId).toBe('childA')
+      // New tile picks up the migrated tab as its active.
+      expect(store.getActiveTabKeyForTile('childA')).toBe('1:a1')
+      expect(store.getTileMruOrder('childA')).toEqual(['1:a1'])
+      // Old tile no longer claims the tab as active — the stored
+      // active key from the parent's pre-migration state references a
+      // tab that's now in childA, so the validator-aware accessor
+      // returns null.
+      expect(store.getActiveTabKeyForTile('parent')).toBeNull()
+      dispose()
+    })
+  })
+
+  // Regression: the cross-workspace move bug. The reconciler effect in
+  // AppShell used to read `state.tabs` inside `reconcileFromProjection`
+  // without an `untrack`, so any optimistic `tabStore.addTab` would
+  // re-run the effect against a CRDT projection that hadn't been
+  // updated yet — and step 1 would silently remove the just-added
+  // tab as "gone from this workspace". When the canonical move op
+  // finally landed, step 2 would re-add the tab as a bare record with
+  // no title / agentProvider / git fields. Symptom: dragging a tab
+  // from another workspace's sidebar entry into the active workspace
+  // showed it as its nanoid + generic icon until page refresh.
+  //
+  // This test pins the underlying reconciler contract: a tab the local
+  // store has but the projection doesn't yet know about (because its
+  // CRDT op hasn't been emitted) is preserved when `crdtKnownTabIds`
+  // doesn't yet list it.
+  it('preserves a locally-added tab when CRDT does not yet know its id', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      // Pre-existing tab Y (the target workspace's existing tab).
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'Y',
+        tileId: 'tile-target',
+        title: 'Agent Leah',
+        workerId: 'w-1',
+      })
+      // Optimistically-added tab X (just moved in from another workspace).
+      // Its move op hasn't been emitted yet, so the CRDT speculative
+      // state knows nothing about it in this workspace.
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'X',
+        tileId: 'tile-target',
+        title: 'Agent Sullivan',
+        workerId: 'w-1',
+      }, { activate: false })
+
+      store.reconcileFromProjection({
+        workspaceId: 'ws-target',
+        renderedTabs: [{
+          tabType: TabType.AGENT,
+          tabId: 'Y',
+          tileId: 'tile-target',
+          position: 'N',
+          workerId: 'w-1',
+        }],
+        // CRDT does NOT yet know about X — its move op hasn't been
+        // emitted. Without this guard the reconciler would have wiped X.
+        crdtKnownTabIds: new Set(['Y']),
+      })
+
+      const x = store.state.tabs.find(t => t.id === 'X')
+      expect(x).toBeDefined()
+      expect(x?.title).toBe('Agent Sullivan')
+      dispose()
+    })
+  })
+
+  // Companion: once the CRDT projection catches up (move ops applied,
+  // X now in renderedTabs for this workspace), step 3 should NOT
+  // strip title / agentProvider — only tile_id / position / worker_id
+  // are CRDT-driven fields.
+  it('preserves title / agentProvider when step 3 syncs tile_id/position', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      const agentProvider = 1 // CLAUDE_CODE
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'X',
+        tileId: 'tile-stale',
+        position: 'M',
+        title: 'Agent Sullivan',
+        agentProvider,
+        workerId: 'w-1',
+      })
+
+      store.reconcileFromProjection({
+        workspaceId: 'ws-target',
+        renderedTabs: [{
+          tabType: TabType.AGENT,
+          tabId: 'X',
+          tileId: 'tile-new',
+          position: 'P',
+          workerId: 'w-1',
+        }],
+        crdtKnownTabIds: new Set(['X']),
+      })
+
+      const x = store.state.tabs.find(t => t.id === 'X')
+      expect(x).toBeDefined()
+      expect(x?.tileId).toBe('tile-new')
+      expect(x?.position).toBe('P')
+      // The non-CRDT fields survive the reconcile.
+      expect(x?.title).toBe('Agent Sullivan')
+      expect(x?.agentProvider).toBe(agentProvider)
       dispose()
     })
   })
 })
 
 describe('cleanupTiles', () => {
-  it('drops MRU and active-tab entries for every passed tile id', () => {
+  it('drops active-tab entries for every passed tile id', () => {
     createRoot((dispose) => {
       const store = createTabStore()
       store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 't-a' })
       store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 't-b' })
       store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 't-keep' })
-      // Remove the actual tabs first so the per-tile records are the only
-      // remaining bookkeeping.
+      // Remove the actual tabs first so the per-tile active entries are
+      // the only remaining bookkeeping (removeTab clears them anyway,
+      // but we re-seed below to test the cleanup explicitly).
       store.removeTab(TabType.AGENT, 'a1')
       store.removeTab(TabType.AGENT, 'a2')
-      // The keep tile's records should survive.
       const beforeKeepActive = store.state.tileActiveTabKeys['t-keep']
-      const beforeKeepMru = store.state.tileMruOrder['t-keep']
 
       store.cleanupTiles(['t-a', 't-b'])
 
       expect(store.state.tileActiveTabKeys['t-a']).toBeUndefined()
-      expect(store.state.tileMruOrder['t-a']).toBeUndefined()
       expect(store.state.tileActiveTabKeys['t-b']).toBeUndefined()
-      expect(store.state.tileMruOrder['t-b']).toBeUndefined()
       expect(store.state.tileActiveTabKeys['t-keep']).toBe(beforeKeepActive)
-      expect(store.state.tileMruOrder['t-keep']).toBe(beforeKeepMru)
+      // MRU follows tile_id automatically — the cleanup target tiles
+      // never held any tabs after the remove calls, so their MRU is
+      // already empty.
+      expect(store.getTileMruOrder('t-a')).toEqual([])
+      expect(store.getTileMruOrder('t-b')).toEqual([])
       dispose()
     })
   })
@@ -975,13 +1231,11 @@ describe('cleanupTiles', () => {
       const store = createTabStore()
       store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 't-a' })
       const beforeActive = store.state.tileActiveTabKeys
-      const beforeMru = store.state.tileMruOrder
 
       store.cleanupTiles([])
 
-      // Same map references — nothing was rewritten.
+      // Same map reference — nothing was rewritten.
       expect(store.state.tileActiveTabKeys).toBe(beforeActive)
-      expect(store.state.tileMruOrder).toBe(beforeMru)
       dispose()
     })
   })
@@ -991,12 +1245,15 @@ describe('cleanupTiles', () => {
       const store = createTabStore()
       store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 't-a' })
       store.removeTab(TabType.AGENT, 'a1')
+      // After removeTab there are no tabs, but the active register was
+      // last-set on insert and cleared by removeTab's fallback. Seed a
+      // throwaway entry to make cleanup observable.
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 't-a' })
       expect(store.state.tileActiveTabKeys['t-a']).toBeDefined()
 
       store.cleanupTile('t-a')
 
       expect(store.state.tileActiveTabKeys['t-a']).toBeUndefined()
-      expect(store.state.tileMruOrder['t-a']).toBeUndefined()
       dispose()
     })
   })
@@ -1016,9 +1273,10 @@ describe('mergeTabsIntoTile', () => {
       expect(src?.tileId).toBe('t-target')
       // Target's existing active tab key is preserved.
       expect(store.state.tileActiveTabKeys['t-target']).toBe('1:tgt-a')
-      // Source's per-tile state is cleared.
+      // Source's per-tile state is cleared. MRU follows tile_id, so the
+      // source tile naturally reports an empty list.
       expect(store.state.tileActiveTabKeys['t-source']).toBeUndefined()
-      expect(store.state.tileMruOrder['t-source']).toBeUndefined()
+      expect(store.getTileMruOrder('t-source')).toEqual([])
       dispose()
     })
   })
@@ -1042,19 +1300,20 @@ describe('mergeTabsIntoTile', () => {
     })
   })
 
-  it('appends source MRU after target MRU and dedupes', () => {
+  it('derives target MRU from per-tab activation order after merge', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      // Target MRU = [tgt-b, tgt-a] (after addTab calls; latest first).
       store.addTab({ type: TabType.AGENT, id: 'tgt-a', tileId: 't-target' })
       store.addTab({ type: TabType.AGENT, id: 'tgt-b', tileId: 't-target' })
-      // Source MRU = [src-b, src-a].
       store.addTab({ type: TabType.AGENT, id: 'src-a', tileId: 't-source' })
       store.addTab({ type: TabType.AGENT, id: 'src-b', tileId: 't-source' })
 
       store.mergeTabsIntoTile('t-source', 't-target')
 
-      expect(store.state.tileMruOrder['t-target']).toEqual(['1:tgt-b', '1:tgt-a', '1:src-b', '1:src-a'])
+      // After merge every tab lives on t-target; per-tile MRU is
+      // sorted by activation order (latest first), so the most-
+      // recently-added (src-b) leads.
+      expect(store.getTileMruOrder('t-target')).toEqual(['1:src-b', '1:src-a', '1:tgt-b', '1:tgt-a'])
       dispose()
     })
   })
@@ -1102,7 +1361,7 @@ describe('mergeTabsIntoTile', () => {
       store.mergeTabsIntoTile('t-source', 't-target')
 
       expect(store.state.tileActiveTabKeys['t-source']).toBeUndefined()
-      expect(store.state.tileMruOrder['t-source']).toBeUndefined()
+      expect(store.getTileMruOrder('t-source')).toEqual([])
       // Target untouched.
       expect(store.state.tileActiveTabKeys['t-target']).toBe('1:tgt-a')
       dispose()
@@ -1269,6 +1528,199 @@ describe('getTabsForTile (per-tile index)', () => {
       expect(tabIds(store.getTabsForTile('tile-2'))).toEqual(['a2'])
       expect(tabIds(store.getTabsForTile('tile-3'))).toEqual(['f1'])
       dispose()
+    })
+  })
+
+  // isTabActiveAnywhere is the chat-trimming hot-path predicate: when
+  // an incoming agent message lands and the tab isn't visible on any
+  // tile (or globally), the chat store trims background history to
+  // MAX_BACKGROUND_CHAT_MESSAGES. The store maintains an inverted
+  // index (`tileIdsByActiveKey`) so this lookup is O(1) instead of
+  // an O(N tiles) Object.values walk. These tests pin the index's
+  // correctness across every mutator that touches active state.
+  describe('isTabActiveAnywhere', () => {
+    it('returns true when the tab is the global active', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        // addTab(activate: true) sets state.activeTabKey = 1:a1
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a1')).toBe(true)
+        dispose()
+      })
+    })
+
+    it('returns true when the tab is the per-tile active on at least one tile (and not global)', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-2' })
+        // a2's addTab activated it → state.activeTabKey === 1:a2;
+        // explicitly steer global active off both candidates so the
+        // "active on tile, not global" branch is exercised.
+        store.setActiveTabForTile('tile-1', TabType.AGENT, 'a1')
+        // Make a third tab the global active so a1 is per-tile-only.
+        store.addTab({ type: TabType.AGENT, id: 'a3' })
+        expect(store.state.activeTabKey).toBe('1:a3')
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a1')).toBe(true)
+        dispose()
+      })
+    })
+
+    it('returns false when the tab exists but is not active anywhere', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' }, { activate: false })
+        // a1 active on tile-1 and globally; a2 is neither.
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a2')).toBe(false)
+        dispose()
+      })
+    })
+
+    it('returns false for a tab that does not exist', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'nope')).toBe(false)
+        dispose()
+      })
+    })
+
+    it('flips to false once the tab is removed', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' })
+        // a2 is global active and tile-1 active; a1 still has its own
+        // history but the inverted index reflects only a2 right now.
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a2')).toBe(true)
+        store.removeTab(TabType.AGENT, 'a2')
+        // removeTab promotes next-MRU on the tile — a1 becomes active.
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a2')).toBe(false)
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a1')).toBe(true)
+        dispose()
+      })
+    })
+
+    it('reflects a moveTabToTile — index updates from source tile to destination tile', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        // a1 is active on tile-1 and globally.
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a1')).toBe(true)
+        store.moveTabToTile('1:a1', 'tile-2')
+        // Per-tile active follows the move; isTabActiveAnywhere still
+        // sees a1 (now on tile-2, plus still global active).
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a1')).toBe(true)
+        // No leaked stale entry on tile-1: only check via the public
+        // surface — moving the sole tab away from tile-1 dropped the
+        // tileActiveTabKeys entry.
+        expect(store.getActiveTabKeyForTile('tile-1')).toBeNull()
+        dispose()
+      })
+    })
+
+    it('drops the index entry after cleanupTile', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-2' })
+        // Make a1 per-tile-only (so we don't trivially pass via the
+        // state.activeTabKey check).
+        store.setActiveTabForTile('tile-1', TabType.AGENT, 'a1')
+        store.addTab({ type: TabType.AGENT, id: 'a3' })
+        expect(store.state.activeTabKey).toBe('1:a3')
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a1')).toBe(true)
+        store.cleanupTile('tile-1')
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a1')).toBe(false)
+        dispose()
+      })
+    })
+
+    it('bulk cleanupTiles drops entries for every passed tile id at once', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-2' })
+        store.addTab({ type: TabType.AGENT, id: 'a3', tileId: 'tile-3' })
+        store.setActiveTabForTile('tile-1', TabType.AGENT, 'a1')
+        store.setActiveTabForTile('tile-2', TabType.AGENT, 'a2')
+        store.setActiveTabForTile('tile-3', TabType.AGENT, 'a3')
+        // Make a4 the global active so each ai is per-tile-only.
+        store.addTab({ type: TabType.AGENT, id: 'a4' })
+        store.cleanupTiles(['tile-1', 'tile-2'])
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a1')).toBe(false)
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a2')).toBe(false)
+        // tile-3 untouched → a3 still active there.
+        expect(store.isTabActiveAnywhere(TabType.AGENT, 'a3')).toBe(true)
+        dispose()
+      })
+    })
+  })
+
+  // promoteNextActiveOnTile is the shared "tile lost its active tab,
+  // pick the next-highest-MRU survivor" helper that removeTab and
+  // moveTabToTile both call. Most of its happy-path coverage lives in
+  // the existing per-mutator tests above; the cases here focus on
+  // the contract boundaries — no-tabs-left, inactive-tab paths, and
+  // the moveTabToTile-with-same-source-and-destination short-circuit.
+  describe('promoteNextActiveOnTile via removeTab / moveTabToTile', () => {
+    it('removeTab on the only tab on a tile clears tileActiveTabKeys[tile]', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        expect(store.getActiveTabKeyForTile('tile-1')).toBe('1:a1')
+        store.removeTab(TabType.AGENT, 'a1')
+        // No MRU candidate → tileActiveTabKeys[tile-1] is null;
+        // the public getter normalizes that to null too.
+        expect(store.getActiveTabKeyForTile('tile-1')).toBeNull()
+        dispose()
+      })
+    })
+
+    it('removeTab on an inactive tab leaves the tile\'s active untouched', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' }, { activate: false })
+        // a1 is the per-tile active. Remove a2 (not active) — a1
+        // must stay active without any MRU re-evaluation.
+        const beforeActive = store.getActiveTabKeyForTile('tile-1')
+        store.removeTab(TabType.AGENT, 'a2')
+        expect(store.getActiveTabKeyForTile('tile-1')).toBe(beforeActive)
+        expect(store.getActiveTabKeyForTile('tile-1')).toBe('1:a1')
+        dispose()
+      })
+    })
+
+    it('moveTabToTile with target === source short-circuits the promote step', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' })
+        // a2 active on tile-1. Moving to the same tile must not
+        // trigger the source-promote path (would otherwise pick a1
+        // because the predicate `sourceTileId !== targetTileId`
+        // gates it).
+        store.moveTabToTile('1:a2', 'tile-1')
+        expect(store.getActiveTabKeyForTile('tile-1')).toBe('1:a2')
+        dispose()
+      })
+    })
+
+    it('removeTab on the global active falls back to the next-MRU tab anywhere', () => {
+      createRoot((dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+        store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-2' })
+        // a2 is global active and tile-2 active. After removeTab(a2):
+        //  - tile-2 active: cleared (no tabs left on tile-2)
+        //  - global active: falls back to a1 (next MRU)
+        store.removeTab(TabType.AGENT, 'a2')
+        expect(store.getActiveTabKeyForTile('tile-2')).toBeNull()
+        expect(store.state.activeTabKey).toBe('1:a1')
+        dispose()
+      })
     })
   })
 })
