@@ -1,7 +1,10 @@
 package solo_test
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -119,6 +122,85 @@ func isDefaultListenerInUse(err error) bool {
 	}
 	return strings.Contains(msg, "Access is denied") ||
 		strings.Contains(msg, "address already in use")
+}
+
+// TestSoloStart_WarnsOnNonLoopbackListen confirms solo.Start emits a security
+// warning when the TCP listener is bound to a non-loopback address. The
+// warning matters because solo mode auto-authenticates every request as the
+// admin — exposing the port to anyone reachable on the network would otherwise
+// hand them passwordless admin access silently.
+//
+// We assert by piping `os.Stderr` to a buffer before solo.Start runs, because
+// `logging.Setup` (invoked at the top of solo.Start) captures `os.Stderr` at
+// handler-construction time and writes its output there. Substituting the
+// default slog handler instead would be clobbered by `logging.Setup`.
+func TestSoloStart_WarnsOnNonLoopbackListen(t *testing.T) {
+	const warnMarker = "non-loopback address"
+
+	cases := []struct {
+		name     string
+		listen   string
+		wantWarn bool
+	}{
+		{"loopback IPv4 does not warn", "127.0.0.1:0", false},
+		{"wildcard warns", "0.0.0.0:0", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			locallistentest.SandboxHome(t)
+			t.Setenv(locallisten.EnvLocalListen, uniqueListenURL(t))
+
+			origStderr := os.Stderr
+			r, w, err := os.Pipe()
+			require.NoError(t, err, "create stderr pipe")
+			defer func() { _ = r.Close() }()
+			os.Stderr = w
+
+			// Drain concurrently — a pipe's kernel buffer (typically 64 KiB)
+			// would block once full and stall solo.Start.
+			drained := make(chan string, 1)
+			go func() {
+				var buf bytes.Buffer
+				_, _ = io.Copy(&buf, r)
+				drained <- buf.String()
+			}()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Panic insurance: if solo.Start panics, this defer still
+			// restores os.Stderr and closes the pipe so the drainer goroutine
+			// doesn't block forever on io.Copy. On the happy path these run
+			// after the explicit close below; the second w.Close is a no-op.
+			defer func() {
+				os.Stderr = origStderr
+				_ = w.Close()
+			}()
+
+			inst, startErr := solo.Start(ctx, solo.Config{
+				Listen:     tc.listen,
+				SkipBanner: true,
+			})
+			if startErr == nil {
+				t.Cleanup(inst.Stop)
+			}
+
+			// Restore stderr before reading drained so any subsequent
+			// require/t.Fatal output reaches the real terminal, and close w
+			// so the drainer sees EOF.
+			os.Stderr = origStderr
+			_ = w.Close()
+			out := <-drained
+
+			require.NoError(t, startErr, "solo.Start; captured stderr:\n%s", out)
+
+			haveWarn := strings.Contains(out, warnMarker)
+			if haveWarn != tc.wantWarn {
+				t.Fatalf("warn presence: got %v, want %v; captured stderr:\n%s",
+					haveWarn, tc.wantWarn, out)
+			}
+		})
+	}
 }
 
 // TestSoloStart_InvalidLocalListenErrors confirms an unparseable URL surfaces

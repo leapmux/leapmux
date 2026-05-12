@@ -31,6 +31,7 @@ import { AgentChatMessageSchema, AgentStatus, ContentCompression, MessageSource 
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
+import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
@@ -792,7 +793,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           }
 
           // Create an optimistic local message so it appears immediately in the chat.
-          const localId = `local-${crypto.randomUUID()}`
+          const localId = `local-${randomUUID()}`
           const localMsg = create(AgentChatMessageSchema, {
             id: localId,
             source: MessageSource.USER,

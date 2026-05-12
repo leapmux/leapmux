@@ -18,6 +18,7 @@ import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
 import type { Session } from './noise'
 import type { ChannelMessage, HubControlFrame, InnerRpcResponse, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import {
   ChannelMessageFlags,
   ChannelMessageSchema,
@@ -970,8 +971,4 @@ export class ChannelManager {
     this.openingChannels.clear()
     this.notifyStateChange()
   }
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
 }

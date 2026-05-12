@@ -1,6 +1,7 @@
 /** Attachment types, cache, and helpers for the agent editor panel. */
 
 import type { AttachmentCapabilities } from './providers/registry'
+import { randomUUID } from '~/lib/idGenerator'
 
 const LEADING_SLASHES = /^\/+/
 
@@ -375,7 +376,7 @@ export function readFileAsAttachment(file: File, filename?: string): Promise<Fil
       const resolvedFilename = filename ?? file.name
       const details = inferAttachmentDetails(resolvedFilename, file.type, data)
       resolve({
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         file,
         filename: resolvedFilename,
         mimeType: details.mimeType,

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,16 @@ import (
 // admin user has completed the /setup flow so the auto-registered local
 // worker can come online.
 const workerSetupPollInterval = 2 * time.Second
+
+// nonLoopbackListenWarnMsg is the security warning emitted when solo mode
+// binds to a non-loopback address. Solo mode injects a soloUser into the
+// auth interceptor (see hub.NewServer and auth.NewInterceptor), so every
+// request is auto-authenticated as the admin without credentials. Loopback
+// keeps that contained to the host; anything else hands the admin role to
+// anyone who can reach the port.
+const nonLoopbackListenWarnMsg = "solo mode is binding to a non-loopback address — every request is auto-authenticated as the admin, " +
+	"so anyone who can reach this port has full admin access without credentials. " +
+	"Restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or run `leapmux hub` for real authentication."
 
 // Config configures the solo launcher.
 type Config struct {
@@ -152,6 +163,10 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		return nil, fmt.Errorf("load hub config: %w", err)
 	}
 	hubCfg.DevMode = cfg.DevMode
+
+	if shouldWarnNonLoopback(cfg, hubCfg.Listen) {
+		slog.Warn(nonLoopbackListenWarnMsg, "listen", hubCfg.Listen)
+	}
 
 	level, err := logging.ParseLevel(hubCfg.LogLevel)
 	if err != nil {
@@ -447,6 +462,34 @@ func loadOrCreateWorkerState(ctx context.Context, server *hub.Server, statePath,
 func mustDecode64(s string) []byte {
 	b, _ := base64.StdEncoding.DecodeString(s)
 	return b
+}
+
+// shouldWarnNonLoopback reports whether solo.Start should emit the
+// non-loopback security warning. Dev mode uses real password auth so it is
+// exempt; NoTCP means there is no TCP listener to warn about.
+func shouldWarnNonLoopback(cfg Config, listen string) bool {
+	return !cfg.DevMode && !cfg.NoTCP && listenIsNonLoopback(listen)
+}
+
+// listenIsNonLoopback reports whether `listen` would expose the hub on
+// something other than a loopback address. Used only to drive the solo-mode
+// security warning; the heuristic stays conservative — empty/missing host or
+// an unparseable hostname is treated as non-loopback so the warning errs on
+// the side of being shown. Wildcard addresses ("0.0.0.0", "::") parse as
+// non-loopback IPs, so `net.IP.IsLoopback` already handles them.
+func listenIsNonLoopback(listen string) bool {
+	if listen == "" {
+		return true
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil || host == "" {
+		return true
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
 }
 
 // parseBool parses a string as a boolean, returning defaultVal if the string

@@ -6,6 +6,7 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
+import { randomUUID } from '~/lib/idGenerator'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
@@ -28,7 +29,7 @@ import { claudeToolResultMeta } from './toolResult'
 function buildSetPermissionModeRequest(mode: PermissionMode): string {
   return JSON.stringify({
     type: 'control_request',
-    request_id: crypto.randomUUID(),
+    request_id: randomUUID(),
     request: { subtype: 'set_permission_mode', mode },
   })
 }
@@ -36,7 +37,7 @@ function buildSetPermissionModeRequest(mode: PermissionMode): string {
 function buildInterruptRequest(): string {
   return JSON.stringify({
     type: 'control_request',
-    request_id: crypto.randomUUID(),
+    request_id: randomUUID(),
     request: { subtype: 'interrupt' },
   })
 }
