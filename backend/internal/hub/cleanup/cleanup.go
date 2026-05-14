@@ -41,6 +41,20 @@ func run(ctx context.Context, st store.Store) {
 	cleanupStep("orgs", func() (int64, error) { return cs.HardDeleteOrgsBefore(ctx, cutoff) })
 	cleanupStep("expired oauth states", func() (int64, error) { return cs.DeleteExpiredOAuthStates(ctx) })
 	cleanupStep("expired pending signups", func() (int64, error) { return cs.DeleteExpiredPendingOAuthSignups(ctx) })
+	cleanupStep("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, time.Now().UTC()) })
+	cleanupStep("expired CLI authorization codes", func() (int64, error) {
+		return cs.DeleteExpiredCLIAuthorizationCodes(ctx, time.Now().UTC())
+	})
+	// Hard-delete API tokens that have been revoked for longer than the
+	// retention window. Same pattern as workspaces/users.
+	cleanupStep("revoked API tokens", func() (int64, error) { return cs.DeleteRevokedAPITokensBefore(ctx, cutoff) })
+	// Delegation tokens are short-lived and high-churn (one per agent
+	// spawn). Hard-delete revoked rows after the retention window so the
+	// table doesn't grow without bound.
+	cleanupStep("revoked delegation tokens", func() (int64, error) { return cs.DeleteRevokedDelegationTokensBefore(ctx, cutoff) })
+	// Expired delegation tokens (TTL passed without an explicit revoke)
+	// are also worth pruning eagerly since they accumulate one-per-spawn.
+	cleanupStep("expired delegation tokens", func() (int64, error) { return cs.DeleteExpiredDelegationTokensBefore(ctx, time.Now().UTC()) })
 }
 
 func cleanupStep(name string, fn func() (int64, error)) {

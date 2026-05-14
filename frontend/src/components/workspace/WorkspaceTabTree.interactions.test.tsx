@@ -1,3 +1,4 @@
+import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -15,14 +16,17 @@ vi.mock('~/components/common/AgentProviderIcon', () => ({
   AgentProviderIcon: () => null,
 }))
 
-function makeTab(type: TabType, id: string, title?: string) {
+function makeTab(type: TabType, id: string, title?: string): Tab {
+  // The wide `TabType` parameter is narrowed to the union's literal
+  // members via the explicit return-type cast; callers pass one of the
+  // three discriminants so the runtime value is always a valid variant.
   return {
     type,
     id,
     title: title ?? id,
     tileId: 'tile-1',
     position: '0|',
-  }
+  } as Tab
 }
 
 describe('workspaceTabTree interactions', () => {

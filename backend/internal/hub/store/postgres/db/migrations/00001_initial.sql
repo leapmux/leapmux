@@ -34,16 +34,28 @@ CREATE TABLE users (
     prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- High-water mark bumped whenever this user's auth basis is
+    -- bulk-revoked. The hub's revocation watcher polls this column
+    -- to fire EvictByUserID + EvictBearersByUserID +
+    -- CloseChannelsByUser so cookie channels and bearer caches die
+    -- in lock-step with admin-CLI mutations that run in a separate
+    -- process from the hub.
+    tokens_revoked_at        TIMESTAMPTZ,
     deleted_at     TIMESTAMPTZ
 );
 CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email != '' AND deleted_at IS NULL;
 CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_users_tokens_revoked_at ON users(tokens_revoked_at) WHERE tokens_revoked_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC) WHERE deleted_at IS NULL;
 -- Verification codes are looked up per-user (the session identifies who),
 -- so no global token index is needed. Index expiry instead, for cleanup.
 CREATE INDEX idx_users_pending_email_expires_at ON users(pending_email_expires_at) WHERE pending_email_expires_at IS NOT NULL;
+-- GetFirstAdmin scans for the earliest non-deleted admin (bootstrap path).
+-- Partial on (is_admin, deleted_at) keeps the index tiny; indexing on
+-- created_at lets the ORDER BY + LIMIT 1 hit the first leaf directly.
+CREATE INDEX idx_users_is_admin ON users(created_at) WHERE is_admin AND deleted_at IS NULL;
 
 -- Multi-org membership (M:N junction)
 CREATE TABLE org_members (
@@ -89,6 +101,10 @@ CREATE TABLE workers (
     deleted_at    TIMESTAMPTZ
 );
 CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC) WHERE deleted_at IS NULL;
+-- Admin status-only listing (ListWorkersAdminByStatus) cannot use the
+-- (registered_by, status, created_at) index because registered_by is the
+-- leading column.
+CREATE INDEX idx_workers_status_created ON workers(status, created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_workers_created_at ON workers(created_at DESC) WHERE deleted_at IS NULL;
 
@@ -181,26 +197,157 @@ CREATE TABLE workspace_access (
     PRIMARY KEY (workspace_id, user_id)
 );
 
--- Workspace tabs (IDs + position/tile_id; paths stay on workers)
-CREATE TABLE workspace_tabs (
+-- See sqlite migration for full rationale on the CRDT schema (op
+-- journal, materialized state blob, derived tab views, dedup table,
+-- and lifecycle outbox).
+CREATE TABLE org_op_batches (
+    org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    physical_ms   BIGINT NOT NULL,
+    logical       BIGINT NOT NULL,
+    last_logical  BIGINT NOT NULL,
+    origin_client TEXT NOT NULL,
+    principal_id  TEXT NOT NULL,
+    batch_id      TEXT NOT NULL,
+    body_hash     BYTEA NOT NULL,
+    batch_payload BYTEA NOT NULL,
+    op_count      INTEGER NOT NULL CHECK (op_count > 0),
+    epoch         BIGINT NOT NULL,
+    committed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (org_id, physical_ms, logical, origin_client)
+);
+CREATE UNIQUE INDEX idx_org_op_batches_dedup ON org_op_batches(org_id, batch_id);
+
+CREATE TABLE org_state (
+    org_id           TEXT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    state_payload    BYTEA NOT NULL,
+    current_epoch    BIGINT NOT NULL DEFAULT 1,
+    epoch_started_at TIMESTAMPTZ NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE workspace_tab_owned (
+    org_id       TEXT NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    worker_id    TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     tab_type     INTEGER NOT NULL,
     tab_id       TEXT NOT NULL,
-    position     TEXT NOT NULL DEFAULT '',
-    tile_id      TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (workspace_id, tab_type, tab_id)
+    worker_id    TEXT NOT NULL,
+    tile_id      TEXT NOT NULL,
+    position     TEXT NOT NULL,
+    PRIMARY KEY (org_id, tab_id)
 );
-CREATE INDEX idx_workspace_tabs_workspace ON workspace_tabs(workspace_id);
-CREATE INDEX idx_workspace_tabs_worker ON workspace_tabs(worker_id);
+CREATE INDEX idx_workspace_tab_owned_worker    ON workspace_tab_owned(worker_id);
+CREATE INDEX idx_workspace_tab_owned_workspace ON workspace_tab_owned(workspace_id);
 
--- Workspace tiling layouts (JSON tree per workspace)
-CREATE TABLE workspace_layouts (
+CREATE TABLE workspace_tab_rendered (
+    org_id       TEXT NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    layout_json  TEXT NOT NULL DEFAULT '{}',
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (workspace_id)
+    tab_type     INTEGER NOT NULL,
+    tab_id       TEXT NOT NULL,
+    worker_id    TEXT NOT NULL,
+    tile_id      TEXT NOT NULL,
+    position     TEXT NOT NULL,
+    PRIMARY KEY (org_id, tab_id)
 );
+CREATE INDEX idx_workspace_tab_rendered_workspace ON workspace_tab_rendered(workspace_id);
+-- LocateAccessibleRenderedTab filters on tab_id alone; the PK has tab_id
+-- as the trailing column so it is not seekable.
+CREATE INDEX idx_workspace_tab_rendered_tab_id ON workspace_tab_rendered(tab_id);
+
+CREATE TABLE org_recent_batch_ids (
+    org_id                TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    batch_id              TEXT NOT NULL,
+    body_hash             BYTEA NOT NULL,
+    principal_id          TEXT NOT NULL,
+    canonical_physical_ms BIGINT NOT NULL,
+    canonical_logical     BIGINT NOT NULL,
+    canonical_client      TEXT NOT NULL,
+    op_count              INTEGER NOT NULL CHECK (op_count > 0),
+    epoch                 BIGINT NOT NULL,
+    expires_at            TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (org_id, batch_id)
+);
+CREATE INDEX idx_org_recent_batch_ids_expires ON org_recent_batch_ids(expires_at);
+
+CREATE TABLE lifecycle_outbox (
+    id          BIGSERIAL PRIMARY KEY,
+    org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    op_type     TEXT NOT NULL,
+    payload     BYTEA NOT NULL,
+    enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    consumed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(org_id, id) WHERE consumed_at IS NULL;
+
+-- See sqlite migration for full rationale on api_tokens.
+CREATE TABLE api_tokens (
+    id                            TEXT PRIMARY KEY,
+    user_id                       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_type                   TEXT NOT NULL,
+    client_name                   TEXT NOT NULL,
+    secret_hash                   BYTEA NOT NULL,
+    refresh_hash                  BYTEA,
+    previous_refresh_hash         BYTEA,
+    previous_refresh_expires_at   TIMESTAMPTZ,
+    scope                         TEXT NOT NULL DEFAULT 'remote:*',
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at                  TIMESTAMPTZ,
+    last_rotated_at               TIMESTAMPTZ,
+    expires_at                    TIMESTAMPTZ,
+    refresh_expires_at            TIMESTAMPTZ,
+    revoked_at                    TIMESTAMPTZ
+);
+CREATE INDEX idx_api_tokens_user ON api_tokens(user_id, client_type);
+CREATE INDEX idx_api_tokens_expires_at ON api_tokens(expires_at);
+CREATE INDEX idx_api_tokens_revoked_at ON api_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
+
+CREATE TABLE delegation_tokens (
+    id                            TEXT PRIMARY KEY,
+    user_id                       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    worker_id                     TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
+    workspace_id                  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    agent_id                      TEXT NOT NULL DEFAULT '',
+    terminal_id                   TEXT NOT NULL DEFAULT '',
+    issued_for_tab_id             TEXT NOT NULL DEFAULT '',
+    issued_for_tab_type           INTEGER NOT NULL DEFAULT 0,
+    secret_hash                   BYTEA NOT NULL,
+    refresh_hash                  BYTEA,
+    previous_refresh_hash         BYTEA,
+    previous_refresh_expires_at   TIMESTAMPTZ,
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at                  TIMESTAMPTZ,
+    expires_at                    TIMESTAMPTZ NOT NULL,
+    refresh_expires_at            TIMESTAMPTZ,
+    revoked_at                    TIMESTAMPTZ
+);
+CREATE INDEX idx_delegation_tokens_user ON delegation_tokens(user_id);
+CREATE INDEX idx_delegation_tokens_worker_agent ON delegation_tokens(worker_id, agent_id);
+CREATE INDEX idx_delegation_tokens_workspace ON delegation_tokens(workspace_id);
+CREATE INDEX idx_delegation_tokens_revoked_at ON delegation_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
+
+CREATE TABLE device_authorizations (
+    device_code           TEXT PRIMARY KEY,
+    user_code             TEXT NOT NULL UNIQUE,
+    device_name           TEXT NOT NULL DEFAULT '',
+    user_id               TEXT REFERENCES users(id) ON DELETE CASCADE,
+    approved              INTEGER NOT NULL DEFAULT 0,
+    last_polled_at        TIMESTAMPTZ,
+    interval_seconds      INTEGER NOT NULL DEFAULT 5,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at            TIMESTAMPTZ NOT NULL,
+    consumed_at           TIMESTAMPTZ
+);
+CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
+
+CREATE TABLE cli_authorization_codes (
+    code                  TEXT PRIMARY KEY,
+    user_id               TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_challenge        TEXT NOT NULL,
+    device_name           TEXT NOT NULL DEFAULT '',
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at            TIMESTAMPTZ NOT NULL,
+    consumed_at           TIMESTAMPTZ
+);
+CREATE INDEX idx_cli_authorization_codes_expires_at ON cli_authorization_codes(expires_at);
 
 -- OAuth identity providers (admin-configured)
 CREATE TABLE oauth_providers (
@@ -270,13 +417,21 @@ CREATE TABLE pending_oauth_signups (
 );
 
 -- +goose Down
+DROP TABLE IF EXISTS cli_authorization_codes;
+DROP TABLE IF EXISTS device_authorizations;
+DROP TABLE IF EXISTS delegation_tokens;
+DROP TABLE IF EXISTS api_tokens;
 DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;
 DROP TABLE IF EXISTS oauth_providers;
-DROP TABLE IF EXISTS workspace_layouts;
-DROP TABLE IF EXISTS workspace_tabs;
+DROP TABLE IF EXISTS lifecycle_outbox;
+DROP TABLE IF EXISTS org_recent_batch_ids;
+DROP TABLE IF EXISTS workspace_tab_rendered;
+DROP TABLE IF EXISTS workspace_tab_owned;
+DROP TABLE IF EXISTS org_state;
+DROP TABLE IF EXISTS org_op_batches;
 DROP TABLE IF EXISTS workspace_access;
 DROP TABLE IF EXISTS worker_access_grants;
 DROP TABLE IF EXISTS workspace_section_items;

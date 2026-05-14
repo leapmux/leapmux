@@ -48,3 +48,23 @@ func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, err
 func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error) {
 	return rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx))
 }
+
+func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, timeToTs(cutoff))
+}
+
+func (s *cleanupStore) DeleteExpiredCLIAuthorizationCodes(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.conn.q.DeleteExpiredCLIAuthorizationCodes(ctx, timeToTs(cutoff))
+}
+
+func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.conn.q.DeleteRevokedAPITokensBefore(ctx, timeToTs(cutoff))
+}
+
+func (s *cleanupStore) DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.conn.q.DeleteRevokedDelegationTokensBefore(ctx, timeToTs(cutoff))
+}
+
+func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, timeToTs(cutoff))
+}

@@ -65,15 +65,22 @@ func Open(path string, cfg Config) (*sql.DB, error) {
 // connection string so they take effect on every pooled connection.
 // It uses the file: URI scheme to safely separate the path from query
 // parameters, avoiding issues if the path contains special characters.
+//
+// `_time_format=sqlite` is critical: it instructs the modernc driver to
+// serialize time.Time values as `YYYY-MM-DD HH:MM:SS.SSS[+-]HH:MM` (a
+// canonical format SQLite's date/time functions parse), instead of
+// the driver default which writes Go's time.Time.String() output and
+// breaks SQL `>`/`<` comparisons against `strftime('now')` whenever
+// the two values fall on the same calendar day.
 func buildDSN(path string, cfg Config) string {
 	if path == ":memory:" {
-		return ":memory:?_pragma=foreign_keys(1)"
+		return ":memory:?_pragma=foreign_keys(1)&_time_format=sqlite"
 	}
 
 	// 60s busy_timeout: high enough to never trigger during normal
 	// operation, but still acts as a safety net against stuck transactions.
 	// Request-scoped contexts provide the real timeout boundary.
-	pragmas := "_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	pragmas := "_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_time_format=sqlite"
 	if cfg.CacheSize != 0 {
 		pragmas += "&_pragma=cache_size(" + strconv.Itoa(cfg.CacheSize) + ")"
 	}

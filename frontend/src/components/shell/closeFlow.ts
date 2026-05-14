@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { Tab } from '~/stores/tab.store'
+import type { Tab } from '~/stores/tab.types'
 import { createSignal } from 'solid-js'
 
 /**

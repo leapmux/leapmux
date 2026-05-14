@@ -5,7 +5,9 @@ package sqlutil
 // (children before parents).
 var SQLTruncateTableOrder = []string{
 	"pending_oauth_signups", "oauth_states", "oauth_tokens", "oauth_user_links", "oauth_providers",
-	"workspace_layouts", "workspace_tabs", "workspace_access", "workspace_section_items", "workspace_sections",
+	"lifecycle_outbox", "org_recent_batch_ids", "workspace_tab_rendered", "workspace_tab_owned",
+	"org_state", "org_op_batches",
+	"workspace_access", "workspace_section_items", "workspace_sections",
 	"workspaces", "worker_access_grants", "worker_notifications", "worker_registration_keys", "workers",
 	"user_sessions", "org_members", "users", "orgs",
 }

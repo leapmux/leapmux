@@ -132,6 +132,42 @@ func (s *Suite) testWorkspaceAccess(t *testing.T) {
 		assert.Empty(t, acls)
 	})
 
+	t.Run("list for user in", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "wa-listin-org", false)
+		owner := SeedUser(t, st, orgID, "wa-listin-owner")
+		viewer := SeedUser(t, st, orgID, "wa-listin-viewer")
+		wsGranted := SeedWorkspace(t, st, orgID, owner.ID, "Granted")
+		wsAlsoGranted := SeedWorkspace(t, st, orgID, owner.ID, "AlsoGranted")
+		wsNotGranted := SeedWorkspace(t, st, orgID, owner.ID, "NotGranted")
+
+		for _, wsID := range []string{wsGranted, wsAlsoGranted} {
+			require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
+				WorkspaceID: wsID, UserID: viewer.ID,
+			}))
+		}
+
+		// Empty input: nil with no DB call.
+		got, err := st.WorkspaceAccess().ListForUserIn(ctx, viewer.ID, nil)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+
+		// Mixed input: only the granted ids come back; non-granted and
+		// missing are filtered. The result is the subset of the input.
+		got, err = st.WorkspaceAccess().ListForUserIn(ctx, viewer.ID, []string{
+			wsGranted, wsNotGranted, wsAlsoGranted, "no-such-ws",
+		})
+		require.NoError(t, err)
+		grantedSet := make(map[string]struct{}, len(got))
+		for _, id := range got {
+			grantedSet[id] = struct{}{}
+		}
+		assert.Contains(t, grantedSet, wsGranted)
+		assert.Contains(t, grantedSet, wsAlsoGranted)
+		assert.NotContains(t, grantedSet, wsNotGranted)
+		assert.NotContains(t, grantedSet, "no-such-ws")
+	})
+
 	t.Run("clear empty", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "wa-org", false)

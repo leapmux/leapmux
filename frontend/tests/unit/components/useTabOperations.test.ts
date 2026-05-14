@@ -3,20 +3,28 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createAgentStore } from '~/stores/agent.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
+import { installTestBridge } from '../helpers/crdtBridge'
 
 const mockInspectLastTabClose = vi.fn()
 const mockPushBranchForClose = vi.fn()
+const mockRegisterFileTabPath = vi.fn(() => Promise.resolve({}))
+const mockRevokeFileTabPath = vi.fn(() => Promise.resolve({}))
+const mockCloseAgent = vi.fn(() => Promise.resolve({ result: undefined }))
+const mockCloseTerminal = vi.fn(() => Promise.resolve({ result: undefined }))
 const mockShowWarnToast = vi.fn()
 const mockShowInfoToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   inspectLastTabClose: (...args: unknown[]) => mockInspectLastTabClose(...args),
   pushBranchForClose: (...args: unknown[]) => mockPushBranchForClose(...args),
+  registerFileTabPath: (...args: unknown[]) => mockRegisterFileTabPath(...args),
+  revokeFileTabPath: (...args: unknown[]) => mockRevokeFileTabPath(...args),
+  closeAgent: (...args: unknown[]) => mockCloseAgent(...args),
+  closeTerminal: (...args: unknown[]) => mockCloseTerminal(...args),
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -38,19 +46,20 @@ function makeUserMessage(id: string, seq: bigint) {
 }
 
 function setup() {
+  // Override the global test bridge with a known tile id so the
+  // projection's root leaf matches what this test wants to address
+  // (tabStore.addTab pre-positions tabs onto `tileId`).
+  installTestBridge({ rootTileId: 'tile-1' })
   const tabStore = createTabStore()
-  const agentStore = createAgentStore()
   const chatStore = createChatStore()
   const layoutStore = createLayoutStore()
 
   const tileId = 'tile-1'
-  layoutStore.setLayout({ type: 'leaf', id: tileId })
   layoutStore.setFocusedTile(tileId)
 
   tabStore.addTab({ type: TabType.AGENT, id: 'agent-a', tileId, workerId: 'w-1' })
   tabStore.addTab({ type: TabType.AGENT, id: 'agent-b', tileId, workerId: 'w-1' }, { activate: false })
   tabStore.setActiveTabForTile(tileId, TabType.AGENT, 'agent-a')
-  agentStore.setActiveAgent('agent-a')
 
   // handleCloseAgent / handleTerminalClose are now synchronous (void-returning)
   // fire-and-forget handlers. Use plain vi.fn() with no resolved value.
@@ -59,7 +68,6 @@ function setup() {
 
   const ops = useTabOperations({
     tabStore,
-    agentStore,
     chatStore,
     layoutStore,
     agentOps: {
@@ -73,17 +81,94 @@ function setup() {
     focusEditor: vi.fn(),
     getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
     setFileTreePath: vi.fn(),
+    getOrgId: () => 'org-test',
+    getActiveWorkspaceId: () => 'ws-test',
+    registry: {
+      findContaining: () => undefined,
+      removeTab: () => {},
+    } as never,
   })
 
-  return { tabStore, agentStore, chatStore, ops, tileId, handleCloseAgent, handleTerminalClose }
+  return { tabStore, chatStore, ops, tileId, handleCloseAgent, handleTerminalClose }
 }
 
 describe('useTabOperations', () => {
   afterEach(() => {
     mockInspectLastTabClose.mockReset()
     mockPushBranchForClose.mockReset()
+    mockRegisterFileTabPath.mockReset()
+    mockRevokeFileTabPath.mockReset()
+    mockRegisterFileTabPath.mockImplementation(() => Promise.resolve({}))
+    mockRevokeFileTabPath.mockImplementation(() => Promise.resolve({}))
     mockShowWarnToast.mockReset()
     mockShowInfoToast.mockReset()
+  })
+
+  describe('file-tab E2EE worker round-trip', () => {
+    it('handleFileOpen calls RegisterFileTabPath with the local path', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setup()
+          ops.handleFileOpen('/tmp/myfile.go')
+          // Allow the fire-and-forget E2EE call to dispatch.
+          await Promise.resolve()
+          expect(mockRegisterFileTabPath).toHaveBeenCalledTimes(1)
+          const [workerId, req] = mockRegisterFileTabPath.mock.calls[0]
+          expect(workerId).toBe('w-1')
+          expect((req as { filePath: string }).filePath).toBe('/tmp/myfile.go')
+          expect((req as { orgId: string }).orgId).toBe('org-test')
+          expect((req as { workspaceId: string }).workspaceId).toBe('ws-test')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleTabClose on a FILE tab calls RevokeFileTabPath', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { tabStore, ops } = setup()
+          tabStore.addTab({
+            type: TabType.FILE,
+            id: 'file-1',
+            filePath: '/tmp/myfile.go',
+            workerId: 'w-1',
+            tileId: 'tile-1',
+          }, { activate: false })
+          const tab = tabStore.state.tabs.find(t => t.id === 'file-1')!
+          const ok = await ops.handleTabClose(tab)
+          expect(ok).toBe(true)
+          await Promise.resolve()
+          expect(mockRevokeFileTabPath).toHaveBeenCalledTimes(1)
+          const [workerId, req] = mockRevokeFileTabPath.mock.calls[0]
+          expect(workerId).toBe('w-1')
+          expect((req as { tabId: string }).tabId).toBe('file-1')
+          expect((req as { orgId: string }).orgId).toBe('org-test')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleFileOpen rolls back the optimistic tab on RegisterFileTabPath failure', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockRegisterFileTabPath.mockImplementationOnce(() => Promise.reject(new Error('e2ee failure')))
+          const { tabStore, ops } = setup()
+          ops.handleFileOpen('/tmp/myfile.go')
+          // Tab added optimistically.
+          expect(tabStore.state.tabs.some(t => t.type === TabType.FILE)).toBe(true)
+          // Wait for the rejection microtask to fire the rollback.
+          await new Promise(r => setTimeout(r, 0))
+          expect(tabStore.state.tabs.some(t => t.type === TabType.FILE)).toBe(false)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
   })
 
   it('marks a tab as closing during decide phase, then clears once inspect resolves', async () => {
@@ -294,6 +379,251 @@ describe('useTabOperations', () => {
   })
 })
 
+// Regression: sidebar middle-click / close on a tab in workspace B
+// while the UI is on workspace A used to be a silent no-op locally:
+// `tabStore.removeTab` filters by id but the tab isn't in the active
+// store, so it just emits the CRDT TombstoneTab op; meanwhile
+// `agentOps.handleCloseAgent` resolves `workerId` via the active
+// `agentStore` which doesn't have the cross-workspace agent and so
+// skips the worker close RPC. The agent kept running on the worker
+// and the sidebar kept showing the row from the stale registry
+// snapshot.
+//
+// The fixed path:
+//   - `handleTabClose` detects the cross-workspace case via
+//     `registry.findContaining` and takes a direct branch that:
+//     * calls `workerRpc.closeAgent` / `workerRpc.closeTerminal`
+//       with the tab's own `workerId` (always populated on
+//       sidebar tabs);
+//     * still emits the CRDT tombstone via `tabStore.removeTab`;
+//     * calls `registry.removeTab(ownerWorkspaceId, tab)` so the
+//       sidebar drops the row immediately.
+describe('useTabOperations.handleTabClose cross-workspace', () => {
+  afterEach(() => {
+    mockInspectLastTabClose.mockReset()
+    mockCloseAgent.mockReset()
+    mockCloseTerminal.mockReset()
+  })
+
+  it('closes a non-active workspace agent via direct worker RPC + registry removeTab', async () => {
+    await createRoot(async (dispose) => {
+      installTestBridge({ rootTileId: 'tile-active' })
+      const tabStore = createTabStore()
+      const chatStore = createChatStore()
+      const layoutStore = createLayoutStore()
+      const handleCloseAgent = vi.fn()
+      const handleTerminalClose = vi.fn()
+
+      // The tab being closed lives in workspace B; the snapshot is
+      // returned by the registry stub. The active stores (workspace A)
+      // intentionally don't know about it.
+      const crossWorkspaceTab = {
+        type: TabType.AGENT,
+        id: 'agent-cross',
+        tileId: 'tile-cross',
+        workerId: 'w-other',
+      } as const
+      const removedTabs: Array<{ wsId: string, tabId: string }> = []
+      const registryStub = {
+        findContaining: () => ({ workspaceId: 'ws-other', tabs: [crossWorkspaceTab] } as never),
+        removeTab: (wsId: string, tab: { id: string }) => { removedTabs.push({ wsId, tabId: tab.id }) },
+      } as never
+
+      mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
+
+      const ops = useTabOperations({
+        tabStore,
+        chatStore,
+        layoutStore,
+        agentOps: { handleCloseAgent } as never,
+        termOps: { handleTerminalClose } as never,
+        activeTab: () => tabStore.activeTab() ?? undefined,
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        focusEditor: vi.fn(),
+        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        setFileTreePath: vi.fn(),
+        getOrgId: () => 'org-test',
+        getActiveWorkspaceId: () => 'ws-active',
+        registry: registryStub,
+      })
+
+      const result = await ops.handleTabClose(crossWorkspaceTab as never)
+      expect(result).toBe(true)
+
+      // Active-store handler is bypassed; direct worker RPC fires
+      // with the tab's own workerId.
+      expect(handleCloseAgent).not.toHaveBeenCalled()
+      expect(mockCloseAgent).toHaveBeenCalledTimes(1)
+      expect(mockCloseAgent.mock.calls[0][0]).toBe('w-other')
+      expect(mockCloseAgent.mock.calls[0][1]).toMatchObject({
+        agentId: 'agent-cross',
+        worktreeAction: WorktreeAction.KEEP,
+      })
+      // Registry snapshot for ws-other gets the tab removed so the
+      // sidebar can drop the row right away.
+      expect(removedTabs).toEqual([{ wsId: 'ws-other', tabId: 'agent-cross' }])
+      dispose()
+    })
+  })
+
+  it('closes a non-active workspace terminal via direct worker RPC + registry removeTab', async () => {
+    await createRoot(async (dispose) => {
+      installTestBridge({ rootTileId: 'tile-active' })
+      const tabStore = createTabStore()
+      const chatStore = createChatStore()
+      const layoutStore = createLayoutStore()
+      const handleCloseAgent = vi.fn()
+      const handleTerminalClose = vi.fn()
+
+      const crossTab = {
+        type: TabType.TERMINAL,
+        id: 'term-cross',
+        tileId: 'tile-cross',
+        workerId: 'w-other',
+      } as const
+      const removedTabs: Array<{ wsId: string, tabId: string }> = []
+      const registryStub = {
+        findContaining: () => ({ workspaceId: 'ws-other', tabs: [crossTab] } as never),
+        removeTab: (wsId: string, tab: { id: string }) => { removedTabs.push({ wsId, tabId: tab.id }) },
+      } as never
+
+      mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
+
+      const ops = useTabOperations({
+        tabStore,
+        chatStore,
+        layoutStore,
+        agentOps: { handleCloseAgent } as never,
+        termOps: { handleTerminalClose } as never,
+        activeTab: () => tabStore.activeTab() ?? undefined,
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        focusEditor: vi.fn(),
+        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        setFileTreePath: vi.fn(),
+        getOrgId: () => 'org-test',
+        getActiveWorkspaceId: () => 'ws-active',
+        registry: registryStub,
+      })
+
+      const result = await ops.handleTabClose(crossTab as never)
+      expect(result).toBe(true)
+      expect(handleTerminalClose).not.toHaveBeenCalled()
+      expect(mockCloseTerminal).toHaveBeenCalledTimes(1)
+      expect(mockCloseTerminal.mock.calls[0][0]).toBe('w-other')
+      expect(mockCloseTerminal.mock.calls[0][1]).toMatchObject({
+        terminalId: 'term-cross',
+        workspaceId: 'ws-other',
+        worktreeAction: WorktreeAction.KEEP,
+      })
+      expect(removedTabs).toEqual([{ wsId: 'ws-other', tabId: 'term-cross' }])
+      dispose()
+    })
+  })
+})
+
+// Regression: closing the last tab on the focused tile used to
+// leave focus on the now-empty tile, so the user saw the empty-tile
+// placeholder while the surviving work lived on another tile.
+// `migrateFocusAfterTabClose` follows the MRU-promoted active tab.
+describe('useTabOperations.handleTabClose focus migration', () => {
+  afterEach(() => {
+    mockInspectLastTabClose.mockReset()
+  })
+
+  it('moves focusedTileId to the surviving active tab\'s tile when the focused tile empties', async () => {
+    await createRoot(async (dispose) => {
+      installTestBridge({ rootTileId: 'root-leaf' })
+      const tabStore = createTabStore()
+      const chatStore = createChatStore()
+      const layoutStore = createLayoutStore()
+
+      // Real split so both tile ids exist in the projected tree.
+      // `containsTileId` matches LEAF nodes only — the layout store's
+      // focus invariant effect resets focus to firstLeaf when the
+      // focused tile id isn't a live leaf. Use the actual leaf ids
+      // produced by `splitTile`, not the pre-split root id.
+      const otherTileId = layoutStore.splitTile('root-leaf', 'horizontal')!
+      const [tileA, tileB] = layoutStore.getAllTileIds()
+      // The split keeps both children as leaves; we just need to know
+      // which one is the new childB so we can target the other.
+      const focusTile = tileB === otherTileId ? tileA : tileB
+      const otherLeafTile = otherTileId
+
+      tabStore.addTab({ type: TabType.FILE, id: 'file-a', tileId: focusTile, workerId: 'w-1', filePath: '/a' })
+      tabStore.addTab({ type: TabType.FILE, id: 'file-b', tileId: otherLeafTile, workerId: 'w-1', filePath: '/b' }, { activate: false })
+      layoutStore.setFocusedTile(focusTile)
+
+      const ops = useTabOperations({
+        tabStore,
+        chatStore,
+        layoutStore,
+        agentOps: { handleCloseAgent: vi.fn() } as never,
+        termOps: { handleTerminalClose: vi.fn() } as never,
+        activeTab: () => tabStore.activeTab() ?? undefined,
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        focusEditor: vi.fn(),
+        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        setFileTreePath: vi.fn(),
+        getOrgId: () => 'org-test',
+        getActiveWorkspaceId: () => 'ws-test',
+        registry: {
+          findContaining: () => undefined,
+          removeTab: () => {},
+        } as never,
+      })
+
+      await ops.handleTabClose({ type: TabType.FILE, id: 'file-a', tileId: focusTile, workerId: 'w-1', filePath: '/a' } as never)
+
+      expect(layoutStore.focusedTileId()).toBe(otherLeafTile)
+      dispose()
+    })
+  })
+
+  it('leaves focus alone when other tabs remain on the focused tile', async () => {
+    await createRoot(async (dispose) => {
+      installTestBridge({ rootTileId: 'root-leaf' })
+      const tabStore = createTabStore()
+      const chatStore = createChatStore()
+      const layoutStore = createLayoutStore()
+
+      const otherTileId = layoutStore.splitTile('root-leaf', 'horizontal')!
+      const [tileA, tileB] = layoutStore.getAllTileIds()
+      const focusTile = tileB === otherTileId ? tileA : tileB
+      const otherLeafTile = otherTileId
+
+      tabStore.addTab({ type: TabType.FILE, id: 'file-a', tileId: focusTile, workerId: 'w-1', filePath: '/a' })
+      tabStore.addTab({ type: TabType.FILE, id: 'file-b', tileId: focusTile, workerId: 'w-1', filePath: '/b' }, { activate: false })
+      tabStore.addTab({ type: TabType.FILE, id: 'file-c', tileId: otherLeafTile, workerId: 'w-1', filePath: '/c' }, { activate: false })
+      layoutStore.setFocusedTile(focusTile)
+
+      const ops = useTabOperations({
+        tabStore,
+        chatStore,
+        layoutStore,
+        agentOps: { handleCloseAgent: vi.fn() } as never,
+        termOps: { handleTerminalClose: vi.fn() } as never,
+        activeTab: () => tabStore.activeTab() ?? undefined,
+        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test' }),
+        focusEditor: vi.fn(),
+        getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
+        setFileTreePath: vi.fn(),
+        getOrgId: () => 'org-test',
+        getActiveWorkspaceId: () => 'ws-test',
+        registry: {
+          findContaining: () => undefined,
+          removeTab: () => {},
+        } as never,
+      })
+
+      await ops.handleTabClose({ type: TabType.FILE, id: 'file-a', tileId: focusTile, workerId: 'w-1', filePath: '/a' } as never)
+
+      // focusTile still has file-b, focus stays.
+      expect(layoutStore.focusedTileId()).toBe(focusTile)
+      dispose()
+    })
+  })
+})
+
 // --- Floating-window auto-cleanup ---
 //
 // We use FILE tabs to drive these tests because handleTabClose removes
@@ -302,14 +632,14 @@ describe('useTabOperations', () => {
 // closes go through agentOps/termOps mocks that don't update tabStore.
 
 function setupWithFloatingWindow() {
+  // The default test bridge already seeds 'main-tile' as the root.
+  // We rely on that to keep `mainTileId` stable across this test.
   const tabStore = createTabStore()
-  const agentStore = createAgentStore()
   const chatStore = createChatStore()
   const layoutStore = createLayoutStore()
   const floatingWindowStore = createFloatingWindowStore()
 
   const mainTileId = 'main-tile'
-  layoutStore.setLayout({ type: 'leaf', id: mainTileId })
   layoutStore.setFocusedTile(mainTileId)
 
   const handleCloseAgent = vi.fn()
@@ -317,7 +647,6 @@ function setupWithFloatingWindow() {
 
   const ops = useTabOperations({
     tabStore,
-    agentStore,
     chatStore,
     layoutStore,
     floatingWindowStore,
@@ -328,6 +657,12 @@ function setupWithFloatingWindow() {
     focusEditor: vi.fn(),
     getScrollState: () => ({ distFromBottom: 9999, atBottom: false }),
     setFileTreePath: vi.fn(),
+    getOrgId: () => 'org-test',
+    getActiveWorkspaceId: () => 'ws-test',
+    registry: {
+      findContaining: () => undefined,
+      removeTab: () => {},
+    } as never,
   })
 
   return { tabStore, layoutStore, floatingWindowStore, ops, mainTileId }
@@ -348,7 +683,7 @@ describe('useTabOperations.handleTabClose floating-window cleanup', () => {
         expect(ok).toBe(true)
         // Auto-cleanup removed the now-empty floating window.
         expect(floatingWindowStore.state.windows).toHaveLength(0)
-        expect(floatingWindowStore.getWindow(windowId)).toBeUndefined()
+        expect(floatingWindowStore.getWindow(windowId)).toBeNull()
       }
       finally {
         dispose()

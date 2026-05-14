@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { TabType, Workspace } from '~/generated/leapmux/v1/workspace_pb'
-import type { Tab, TabItemOps } from '~/stores/tab.store'
+import type { Tab, TabItemOps } from '~/stores/tab.types'
 
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -10,6 +10,7 @@ import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
+import { activeTabKey as buildActiveTabStorageKey } from '~/components/shell/tabPersistenceKeys'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { spinner } from '~/styles/animations.css'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
@@ -305,7 +306,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         onTabClick={(type, tabId) => {
                           if (id !== props.activeWorkspaceId) {
                             // Store desired tab so workspace restore activates it.
-                            sessionStorage.setItem(`leapmux:activeTab:${id}`, `${type}:${tabId}`)
+                            sessionStorage.setItem(buildActiveTabStorageKey(id), `${type}:${tabId}`)
                             props.onSelect(id)
                           }
                           else {

@@ -1,0 +1,282 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "google/protobuf/timestamp.proto";
+import "leapmux/v1/org_crdt.proto";
+import "leapmux/v1/workspace.proto";
+
+// OrgCRDT carries unary CRDT mutations + presence heartbeats for an
+// org. The org-scoped event subscription is delivered exclusively
+// over the `/ws/orgevents` WebSocket endpoint (see
+// `backend/internal/hub/service/ws_orgevents.go`); there is no
+// streaming RPC here. Workspace lifecycle (create / rename / delete /
+// share) stays on WorkspaceService.
+service OrgCRDT {
+  rpc SubmitOps(SubmitOpsRequest) returns (SubmitOpsResponse);
+  rpc UpdatePresence(UpdatePresenceRequest) returns (UpdatePresenceResponse);
+  // GetMaterialized returns a one-shot CRDT bootstrap snapshot for
+  // callers that only need the initial OrgMaterialized event (CLI
+  // commands that submit one batch and exit). Skips the WS handshake
+  // + first-event-await dance the streaming `/ws/orgevents` path
+  // requires per invocation.
+  rpc GetMaterialized(GetMaterializedRequest) returns (GetMaterializedResponse);
+}
+
+// OrgOp is the wire envelope for a single CRDT op. Each body is a
+// single LWW register write or a tombstone — every op type
+// commutes with every other op when canonical HLCs are assigned by
+// the hub.
+message OrgOp {
+  string org_id           = 1;
+  string op_id            = 2;  // 48-char nanoid; dedup key
+  string origin_client_id = 3;  // hub-overwritten on commit (auth basis)
+  HLC    client_hlc       = 4;  // advisory hint; hub assigns canonical_hlc on commit
+  HLC    canonical_hlc    = 5;  // populated on commit / echo
+  oneof body {
+    SetNodeRegisterOp           set_node_register             = 10;
+    TombstoneNodeOp             tombstone_node                = 11;
+    SetTabRegisterOp            set_tab_register              = 12;
+    TombstoneTabOp              tombstone_tab                 = 13;
+    SetFloatingWindowRegisterOp set_floating_window_register  = 14;
+    TombstoneFloatingWindowOp   tombstone_floating_window     = 15;
+    SetWorkspaceRootNodeOp      set_workspace_root_node       = 16;
+  }
+}
+
+// SetNodeRegisterOp writes exactly one register on a node. parent_id
+// writes are only valid for nodes that don't yet exist in the
+// pre-batch state (the validator rejects parent_id writes to existing
+// nodes — set-once enforcement).
+message SetNodeRegisterOp {
+  string node_id = 1;
+  oneof field {
+    NodeKind       kind        = 10;
+    string         parent_id   = 11;  // creation-only
+    string         position    = 12;
+    SplitDirection direction   = 13;
+    DoubleList     ratios      = 14;
+    uint32         rows        = 15;
+    uint32         cols        = 16;
+    DoubleList     row_ratios  = 17;
+    DoubleList     col_ratios  = 18;
+  }
+}
+message TombstoneNodeOp { string node_id = 1; }
+
+// SetTabRegisterOp writes exactly one register on a tab. tile_id
+// writes implicitly carry the tab to a new workspace if the new
+// tile's ancestor chain resolves to a different workspace.
+message SetTabRegisterOp {
+  TabType tab_type = 1;
+  string  tab_id   = 2;
+  oneof field {
+    string tile_id        = 10;
+    string position       = 11;
+    string worker_id      = 12;
+    int32  display_mode   = 13;  // FILE only
+    int32  file_view_mode = 14;  // FILE only
+    string file_diff_base = 15;  // FILE only
+  }
+}
+message TombstoneTabOp { TabType tab_type = 1; string tab_id = 2; }
+
+// SetFloatingWindowRegisterOp writes exactly one register on a
+// floating window. root_node_id writes are creation-only (set-once);
+// workspace_id writes move the window between workspaces (only
+// allowed when the inner subtree has no non-root descendants).
+message SetFloatingWindowRegisterOp {
+  string window_id = 1;
+  oneof field {
+    string workspace_id = 9;
+    double x            = 10;
+    double y            = 11;
+    double width        = 12;
+    double height       = 13;
+    double opacity      = 14;
+    string root_node_id = 15;  // creation-only
+  }
+}
+message TombstoneFloatingWindowOp { string window_id = 1; }
+
+// SetWorkspaceRootNodeOp seeds the (set-once) root_node_id slot on a
+// WorkspaceContentsRecord. Hub-only — submitted exclusively via the
+// internal lifecycle path (CreateWorkspace seeding); rejected as
+// hub_only_op when sent by a client.
+message SetWorkspaceRootNodeOp {
+  string workspace_id = 1;
+  string root_node_id = 2;
+}
+
+// SubmitOpsRequest groups one or more atomic OpBatches in a single
+// request. Each OpBatch commits atomically (all ops or none); batches
+// are independent — a rejected batch never poisons sibling batches.
+message SubmitOpsRequest {
+  string           org_id  = 1;
+  // REQUIRED. Must equal the current_epoch from the most recent
+  // OrgMaterialized this client received over `/ws/orgevents`. epoch
+  // == 0 is rejected as epoch_required (clients must bootstrap first);
+  // epoch < current_epoch - 1 is rejected as stale_epoch.
+  int64            epoch   = 2;
+  repeated OpBatch batches = 3;
+}
+
+message OpBatch {
+  string         batch_id = 1;  // client-minted; per-batch result correlation
+  repeated OrgOp ops      = 2;
+}
+
+message SubmitOpsResponse {
+  // One result per batch in request.batches, in the same order.
+  repeated BatchResult results = 1;
+}
+
+message BatchResult {
+  string batch_id = 1;
+  oneof outcome {
+    BatchCommitted committed = 2;
+    BatchRejection rejected  = 3;
+  }
+}
+
+message BatchCommitted {
+  repeated CommittedOp committed = 1;
+  HLC                  max_hlc   = 2;
+  int64                epoch     = 3;
+}
+
+message CommittedOp {
+  string op_id         = 1;
+  HLC    canonical_hlc = 2;
+}
+
+enum BatchRejectionReason {
+  BATCH_REJECTION_UNSPECIFIED                       = 0;
+  BATCH_REJECTION_EPOCH_REQUIRED                    = 1;
+  BATCH_REJECTION_STALE_EPOCH                       = 2;
+  BATCH_REJECTION_FORBIDDEN_WORKSPACE               = 3;
+  BATCH_REJECTION_UNKNOWN_WORKSPACE                 = 4;
+  BATCH_REJECTION_TOMBSTONED_TARGET                 = 5;
+  BATCH_REJECTION_OP_ID_COLLISION                   = 6;
+  BATCH_REJECTION_OP_ID_COLLISION_UNAUTHORIZED      = 7;
+  reserved 8;
+  reserved "BATCH_REJECTION_INCONSISTENT_PARTIAL_COMMIT";
+  BATCH_REJECTION_HUB_ONLY_OP                       = 9;
+  BATCH_REJECTION_TAB_PLACEMENT_INVALID             = 10;
+  BATCH_REJECTION_INCOMPLETE_RECORD                 = 11;
+  BATCH_REJECTION_ROOT_NODE_PROTECTED               = 12;
+  BATCH_REJECTION_ROOT_NODE_NOT_UNIQUE              = 13;
+  BATCH_REJECTION_FLOATING_MOVE_WITH_DESCENDANTS    = 14;
+  BATCH_REJECTION_VALUE_DOMAIN                      = 15;
+  BATCH_REJECTION_PARENT_IMMUTABLE                  = 16;
+  BATCH_REJECTION_ROOT_IMMUTABLE                    = 17;
+  BATCH_REJECTION_TAB_ID_COLLISION_ACROSS_TYPES     = 18;
+  // SetTabRegisterOp.worker_id refers to a worker the principal cannot
+  // use (either no such worker exists or the principal has no
+  // access grant). Caught at SubmitOps so a CRDT batch can't pin a
+  // tab to a worker the user couldn't reach.
+  BATCH_REJECTION_INVALID_WORKER_REF                = 19;
+}
+
+message BatchRejection {
+  BatchRejectionReason reason          = 1;
+  string               offending_op_id = 2;
+}
+
+// WatchOrgRequest carries the per-org subscription parameters for the
+// `/ws/orgevents` WebSocket (and the local-IPC `hub.WatchOrg` tunnel
+// that proxies into it). The hub always sends OrgMaterialized as the
+// first event; reconnects re-bootstrap and clients dedup echoed
+// batches by batch_id.
+message WatchOrgRequest {
+  string          org_id        = 1;
+  // Subscribe filter — empty means "every workspace caller can read".
+  // Unauthorized IDs are rejected up front.
+  repeated string workspace_ids = 2;
+}
+
+// GetMaterializedRequest mirrors WatchOrgRequest but for the one-shot
+// unary path: returns the post-filter OrgMaterialized snapshot
+// without subscribing to subsequent events. Unauthorized workspace
+// ids are rejected up front the same way WatchOrg does.
+message GetMaterializedRequest {
+  string          org_id        = 1;
+  repeated string workspace_ids = 2;
+}
+
+message GetMaterializedResponse {
+  OrgMaterialized state = 1;
+}
+
+message WatchOrgEvent {
+  oneof event {
+    OrgMaterialized      initial             = 1;  // ALWAYS first
+    OpBatch              batch               = 2;  // canonical-HLC-tagged; whole batch as one event
+    EntityMaterialized   entity_materialized = 3;  // visibility entry
+    EntityRemoved        entity_removed      = 4;  // visibility exit
+    PresenceUpdate       presence            = 5;
+    WorkspaceRenamed     renamed             = 6;
+    WorkspaceCreated     created             = 7;
+    WorkspaceDeleted     deleted             = 8;
+  }
+}
+
+// EntityMaterialized is sent when an entity ENTERS a subscriber's
+// allowed set (as a result of a workspace move). The full record
+// replaces the subscriber's local copy; raw move ops are NOT
+// broadcast to becoming-visible subscribers because they would carry
+// pre-state from a workspace the subscriber can't see.
+message EntityMaterialized {
+  HLC at_hlc = 1;
+  oneof entity {
+    TabRecord            tab             = 2;
+    FloatingWindowRecord floating_window = 3;
+    NodeRecord           node            = 4;
+  }
+}
+
+// EntityRemoved is sent when an entity LEAVES a subscriber's allowed
+// set. Carries only the entity id — no destination workspace
+// information — to prevent leaking the destination to source-only
+// subscribers.
+message EntityRemoved {
+  HLC at_hlc = 1;
+  oneof entity {
+    TabIdent tab        = 2;
+    string   window_id  = 3;
+    string   node_id    = 4;
+  }
+}
+
+message TabIdent {
+  TabType tab_type = 1;
+  string  tab_id   = 2;
+}
+
+message WorkspaceCreated {
+  string workspace_id = 1;
+  string title        = 2;
+  string root_node_id = 3;
+}
+
+// UpdatePresenceRequest signals that the caller's client just had
+// input. The hub records its own receive time; client_id comes from
+// the authenticated session (NOT from the request body).
+message UpdatePresenceRequest {
+  string org_id       = 1;
+  string workspace_id = 2;
+}
+
+message UpdatePresenceResponse {}
+
+// PresenceUpdate identifies the active client (if any) for a
+// workspace. The active client is the one whose last input timestamp
+// is strictly ahead of every other currently-connected client.
+// active_client_id == "" means either no connected client has
+// reported input yet or two clients share the most-recent timestamp
+// (no clear leader). The hub clears a client's entries when its WS
+// subscription drops (after a short grace window for reconnects).
+message PresenceUpdate {
+  string                    workspace_id     = 1;
+  string                    active_client_id = 2;
+  google.protobuf.Timestamp updated_at       = 3;
+}

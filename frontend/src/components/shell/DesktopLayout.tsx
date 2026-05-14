@@ -192,6 +192,88 @@ function useSidebarDrag(opts: {
   }
 }
 
+/**
+ * Per-side sidebar state + handlers. Both sidebars need width,
+ * collapsed/auto-collapsed flags, collapse/expand/toggle handlers,
+ * the pointer-drag binding, and a way to apply an auto-collapse
+ * decision from {@link decideAutoCollapse}. Encapsulating one
+ * side's state here lets DesktopLayout call this hook twice
+ * instead of mirroring every signal/handler per side.
+ *
+ * `onSave` is invoked whenever side state changes; the caller owns
+ * the cross-side serialization (sessionStorage payload includes both
+ * sides' fields together) so the hook does not directly touch
+ * storage.
+ */
+function useSidebarSide(opts: {
+  side: 'left' | 'right'
+  initWidth: number
+  initCollapsed: boolean
+  initAutoCollapsed: boolean
+  minWidth: number
+  collapsedSizePx: number
+  onSave: () => void
+}) {
+  const [width, setWidth] = createSignal(opts.initWidth)
+  const [collapsed, setCollapsed] = createSignal(opts.initCollapsed)
+  const [autoCollapsed, setAutoCollapsed] = createSignal(opts.initAutoCollapsed)
+  let widthBeforeCollapse = opts.initWidth
+
+  const collapse = () => {
+    widthBeforeCollapse = width()
+    setAutoCollapsed(false)
+    setCollapsed(true)
+    opts.onSave()
+  }
+  const expand = () => {
+    setAutoCollapsed(false)
+    setCollapsed(false)
+    setWidth(widthBeforeCollapse)
+    opts.onSave()
+  }
+  const toggle = () => (collapsed() ? expand() : collapse())
+
+  const drag = useSidebarDrag({
+    getWidth: width,
+    setWidth: (px) => {
+      setWidth(px)
+      opts.onSave()
+    },
+    minWidth: opts.minWidth,
+    direction: opts.side,
+  })
+
+  const pxStyle = () => `${collapsed() ? opts.collapsedSizePx : width()}px`
+
+  const applyAutoCollapseDecision = (decision: AutoCollapseDecision) => {
+    const wantCollapse = opts.side === 'left' ? decision.collapseLeft : decision.collapseRight
+    const wantExpand = opts.side === 'left' ? decision.expandLeft : decision.expandRight
+    if (wantCollapse) {
+      widthBeforeCollapse = width()
+      setAutoCollapsed(true)
+      setCollapsed(true)
+    }
+    if (wantExpand) {
+      setAutoCollapsed(false)
+      setCollapsed(false)
+      setWidth(wantExpand.newWidth)
+    }
+  }
+
+  return {
+    width,
+    collapsed,
+    autoCollapsed,
+    collapse,
+    expand,
+    toggle,
+    drag,
+    pxStyle,
+    applyAutoCollapseDecision,
+    getWidthBeforeCollapse: () => widthBeforeCollapse,
+  }
+}
+
 export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   // Read saved sidebar state (read-once at mount time).
   // eslint-disable-next-line solid/reactivity -- read-once at mount time, matching original IIFE behavior
@@ -214,31 +296,22 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   let rightOpenSections: Record<string, boolean> = savedSidebar?.rightOpenSections ?? {}
   let rightSectionSizes: Record<string, number> = savedSidebar?.rightSectionSizes ?? {}
 
-  // Reactive sidebar state.
-  const [leftWidth, setLeftWidth] = createSignal(initLeftPx)
-  const [rightWidth, setRightWidth] = createSignal(initRightPx)
-  const [leftCollapsed, setLeftCollapsed] = createSignal(savedSidebar?.leftCollapsed ?? false)
-  const [rightCollapsed, setRightCollapsed] = createSignal(savedSidebar?.rightCollapsed ?? false)
-  const [autoCollapsedLeft, setAutoCollapsedLeft] = createSignal(savedSidebar?.autoCollapsedLeft ?? false)
-  const [autoCollapsedRight, setAutoCollapsedRight] = createSignal(savedSidebar?.autoCollapsedRight ?? false)
-
-  useShortcutContext('sidebarVisible', () => !leftCollapsed())
-
-  let leftWidthBeforeCollapse = initLeftPx
-  let rightWidthBeforeCollapse = initRightPx
-
   // --- Persistence ---
+  // Forward-declare so the side hooks can call into it before their
+  // own state is constructed; the closures read at fire time.
+  let leftSide!: ReturnType<typeof useSidebarSide>
+  let rightSide!: ReturnType<typeof useSidebarSide>
   const doSaveSidebarState = () => {
     const id = props.activeWorkspaceId
     if (!id)
       return
     const state: SidebarState = {
-      leftSize: leftCollapsed() ? leftWidthBeforeCollapse : leftWidth(),
-      rightSize: rightCollapsed() ? rightWidthBeforeCollapse : rightWidth(),
-      leftCollapsed: leftCollapsed(),
-      rightCollapsed: rightCollapsed(),
-      autoCollapsedLeft: autoCollapsedLeft(),
-      autoCollapsedRight: autoCollapsedRight(),
+      leftSize: leftSide.collapsed() ? leftSide.getWidthBeforeCollapse() : leftSide.width(),
+      rightSize: rightSide.collapsed() ? rightSide.getWidthBeforeCollapse() : rightSide.width(),
+      leftCollapsed: leftSide.collapsed(),
+      rightCollapsed: rightSide.collapsed(),
+      autoCollapsedLeft: leftSide.autoCollapsed(),
+      autoCollapsedRight: rightSide.autoCollapsed(),
       leftOpenSections,
       leftSectionSizes,
       rightOpenSections,
@@ -250,110 +323,51 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   // eslint-disable-next-line solid/reactivity
   const saveSidebarState = trailingDebounce(doSaveSidebarState, 300)
 
-  // --- Collapse / Expand ---
-  const collapseLeft = () => {
-    leftWidthBeforeCollapse = leftWidth()
-    setAutoCollapsedLeft(false)
-    setLeftCollapsed(true)
-    saveSidebarState()
-  }
-  const expandLeft = () => {
-    setAutoCollapsedLeft(false)
-    setLeftCollapsed(false)
-    setLeftWidth(leftWidthBeforeCollapse)
-    saveSidebarState()
-  }
-
-  const toggleLeft = () => {
-    if (leftCollapsed())
-      expandLeft()
-    else
-      collapseLeft()
-  }
-  onMount(() => {
-    props.setToggleLeftSidebar?.(toggleLeft)
-  })
-  createEffect(() => props.setLeftSidebarVisible?.(!leftCollapsed()))
-
-  const collapseRight = () => {
-    rightWidthBeforeCollapse = rightWidth()
-    setAutoCollapsedRight(false)
-    setRightCollapsed(true)
-    saveSidebarState()
-  }
-  const expandRight = () => {
-    setAutoCollapsedRight(false)
-    setRightCollapsed(false)
-    setRightWidth(rightWidthBeforeCollapse)
-    saveSidebarState()
-  }
-  const toggleRight = () => {
-    if (rightCollapsed())
-      expandRight()
-    else
-      collapseRight()
-  }
-  onMount(() => {
-    props.setToggleRightSidebar?.(toggleRight)
-  })
-  createEffect(() => props.setRightSidebarVisible?.(!rightCollapsed()))
-
-  // --- Drag handles ---
-  const leftDrag = useSidebarDrag({
-    getWidth: leftWidth,
-    setWidth: (px) => {
-      setLeftWidth(px)
-      saveSidebarState()
-    },
+  leftSide = useSidebarSide({
+    side: 'left',
+    initWidth: initLeftPx,
+    initCollapsed: savedSidebar?.leftCollapsed ?? false,
+    initAutoCollapsed: savedSidebar?.autoCollapsedLeft ?? false,
     minWidth: MIN_SIDEBAR_PX,
-    direction: 'left',
+    collapsedSizePx: COLLAPSED_SIZE_PX,
+    onSave: saveSidebarState,
   })
-  const rightDrag = useSidebarDrag({
-    getWidth: rightWidth,
-    setWidth: (px) => {
-      setRightWidth(px)
-      saveSidebarState()
-    },
+  rightSide = useSidebarSide({
+    side: 'right',
+    initWidth: initRightPx,
+    initCollapsed: savedSidebar?.rightCollapsed ?? false,
+    initAutoCollapsed: savedSidebar?.autoCollapsedRight ?? false,
     minWidth: MIN_SIDEBAR_PX,
-    direction: 'right',
+    collapsedSizePx: COLLAPSED_SIZE_PX,
+    onSave: saveSidebarState,
   })
+
+  useShortcutContext('sidebarVisible', () => !leftSide.collapsed())
+
+  onMount(() => {
+    props.setToggleLeftSidebar?.(leftSide.toggle)
+    props.setToggleRightSidebar?.(rightSide.toggle)
+  })
+  createEffect(() => props.setLeftSidebarVisible?.(!leftSide.collapsed()))
+  createEffect(() => props.setRightSidebarVisible?.(!rightSide.collapsed()))
 
   // --- Auto-collapse / expand on viewport resize ---
   const applyViewportResize = () => {
     const decision = decideAutoCollapse({
       viewportWidth: window.innerWidth,
-      leftCollapsed: leftCollapsed(),
-      rightCollapsed: rightCollapsed(),
-      leftWidth: leftWidth(),
-      rightWidth: rightWidth(),
-      autoCollapsedLeft: autoCollapsedLeft(),
-      autoCollapsedRight: autoCollapsedRight(),
-      leftWidthBeforeCollapse,
-      rightWidthBeforeCollapse,
+      leftCollapsed: leftSide.collapsed(),
+      rightCollapsed: rightSide.collapsed(),
+      leftWidth: leftSide.width(),
+      rightWidth: rightSide.width(),
+      autoCollapsedLeft: leftSide.autoCollapsed(),
+      autoCollapsedRight: rightSide.autoCollapsed(),
+      leftWidthBeforeCollapse: leftSide.getWidthBeforeCollapse(),
+      rightWidthBeforeCollapse: rightSide.getWidthBeforeCollapse(),
     })
     if (!decision.collapseLeft && !decision.collapseRight && !decision.expandLeft && !decision.expandRight)
       return
-
-    if (decision.collapseLeft) {
-      leftWidthBeforeCollapse = leftWidth()
-      setAutoCollapsedLeft(true)
-      setLeftCollapsed(true)
-    }
-    if (decision.collapseRight) {
-      rightWidthBeforeCollapse = rightWidth()
-      setAutoCollapsedRight(true)
-      setRightCollapsed(true)
-    }
-    if (decision.expandLeft) {
-      setAutoCollapsedLeft(false)
-      setLeftCollapsed(false)
-      setLeftWidth(decision.expandLeft.newWidth)
-    }
-    if (decision.expandRight) {
-      setAutoCollapsedRight(false)
-      setRightCollapsed(false)
-      setRightWidth(decision.expandRight.newWidth)
-    }
+    leftSide.applyAutoCollapseDecision(decision)
+    rightSide.applyAutoCollapseDecision(decision)
     saveSidebarState()
   }
 
@@ -376,8 +390,8 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   })
 
   // Computed widths for CSS.
-  const leftPxStyle = () => `${leftCollapsed() ? COLLAPSED_SIZE_PX : leftWidth()}px`
-  const rightPxStyle = () => `${rightCollapsed() ? COLLAPSED_SIZE_PX : rightWidth()}px`
+  const leftPxStyle = leftSide.pxStyle
+  const rightPxStyle = rightSide.pxStyle
 
   return (
     <SectionDragProvider
@@ -399,8 +413,8 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             style={{ flex: `0 0 ${leftPxStyle()}` }}
           >
             {props.createLeftSidebar({
-              isCollapsed: leftCollapsed,
-              onExpand: expandLeft,
+              isCollapsed: leftSide.collapsed,
+              onExpand: leftSide.expand,
               initialOpenSections: savedSidebar?.leftOpenSections,
               initialSectionSizes: savedSidebar?.leftSectionSizes,
               onStateChange: (open, sizes) => {
@@ -415,7 +429,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           <div
             class={styles.resizeHandle}
             data-testid="resize-handle"
-            onPointerDown={leftDrag}
+            onPointerDown={leftSide.drag}
           />
 
           {/* Center panel */}
@@ -454,12 +468,26 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
               )}
             >
               <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
-                <TilingLayout
-                  root={props.layoutStore.state.root}
-                  renderTile={props.renderTile}
-                  onRatioChange={props.onRatioChange}
-                  onGridRatiosChange={props.onGridRatiosChange}
-                />
+                {/*
+                  Key TilingLayout on the active workspace id so the
+                  entire tile tree (and all its TabBar instances)
+                  re-mounts on every workspace switch. Without this,
+                  Solid's <Match>/<For> reuses the prior workspace's
+                  tile component and its prop bindings — and although
+                  state.root and tabStore are updated by the reconciler,
+                  the cached prop accessors (especially the
+                  `tabsByTile` memo result handed to TabBar's
+                  `<For each={props.tabs}>`) sometimes don't re-evaluate
+                  in time. A fresh subtree avoids the race entirely.
+                */}
+                <Show when={props.activeWorkspaceId} keyed>
+                  <TilingLayout
+                    root={props.layoutStore.state.root}
+                    renderTile={props.renderTile}
+                    onRatioChange={props.onRatioChange}
+                    onGridRatiosChange={props.onGridRatiosChange}
+                  />
+                </Show>
                 {props.editorPanel}
               </ChatDropZone>
             </Show>
@@ -469,7 +497,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           <div
             class={styles.resizeHandle}
             data-testid="resize-handle"
-            onPointerDown={rightDrag}
+            onPointerDown={rightSide.drag}
           />
 
           {/* Right sidebar */}
@@ -478,8 +506,8 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             style={{ flex: `0 0 ${rightPxStyle()}` }}
           >
             {props.createRightSidebar({
-              isCollapsed: rightCollapsed,
-              onExpand: expandRight,
+              isCollapsed: rightSide.collapsed,
+              onExpand: rightSide.expand,
               initialOpenSections: savedSidebar?.rightOpenSections,
               initialSectionSizes: savedSidebar?.rightSectionSizes,
               onStateChange: (open, sizes) => {

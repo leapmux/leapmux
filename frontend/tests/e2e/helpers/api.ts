@@ -269,6 +269,14 @@ export async function openAgentViaAPI(
     checkoutBranch?: string
     useWorktreePath?: string
     agentProvider?: number
+    /**
+     * Optional initial tab title. UI-driven opens pick a name via
+     * `pickAgentTitle`; the API path leaves `title=""` by default so
+     * tests that need a visible non-empty title (e.g. for
+     * cross-workspace move regression coverage where the bug strips
+     * exactly this field) must opt in explicitly.
+     */
+    title?: string
   },
 ): Promise<string> {
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/leapmux/v1/agent_pb')
@@ -300,6 +308,7 @@ export async function openAgentViaAPI(
       workspaceId,
       workerId,
       workingDir: workingDir ?? '',
+      ...(options?.title ? { title: options.title } : {}),
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.agentProvider ? { agentProvider: options.agentProvider } : {}),
       ...(options?.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
@@ -312,16 +321,33 @@ export async function openAgentViaAPI(
     throw new Error('openAgentViaAPI: no agent in response')
   }
 
-  // Register the tab on the hub so the frontend can discover it.
-  await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/AddTab`, {
-    method: 'POST',
-    headers: authedHeaders(cookie),
-    body: JSON.stringify({
-      workspaceId,
-      tab: { tabType: 'TAB_TYPE_AGENT', tabId: resp.agent.id, workerId },
-    }),
+  // Seed the tab into the CRDT so UI-driven tests find a rendered
+  // tab on a freshly-API-seeded workspace. Mirrors what
+  // `tabStore.addTab` emits during a browser-driven openAgent flow:
+  // SetTabRegister(tile_id=root_node_id) + position + worker_id.
+  //
+  // The seed uses the SHARED `OrgEventsSubscription` opened by
+  // `createWorkspaceViaAPI` BEFORE the workspace existed. That
+  // subscription's state is populated by the hub's broadcast of the
+  // seed `SetWorkspaceRootNode` op (or the `WorkspaceCreated` event),
+  // exactly like the browser's long-lived `/ws/orgevents`. A
+  // workspace where the hub failed to deliver those events surfaces
+  // here as an `awaitRootNodeId` timeout — same diagnostic the user
+  // would see in production (empty workspace, missing agent tab).
+  const orgId = await getAdminOrgId(hubUrl, cookie)
+  const { seedTabIntoWorkspace, getOrgEventsSubscription } = await import('./crdt')
+  const { TabType } = await import('../../../src/generated/leapmux/v1/workspace_pb')
+  const orgEvents = await getOrgEventsSubscription(hubUrl, cookie, orgId)
+  await seedTabIntoWorkspace({
+    hubUrl,
+    cookie,
+    orgId,
+    workspaceId,
+    tabType: TabType.AGENT,
+    tabId: resp.agent.id,
+    workerId,
+    orgEvents,
   })
-
   return resp.agent.id
 }
 
@@ -330,6 +356,16 @@ export async function openAgentViaAPI(
 
 /**
  * Create a workspace via the hub's WorkspaceService. Returns the workspace ID.
+ *
+ * Warms the per-(hub, org) `OrgEventsSubscription` BEFORE dispatching
+ * the create RPC. This makes the test fixture mirror the production
+ * browser flow: a long-lived `/ws/orgevents` subscription is already
+ * attached at the moment the workspace is created, so the hub-side
+ * seed-ops broadcast (and its filter-expansion contract) is on the
+ * critical path of the test. Opening the subscription AFTER the
+ * create would re-bootstrap from the materialized state and mask
+ * regressions where the seed ops are dropped for existing
+ * subscribers.
  */
 export async function createWorkspaceViaAPI(
   hubUrl: string,
@@ -337,6 +373,14 @@ export async function createWorkspaceViaAPI(
   title: string,
   orgId: string,
 ): Promise<string> {
+  // Establish the subscription FIRST so the hub's broadcast of the
+  // lifecycle-create's seed batch lands on it. Awaiting the open
+  // here guarantees the WebSocket is in the manager's subscriber set
+  // by the time the CreateWorkspace RPC reaches the lifecycle
+  // outbox.
+  const { getOrgEventsSubscription } = await import('./crdt')
+  await getOrgEventsSubscription(hubUrl, cookie, orgId)
+
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`, {
     method: 'POST',
     headers: authedHeaders(cookie),

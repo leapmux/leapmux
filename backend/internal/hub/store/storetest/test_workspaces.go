@@ -32,6 +32,35 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
+	t.Run("list by ids", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "ws-byid-org", false)
+		user := SeedUser(t, st, orgID, "ws-byid-user")
+		wsA := SeedWorkspace(t, st, orgID, user.ID, "A")
+		wsB := SeedWorkspace(t, st, orgID, user.ID, "B")
+		wsDeleted := SeedWorkspace(t, st, orgID, user.ID, "Deleted")
+		_, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
+			ID:          wsDeleted,
+			OwnerUserID: user.ID,
+		})
+		require.NoError(t, err)
+
+		got, err := st.Workspaces().ListByIDs(ctx, nil)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+
+		got, err = st.Workspaces().ListByIDs(ctx, []string{wsA, wsB, wsDeleted, "missing-ws"})
+		require.NoError(t, err)
+		ids := make(map[string]struct{}, len(got))
+		for _, ws := range got {
+			ids[ws.ID] = struct{}{}
+		}
+		assert.Contains(t, ids, wsA)
+		assert.Contains(t, ids, wsB)
+		assert.NotContains(t, ids, wsDeleted, "soft-deleted workspaces should be excluded")
+		assert.NotContains(t, ids, "missing-ws")
+	})
+
 	t.Run("list accessible", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "ws-org", false)

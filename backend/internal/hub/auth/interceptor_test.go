@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -19,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // setupInterceptorTestServer creates an httptest server with the AuthService
@@ -147,6 +149,369 @@ func TestInterceptor_BearerTokenNotAccepted(t *testing.T) {
 	_, err := client.GetCurrentUser(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// setupInterceptorTestServerWithBearerSupport wires the TokenValidator
+// into the interceptor so `Authorization: Bearer lmx_*` requests are
+// validated. Returns the client plus the store so the caller can mint
+// API tokens for the test.
+func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect.AuthServiceClient, store.Store, *auth.TokenValidator) {
+	t.Helper()
+
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+
+	pepper := []byte("0123456789abcdef0123456789abcdef")
+	tv, err := auth.NewTokenValidator(st, pepper)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	interceptor, _ := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
+	interceptors := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(st, &config.Config{}, nil, nil, mail.NewStubSender(), mail.Renderer{})
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), st, tv
+}
+
+// adminUserID looks up the bootstrap admin user's id so tests can mint
+// tokens scoped to it.
+func adminUserID(t *testing.T, st store.Store) string {
+	t.Helper()
+	u, err := st.Users().GetByUsername(context.Background(), "admin")
+	require.NoError(t, err)
+	return u.ID
+}
+
+func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     userID,
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: tv.HashSecret(secret),
+		Scope:      "remote:*",
+	}))
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+
+	resp, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+}
+
+func TestInterceptor_LeapMuxBearer_RejectsRevoked(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     userID,
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: tv.HashSecret(secret),
+		Scope:      "remote:*",
+	}))
+	_, err := st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+
+	_, err = client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestInterceptor_LeapMuxBearer_RejectsMalformed(t *testing.T) {
+	client, _, _ := setupInterceptorTestServerWithBearerSupport(t)
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer lmx_only-one-piece")
+
+	_, err := client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestInterceptor_LeapMuxBearer_RejectsUnknownTokenID(t *testing.T) {
+	client, _, _ := setupInterceptorTestServerWithBearerSupport(t)
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, newTestTokenID(), "any"))
+
+	_, err := client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke pins down the
+// "revocation is immediate" contract from the plan. The cache TTL is
+// 30s; without explicit eviction, a revoked token would keep working
+// for up to 30s after the admin clicks Revoke. SessionCache.EvictBearer
+// must purge the in-memory cache so the next request hits the DB and
+// observes the revoked_at column.
+func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+
+	pepper := []byte("0123456789abcdef0123456789abcdef")
+	tv, err := auth.NewTokenValidator(st, pepper)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	interceptor, sc := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
+	t.Cleanup(sc.Stop)
+	interceptors := connect.WithInterceptors(interceptor)
+	authSvc := service.NewAuthService(st, &config.Config{}, sc, nil, mail.NewStubSender(), mail.Renderer{})
+	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+
+	userID := adminUserID(t, st)
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: tokenID, UserID: userID, ClientType: "cli", ClientName: "test",
+		SecretHash: tv.HashSecret(secret), Scope: "remote:*",
+	}))
+
+	bearer := "Bearer " + auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+
+	// Warm the bearer cache.
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", bearer)
+	_, err = client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+
+	// Revoke + evict.
+	_, err = st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+	sc.EvictBearer(tokenID)
+
+	// Next call must fail immediately, not 30s later.
+	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req2.Header().Set("Authorization", bearer)
+	_, err = client.GetCurrentUser(context.Background(), req2)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// TestInterceptor_LeapMuxBearer_RejectsExpired pins down that the
+// interceptor rejects API bearers whose access token has expired even
+// when their underlying row is otherwise valid (not revoked, not
+// malformed). Without this guard, expired tokens would keep working
+// indefinitely as long as the row exists — defeating the purpose of
+// `expires_at`.
+func TestInterceptor_LeapMuxBearer_RejectsExpired(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	pastExpiry := time.Now().Add(-1 * time.Minute)
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     userID,
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: tv.HashSecret(secret),
+		Scope:      "remote:*",
+		ExpiresAt:  &pastExpiry,
+	}))
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+
+	_, err := client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+		"expired bearer must surface as Unauthenticated, got %v", err)
+}
+
+// TestInterceptor_DelegationBearer_AcceptsValidToken verifies a
+// delegation-token bearer (kind 'd') resolves through the same
+// interceptor path as an API token. The plan unifies both kinds
+// behind the single Authorization: Bearer surface; this test pins
+// that the validator dispatches to the right table by kind tag.
+func TestInterceptor_DelegationBearer_AcceptsValidToken(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	// Seed a worker so the delegation row's worker_id FK is satisfied.
+	workerID := id.Generate()
+	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
+		ID:              workerID,
+		AuthToken:       id.Generate(),
+		RegisteredBy:    userID,
+		PublicKey:       []byte("delegation-x25519-key-32-bytes-pad"),
+		MlkemPublicKey:  []byte("dele-mlkem"),
+		SlhdsaPublicKey: []byte("dele-slhdsa"),
+	}))
+	// Seed a workspace owned by the user so the delegation's
+	// workspace_id is meaningful for downstream scope checks.
+	workspaceID := id.Generate()
+	user, err := st.Users().GetByUsername(context.Background(), "admin")
+	require.NoError(t, err)
+	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
+		ID:          workspaceID,
+		OrgID:       user.OrgID,
+		OwnerUserID: userID,
+		Title:       "ws",
+	}))
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
+		ID:          tokenID,
+		UserID:      userID,
+		WorkerID:    workerID,
+		WorkspaceID: workspaceID,
+		SecretHash:  tv.HashSecret(secret),
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}))
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
+
+	resp, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err, "valid delegation bearer must resolve like an API bearer")
+	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+}
+
+// TestInterceptor_DelegationBearer_RejectsRevoked confirms the
+// dispatch path handles revocation symmetrically across token kinds.
+// A revoked delegation row should never authenticate, even though
+// every other field still matches.
+func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	workerID := id.Generate()
+	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
+		ID:              workerID,
+		AuthToken:       id.Generate(),
+		RegisteredBy:    userID,
+		PublicKey:       []byte("revoked-x25519-key-32-bytes-padxx"),
+		MlkemPublicKey:  []byte("rev-mlkem"),
+		SlhdsaPublicKey: []byte("rev-slhdsa"),
+	}))
+	workspaceID := id.Generate()
+	user, err := st.Users().GetByUsername(context.Background(), "admin")
+	require.NoError(t, err)
+	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
+		ID:          workspaceID,
+		OrgID:       user.OrgID,
+		OwnerUserID: userID,
+		Title:       "ws",
+	}))
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
+		ID:          tokenID,
+		UserID:      userID,
+		WorkerID:    workerID,
+		WorkspaceID: workspaceID,
+		SecretHash:  tv.HashSecret(secret),
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}))
+	_, err = st.DelegationTokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
+
+	_, err = client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// TestInterceptor_DelegationBearer_RejectsExpired pins the same
+// expiry contract for delegation tokens. Their TTL is short by design
+// (DelegationTokenTTL = 1h); the interceptor must enforce it.
+func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	workerID := id.Generate()
+	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
+		ID:              workerID,
+		AuthToken:       id.Generate(),
+		RegisteredBy:    userID,
+		PublicKey:       []byte("expired-x25519-key-32-bytes-padxx"),
+		MlkemPublicKey:  []byte("exp-mlkem"),
+		SlhdsaPublicKey: []byte("exp-slhdsa"),
+	}))
+	workspaceID := id.Generate()
+	user, err := st.Users().GetByUsername(context.Background(), "admin")
+	require.NoError(t, err)
+	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
+		ID:          workspaceID,
+		OrgID:       user.OrgID,
+		OwnerUserID: userID,
+		Title:       "ws",
+	}))
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
+		ID:          tokenID,
+		UserID:      userID,
+		WorkerID:    workerID,
+		WorkspaceID: workspaceID,
+		SecretHash:  tv.HashSecret(secret),
+		ExpiresAt:   time.Now().Add(-time.Minute), // already expired
+	}))
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
+
+	_, err = client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// TestInterceptor_LeapMuxBearer_RejectsUnknownKindTag pins the
+// dispatch table's "unknown kind = reject without a DB round-trip"
+// guarantee. Format is `lmx_<kind><id>_<secret>`; a kind char that
+// isn't 'a' (api) or 'd' (delegation) must short-circuit at parse
+// time. Without this, every spam request would burn a primary-key
+// lookup on each table — measurable under load.
+func TestInterceptor_LeapMuxBearer_RejectsUnknownKindTag(t *testing.T) {
+	client, _, _ := setupInterceptorTestServerWithBearerSupport(t)
+
+	// Manually craft a bearer with kind 'z' (unrecognised). Format:
+	// lmx_<kind><id>_<secret>; FormatBearer hides the kind char so we
+	// stitch one together by hand.
+	tokenID := newTestTokenID()
+	bogus := "lmx_z" + tokenID + "_anysecret"
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+bogus)
+
+	_, err := client.GetCurrentUser(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func newTestTokenID() string {
+	// Reuse the project's id generator for token primary keys.
+	return id.Generate()
 }
 
 // setupInterceptorTestServerWithCache is like setupInterceptorTestServer but

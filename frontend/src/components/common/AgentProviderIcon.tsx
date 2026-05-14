@@ -19,7 +19,7 @@ export function agentProviderLabel(provider?: AgentProvider): string {
     case AgentProvider.CURSOR: return 'Cursor'
     case AgentProvider.GOOSE: return 'Goose'
     case AgentProvider.KILO: return 'Kilo'
-    case AgentProvider.PI: return 'Pi Coding Agent'
+    case AgentProvider.PI: return 'Pi'
     default: return 'Unknown'
   }
 }

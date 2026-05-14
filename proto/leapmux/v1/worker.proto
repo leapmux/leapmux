@@ -4,6 +4,7 @@ package leapmux.v1;
 import "google/protobuf/timestamp.proto";
 import "leapmux/v1/channel.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/org_ops.proto";
 import "leapmux/v1/workspace.proto";
 
 // WorkerConnectorService is called BY Worker instances on Hub via gRPC.
@@ -16,6 +17,29 @@ service WorkerConnectorService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   // Main bidirectional stream for lifecycle notifications and E2EE channel management.
   rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
+}
+
+// WorkerReconcilerService is called BY Workers on Hub via ConnectRPC.
+// Authenticated by the worker's auth_token (the same bearer used for
+// Connect). Provides the periodic worker-side orphan reconciler with the
+// authoritative `workspace_tab_owned` view filtered to the calling worker.
+service WorkerReconcilerService {
+  rpc ListOwnedTabsForWorker(ListOwnedTabsForWorkerRequest) returns (ListOwnedTabsForWorkerResponse);
+}
+
+message ListOwnedTabsForWorkerRequest {}
+
+message ListOwnedTabsForWorkerResponse {
+  repeated OwnedTab tabs = 1;
+}
+
+message OwnedTab {
+  string  org_id       = 1;
+  string  workspace_id = 2;
+  TabType tab_type     = 3;
+  string  tab_id       = 4;
+  string  tile_id      = 5;
+  string  position     = 6;
 }
 
 // WorkerManagementService is called BY Frontend on Hub via ConnectRPC.
@@ -147,6 +171,12 @@ message Worker {
   // worker; the frontend hides the Deregister... menu item for the same
   // reason.
   bool auto_registered = 6;
+  // The org that owns the registering user. Joined on read from
+  // users.org_id; populated by the hub in GetWorker / ListWorkers so
+  // the `leapmux remote` CLI's universal resolver can derive org_id
+  // from worker_id without an extra round-trip. Workers are
+  // per-user, and users have a single org, so this is unambiguous.
+  string org_id = 7;
 }
 
 // --- Bidirectional stream envelope messages ---
@@ -168,8 +198,11 @@ message ConnectRequest {
   }
 }
 
-// WorkspaceTabsSync is sent by a worker on connect to reconcile its tab state
-// with the hub's workspace_tabs table.
+// WorkspaceTabsSync is sent by a worker on connect to reconcile its tab
+// state with the hub's CRDT-derived workspace_tab_owned view. The hub
+// replies with WorkspaceTabsSyncResponse instructing the worker to drop
+// orphaned local entities or update local workspace bookkeeping for
+// tabs the CRDT has moved.
 message WorkspaceTabsSync {
   repeated WorkspaceTabEntry tabs = 1;
 }
@@ -178,6 +211,21 @@ message WorkspaceTabEntry {
   string workspace_id = 1;
   TabType tab_type = 2;
   string tab_id = 3;
+}
+
+// WorkspaceTabsSyncResponse is the hub's per-tab classification of the
+// worker's reported state. Tabs in `orphan_tab_ids` no longer exist
+// (or have been tombstoned) in the CRDT; the worker drops the local
+// agent / terminal / file-tab. Tabs in `reassignments` exist with a
+// different workspace_id; the worker updates its local bookkeeping.
+message WorkspaceTabsSyncResponse {
+  repeated TabIdent           orphan_tab_ids = 1;
+  repeated TabReassignment    reassignments  = 2;
+}
+
+message TabReassignment {
+  TabIdent tab              = 1;
+  string   new_workspace_id = 2;
 }
 
 // ConnectResponse wraps all messages from Hub to Worker.
@@ -195,6 +243,9 @@ message ConnectResponse {
     Heartbeat heartbeat = 7;
     // Access control
     ChannelAccessUpdate channel_access_update = 8;
+    // Workspace-tabs sync result (carried in the same request_id as the
+    // worker's WorkspaceTabsSync ConnectRequest payload).
+    WorkspaceTabsSyncResponse workspace_tabs_sync_resp = 9;
   }
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"time"
 
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
@@ -79,11 +80,29 @@ func runSessionRevokeUser(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 
-		if err := st.Sessions().DeleteByUser(ctx, user.ID); err != nil {
-			return fmt.Errorf("delete sessions: %w", err)
+		var apiCount, delegationCount int64
+		err = st.RunInTransaction(ctx, func(tx store.Store) error {
+			if err := tx.Sessions().DeleteByUser(ctx, user.ID); err != nil {
+				return fmt.Errorf("delete sessions: %w", err)
+			}
+			// "Revoke all sessions" is the canonical
+			// "kill every active credential for this user" lever.
+			// Spawned agents holding delegation bearers and CLI
+			// instances holding api_tokens count as active
+			// credentials too, so revoke both alongside the
+			// session purge. Bumping tokens_revoked_at lets the
+			// hub's revocation watcher pick this up cross-process
+			// and fire CloseChannelsByUser within its poll
+			// interval.
+			var err error
+			apiCount, delegationCount, err = auth.RevokeAllUserCredentials(ctx, tx, user.ID)
+			return err
+		})
+		if err != nil {
+			return err
 		}
 
-		fmt.Printf("Revoked all sessions for user %q (id: %s)\n", user.Username, user.ID)
+		fmt.Printf("Revoked all sessions for user %q (id: %s); %d api token(s) and %d delegation token(s) also revoked\n", user.Username, user.ID, apiCount, delegationCount)
 		return nil
 	})
 }

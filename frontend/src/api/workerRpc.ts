@@ -11,6 +11,7 @@ import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
 import type {
   CloseAgentResponse,
   DeleteAgentMessageResponse,
+  InterruptAgentResponse,
   ListAgentMessagesResponse,
   ListAgentsResponse,
   ListAvailableProvidersResponse,
@@ -56,6 +57,12 @@ import type {
   MoveTabWorkspaceResponse,
   WatchEventsResponse,
 } from '~/generated/leapmux/v1/workspace_pb'
+import type {
+  GetFileTabPathResponse,
+  RegisterFileTabPathResponse,
+  RelocateFileTabPathResponse,
+  RevokeFileTabPathResponse,
+} from '~/generated/leapmux/v1/workspace_private_pb'
 import type { ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { createClient } from '@connectrpc/connect'
@@ -67,6 +74,8 @@ import {
   CloseAgentResponseSchema,
   DeleteAgentMessageRequestSchema,
   DeleteAgentMessageResponseSchema,
+  InterruptAgentRequestSchema,
+  InterruptAgentResponseSchema,
   ListAgentMessagesRequestSchema,
   ListAgentMessagesResponseSchema,
   ListAgentsRequestSchema,
@@ -145,6 +154,16 @@ import {
   WatchEventsRequestSchema,
   WatchEventsResponseSchema,
 } from '~/generated/leapmux/v1/workspace_pb'
+import {
+  GetFileTabPathRequestSchema,
+  GetFileTabPathResponseSchema,
+  RegisterFileTabPathRequestSchema,
+  RegisterFileTabPathResponseSchema,
+  RelocateFileTabPathRequestSchema,
+  RelocateFileTabPathResponseSchema,
+  RevokeFileTabPathRequestSchema,
+  RevokeFileTabPathResponseSchema,
+} from '~/generated/leapmux/v1/workspace_private_pb'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { ChannelManager } from '~/lib/channel'
 import { emitDevEvent } from '~/lib/devInstrument'
@@ -380,6 +399,38 @@ export function moveTabWorkspace(workerId: string, req: MessageInitShape<typeof 
 }
 
 // ---------------------------------------------------------------------------
+// File-tab paths (E2EE-only — hub never sees the path)
+// ---------------------------------------------------------------------------
+
+export function registerFileTabPath(
+  workerId: string,
+  req: MessageInitShape<typeof RegisterFileTabPathRequestSchema>,
+): Promise<RegisterFileTabPathResponse> {
+  return callWorker(workerId, 'RegisterFileTabPath', RegisterFileTabPathRequestSchema, RegisterFileTabPathResponseSchema, req)
+}
+
+export function getFileTabPath(
+  workerId: string,
+  req: MessageInitShape<typeof GetFileTabPathRequestSchema>,
+): Promise<GetFileTabPathResponse> {
+  return callWorker(workerId, 'GetFileTabPath', GetFileTabPathRequestSchema, GetFileTabPathResponseSchema, req)
+}
+
+export function revokeFileTabPath(
+  workerId: string,
+  req: MessageInitShape<typeof RevokeFileTabPathRequestSchema>,
+): Promise<RevokeFileTabPathResponse> {
+  return callWorker(workerId, 'RevokeFileTabPath', RevokeFileTabPathRequestSchema, RevokeFileTabPathResponseSchema, req)
+}
+
+export function relocateFileTabPath(
+  workerId: string,
+  req: MessageInitShape<typeof RelocateFileTabPathRequestSchema>,
+): Promise<RelocateFileTabPathResponse> {
+  return callWorker(workerId, 'RelocateFileTabPath', RelocateFileTabPathRequestSchema, RelocateFileTabPathResponseSchema, req)
+}
+
+// ---------------------------------------------------------------------------
 // Agent
 // ---------------------------------------------------------------------------
 
@@ -411,6 +462,10 @@ export function listAgentMessages(workerId: string, req: MessageInitShape<typeof
 
 export function renameAgent(workerId: string, req: MessageInitShape<typeof RenameAgentRequestSchema>): Promise<RenameAgentResponse> {
   return callWorker(workerId, 'RenameAgent', RenameAgentRequestSchema, RenameAgentResponseSchema, req)
+}
+
+export function interruptAgent(workerId: string, req: MessageInitShape<typeof InterruptAgentRequestSchema>): Promise<InterruptAgentResponse> {
+  return callWorker(workerId, 'InterruptAgent', InterruptAgentRequestSchema, InterruptAgentResponseSchema, req)
 }
 
 export function sendControlResponse(workerId: string, req: MessageInitShape<typeof SendControlResponseRequestSchema>): Promise<SendControlResponseResponse> {

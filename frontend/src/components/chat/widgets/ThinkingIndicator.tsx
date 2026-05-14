@@ -1,5 +1,5 @@
 import type { Component, JSX } from 'solid-js'
-import { createEffect, createMemo, createSignal, For, onCleanup } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount } from 'solid-js'
 import { createCompassSimulation } from '../compassPhysics'
 import { getRandomVerb } from '../spinnerVerbs'
 import * as styles from './ThinkingIndicator.css'
@@ -14,25 +14,239 @@ export interface ThinkingIndicatorProps {
    */
   paused?: boolean
   onExpandTick?: () => void
+  /**
+   * Stable identifier (typically the agent id) used to persist the
+   * randomly-chosen verb across re-mounts of this component. Without
+   * it, every mount picks a fresh verb — so a tile split / make-grid
+   * / close-grid that re-mounts ChatView mid-stream would flip the
+   * verb visibly. When supplied, the verb persists across re-mounts
+   * during a continuous thinking session and only refreshes on
+   * genuine idle→thinking transitions inside a live component (and
+   * on the 60s in-turn rotation, with a crossfade).
+   */
+  id?: string
+}
+
+// How often the verb rotates while the indicator is visible (and not
+// paused). Long enough that any individual verb gets noticed but short
+// enough that a multi-minute turn surfaces several.
+const ROTATION_INTERVAL_MS = 60_000
+// CSS opacity transition duration on the verb spans. Kept in lockstep
+// with the value in ThinkingIndicator.css — rotation logic uses it to
+// know when the now-inactive span has finished fading out, so the dead
+// content can be cleared without affecting the grid cell width during
+// the fade itself.
+const ROTATION_FADE_MS = 500
+
+// Module-level cache of the indicator's persistent state per id —
+// the verb currently displayed and the last compass angle (in
+// radians). Survives ThinkingIndicator re-mounts caused by
+// layout-tree restructures (tile split / make-grid / close-grid) so
+// neither the verb nor the pendulum visibly snaps when the
+// indicator's DOM re-mounts mid-stream.
+//
+// Entries are written on mount (when seeding the verb), on
+// invisible→visible transitions inside a live component, on each 60s
+// in-turn verb rotation, and on every sim tick for the angle.
+// Updating an existing key is in-place — the map's insertion-order
+// queue isn't disturbed — so only first-seen ids advance the FIFO.
+//
+// Size is bounded by MAX_CACHE_ENTRIES with FIFO eviction. Eviction
+// kicks in only when a NEW id arrives past the cap; an evicted
+// agent's next re-mount simply falls back to a fresh verb / zero
+// angle, which is the same behaviour as the very first mount of any
+// id. There's no explicit "agent closed" hook because the cap
+// catches it within a bounded number of subsequent agent opens
+// regardless.
+interface IndicatorSnapshot {
+  verb?: string
+  angleRad?: number
+}
+const MAX_CACHE_ENTRIES = 128
+const indicatorCache = new Map<string, IndicatorSnapshot>()
+
+function trimCache(): void {
+  // Map iteration is insertion order. Drop the oldest until we're
+  // back under the cap. The loop handles arbitrary overshoot
+  // (single insert can only push one over the cap, but a future
+  // batch-set path is safe by construction).
+  while (indicatorCache.size > MAX_CACHE_ENTRIES) {
+    const oldest = indicatorCache.keys().next().value
+    if (oldest === undefined)
+      break
+    indicatorCache.delete(oldest)
+  }
+}
+
+function cacheVerb(id: string | undefined, verb: string): void {
+  if (id === undefined)
+    return
+  const existing = indicatorCache.get(id)
+  if (existing) {
+    existing.verb = verb
+    return
+  }
+  indicatorCache.set(id, { verb })
+  trimCache()
+}
+
+function cacheAngle(id: string | undefined, angleRad: number): void {
+  if (id === undefined)
+    return
+  const existing = indicatorCache.get(id)
+  if (existing) {
+    existing.angleRad = angleRad
+    return
+  }
+  indicatorCache.set(id, { angleRad })
+  trimCache()
+}
+
+function pickAndCacheVerb(id: string | undefined): string {
+  const v = getRandomVerb()
+  cacheVerb(id, v)
+  return v
 }
 
 export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
-  const [verb, setVerb] = createSignal(getRandomVerb())
-  const chars = createMemo(() => `${verb()}...`.split(''))
-  const [angleDeg, setAngleDeg] = createSignal(0)
-  const [highlightPos, setHighlightPos] = createSignal(0)
-  const [expanded, setExpanded] = createSignal(false)
+  // eslint-disable-next-line solid/reactivity -- intentional setup-time read; the effect below tracks reactive updates.
+  const initialId = props.id
+  const snapshot = initialId !== undefined ? indicatorCache.get(initialId) : undefined
+  const cached = snapshot?.verb
+  // Two stacked verb slots so we can crossfade between them. The active
+  // one renders at opacity 1, the other at opacity 0 — when rotating,
+  // we put the new verb in the inactive slot and flip `activeIsA`,
+  // letting CSS opacity transitions handle the visual swap. The
+  // inactive slot is cleared after the fade completes so its (now-
+  // stale) content doesn't keep widening the grid cell on subsequent
+  // rotations.
+  const [verbA, setVerbA] = createSignal(cached ?? pickAndCacheVerb(initialId))
+  const [verbB, setVerbB] = createSignal('')
+  const [activeIsA, setActiveIsA] = createSignal(true)
+
+  const charsA = createMemo(() => (verbA() ? `${verbA()}...`.split('') : []))
+  const charsB = createMemo(() => (verbB() ? `${verbB()}...`.split('') : []))
+
+  // Seed the angle from the cache so a re-mount caused by a layout
+  // change resumes the pendulum at the angle the user last saw,
+  // instead of snapping back to 0. The simulation itself is given the
+  // same seed (in radians) below.
+  const seedAngleRad = snapshot?.angleRad ?? 0
+  const [angleDeg, setAngleDeg] = createSignal((seedAngleRad * 180) / Math.PI)
+  // Wave position is derived per-verb from the compass angle and that
+  // verb's own char count. Computing it per-verb (rather than sharing
+  // a single highlightPos signal) means verbs of different lengths
+  // still render the wave at the same RELATIVE position — the wave
+  // doesn't visually "jump" when a long verb crossfades to a short
+  // one.
+  const computeHighlight = (count: number): number => {
+    if (count <= 0)
+      return 0
+    const pos = (angleDeg() / 360) * count
+    return ((pos % count) + count) % count
+  }
+  const highlightPosA = createMemo(() => computeHighlight(charsA().length))
+  const highlightPosB = createMemo(() => computeHighlight(charsB().length))
+
+  // If we mount with visible=true — typically because the host
+  // component (ChatView) was just re-mounted as part of a layout-tree
+  // restructure like a tile split, while the agent is still actively
+  // thinking — seed expanded=true so the indicator appears
+  // already-open. CSS transitions don't fire on the initial render
+  // value, so this skips the 300ms expand animation that would
+  // otherwise look like a disappear/reappear flicker. Fresh mounts
+  // with the agent idle still start collapsed.
+  //
+  // Reading props.visible here at setup time is intentional: we want
+  // the value as of mount, not a reactive subscription (the effect
+  // below tracks subsequent changes). The eslint rule is conservative
+  // about prop reads outside tracked scopes — this case is one of the
+  // legitimate exceptions it documents.
+  // eslint-disable-next-line solid/reactivity
+  const initiallyVisible = !!props.visible
+  const [expanded, setExpanded] = createSignal(initiallyVisible)
 
   const sim = createCompassSimulation((state) => {
     setAngleDeg((state.angle * 180) / Math.PI)
-    const c = chars()
-    const pos = ((state.angle * 180) / Math.PI / 360) * c.length
-    setHighlightPos(((pos % c.length) + c.length) % c.length)
-  })
+    cacheAngle(props.id, state.angle)
+  }, seedAngleRad)
 
   let expandRafId = 0
   let tickRafId = 0
-  let wasVisible = false
+  let rotateIntervalId: ReturnType<typeof setInterval> | undefined
+  const pendingClearTimers = new Set<ReturnType<typeof setTimeout>>()
+  let wasVisible = initiallyVisible
+
+  // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
+  // binding can re-pin to the bottom on every frame while the
+  // indicator's height settles. Used both for the false→true expand
+  // animation (where the row grows over 300ms) and for the
+  // initiallyVisible mount case (where there's no animation, but the
+  // freshly-laid-out indicator's SVG / font load can still nudge
+  // scrollHeight up after the initial paint and leave a re-mounted
+  // ChatView scrolled just above the indicator).
+  const runExpandTickLoop = () => {
+    const start = performance.now()
+    const tick = () => {
+      props.onExpandTick?.()
+      if (performance.now() - start < 700) {
+        tickRafId = requestAnimationFrame(tick)
+      }
+    }
+    tickRafId = requestAnimationFrame(tick)
+  }
+
+  // Rotate to a fresh verb. Puts the new verb in the currently-
+  // inactive slot, flips activeIsA so CSS crossfades opacity, caches
+  // the new verb so a layout-induced re-mount pins to the latest
+  // (not a stale earlier verb), and schedules a cleanup that clears
+  // the now-inactive slot once the fade finishes. The clear is what
+  // keeps the grid cell from staying perma-wide after a long verb
+  // gives way to a shorter one.
+  const rotateVerb = () => {
+    // getRandomVerb already avoids repeating the most-recently-returned
+    // verb globally; the safety check here defends against the
+    // single-verb-pool edge case where it returns the same string.
+    const next = getRandomVerb()
+    const current = activeIsA() ? verbA() : verbB()
+    if (next === current)
+      return
+
+    if (activeIsA()) {
+      setVerbB(next)
+      setActiveIsA(false)
+      const t = setTimeout(() => {
+        pendingClearTimers.delete(t)
+        if (!activeIsA())
+          setVerbA('')
+      }, ROTATION_FADE_MS)
+      pendingClearTimers.add(t)
+    }
+    else {
+      setVerbA(next)
+      setActiveIsA(true)
+      const t = setTimeout(() => {
+        pendingClearTimers.delete(t)
+        if (activeIsA())
+          setVerbB('')
+      }, ROTATION_FADE_MS)
+      pendingClearTimers.add(t)
+    }
+
+    // Updates only the verb field of the snapshot, leaving angleRad
+    // untouched — the sim is still ticking through the rotation and
+    // must not be reset to 0.
+    cacheVerb(props.id, next)
+  }
+
+  // Initiallly-visible mount path: skip the height-expand animation
+  // (it would look like a disappear/reappear when ChatView re-mounts
+  // mid-stream via a tile split), but still tick onExpandTick so the
+  // parent re-pins to bottom as the indicator's content lays out.
+  onMount(() => {
+    if (initiallyVisible)
+      runExpandTickLoop()
+  })
 
   createEffect(() => {
     const visible = props.visible
@@ -41,18 +255,19 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     if (visible) {
       if (!wasVisible) {
         wasVisible = true
-        setVerb(getRandomVerb())
+        // Genuine idle→thinking transition inside a live component:
+        // start a fresh turn with a fresh verb in slot A. We don't
+        // crossfade here — the whole wrapper is fading in from
+        // opacity 0 already, and the old slot-B content (if any)
+        // would be a stale verb from the prior turn that we don't
+        // want to flash through.
+        setVerbA(pickAndCacheVerb(props.id))
+        setVerbB('')
+        setActiveIsA(true)
         expandRafId = requestAnimationFrame(() => setExpanded(true))
         // Notify parent on each frame during the height transition so it can
         // keep the scroll position pinned to the bottom.
-        const start = performance.now()
-        const tick = () => {
-          props.onExpandTick?.()
-          if (performance.now() - start < 700) {
-            tickRafId = requestAnimationFrame(tick)
-          }
-        }
-        tickRafId = requestAnimationFrame(tick)
+        runExpandTickLoop()
       }
     }
     else {
@@ -62,17 +277,62 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       setExpanded(false)
     }
 
-    if (visible && !paused)
+    // Compass simulation + in-turn verb rotation are both gated on
+    // visible-and-not-paused: a background tab shouldn't burn CPU on
+    // animation, and a hidden indicator rotating its verb every 60s
+    // wastes work on something the user can't see.
+    if (visible && !paused) {
       sim.start()
-    else
+      if (rotateIntervalId === undefined)
+        rotateIntervalId = setInterval(rotateVerb, ROTATION_INTERVAL_MS)
+    }
+    else {
       sim.stop()
+      if (rotateIntervalId !== undefined) {
+        clearInterval(rotateIntervalId)
+        rotateIntervalId = undefined
+      }
+    }
   })
 
   onCleanup(() => {
     cancelAnimationFrame(expandRafId)
     cancelAnimationFrame(tickRafId)
     sim.stop()
+    if (rotateIntervalId !== undefined) {
+      clearInterval(rotateIntervalId)
+      rotateIntervalId = undefined
+    }
+    for (const t of pendingClearTimers)
+      clearTimeout(t)
+    pendingClearTimers.clear()
   })
+
+  const verbSpan = (
+    isSlotA: boolean,
+    verbChars: () => string[],
+    verbHighlight: () => number,
+  ) => (
+    <span
+      class={styles.verb}
+      classList={{ [styles.verbActive]: activeIsA() === isSlotA }}
+      style={{
+        '--highlight-pos': String(verbHighlight()),
+        '--char-total': String(verbChars().length || 1),
+      } as JSX.CSSProperties}
+    >
+      <For each={verbChars()}>
+        {(char, i) => (
+          <span
+            class={styles.char}
+            style={{ '--char-i': String(i()) } as JSX.CSSProperties}
+          >
+            {char}
+          </span>
+        )}
+      </For>
+    </span>
+  )
 
   return (
     <div
@@ -138,23 +398,9 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
               </g>
             </g>
           </svg>
-          <span
-            class={styles.verb}
-            style={{
-              '--highlight-pos': String(highlightPos()),
-              '--char-total': String(chars().length),
-            } as JSX.CSSProperties}
-          >
-            <For each={chars()}>
-              {(char, i) => (
-                <span
-                  class={styles.char}
-                  style={{ '--char-i': String(i()) } as JSX.CSSProperties}
-                >
-                  {char}
-                </span>
-              )}
-            </For>
+          <span class={styles.verbStack}>
+            {verbSpan(true, charsA, highlightPosA)}
+            {verbSpan(false, charsB, highlightPosB)}
           </span>
         </div>
       </div>

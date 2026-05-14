@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/pathutil"
@@ -18,6 +19,14 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 	"golang.org/x/sync/errgroup"
 )
+
+// pushBranchForCloseTimeout caps the worker-side git push (and its
+// preceding `add` / `commit -m WIP`) so a credential helper, hung SSH
+// passphrase prompt, or unreachable remote can't leak a git subprocess
+// after the frontend has already given up (frontend RPC deadline is
+// ~10s by default). 60s leaves margin for slow remotes while still
+// being short enough that a hung helper bites cleanly.
+const pushBranchForCloseTimeout = 60 * time.Second
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
 func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
@@ -296,7 +305,14 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		if err := svc.pushBranchForClose(bgCtx(), r.GetTabType(), r.GetTabId()); err != nil {
+		// Bound the git subprocess lifetime. Without this, a stuck
+		// credential helper or SSH passphrase prompt would leak the
+		// `git push` process indefinitely (the dispatcher does not
+		// thread the inbound RPC's context to handlers, so the
+		// frontend's own ~10s deadline has no way to cancel us).
+		ctx, cancel := context.WithTimeout(bgCtx(), pushBranchForCloseTimeout)
+		defer cancel()
+		if err := svc.pushBranchForClose(ctx, r.GetTabType(), r.GetTabId()); err != nil {
 			sendInternalError(sender, err.Error())
 			return
 		}

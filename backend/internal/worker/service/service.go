@@ -64,11 +64,80 @@ type Context struct {
 	AgentStartup    *startupRegistry[leapmuxv1.AgentStatus]
 	TerminalStartup *startupRegistry[leapmuxv1.TerminalStatus]
 
+	// PrivateEvents is the worker-local pub/sub for E2EE-only events
+	// (TabRenamed, FileTabPathRegistered, FileTabPathRevoked). Always
+	// non-nil after NewContext.
+	PrivateEvents *PrivateEventsBus
+
+	// FileTabPaths persists (org_id, tab_id) -> (workspace_id,
+	// file_path) for FILE-typed tabs. Always non-nil after NewContext.
+	// The hub never sees these rows; clients fetch paths over E2EE.
+	FileTabPaths *FileTabPathStore
+
+	// RemoteIPC supplies per-agent local-IPC servers for the
+	// `leapmux remote` CLI. Nil disables remote control (env vars are
+	// not injected and no socket is created).
+	RemoteIPC RemoteIPCFactory
+
 	// Cleanup tracks in-flight close handlers so Shutdown() can wait for
 	// them to finish before DB/data-dir teardown. Close handlers must
 	// Add(1) at entry and defer Done() so Wait() in Shutdown observes
 	// them even if a handler panics.
 	Cleanup sync.WaitGroup
+
+	// agentRemoteCleanups maps agentID → cleanup func to run on close.
+	// Populated by RemoteIPC.AgentSpawning.
+	agentRemoteMu       sync.Mutex
+	agentRemoteCleanups map[string]func()
+
+	// terminalRemoteCleanups is the equivalent map for opted-in
+	// terminals.
+	terminalRemoteMu       sync.Mutex
+	terminalRemoteCleanups map[string]func()
+
+	// localAuthorizers maps synthetic local-IPC stream ids to their
+	// LocalIPCAuthorizer. The router populates the entry around each
+	// dispatch so requireAccessibleWorkspace can answer access checks
+	// for callers that don't have an E2EE channel.
+	localAuthorizers sync.Map
+}
+
+func (svc *Context) registerAgentCleanup(agentID string, cleanupFn func()) {
+	svc.agentRemoteMu.Lock()
+	defer svc.agentRemoteMu.Unlock()
+	if svc.agentRemoteCleanups == nil {
+		svc.agentRemoteCleanups = map[string]func(){}
+	}
+	svc.agentRemoteCleanups[agentID] = cleanupFn
+}
+
+func (svc *Context) runAgentCleanup(agentID string) {
+	svc.agentRemoteMu.Lock()
+	fn, ok := svc.agentRemoteCleanups[agentID]
+	delete(svc.agentRemoteCleanups, agentID)
+	svc.agentRemoteMu.Unlock()
+	if ok && fn != nil {
+		fn()
+	}
+}
+
+func (svc *Context) registerTerminalCleanup(terminalID string, cleanupFn func()) {
+	svc.terminalRemoteMu.Lock()
+	defer svc.terminalRemoteMu.Unlock()
+	if svc.terminalRemoteCleanups == nil {
+		svc.terminalRemoteCleanups = map[string]func(){}
+	}
+	svc.terminalRemoteCleanups[terminalID] = cleanupFn
+}
+
+func (svc *Context) runTerminalCleanup(terminalID string) {
+	svc.terminalRemoteMu.Lock()
+	fn, ok := svc.terminalRemoteCleanups[terminalID]
+	delete(svc.terminalRemoteCleanups, terminalID)
+	svc.terminalRemoteMu.Unlock()
+	if ok && fn != nil {
+		fn()
+	}
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -106,7 +175,9 @@ func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manage
 		WakeLock:        wl,
 		AgentStartup:    newAgentStartupRegistry(),
 		TerminalStartup: newTerminalStartupRegistry(),
+		PrivateEvents:   NewPrivateEventsBus(),
 	}
+	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, svc.PrivateEvents)
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
 	svc.createAgentRecordFn = svc.Queries.CreateAgent
@@ -414,13 +485,15 @@ func sendFailedPrecondition(sender *channel.Sender, msg string) {
 // has no context or the workspace is not in its accessible set (populated at
 // channel handshake by the hub's list of workspaces the user owns). The
 // caller is responsible for rejecting empty workspace_id up front.
+//
+// Authorization is delegated to AuthorizerForSender so both E2EE channels
+// (channelmgr-backed) and local-IPC callers (registered LocalIPCAuthorizer)
+// take the same code path. Callers that need the authorizer for follow-up
+// checks (list filters, watcher subscriber ids) should use
+// AuthorizerForSender directly.
 func (svc *Context) requireAccessibleWorkspace(sender *channel.Sender, workspaceID string) bool {
-	channelID := sender.ChannelID()
-	if channelID == "" {
-		sendPermissionDenied(sender, "workspace is not accessible")
-		return false
-	}
-	if !svc.Channels.AccessibleWorkspaceIDs(channelID)[workspaceID] {
+	auth := svc.AuthorizerForSender(sender)
+	if !auth.IsAccessible(workspaceID) {
 		sendPermissionDenied(sender, "workspace is not accessible")
 		return false
 	}

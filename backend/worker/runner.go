@@ -14,9 +14,11 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/crossworker"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
+	"github.com/leapmux/leapmux/internal/worker/remoteipc"
 	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 )
@@ -123,6 +125,46 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		service.RegisterAll(dispatcher, svcCtx)
 		channelMgr.SetDispatcher(dispatcher)
 
+		// Per-agent local-IPC factory backing the leapmux remote CLI.
+		// Cross-worker calls use TOFU pin storage in the worker data
+		// dir; failures here are non-fatal — the worker still serves
+		// its own agents over the existing E2EE channel.
+		pins, pinErr := crossworker.NewPinStore(cfg.DataDir)
+		if pinErr != nil {
+			slog.Warn("cross-worker pin store unavailable; sibling-worker calls disabled", "error", pinErr)
+		}
+		var cwClient *crossworker.Client
+		var delegation *crossworker.DelegationStore
+		if pins != nil {
+			delegation = crossworker.NewDelegationStore(cfg.HubURL, cfg.AuthToken, cfg.WorkerID)
+			// Defense-in-depth: a periodic sweep drops cached
+			// delegation rows whose access token has expired AND whose
+			// refcount fell to zero through an abnormal Release path.
+			// The healthy lifecycle (Acquire → GetBearer → Release)
+			// already keeps the cache bounded; this catches orphans.
+			go delegation.RunJanitor(ctx, time.Hour)
+			cwClient = crossworker.New(cfg.HubURL, pins, delegation)
+		}
+		var hubStreams remoteipc.HubStreamer
+		var hubBridge remoteipc.HubBridge
+		if delegation != nil {
+			hubStreams = remoteipc.NewHubWorkspaceStreamer(cfg.HubURL, delegation)
+			// HubBridge mirrors HubStreamer for unary hub-bound RPCs
+			// (workspace/tab/tile/layout). Wired with the same
+			// delegation store so streaming and unary share a single
+			// (user, workspace) → bearer cache and one revoke path.
+			hubBridge = remoteipc.NewHubWorkspaceBridge(cfg.HubURL, delegation)
+		}
+		svcCtx.RemoteIPC = &remoteipc.Factory{
+			WorkerID:    cfg.WorkerID,
+			Dispatcher:  dispatcher,
+			CrossWorker: cwClient,
+			HubBridge:   hubBridge,
+			HubStreams:  hubStreams,
+			Authorizers: svcCtx,
+			Delegation:  delegation,
+		}
+
 		client.SetChannelMgr(channelMgr)
 		client.EncryptionMode = cfg.EncryptionMode
 		client.PublicKey = cfg.CompositeKey.X25519Public
@@ -134,6 +176,36 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		queries := db.New(sqlDB)
 		client.TabSyncProvider = func() *leapmuxv1.WorkspaceTabsSync {
 			return buildTabSync(queries)
+		}
+
+		// Periodic orphan reconciler: walks worker-local file-tab rows
+		// against the hub's CRDT-derived workspace_tab_owned view and
+		// drops / relocates rows the CRDT no longer agrees with. Runs
+		// once at startup and every hour after; cancelled on ctx done.
+		reconciler := service.NewOrphanReconciler(
+			queries,
+			svcCtx.FileTabPaths,
+			func(rctx context.Context) ([]*leapmuxv1.OwnedTab, error) {
+				return client.ListOwnedTabsForWorker(rctx)
+			},
+			service.OrphanReconcilerOptions{
+				// Stop the in-memory exec.Cmd / PTY alongside the
+				// DB closed_at write. Without these, an orphan
+				// reconcile only stops future respawns; the live
+				// subprocess keeps running until the worker
+				// itself exits.
+				Agents:    svcCtx.Agents,
+				Terminals: svcCtx.Terminals,
+			},
+		)
+		go reconciler.Run(ctx)
+
+		// Hub's connect-time WorkspaceTabsSync reply only signals that
+		// the hub has finished its side of the reconciliation; trigger
+		// the worker-side reconciler so this worker converges on every
+		// reconnect (not just on the hourly tick).
+		client.OnTabSyncResponse = func(*leapmuxv1.WorkspaceTabsSyncResponse) {
+			reconciler.Trigger()
 		}
 	}
 

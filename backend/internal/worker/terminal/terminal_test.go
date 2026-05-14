@@ -465,12 +465,33 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 		m.RemoveTerminal("tm-append")
 	})
 
-	// Wait for the shell's initial prompt bytes so we have a stable baseline.
+	// Wait for the shell's initial prompt to *finish* writing before
+	// capturing baseline. `/bin/sh -i -l` (and pwsh, zsh, etc.) emit
+	// the prompt as several PTY chunks — hostname, working dir, $PS1,
+	// trailing space — and on a loaded test host the gap between the
+	// first chunk landing and the last one can exceed the
+	// AssertEventually poll interval. The previous baseline-capture
+	// triggered on the first non-zero offset, so any chunk arriving
+	// after baseline but before AppendOutput inflated the delta by
+	// the prompt remainder and tripped the assertion below.
+	//
+	// Probing two samples 50ms apart and only accepting when they
+	// agree pins baseline to a quiescent terminal; an interactive
+	// shell only writes again in response to stdin we never send.
+	var baseline int64
 	testutil.AssertEventually(t, func() bool {
-		_, off, _ := m.ScreenSnapshotSince("tm-append", 0)
-		return off > 0
-	}, "initial shell output")
-	_, baseline, _ := m.ScreenSnapshotSince("tm-append", 0)
+		_, off1, _ := m.ScreenSnapshotSince("tm-append", 0)
+		if off1 == 0 {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+		_, off2, _ := m.ScreenSnapshotSince("tm-append", 0)
+		if off1 != off2 {
+			return false
+		}
+		baseline = off2
+		return true
+	}, "shell prompt settled")
 
 	notice := []byte("\r\n[terminal disconnected]\r\n")
 	require.True(t, m.AppendOutput("tm-append", notice))

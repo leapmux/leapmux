@@ -67,6 +67,16 @@ func newHTTPProxy(hubURL string) *HubProxy {
 // ProxyHTTP proxies an HTTP request to the Hub and returns the response
 // metadata and raw body bytes. The cookie jar manages session cookies
 // automatically.
+//
+// **Streaming caveat**: this implementation reads the full response body
+// before returning, so any HTTP server-streaming endpoint reached
+// through it would appear to "hang" in desktop mode until the upstream
+// closes. The org-event subscription side-steps this entirely by
+// running over `/ws/orgevents` (a length-prefixed WebSocket relay)
+// rather than a streaming RPC. If a streaming HTTP endpoint is ever
+// reintroduced, the plan calls for a chunked variant
+// (`proxy_http_stream` Tauri command + Go-side `http.Flusher`-driven
+// chunks + JS-side `ReadableStream` body).
 func (a *App) ProxyHTTP(method, path string, headers map[string]string, body []byte) (*ProxyResponse, []byte, error) {
 	if a.proxy == nil {
 		return nil, nil, fmt.Errorf("not connected")

@@ -9,4 +9,4 @@ SELECT * FROM oauth_states WHERE state = ?;
 DELETE FROM oauth_states WHERE state = ?;
 
 -- name: DeleteExpiredOAuthStates :execresult
-DELETE FROM oauth_states WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+DELETE FROM oauth_states WHERE datetime(expires_at) < datetime('now');

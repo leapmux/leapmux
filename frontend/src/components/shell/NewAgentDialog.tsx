@@ -25,7 +25,6 @@ interface NewAgentDialogProps {
   defaultWorkerId?: string
   defaultWorkingDir?: string
   defaultModel?: string
-  defaultTitle?: string
   defaultAgentProvider?: AgentProvider
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
@@ -72,7 +71,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
         workspaceId: props.workspaceId,
         agentProvider: agentProvider(),
         model: props.defaultModel ?? '',
-        title: props.defaultTitle ?? '',
+        // title omitted: worker picks "Agent <Name>" from the shared pool.
         systemPrompt: '',
         workerId: state.workerId(),
         workingDir: state.workingDir(),

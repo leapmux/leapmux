@@ -1,10 +1,10 @@
 import type { AgentEvent, TerminalEvent, WatchAgentEntry } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import type { createAgentStore } from '~/stores/agent.store'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore } from '~/stores/tab.store'
+import type { Tab } from '~/stores/tab.types'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
@@ -20,9 +20,11 @@ import { createLogger } from '~/lib/logger'
 import { extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { CODEX_RATE_LIMITS_METHOD } from '~/lib/rateLimitUtils'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
+import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.store'
+import { gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.helpers'
+import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 
 const log = createLogger('workspace')
 const TEXT_DECODER = new TextDecoder()
@@ -64,7 +66,6 @@ function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | 
 }
 
 export interface WorkspaceConnectionParams {
-  agentStore: ReturnType<typeof createAgentStore>
   chatStore: ReturnType<typeof createChatStore>
   tabStore: ReturnType<typeof createTabStore>
   controlStore: ReturnType<typeof createControlStore>
@@ -79,15 +80,11 @@ export interface WorkspaceConnectionParams {
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
-  const { agentStore, chatStore, tabStore, controlStore, agentSessionStore, settingsLoading } = params
+  const { chatStore, tabStore, controlStore, agentSessionStore, settingsLoading } = params
   const [workerOnline, setWorkerOnline] = createSignal(true)
 
-  const isAgentTabVisible = (agentId: string): boolean => {
-    const key = tabKey({ type: TabType.AGENT, id: agentId })
-    if (tabStore.state.activeTabKey === key)
-      return true
-    return Object.values(tabStore.state.tileActiveTabKeys).includes(key)
-  }
+  const isAgentTabVisible = (agentId: string): boolean =>
+    tabStore.isTabActiveAnywhere(TabType.AGENT, agentId)
 
   // Single unified event stream abort controller.
   let eventStreamAbort: AbortController | null = null
@@ -125,29 +122,34 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const sc = inner.value
         if (sc.status === AgentStatus.UNSPECIFIED && !sc.gitStatus)
           return
-        const owningWsId = params.registry.findContaining(s => s.agents.some(a => a.id === agentId))?.workspaceId
+        // Find the snapshot that owns this agent by looking for a tab
+        // with this id and AGENT type — the per-agent metadata now
+        // travels on the tab record, so the lookup is unified.
+        const owningWsId = params.registry.findContaining(
+          s => s.tabs.some(t => t.type === TabType.AGENT && t.id === agentId),
+        )?.workspaceId
         if (owningWsId) {
           params.registry.update(owningWsId, (snap) => {
-            let agents = snap.agents
+            let tabs = snap.tabs
             if (sc.status !== AgentStatus.UNSPECIFIED) {
-              const i = snap.agents.findIndex(a => a.id === agentId)
-              if (i >= 0 && snap.agents[i].status !== sc.status) {
-                agents = snap.agents.slice()
-                agents[i] = { ...agents[i], status: sc.status }
+              const i = snap.tabs.findIndex(t => t.type === TabType.AGENT && t.id === agentId)
+              const existing = i >= 0 ? snap.tabs[i] : undefined
+              if (existing && isAgentTab(existing) && existing.agentStatus !== sc.status) {
+                tabs = snap.tabs.slice()
+                tabs[i] = { ...existing, agentStatus: sc.status }
               }
             }
-            let tabs = snap.tabs
             if (sc.gitStatus) {
               const next = toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel)
-              const i = snap.tabs.findIndex(t => t.type === TabType.AGENT && t.id === agentId)
-              if (i >= 0 && gitTabFieldsDiffer(snap.tabs[i], next)) {
-                tabs = snap.tabs.slice()
+              const i = (tabs === snap.tabs ? snap.tabs : tabs).findIndex(t => t.type === TabType.AGENT && t.id === agentId)
+              if (i >= 0 && gitTabFieldsDiffer(tabs[i], next)) {
+                tabs = tabs === snap.tabs ? tabs.slice() : tabs
                 tabs[i] = { ...tabs[i], ...next }
               }
             }
-            if (agents === snap.agents && tabs === snap.tabs)
+            if (tabs === snap.tabs)
               return snap
-            return { ...snap, agents, tabs }
+            return { ...snap, tabs }
           })
         }
       }
@@ -160,9 +162,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       if (catchUpPhase !== 'live')
         return
       setWorkerOnline(true)
-      const current = agentStore.getById(agentId)
-      if (current?.status === AgentStatus.INACTIVE) {
-        agentStore.updateAgent(agentId, { status: AgentStatus.ACTIVE })
+      const current = tabStore.getAgentTab(agentId)
+      if (current?.agentStatus === AgentStatus.INACTIVE) {
+        tabStore.updateTab(TabType.AGENT, agentId, { agentStatus: AgentStatus.ACTIVE })
       }
     }
 
@@ -328,7 +330,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // type:"result", Codex turn/completed, ACP stopReason, Pi agent_end)
         // as `result_divider`, so this gate is provider-agnostic.
         if (category.kind === 'result_divider') {
-          const modelId = agentStore.getById(agentId)?.model
+          const modelId = tabStore.getAgentTab(agentId)?.model
           const meta = extractResultMetadata(parsed, modelId)
           if (meta) {
             if (msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed') {
@@ -407,22 +409,22 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (catchUpPhases.get(agentId) === 'catchingUp') {
             const replayEndSeq = chatStore.getLastSeq(agentId)
             if (replayEndSeq > 0n) {
-              const wid = agentStore.getById(agentId)?.workerId ?? ''
+              const wid = tabStore.getAgentTab(agentId)?.workerId ?? ''
               void chatStore.loadNewerMessages(wid, agentId, replayEndSeq, signal)
             }
           }
           break
         }
 
-        // Read the prior status before updateAgent overwrites it so
+        // Read the prior status before updateTab overwrites it so
         // STARTING → ACTIVE / STARTUP_FAILED transitions can drain the
         // per-agent pending-message queue.
-        const prev = agentStore.getById(sc.agentId)
-        if (prev?.status === AgentStatus.STARTING) {
+        const prev = tabStore.getAgentTab(sc.agentId)
+        if (prev?.agentStatus === AgentStatus.STARTING) {
           const queued = chatStore.takePendingOutbound(sc.agentId)
           if (queued.length > 0) {
             if (sc.status === AgentStatus.ACTIVE) {
-              const wid = prev.workerId
+              const wid = prev.workerId ?? ''
               void (async () => {
                 for (const m of queued) {
                   chatStore.clearMessagePendingLabel(m.localId)
@@ -458,8 +460,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // would otherwise overwrite valid agent state with defaults,
         // causing the agent to become "unwatchable" and dropping the
         // event stream.
-        agentStore.updateAgent(sc.agentId, {
-          ...(hasStatus ? { status: sc.status, agentSessionId: sc.agentSessionId } : {}),
+        // Route available models/option groups into the global settings
+        // label cache so notification renderers can resolve human names
+        // when the inline label is missing. We also persist them on the
+        // tab for the settings dialog's "current catalogs" reads.
+        if ((sc.availableModels && sc.availableModels.length > 0) || (sc.availableOptionGroups && sc.availableOptionGroups.length > 0))
+          updateSettingsLabelCache(sc.availableModels, sc.availableOptionGroups)
+
+        tabStore.updateTab(TabType.AGENT, sc.agentId, {
+          ...(hasStatus ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId } : {}),
           // Carry startupError alongside status transitions so the tab's
           // in-tab error view can render the server-formatted message.
           // Only set on the failed/cleared transitions — other status
@@ -491,7 +500,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           ...(sc.availableOptionGroups && sc.availableOptionGroups.length > 0
             ? { availableOptionGroups: sc.availableOptionGroups }
             : {}),
-          gitStatus: sc.gitStatus,
+          ...(sc.gitStatus ? { agentGitStatus: sc.gitStatus } : {}),
         })
         if (sc.gitStatus) {
           tabStore.updateTab(
@@ -511,7 +520,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (
             catchUpPhase === 'live'
             && sc.agentSessionId
-            && agentStore.state.agents.some(a => a.id === agentId)
+            && tabStore.getAgentTab(agentId)
           ) {
             params.onTurnEnd?.(agentId)
           }
@@ -523,7 +532,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         if (catchUpPhase === 'catchingUp') {
           const replayEndSeq = chatStore.getLastSeq(agentId)
           if (replayEndSeq > 0n) {
-            const wid = agentStore.getById(agentId)?.workerId ?? ''
+            const wid = tabStore.getAgentTab(agentId)?.workerId ?? ''
             void chatStore.loadNewerMessages(wid, agentId, replayEndSeq, signal)
           }
         }
@@ -535,8 +544,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // During catch-up, the INACTIVE statusChange may have already been
         // processed before this replayed controlRequest arrives. Skip adding
         // the request so the user isn't stuck on an unanswerable prompt.
-        const agentEntry = agentStore.getById(cr.agentId)
-        if (catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)
+        const agentEntry = tabStore.getAgentTab(cr.agentId)
+        if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)
           break
         const payload = JSON.parse(TEXT_DECODER.decode(cr.payload))
         controlStore.addRequest(cr.agentId, {
@@ -593,12 +602,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       if (termEvent.event.case === 'closed') {
         const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
         const owningWsId = params.registry.findContaining(
-          s => s.tabs.some(t => tabKey(t) === key && t.status !== TerminalStatus.EXITED),
+          s => s.tabs.some(t => tabKey(t) === key && isTerminalTab(t) && t.status !== TerminalStatus.EXITED),
         )?.workspaceId
         if (owningWsId) {
           params.registry.update(owningWsId, snap => ({
             ...snap,
-            tabs: snap.tabs.map(t => tabKey(t) === key ? { ...t, status: TerminalStatus.EXITED } : t),
+            tabs: snap.tabs.map(t => tabKey(t) === key && isTerminalTab(t) ? { ...t, status: TerminalStatus.EXITED } : t),
           }))
         }
       }
@@ -724,7 +733,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         .filter(entry => !nonActiveAgentIds.has(entry.agentId))
         .map(async (entry) => {
           try {
-            const wid = agentStore.getById(entry.agentId)?.workerId ?? ''
+            const wid = tabStore.getAgentTab(entry.agentId)?.workerId ?? ''
             await chatStore.loadInitialMessages(wid, entry.agentId)
           }
           catch (err) {
@@ -840,15 +849,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     nonActiveTerminalIds.clear()
 
     if (wsId && workerId) {
-      // Active workspace agents/terminals from live stores.
-      for (const agent of agentStore.state.agents) {
-        if (agent.workerId === workerId) {
-          agentEntries.push({ agentId: agent.id, afterSeq: BigInt(0) } as WatchAgentEntry)
-        }
-      }
-
+      // Active workspace agents/terminals: both kinds now live in
+      // tabStore. AGENT tabs carry their metadata directly on the tab.
       for (const tab of tabStore.state.tabs) {
-        if (tab.type === TabType.TERMINAL && tab.workerId === workerId) {
+        if (tab.workerId !== workerId)
+          continue
+        if (tab.type === TabType.AGENT) {
+          agentEntries.push({ agentId: tab.id, afterSeq: BigInt(0) } as WatchAgentEntry)
+        }
+        else if (tab.type === TabType.TERMINAL) {
           terminalIds.push(tab.id)
         }
       }
@@ -862,14 +871,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           continue
         if (!snap.tabsLoaded)
           continue
-        for (const agent of snap.agents) {
-          if (agent.workerId === workerId && !activeAgentIds.has(agent.id)) {
-            agentEntries.push({ agentId: agent.id, afterSeq: BigInt(0) } as WatchAgentEntry)
-            nonActiveAgentIds.add(agent.id)
-          }
-        }
         for (const tab of snap.tabs) {
-          if (tab.type === TabType.TERMINAL && tab.workerId === workerId && !activeTermIds.has(tab.id)) {
+          if (tab.workerId !== workerId)
+            continue
+          if (tab.type === TabType.AGENT && !activeAgentIds.has(tab.id)) {
+            agentEntries.push({ agentId: tab.id, afterSeq: BigInt(0) } as WatchAgentEntry)
+            nonActiveAgentIds.add(tab.id)
+          }
+          else if (tab.type === TabType.TERMINAL && !activeTermIds.has(tab.id)) {
             terminalIds.push(tab.id)
             nonActiveTerminalIds.add(tab.id)
           }
@@ -922,15 +931,17 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         }))
       }
     })
-    for (const a of agentStore.state.agents) {
-      chatStore.clearStreamingText(a.id)
-      const streams = chatStore.state.commandStreamsByAgent[a.id]
+    for (const tab of tabStore.state.tabs) {
+      if (tab.type !== TabType.AGENT)
+        continue
+      chatStore.clearStreamingText(tab.id)
+      const streams = chatStore.state.commandStreamsByAgent[tab.id]
       if (streams) {
         for (const spanId of Object.keys(streams))
-          chatStore.clearCommandStream(a.id, spanId)
+          chatStore.clearCommandStream(tab.id, spanId)
       }
-      if (a.status === AgentStatus.ACTIVE) {
-        agentStore.updateAgent(a.id, { status: AgentStatus.INACTIVE })
+      if (tab.agentStatus === AgentStatus.ACTIVE) {
+        tabStore.updateTab(TabType.AGENT, tab.id, { agentStatus: AgentStatus.INACTIVE })
       }
     }
   })
@@ -949,12 +960,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const tabId = parts[1]
     if (chatStore.isInitialLoadComplete(tabId))
       return
-    // Only load messages for agents in the active workspace's store.
+    // Only load messages for agents in the active workspace's tab store.
     // Non-active workspace agents exist only in registry snapshots and
-    // don't have a workerId in agentStore — attempting to load with an
-    // empty workerId causes an "invalid_argument" error.
-    const agent = agentStore.getById(tabId)
-    if (!agent)
+    // don't have a workerId locally — attempting to load with an empty
+    // workerId would cause an "invalid_argument" error.
+    const agent = tabStore.getAgentTab(tabId)
+    if (!agent || !agent.workerId)
       return
     chatStore.loadInitialMessages(agent.workerId, tabId).catch((err) => {
       showWarnToast('Failed to load chat history', err)

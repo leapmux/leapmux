@@ -1522,6 +1522,32 @@ func (b *acpBase) cancelSession() error {
 	return b.sendNotification(acpMethodSessionCancel, json.RawMessage(params))
 }
 
+// Interrupt aborts the active ACP turn by sending the
+// `session/cancel` notification — the wire format every ACP server
+// in our roster (Gemini, Cursor, Copilot, Kilo, OpenCode, Goose)
+// recognizes, and the one acpProvider.IsInterrupt classifier expects.
+//
+// Embedded into every ACP-derived agent (GeminiCLIAgent, CursorAgent,
+// CopilotCLIAgent, KiloAgent, OpenCodeAgent, GooseAgent) via the
+// acpBase embedding chain, so a single implementation covers all six
+// providers.
+//
+// No-op when no session has been opened (sessionID still empty) so
+// the worker InterruptAgent RPC can be called unconditionally without
+// the caller having to wait for the ACP handshake to complete.
+func (b *acpBase) Interrupt() error {
+	if b.IsStopped() {
+		return fmt.Errorf("agent is stopped")
+	}
+	b.mu.Lock()
+	sessionID := b.sessionID
+	b.mu.Unlock()
+	if sessionID == "" {
+		return nil
+	}
+	return b.cancelSession()
+}
+
 // capitalizeFirst returns s with its first rune upper-cased.
 func capitalizeFirst(s string) string {
 	if s == "" {

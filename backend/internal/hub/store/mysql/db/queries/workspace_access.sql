@@ -13,3 +13,8 @@ DELETE FROM workspace_access WHERE workspace_id = ?;
 -- name: HasWorkspaceAccess :one
 SELECT COUNT(*) > 0 AS has_access FROM workspace_access
 WHERE workspace_id = ? AND user_id = ?;
+
+-- name: ListWorkspaceAccessForUserIn :many
+SELECT workspace_id FROM workspace_access
+WHERE user_id = sqlc.arg(user_id)
+  AND workspace_id IN (sqlc.slice('workspace_ids'));

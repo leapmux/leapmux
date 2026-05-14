@@ -16,12 +16,19 @@ import (
 type SendFunc func(msg *leapmuxv1.ChannelMessage) error
 
 // channel represents an active encrypted channel between a frontend and worker.
+//
+// BearerTokenID is the api_tokens / delegation_tokens id that
+// authenticated the OpenChannel call when the caller used a bearer
+// token; empty for cookie-authenticated channels. CloseByBearer uses
+// this to drop every channel an `lmx_…` token authorized when that
+// token is revoked.
 type channel struct {
-	ChannelID string
-	WorkerID  string
-	UserID    string
-	ConnID    string // Multiplexed connection that owns this channel (empty until first message).
-	cancel    context.CancelFunc
+	ChannelID     string
+	WorkerID      string
+	UserID        string
+	BearerTokenID string
+	ConnID        string // Multiplexed connection that owns this channel (empty until first message).
+	cancel        context.CancelFunc
 }
 
 // userConn represents a single multiplexed WebSocket connection for a user.
@@ -85,15 +92,26 @@ func WithMaxIncompleteChunked(n int) Option {
 
 // Register adds a new channel to the manager. The channel starts without an
 // associated connection. Call SetChannelConn() to associate the channel with
-// a specific multiplexed connection.
+// a specific multiplexed connection. For channels authenticated by a bearer
+// token (api_tokens or delegation_tokens), prefer RegisterWithBearer so
+// CloseByBearer can match later.
 func (m *Manager) Register(channelID, workerID, userID string, cancel context.CancelFunc) {
+	m.RegisterWithBearer(channelID, workerID, userID, "", cancel)
+}
+
+// RegisterWithBearer adds a new channel and records the bearer token
+// id that authenticated the OpenChannel call. Pass an empty
+// bearerTokenID for cookie-authenticated channels (equivalent to
+// Register).
+func (m *Manager) RegisterWithBearer(channelID, workerID, userID, bearerTokenID string, cancel context.CancelFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.channels[channelID] = &channel{
-		ChannelID: channelID,
-		WorkerID:  workerID,
-		UserID:    userID,
-		cancel:    cancel,
+		ChannelID:     channelID,
+		WorkerID:      workerID,
+		UserID:        userID,
+		BearerTokenID: bearerTokenID,
+		cancel:        cancel,
 	}
 }
 
@@ -196,42 +214,12 @@ func (m *Manager) Unregister(channelID string) {
 // Close notifications are sent to the owning frontend connection so clients can
 // detect dead channels without waiting for RPC timeouts.
 func (m *Manager) UnregisterByWorker(workerID string) []string {
-	type closeNotif struct {
-		sender    SendFunc
-		channelID string
+	closed := m.closeMatching(func(ch *channel) bool { return ch.WorkerID == workerID })
+	ids := make([]string, len(closed))
+	for i, cc := range closed {
+		ids[i] = cc.ChannelID
 	}
-
-	m.mu.Lock()
-	var removed []string
-	var cancels []context.CancelFunc
-	var notifs []closeNotif
-	for id, ch := range m.channels {
-		if ch.WorkerID == workerID {
-			removed = append(removed, id)
-			if ch.cancel != nil {
-				cancels = append(cancels, ch.cancel)
-			}
-			if sender := m.getConnSender(ch.UserID, ch.ConnID); sender != nil {
-				notifs = append(notifs, closeNotif{sender: sender, channelID: id})
-			}
-			delete(m.channels, id)
-		}
-	}
-	m.mu.Unlock()
-
-	// Send close notifications outside the lock.
-	for _, n := range notifs {
-		sendCloseNotification(n.sender, n.channelID)
-	}
-
-	for _, id := range removed {
-		m.ChunkTracker.RemoveChannel(id)
-	}
-
-	for _, cancel := range cancels {
-		cancel()
-	}
-	return removed
+	return ids
 }
 
 // ClosedChannel holds the IDs of a channel that was unregistered, so the
@@ -239,6 +227,101 @@ func (m *Manager) UnregisterByWorker(workerID string) []string {
 type ClosedChannel struct {
 	ChannelID string
 	WorkerID  string
+	UserID    string
+}
+
+// closeMatching is the shared core of CloseByBearer / CloseByUser /
+// other selector-based closes. The function takes m.mu internally; the
+// matched channels are removed from the map and their cancel funcs are
+// drained outside the lock so callers don't sit on m.mu through context
+// cancellation.
+func (m *Manager) closeMatching(predicate func(*channel) bool) []ClosedChannel {
+	return m.closeMatchingWithLocked(nil, func(*Manager) func(*channel) bool { return predicate })
+}
+
+// closeMatchingWithLocked is the generalised closeMatching: it lets a
+// caller run extra state mutations (e.g. unbinding a user connection)
+// inside the same lock window that picks the predicate. The locked
+// callback runs first; its return value becomes the predicate for the
+// channel sweep — this lets the predicate close over freshly mutated
+// state (e.g. "noConns" from unbindLocked) without racing a concurrent
+// BindUser/Register.
+//
+// `extraCancel` is invoked outside the lock after channel cancels run;
+// callers that unbound a connection use it to cancel the connection's
+// own ctx.
+func (m *Manager) closeMatchingWithLocked(extraCancel func(), build func(m *Manager) func(*channel) bool) []ClosedChannel {
+	type closeNotif struct {
+		sender    SendFunc
+		channelID string
+	}
+
+	m.mu.Lock()
+	predicate := build(m)
+	var removed []ClosedChannel
+	var cancels []context.CancelFunc
+	var notifs []closeNotif
+	for id, ch := range m.channels {
+		if !predicate(ch) {
+			continue
+		}
+		removed = append(removed, ClosedChannel{ChannelID: id, WorkerID: ch.WorkerID, UserID: ch.UserID})
+		if ch.cancel != nil {
+			cancels = append(cancels, ch.cancel)
+		}
+		if sender := m.getConnSender(ch.UserID, ch.ConnID); sender != nil {
+			notifs = append(notifs, closeNotif{sender: sender, channelID: id})
+		}
+		delete(m.channels, id)
+	}
+	m.mu.Unlock()
+
+	if extraCancel != nil {
+		extraCancel()
+	}
+	for _, n := range notifs {
+		sendCloseNotification(n.sender, n.channelID)
+	}
+	for _, cc := range removed {
+		m.ChunkTracker.RemoveChannel(cc.ChannelID)
+	}
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return removed
+}
+
+// CloseByBearer drops every channel that was authenticated by the
+// given bearer token id (api_tokens or delegation_tokens primary
+// key). Returns the dropped channels so the caller can notify each
+// worker via the existing `ChannelClose` payload — channels closed
+// here did NOT see a CloseChannel request, so the worker would
+// otherwise hold the inner channel state until its own timeout.
+//
+// Empty tokenID is rejected (matches no rows) so a buggy revoke
+// path can't accidentally tear down every cookie-authenticated
+// channel.
+func (m *Manager) CloseByBearer(tokenID string) []ClosedChannel {
+	if tokenID == "" {
+		return nil
+	}
+	return m.closeMatching(func(ch *channel) bool {
+		return ch.BearerTokenID == tokenID
+	})
+}
+
+// CloseByUser drops every channel for the given user. Used by
+// user-revocation paths (password change, account deletion, admin
+// force-logout-all) so spawned-agent channels die in lock-step with
+// the row-level revocation. Empty userID is rejected for the same
+// reason as CloseByBearer.
+func (m *Manager) CloseByUser(userID string) []ClosedChannel {
+	if userID == "" {
+		return nil
+	}
+	return m.closeMatching(func(ch *channel) bool {
+		return ch.UserID == userID
+	})
 }
 
 // UnbindUserAndCleanup atomically unbinds a relay connection and removes the
@@ -250,35 +333,27 @@ type ClosedChannel struct {
 // Register from a new relay session cannot be wiped by the unbound-channel
 // sweep. Returns the closed channels so the caller can notify workers.
 func (m *Manager) UnbindUserAndCleanup(userID, connID string) []ClosedChannel {
-	m.mu.Lock()
-	uc, noConns := m.unbindLocked(userID, connID)
-
-	var removed []ClosedChannel
-	var cancels []context.CancelFunc
-	for id, ch := range m.channels {
-		if ch.UserID != userID {
-			continue
-		}
-		if ch.ConnID == connID || (noConns && ch.ConnID == "") {
-			removed = append(removed, ClosedChannel{ChannelID: id, WorkerID: ch.WorkerID})
-			if ch.cancel != nil {
-				cancels = append(cancels, ch.cancel)
+	// Channel pruning shares closeMatching's drain pipeline (notify
+	// senders, drop chunk tracking, cancel ctxs) so we don't grow a
+	// parallel teardown path that drifts from closeMatching.
+	var uc *userConn
+	return m.closeMatchingWithLocked(
+		func() {
+			if uc != nil && uc.cancel != nil {
+				uc.cancel()
 			}
-			delete(m.channels, id)
-		}
-	}
-	m.mu.Unlock()
-
-	if uc != nil && uc.cancel != nil {
-		uc.cancel()
-	}
-	for _, cc := range removed {
-		m.ChunkTracker.RemoveChannel(cc.ChannelID)
-	}
-	for _, cancel := range cancels {
-		cancel()
-	}
-	return removed
+		},
+		func(*Manager) func(*channel) bool {
+			noConns := false
+			uc, noConns = m.unbindLocked(userID, connID)
+			return func(ch *channel) bool {
+				if ch.UserID != userID {
+					return false
+				}
+				return ch.ConnID == connID || (noConns && ch.ConnID == "")
+			}
+		},
+	)
 }
 
 // SendToFrontend routes a ChannelMessage from a worker to the frontend client.

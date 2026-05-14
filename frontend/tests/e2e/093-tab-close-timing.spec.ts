@@ -72,12 +72,15 @@ async function installObservers(page: Page): Promise<void> {
       }
       if (w.__dialogVisibleAt == null) {
         const dialog = document.querySelector('dialog[open]')
-        if (dialog && dialog.textContent?.includes('Close Last Tab'))
+        // Case-insensitive: the dialog title is "Close last tab"
+        // (sentence case), but historic test code looked for "Close
+        // Last Tab" (title case) and silently missed every match.
+        if (dialog && dialog.textContent?.toLowerCase().includes('close last tab'))
           w.__dialogVisibleAt = performance.now()
       }
       if (w.__dialogVisibleAt != null && w.__dialogRemovedAt == null) {
         const dialog = document.querySelector('dialog[open]')
-        if (!dialog || !dialog.textContent?.includes('Close Last Tab'))
+        if (!dialog || !dialog.textContent?.toLowerCase().includes('close last tab'))
           w.__dialogRemovedAt = performance.now()
       }
     })

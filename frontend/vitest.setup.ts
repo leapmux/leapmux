@@ -1,5 +1,40 @@
+import { createRoot } from 'solid-js'
+import { afterEach, beforeEach } from 'vitest'
+import { setCRDTBridge } from './src/lib/crdt'
+import { installTestBridge } from './tests/unit/helpers/crdtBridge'
 import { installPointerEventShim } from './tests/unit/helpers/pointer'
 import '@testing-library/jest-dom/vitest'
+
+// Install a default CRDT bridge before every test so the projection-
+// driven layout / tab / floating-window stores have a workspace +
+// root tile to render. Tests that need a different orgId / workspaceId
+// / rootTileId can override by calling installTestBridge() themselves
+// inside the test body.
+//
+// The bridge's reactive signal is created inside a per-test
+// `createRoot` so Solid's signal subscription tracking works
+// properly. The afterEach disposes the root, releasing the signal +
+// any memos that depended on it.
+//
+// The default bridge seeds a single-LEAF root tile keyed `main-tile`
+// so legacy tests that hard-code that id still find a matching node
+// in the projection.
+let disposeBridgeRoot: (() => void) | null = null
+
+beforeEach(() => {
+  createRoot((dispose) => {
+    disposeBridgeRoot = dispose
+    installTestBridge({ orgId: 'org-test', workspaceId: 'ws-test', rootTileId: 'main-tile' })
+  })
+})
+
+afterEach(() => {
+  if (disposeBridgeRoot) {
+    disposeBridgeRoot()
+    disposeBridgeRoot = null
+  }
+  setCRDTBridge(null)
+})
 
 // jsdom (29.x) does not implement PointerEvent; install a MouseEvent-based
 // shim globally so any `fireEvent.pointer*` / `new PointerEvent(...)` call

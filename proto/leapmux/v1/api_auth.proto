@@ -1,0 +1,113 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/workspace.proto";
+
+// APIAuthService backs the leapmux remote CLI authentication flows.
+// It is exposed by the hub alongside the existing AuthService and is
+// reachable without a session cookie (its endpoints either bootstrap a
+// session — local-redirect / device-code — or accept refresh tokens).
+//
+// Endpoints are also exposed as plain HTTP routes (see
+// /auth/cli/...). The service form keeps the wire types in one place
+// for the CLI client.
+service APIAuthService {
+  // DeviceAuthorization starts the RFC 8628 device-code flow. The CLI
+  // calls this when local-redirect is unavailable (SSH / container).
+  rpc DeviceAuthorization(DeviceAuthorizationRequest) returns (DeviceAuthorizationResponse);
+  // CLITokenExchange exchanges an authorization code (local-redirect)
+  // or device_code (device flow) for an access + refresh token pair.
+  rpc CLITokenExchange(CLITokenExchangeRequest) returns (CLITokenExchangeResponse);
+  // CLIRefresh rotates a refresh token. Reuse of a previously rotated
+  // refresh after the grace window revokes the entire row.
+  rpc CLIRefresh(CLIRefreshRequest) returns (CLIRefreshResponse);
+  // CLIRevoke revokes the current api_tokens row.
+  rpc CLIRevoke(CLIRevokeRequest) returns (CLIRevokeResponse);
+}
+
+message DeviceAuthorizationRequest {
+  // Free-form name shown on the consent screen ("trustin's MacBook").
+  string device_name = 1;
+}
+
+message DeviceAuthorizationResponse {
+  string device_code = 1;
+  string user_code = 2;             // 8 chars in 4-4 groups, ambiguity-free alphabet
+  string verification_uri = 3;
+  string verification_uri_complete = 4;
+  int64 expires_in_seconds = 5;
+  int64 interval_seconds = 6;
+}
+
+message CLITokenExchangeRequest {
+  // Local-redirect flow.
+  string code = 1;
+  string code_verifier = 2;
+  // Device flow.
+  string device_code = 3;
+  // Free-form device label, used when the token is minted.
+  string device_name = 4;
+}
+
+message CLITokenExchangeResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 access_expires_in_seconds = 3;
+  int64 refresh_expires_in_seconds = 4;
+  string token_id = 5;
+  string user_id = 6;
+  string username = 7;
+}
+
+message CLIRefreshRequest {
+  string refresh_token = 1;
+}
+
+message CLIRefreshResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 access_expires_in_seconds = 3;
+  int64 refresh_expires_in_seconds = 4;
+  string token_id = 5;
+}
+
+message CLIRevokeRequest {
+  string token = 1;
+}
+
+message CLIRevokeResponse {}
+
+// --- Worker-issued delegation tokens ---
+
+// DelegationService is implemented on the hub but called only by workers
+// (authenticated with their existing AuthToken). Workers mint a short-
+// lived bearer the spawned agent can present to the hub on the user's
+// behalf, scoped to a single workspace.
+service DelegationService {
+  rpc MintDelegationToken(MintDelegationTokenRequest) returns (MintDelegationTokenResponse);
+  rpc RevokeDelegationToken(RevokeDelegationTokenRequest) returns (RevokeDelegationTokenResponse);
+}
+
+message MintDelegationTokenRequest {
+  string user_id = 1;
+  string workspace_id = 2;
+  string issued_for_tab_id = 3; // provenance only; not enforced
+  TabType issued_for_tab_type = 4;
+  string agent_id = 5;          // optional, for audit
+  string terminal_id = 6;       // optional, for audit
+  int64 ttl_seconds = 7;        // capped server-side
+}
+
+message MintDelegationTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 access_expires_in_seconds = 3;
+  int64 refresh_expires_in_seconds = 4;
+  string token_id = 5;
+}
+
+message RevokeDelegationTokenRequest {
+  string token_id = 1;
+}
+
+message RevokeDelegationTokenResponse {}

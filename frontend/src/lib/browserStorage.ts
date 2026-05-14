@@ -30,6 +30,14 @@ export interface BrowserPreferences {
   showHiddenMessages?: boolean
   enterKeyMode?: EnterKeyMode
   terminalRenderer?: TerminalRendererPreference
+  /**
+   * When true, ignore `ActiveTabRequested` events from other clients
+   * (e.g. `leapmux remote tab focus`). Default false: another browser
+   * tab or the CLI can steal focus, which is the intended behaviour
+   * for "tab focus" to "just work" — flip this if your workflow
+   * dislikes remote-driven focus changes.
+   */
+  ignoreRemoteFocus?: boolean
 }
 
 // ---------------------------------------------------------------------------

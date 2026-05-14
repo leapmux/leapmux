@@ -1,10 +1,9 @@
-import type { Tab } from '~/stores/tab.store'
+import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createImperativeRef } from '~/lib/imperativeRef'
-import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
@@ -36,7 +35,6 @@ interface RendererSetup {
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: ReturnType<typeof createFloatingWindowStore>
   handleTabClose: ReturnType<typeof vi.fn>
-  persistLayout: ReturnType<typeof vi.fn>
 }
 
 function renderRenderer(s: RendererSetup, focusedTileId: string) {
@@ -44,11 +42,11 @@ function renderRenderer(s: RendererSetup, focusedTileId: string) {
     const r = createTileRenderer({
       stores: {
         tabStore: s.tabStore,
-        agentStore: createAgentStore(),
         chatStore: createChatStore(),
         controlStore: createControlStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
+        workerInfoStore: { getHomeDir: () => '' },
       },
       ops: {
         agentOps: {
@@ -105,7 +103,6 @@ function renderRenderer(s: RendererSetup, focusedTileId: string) {
       floatingWindow: {
         store: s.floatingWindowStore,
       },
-      persistLayout: s.persistLayout as () => void,
       settingsLoading: { loading: () => false } as any,
     })
     return (
@@ -123,7 +120,6 @@ function createSetup(): RendererSetup {
     layoutStore: createLayoutStore(),
     floatingWindowStore: createFloatingWindowStore(),
     handleTabClose: vi.fn(async (_tab: Tab) => true),
-    persistLayout: vi.fn(),
   }
 }
 
@@ -155,8 +151,15 @@ describe('tileRenderer close-tile flow', () => {
 
   it('moves tabs to the heir tile and removes the closed tile when the user picks "Move tabs"', async () => {
     const s = createSetup()
-    const leftTileId = s.layoutStore.focusedTileId()
-    const rightTileId = s.layoutStore.splitTile(leftTileId, 'horizontal')!
+    const preSplitTileId = s.layoutStore.focusedTileId()
+    const rightTileId = s.layoutStore.splitTile(preSplitTileId, 'horizontal')!
+    // Under the projection-driven CRDT model, splitTile flips the
+    // pre-split tile's kind from LEAF to SPLIT in place; the original
+    // pre-split id is now a SPLIT (not a leaf), and TWO new leaf ids
+    // are minted (childA where original tabs land, childB = rightTileId).
+    // The heir of rightTileId is therefore childA, not the pre-split id.
+    const heirTileId = s.layoutStore.owner().findHeirTile(rightTileId)
+    expect(heirTileId).toBeTruthy()
     const terminalTab: Tab = {
       type: TabType.TERMINAL,
       id: 'term-right',
@@ -180,8 +183,7 @@ describe('tileRenderer close-tile flow', () => {
     })
     expect(s.handleTabClose).not.toHaveBeenCalled()
     const moved = s.tabStore.state.tabs.find(t => t.id === terminalTab.id)
-    expect(moved?.tileId).toBe(leftTileId)
-    expect(s.persistLayout).toHaveBeenCalled()
+    expect(moved?.tileId).toBe(heirTileId)
   })
 
   it('closes tabs and removes the tile when the user confirms "Close all tabs"', async () => {
@@ -241,20 +243,32 @@ describe('tileRenderer close-tile flow', () => {
   it('predicate updates propagate to a surviving tile when its sibling closes (reactive actions)', async () => {
     // Regression for the prior `actions = buildTileActions(tileId)` snapshot:
     // when a sibling closes and the surviving leaf keeps its identity (the
-    // parent split collapses to that leaf via `optimize`), the survivor's
-    // closeMode should flip from 'tile' to 'none'. Without reactive actions
-    // the close button would linger on the dead snapshot.
+    // parent split collapses to that leaf via the projection's single-
+    // child SPLIT collapse), the survivor's closeMode should flip from
+    // 'tile' to 'none'. Without reactive actions the close button would
+    // linger on the dead snapshot.
+    //
+    // Under the projection-driven CRDT model, splitTile flips T's kind
+    // LEAF → SPLIT in place; the original T id becomes the SPLIT, with
+    // two new leaf children A and B. The "surviving leaf" after closing
+    // B is A (whose nodeId we look up via owner.findHeirTile).
     const s = createSetup()
-    const leftTileId = s.layoutStore.focusedTileId()
-    const rightTileId = s.layoutStore.splitTile(leftTileId, 'horizontal')!
+    const preSplitTileId = s.layoutStore.focusedTileId()
+    const rightTileId = s.layoutStore.splitTile(preSplitTileId, 'horizontal')!
+    const survivorTileId = s.layoutStore.owner().findHeirTile(rightTileId)!
 
-    renderRenderer(s, leftTileId)
+    renderRenderer(s, survivorTileId)
 
     // multiTile is true → close-tile button is visible on the survivor.
     expect(screen.getByTestId('close-tile')).toBeInTheDocument()
 
-    // Close the sibling. The split collapses to a single leaf with id
-    // === leftTileId, so the rendered Tile stays mounted.
+    // Close the sibling. The split collapses to a single leaf and the
+    // survivor's closeMode flips from 'tile' to 'none'. The projection's
+    // single-child collapse re-keys the rendered leaf to the SPLIT's
+    // node_id (preSplitTileId), but the test mounted the Tile keyed on
+    // survivorTileId — under the new id mapping the originally-mounted
+    // tile is re-keyed to preSplitTileId, so the close button on it
+    // disappears via predicate change.
     s.layoutStore.closeTile(rightTileId)
 
     await waitFor(() => {
@@ -272,7 +286,10 @@ describe('tileRenderer close-tile flow', () => {
     // window — single-tile windows render `closeMode='none'`). This test
     // pins that no-op behavior end-to-end through the dialog.
     const s = createSetup()
-    const { windowId, tileId: leftTileId } = s.floatingWindowStore.addWindow()
+    const created = s.floatingWindowStore.addWindow()
+    if (!created)
+      throw new Error('addWindow returned null — vitest setup should wire a default CRDT bridge')
+    const { windowId, tileId: leftTileId } = created
     const rightTileId = s.floatingWindowStore.splitTile(windowId, leftTileId, 'horizontal')!
     s.layoutStore.setFocusedTile(rightTileId)
     s.floatingWindowStore.setFocusedTile(windowId, rightTileId)
@@ -321,6 +338,5 @@ describe('tileRenderer close-tile flow', () => {
     expect(s.floatingWindowStore.getWindow(windowId)).toBeDefined()
     expect([...s.floatingWindowStore.getWindowTileIdSet(windowId) ?? []]).toEqual([leftTileId])
     expect(s.tabStore.getTabsForTile(rightTileId)).toEqual([])
-    expect(s.persistLayout).toHaveBeenCalled()
   })
 })

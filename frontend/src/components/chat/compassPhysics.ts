@@ -4,13 +4,20 @@ export interface CompassState {
 
 export function createCompassSimulation(
   onUpdate: (state: CompassState) => void,
+  initialAngle: number = 0,
 ): { start: () => void, stop: () => void } {
   const SPRING_K = 3.0
   const DAMPING = 2.0
   const TICK_MS = 67 // ~15 FPS
   const MAX_DT = 0.1
 
-  let angle = 0
+  // `initialAngle` seeds the pendulum so that callers can resume from
+  // a previously-observed angle (e.g. when ThinkingIndicator re-mounts
+  // across a layout change while the agent is still thinking). Other
+  // physics state (velocity, target) starts from rest — the spring
+  // will smoothly pull the pendulum toward a fresh random target, so
+  // there's no visible "snap" from the angle handoff.
+  let angle = initialAngle
   let angularVelocity = 0
   let target = 0
   let nextTargetTime = 0

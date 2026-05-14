@@ -13,6 +13,7 @@ import (
 
 	pty "github.com/aymanbagabas/go-pty"
 
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
@@ -248,6 +249,11 @@ type Options struct {
 	ShellStartDir string
 	Cols          uint16
 	Rows          uint16
+	// ExtraEnv is appended verbatim to the spawned shell's environment
+	// after TERM is set. The service.Context populates this with
+	// LEAPMUX_REMOTE_* so scripts inside the shell can drive LeapMux
+	// via `leapmux remote`.
+	ExtraEnv []string
 }
 
 // Start creates a new PTY terminal session. The supplied context
@@ -275,9 +281,15 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal
 
 	cmd := ptmx.CommandContext(ctx, shell, args...)
 	cmd.Dir = opts.WorkingDir
-	cmd.Env = procutil.ScrubAppImageEnvSlice(append(os.Environ(),
+	cmd.Env = envutil.ScrubAppImageEnvSlice(append(os.Environ(),
 		"TERM=xterm-256color",
 	))
+	if len(opts.ExtraEnv) > 0 {
+		// Strip any pre-existing LEAPMUX_REMOTE_* (defensive — leapmux
+		// worker doesn't normally set them, but a recursive launch
+		// would inherit) before injecting the canonical values.
+		cmd.Env = append(envutil.StripByPrefix(cmd.Env, "LEAPMUX_REMOTE_"), opts.ExtraEnv...)
+	}
 	// No procutil.HideConsoleWindow here: on Windows, CREATE_NO_WINDOW is
 	// incompatible with ConPTY — the pseudo console already serves as the
 	// child's console, and the flag would leave it with none.

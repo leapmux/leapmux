@@ -4,50 +4,51 @@ import type { createTabStore } from '~/stores/tab.store'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { positionAtInsertIdx } from '~/lib/lexorank'
 import { basename } from '~/lib/paths'
-import { parseTabKey, tabKey } from '~/stores/tab.store'
+import { tabKey } from '~/stores/tab.helpers'
 import * as styles from './AppShell.css'
-import { removeEmptyFloatingWindow } from './tileLifecycle'
+import { useTileMove } from './useTileMove'
 
 interface UseTileDragDropOpts {
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: FloatingWindowStoreType
-  persistLayout: () => void
 }
 
 export function useTileDragDrop(opts: UseTileDragDropOpts) {
-  const { tabStore, layoutStore, floatingWindowStore, persistLayout } = opts
+  const { tabStore, layoutStore, floatingWindowStore } = opts
+  const tileMove = useTileMove({ tabStore, layoutStore, floatingWindowStore })
 
   const handleIntraTileReorder = (_tileId: string, fromKey: string, toKey: string) => {
     tabStore.reorderTabs(fromKey, toKey)
-    persistLayout()
   }
 
   const handleCrossTileMove = (fromTileId: string, toTileId: string, draggedTabKey: string, nearTabKey: string | null) => {
-    tabStore.moveTabToTile(draggedTabKey, toTileId)
+    const draggedTab = tabStore.getTabByKey(draggedTabKey)
+    if (!draggedTab)
+      return
+    // Capture BEFORE the move: was this the active tab on the source?
+    // If yes, the user is "carrying" what they were working on across
+    // panes and focus should follow — keeping focus on the source
+    // tile after the move would leave the user clicking back to where
+    // their tab no longer is. If the dragged tab was inactive in its
+    // source tile bar (user dragging tab Y while reading tab X), the
+    // user's attention is still on X — leave focus alone.
+    const wasActiveOnSource = tabStore.getActiveTabKeyForTile(fromTileId) === draggedTabKey
 
-    // Resolve insertion index: when a near-tab is named (drop landed on a
-    // specific tab), the dragged tab takes that slot, displacing the target
-    // right; otherwise append. `positionAtInsertIdx` handles all four edge
-    // cases (head, tail, between, empty list) via `mid`'s documented
+    tileMove.moveTabToTile(draggedTab, toTileId, { takeFocus: wasActiveOnSource, cleanupSource: true })
+
+    // Resolve insertion index against the post-move tab list: when a
+    // near-tab is named (drop landed on a specific tab), the dragged
+    // tab takes that slot, displacing the target right; otherwise
+    // append. `positionAtInsertIdx` handles all four edge cases
+    // (head, tail, between, empty list) via `mid`'s documented
     // empty-string semantics.
     const targetTabs = tabStore.getTabsForTile(toTileId)
     const nearIdx = nearTabKey
       ? targetTabs.findIndex(t => tabKey(t) === nearTabKey)
       : -1
     const insertIdx = nearIdx >= 0 ? nearIdx : targetTabs.length
-    const newPosition = positionAtInsertIdx(targetTabs, insertIdx)
-    tabStore.setTabPosition(draggedTabKey, newPosition)
-
-    const parsed = parseTabKey(draggedTabKey)
-    if (parsed) {
-      tabStore.setActiveTabForTile(toTileId, parsed.type, parsed.id)
-    }
-
-    // Remove the source floating window if it's now empty.
-    removeEmptyFloatingWindow(layoutStore, floatingWindowStore, tabStore, fromTileId)
-
-    persistLayout()
+    tabStore.setTabPosition(draggedTabKey, positionAtInsertIdx(targetTabs, insertIdx))
   }
 
   const lookupTileIdForTab = (key: string): string | undefined => {

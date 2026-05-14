@@ -52,29 +52,69 @@ type OpenChannelOptions struct {
 	// WebSocketHTTPClient is the HTTP/1.1 client used for WebSocket upgrade.
 	// When nil, websocket.Dial uses the default transport.
 	WebSocketHTTPClient *http.Client
+
+	// BearerToken, when non-empty, is sent as "Authorization: Bearer
+	// <token>" on every hub call (GetWorkerHandshakeParams, OpenChannel,
+	// /ws/channel upgrade). Used by the leapmux remote CLI and the
+	// worker-side cross-worker client.
+	BearerToken string
+
+	// KeyPin, when non-nil, verifies (and on first contact records) the
+	// worker's public keys against a TOFU pin store. A mismatch aborts
+	// the handshake — defends against a compromised hub substituting
+	// keys.
+	KeyPin KeyPinStore
+}
+
+// KeyPinStore captures the per-hub TOFU key-pinning behaviour the
+// CLI / cross-worker callers need. Implementations are responsible for
+// persistence (CLI: ~/.config/leapmux/remote/<hub-host>/pins.json;
+// worker: <datadir>/cross_worker_pins.json).
+type KeyPinStore interface {
+	// Verify is called with the worker's freshly-fetched public keys.
+	// On first contact (no pin yet) the implementation records the
+	// pin (TOFU) and returns nil. On a mismatch it returns a non-nil
+	// error and OpenChannel aborts.
+	Verify(workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) error
 }
 
 // OpenChannel opens a new E2EE channel to the specified worker via Hub.
-// Authentication is handled via cookies in the HTTP client's cookie jar.
+// Authentication is handled via cookies in the HTTP client's cookie jar
+// (default) or, when opts.BearerToken is set, via "Authorization:
+// Bearer <token>" on every hub call.
 func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *OpenChannelOptions) (*Channel, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	var wsHTTPClient *http.Client
+	var bearer string
+	var pinStore KeyPinStore
 	if opts != nil {
 		if opts.HTTPClient != nil {
 			httpClient = opts.HTTPClient
 		}
 		wsHTTPClient = opts.WebSocketHTTPClient
+		bearer = opts.BearerToken
+		pinStore = opts.KeyPin
 	}
 	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL)
 
 	// 1. Get Worker's public key and encryption mode in one round trip.
-	paramsResp, err := channelClient.GetWorkerHandshakeParams(ctx, connect.NewRequest(
-		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID},
-	))
+	paramsReq := connect.NewRequest(&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID})
+	if bearer != "" {
+		paramsReq.Header().Set("Authorization", "Bearer "+bearer)
+	}
+	paramsResp, err := channelClient.GetWorkerHandshakeParams(ctx, paramsReq)
 	if err != nil {
 		return nil, fmt.Errorf("get worker handshake params: %w", err)
 	}
 	encMode := paramsResp.Msg.GetEncryptionMode()
+
+	// TOFU key pinning — abort if the hub returns keys that don't match
+	// the recorded pin. First contact records the pin.
+	if pinStore != nil {
+		if err := pinStore.Verify(workerID, paramsResp.Msg.GetPublicKey(), paramsResp.Msg.GetMlkemPublicKey(), paramsResp.Msg.GetSlhdsaPublicKey()); err != nil {
+			return nil, fmt.Errorf("worker key pin: %w", err)
+		}
+	}
 
 	// 2. Perform Noise_NK handshake (message 1).
 	var hs *noiseutil.HandshakeState
@@ -89,12 +129,14 @@ func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *Ope
 	}
 
 	// 3. Open channel via Hub.
-	openResp, err := channelClient.OpenChannel(ctx, connect.NewRequest(
-		&leapmuxv1.OpenChannelRequest{
-			WorkerId:         workerID,
-			HandshakePayload: msg1,
-		},
-	))
+	openReq := connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+		WorkerId:         workerID,
+		HandshakePayload: msg1,
+	})
+	if bearer != "" {
+		openReq.Header().Set("Authorization", "Bearer "+bearer)
+	}
+	openResp, err := channelClient.OpenChannel(ctx, openReq)
 	if err != nil {
 		return nil, fmt.Errorf("open channel: %w", err)
 	}
@@ -119,6 +161,9 @@ func OpenChannel(ctx context.Context, hubURL, userID, workerID string, opts *Ope
 	}
 	if wsHTTPClient != nil {
 		wsDialOpts.HTTPClient = wsHTTPClient
+	}
+	if bearer != "" {
+		wsDialOpts.HTTPHeader = http.Header{"Authorization": []string{"Bearer " + bearer}}
 	}
 	wsConn, _, err := websocket.Dial(ctx, wsURL, wsDialOpts)
 	if err != nil {

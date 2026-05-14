@@ -16,29 +16,11 @@ import (
 )
 
 // mysqlStore implements store.Store backed by MySQL.
+//
+// Sub-stores are constructed on demand by each getter rather than
+// cached on the struct — see sqlite.sqliteStore for the rationale.
 type mysqlStore struct {
 	conn *mysqlConn
-
-	orgs                  orgStore
-	users                 userStore
-	sessions              sessionStore
-	orgMembers            orgMemberStore
-	workers               workerStore
-	workerAccessGrants    workerAccessGrantStore
-	workerNotifications   workerNotificationStore
-	registrationKeys      registrationKeyStore
-	workspaces            workspaceStore
-	workspaceAccess       workspaceAccessStore
-	workspaceTabs         workspaceTabStore
-	workspaceLayouts      workspaceLayoutStore
-	workspaceSections     workspaceSectionStore
-	workspaceSectionItems workspaceSectionItemStore
-	oauthProviders        oauthProviderStore
-	oauthStates           oauthStateStore
-	oauthTokens           oauthTokenStore
-	oauthUserLinks        oauthUserLinkStore
-	pendingOAuthSignups   pendingOAuthSignupStore
-	cleanup               cleanupStore
 }
 
 var _ store.Store = (*mysqlStore)(nil)
@@ -94,7 +76,7 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 		return nil, fmt.Errorf("migrate mysql: %w", err)
 	}
 
-	st := &mysqlStore{
+	return &mysqlStore{
 		conn: &mysqlConn{
 			shared: &mysqlShared{
 				db:       sqlDB,
@@ -103,9 +85,7 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 			exec: sqlDB,
 			q:    gendb.New(sqlDB),
 		},
-	}
-	initSubStores(st)
-	return st, nil
+	}, nil
 }
 
 // NewFromDB wraps an existing *sql.DB (already opened and migrated) into a
@@ -116,7 +96,7 @@ func NewFromDB(sqlDB *sql.DB) (store.Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init mysql migrator: %w", err)
 	}
-	st := &mysqlStore{
+	return &mysqlStore{
 		conn: &mysqlConn{
 			shared: &mysqlShared{
 				db:       sqlDB,
@@ -125,60 +105,68 @@ func NewFromDB(sqlDB *sql.DB) (store.Store, error) {
 			exec: sqlDB,
 			q:    gendb.New(sqlDB),
 		},
-	}
-	initSubStores(st)
-	return st, nil
+	}, nil
 }
 
-func initSubStores(s *mysqlStore) {
-	s.orgs = orgStore{conn: s.conn}
-	s.users = userStore{conn: s.conn}
-	s.sessions = sessionStore{conn: s.conn}
-	s.orgMembers = orgMemberStore{conn: s.conn}
-	s.workers = workerStore{conn: s.conn}
-	s.workerAccessGrants = workerAccessGrantStore{conn: s.conn}
-	s.workerNotifications = workerNotificationStore{conn: s.conn}
-	s.registrationKeys = registrationKeyStore{conn: s.conn}
-	s.workspaces = workspaceStore{conn: s.conn}
-	s.workspaceAccess = workspaceAccessStore{conn: s.conn}
-	s.workspaceTabs = workspaceTabStore{conn: s.conn}
-	s.workspaceLayouts = workspaceLayoutStore{conn: s.conn}
-	s.workspaceSections = workspaceSectionStore{conn: s.conn}
-	s.workspaceSectionItems = workspaceSectionItemStore{conn: s.conn}
-	s.oauthProviders = oauthProviderStore{conn: s.conn}
-	s.oauthStates = oauthStateStore{conn: s.conn}
-	s.oauthTokens = oauthTokenStore{conn: s.conn}
-	s.oauthUserLinks = oauthUserLinkStore{conn: s.conn}
-	s.pendingOAuthSignups = pendingOAuthSignupStore{conn: s.conn}
-	s.cleanup = cleanupStore{conn: s.conn}
+func (s *mysqlStore) Orgs() store.OrgStore             { return &orgStore{conn: s.conn} }
+func (s *mysqlStore) Users() store.UserStore           { return &userStore{conn: s.conn} }
+func (s *mysqlStore) Sessions() store.SessionStore     { return &sessionStore{conn: s.conn} }
+func (s *mysqlStore) OrgMembers() store.OrgMemberStore { return &orgMemberStore{conn: s.conn} }
+func (s *mysqlStore) Workers() store.WorkerStore       { return &workerStore{conn: s.conn} }
+func (s *mysqlStore) WorkerAccessGrants() store.WorkerAccessGrantStore {
+	return &workerAccessGrantStore{conn: s.conn}
 }
-
-func (s *mysqlStore) Orgs() store.OrgStore                             { return &s.orgs }
-func (s *mysqlStore) Users() store.UserStore                           { return &s.users }
-func (s *mysqlStore) Sessions() store.SessionStore                     { return &s.sessions }
-func (s *mysqlStore) OrgMembers() store.OrgMemberStore                 { return &s.orgMembers }
-func (s *mysqlStore) Workers() store.WorkerStore                       { return &s.workers }
-func (s *mysqlStore) WorkerAccessGrants() store.WorkerAccessGrantStore { return &s.workerAccessGrants }
 func (s *mysqlStore) WorkerNotifications() store.WorkerNotificationStore {
-	return &s.workerNotifications
+	return &workerNotificationStore{conn: s.conn}
 }
-func (s *mysqlStore) RegistrationKeys() store.RegistrationKeyStore   { return &s.registrationKeys }
-func (s *mysqlStore) Workspaces() store.WorkspaceStore               { return &s.workspaces }
-func (s *mysqlStore) WorkspaceAccess() store.WorkspaceAccessStore    { return &s.workspaceAccess }
-func (s *mysqlStore) WorkspaceTabs() store.WorkspaceTabStore         { return &s.workspaceTabs }
-func (s *mysqlStore) WorkspaceLayouts() store.WorkspaceLayoutStore   { return &s.workspaceLayouts }
-func (s *mysqlStore) WorkspaceSections() store.WorkspaceSectionStore { return &s.workspaceSections }
+func (s *mysqlStore) RegistrationKeys() store.RegistrationKeyStore {
+	return &registrationKeyStore{conn: s.conn}
+}
+func (s *mysqlStore) Workspaces() store.WorkspaceStore { return &workspaceStore{conn: s.conn} }
+func (s *mysqlStore) WorkspaceAccess() store.WorkspaceAccessStore {
+	return &workspaceAccessStore{conn: s.conn}
+}
+func (s *mysqlStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
+	return &workspaceTabIndexStore{conn: s.conn}
+}
+func (s *mysqlStore) OrgOpBatches() store.OrgOpBatchesStore {
+	return &orgOpBatchesStore{conn: s.conn}
+}
+func (s *mysqlStore) OrgState() store.OrgStateStore { return &orgStateStore{conn: s.conn} }
+func (s *mysqlStore) OrgRecentBatchIDs() store.OrgRecentBatchIDStore {
+	return &orgRecentBatchIDStore{conn: s.conn}
+}
+func (s *mysqlStore) LifecycleOutbox() store.LifecycleOutboxStore {
+	return &lifecycleOutboxStore{conn: s.conn}
+}
+func (s *mysqlStore) WorkspaceSections() store.WorkspaceSectionStore {
+	return &workspaceSectionStore{conn: s.conn}
+}
 func (s *mysqlStore) WorkspaceSectionItems() store.WorkspaceSectionItemStore {
-	return &s.workspaceSectionItems
+	return &workspaceSectionItemStore{conn: s.conn}
 }
-func (s *mysqlStore) OAuthProviders() store.OAuthProviderStore { return &s.oauthProviders }
-func (s *mysqlStore) OAuthStates() store.OAuthStateStore       { return &s.oauthStates }
-func (s *mysqlStore) OAuthTokens() store.OAuthTokenStore       { return &s.oauthTokens }
-func (s *mysqlStore) OAuthUserLinks() store.OAuthUserLinkStore { return &s.oauthUserLinks }
+func (s *mysqlStore) OAuthProviders() store.OAuthProviderStore {
+	return &oauthProviderStore{conn: s.conn}
+}
+func (s *mysqlStore) OAuthStates() store.OAuthStateStore { return &oauthStateStore{conn: s.conn} }
+func (s *mysqlStore) OAuthTokens() store.OAuthTokenStore { return &oauthTokenStore{conn: s.conn} }
+func (s *mysqlStore) OAuthUserLinks() store.OAuthUserLinkStore {
+	return &oauthUserLinkStore{conn: s.conn}
+}
 func (s *mysqlStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
-	return &s.pendingOAuthSignups
+	return &pendingOAuthSignupStore{conn: s.conn}
 }
-func (s *mysqlStore) Cleanup() store.CleanupStore { return &s.cleanup }
+func (s *mysqlStore) APITokens() store.APITokenStore { return &apiTokenStore{conn: s.conn} }
+func (s *mysqlStore) DelegationTokens() store.DelegationTokenStore {
+	return &delegationTokenStore{conn: s.conn}
+}
+func (s *mysqlStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
+	return &deviceAuthorizationStore{conn: s.conn}
+}
+func (s *mysqlStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
+	return &cliAuthorizationCodeStore{conn: s.conn}
+}
+func (s *mysqlStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
 func (s *mysqlStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
 
 func (s *mysqlStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
@@ -195,7 +183,6 @@ func (s *mysqlStore) RunInTransaction(ctx context.Context, fn func(tx store.Stor
 			q:      s.conn.q.WithTx(tx),
 		},
 	}
-	initSubStores(txStore)
 	if err := fn(txStore); err != nil {
 		return err
 	}

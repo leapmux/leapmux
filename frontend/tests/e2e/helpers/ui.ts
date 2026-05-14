@@ -378,11 +378,62 @@ export async function waitForSettingsIdle(page: Page) {
 /**
  * Wait for a workspace page to be fully loaded.
  * Waits for either a tab or the empty tile actions/hint.
+ *
+ * Each locator uses `.first()` because workspaces can have multiple
+ * tabs visible; without `.first()`, Playwright's strict-mode check
+ * throws on multi-match — `isMaybeVisible` swallows the error and
+ * returns false, masking that the workspace IS ready.
+ *
+ * `timeoutMs` is forwarded to the underlying `expect.poll` so callers
+ * driving the dev-mode worker (where worker subprocess spawn extends
+ * first-render latency beyond the default expect timeout) can extend
+ * the wait without re-implementing the readiness shape.
  */
-export async function waitForWorkspaceReady(page: Page) {
-  await expectAnyVisible(
-    page.locator('[data-testid="tab"]'),
-    page.locator('[data-testid="empty-tile-actions"]'),
-    page.locator('[data-testid="empty-tile-hint"]'),
+export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
+  const pollOpts = timeoutMs != null ? { timeout: timeoutMs } : undefined
+  await expect.poll(async () => {
+    if (await page.locator('[data-testid="tab"]').first().isVisible().catch(() => false))
+      return true
+    if (await page.locator('[data-testid="empty-tile-actions"]').first().isVisible().catch(() => false))
+      return true
+    if (await page.locator('[data-testid="empty-tile-hint"]').first().isVisible().catch(() => false))
+      return true
+    return false
+  }, pollOpts).toBe(true)
+}
+
+/**
+ * Authenticate as `token`, navigate to `workspaceUrl`, and wait for
+ * the workspace shell to be ready (first tile rendered). Shared
+ * across the multi-context CRDT-convergence specs (150/151/152/153)
+ * that all need the same setup before driving layout mutations.
+ */
+export async function gotoWorkspace(page: Page, token: string, workspaceUrl: string) {
+  await loginViaToken(page, token)
+  await page.goto(workspaceUrl)
+  await waitForWorkspaceReady(page)
+  // Wait for the bootstrap event so subsequent mutations reach the
+  // store via the WS round-trip rather than the fallback projection.
+  await page.locator('[data-testid="tile"]').first().waitFor()
+}
+
+/**
+ * Read the rendered titles of every agent tab in the tabbar, stripping
+ * the close / notification / remote-badge child nodes so the returned
+ * text matches the visible label. Used by specs that assert dragged or
+ * restored tabs keep their metadata.
+ */
+export async function tabbarAgentLabels(page: Page): Promise<string[]> {
+  return page.locator('[data-testid="tab"][data-tab-type="agent"]').evaluateAll(els =>
+    els.map((el) => {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('[data-testid="tab-close"], [data-testid="tab-notification"], [data-testid="tab-remote-badge"]').forEach(n => n.remove())
+      return (clone.textContent ?? '').trim()
+    }),
   )
+}
+
+/** Locate a tab by its hub-side `tab_id`. */
+export function tabById(page: Page, tabId: string): Locator {
+  return page.locator(`[data-testid="tab"][data-tab-id="${tabId}"]`)
 }

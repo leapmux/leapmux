@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { FileDiffBase, FileViewMode } from '~/stores/tab.store'
+import type { FileDiffBase, FileViewMode } from '~/stores/tab.types'
 import { Show } from 'solid-js'
 import * as styles from './DiffModeToolbar.css'
 

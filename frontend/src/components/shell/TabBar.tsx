@@ -2,7 +2,7 @@ import type { Component, JSX } from 'solid-js'
 import type { TileActions } from './TileActionsMenu'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
-import type { Tab } from '~/stores/tab.store'
+import type { Tab } from '~/stores/tab.types'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
 import Ellipsis from 'lucide-solid/icons/ellipsis'
@@ -23,7 +23,8 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { basename } from '~/lib/paths'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
-import { canCloseTab, tabKey } from '~/stores/tab.store'
+import { canCloseTab, tabKey } from '~/stores/tab.helpers'
+import { isTerminalTab } from '~/stores/tab.types'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
@@ -224,7 +225,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
         data-testid="tab"
         data-tab-type={tabTypeLabel(tab.type)}
         data-tab-id={tab.id}
-        data-terminal-status={tab.status}
+        data-terminal-status={isTerminalTab(tab) ? tab.status : undefined}
         onClick={() => handleTabChange(tabKey(tab))}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -240,7 +241,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
             props.onClose(tab)
           }
         }}
-        onContextMenu={(e: MouseEvent) => e.preventDefault()}
+        onContextMenu={(e: MouseEvent) => {
+          e.preventDefault()
+        }}
         onDblClick={(e: MouseEvent) => {
           e.preventDefault()
           e.stopPropagation()
@@ -253,7 +256,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
         </span>
         <Show
           when={editingTabKey() === tabKey(tab)}
-          fallback={<TabTextWithTooltip label={tabLabel(tab)} status={tab.status} />}
+          fallback={<TabTextWithTooltip label={tabLabel(tab)} status={isTerminalTab(tab) ? tab.status : undefined} />}
         >
           <input
             class={styles.tabEditInput}

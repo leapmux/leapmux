@@ -23,8 +23,11 @@ type Store interface {
 	RegistrationKeys() RegistrationKeyStore
 	Workspaces() WorkspaceStore
 	WorkspaceAccess() WorkspaceAccessStore
-	WorkspaceTabs() WorkspaceTabStore
-	WorkspaceLayouts() WorkspaceLayoutStore
+	WorkspaceTabIndex() WorkspaceTabIndexStore
+	OrgOpBatches() OrgOpBatchesStore
+	OrgState() OrgStateStore
+	OrgRecentBatchIDs() OrgRecentBatchIDStore
+	LifecycleOutbox() LifecycleOutboxStore
 	WorkspaceSections() WorkspaceSectionStore
 	WorkspaceSectionItems() WorkspaceSectionItemStore
 	OAuthProviders() OAuthProviderStore
@@ -32,6 +35,10 @@ type Store interface {
 	OAuthTokens() OAuthTokenStore
 	OAuthUserLinks() OAuthUserLinkStore
 	PendingOAuthSignups() PendingOAuthSignupStore
+	APITokens() APITokenStore
+	DelegationTokens() DelegationTokenStore
+	DeviceAuthorizations() DeviceAuthorizationStore
+	CLIAuthorizationCodes() CLIAuthorizationCodeStore
 	Cleanup() CleanupStore
 
 	// Migrator returns the schema migration manager for this backend.
@@ -94,6 +101,13 @@ type UserStore interface {
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
 	ListByOrgID(ctx context.Context, orgID string) ([]User, error)
+	// ListByIDs returns the live (non-deleted) user rows whose id is
+	// in `ids`. Missing or deleted ids are silently dropped from the
+	// result — callers diff against the input slice when they need to
+	// detect absence. Empty `ids` returns nil with no DB call. Used by
+	// share-flow validators that need to verify a batch of user refs
+	// without paying N round-trips.
+	ListByIDs(ctx context.Context, ids []string) ([]User, error)
 	ListAll(ctx context.Context, p ListAllUsersParams) ([]User, error)
 	Search(ctx context.Context, p SearchUsersParams) ([]User, error)
 	UpdateProfile(ctx context.Context, p UpdateUserProfileParams) error
@@ -107,6 +121,30 @@ type UserStore interface {
 	ClearPendingEmail(ctx context.Context, id string) error
 	ClearCompetingPendingEmails(ctx context.Context, p ClearCompetingPendingEmailsParams) error
 	Delete(ctx context.Context, id string) error
+	// BumpTokensRevokedAt advances the user's tokens_revoked_at high-
+	// water mark. The hub's revocation watcher polls this column to
+	// drive `EvictByUserID` + `EvictBearersByUserID` +
+	// `CloseChannelsByUser` so the in-memory cache + open channels
+	// die in lock-step with admin-CLI mutations. Returns the number
+	// of rows affected (0 when the user is already deleted or
+	// missing). Idempotent under repeated calls.
+	BumpTokensRevokedAt(ctx context.Context, userID string) (int64, error)
+	// ListWithTokensRevokedSince returns users whose tokens_revoked_at
+	// moved past the supplied high-water mark, ordered ascending.
+	// Used by the watcher to find rows to act on; the caller updates
+	// the watermark with the max returned value.
+	ListWithTokensRevokedSince(ctx context.Context, since time.Time) ([]UserTokensRevoked, error)
+	// MaxTokensRevokedAt returns the most recent tokens_revoked_at
+	// across all users (or zero time when none). The revocation
+	// watcher seeds its user-side watermark with this at hub bootstrap.
+	MaxTokensRevokedAt(ctx context.Context) (time.Time, error)
+}
+
+// UserTokensRevoked is the projection ListWithTokensRevokedSince
+// returns: just the user id and the high-water-mark timestamp.
+type UserTokensRevoked struct {
+	UserID          string
+	TokensRevokedAt time.Time
 }
 
 type SessionStore interface {
@@ -220,6 +258,12 @@ type WorkspaceStore interface {
 	Create(ctx context.Context, p CreateWorkspaceParams) error
 	GetByID(ctx context.Context, id string) (*Workspace, error)
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*Workspace, error)
+	// ListByIDs returns the non-deleted workspace rows whose id is in
+	// `ids`. Missing or deleted ids are silently dropped from the
+	// result. Empty `ids` returns nil with no DB call. The CLI's
+	// requested-workspace paths (`tab list`, `/ws/orgevents`
+	// subscribe) use this to verify a batch of refs in a single query.
+	ListByIDs(ctx context.Context, ids []string) ([]Workspace, error)
 	ListAccessible(ctx context.Context, p ListAccessibleWorkspacesParams) ([]Workspace, error)
 	Rename(ctx context.Context, p RenameWorkspaceParams) (int64, error)
 	SoftDelete(ctx context.Context, p SoftDeleteWorkspaceParams) (int64, error)
@@ -232,26 +276,198 @@ type WorkspaceAccessStore interface {
 	Revoke(ctx context.Context, p RevokeWorkspaceAccessParams) error
 	ListByWorkspaceID(ctx context.Context, workspaceID string) ([]WorkspaceAccess, error)
 	HasAccess(ctx context.Context, p HasWorkspaceAccessParams) (bool, error)
+	// ListForUserIn returns the subset of `workspaceIDs` for which
+	// userID holds a workspace_access grant. Used by the
+	// /ws/orgevents subscribe path to filter a batch of requested
+	// workspaces without one HasAccess call per id. Empty
+	// `workspaceIDs` returns an empty slice with no DB call.
+	ListForUserIn(ctx context.Context, userID string, workspaceIDs []string) ([]string, error)
 	Clear(ctx context.Context, workspaceID string) error
 }
 
-type WorkspaceTabStore interface {
-	Upsert(ctx context.Context, p UpsertWorkspaceTabParams) error
-	BulkUpsert(ctx context.Context, params []UpsertWorkspaceTabParams) error
-	Delete(ctx context.Context, p DeleteWorkspaceTabParams) error
-	DeleteByWorker(ctx context.Context, workerID string) error
-	DeleteByWorkspace(ctx context.Context, workspaceID string) error
-	DeleteWorkerTabsForWorkspace(ctx context.Context, p DeleteWorkerTabsForWorkspaceParams) error
-	ListByWorkspace(ctx context.Context, workspaceID string) ([]WorkspaceTab, error)
-	ListByWorker(ctx context.Context, workerID string) ([]WorkspaceTab, error)
+// WorkspaceTabIndexStore is the materialized derived view of every
+// non-tombstoned tab in the org doc. The CRDT manager keeps it in
+// sync with OrgCrdtState; UI / worker reconciliation consume it via
+// _rendered (UI) or _owned (worker reconciliation).
+type WorkspaceTabIndexStore interface {
+	UpsertOwned(ctx context.Context, p UpsertOwnedTabParams) error
+	// BulkUpsertOwned applies every row in `rows` as a single bulk
+	// upsert. Empty slice is a no-op. Implementations chunk internally
+	// when the backend's parameter limit would be exceeded, but the
+	// operation as a whole is not atomic across chunks — callers that
+	// need atomicity must run inside a transaction.
+	BulkUpsertOwned(ctx context.Context, rows []UpsertOwnedTabParams) error
+	DeleteOwned(ctx context.Context, orgID, tabID string) error
+	// BulkDeleteOwned deletes every row identified by `keys` as a
+	// single bulk delete. Empty slice is a no-op. Same chunking /
+	// atomicity notes as BulkUpsertOwned.
+	BulkDeleteOwned(ctx context.Context, keys []TabIndexKey) error
+	DeleteOwnedByOrg(ctx context.Context, orgID string) error
+	ListOwnedByWorkspace(ctx context.Context, workspaceID string) ([]WorkspaceTabRow, error)
+	ListOwnedByWorker(ctx context.Context, workerID string) ([]WorkspaceTabRow, error)
 	ListDistinctWorkersByWorkspace(ctx context.Context, workspaceID string) ([]string, error)
-	GetMaxPosition(ctx context.Context, workspaceID string) (string, error)
+	// GetOwned returns the single workspace_tab_owned row identified
+	// by (workspace_id, tab_type, tab_id), or ErrNotFound. The
+	// indexed point-lookup mirrors GetRendered and lets the
+	// delegation handler's mint-time propagation wait poll a single
+	// row instead of materializing every owned tab in the workspace.
+	GetOwned(ctx context.Context, p GetOwnedTabParams) (*WorkspaceTabRow, error)
+
+	UpsertRendered(ctx context.Context, p UpsertRenderedTabParams) error
+	// BulkUpsertRendered is the rendered-view counterpart to
+	// BulkUpsertOwned.
+	BulkUpsertRendered(ctx context.Context, rows []UpsertRenderedTabParams) error
+	DeleteRendered(ctx context.Context, orgID, tabID string) error
+	// BulkDeleteRendered is the rendered-view counterpart to
+	// BulkDeleteOwned.
+	BulkDeleteRendered(ctx context.Context, keys []TabIndexKey) error
+	DeleteRenderedByOrg(ctx context.Context, orgID string) error
+	ListRenderedByWorkspace(ctx context.Context, workspaceID string) ([]WorkspaceTabRow, error)
+	// ListRenderedByWorkspaceIDs returns rendered tabs across every
+	// workspace_id in `workspaceIDs`. The result is ordered by
+	// (workspace_id, position) so callers iterating the slice get a
+	// stable per-workspace grouping without a secondary sort. Empty
+	// `workspaceIDs` returns nil with no DB call.
+	ListRenderedByWorkspaceIDs(ctx context.Context, workspaceIDs []string) ([]WorkspaceTabRow, error)
+	GetRendered(ctx context.Context, p GetRenderedTabParams) (*WorkspaceTabRow, error)
+	// LocateAccessibleRendered returns the rendered-tab row matching
+	// (tab_type, tab_id) across every workspace the user can access
+	// (owner or share grant). Returns ErrNotFound when no accessible
+	// workspace contains the tab. Backs WorkspaceService.LocateTab so
+	// the CLI can resolve a tab's full context (org / workspace /
+	// tile / worker) from just the id.
+	LocateAccessibleRendered(ctx context.Context, p LocateAccessibleRenderedTabParams) (*WorkspaceTabRow, error)
 }
 
-type WorkspaceLayoutStore interface {
-	Get(ctx context.Context, workspaceID string) (*WorkspaceLayout, error)
-	Upsert(ctx context.Context, p UpsertWorkspaceLayoutParams) error
-	Delete(ctx context.Context, workspaceID string) error
+// OrgOpBatchesStore manages the CRDT op-batch journal.
+type OrgOpBatchesStore interface {
+	Insert(ctx context.Context, p InsertOrgOpBatchParams) error
+	// ListAfter pages through batches strictly after the given HLC
+	// cursor. `limit` caps the per-call row count so a far-behind
+	// subscriber cannot OOM the broadcaster; pass a large value
+	// (CRDTBatchPageLimit) for "drain everything available now".
+	ListAfter(ctx context.Context, p ListOrgOpBatchesAfterParams) ([]OrgOpBatchRow, error)
+	DeleteThrough(ctx context.Context, p DeleteOrgOpBatchesThroughParams) error
+	Count(ctx context.Context, orgID string) (int64, error)
+}
+
+// OrgStateStore manages the per-org materialized state blob.
+type OrgStateStore interface {
+	Get(ctx context.Context, orgID string) (*OrgStateRow, error)
+	Upsert(ctx context.Context, p UpsertOrgStateParams) error
+	AdvanceEpoch(ctx context.Context, p AdvanceOrgEpochParams) error
+}
+
+// OrgRecentBatchIDStore manages the dedup table.
+type OrgRecentBatchIDStore interface {
+	Get(ctx context.Context, orgID, batchID string) (*OrgRecentBatchIDRow, error)
+	Insert(ctx context.Context, p InsertOrgRecentBatchIDParams) error
+	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
+}
+
+// LifecycleOutboxStore manages the workspace-lifecycle transactional outbox.
+type LifecycleOutboxStore interface {
+	Insert(ctx context.Context, p InsertLifecycleOutboxParams) error
+	// ListPending pages through unconsumed rows in id order. `limit`
+	// caps the per-call row count so a wedged outbox cannot OOM the
+	// dispatcher; callers iterate to drain.
+	ListPending(ctx context.Context, p ListPendingLifecycleOutboxParams) ([]LifecycleOutboxRow, error)
+	MarkConsumed(ctx context.Context, p MarkLifecycleOutboxConsumedParams) error
+	DeleteConsumedBefore(ctx context.Context, before time.Time) (int64, error)
+}
+
+// CRDTBatchPageLimit is the default per-page row cap when a caller has
+// no specific paging preference. Big enough that practical drains see
+// one round trip; small enough to bound memory on a far-behind path.
+const CRDTBatchPageLimit = 1024
+
+// ListPendingLifecycleOutboxParams pages a ListPending call.
+type ListPendingLifecycleOutboxParams struct {
+	OrgID string
+	Limit int32
+}
+
+// APITokenStore manages durable bearer tokens (CLI / future external).
+type APITokenStore interface {
+	Create(ctx context.Context, p CreateAPITokenParams) error
+	GetByID(ctx context.Context, id string) (*APIToken, error)
+	ListByUser(ctx context.Context, p ListAPITokensByUserParams) ([]APIToken, error)
+	Touch(ctx context.Context, id string) error
+	RotateRefresh(ctx context.Context, p RotateAPITokenRefreshParams) error
+	Revoke(ctx context.Context, id string) (int64, error)
+	// RevokeByUser bulk-revokes every live api_tokens row for userID.
+	// Hooked from admin commands that kill the user's auth basis
+	// (delete, password reset, force-logout-all) so api bearers die
+	// alongside delegation tokens.
+	RevokeByUser(ctx context.Context, userID string) (int64, error)
+	// ListRevokedSince returns rows whose revoked_at moved past the
+	// watcher's high-water mark. Same shape as DelegationTokenStore.
+	ListRevokedSince(ctx context.Context, since time.Time) ([]TokenRevocationRecord, error)
+	// MaxRevokedAt returns the most recent revoked_at across all rows,
+	// or the zero time when no rows have been revoked. The revocation
+	// watcher calls this once at hub bootstrap to seed its watermark
+	// in O(1) instead of materializing every historical row via
+	// ListRevokedSince.
+	MaxRevokedAt(ctx context.Context) (time.Time, error)
+	DeleteRevokedBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// TokenRevocationRecord is the projection ListRevokedSince returns
+// for both api_tokens and delegation_tokens — only the fields the
+// watcher needs to act.
+type TokenRevocationRecord struct {
+	ID        string
+	UserID    string
+	RevokedAt time.Time
+}
+
+// DelegationTokenStore manages worker-minted ephemeral tokens.
+type DelegationTokenStore interface {
+	Create(ctx context.Context, p CreateDelegationTokenParams) error
+	GetByID(ctx context.Context, id string) (*DelegationToken, error)
+	ListByUser(ctx context.Context, userID string) ([]DelegationToken, error)
+	ListActiveByUser(ctx context.Context, userID string) ([]DelegationToken, error)
+	Touch(ctx context.Context, id string) error
+	RotateRefresh(ctx context.Context, p RotateDelegationTokenRefreshParams) error
+	Revoke(ctx context.Context, id string) (int64, error)
+	// RevokeByUser bulk-revokes every non-revoked, non-expired
+	// delegation token for the given user. Returns the count of rows
+	// affected. Hooked from auth flows (logout, password change,
+	// account deactivation) so the plan's "user-session revocation
+	// propagated by hub" requirement holds: the spawned-agent
+	// bearers tied to that user die at the hub the moment the user's
+	// auth basis goes away.
+	RevokeByUser(ctx context.Context, userID string) (int64, error)
+	// ListRevokedSince returns rows revoked after the watcher's
+	// high-water mark. The hub's revocation watcher uses this to
+	// pick up admin-CLI revocations that mutate the row directly.
+	ListRevokedSince(ctx context.Context, since time.Time) ([]TokenRevocationRecord, error)
+	// MaxRevokedAt returns the most recent revoked_at across all rows
+	// (or zero time when none). See the matching method on
+	// APITokenStore for the bootstrap-seed rationale.
+	MaxRevokedAt(ctx context.Context) (time.Time, error)
+	DeleteRevokedBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteExpiredBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// DeviceAuthorizationStore manages RFC 8628 device-code grants.
+type DeviceAuthorizationStore interface {
+	Create(ctx context.Context, p CreateDeviceAuthorizationParams) error
+	Get(ctx context.Context, deviceCode string) (*DeviceAuthorization, error)
+	GetByUserCode(ctx context.Context, userCode string) (*DeviceAuthorization, error)
+	Approve(ctx context.Context, p ApproveDeviceAuthorizationParams) (int64, error)
+	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationByUserCodeParams) (int64, error)
+	Deny(ctx context.Context, deviceCode string) (int64, error)
+	Consume(ctx context.Context, deviceCode string) (int64, error)
+	TouchPoll(ctx context.Context, deviceCode string) error
+	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// CLIAuthorizationCodeStore manages local-redirect one-shot codes.
+type CLIAuthorizationCodeStore interface {
+	Create(ctx context.Context, p CreateCLIAuthorizationCodeParams) error
+	Consume(ctx context.Context, code string) (*CLIAuthorizationCode, error)
+	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type WorkspaceSectionStore interface {
@@ -335,6 +551,11 @@ type CleanupStore interface {
 	HardDeleteOrgsBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredOAuthStates(ctx context.Context) (int64, error)
 	DeleteExpiredPendingOAuthSignups(ctx context.Context) (int64, error)
+	DeleteExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteExpiredCLIAuthorizationCodes(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // TestEntity identifies a table/collection for test helper operations.

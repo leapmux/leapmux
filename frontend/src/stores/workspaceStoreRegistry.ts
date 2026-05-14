@@ -1,22 +1,48 @@
-import type { FloatingWindowStoreState } from './floatingWindow.store'
 import type { LayoutStoreState } from './layout.store'
-import type { RestorableTabState, Tab } from './tab.store'
-import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { RestorableTabState, Tab } from '~/stores/tab.types'
 import { createSignal } from 'solid-js'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { tabKey } from './tab.store'
+import { tabKey } from '~/stores/tab.helpers'
 
 /**
  * A snapshot of per-workspace state, cached so that switching back to a
  * previously visited workspace restores instantly without re-fetching.
+ *
+ * Per-agent metadata lives directly on the `tabs` records (populated by
+ * `protoToAgentTabFields` on hydration), so there is no separate
+ * `agents` slot to keep in sync. Floating-window state is omitted too:
+ * `floatingWindowStore` is projection-driven from the CRDT bridge, so
+ * re-activation re-derives it from the materialized state directly.
  */
 export interface WorkspaceSnapshot extends RestorableTabState {
   workspaceId: string
   layout: LayoutStoreState
-  floatingWindows?: FloatingWindowStoreState
-  agents: AgentInfo[]
   restored: boolean
   tabsLoaded: boolean
+}
+
+/**
+ * Build a fresh empty workspace snapshot. The cross-workspace move path
+ * (useCrossWorkspaceMove) creates one when dropping a tab onto a
+ * workspace the client has never opened — neither `restored` nor
+ * `tabsLoaded` are set so the subsequent ListTabs fetch on switch-in
+ * still merges the hub's authoritative tab list.
+ */
+export function createEmptySnapshot(
+  workspaceId: string,
+  opts?: { layoutRootId?: string },
+): WorkspaceSnapshot {
+  const tileId = opts?.layoutRootId ?? 'tile-1'
+  return {
+    workspaceId,
+    tabs: [],
+    activeTabKey: null,
+    layout: {
+      root: { type: 'leaf', id: tileId },
+      focusedTileId: tileId,
+    },
+    restored: false,
+    tabsLoaded: false,
+  }
 }
 
 export function createWorkspaceStoreRegistry() {
@@ -31,6 +57,11 @@ export function createWorkspaceStoreRegistry() {
   }
 
   function set(workspaceId: string, snapshot: WorkspaceSnapshot): void {
+    // Same-reference replays (double-mount, idempotent restore) MUST
+    // NOT bump the version signal — every reactive consumer would re-run
+    // for no observable change.
+    if (snapshots.get(workspaceId) === snapshot)
+      return
     snapshots.set(workspaceId, snapshot)
     setVersion(v => v + 1)
   }
@@ -68,9 +99,8 @@ export function createWorkspaceStoreRegistry() {
   }
 
   /**
-   * Remove a tab from a snapshot. For AGENT tabs, also drops the matching
-   * agent record so the snapshot stays consistent. No-op if the snapshot or
-   * the tab is missing.
+   * Remove a tab from a snapshot. No-op if the snapshot or the tab is
+   * missing.
    */
   function removeTab(workspaceId: string, tab: Tab): void {
     const key = tabKey(tab)
@@ -78,10 +108,7 @@ export function createWorkspaceStoreRegistry() {
       const nextTabs = snap.tabs.filter(t => tabKey(t) !== key)
       if (nextTabs.length === snap.tabs.length)
         return snap
-      const nextAgents = tab.type === TabType.AGENT
-        ? snap.agents.filter(a => a.id !== tab.id)
-        : snap.agents
-      return { ...snap, tabs: nextTabs, agents: nextAgents }
+      return { ...snap, tabs: nextTabs }
     })
   }
 

@@ -3,9 +3,9 @@ import type { TabContext } from './tabContext'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
+import type { TerminalTab } from '~/stores/tab.types'
 
 import { createEffect, createSignal, on } from 'solid-js'
-import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { toastCloseFailure } from '~/components/shell/closeFailureToast'
@@ -13,9 +13,7 @@ import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.store'
-
-import { pickTerminalTitle } from './tabNames'
+import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
 
 export interface UseTerminalOperationsProps {
   org: { orgId: () => string }
@@ -27,7 +25,6 @@ export interface UseTerminalOperationsProps {
   setShowNewTerminalDialog: (v: boolean) => void
   setNewTerminalLoading: (v: boolean) => void
   setNewShellLoading: (v: boolean) => void
-  persistLayout?: () => void
 }
 
 export function useTerminalOperations(props: UseTerminalOperationsProps) {
@@ -75,7 +72,9 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
     props.setNewTerminalLoading(true)
     try {
-      const title = pickTerminalTitle(props.tabStore.state.tabs)
+      // Title left out: the worker picks "Terminal <Name>" server-side
+      // and returns it in the response. One pool, one place — see
+      // worker/service/tab_names.go.
       const resp = await workerRpc.openTerminal(ctx.workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
@@ -93,23 +92,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       // (phase 1 of the async startup reports the post-mutation gitStatus).
       // Seed optimistically from the active tab so the sidebar doesn't flash
       // the new tab under the workspace before phase 1 completes.
-      const newTab = { type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, status: TerminalStatus.STARTING }
+      const newTab: TerminalTab = { type: TabType.TERMINAL, id: resp.terminalId, title: resp.title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, shellStartDir: shellStartDir ?? ctx.workingDir, status: TerminalStatus.STARTING }
       const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), newTab)
       props.tabStore.addTab({ ...newTab, ...seed }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
-      props.persistLayout?.()
-      // Register tab with hub.
-      workspaceClient.addTab({
-        workspaceId: ws.id,
-        tab: { tabType: TabType.TERMINAL, tabId: resp.terminalId, tileId, workerId: ctx.workerId },
-      }).catch(() => {})
-      // Persist initial title to backend so it survives restarts.
-      workerRpc.updateTerminalTitle(ctx.workerId, {
-        orgId: props.org.orgId(),
-        workspaceId: ws.id,
-        terminalId: resp.terminalId,
-        title,
-      }).catch(() => {})
     }
     catch (err) {
       showWarnToast('Failed to open terminal', err)
@@ -132,7 +118,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
     props.setNewShellLoading(true)
     try {
-      const title = pickTerminalTitle(props.tabStore.state.tabs)
       const resp = await workerRpc.openTerminal(ctx.workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
@@ -145,23 +130,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
       const tileId = props.layoutStore.focusedTileId()
       const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-      const newTab = { type: TabType.TERMINAL, id: resp.terminalId, title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, status: TerminalStatus.STARTING }
+      const newTab: TerminalTab = { type: TabType.TERMINAL, id: resp.terminalId, title: resp.title, tileId, workerId: ctx.workerId, workingDir: ctx.workingDir, status: TerminalStatus.STARTING }
       const seed = resolveOptimisticGitInfo(props.tabStore.activeTab(), newTab)
       props.tabStore.addTab({ ...newTab, ...seed }, { afterKey })
       props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, resp.terminalId)
-      props.persistLayout?.()
-      // Register tab with hub.
-      workspaceClient.addTab({
-        workspaceId: ws.id,
-        tab: { tabType: TabType.TERMINAL, tabId: resp.terminalId, tileId, workerId: ctx.workerId },
-      }).catch(() => {})
-      // Persist initial title to backend so it survives restarts.
-      workerRpc.updateTerminalTitle(ctx.workerId, {
-        orgId: props.org.orgId(),
-        workspaceId: ws.id,
-        terminalId: resp.terminalId,
-        title,
-      }).catch(() => {})
     }
     catch (err) {
       showWarnToast('Failed to open terminal', err)
@@ -293,10 +265,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         })
     }
 
-    // Hub unregister (parallel with worker close).
-    if (ws) {
-      workspaceClient.removeTab({ workspaceId: ws.id, tabType: TabType.TERMINAL, tabId: terminalId }).catch(() => {})
-    }
+    // `tabStore.removeTab` above emitted the TombstoneTab op via the
+    // CRDT bridge; the hub broadcasts it to peer clients via
+    // /ws/orgevents.
+    void terminalId
   }
 
   return {

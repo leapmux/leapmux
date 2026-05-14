@@ -29,7 +29,7 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		ctx, opts.Shell, opts.LoginShell, "goose", nil, []string{"acp"}, nil, opts.WorkingDir,
 	)
 
-	cmd.Env = append(cmd.Environ(), "LEAPMUX_WORKER=1")
+	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
 
 	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -38,22 +38,9 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 
 	a := &GooseCLIAgent{
 		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:            opts.AgentID,
-				providerName:       "goose",
-				cmd:                cmd,
-				stdin:              stdin,
-				ctx:                ctx,
-				cancel:             cancel,
-				stderrDone:         make(chan struct{}),
-				processDone:        make(chan struct{}),
-				preambleDelimiter:  preambleDelimiter,
-				preambleMetaPrefix: metaPrefix,
-				preambleMeta:       make(map[string]string),
-				apiTimeout:         opts.apiTimeout(),
-			}},
-			sink:  sink,
-			model: opts.Model,
+			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "goose", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
+			sink:        sink,
+			model:       opts.Model,
 		},
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)

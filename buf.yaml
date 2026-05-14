@@ -4,6 +4,27 @@ modules:
 lint:
   use:
     - STANDARD
+  except:
+    # Streaming RPCs return event-style messages whose names don't fit
+    # the "<RpcName>Response" convention (WorkspaceEvent,
+    # WorkspacePrivateEvent, StreamInnerEnvelope). The naming is
+    # intentional — these are event payloads, not request-response
+    # pairs — so we suppress the lint here rather than rename them
+    # everywhere.
+    - RPC_RESPONSE_STANDARD_NAME
+    # BatchRejectionReason values are referenced as BATCH_REJECTION_X
+    # in the CRDT validator and the frontend pendingOps reject
+    # handler — the plan's design freezes those names. The buf
+    # default would force a "BATCH_REJECTION_REASON_" prefix; the
+    # extra component noise isn't worth a global rename, and the
+    # values are namespaced via the enum's package anyway.
+    - ENUM_VALUE_PREFIX
+    # OrgCRDT is the canonical name in the plan and on the wire. The
+    # buf default would force a `Service` suffix; the existing
+    # WorkspaceService / WorkerConnectorService etc. follow that
+    # convention, but OrgCRDT reads as a noun referring to the data
+    # type the service operates on. Carve it out specifically.
+    - SERVICE_SUFFIX
 breaking:
   use:
     - FILE

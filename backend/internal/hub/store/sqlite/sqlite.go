@@ -15,29 +15,14 @@ import (
 )
 
 // sqliteStore implements store.Store backed by SQLite.
+//
+// Sub-stores are constructed on demand by each getter rather than
+// cached on the struct: a transaction-scoped store would otherwise
+// allocate all 26 sub-store structs up front (most unused per tx), and
+// a fresh `&{conn}` per call is cheaper than the prior 26-field batch
+// for any tx that touches fewer than ~26 tables.
 type sqliteStore struct {
 	conn *sqliteConn
-
-	orgs                  orgStore
-	users                 userStore
-	sessions              sessionStore
-	orgMembers            orgMemberStore
-	workers               workerStore
-	workerAccessGrants    workerAccessGrantStore
-	workerNotifications   workerNotificationStore
-	registrationKeys      registrationKeyStore
-	workspaces            workspaceStore
-	workspaceAccess       workspaceAccessStore
-	workspaceTabs         workspaceTabStore
-	workspaceLayouts      workspaceLayoutStore
-	workspaceSections     workspaceSectionStore
-	workspaceSectionItems workspaceSectionItemStore
-	oauthProviders        oauthProviderStore
-	oauthStates           oauthStateStore
-	oauthTokens           oauthTokenStore
-	oauthUserLinks        oauthUserLinkStore
-	pendingOAuthSignups   pendingOAuthSignupStore
-	cleanup               cleanupStore
 }
 
 var _ store.Store = (*sqliteStore)(nil)
@@ -70,7 +55,7 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 		return nil, fmt.Errorf("migrate sqlite: %w", err)
 	}
 
-	st := &sqliteStore{
+	return &sqliteStore{
 		conn: &sqliteConn{
 			shared: &sqliteShared{
 				db:       sqlDB,
@@ -79,9 +64,7 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 			exec: sqlDB,
 			q:    gendb.New(sqlDB),
 		},
-	}
-	initSubStores(st)
-	return st, nil
+	}, nil
 }
 
 // NewFromDB wraps an existing *sql.DB (already opened and migrated) into a
@@ -92,7 +75,7 @@ func NewFromDB(sqlDB *sql.DB) (store.Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init sqlite migrator: %w", err)
 	}
-	st := &sqliteStore{
+	return &sqliteStore{
 		conn: &sqliteConn{
 			shared: &sqliteShared{
 				db:       sqlDB,
@@ -101,60 +84,68 @@ func NewFromDB(sqlDB *sql.DB) (store.Store, error) {
 			exec: sqlDB,
 			q:    gendb.New(sqlDB),
 		},
-	}
-	initSubStores(st)
-	return st, nil
+	}, nil
 }
 
-func initSubStores(s *sqliteStore) {
-	s.orgs = orgStore{conn: s.conn}
-	s.users = userStore{conn: s.conn}
-	s.sessions = sessionStore{conn: s.conn}
-	s.orgMembers = orgMemberStore{conn: s.conn}
-	s.workers = workerStore{conn: s.conn}
-	s.workerAccessGrants = workerAccessGrantStore{conn: s.conn}
-	s.workerNotifications = workerNotificationStore{conn: s.conn}
-	s.registrationKeys = registrationKeyStore{conn: s.conn}
-	s.workspaces = workspaceStore{conn: s.conn}
-	s.workspaceAccess = workspaceAccessStore{conn: s.conn}
-	s.workspaceTabs = workspaceTabStore{conn: s.conn}
-	s.workspaceLayouts = workspaceLayoutStore{conn: s.conn}
-	s.workspaceSections = workspaceSectionStore{conn: s.conn}
-	s.workspaceSectionItems = workspaceSectionItemStore{conn: s.conn}
-	s.oauthProviders = oauthProviderStore{conn: s.conn}
-	s.oauthStates = oauthStateStore{conn: s.conn}
-	s.oauthTokens = oauthTokenStore{conn: s.conn}
-	s.oauthUserLinks = oauthUserLinkStore{conn: s.conn}
-	s.pendingOAuthSignups = pendingOAuthSignupStore{conn: s.conn}
-	s.cleanup = cleanupStore{conn: s.conn}
+func (s *sqliteStore) Orgs() store.OrgStore             { return &orgStore{conn: s.conn} }
+func (s *sqliteStore) Users() store.UserStore           { return &userStore{conn: s.conn} }
+func (s *sqliteStore) Sessions() store.SessionStore     { return &sessionStore{conn: s.conn} }
+func (s *sqliteStore) OrgMembers() store.OrgMemberStore { return &orgMemberStore{conn: s.conn} }
+func (s *sqliteStore) Workers() store.WorkerStore       { return &workerStore{conn: s.conn} }
+func (s *sqliteStore) WorkerAccessGrants() store.WorkerAccessGrantStore {
+	return &workerAccessGrantStore{conn: s.conn}
 }
-
-func (s *sqliteStore) Orgs() store.OrgStore                             { return &s.orgs }
-func (s *sqliteStore) Users() store.UserStore                           { return &s.users }
-func (s *sqliteStore) Sessions() store.SessionStore                     { return &s.sessions }
-func (s *sqliteStore) OrgMembers() store.OrgMemberStore                 { return &s.orgMembers }
-func (s *sqliteStore) Workers() store.WorkerStore                       { return &s.workers }
-func (s *sqliteStore) WorkerAccessGrants() store.WorkerAccessGrantStore { return &s.workerAccessGrants }
 func (s *sqliteStore) WorkerNotifications() store.WorkerNotificationStore {
-	return &s.workerNotifications
+	return &workerNotificationStore{conn: s.conn}
 }
-func (s *sqliteStore) RegistrationKeys() store.RegistrationKeyStore   { return &s.registrationKeys }
-func (s *sqliteStore) Workspaces() store.WorkspaceStore               { return &s.workspaces }
-func (s *sqliteStore) WorkspaceAccess() store.WorkspaceAccessStore    { return &s.workspaceAccess }
-func (s *sqliteStore) WorkspaceTabs() store.WorkspaceTabStore         { return &s.workspaceTabs }
-func (s *sqliteStore) WorkspaceLayouts() store.WorkspaceLayoutStore   { return &s.workspaceLayouts }
-func (s *sqliteStore) WorkspaceSections() store.WorkspaceSectionStore { return &s.workspaceSections }
+func (s *sqliteStore) RegistrationKeys() store.RegistrationKeyStore {
+	return &registrationKeyStore{conn: s.conn}
+}
+func (s *sqliteStore) Workspaces() store.WorkspaceStore { return &workspaceStore{conn: s.conn} }
+func (s *sqliteStore) WorkspaceAccess() store.WorkspaceAccessStore {
+	return &workspaceAccessStore{conn: s.conn}
+}
+func (s *sqliteStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
+	return &workspaceTabIndexStore{conn: s.conn}
+}
+func (s *sqliteStore) OrgOpBatches() store.OrgOpBatchesStore {
+	return &orgOpBatchesStore{conn: s.conn}
+}
+func (s *sqliteStore) OrgState() store.OrgStateStore { return &orgStateStore{conn: s.conn} }
+func (s *sqliteStore) OrgRecentBatchIDs() store.OrgRecentBatchIDStore {
+	return &orgRecentBatchIDStore{conn: s.conn}
+}
+func (s *sqliteStore) LifecycleOutbox() store.LifecycleOutboxStore {
+	return &lifecycleOutboxStore{conn: s.conn}
+}
+func (s *sqliteStore) WorkspaceSections() store.WorkspaceSectionStore {
+	return &workspaceSectionStore{conn: s.conn}
+}
 func (s *sqliteStore) WorkspaceSectionItems() store.WorkspaceSectionItemStore {
-	return &s.workspaceSectionItems
+	return &workspaceSectionItemStore{conn: s.conn}
 }
-func (s *sqliteStore) OAuthProviders() store.OAuthProviderStore { return &s.oauthProviders }
-func (s *sqliteStore) OAuthStates() store.OAuthStateStore       { return &s.oauthStates }
-func (s *sqliteStore) OAuthTokens() store.OAuthTokenStore       { return &s.oauthTokens }
-func (s *sqliteStore) OAuthUserLinks() store.OAuthUserLinkStore { return &s.oauthUserLinks }
+func (s *sqliteStore) OAuthProviders() store.OAuthProviderStore {
+	return &oauthProviderStore{conn: s.conn}
+}
+func (s *sqliteStore) OAuthStates() store.OAuthStateStore { return &oauthStateStore{conn: s.conn} }
+func (s *sqliteStore) OAuthTokens() store.OAuthTokenStore { return &oauthTokenStore{conn: s.conn} }
+func (s *sqliteStore) OAuthUserLinks() store.OAuthUserLinkStore {
+	return &oauthUserLinkStore{conn: s.conn}
+}
 func (s *sqliteStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
-	return &s.pendingOAuthSignups
+	return &pendingOAuthSignupStore{conn: s.conn}
 }
-func (s *sqliteStore) Cleanup() store.CleanupStore { return &s.cleanup }
+func (s *sqliteStore) APITokens() store.APITokenStore { return &apiTokenStore{conn: s.conn} }
+func (s *sqliteStore) DelegationTokens() store.DelegationTokenStore {
+	return &delegationTokenStore{conn: s.conn}
+}
+func (s *sqliteStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
+	return &deviceAuthorizationStore{conn: s.conn}
+}
+func (s *sqliteStore) CLIAuthorizationCodes() store.CLIAuthorizationCodeStore {
+	return &cliAuthorizationCodeStore{conn: s.conn}
+}
+func (s *sqliteStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
 func (s *sqliteStore) Migrator() store.Migrator    { return s.conn.shared.migrator }
 
 func (s *sqliteStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
@@ -171,7 +162,6 @@ func (s *sqliteStore) RunInTransaction(ctx context.Context, fn func(tx store.Sto
 			q:      s.conn.q.WithTx(tx),
 		},
 	}
-	initSubStores(txStore)
 	if err := fn(txStore); err != nil {
 		return err
 	}

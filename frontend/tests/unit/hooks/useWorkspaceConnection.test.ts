@@ -4,7 +4,6 @@ import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
-import { createAgentStore } from '~/stores/agent.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
@@ -20,7 +19,10 @@ import { createTabStore } from '~/stores/tab.store'
  */
 describe('controlRequest guard for inactive agents', () => {
   function makeAgent(id: string, status: AgentStatus) {
-    return { id, status } as Parameters<ReturnType<typeof createAgentStore>['addAgent']>[0]
+    return { id, status }
+  }
+  function asAgentTab(a: { id: string, status: AgentStatus }) {
+    return { type: TabType.AGENT, id: a.id, agentStatus: a.status }
   }
 
   function makeRequest(requestId: string, agentId: string) {
@@ -29,17 +31,17 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should not add catch-up control request when agent is INACTIVE', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
+      const tabStore = createTabStore()
       const controlStore = createControlStore()
 
-      agentStore.addAgent(makeAgent('agent-1', AgentStatus.INACTIVE))
+      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.INACTIVE)))
 
       // Simulate the guard in useWorkspaceConnection's controlRequest handler:
-      // if (catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE) break
+      // if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE) break
       const catchUpPhase = 'catchingUp'
-      // const agentEntry = agentStore.state.agents.find(a => a.id === cr.agentId)
-      const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
-      if (!(catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)) {
+      // const agentEntry = tabStore.getAgentTab(cr.agentId)
+      const agentEntry = tabStore.getAgentTab('agent-1')
+      if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
@@ -50,23 +52,23 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should revive stale INACTIVE state and add live control request', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
+      const tabStore = createTabStore()
       const controlStore = createControlStore()
 
-      agentStore.addAgent(makeAgent('agent-1', AgentStatus.INACTIVE))
+      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.INACTIVE)))
 
       const catchUpPhase = 'live'
       if (catchUpPhase === 'live') {
-        const current = agentStore.getById('agent-1')
-        if (current?.status === AgentStatus.INACTIVE)
-          agentStore.updateAgent('agent-1', { status: AgentStatus.ACTIVE })
+        const current = tabStore.getAgentTab('agent-1')
+        if (current?.agentStatus === AgentStatus.INACTIVE)
+          tabStore.updateTab(TabType.AGENT, 'agent-1', { agentStatus: AgentStatus.ACTIVE })
       }
-      const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
-      if (!(catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)) {
+      const agentEntry = tabStore.getAgentTab('agent-1')
+      if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
-      expect(agentStore.getById('agent-1')?.status).toBe(AgentStatus.ACTIVE)
+      expect(tabStore.getAgentTab('agent-1')?.agentStatus).toBe(AgentStatus.ACTIVE)
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
       dispose()
     })
@@ -74,14 +76,14 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should add control request when agent is ACTIVE', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
+      const tabStore = createTabStore()
       const controlStore = createControlStore()
 
-      agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
+      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
 
       const catchUpPhase = 'catchingUp'
-      const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
-      if (!(catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)) {
+      const agentEntry = tabStore.getAgentTab('agent-1')
+      if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
@@ -92,16 +94,16 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should clear control requests when agent becomes INACTIVE', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
+      const tabStore = createTabStore()
       const controlStore = createControlStore()
 
-      agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
+      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
       controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
 
       // Simulate statusChange INACTIVE → controlStore.clearAgent()
-      agentStore.updateAgent('agent-1', { status: AgentStatus.INACTIVE })
+      tabStore.updateTab(TabType.AGENT, 'agent-1', { agentStatus: AgentStatus.INACTIVE })
       controlStore.clearAgent('agent-1')
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(0)
@@ -111,17 +113,17 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should preserve pending control requests across short connection blips', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
+      const tabStore = createTabStore()
       const controlStore = createControlStore()
 
-      agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
+      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
       controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
 
       // Simulate worker-offline transition: agent goes INACTIVE but pending
       // control requests must survive transient transport blips.
-      agentStore.updateAgent('agent-1', { status: AgentStatus.INACTIVE })
+      tabStore.updateTab(TabType.AGENT, 'agent-1', { agentStatus: AgentStatus.INACTIVE })
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
       dispose()
@@ -130,10 +132,10 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should clear control requests on worker restart because agent processes stop', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
+      const tabStore = createTabStore()
       const controlStore = createControlStore()
 
-      agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
+      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
       controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
@@ -141,7 +143,7 @@ describe('controlRequest guard for inactive agents', () => {
       // Simulate the statusChange handler during catch-up replay after a
       // worker restart: the replayed INACTIVE statusChange triggers clearAgent
       // because the agent process no longer exists.
-      agentStore.updateAgent('agent-1', { status: AgentStatus.INACTIVE })
+      tabStore.updateTab(TabType.AGENT, 'agent-1', { agentStatus: AgentStatus.INACTIVE })
       controlStore.clearAgent('agent-1')
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(0)
@@ -150,8 +152,8 @@ describe('controlRequest guard for inactive agents', () => {
       // by the controlRequest-case guard in useWorkspaceConnection: catch-up
       // replay + INACTIVE → break.
       const catchUpPhase = 'catchingUp'
-      const agentEntry = agentStore.state.agents.find(a => a.id === 'agent-1')
-      if (!(catchUpPhase !== 'live' && agentEntry?.status === AgentStatus.INACTIVE)) {
+      const agentEntry = tabStore.getAgentTab('agent-1')
+      if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       }
 
@@ -162,10 +164,10 @@ describe('controlRequest guard for inactive agents', () => {
 
   it('should preserve pending control requests across WatchEvents stream restarts', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
+      const tabStore = createTabStore()
       const controlStore = createControlStore()
 
-      agentStore.addAgent(makeAgent('agent-1', AgentStatus.ACTIVE))
+      tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
       controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
 
       expect(controlStore.getRequests('agent-1')).toHaveLength(1)
@@ -507,12 +509,12 @@ describe('streaming text preservation', () => {
  */
 describe('startupMessage handling in agent statusChange', () => {
   function applyStatusChange(
-    agentStore: ReturnType<typeof createAgentStore>,
+    tabStore: ReturnType<typeof createTabStore>,
     sc: { agentId: string, status: AgentStatus, startupMessage?: string },
   ) {
     const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
-    agentStore.updateAgent(sc.agentId, {
-      ...(hasStatus ? { status: sc.status } : {}),
+    tabStore.updateTab(TabType.AGENT, sc.agentId, {
+      ...(hasStatus ? { agentStatus: sc.status } : {}),
       ...(sc.status === AgentStatus.STARTING
         ? { startupMessage: sc.startupMessage ?? '' }
         : hasStatus ? { startupMessage: '' } : {}),
@@ -521,70 +523,73 @@ describe('startupMessage handling in agent statusChange', () => {
 
   it('stores startupMessage while STARTING so the startup panel can render the phase label', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
-      agentStore.addAgent({ id: 'agent-1', status: AgentStatus.STARTING } as Parameters<typeof agentStore.addAgent>[0])
+      const tabStore = createTabStore()
+      tabStore.addTab({ type: TabType.AGENT, id: 'agent-1', agentStatus: AgentStatus.STARTING })
 
-      applyStatusChange(agentStore, {
+      applyStatusChange(tabStore, {
         agentId: 'agent-1',
         status: AgentStatus.STARTING,
         startupMessage: 'Checking Git status…',
       })
-      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Checking Git status…')
+      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('Checking Git status…')
 
-      applyStatusChange(agentStore, {
+      applyStatusChange(tabStore, {
         agentId: 'agent-1',
         status: AgentStatus.STARTING,
         startupMessage: 'Starting Claude Code…',
       })
-      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Starting Claude Code…')
+      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('Starting Claude Code…')
       dispose()
     })
   })
 
   it('clears startupMessage on ACTIVE so the label does not linger after startup succeeds', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
-      agentStore.addAgent({
+      const tabStore = createTabStore()
+      tabStore.addTab({
+        type: TabType.AGENT,
         id: 'agent-1',
-        status: AgentStatus.STARTING,
+        agentStatus: AgentStatus.STARTING,
         startupMessage: 'Starting Claude Code…',
-      } as Parameters<typeof agentStore.addAgent>[0])
+      })
 
-      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.ACTIVE })
+      applyStatusChange(tabStore, { agentId: 'agent-1', status: AgentStatus.ACTIVE })
 
-      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('')
+      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('')
       dispose()
     })
   })
 
   it('clears startupMessage on STARTUP_FAILED so the error banner replaces the phase label', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
-      agentStore.addAgent({
+      const tabStore = createTabStore()
+      tabStore.addTab({
+        type: TabType.AGENT,
         id: 'agent-1',
-        status: AgentStatus.STARTING,
+        agentStatus: AgentStatus.STARTING,
         startupMessage: 'Checking Git status…',
-      } as Parameters<typeof agentStore.addAgent>[0])
+      })
 
-      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.STARTUP_FAILED })
+      applyStatusChange(tabStore, { agentId: 'agent-1', status: AgentStatus.STARTUP_FAILED })
 
-      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('')
+      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('')
       dispose()
     })
   })
 
   it('leaves startupMessage alone on status-less events (UNSPECIFIED) so catchUp sentinels do not wipe live phases', () => {
     createRoot((dispose) => {
-      const agentStore = createAgentStore()
-      agentStore.addAgent({
+      const tabStore = createTabStore()
+      tabStore.addTab({
+        type: TabType.AGENT,
         id: 'agent-1',
-        status: AgentStatus.STARTING,
+        agentStatus: AgentStatus.STARTING,
         startupMessage: 'Checking Git status…',
-      } as Parameters<typeof agentStore.addAgent>[0])
+      })
 
-      applyStatusChange(agentStore, { agentId: 'agent-1', status: AgentStatus.UNSPECIFIED })
+      applyStatusChange(tabStore, { agentId: 'agent-1', status: AgentStatus.UNSPECIFIED })
 
-      expect(agentStore.state.agents.find(a => a.id === 'agent-1')?.startupMessage).toBe('Checking Git status…')
+      expect(tabStore.getAgentTab('agent-1')?.startupMessage).toBe('Checking Git status…')
       dispose()
     })
   })

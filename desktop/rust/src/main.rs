@@ -1222,6 +1222,16 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
         proto::event::Payload::ChannelClose(_) => {
             let _ = app_handle.emit("channel:close", Value::Null);
         }
+        proto::event::Payload::OrgEventsMessage(msg) => {
+            // Forward the hub's length-prefixed WatchOrgEvent frame
+            // verbatim to the webview. The frontend's `useOrgEvents`
+            // hook decodes identically to native WS frames.
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
+            let _ = app_handle.emit("orgevents:message", b64);
+        }
+        proto::event::Payload::OrgEventsClose(_) => {
+            let _ = app_handle.emit("orgevents:close", Value::Null);
+        }
         proto::event::Payload::SidecarLog(log) => {
             let payload = json!({
               "level": log.level,
@@ -1515,6 +1525,37 @@ async fn close_channel_relay(shell: State<'_, Arc<DesktopShell>>) -> Result<(), 
         shell
             .send_request_async(proto::request::Method::CloseChannelRelay(
                 proto::CloseChannelRelayRequest {},
+            ))
+            .await?,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_orgevents_relay(
+    shell: State<'_, Arc<DesktopShell>>,
+    org_id: String,
+    workspace_ids: Vec<String>,
+) -> Result<(), String> {
+    check_response(
+        shell
+            .send_request_async(proto::request::Method::OpenOrgEventsRelay(
+                proto::OpenOrgEventsRelayRequest {
+                    org_id,
+                    workspace_ids,
+                },
+            ))
+            .await?,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn close_orgevents_relay(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+    check_response(
+        shell
+            .send_request_async(proto::request::Method::CloseOrgEventsRelay(
+                proto::CloseOrgEventsRelayRequest {},
             ))
             .await?,
     )?;
@@ -2055,6 +2096,8 @@ fn main() {
             open_channel_relay,
             send_channel_message,
             close_channel_relay,
+            open_orgevents_relay,
+            close_orgevents_relay,
             create_tunnel,
             delete_tunnel,
             list_tunnels,

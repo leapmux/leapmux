@@ -1,0 +1,182 @@
+package revocationwatcher_test
+
+// Integration tests that pin the cross-process contract: each admin
+// CLI revocation path mutates the DB columns the watcher polls, and
+// the watcher in turn drives EvictBearer / EvictByUserID +
+// CloseChannelsByBearer / CloseChannelsByUser. The admin commands
+// themselves run in a separate process from the hub in production;
+// these tests exercise the database side they share.
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/id"
+)
+
+// TestAdminPath_APITokenRevoke_ClosesBearerChannels mirrors what
+// `leapmux admin api-token revoke --id <id>` does (Revoke a single
+// row). The watcher must pick that up and close any bearer-keyed
+// channel that token authenticated.
+func TestAdminPath_APITokenRevoke_ClosesBearerChannels(t *testing.T) {
+	env := setup(t)
+
+	apiTokenID := id.Generate()
+	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: apiTokenID, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		SecretHash: []byte("hash"), Scope: "remote:*",
+	}))
+
+	// Admin CLI revoke shape: the row gets revoked_at; cache /
+	// channel teardown is the watcher's job.
+	_, err := env.st.APITokens().Revoke(context.Background(), apiTokenID)
+	require.NoError(t, err)
+
+	env.watcher.RunOnce(context.Background())
+	assert.Equal(t, []string{apiTokenID}, env.closer.bearerSnapshot())
+}
+
+// TestAdminPath_UserDelete_TearsDownEverything emulates the
+// `leapmux admin user delete` admin transaction: every credential
+// the user had — sessions (separate concern), api_tokens,
+// delegation_tokens — gets revoked, and `users.tokens_revoked_at`
+// is bumped. The watcher must close per-bearer channels for the
+// revoked rows AND fire CloseChannelsByUser for cookie-only
+// channels via the user-wide HWM path.
+func TestAdminPath_UserDelete_TearsDownEverything(t *testing.T) {
+	env := setup(t)
+
+	apiTok := id.Generate()
+	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: apiTok, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		SecretHash: []byte("hash"), Scope: "remote:*",
+	}))
+	delTok := env.seedDelegationToken(t)
+
+	// Mimic the admin transaction sequence.
+	require.NoError(t, env.st.RunInTransaction(context.Background(), func(tx store.Store) error {
+		if _, err := tx.APITokens().RevokeByUser(context.Background(), env.userID); err != nil {
+			return err
+		}
+		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), env.userID); err != nil {
+			return err
+		}
+		_, err := tx.Users().BumpTokensRevokedAt(context.Background(), env.userID)
+		return err
+	}))
+
+	env.watcher.RunOnce(context.Background())
+
+	// Both bearer-keyed channels closed.
+	got := env.closer.bearerSnapshot()
+	assert.ElementsMatch(t, []string{apiTok, delTok}, got)
+	// User-wide close fired for cookie channels.
+	assert.Equal(t, []string{env.userID}, env.closer.userSnapshot())
+}
+
+// TestAdminPath_ResetPassword_RevokesTokensAndChannels mirrors
+// `leapmux admin user reset-password`. The shape is the same as
+// user delete except the user row stays and sessions are deleted
+// instead of soft-revoked; from the watcher's perspective only
+// the (api_tokens revoke + delegation revoke + tokens_revoked_at
+// bump) tuple matters.
+func TestAdminPath_ResetPassword_RevokesTokensAndChannels(t *testing.T) {
+	env := setup(t)
+	apiTok := id.Generate()
+	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: apiTok, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		SecretHash: []byte("hash"), Scope: "remote:*",
+	}))
+	delTok := env.seedDelegationToken(t)
+
+	require.NoError(t, env.st.RunInTransaction(context.Background(), func(tx store.Store) error {
+		if _, err := tx.APITokens().RevokeByUser(context.Background(), env.userID); err != nil {
+			return err
+		}
+		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), env.userID); err != nil {
+			return err
+		}
+		_, err := tx.Users().BumpTokensRevokedAt(context.Background(), env.userID)
+		return err
+	}))
+
+	env.watcher.RunOnce(context.Background())
+	assert.ElementsMatch(t, []string{apiTok, delTok}, env.closer.bearerSnapshot())
+	assert.Equal(t, []string{env.userID}, env.closer.userSnapshot())
+}
+
+// TestAdminPath_SessionRevokeUser_TearsDownAllChannels mirrors
+// `leapmux admin session revoke-user`. Sessions are deleted (the
+// watcher doesn't see those — they're hard-deleted, not flagged),
+// so the user-wide HWM bump is what carries the signal for cookie
+// channels; api / delegation tokens are revoked in the same
+// transaction.
+func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {
+	env := setup(t)
+	apiTok := id.Generate()
+	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: apiTok, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		SecretHash: []byte("hash"), Scope: "remote:*",
+	}))
+	delTok := env.seedDelegationToken(t)
+
+	require.NoError(t, env.st.RunInTransaction(context.Background(), func(tx store.Store) error {
+		// sessions are hard-deleted in production; from the
+		// watcher's point of view this is a no-op.
+		if _, err := tx.APITokens().RevokeByUser(context.Background(), env.userID); err != nil {
+			return err
+		}
+		if _, err := tx.DelegationTokens().RevokeByUser(context.Background(), env.userID); err != nil {
+			return err
+		}
+		_, err := tx.Users().BumpTokensRevokedAt(context.Background(), env.userID)
+		return err
+	}))
+
+	env.watcher.RunOnce(context.Background())
+	assert.ElementsMatch(t, []string{apiTok, delTok}, env.closer.bearerSnapshot())
+	assert.Equal(t, []string{env.userID}, env.closer.userSnapshot())
+}
+
+// TestAdminPath_UserRevocation_PropagatesViaPropagateUserRevocation
+// pins the in-process path used by UserService.ChangePassword:
+// auth.PropagateUserRevocation revokes both token tables AND bumps
+// tokens_revoked_at, so the watcher's NEXT sweep (intended as a
+// belt-and-braces replay) doesn't see anything new.
+//
+// The in-process callers also drive CloseChannelsByUser inline so
+// they don't wait for the watcher; this test asserts the *DB-side*
+// effects, which is what the watcher consumes cross-process.
+func TestAdminPath_UserRevocation_PropagatesViaPropagateUserRevocation(t *testing.T) {
+	env := setup(t)
+	apiTok := id.Generate()
+	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: apiTok, UserID: env.userID, ClientType: "cli", ClientName: "test",
+		SecretHash: []byte("hash"), Scope: "remote:*",
+	}))
+	delTok := env.seedDelegationToken(t)
+
+	count, err := auth.PropagateUserRevocation(context.Background(), env.st, env.cache, env.userID)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, count, int64(1))
+
+	// Both tokens are revoked at row level.
+	apiRow, err := env.st.APITokens().GetByID(context.Background(), apiTok)
+	require.NoError(t, err)
+	require.NotNil(t, apiRow.RevokedAt)
+	delRow, err := env.st.DelegationTokens().GetByID(context.Background(), delTok)
+	require.NoError(t, err)
+	require.NotNil(t, delRow.RevokedAt)
+
+	// users.tokens_revoked_at moved forward.
+	users, err := env.st.Users().ListWithTokensRevokedSince(context.Background(), time.Time{})
+	require.NoError(t, err)
+	require.Len(t, users, 1)
+	assert.Equal(t, env.userID, users[0].UserID)
+}

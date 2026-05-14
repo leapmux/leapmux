@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type workspaceAccessStore struct {
@@ -22,9 +21,19 @@ func (s *workspaceAccessStore) Grant(ctx context.Context, p store.GrantWorkspace
 }
 
 func (s *workspaceAccessStore) BulkGrant(ctx context.Context, params []store.GrantWorkspaceAccessParams) error {
-	return sqlutil.BulkGrantWorkspaceAccess(params, func(p store.GrantWorkspaceAccessParams) error {
-		return s.Grant(ctx, p)
-	})
+	if len(params) == 0 {
+		return nil
+	}
+	workspaceIDs := make([]string, len(params))
+	userIDs := make([]string, len(params))
+	for i, p := range params {
+		workspaceIDs[i] = p.WorkspaceID
+		userIDs[i] = p.UserID
+	}
+	return mapErr(s.conn.q.BulkGrantWorkspaceAccess(ctx, gendb.BulkGrantWorkspaceAccessParams{
+		WorkspaceIds: workspaceIDs,
+		UserIds:      userIDs,
+	}))
 }
 
 func (s *workspaceAccessStore) Revoke(ctx context.Context, p store.RevokeWorkspaceAccessParams) error {
@@ -56,6 +65,20 @@ func (s *workspaceAccessStore) HasAccess(ctx context.Context, p store.HasWorkspa
 		UserID:      p.UserID,
 	})
 	return ok, mapErr(err)
+}
+
+func (s *workspaceAccessStore) ListForUserIn(ctx context.Context, userID string, workspaceIDs []string) ([]string, error) {
+	if len(workspaceIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.conn.q.ListWorkspaceAccessForUserIn(ctx, gendb.ListWorkspaceAccessForUserInParams{
+		UserID:       userID,
+		WorkspaceIds: workspaceIDs,
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return rows, nil
 }
 
 func (s *workspaceAccessStore) Clear(ctx context.Context, workspaceID string) error {

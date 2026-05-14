@@ -3,7 +3,7 @@ import { expect, PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
 
 piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 
-piTest.describe('Pi Coding Agent Lifecycle', () => {
+piTest.describe('Pi Agent Lifecycle', () => {
   piTest('Pi agent tab is visible after creation', async ({ authenticatedPiWorkspace, page }) => {
     void authenticatedPiWorkspace // fixture trigger
     const tabs = page.locator('[data-testid="tab"]')

@@ -395,11 +395,9 @@ func (s *Suite) testCleanup(t *testing.T) {
 		require.NoError(t, st.WorkspaceAccess().Grant(ctx, store.GrantWorkspaceAccessParams{
 			WorkspaceID: wsID, UserID: user.ID,
 		}))
-		require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
-			WorkspaceID: wsID, WorkerID: worker.ID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "f1",
-		}))
-		require.NoError(t, st.WorkspaceLayouts().Upsert(ctx, store.UpsertWorkspaceLayoutParams{
-			WorkspaceID: wsID, LayoutJSON: `{"test":true}`,
+		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+			OrgID: orgID, WorkspaceID: wsID, WorkerID: worker.ID,
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "f1",
 		}))
 		secID := id.Generate()
 		require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -425,15 +423,12 @@ func (s *Suite) testCleanup(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, access)
 
-		_, err = st.WorkspaceLayouts().Get(ctx, wsID)
-		assert.ErrorIs(t, err, store.ErrNotFound)
-
 		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
 			UserID: user.ID, WorkspaceID: wsID,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound)
 
-		tabs, err := st.WorkspaceTabs().ListByWorkspace(ctx, wsID)
+		tabs, err := st.WorkspaceTabIndex().ListOwnedByWorkspace(ctx, wsID)
 		require.NoError(t, err)
 		assert.Empty(t, tabs)
 	})
@@ -454,8 +449,9 @@ func (s *Suite) testCleanup(t *testing.T) {
 			Type:    leapmuxv1.NotificationType_NOTIFICATION_TYPE_DEREGISTER,
 			Payload: `{"test":true}`,
 		}))
-		require.NoError(t, st.WorkspaceTabs().Upsert(ctx, store.UpsertWorkspaceTabParams{
-			WorkspaceID: wsID, WorkerID: worker.ID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "wk-f1",
+		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+			OrgID: orgID, WorkspaceID: wsID, WorkerID: worker.ID,
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "wk-f1",
 		}))
 
 		// Soft-delete and backdate.

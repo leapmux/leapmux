@@ -18,7 +18,7 @@ interface NewTerminalDialogProps {
   workspaceId: string
   defaultWorkerId?: string
   defaultWorkingDir?: string
-  onCreated: (terminalId: string, workerId: string, workingDir: string) => void
+  onCreated: (terminalId: string, workerId: string, workingDir: string, title: string) => void
   onClose: () => void
 }
 
@@ -85,7 +85,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
         createBranchBase: state.gitMode() === 'create-branch' ? state.createBranchBase() : '',
         useWorktreePath: state.gitMode() === 'use-worktree' ? state.useWorktreePath() : '',
       })
-      props.onCreated(resp.terminalId, state.workerId(), state.workingDir())
+      props.onCreated(resp.terminalId, state.workerId(), state.workingDir(), resp.title)
     }
     catch (err) {
       state.setError(err instanceof Error ? err.message : 'Failed to create terminal')

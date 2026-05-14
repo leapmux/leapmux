@@ -20,13 +20,20 @@ import (
 // channel relay. Frontend connects after OpenChannel succeeds, and all
 // subsequent traffic is opaque ciphertext relayed between Frontend and Worker.
 //
-// URL: /ws/channel?token={session_token}
+// Authentication accepts:
+//   - Solo mode: auto-authed as the solo user.
+//   - Cookie: Set-Cookie session, set by /auth/login.
+//   - Bearer: "Authorization: Bearer lmx_..." for the CLI / agents that
+//     hold api_tokens or delegation_tokens.
+//
+// URL: /ws/channel
 type ChannelRelayHandler struct {
-	store        store.Store
-	workerMgr    *workermgr.Manager
-	channelMgr   *channelmgr.Manager
-	soloUser     *auth.UserInfo
-	secureCookie bool
+	store          store.Store
+	workerMgr      *workermgr.Manager
+	channelMgr     *channelmgr.Manager
+	soloUser       *auth.UserInfo
+	secureCookie   bool
+	tokenValidator *auth.TokenValidator
 }
 
 // NewChannelRelayHandler creates a new WebSocket relay handler.
@@ -46,27 +53,25 @@ func NewChannelRelayHandler(
 	}
 }
 
+// WithTokenValidator wires Bearer-auth support into the relay handler.
+// Returns the receiver for chaining at construction time.
+func (h *ChannelRelayHandler) WithTokenValidator(v *auth.TokenValidator) *ChannelRelayHandler {
+	h.tokenValidator = v
+	return h
+}
+
 // ServeHTTP upgrades the connection to a multiplexed WebSocket and relays
 // channel messages for all channels belonging to the authenticated user.
 func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var user *auth.UserInfo
-
-	if h.soloUser != nil {
-		// Solo mode: auto-authenticate as the solo user.
-		user = h.soloUser
-	} else {
-		token := auth.SessionIDFromRequest(r, h.secureCookie)
-		if token == "" {
-			http.Error(w, "missing session cookie", http.StatusUnauthorized)
-			return
-		}
-
-		var err error
-		user, err = auth.ValidateToken(r.Context(), h.store, token)
-		if err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
+		Store:     h.store,
+		Validator: h.tokenValidator,
+		SoloUser:  h.soloUser,
+		Cookies:   []bool{h.secureCookie},
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
 	}
 
 	// Upgrade to WebSocket.

@@ -10,6 +10,34 @@ import { useWindowPointerDrag } from './windowPointerDrag'
 const SNAP_THRESHOLD_PX = 15
 
 /**
+ * Resolve the pixel-space dimensions of the nearest non-zero-sized,
+ * attached ancestor of `el`. Exported (and pure) so unit tests can
+ * cover the detached-parent fallback path that drag math relies on.
+ *
+ * Walk: start at `el?.parentElement`, climb until we find an ancestor
+ * with a non-zero `getBoundingClientRect()`. If none of the ancestors
+ * is valid (the element is fully detached from the document, which
+ * happens transiently when `<For>` recreates the container on a CRDT
+ * tick mid-pointerdown), fall back to the visual viewport.
+ *
+ * Without this fallback, `parentW`/`parentH` collapsed to `1`, the
+ * drag handler treated pixel deltas as fractional values, and tiny
+ * pointer movements snapped the window to corners.
+ */
+export function resolveParentSize(el: HTMLElement | null | undefined): { parentW: number, parentH: number } {
+  let cur: HTMLElement | null = el?.parentElement ?? null
+  while (cur) {
+    const rect = cur.getBoundingClientRect()
+    if (rect.width > 0 && rect.height > 0)
+      return { parentW: rect.width, parentH: rect.height }
+    cur = cur.parentElement
+  }
+  const fallbackW = (typeof window !== 'undefined' && (window.visualViewport?.width || window.innerWidth)) || 1
+  const fallbackH = (typeof window !== 'undefined' && (window.visualViewport?.height || window.innerHeight)) || 1
+  return { parentW: fallbackW, parentH: fallbackH }
+}
+
+/**
  * Snap a fractional (0..1) window position to the nearest parent edge if it
  * is within `SNAP_THRESHOLD_PX` of that edge. `x`/`y`/`w`/`h` are fractions of
  * `parentW`/`parentH`. Returns the (possibly snapped) `{x, y}`. Snapping is
@@ -84,17 +112,14 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
   // in-flight resize and vice-versa. Cleanup on unmount is handled inside.
   const drag = useWindowPointerDrag()
 
-  const getContainerParent = () => containerRef?.parentElement
-
-  /**
-   * Capture the parent's pixel dimensions once at drag-start. Subsequent
-   * pointermove ticks divide by these instead of re-reading
-   * `getBoundingClientRect`, which would force a layout per frame.
-   */
-  const captureParentSize = (): { parentW: number, parentH: number } => {
-    const rect = getContainerParent()?.getBoundingClientRect()
-    return { parentW: rect?.width ?? 1, parentH: rect?.height ?? 1 }
-  }
+  // Capture the parent's pixel dimensions once at drag-start.
+  // Subsequent pointermove ticks divide by these so the per-event
+  // path doesn't re-read `getBoundingClientRect` (which would force a
+  // layout per frame). The defensive ancestor walk in
+  // `resolveParentSize` matters when `<For>` has just torn down this
+  // container on a CRDT tick: the pointerdown can land on a
+  // momentarily-detached node whose `parentElement` is null.
+  const captureParentSize = () => resolveParentSize(containerRef)
 
   // --- Edge snapping ---
 
@@ -145,7 +170,9 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
         const snapped = snapPosition(rawX, rawY, props.width, props.height, parentW, parentH)
         props.floatingWindowStore.updatePosition(props.windowId, snapped.x, snapped.y)
       },
-      onUp: () => props.onGeometryChange?.(),
+      onUp: () => {
+        props.onGeometryChange?.()
+      },
     })
   }
 

@@ -5,7 +5,8 @@ import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
-import type { createTabStore, Tab } from '~/stores/tab.store'
+import type { createTabStore } from '~/stores/tab.store'
+import type { Tab } from '~/stores/tab.types'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState, platformBridge } from '~/api/platformBridge'
 import { setShowPreferencesDialog } from '~/components/shell/UserMenuState'
@@ -19,7 +20,7 @@ import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { syncMacMenuAccelerator } from '~/lib/shortcuts/tauriAccelerator'
 import { getFocusedChatSend } from '~/stores/focusedChatSend.store'
-import { tabKey } from '~/stores/tab.store'
+import { tabKey } from '~/stores/tab.helpers'
 
 interface UseShortcutsProps {
   tabStore: ReturnType<typeof createTabStore>

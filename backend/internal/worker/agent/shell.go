@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -71,7 +72,7 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 
 	cmd := exec.CommandContext(ctx, shellPath, cmdArgs...)
 	cmd.Dir = workingDir
-	procutil.ScrubAppImageEnv(cmd)
+	envutil.ScrubAppImageEnv(cmd)
 	procutil.HideConsoleWindow(cmd)
 	return cmd, delimiter, metaPrefix
 }

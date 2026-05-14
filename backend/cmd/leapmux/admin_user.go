@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -284,6 +285,17 @@ func runUserDelete(cmd adminCmdCtx, args []string) error {
 			if err := tx.Sessions().DeleteByUser(ctx, user.ID); err != nil {
 				return fmt.Errorf("delete sessions: %w", err)
 			}
+			// User deletion implies every credential the user had —
+			// CLI api tokens, agent delegation tokens, browser
+			// sessions — must die. The hub's revocation watcher
+			// polls the revoked_at columns and the
+			// `users.tokens_revoked_at` high-water mark, so the
+			// in-memory bearer cache and any open channels (cookie
+			// or bearer) are torn down within the watcher's poll
+			// interval — no IPC from this admin CLI required.
+			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, user.ID); err != nil {
+				return err
+			}
 			if err := tx.OrgMembers().Delete(ctx, store.DeleteOrgMemberParams{
 				OrgID:  user.OrgID,
 				UserID: user.ID,
@@ -345,6 +357,16 @@ func runUserResetPassword(cmd adminCmdCtx, args []string) error {
 
 			if err := tx.Sessions().DeleteByUser(ctx, user.ID); err != nil {
 				return fmt.Errorf("delete sessions: %w", err)
+			}
+
+			// Admin password reset rotates the user's auth basis
+			// globally; every credential predating the rotation
+			// (api tokens, delegation tokens, sessions, channels)
+			// must die. Bumping tokens_revoked_at lets the hub's
+			// revocation watcher pick this up cross-process and
+			// fire CloseChannelsByUser without an IPC.
+			if _, _, err := auth.RevokeAllUserCredentials(ctx, tx, user.ID); err != nil {
+				return err
 			}
 
 			return nil

@@ -112,7 +112,22 @@ CREATE TABLE worktree_tabs (
 );
 CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id);
 
+-- File-tab paths kept E2EE on the worker. The hub never sees these
+-- rows; clients fetch paths over WatchWorkspacePrivateEvents and
+-- GetFileTabPath. tab_id is unique within an org but not across orgs,
+-- so the primary key includes org_id.
+CREATE TABLE worker_file_tabs (
+    org_id       TEXT NOT NULL,
+    tab_id       TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    file_path    TEXT NOT NULL,
+    created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (org_id, tab_id)
+);
+CREATE INDEX idx_worker_file_tabs_workspace ON worker_file_tabs(org_id, workspace_id);
+
 -- +goose Down
+DROP TABLE IF EXISTS worker_file_tabs;
 DROP TABLE IF EXISTS terminals;
 DROP TABLE IF EXISTS worktree_tabs;
 DROP TABLE IF EXISTS worktrees;

@@ -3,10 +3,13 @@ package keystore
 import (
 	"bufio"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"hash"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +18,13 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
+
+// newSubkeyMAC returns an HMAC-SHA256 keyed by the active root key. It
+// is used to derive purpose-specific secrets (e.g. the api_token pepper)
+// without exposing the raw key to callers.
+func newSubkeyMAC(key []byte) hash.Hash {
+	return hmac.New(sha256.New, key)
+}
 
 const (
 	// nonceSize is the XChaCha20-Poly1305 nonce size (24 bytes).
@@ -76,6 +86,21 @@ func New(keys map[uint32][keySize]byte) (*Keystore, error) {
 
 // ActiveVersion returns the active (highest) key version.
 func (ks *Keystore) ActiveVersion() uint32 { return ks.activeVersion }
+
+// DeriveSubkey returns a 32-byte subkey derived from the active key
+// material plus the given purpose label. Used for per-purpose secrets
+// (e.g. an HMAC pepper for api_token verification) so that no caller
+// directly handles the raw encryption key. The derivation is
+// HMAC-SHA256(active_key, purpose) — a straightforward KDF for
+// purposes that only need a stable 32-byte secret.
+func (ks *Keystore) DeriveSubkey(purpose string) [32]byte {
+	key := ks.keys[ks.activeVersion]
+	mac := newSubkeyMAC(key[:])
+	mac.Write([]byte(purpose))
+	var out [32]byte
+	copy(out[:], mac.Sum(nil))
+	return out
+}
 
 // Versions returns all key versions in the ring, sorted ascending.
 func (ks *Keystore) Versions() []uint32 {

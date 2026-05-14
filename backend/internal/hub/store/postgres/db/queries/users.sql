@@ -36,6 +36,11 @@ SELECT EXISTS(
 -- name: ListUsersByOrgID :many
 SELECT * FROM users WHERE org_id = $1 AND deleted_at IS NULL ORDER BY created_at;
 
+-- name: ListUsersByIDs :many
+SELECT * FROM users
+WHERE id = ANY(sqlc.arg(user_ids)::TEXT[])
+  AND deleted_at IS NULL;
+
 -- name: ListAllUsers :many
 SELECT * FROM users WHERE deleted_at IS NULL
   AND (sqlc.narg(cursor)::timestamptz IS NULL OR created_at < sqlc.narg(cursor))
@@ -128,3 +133,22 @@ WHERE pending_email = $1 AND id != $2;
 -- name: ClearStalePendingEmails :execresult
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < $1;
+
+-- name: BumpUserTokensRevokedAt :execrows
+UPDATE users
+SET tokens_revoked_at = NOW(), updated_at = NOW()
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: ListUsersWithTokensRevokedSince :many
+SELECT id, tokens_revoked_at FROM users
+WHERE tokens_revoked_at IS NOT NULL AND tokens_revoked_at > $1
+ORDER BY tokens_revoked_at ASC;
+
+-- name: MaxUserTokensRevokedAt :one
+-- Mirror of MaxAPITokenRevokedAt for users.tokens_revoked_at. Used
+-- by the revocation watcher's bootstrap-time seed. ORDER BY + LIMIT 1
+-- lets sqlc infer the return type from the underlying column.
+SELECT tokens_revoked_at FROM users
+WHERE tokens_revoked_at IS NOT NULL
+ORDER BY tokens_revoked_at DESC
+LIMIT 1;

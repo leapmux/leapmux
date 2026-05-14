@@ -188,21 +188,67 @@ type WorkspaceAccess struct {
 	CreatedAt   time.Time
 }
 
-// WorkspaceTab represents a tab reference within a workspace.
-type WorkspaceTab struct {
+// WorkspaceTabRow is a row from workspace_tab_owned or
+// workspace_tab_rendered. The two views have the same shape; the
+// distinction is *which* table they came from. Worker reconciliation
+// reads from `_owned`; UI reads from `_rendered`.
+type WorkspaceTabRow struct {
+	OrgID       string
 	WorkspaceID string
-	WorkerID    string
 	TabType     leapmuxv1.TabType
 	TabID       string
-	Position    string
+	WorkerID    string
 	TileID      string
+	Position    string
 }
 
-// WorkspaceLayout stores the JSON tiling layout for a workspace.
-type WorkspaceLayout struct {
-	WorkspaceID string
-	LayoutJSON  string
-	UpdatedAt   time.Time
+// OrgOpBatchRow is a single row of the CRDT op-batch journal.
+type OrgOpBatchRow struct {
+	OrgID        string
+	PhysicalMs   int64
+	Logical      int64
+	LastLogical  int64
+	OriginClient string
+	PrincipalID  string
+	BatchID      string
+	BodyHash     []byte
+	BatchPayload []byte
+	OpCount      int64
+	Epoch        int64
+	CommittedAt  time.Time
+}
+
+// OrgStateRow is the materialized OrgCrdtState blob.
+type OrgStateRow struct {
+	OrgID          string
+	StatePayload   []byte
+	CurrentEpoch   int64
+	EpochStartedAt time.Time
+	UpdatedAt      time.Time
+}
+
+// OrgRecentBatchIDRow is a dedup-table row.
+type OrgRecentBatchIDRow struct {
+	OrgID               string
+	BatchID             string
+	BodyHash            []byte
+	PrincipalID         string
+	CanonicalPhysicalMs int64
+	CanonicalLogical    int64
+	CanonicalClient     string
+	OpCount             int64
+	Epoch               int64
+	ExpiresAt           time.Time
+}
+
+// LifecycleOutboxRow is the persisted outbox payload.
+type LifecycleOutboxRow struct {
+	ID         int64
+	OrgID      string
+	OpType     string
+	Payload    []byte
+	EnqueuedAt time.Time
+	ConsumedAt *time.Time
 }
 
 // WorkspaceSection represents a sidebar section for a user.
@@ -575,29 +621,130 @@ type HasWorkspaceAccessParams struct {
 	UserID      string
 }
 
-type UpsertWorkspaceTabParams struct {
+// UpsertOwnedTabParams / UpsertRenderedTabParams target the two
+// derived tab-index views maintained by the CRDT manager. Both views
+// carry identical column sets — alias rather than two parallel structs
+// so the bulk-upsert helpers can take either type without an extra
+// copy pass.
+type UpsertOwnedTabParams struct {
+	OrgID       string
 	WorkspaceID string
-	WorkerID    string
 	TabType     leapmuxv1.TabType
 	TabID       string
-	Position    string
+	WorkerID    string
 	TileID      string
+	Position    string
 }
 
-type DeleteWorkspaceTabParams struct {
+// UpsertRenderedTabParams is an alias of UpsertOwnedTabParams; the two
+// derived views share the same column set, so callers that build the
+// "rendered" slice from already-typed "owned" data can pass it through
+// directly.
+type UpsertRenderedTabParams = UpsertOwnedTabParams
+
+type GetRenderedTabParams struct {
 	WorkspaceID string
 	TabType     leapmuxv1.TabType
 	TabID       string
 }
 
-type DeleteWorkerTabsForWorkspaceParams struct {
-	WorkerID    string
+// GetOwnedTabParams identifies a single owned-tab row.
+// (workspace_id, tab_id) is sufficient: workspace_tab_owned is keyed
+// on (org_id, tab_id), workspace_id is determined by org_id, and
+// tab_id is globally unique within an org (the CRDT mints fresh ids
+// per tab), so the pair lookups one row at most.
+type GetOwnedTabParams struct {
 	WorkspaceID string
+	TabID       string
 }
 
-type UpsertWorkspaceLayoutParams struct {
-	WorkspaceID string
-	LayoutJSON  string
+// TabIndexKey identifies a single row in workspace_tab_owned or
+// workspace_tab_rendered for bulk-delete by (org_id, tab_id).
+type TabIndexKey struct {
+	OrgID string
+	TabID string
+}
+
+// LocateAccessibleRenderedTabParams identifies a rendered tab without
+// pre-scoping by workspace; the impl applies the user's accessibility
+// filter so the lookup is safe across orgs.
+type LocateAccessibleRenderedTabParams struct {
+	UserID  string
+	TabType leapmuxv1.TabType
+	TabID   string
+}
+
+// InsertOrgOpBatchParams writes a single row to org_op_batches.
+type InsertOrgOpBatchParams struct {
+	OrgID        string
+	PhysicalMs   int64
+	Logical      int64
+	LastLogical  int64
+	OriginClient string
+	PrincipalID  string
+	BatchID      string
+	BodyHash     []byte
+	BatchPayload []byte
+	OpCount      int64
+	Epoch        int64
+}
+
+type ListOrgOpBatchesAfterParams struct {
+	OrgID             string
+	AfterPhysicalMs   int64
+	AfterLogical      int64
+	AfterOriginClient string
+	// Limit caps the per-call row count so a far-behind subscriber
+	// cannot OOM the broadcaster. Use CRDTBatchPageLimit for the
+	// default page size.
+	Limit int32
+}
+
+type DeleteOrgOpBatchesThroughParams struct {
+	OrgID               string
+	ThroughPhysicalMs   int64
+	ThroughLogical      int64
+	ThroughOriginClient string
+}
+
+// UpsertOrgStateParams writes a fresh state blob.
+type UpsertOrgStateParams struct {
+	OrgID          string
+	StatePayload   []byte
+	CurrentEpoch   int64
+	EpochStartedAt time.Time
+	UpdatedAt      time.Time
+}
+
+type AdvanceOrgEpochParams struct {
+	OrgID          string
+	Epoch          int64
+	EpochStartedAt time.Time
+	UpdatedAt      time.Time
+}
+
+type InsertOrgRecentBatchIDParams struct {
+	OrgID               string
+	BatchID             string
+	BodyHash            []byte
+	PrincipalID         string
+	CanonicalPhysicalMs int64
+	CanonicalLogical    int64
+	CanonicalClient     string
+	OpCount             int64
+	Epoch               int64
+	ExpiresAt           time.Time
+}
+
+type InsertLifecycleOutboxParams struct {
+	OrgID   string
+	OpType  string
+	Payload []byte
+}
+
+type MarkLifecycleOutboxConsumedParams struct {
+	ID         int64
+	ConsumedAt time.Time
 }
 
 type CreateWorkspaceSectionParams struct {
@@ -719,6 +866,156 @@ type GetOAuthUserLinkParams struct {
 type DeleteOAuthUserLinkParams struct {
 	UserID     string
 	ProviderID string
+}
+
+// --- API token types ---
+
+// APIToken is a durable bearer credential issued to leapmux remote CLI
+// (and future external clients). The exposed bearer is composed in code
+// as "lmx_<id>_<secret>"; SecretHash stores HMAC-SHA256(secret, server
+// pepper) so leaks of the snapshot alone don't allow forgery.
+type APIToken struct {
+	ID                       string
+	UserID                   string
+	ClientType               string
+	ClientName               string
+	SecretHash               []byte
+	RefreshHash              []byte
+	PreviousRefreshHash      []byte
+	PreviousRefreshExpiresAt *time.Time
+	Scope                    string
+	CreatedAt                time.Time
+	LastUsedAt               *time.Time
+	LastRotatedAt            *time.Time
+	ExpiresAt                *time.Time
+	RefreshExpiresAt         *time.Time
+	RevokedAt                *time.Time
+}
+
+// DelegationToken is a short-lived bearer minted by a worker so a
+// spawned agent (or opt-in terminal) can act for the user against the
+// hub or a sibling worker. Scope is (UserID, WorkspaceID); IssuedFor*
+// fields are provenance only.
+type DelegationToken struct {
+	ID                       string
+	UserID                   string
+	WorkerID                 string
+	WorkspaceID              string
+	AgentID                  string
+	TerminalID               string
+	IssuedForTabID           string
+	IssuedForTabType         int32
+	SecretHash               []byte
+	RefreshHash              []byte
+	PreviousRefreshHash      []byte
+	PreviousRefreshExpiresAt *time.Time
+	CreatedAt                time.Time
+	LastUsedAt               *time.Time
+	ExpiresAt                time.Time
+	RefreshExpiresAt         *time.Time
+	RevokedAt                *time.Time
+}
+
+// DeviceAuthorization is an in-flight RFC 8628 device-code grant.
+type DeviceAuthorization struct {
+	DeviceCode      string
+	UserCode        string
+	DeviceName      string
+	UserID          string
+	Approved        int64 // 0 pending, 1 approved, 2 denied
+	LastPolledAt    *time.Time
+	IntervalSeconds int64
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	ConsumedAt      *time.Time
+}
+
+// CLIAuthorizationCode is a one-shot OAuth-style code for the CLI's
+// local-redirect login flow.
+type CLIAuthorizationCode struct {
+	Code          string
+	UserID        string
+	CodeChallenge string
+	DeviceName    string
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+	ConsumedAt    *time.Time
+}
+
+type CreateAPITokenParams struct {
+	ID               string
+	UserID           string
+	ClientType       string
+	ClientName       string
+	SecretHash       []byte
+	RefreshHash      []byte
+	Scope            string
+	ExpiresAt        *time.Time
+	RefreshExpiresAt *time.Time
+}
+
+type RotateAPITokenRefreshParams struct {
+	ID                       string
+	NewSecretHash            []byte
+	NewExpiresAt             *time.Time
+	NewRefreshHash           []byte
+	NewRefreshExpiresAt      *time.Time
+	PreviousRefreshHash      []byte
+	PreviousRefreshExpiresAt *time.Time
+}
+
+type ListAPITokensByUserParams struct {
+	UserID     string
+	ClientType string // empty = all
+}
+
+type CreateDelegationTokenParams struct {
+	ID               string
+	UserID           string
+	WorkerID         string
+	WorkspaceID      string
+	AgentID          string
+	TerminalID       string
+	IssuedForTabID   string
+	IssuedForTabType int32
+	SecretHash       []byte
+	RefreshHash      []byte
+	ExpiresAt        time.Time
+	RefreshExpiresAt *time.Time
+}
+
+type RotateDelegationTokenRefreshParams struct {
+	ID                       string
+	NewRefreshHash           []byte
+	NewRefreshExpiresAt      *time.Time
+	PreviousRefreshHash      []byte
+	PreviousRefreshExpiresAt *time.Time
+}
+
+type CreateDeviceAuthorizationParams struct {
+	DeviceCode      string
+	UserCode        string
+	DeviceName      string
+	IntervalSeconds int64
+	ExpiresAt       time.Time
+}
+
+type ApproveDeviceAuthorizationParams struct {
+	DeviceCode string
+	UserID     string
+}
+
+type ApproveDeviceAuthorizationByUserCodeParams struct {
+	UserCode string
+	UserID   string
+}
+
+type CreateCLIAuthorizationCodeParams struct {
+	Code          string
+	UserID        string
+	CodeChallenge string
+	DeviceName    string
+	ExpiresAt     time.Time
 }
 
 type CreatePendingOAuthSignupParams struct {

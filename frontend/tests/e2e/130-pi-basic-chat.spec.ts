@@ -3,7 +3,7 @@ import { expect, PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
 
 piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 
-piTest.describe('Pi Coding Agent Basic Chat', () => {
+piTest.describe('Pi Basic Chat', () => {
   piTest('send message and receive response', async ({ authenticatedPiWorkspace, page }) => {
     void authenticatedPiWorkspace // fixture trigger
     await sendMessage(page, 'What is 2+2? Reply with just the number.')

@@ -36,6 +36,11 @@ SELECT EXISTS(
 -- name: ListUsersByOrgID :many
 SELECT * FROM users WHERE org_id = ? AND deleted_at IS NULL ORDER BY created_at;
 
+-- name: ListUsersByIDs :many
+SELECT * FROM users
+WHERE id IN (sqlc.slice('user_ids'))
+  AND deleted_at IS NULL;
+
 -- name: ListAllUsers :many
 SELECT * FROM users WHERE deleted_at IS NULL
   AND (sqlc.narg(cursor) IS NULL OR created_at < sqlc.narg(cursor))
@@ -120,3 +125,34 @@ WHERE pending_email = ? AND id != ?;
 -- name: ClearStalePendingEmails :execresult
 UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < ?;
+
+-- name: BumpUserTokensRevokedAt :execresult
+-- Bumps the high-water mark the hub's revocation watcher polls.
+-- Admin commands and in-process credential-rotation paths call
+-- this so the watcher picks up the user-wide revocation and fires
+-- the matching cache + channel teardown.
+UPDATE users
+SET tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    updated_at        = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ? AND deleted_at IS NULL;
+
+-- name: ListUsersWithTokensRevokedSince :many
+-- Returns user IDs whose tokens_revoked_at moved past the watcher's
+-- high-water mark. Uses strftime instead of datetime() so the
+-- comparison preserves millisecond precision; plain datetime()
+-- truncates to seconds and would silently lose bumps that land
+-- in the same second as the watcher's last sweep.
+SELECT id, tokens_revoked_at FROM users
+WHERE tokens_revoked_at IS NOT NULL
+  AND strftime('%Y-%m-%dT%H:%M:%fZ', tokens_revoked_at) > strftime('%Y-%m-%dT%H:%M:%fZ', ?)
+ORDER BY tokens_revoked_at ASC;
+
+-- name: MaxUserTokensRevokedAt :one
+-- Mirror of MaxAPITokenRevokedAt for users.tokens_revoked_at. The
+-- revocation watcher's bootstrap-time seed uses this to skip the
+-- historical enumeration. ORDER BY + LIMIT 1 lets sqlc infer the
+-- return type from the underlying column.
+SELECT tokens_revoked_at FROM users
+WHERE tokens_revoked_at IS NOT NULL
+ORDER BY tokens_revoked_at DESC
+LIMIT 1;

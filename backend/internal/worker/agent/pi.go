@@ -77,7 +77,7 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 		[]string{"--mode", "rpc"},
 		nil, opts.WorkingDir,
 	)
-	cmd.Env = append(cmd.Environ(), "LEAPMUX_WORKER=1")
+	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
 
 	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -85,20 +85,7 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 	}
 
 	a := &PiAgent{
-		processBase: processBase{
-			agentID:            opts.AgentID,
-			providerName:       "pi",
-			cmd:                cmd,
-			stdin:              stdin,
-			ctx:                ctx,
-			cancel:             cancel,
-			stderrDone:         make(chan struct{}),
-			processDone:        make(chan struct{}),
-			preambleDelimiter:  preambleDelimiter,
-			preambleMetaPrefix: metaPrefix,
-			preambleMeta:       make(map[string]string),
-			apiTimeout:         opts.apiTimeout(),
-		},
+		processBase:   newProcessBase(opts, "pi", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
 		model:         opts.Model,
 		thinkingLevel: opts.Effort,
 		provider:      cmp.Or(opts.ExtraSettings[PiExtraProvider], PiDefaultProvider),
@@ -309,6 +296,30 @@ func (a *PiAgent) Stop() {
 		_, _ = a.sendPiCommand(PiCommandAbort, nil, 1*time.Second)
 	}
 	a.processBase.Stop()
+}
+
+// Interrupt aborts the running Pi turn by sending the `abort`
+// command. Pi's wire format uses {type:"abort"} per the
+// piProvider.IsInterrupt classifier; sendPiCommand applies the
+// envelope.
+//
+// No-op when no turn is active so scripts can invoke this without
+// probing currentTurnActive first.
+func (a *PiAgent) Interrupt() error {
+	a.mu.Lock()
+	stopped := a.stopped
+	turnActive := a.currentTurnActive
+	a.mu.Unlock()
+	if stopped {
+		return fmt.Errorf("agent is stopped")
+	}
+	if !turnActive {
+		return nil
+	}
+	// Short timeout — Pi acks aborts quickly; longer waits would just
+	// extend the apparent latency of a user-driven interrupt.
+	_, err := a.sendPiCommand(PiCommandAbort, nil, 1*time.Second)
+	return err
 }
 
 // ClearContext starts a fresh Pi session in-place.

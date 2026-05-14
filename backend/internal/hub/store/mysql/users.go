@@ -2,6 +2,9 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
@@ -170,6 +173,17 @@ func (s *userStore) ListByOrgID(ctx context.Context, orgID string) ([]store.User
 	return fromDBUsers(rows), nil
 }
 
+func (s *userStore) ListByIDs(ctx context.Context, ids []string) ([]store.User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.conn.q.ListUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return fromDBUsers(rows), nil
+}
+
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) ([]store.User, error) {
 	params, err := listAllUsersParams(p.Cursor, p.Limit)
 	if err != nil {
@@ -264,4 +278,42 @@ func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.Cle
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.DeleteUser(ctx, id))
+}
+
+func (s *userStore) BumpTokensRevokedAt(ctx context.Context, userID string) (int64, error) {
+	return rowsAffected(s.conn.q.BumpUserTokensRevokedAt(ctx, userID))
+}
+
+func (s *userStore) ListWithTokensRevokedSince(ctx context.Context, since time.Time) ([]store.UserTokensRevoked, error) {
+	rows, err := s.conn.q.ListUsersWithTokensRevokedSince(ctx, sql.NullTime{Time: since.UTC(), Valid: true})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]store.UserTokensRevoked, 0, len(rows))
+	for _, r := range rows {
+		if !r.TokensRevokedAt.Valid {
+			continue
+		}
+		out = append(out, store.UserTokensRevoked{
+			UserID:          r.ID,
+			TokensRevokedAt: r.TokensRevokedAt.Time,
+		})
+	}
+	return out, nil
+}
+
+// MaxTokensRevokedAt returns the latest users.tokens_revoked_at, or
+// the zero time when no user has had their tokens revoked.
+func (s *userStore) MaxTokensRevokedAt(ctx context.Context) (time.Time, error) {
+	t, err := s.conn.q.MaxUserTokensRevokedAt(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, mapErr(err)
+	}
+	if !t.Valid {
+		return time.Time{}, nil
+	}
+	return t.Time, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -129,6 +130,23 @@ var adminTree = adminGroup{
 				{Name: "version", Summary: "Show current schema version", Run: runDBVersion},
 			},
 		},
+		{
+			Name:    "api-token",
+			Summary: "Manage durable API tokens (CLI / integrations)",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List API tokens", Run: runAPITokenList},
+				{Name: "issue", Summary: "Issue a new API token (e.g. for headless service accounts)", Run: runAPITokenIssue},
+				{Name: "revoke", Summary: "Revoke an API token by id", Run: runAPITokenRevoke},
+			},
+		},
+		{
+			Name:    "delegation-token",
+			Summary: "Manage worker-minted delegation tokens",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List delegation tokens", Run: runDelegationTokenList},
+				{Name: "revoke", Summary: "Revoke a delegation token by id", Run: runDelegationTokenRevoke},
+			},
+		},
 	},
 }
 
@@ -225,17 +243,13 @@ func withAdminStore(cmd adminCmdCtx, args []string, setup func(fs *flag.FlagSet)
 		cfg = adminConfig(*dataDir)
 	}
 
-	st, err := openAdminStore(cfg)
+	st, err := storeopen.Open(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = st.Close() }()
 
 	return fn(context.Background(), cfg, st)
-}
-
-func openAdminStore(cfg *config.Config) (store.Store, error) {
-	return storeopen.Open(context.Background(), cfg)
 }
 
 // adminConfig returns a minimal Config with DataDir set. When dataDir is
@@ -248,6 +262,37 @@ func adminConfig(dataDir string) *config.Config {
 		cfg.DataDir = config.DefaultHubDataDir()
 	}
 	return cfg
+}
+
+// adminAllUsersLimit caps how many users `collectAcrossUsers` will
+// scan when --user is unset on a list-style admin command. Hub
+// deployments large enough to bump against this should pass --user
+// to narrow the query; we surface the cap here so changes are
+// reviewed in one place.
+const adminAllUsersLimit = 1000
+
+// collectAcrossUsers runs `fetch` once per user in the store when
+// `userID` is empty, otherwise just once for the named user. The
+// per-user results are concatenated in user-listing order. Shared by
+// `api-token list` and `delegation-token list` which both walk every
+// user when --user is unset.
+func collectAcrossUsers[T any](ctx context.Context, st store.Store, userID string, fetch func(uid string) ([]T, error)) ([]T, error) {
+	if userID != "" {
+		return fetch(userID)
+	}
+	users, err := st.Users().ListAll(ctx, store.ListAllUsersParams{Limit: adminAllUsersLimit})
+	if err != nil {
+		return nil, err
+	}
+	var rows []T
+	for _, u := range users {
+		batch, err := fetch(u.ID)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, batch...)
+	}
+	return rows, nil
 }
 
 // withAdminConfig creates a flag set with --data-dir, parses args, and
@@ -353,6 +398,14 @@ func yesNo(v bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// printJSON writes v to stdout as indented JSON. Admin commands use it
+// for output that needs to round-trip through `jq` / scripts.
+func printJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 // maybePrintNextCursor prints a cursor hint for the next page if the result

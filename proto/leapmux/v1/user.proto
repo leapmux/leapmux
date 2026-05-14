@@ -34,6 +34,13 @@ service UserService {
   rpc UpdatePreferences(UpdatePreferencesRequest) returns (UpdatePreferencesResponse);
   // Get the current timeout configuration.
   rpc GetTimeouts(GetTimeoutsRequest) returns (GetTimeoutsResponse);
+  // GetUser resolves a minimal user record (id, org_id, username)
+  // for another member of the caller's org. Used by the
+  // `leapmux remote` CLI universal resolver to derive org_id from
+  // user_id. Self-lookups always work; cross-user lookups are
+  // gated by same-org membership — returns PermissionDenied
+  // otherwise.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
 }
 
 message UpdateProfileRequest {
@@ -133,6 +140,16 @@ message GetTimeoutsResponse {
   int32 api_timeout_seconds = 1;
   int32 agent_startup_timeout_seconds = 2;
   int32 worktree_create_timeout_seconds = 3;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  string user_id  = 1;
+  string org_id   = 2;
+  string username = 3;
 }
 
 message UserPreferences {

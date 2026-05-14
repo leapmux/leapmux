@@ -484,6 +484,17 @@ export const platformBridge = {
   async closeChannelRelay(): Promise<void> {
     await tauriInvoke('close_channel_relay')
   },
+  // OrgEvents relay (`/ws/orgevents`). The webview can't dial the
+  // unix-socket hub natively in desktop solo mode, so the Go sidecar
+  // opens the WebSocket on our behalf and forwards each binary
+  // frame as a Tauri `orgevents:message` event (base64-encoded
+  // length-prefixed WatchOrgEvent bytes).
+  async openOrgEventsRelay(orgId: string, workspaceIds: string[] = []): Promise<void> {
+    await tauriInvoke('open_orgevents_relay', { orgId, workspaceIds })
+  },
+  async closeOrgEventsRelay(): Promise<void> {
+    await tauriInvoke('close_orgevents_relay')
+  },
   async getStartupInfo(): Promise<StartupInfo> {
     const wire = await tauriInvoke<StartupInfoWire>('get_startup_info')
     return {
@@ -535,19 +546,23 @@ export const platformBridge = {
   },
 }
 
+/**
+ * desktopFetch is the unary-only ConnectRPC transport for the desktop
+ * sidecar. The org-event subscription is not an RPC — it lives on the
+ * `/ws/orgevents` WebSocket endpoint (see
+ * `frontend/src/components/shell/useOrgEvents.ts`). WebSocket
+ * negotiates Upgrade and bypasses HTTP/1.1 chunked-stream buffering
+ * hazards (corporate proxies, Tauri's buffered fetch), which is why
+ * the previous streaming RPC was retired.
+ */
 export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
   const url = typeof input === 'string' ? input : (input as Request).url
   const method = init?.method ?? 'POST'
   const headers = Object.fromEntries(new Headers(init?.headers).entries())
   const body = init?.body ? arrayBufferToBase64(init.body as ArrayBuffer | Uint8Array | string) : ''
   const parsed = new URL(url)
-  const resp = await platformBridge.proxyHttp(
-    method,
-    parsed.pathname + parsed.search,
-    headers,
-    body,
-  )
-
+  const path = parsed.pathname + parsed.search
+  const resp = await platformBridge.proxyHttp(method, path, headers, body)
   return new Response(base64ToArrayBuffer(resp.body), {
     status: resp.status,
     headers: resp.headers,

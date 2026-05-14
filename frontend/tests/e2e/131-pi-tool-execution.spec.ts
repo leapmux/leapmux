@@ -3,7 +3,7 @@ import { expect, PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
 
 piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 
-piTest.describe('Pi Coding Agent Tool Execution', () => {
+piTest.describe('Pi Tool Execution', () => {
   piTest('bash command execution renders output in chat', async ({ authenticatedPiWorkspace, page }) => {
     void authenticatedPiWorkspace // fixture trigger
     await sendMessage(page, 'Run the bash command: echo "pi-test-output" and show me the output.')

@@ -266,7 +266,7 @@ func (s *WorkerManagementService) ListWorkers(
 
 	protoWorkers := make([]*leapmuxv1.Worker, len(workers))
 	for i := range workers {
-		protoWorkers[i] = s.workerToProto(&workers[i])
+		protoWorkers[i] = s.workerToProto(&workers[i], user.OrgID)
 	}
 
 	hasMore := int64(len(workers)) == limit
@@ -305,7 +305,7 @@ func (s *WorkerManagementService) GetWorker(
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetWorkerResponse{
-		Worker: s.workerToProto(worker),
+		Worker: s.workerToProto(worker, user.OrgID),
 	}), nil
 }
 
@@ -357,7 +357,14 @@ func (s *WorkerManagementService) DeregisterWorker(
 	return connect.NewResponse(&leapmuxv1.DeregisterWorkerResponse{}), nil
 }
 
-func (s *WorkerManagementService) workerToProto(b *store.Worker) *leapmuxv1.Worker {
+// workerToProto converts a store.Worker into the wire-side Worker
+// message. orgID is the caller's org — workers are owned by a single
+// user, that user has one org, and every Workers().Get* /
+// ListByUserID call upstream is already filtered by the caller's
+// user_id, so the caller's org is the worker's org. Passing it as a
+// parameter (rather than joining users.org_id at the SQL layer)
+// avoids a per-worker round-trip in ListWorkers.
+func (s *WorkerManagementService) workerToProto(b *store.Worker, orgID string) *leapmuxv1.Worker {
 	lastSeen := ""
 	if b.LastSeenAt != nil {
 		lastSeen = timefmt.Format(*b.LastSeenAt)
@@ -365,6 +372,7 @@ func (s *WorkerManagementService) workerToProto(b *store.Worker) *leapmuxv1.Work
 
 	return &leapmuxv1.Worker{
 		Id:             b.ID,
+		OrgId:          orgID,
 		Online:         s.workerMgr.IsOnline(b.ID),
 		CreatedAt:      timefmt.Format(b.CreatedAt),
 		LastSeenAt:     lastSeen,

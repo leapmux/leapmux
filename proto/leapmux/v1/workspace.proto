@@ -10,11 +10,14 @@ enum TabType {
   TAB_TYPE_UNSPECIFIED = 0;
   TAB_TYPE_AGENT = 1;
   TAB_TYPE_TERMINAL = 2;
-  TAB_TYPE_FILE = 3; // Ephemeral file viewer tab (not persisted to backend)
+  TAB_TYPE_FILE = 3;
 }
 
-// WorkspaceService is the hub-side service for workspace management.
-// Frontend calls these RPCs directly on the Hub (not via E2EE channels).
+// WorkspaceService manages workspace metadata + read-only tab views.
+// Layout / tab mutations live on OrgCRDT (see org_ops.proto). The
+// WorkspaceCreated / WorkspaceRenamed / WorkspaceDeleted lifecycle
+// events are broadcast on the `/ws/orgevents` WebSocket subscription
+// (see backend/internal/hub/service/ws_orgevents.go).
 service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
@@ -23,12 +26,27 @@ service WorkspaceService {
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   rpc UpdateWorkspaceSharing(UpdateWorkspaceSharingRequest) returns (UpdateWorkspaceSharingResponse);
   rpc ListWorkspaceShares(ListWorkspaceSharesRequest) returns (ListWorkspaceSharesResponse);
-  rpc AddTab(AddTabRequest) returns (AddTabResponse);
-  rpc RemoveTab(RemoveTabRequest) returns (RemoveTabResponse);
+  // ListTabs returns the materialized tab list across one or more
+  // workspaces. Reads `workspace_tab_rendered`.
   rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
-  rpc GetLayout(GetLayoutRequest) returns (GetLayoutResponse);
-  rpc SaveLayout(SaveLayoutRequest) returns (SaveLayoutResponse);
-  rpc SaveMultiLayout(SaveMultiLayoutRequest) returns (SaveMultiLayoutResponse);
+  // GetTab returns a single tab so callers can resolve the worker
+  // that owns it. Reads `workspace_tab_rendered`.
+  rpc GetTab(GetTabRequest) returns (GetTabResponse);
+  // LocateTab resolves a tab by (tab_type, tab_id) without requiring
+  // workspace_id or org_id — the hub finds the tab across every
+  // workspace the caller can access. Used by the `leapmux remote` CLI
+  // to derive the spawning tab's context (workspace, org, tile,
+  // worker) from a single env-injected anchor (LEAPMUX_REMOTE_TAB_ID
+  // + LEAPMUX_REMOTE_TAB_TYPE). Reads `workspace_tab_rendered`.
+  rpc LocateTab(LocateTabRequest) returns (LocateTabResponse);
+  // LocateTile resolves a tile by tile_id without requiring
+  // workspace_id. The hub walks the user's accessible CRDT state
+  // (from the in-memory `crdt.Manager` for the user's org), finds
+  // the workspace whose tile-tree contains the node, and verifies
+  // the caller can read that workspace. Returns NotFound when the
+  // tile isn't visible to the caller. Used by the `leapmux remote`
+  // CLI universal resolver when a script knows only a tile id.
+  rpc LocateTile(LocateTileRequest) returns (LocateTileResponse);
 }
 
 // --- Workspace CRUD ---
@@ -75,7 +93,7 @@ message Workspace {
 message UpdateWorkspaceSharingRequest {
   string workspace_id = 1;
   ShareMode share_mode = 2;
-  repeated string user_ids = 3; // Only used when share_mode = "members"
+  repeated string user_ids = 3;
 }
 
 message UpdateWorkspaceSharingResponse {}
@@ -86,7 +104,7 @@ message ListWorkspaceSharesRequest {
 
 message ListWorkspaceSharesResponse {
   ShareMode share_mode = 1;
-  repeated WorkspaceShareMember members = 2; // Only populated when share_mode = "members"
+  repeated WorkspaceShareMember members = 2;
 }
 
 message WorkspaceShareMember {
@@ -109,40 +127,28 @@ message DeleteWorkspaceRequest {
 }
 
 message DeleteWorkspaceResponse {
-  repeated string worker_ids = 1; // Workers that had tabs (frontend calls each for cleanup)
+  // Workers that hosted tabs at delete time. The frontend calls each
+  // for cleanup. Sourced from OrgCrdtState.tabs (in-memory) so even
+  // tabs hidden by projection-repair are included.
+  repeated string worker_ids = 1;
 }
 
-// --- Workspace Tabs ---
+// --- Workspace Tabs (read-only views; mutations via OrgCRDT) ---
 
 message WorkspaceTab {
   TabType tab_type = 1;
   string tab_id = 2;
   string position = 3;
   string tile_id = 4;
-  string worker_id = 5;         // Worker that owns this tab
-  string workspace_id = 6;      // Populated by ListTabs; ignored on mutation inputs
+  string worker_id = 5;
+  string workspace_id = 6;
 }
-
-message AddTabRequest {
-  string workspace_id = 1;
-  WorkspaceTab tab = 2;
-}
-
-message AddTabResponse {}
-
-message RemoveTabRequest {
-  string workspace_id = 1;
-  TabType tab_type = 2;
-  string tab_id = 3;
-}
-
-message RemoveTabResponse {}
 
 message ListTabsRequest {
   string org_id = 1;
-  // Workspaces to fetch tabs for. Empty = every workspace in the org the caller
-  // can read. Unknown / inaccessible IDs are silently dropped so stale sidebar
-  // state doesn't produce errors.
+  // Workspaces to fetch tabs for. Empty = every workspace in the org
+  // the caller can read. Unknown / inaccessible IDs are silently
+  // dropped so stale sidebar state doesn't produce errors.
   repeated string workspace_ids = 2;
 }
 
@@ -150,97 +156,21 @@ message ListTabsResponse {
   repeated WorkspaceTab tabs = 1;
 }
 
-// --- Tiling Layout ---
+// --- Tiling Layout shared types ---
 
+// SplitDirection names the orientation of the divider line between
+// the two children of a SPLIT node. The convention matches tmux and
+// the `tile split --direction` CLI flag:
+//   HORIZONTAL = a horizontal divider (-) between two stacked panes.
+//   VERTICAL   = a vertical divider (|) between two side-by-side panes.
 enum SplitDirection {
   SPLIT_DIRECTION_UNSPECIFIED = 0;
   SPLIT_DIRECTION_HORIZONTAL = 1;
   SPLIT_DIRECTION_VERTICAL = 2;
 }
 
-message LayoutNode {
-  oneof node {
-    LayoutSplit split = 1;
-    LayoutLeaf leaf = 2;
-    LayoutGrid grid = 3;
-  }
-}
-
-message LayoutSplit {
-  string id = 1;
-  SplitDirection direction = 2;
-  repeated double ratios = 3;
-  repeated LayoutNode children = 4;
-}
-
-message LayoutLeaf {
-  string id = 1;
-}
-
-// LayoutGrid is a fixed rows×cols grid of cells with shared row heights and
-// column widths (no Pinterest-style masonry). Cells are stored row-major:
-// cells[r * cols + c] is the cell at row r, column c. Each cell is itself a
-// LayoutNode (leaf, split, or nested grid).
-message LayoutGrid {
-  string id = 1;
-  uint32 rows = 2;
-  uint32 cols = 3;
-  repeated double row_ratios = 4;
-  repeated double col_ratios = 5;
-  repeated LayoutNode cells = 6;
-}
-
-// FloatingWindow represents a detached floating window overlay.
-message FloatingWindow {
-  string id = 1;
-  double x = 2;      // fraction of viewport width (can be negative)
-  double y = 3;      // fraction of viewport height (can be negative)
-  double width = 4;   // fraction of viewport width, must be > 0
-  double height = 5;  // fraction of viewport height, must be > 0
-  LayoutNode layout = 6;
-  double opacity = 7; // window opacity (0.0–1.0), 0 means default (1.0)
-}
-
-message GetLayoutRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-}
-
-message GetLayoutResponse {
-  LayoutNode layout = 1;
-  repeated FloatingWindow floating_windows = 2;
-}
-
-message SaveLayoutRequest {
-  string org_id = 1;
-  string workspace_id = 2;
-  LayoutNode layout = 3;
-  repeated WorkspaceTab tabs = 4;
-  repeated FloatingWindow floating_windows = 5;
-}
-
-message SaveLayoutResponse {}
-
-// --- Multi-Workspace Layout ---
-
-message WorkspaceLayoutEntry {
-  string workspace_id = 1;
-  LayoutNode layout = 2;
-  repeated WorkspaceTab tabs = 3;
-  repeated FloatingWindow floating_windows = 4;
-}
-
-message SaveMultiLayoutRequest {
-  string org_id = 1;
-  repeated WorkspaceLayoutEntry entries = 2;
-}
-
-message SaveMultiLayoutResponse {}
-
 // --- Worker Inner RPCs ---
 
-// CleanupWorkspaceRequest is sent via E2EE channel to a worker to clean up
-// all resources (agents, terminals, worktrees) for a deleted workspace.
 message CleanupWorkspaceRequest {
   string workspace_id = 1;
 }
@@ -249,8 +179,6 @@ message CleanupWorkspaceResponse {
   repeated WorktreeInfo worktrees = 1;
 }
 
-// WorktreeInfo describes a worktree found during workspace cleanup.
-// Travels via E2EE so the hub never sees filesystem paths.
 message WorktreeInfo {
   string worktree_id = 1;
   string worktree_path = 2;
@@ -267,7 +195,7 @@ message MoveTabWorkspaceRequest {
 
 message MoveTabWorkspaceResponse {}
 
-// --- Event Streaming ---
+// --- Event Streaming (per-agent / per-terminal) ---
 
 message WatchEventsRequest {
   repeated WatchAgentEntry agents = 1;
@@ -276,19 +204,11 @@ message WatchEventsRequest {
 
 message WatchAgentEntry {
   string agent_id = 1;
-  int64 after_seq = 2; // Resume from this sequence number (0 = from beginning, -1 = live only)
+  int64 after_seq = 2;
 }
 
 message WatchTerminalEntry {
   string terminal_id = 1;
-  // Cumulative byte offset the client has already processed for this
-  // terminal's output stream. Backend replays bytes with offset >
-  // after_offset. A fresh subscription (or a client that has lost its
-  // state) sends 0; the backend responds with a full snapshot marked
-  // is_snapshot=true. A resubscribe with an up-to-date offset yields an
-  // empty catch-up (no TerminalData event). An offset that has fallen
-  // out of the backend's retention window, or is larger than the
-  // backend's counter (PTY recreated), is treated the same as 0.
   int64 after_offset = 2;
 }
 
@@ -299,9 +219,6 @@ message WatchEventsResponse {
   }
 }
 
-// AgentEvent wraps agent-related events with the originating agent_id.
-// Used both as the wire type in WatchEventsResponse and as the internal
-// broadcast type in agentmgr.Watcher.
 message AgentEvent {
   string agent_id = 1;
   oneof event {
@@ -317,15 +234,8 @@ message AgentEvent {
   }
 }
 
-// CatchUpComplete is a sentinel event sent by the server after all historical
-// replay events (messages, status, control requests) for an agent have been
-// delivered. The client uses this to transition from catch-up phase to live
-// phase, preventing replayed events from triggering side effects like sounds.
 message CatchUpComplete {}
 
-// TerminalEvent wraps terminal-related events with the originating terminal_id.
-// Used both as the wire type in WatchEventsResponse and as the internal
-// broadcast type in terminalmgr.Watcher.
 message TerminalEvent {
   string terminal_id = 1;
   oneof event {
@@ -333,4 +243,56 @@ message TerminalEvent {
     TerminalClosed closed = 3;
     TerminalStatusChange status_change = 4;
   }
+}
+
+// --- GetTab (single-tab worker resolution) ---
+
+message GetTabRequest {
+  string workspace_id = 1;
+  string tab_id = 2;
+  TabType tab_type = 3;
+}
+
+message GetTabResponse {
+  WorkspaceTab tab = 1;
+}
+
+// --- LocateTab (cross-workspace single-tab lookup) ---
+//
+// Like GetTab but without a workspace_id filter: the hub looks for
+// the tab across every workspace the caller can access (owner or
+// share grant). Used when only the tab id is known — `leapmux remote`
+// derives org / workspace / tile / worker from this single hop.
+// Returns NotFound when no accessible workspace contains the tab.
+
+message LocateTabRequest {
+  TabType tab_type = 1;
+  string  tab_id   = 2;
+}
+
+message LocateTabResponse {
+  WorkspaceTab tab = 1;
+}
+
+// --- LocateTile (cross-workspace tile lookup) ---
+
+message LocateTileRequest {
+  string tile_id = 1;
+}
+
+message LocateTileResponse {
+  string workspace_id = 1;
+  string org_id       = 2;
+}
+
+// --- Workspace lifecycle events (broadcast on `/ws/orgevents`) ---
+
+message WorkspaceRenamed {
+  string workspace_id = 1;
+  string title = 2;
+}
+
+message WorkspaceDeleted {
+  string workspace_id = 1;
+  repeated string worker_ids = 2;
 }
