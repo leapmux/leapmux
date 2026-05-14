@@ -35,14 +35,6 @@ env:
   # ship Node-24 releases. Reusable workflows do not inherit env from the
   # caller, so this has to be redeclared here.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Match ci.yaml: route rustc through sccache so the GHA-backed compile
-  # cache fills in any artifacts the Swatinem/rust-cache restore missed.
-  # Workflow-level so every Rust-compiling job inherits the same wrapper;
-  # signing jobs that don't run cargo are unaffected. See ci.yaml for the
-  # full rationale.
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: sccache
-  CARGO_INCREMENTAL: "0"
 
 jobs:
   linux:
@@ -153,9 +145,6 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Cache Cargo dependencies
         # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
@@ -342,9 +331,6 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Cache Cargo dependencies
         # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
@@ -655,9 +641,6 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Cache Cargo dependencies
         # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.

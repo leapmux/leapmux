@@ -17,17 +17,6 @@ env:
   # Node-24 releases (or once the forced-switch date passes and the override
   # becomes a no-op).
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # sccache fronts rustc to cache individual compilation units in the GHA
-  # cache backend. SCCACHE_GHA_ENABLED switches the storage layer on;
-  # RUSTC_WRAPPER points cargo at sccache; CARGO_INCREMENTAL=0 disables
-  # incremental compilation (which conflicts with sccache and would otherwise
-  # pollute target/ with non-cacheable artifacts). Every job that compiles
-  # Rust must install sccache via `mozilla-actions/sccache-action` before
-  # `cargo` runs — jobs that don't run cargo are unaffected because rustc
-  # never invokes the wrapper.
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: sccache
-  CARGO_INCREMENTAL: "0"
 
 jobs:
   linux:
@@ -138,13 +127,6 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Setup sccache
-        # Wraps rustc to cache individual compilation units in the GHA cache
-        # backend. Must run before any `cargo` invocation; the workflow-level
-        # RUSTC_WRAPPER=sccache env var causes cargo to fail if the binary is
-        # not on PATH.
-        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Cache Cargo dependencies
         # Swatinem/rust-cache replaces a raw actions/cache for desktop/rust/
@@ -353,9 +335,6 @@ jobs:
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
-
       - name: Cache Cargo dependencies
         # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
         uses: Swatinem/rust-cache@v2
@@ -456,9 +435,6 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Cache Cargo dependencies
         # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
