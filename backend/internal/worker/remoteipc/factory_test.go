@@ -59,11 +59,15 @@ func (f *fakeDelegationLifecycle) snapshot() (acq, rel []scopedKey) {
 // directly-rooted per-test tempdir. DefaultSocketPath nests one extra
 // level below the configured runtime dir (`lmx-<wid8>/`); anchoring
 // under `/tmp` here keeps the full socket path well under macOS's
-// 104-byte sun_path limit even on long $TMPDIR layouts.
+// 104-byte sun_path limit even on long $TMPDIR layouts. On Windows
+// DefaultSocketPath ignores XDG_RUNTIME_DIR and emits an `npipe:` URL,
+// so this is a no-op there — the named-pipe namespace is process-wide
+// and doesn't need a per-test prefix beyond the spawn-id baked into
+// the pipe name.
 func withTempSocketRoot(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("factory tests use unix-socket lifetime; npipe path is exercised separately")
+		return
 	}
 	dir, err := os.MkdirTemp("/tmp", "lmx-")
 	require.NoError(t, err)

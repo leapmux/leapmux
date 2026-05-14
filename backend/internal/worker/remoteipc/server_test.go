@@ -2,11 +2,13 @@ package remoteipc_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,17 +35,32 @@ func shortSocketPath(t *testing.T) string {
 	return filepath.Join(dir, "ipc.sock")
 }
 
-// startTestServer spins up a per-agent IPC server on a unix socket and
-// returns a ConnectRPC client dialled over it. The test owns the
-// caller's raw token via opts.Token and `clientToken` so it can prove
-// auth header round-trips correctly.
-func startTestServer(t *testing.T, info remoteipc.TokenInfo, router *remoteipc.Router) (string, leapmuxv1connect.RemoteIPCServiceClient) {
+// pipeNameCounter disambiguates concurrent npipe-using tests in the
+// same process; pid+nano alone races inside a tight test loop.
+var pipeNameCounter atomic.Uint64
+
+// testSocketURL returns a per-platform local-IPC URL the tests can hand
+// to remoteipc.Listen / locallisten.Dialer. Unix socket on POSIX, named
+// pipe on Windows — both schemes are supported by the production
+// remoteipc.Server, so picking per-platform here lets the same test
+// body cover both.
+func testSocketURL(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("server_test uses unix sockets; npipe variant is exercised separately")
+		n := pipeNameCounter.Add(1)
+		return fmt.Sprintf("npipe:leapmux-remoteipc-test-%d-%d-%d", os.Getpid(), time.Now().UnixNano(), n)
 	}
+	return "unix:" + shortSocketPath(t)
+}
 
-	sockURL := "unix:" + shortSocketPath(t)
+// startTestServer spins up a per-agent IPC server on a local-IPC
+// transport (unix socket on POSIX, named pipe on Windows) and returns
+// a ConnectRPC client dialled over it. The test owns the caller's raw
+// token via opts.Token and `clientToken` so it can prove auth header
+// round-trips correctly.
+func startTestServer(t *testing.T, info remoteipc.TokenInfo, router *remoteipc.Router) (string, leapmuxv1connect.RemoteIPCServiceClient) {
+	t.Helper()
+	sockURL := testSocketURL(t)
 	rawToken := remoteipc.MintToken()
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: sockURL,
@@ -82,7 +99,7 @@ func (i *injectAuthHeader) RoundTrip(req *http.Request) (*http.Response, error) 
 // anonymous callers.
 func startTestServerNoAuth(t *testing.T, info remoteipc.TokenInfo, router *remoteipc.Router) leapmuxv1connect.RemoteIPCServiceClient {
 	t.Helper()
-	sockURL := "unix:" + shortSocketPath(t)
+	sockURL := testSocketURL(t)
 	rawToken := remoteipc.MintToken()
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: sockURL,
@@ -140,7 +157,7 @@ func TestServer_Whoami_RejectsWrongToken(t *testing.T) {
 	router := &remoteipc.Router{
 		WorkerID: "worker-A", UserID: "u-1", WorkspaceIDs: []string{"ws-1"},
 	}
-	sockURL := "unix:" + shortSocketPath(t)
+	sockURL := testSocketURL(t)
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: sockURL,
 		Token:     remoteipc.MintToken(),
@@ -259,7 +276,7 @@ func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	}
 	info := remoteipc.TokenInfo{UserID: "u-1", WorkspaceID: "ws-1", WorkerID: "worker-A"}
 
-	sockURL := "unix:" + shortSocketPath(t)
+	sockURL := testSocketURL(t)
 	rawToken := remoteipc.MintToken()
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: sockURL,
@@ -280,8 +297,9 @@ func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	_, err = client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
 	require.NoError(t, err)
 
-	// Close: socket file is removed and listener is torn down. Any
-	// subsequent dial via the same path must fail.
+	// Close: the listener is torn down (and on POSIX the socket file
+	// removed; on Windows the named-pipe instance released). Any
+	// subsequent dial via the same URL must fail.
 	require.NoError(t, srv.Close())
 
 	dial2, err := locallisten.Dialer(sockURL)
