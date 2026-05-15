@@ -499,18 +499,23 @@ tasks:
     cmds:
       # build-backend isn't implied by build-desktop-windows on its own; only
       # the top-level `task build` calls it first. The WiX fragment references
-      # $(env.LEAPMUX_CLI_PATH), which we point at the CLI built right here.
+      # $(env.TAURI_LEAPMUX_CLI_PATH), which we point at the CLI built right here.
       - task: build-backend
       - task: prepare-desktop
       - task: build-desktop-sidecar
-      # LEAPMUX_CLI_PATH is consumed by desktop/rust/windows/wix-peruser.wxs
-      # via WiX's $(env.NAME) preprocessor. tauri build invokes
-      # candle.exe/light.exe in this same env, so the path resolves at
-      # bundling time. --bundles msi drops Tauri's default NSIS .exe — we
-      # ship MSI only because only WiX exposes the `<Environment>` machinery
-      # we use for the scoped HKCU PATH append.
+      # TAURI_LEAPMUX_CLI_PATH is consumed by
+      # desktop/rust/windows/wix-peruser.wxs via WiX's $(env.NAME)
+      # preprocessor. The TAURI_ prefix is load-bearing: tauri-bundler's
+      # clear_env_for_wix() wipes the candle.exe environment and only
+      # restores SYSTEMROOT/TMP/TEMP plus variables whose uppercased name
+      # starts with "TAURI", so a plain LEAPMUX_CLI_PATH would be invisible
+      # to candle and the preprocessor would fail with an opaque "failed
+      # to run candle.exe" (Tauri swallows candle's stderr).
+      # --bundles msi drops Tauri's default NSIS .exe — we ship MSI only
+      # because only WiX exposes the `<Environment>` machinery we use for
+      # the scoped HKCU PATH append.
       - |
-        export LEAPMUX_CLI_PATH="$(pwd)/leapmux.exe"
+        export TAURI_LEAPMUX_CLI_PATH="$(pwd)/leapmux.exe"
         cd desktop/rust && ../../frontend/node_modules/.bin/tauri build \
           --bundles msi \
           --config '{"version":"{{.VERSION | replace "-dev" ""}}"}'

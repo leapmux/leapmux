@@ -11,9 +11,12 @@
   appended to the user's PATH — neither LeapMuxDesktop.exe nor the Go
   sidecar at INSTALLDIR's root is exposed to user shells.
 
-  $(env.LEAPMUX_CLI_PATH) is set by Taskfile.yaml's build-desktop-windows
-  before invoking `tauri build`; it resolves to the freshly-compiled
-  leapmux.exe at the repo root.
+  $(env.TAURI_LEAPMUX_CLI_PATH) is set by Taskfile.yaml's
+  build-desktop-windows before invoking `tauri build`; it resolves to
+  the freshly-compiled leapmux.exe at the repo root. The TAURI_ prefix
+  is required: tauri-bundler clears candle.exe's environment and only
+  forwards SYSTEMROOT/TMP/TEMP plus TAURI*-prefixed variables, so a
+  plain LEAPMUX_CLI_PATH would not survive into the preprocessor.
 
   GUID is committed (not regenerated) so MajorUpgrade can match the
   component across releases.
@@ -34,7 +37,7 @@
                    Guid="E1435041-FC1D-45F9-9733-4D7B50B9667F"
                    Win64="yes">
           <File Id="LeapmuxCliExe"
-                Source="$(env.LEAPMUX_CLI_PATH)"
+                Source="$(env.TAURI_LEAPMUX_CLI_PATH)"
                 KeyPath="yes"/>
           <Environment Id="LeapmuxCliPath"
                        Name="PATH"
