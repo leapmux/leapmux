@@ -45,7 +45,13 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .apt-cache
-          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/workflows/ci.yaml') }}
+          # Hash both workflow files so adding or removing a package in
+          # either ci.yaml or desktop-artifacts.yaml rotates the cache. The
+          # two workflows install identical package sets and share the
+          # cache scope; if only ci.yaml were hashed, a desktop-artifacts-
+          # only edit would silently re-download every run.
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/workflows/ci.yaml', '.github/workflows/desktop-artifacts.yaml') }}
+          restore-keys: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-
 
       - name: Configure APT cache directories
         run: |
@@ -123,14 +129,19 @@ jobs:
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v5
+        # Swatinem/rust-cache replaces a raw actions/cache for desktop/rust/
+        # target: it splits the key by rustc + target triple automatically,
+        # only stores fingerprinted artifacts that match the current
+        # Cargo.lock, and prunes stale outputs before save — so the saved
+        # blob stays tight and a `RUST_VERSION` bump rotates the key
+        # cleanly instead of restoring 1+ GB of artifacts cargo then
+        # discards. `shared-key: desktop` keeps ci.yaml and
+        # desktop-artifacts.yaml on the same key so push-to-main's
+        # desktop-artifacts run reuses the cache CI just populated.
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            desktop/rust/target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+          workspaces: desktop/rust
+          shared-key: desktop
 
       - name: Cache Tauri downloads
         # The cached ~/.cache/tauri contents (linuxdeploy AppImage, the
@@ -151,17 +162,24 @@ jobs:
         with:
           path: ~/.cache/tauri
           key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
+          # Fall back to last week's cache at the Monday CACHE_WEEK rotation
+          # boundary so we don't redownload the linuxdeploy AppImage + GTK
+          # plugins every Monday.
+          restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache awesome-claude-spinners
         # Spinner JSON files are fetched by `task generate-spinners` with
         # a fresh git clone every run. Caching the generated directory
         # keyed on CACHE_WEEK lets us skip the clone on subsequent runs
         # within the same ISO week while still refreshing weekly (matching
-        # the Tauri cache policy above).
+        # the Tauri cache policy above). The content is pure JSON,
+        # identical across all OS/arch combinations, so the key omits
+        # runner.os/runner.arch — the first job in any run populates it
+        # for the rest.
         uses: actions/cache@v5
         with:
           path: frontend/src/spinners
-          key: spinners-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+          key: spinners-${{ env.CACHE_WEEK }}
 
       - name: Setup buf
         uses: bufbuild/buf-setup-action@v1
@@ -318,26 +336,24 @@ jobs:
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v5
+        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            desktop/rust/target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+          workspaces: desktop/rust
+          shared-key: desktop
 
       - name: Cache Tauri downloads
         uses: actions/cache@v5
         with:
           path: ~/Library/Caches/tauri
           key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+          restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache awesome-claude-spinners
         uses: actions/cache@v5
         with:
           path: frontend/src/spinners
-          key: spinners-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
+          key: spinners-${{ env.CACHE_WEEK }}
 
       - name: Setup buf
         uses: bufbuild/buf-setup-action@v1
@@ -421,26 +437,24 @@ jobs:
           components: clippy
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v5
+        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            desktop/rust/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+          workspaces: desktop/rust
+          shared-key: desktop
 
       - name: Cache Tauri downloads
         uses: actions/cache@v5
         with:
           path: ~/AppData/Local/tauri
           key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
+          restore-keys: tauri-${{ runner.os }}-
 
       - name: Cache awesome-claude-spinners
         uses: actions/cache@v5
         with:
           path: frontend/src/spinners
-          key: spinners-${{ runner.os }}-${{ env.CACHE_WEEK }}
+          key: spinners-${{ env.CACHE_WEEK }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
