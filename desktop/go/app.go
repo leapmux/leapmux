@@ -270,3 +270,19 @@ func (a *App) ListEditors(refresh bool) []DetectedEditor {
 func (a *App) OpenInEditor(editorID, path string) error {
 	return a.editors.Open(editorID, path)
 }
+
+// CliPathStatus reports whether the bundled `leapmux` CLI is discoverable on
+// the current user's PATH. macOS only — other platforms always report
+// STATE_UNAVAILABLE because PATH integration is handled by the installer.
+func (a *App) CliPathStatus() *desktoppb.CliPathStatusResponse {
+	return cliPathStatusFromSidecar()
+}
+
+// CliInstallSymlink attempts to create the on-PATH symlink pointing at the
+// bundled `leapmux`. macOS only. `force` lets the caller overwrite a real
+// (non-symlink) file at the destination — the UI sets it on the user's
+// "Replace" confirmation after a prior call reported
+// RESULT_ALREADY_EXISTS_REAL_FILE.
+func (a *App) CliInstallSymlink(force bool) *desktoppb.CliInstallSymlinkResponse {
+	return cliInstallSymlinkFromSidecar(force)
+}

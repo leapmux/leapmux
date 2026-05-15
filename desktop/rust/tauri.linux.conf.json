@@ -12,7 +12,10 @@
         "bundleMediaFramework": true
       },
       "deb": {
-        "desktopTemplate": "desktop-template.desktop"
+        "desktopTemplate": "desktop-template.desktop",
+        "files": {
+          "/usr/bin/leapmux": "../../leapmux"
+        }
       }
     }
   }

@@ -1,4 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "mainBinaryName": "LeapMuxDesktop"
+  "mainBinaryName": "LeapMuxDesktop",
+  "bundle": {
+    "targets": ["msi"],
+    "windows": {
+      "wix": {
+        "fragmentPaths": ["windows/wix-peruser.wxs"],
+        "componentRefs": ["LeapmuxCliComponent"]
+      }
+    }
+  }
 }

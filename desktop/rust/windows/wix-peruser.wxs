@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Per-user MSI fragment, referenced from desktop/rust/tauri.windows.conf.json
+  via bundle.windows.wix.{fragmentPaths,componentRefs}. Tauri 2.10's WiX
+  bundler doesn't expose `installMode`, so we override the install scope by
+  pre-setting the WI5 single-package per-user properties that Tauri's stock
+  main.wxs honours, plus a SetDirectory that retargets INSTALLDIR from
+  ProgramFiles64Folder to %LocalAppData%\Programs.
+
+  The CLI ships in its own `cli` subdirectory of INSTALLDIR. Only `cli` is
+  appended to the user's PATH — neither LeapMuxDesktop.exe nor the Go
+  sidecar at INSTALLDIR's root is exposed to user shells.
+
+  $(env.LEAPMUX_CLI_PATH) is set by Taskfile.yaml's build-desktop-windows
+  before invoking `tauri build`; it resolves to the freshly-compiled
+  leapmux.exe at the repo root.
+
+  GUID is committed (not regenerated) so MajorUpgrade can match the
+  component across releases.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <Property Id="ALLUSERS" Secure="yes"/>
+    <Property Id="MSIINSTALLPERUSER" Value="1" Secure="yes"/>
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR"/>
+
+    <SetDirectory Id="INSTALLDIR"
+                  Value="[LocalAppDataFolder]Programs\LeapMux Desktop"
+                  Sequence="first">1</SetDirectory>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Directory Id="CliDir" Name="cli">
+        <Component Id="LeapmuxCliComponent"
+                   Guid="E1435041-FC1D-45F9-9733-4D7B50B9667F"
+                   Win64="yes">
+          <File Id="LeapmuxCliExe"
+                Source="$(env.LEAPMUX_CLI_PATH)"
+                KeyPath="yes"/>
+          <Environment Id="LeapmuxCliPath"
+                       Name="PATH"
+                       Value="[CliDir]"
+                       Permanent="no"
+                       Part="last"
+                       Action="set"
+                       System="no"/>
+        </Component>
+      </Directory>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

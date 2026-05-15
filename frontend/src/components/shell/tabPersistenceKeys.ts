@@ -13,6 +13,11 @@
 
 export const ACTIVE_WORKSPACE_KEY = 'leapmux:activeWorkspace'
 
+// One-shot gate for AppShell's macOS "install leapmux on PATH" prompt:
+// the check runs at most once per browser session regardless of how many
+// times the user enters/leaves the workspace route.
+export const CLI_PATH_CHECKED_KEY = 'leapmux:cli-path-checked'
+
 export function activeTabKey(workspaceId: string): string {
   return `leapmux:activeTab:${workspaceId}`
 }

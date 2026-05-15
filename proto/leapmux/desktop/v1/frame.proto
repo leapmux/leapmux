@@ -44,6 +44,8 @@ message Request {
     // is read-only — the frontend never writes to /ws/orgevents.
     OpenOrgEventsRelayRequest open_org_events_relay = 32;
     CloseOrgEventsRelayRequest close_org_events_relay = 33;
+    CliPathStatusRequest cli_path_status = 34;
+    CliInstallSymlinkRequest cli_install_symlink = 35;
   }
 }
 
@@ -61,6 +63,19 @@ message CloseOrgEventsRelayRequest {}
 message SwitchModeRequest {}
 message ListTunnelsRequest {}
 message ShutdownRequest {}
+message CliPathStatusRequest {}
+
+// CliInstallSymlinkRequest creates the on-PATH symlink for the bundled
+// `leapmux` CLI. `force` controls overwriting an existing entry at the
+// symlink destination: when false (default), a regular (non-symlink) file
+// at the destination causes RESULT_ALREADY_EXISTS_REAL_FILE so the UI can
+// confirm with the user before clobbering it. When true, any existing file
+// or symlink is removed before the new symlink is created. Either way, a
+// dangling/outdated symlink is silently replaced — the prompt only guards
+// against clobbering a real file the user explicitly put there.
+message CliInstallSymlinkRequest {
+  bool force = 1;
+}
 
 // OpenOrgEventsRelay names the org subscription the sidecar should
 // establish. `workspace_ids` is empty for the standard "all my
@@ -129,7 +144,61 @@ message Response {
     StartupInfo startup_info = 19;
     SidecarInfo sidecar_info = 20;
     ListEditorsResponse list_editors = 21;
+    CliPathStatusResponse cli_path_status = 22;
+    CliInstallSymlinkResponse cli_install_symlink = 23;
   }
+}
+
+// --- CLI PATH integration (macOS) ---
+//
+// CliPathStatusResponse classifies whether the `leapmux` CLI shipped inside
+// the desktop app bundle is discoverable on the user's PATH. Used by the
+// frontend to offer a one-click symlink install at /usr/local/bin/leapmux.
+// On non-darwin builds the sidecar always returns STATE_UNAVAILABLE.
+message CliPathStatusResponse {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_OK = 1;          // leapmux on PATH and (realpath or sha256) matches the bundled binary
+    STATE_MISSING = 2;     // leapmux not on PATH; symlink target reported in `target`
+    STATE_MISMATCH = 3;    // leapmux on PATH but is a different binary (different content); path reported in `resolved`
+    STATE_UNAVAILABLE = 4; // not applicable (non-macOS, or bundled binary absent — dev runs)
+  }
+  // TargetKind describes what (if anything) currently exists at the
+  // install destination (`target` below). The UI uses this to decide
+  // upfront whether the Install button needs a "replaces existing file"
+  // warning and whether to send `force=true` — without it, MISSING +
+  // non-exec real file at the destination requires a two-click flow
+  // (Install → ALREADY_EXISTS_REAL_FILE → Replace).
+  enum TargetKind {
+    TARGET_KIND_UNSPECIFIED = 0;  // permission error or unclassifiable; clients should treat as REGULAR_FILE (safer prompt)
+    TARGET_KIND_ABSENT = 1;       // nothing at target path
+    TARGET_KIND_SYMLINK = 2;      // any symlink (valid, dangling, points elsewhere)
+    TARGET_KIND_REGULAR_FILE = 3; // user-placed file (non-symlink)
+  }
+  State state = 1;
+  string bundled = 2;    // absolute path to the bundled leapmux inside the .app
+  string resolved = 3;   // absolute on-PATH path; only set when state = STATE_MISMATCH
+  string target = 4;     // suggested install destination; only set when state = STATE_MISSING
+  TargetKind target_kind = 5; // populated for every state; describes what's at `target` (or cliSymlinkDst when target is empty)
+}
+
+// CliInstallSymlinkResponse reports the outcome of attempting to create the
+// symlink at /usr/local/bin/leapmux. NEEDS_SUDO surfaces the exact sudo
+// command for the UI to display; PARENT_MISSING fires when /usr/local/bin
+// itself is absent (clean Apple Silicon without Homebrew).
+message CliInstallSymlinkResponse {
+  enum Result {
+    RESULT_UNSPECIFIED = 0;
+    RESULT_OK = 1;
+    RESULT_NEEDS_SUDO = 2;
+    RESULT_ALREADY_EXISTS_REAL_FILE = 3;
+    RESULT_PARENT_MISSING = 4;
+    RESULT_IO_ERROR = 5;
+  }
+  Result result = 1;
+  string command = 2; // populated for NEEDS_SUDO / PARENT_MISSING (suggested sudo command)
+  string path = 3;    // populated for ALREADY_EXISTS_REAL_FILE / PARENT_MISSING
+  string message = 4; // populated for IO_ERROR
 }
 
 message SetWindowSizeResponse {}

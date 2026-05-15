@@ -3,6 +3,7 @@ import type { BuildInfo } from '~/lib/systemInfo'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
+import { isMac } from '~/lib/shortcuts/platform'
 
 export type PlatformMode = 'web' | 'tauri-desktop-solo' | 'tauri-desktop-distributed' | 'tauri-mobile-distributed'
 
@@ -78,6 +79,83 @@ export interface TunnelInfo {
 export interface DetectedEditor {
   id: string
   displayName: string
+}
+
+// Tagged unions the UI consumes. Mirror CliPathStatusResponse and
+// CliInstallSymlinkResponse in proto/leapmux/desktop/v1/frame.proto.
+export type CliPathTargetKind = 'absent' | 'symlink' | 'regular_file' | 'unknown'
+
+export type CliPathStatus
+  = | { state: 'ok', bundled: string }
+    | { state: 'missing', bundled: string, target: string, targetKind: CliPathTargetKind }
+    | { state: 'mismatch', bundled: string, resolved: string, targetKind: CliPathTargetKind }
+    | { state: 'unavailable' }
+
+export type CliInstallResult
+  = | { result: 'ok' }
+    | { result: 'needs_sudo', command: string }
+    | { result: 'already_exists_real_file', path: string }
+    | { result: 'parent_missing', path: string, command: string }
+    | { result: 'io_error', message: string }
+
+interface CliPathStatusPayload {
+  state: number
+  bundled: string
+  resolved: string
+  target: string
+  targetKind: number
+}
+
+interface CliInstallSymlinkPayload {
+  result: number
+  command: string
+  path: string
+  message: string
+}
+
+// Numeric codes mirror the proto enums in frame.proto. The Tauri commands
+// return raw i32 (prost-generated enums aren't serde-Serialize), so we
+// translate here once at the boundary.
+const PathState = { OK: 1, MISSING: 2, MISMATCH: 3 } as const
+const TargetKind = { ABSENT: 1, SYMLINK: 2, REGULAR_FILE: 3 } as const
+const InstallResultCode = {
+  OK: 1,
+  NEEDS_SUDO: 2,
+  ALREADY_EXISTS_REAL_FILE: 3,
+  PARENT_MISSING: 4,
+  IO_ERROR: 5,
+} as const
+
+function decodeTargetKind(n: number): CliPathTargetKind {
+  switch (n) {
+    case TargetKind.ABSENT: return 'absent'
+    case TargetKind.SYMLINK: return 'symlink'
+    case TargetKind.REGULAR_FILE: return 'regular_file'
+    // UNSPECIFIED (0) or any unknown value collapses to 'unknown' so the
+    // dialog defaults to the safer two-click danger button — a permission
+    // error reading the target shouldn't silently downgrade.
+    default: return 'unknown'
+  }
+}
+
+function decodeCliPathStatus(p: CliPathStatusPayload): CliPathStatus {
+  switch (p.state) {
+    case PathState.OK: return { state: 'ok', bundled: p.bundled }
+    case PathState.MISSING: return { state: 'missing', bundled: p.bundled, target: p.target, targetKind: decodeTargetKind(p.targetKind) }
+    case PathState.MISMATCH: return { state: 'mismatch', bundled: p.bundled, resolved: p.resolved, targetKind: decodeTargetKind(p.targetKind) }
+    default: return { state: 'unavailable' }
+  }
+}
+
+function decodeCliInstallResult(p: CliInstallSymlinkPayload): CliInstallResult {
+  switch (p.result) {
+    case InstallResultCode.OK: return { result: 'ok' }
+    case InstallResultCode.NEEDS_SUDO: return { result: 'needs_sudo', command: p.command }
+    case InstallResultCode.ALREADY_EXISTS_REAL_FILE: return { result: 'already_exists_real_file', path: p.path }
+    case InstallResultCode.PARENT_MISSING: return { result: 'parent_missing', path: p.path, command: p.command }
+    case InstallResultCode.IO_ERROR: return { result: 'io_error', message: p.message }
+    default: return { result: 'io_error', message: p.message || 'unknown sidecar response' }
+  }
 }
 
 declare global {
@@ -474,6 +552,19 @@ export const platformBridge = {
         bodyBase64,
       },
     })
+  },
+  // Returns null off-Tauri or off-macOS so callers can skip the IPC.
+  async cliPathStatus(): Promise<CliPathStatus | null> {
+    if (!isTauriApp() || !isMac())
+      return null
+    const payload = await tauriInvoke<CliPathStatusPayload>('cli_path_status')
+    return decodeCliPathStatus(payload)
+  },
+  // `force=true` overwrites a regular (non-symlink) file at the install
+  // destination. Symlinks are always replaced regardless of `force`.
+  async cliInstallSymlink(force = false): Promise<CliInstallResult> {
+    const payload = await tauriInvoke<CliInstallSymlinkPayload>('cli_install_symlink', { force })
+    return decodeCliInstallResult(payload)
   },
   async openChannelRelay(): Promise<void> {
     await tauriInvoke('open_channel_relay')

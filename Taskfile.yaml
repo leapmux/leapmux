@@ -297,16 +297,28 @@ tasks:
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
+      - leapmux
     generates:
       - "LeapMux Desktop.app/**/*"
       - "LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
     cmds:
+      # build-backend isn't implied by build-desktop-darwin on its own (only
+      # by the top-level `task build`), but the cp step below embeds the CLI
+      # into the .app bundle, so leapmux must exist at the repo root first.
+      - task: build-backend
       - task: prepare-desktop
       - task: build-desktop-sidecar
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --bundles app --config '{"version":"{{.VERSION}}"}'
       # Move sidecar from Resources/_up_/go/bin/ to MacOS/ for a cleaner bundle layout.
       - mv "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_/go/bin/"* "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/"
       - rm -rf "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/Resources/_up_"
+      # Embed the leapmux CLI inside Contents/MacOS/. The inside-out
+      # signing sweep in sign-macos.sh discovers it as a Mach-O and applies
+      # Developer ID + hardened runtime alongside the sidecar; the runtime
+      # PATH check in the Go sidecar resolves it via
+      # filepath.Join(filepath.Dir(os.Executable()), "leapmux") at startup.
+      - cp leapmux "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/leapmux"
+      - chmod 0755 "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app/Contents/MacOS/leapmux"
       # Sign the .app. With MACOS_CODESIGN_IDENTITY set, sign-macos.sh applies
       # Developer ID + hardened runtime + entitlements to nested Mach-O code
       # inside-out; without it, falls back to ad-hoc signing for local dev.
@@ -346,6 +358,12 @@ tasks:
       - xcrun stapler staple {{.APP_PATH}}
       - xcrun stapler validate {{.APP_PATH}}
       - rm -f notarize-app.zip
+      # Explicit assertion that the inside-out signer actually picked up the
+      # embedded leapmux CLI binary and that Gatekeeper accepts it. Without
+      # this check, a regression in sign-macos.sh's Mach-O discovery could
+      # silently ship an unsigned CLI inside an otherwise-notarized .app.
+      - codesign --verify --strict --verbose=2 "{{.APP_PATH}}/Contents/MacOS/leapmux"
+      - spctl --assess --verbose --type exec "{{.APP_PATH}}/Contents/MacOS/leapmux"
       # Confirm Gatekeeper accepts the now-stapled .app before we wrap it.
       - spctl --assess --verbose --type exec {{.APP_PATH}}
       # Rebuild the DMG from the stapled .app, then sign + notarize + staple
@@ -413,12 +431,17 @@ tasks:
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
+      - leapmux
     generates:
       - leapmux-desktop
       - leapmux-desktop-service-*
       - leapmux-desktop*.deb
       - leapmux-desktop*.AppImage
     cmds:
+      # build-backend is not implied by build-desktop-linux on its own (only by
+      # the top-level `task build`), but tauri.linux.conf.json's `deb.files`
+      # references ../../leapmux, so the CLI must exist before tauri build.
+      - task: build-backend
       - task: prepare-desktop
       - task: build-desktop-sidecar
       - desktop/rust/scripts/patch-linuxdeploy.sh
@@ -427,6 +450,26 @@ tasks:
       - cp -f desktop/go/bin/leapmux-desktop-service-* .
       - cp -f desktop/rust/target/release/bundle/deb/leapmux-desktop*.deb .
       - cp -f desktop/rust/target/release/bundle/appimage/leapmux-desktop*.AppImage .
+      # Tauri's deb bundler hardcodes /usr/bin/<mainBinaryName> for the app
+      # binary; there's no config knob to relocate it. Post-process the .deb
+      # so `leapmux-desktop` lands under /usr/lib/ (off PATH) while
+      # /usr/bin/leapmux (added via deb.files) stays as the only CLI on PATH.
+      # dpkg-deb -R/-b is round-tripped by Debian itself — md5sums regenerate
+      # automatically. The grep -q is a tripwire: if desktop-template.desktop
+      # ever stops pointing at /usr/lib/..., the relocation falls out of sync
+      # and we want a loud failure rather than a silent broken .desktop file.
+      - |
+        set -euo pipefail
+        for deb in leapmux-desktop_*.deb; do
+          work="$(mktemp -d)"
+          dpkg-deb -R "$deb" "$work"
+          mkdir -p "$work/usr/lib/leapmux-desktop"
+          mv "$work/usr/bin/leapmux-desktop" "$work/usr/lib/leapmux-desktop/leapmux-desktop"
+          grep -q '^Exec=/usr/lib/leapmux-desktop/leapmux-desktop$' \
+            "$work/usr/share/applications/"*.desktop
+          dpkg-deb -b "$work" "$deb"
+          rm -rf "$work"
+        done
 
   build-desktop-windows:
     desc: Build desktop for Windows
@@ -444,45 +487,47 @@ tasks:
       - desktop/rust/capabilities/**/*
       - desktop/rust/tauri.conf.json
       - desktop/rust/tauri.windows.conf.json
+      - desktop/rust/windows/**/*
       - desktop/rust/icons/icon.ico
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
+      - leapmux.exe
     generates:
-      - LeapMuxDesktop*.exe
       - LeapMuxDesktop*.msi
       - leapmux-desktop-service-*.exe
     cmds:
+      # build-backend isn't implied by build-desktop-windows on its own; only
+      # the top-level `task build` calls it first. The WiX fragment references
+      # $(env.LEAPMUX_CLI_PATH), which we point at the CLI built right here.
+      - task: build-backend
       - task: prepare-desktop
       - task: build-desktop-sidecar
-      - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION | replace "-dev" ""}}"}'
-      - cp -f desktop/rust/target/release/LeapMuxDesktop.exe .
-      - cp -f desktop/go/bin/leapmux-desktop-service-*.exe .
-      # Tauri's NSIS and WiX bundlers name the installer after productName
-      # ("LeapMux Desktop" — with a space), regardless of our mainBinaryName
-      # override. Copy with a space-stripping rename so we ship spaceless
-      # filenames. The WiX bundler additionally appends "_en-US"; strip
-      # that too. Both bundlers also embed whatever version we passed to
-      # `tauri build` — which is {{.VERSION}} with "-dev" stripped, since
-      # WiX's ProductVersion rejects semver prerelease tags — so re-insert
-      # the full {{.VERSION}} in the output filename to match the other
-      # desktop bundles. The MSI's internal ProductVersion and the NSIS
-      # installer's internal version string stay at the stripped form;
-      # that's a Windows Installer / NSIS limitation we can't work around,
-      # but the filename is what users download. We cd into the bundle
-      # dir first so the glob expands to bare filenames: on Windows,
-      # mvdan/sh expands globs with directory segments to native backslash
-      # paths, and the resulting behavior of `${##*/}` varies with the
-      # parent shell (bash vs PowerShell).
+      # LEAPMUX_CLI_PATH is consumed by desktop/rust/windows/wix-peruser.wxs
+      # via WiX's $(env.NAME) preprocessor. tauri build invokes
+      # candle.exe/light.exe in this same env, so the path resolves at
+      # bundling time. --bundles msi drops Tauri's default NSIS .exe — we
+      # ship MSI only because only WiX exposes the `<Environment>` machinery
+      # we use for the scoped HKCU PATH append.
       - |
-        repo_root="$(pwd)"
-        cd desktop/rust/target/release/bundle/nsis
-        for src in LeapMux*-setup.exe; do
-          [ -e "$src" ] || continue
-          dest="${src// /}"
-          dest="${dest/_{{.VERSION | replace "-dev" ""}}_/_{{.VERSION}}_}"
-          cp -f "$src" "$repo_root/$dest"
-        done
+        export LEAPMUX_CLI_PATH="$(pwd)/leapmux.exe"
+        cd desktop/rust && ../../frontend/node_modules/.bin/tauri build \
+          --bundles msi \
+          --config '{"version":"{{.VERSION | replace "-dev" ""}}"}'
+      - cp -f desktop/go/bin/leapmux-desktop-service-*.exe .
+      # Tauri's WiX bundler names the installer after productName ("LeapMux
+      # Desktop" — with a space) regardless of mainBinaryName, and appends
+      # "_en-US" before the extension. Strip both for the published filename.
+      # Tauri also embeds whatever version we passed to `tauri build` —
+      # {{.VERSION}} with "-dev" stripped, since WiX's ProductVersion rejects
+      # semver prerelease tags — so we re-insert the full {{.VERSION}} in the
+      # output filename to match the .deb/.dmg artifacts. The MSI's internal
+      # ProductVersion stays at the stripped form; that's a Windows Installer
+      # limitation we can't work around, but the filename is what users
+      # download. We cd into the bundle dir first so the glob expands to bare
+      # filenames: on Windows, mvdan/sh expands globs with directory segments
+      # to native backslash paths and `${##*/}` then varies with the parent
+      # shell (bash vs PowerShell).
       - |
         repo_root="$(pwd)"
         cd desktop/rust/target/release/bundle/msi
@@ -505,7 +550,7 @@ tasks:
         if: '[ "{{OS}}" = "darwin" ]'
       - cmd: ./leapmux-desktop {{.CLI_ARGS}}
         if: '[ "{{OS}}" = "linux" ]'
-      - cmd: ./LeapMuxDesktop.exe {{.CLI_ARGS}}
+      - cmd: ./desktop/rust/target/release/LeapMuxDesktop.exe {{.CLI_ARGS}}
         if: '[ "{{OS}}" = "windows" ]'
 
   # --- Testing ---
@@ -670,7 +715,7 @@ tasks:
     desc: Start desktop app for development
     cmds:
       - task: generate
-      - task: prepare-frontend
+      - task: build-backend
       - task: prepare-desktop
       - task: build-desktop-sidecar
       - mprocs --config mprocs-desktop.yaml
@@ -824,7 +869,6 @@ tasks:
       - rm -f  leapmux-desktop-service-*
       - rm -f  leapmux-desktop*.deb
       - rm -f  leapmux-desktop*.AppImage
-      - rm -f  LeapMux*.exe
       - rm -f  LeapMux*.msi
       - rm -f  desktop/go/leapmux-desktop desktop/go/leapmux-desktop.exe
       - rm -rf desktop/go/bin/
