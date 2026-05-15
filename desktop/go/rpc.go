@@ -322,6 +322,18 @@ func (s *RPCSession) handleRequest(req *desktoppb.Request) {
 			go s.onShutdown()
 		}
 
+	case *desktoppb.Request_CliPathStatus:
+		s.writeResponse(&desktoppb.Response{
+			Id:     id,
+			Result: &desktoppb.Response_CliPathStatus{CliPathStatus: s.app.CliPathStatus()},
+		})
+
+	case *desktoppb.Request_CliInstallSymlink:
+		s.writeResponse(&desktoppb.Response{
+			Id:     id,
+			Result: &desktoppb.Response_CliInstallSymlink{CliInstallSymlink: s.app.CliInstallSymlink(m.CliInstallSymlink.Force)},
+		})
+
 	default:
 		s.writeError(id, fmt.Errorf("unknown method: %T", req.Method))
 	}

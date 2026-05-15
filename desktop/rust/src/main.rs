@@ -1488,6 +1488,74 @@ async fn proxy_http(
     }
 }
 
+// --- CLI PATH integration (macOS only at the sidecar level) ---
+
+#[derive(Serialize)]
+struct CliPathStatusPayload {
+    state: i32,
+    bundled: String,
+    resolved: String,
+    target: String,
+    #[serde(rename = "targetKind")]
+    target_kind: i32,
+}
+
+#[tauri::command]
+async fn cli_path_status(
+    shell: State<'_, Arc<DesktopShell>>,
+) -> Result<CliPathStatusPayload, String> {
+    let resp = check_response(
+        shell
+            .send_request_async(proto::request::Method::CliPathStatus(
+                proto::CliPathStatusRequest {},
+            ))
+            .await?,
+    )?;
+
+    match resp.result {
+        Some(proto::response::Result::CliPathStatus(r)) => Ok(CliPathStatusPayload {
+            state: r.state,
+            bundled: r.bundled,
+            resolved: r.resolved,
+            target: r.target,
+            target_kind: r.target_kind,
+        }),
+        _ => Err("unexpected response for cli_path_status".to_string()),
+    }
+}
+
+#[derive(Serialize)]
+struct CliInstallSymlinkPayload {
+    result: i32,
+    command: String,
+    path: String,
+    message: String,
+}
+
+#[tauri::command]
+async fn cli_install_symlink(
+    shell: State<'_, Arc<DesktopShell>>,
+    force: bool,
+) -> Result<CliInstallSymlinkPayload, String> {
+    let resp = check_response(
+        shell
+            .send_request_async(proto::request::Method::CliInstallSymlink(
+                proto::CliInstallSymlinkRequest { force },
+            ))
+            .await?,
+    )?;
+
+    match resp.result {
+        Some(proto::response::Result::CliInstallSymlink(r)) => Ok(CliInstallSymlinkPayload {
+            result: r.result,
+            command: r.command,
+            path: r.path,
+            message: r.message,
+        }),
+        _ => Err("unexpected response for cli_install_symlink".to_string()),
+    }
+}
+
 #[tauri::command]
 async fn open_channel_relay(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
     check_response(
@@ -2093,6 +2161,8 @@ fn main() {
             connect_solo,
             connect_distributed,
             proxy_http,
+            cli_path_status,
+            cli_install_symlink,
             open_channel_relay,
             send_channel_message,
             close_channel_relay,

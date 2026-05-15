@@ -3,17 +3,20 @@ import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { BatchOutcome } from './useOpsSubmitter'
+import type { CliPathStatus } from '~/api/platformBridge'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, Match, on, Show, Switch, untrack } from 'solid-js'
 import { workerClient } from '~/api/clients'
+import { isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import { channelManager, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
+import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
-import { ACTIVE_WORKSPACE_KEY } from '~/components/shell/tabPersistenceKeys'
+import { ACTIVE_WORKSPACE_KEY, CLI_PATH_CHECKED_KEY } from '~/components/shell/tabPersistenceKeys'
 import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
@@ -40,6 +43,7 @@ import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
 import { parentDirectory } from '~/lib/paths'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
+import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -126,6 +130,10 @@ export const AppShell: ParentComponent = (props) => {
   const [confirmDeleteWs, setConfirmDeleteWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
   const [confirmArchiveWs, setConfirmArchiveWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
   const [keyPinConfirm, setKeyPinConfirm] = createSignal<KeyPinConfirmState | null>(null)
+  // Set to a `missing` / `mismatch` status when the macOS PATH check should
+  // show its dialog. `null` keeps the dialog unmounted (ok / unavailable /
+  // not-yet-checked / non-macOS).
+  const [cliPathInfo, setCliPathInfo] = createSignal<(CliPathStatus & { state: 'missing' | 'mismatch' }) | null>(null)
 
   // Worker section state
   const workerInfoStore = createWorkerInfoStore()
@@ -501,6 +509,33 @@ export const AppShell: ParentComponent = (props) => {
   })
 
   const isWorkspaceRoute = createMemo(() => hasWorkspaceDesktopChrome(location.pathname))
+
+  // macOS-only: when the user enters the workspace view in Solo mode, ask
+  // the sidecar whether the bundled `leapmux` CLI is reachable on PATH.
+  // Solo is the only mode where users invoke leapmux against the local hub
+  // from a shell. The sessionStorage flag is set BEFORE the IPC so a slow
+  // sidecar can't trigger duplicate prompts if the route flips during the
+  // await — accepted trade-off: a transient sidecar failure suppresses the
+  // prompt for the rest of the session.
+  createEffect(() => {
+    if (!isWorkspaceRoute())
+      return
+    if (!isTauriApp() || !isMac())
+      return
+    if (sessionStorage.getItem(CLI_PATH_CHECKED_KEY) === '1')
+      return
+    void (async () => {
+      const runtime = await platformBridge.getRuntimeState()
+      if (runtime.shellMode !== 'solo')
+        return
+      sessionStorage.setItem(CLI_PATH_CHECKED_KEY, '1')
+      const status = await platformBridge.cliPathStatus()
+      if (!status)
+        return
+      if (status.state === 'missing' || status.state === 'mismatch')
+        setCliPathInfo(status)
+    })()
+  })
 
   // True when the URL has a workspace ID but it doesn't exist in the loaded list
   const workspaceNotFound = createMemo(() => {
@@ -1134,6 +1169,15 @@ export const AppShell: ParentComponent = (props) => {
       </Switch>
 
       <tileRenderer.CloseDialogs />
+
+      <Show when={cliPathInfo()}>
+        {info => (
+          <CliPathDialog
+            status={info()}
+            onClose={() => setCliPathInfo(null)}
+          />
+        )}
+      </Show>
 
       <AppShellDialogs
         showNewAgentDialog={showNewAgentDialog()}
