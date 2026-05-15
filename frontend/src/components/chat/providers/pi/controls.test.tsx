@@ -38,8 +38,8 @@ describe('pi select control requests', () => {
 
     expect(container.textContent ?? '').toContain('Agent Question')
     expect(container.textContent ?? '').toContain('Allow dangerous command?')
-    expect(getByTestId('question-option-Allow')).toBeTruthy()
-    expect(getByTestId('question-option-Block')).toBeTruthy()
+    expect(getByTestId('question-option-Allow')).toBeInTheDocument()
+    expect(getByTestId('question-option-Block')).toBeInTheDocument()
   })
 
   it('renders the default title when the payload omits one', () => {
@@ -74,8 +74,8 @@ describe('pi select control requests', () => {
     const { queryByTestId } = render(() => (
       <PiControlContent request={req} askState={makeAskState()} />
     ))
-    expect(queryByTestId('question-option-Real')).toBeTruthy()
-    expect(queryByTestId('question-option-Other')).toBeTruthy()
+    expect(queryByTestId('question-option-Real')).toBeInTheDocument()
+    expect(queryByTestId('question-option-Other')).toBeInTheDocument()
     expect(queryByTestId('question-option-42')).toBeNull()
   })
 
@@ -171,12 +171,25 @@ function makeEditorRequest(prefill = ''): ControlRequest {
 
 describe('pi confirm control requests', () => {
   it('renders Approve and Deny buttons with the message body', () => {
-    const { container, getByTestId } = render(() => (
+    const { container } = render(() => (
+      <PiControlActions
+        request={makeConfirmRequest()}
+        askState={makeAskState()}
+        onRespond={vi.fn()}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+      />
+    ))
+    const { container: contentContainer } = render(() => (
       <PiControlContent request={makeConfirmRequest()} askState={makeAskState()} />
     ))
-    expect(container.textContent ?? '').toContain('Continue?')
-    expect(container.textContent ?? '').toContain('About to delete files.')
-    void getByTestId // ensure no throw above
+    expect(contentContainer.textContent ?? '').toContain('Continue?')
+    expect(contentContainer.textContent ?? '').toContain('About to delete files.')
+    // The action surface produces the Approve / Deny buttons referenced by
+    // the test name. queryByTestId-scoped to this render so the assertion
+    // doesn't accidentally pick up the content render above.
+    expect(container.querySelector('[data-testid="control-allow-btn"]')).toBeInTheDocument()
+    expect(container.querySelector('[data-testid="control-deny-btn"]')).toBeInTheDocument()
   })
 
   it('emits a confirm:true response on Approve', async () => {

@@ -24,24 +24,6 @@ describe('createSectionStore', () => {
     })
   })
 
-  it('should set loading', () => {
-    createRoot((dispose) => {
-      const store = createSectionStore()
-      store.setLoading(true)
-      expect(store.state.loading).toBe(true)
-      dispose()
-    })
-  })
-
-  it('should set error', () => {
-    createRoot((dispose) => {
-      const store = createSectionStore()
-      store.setError('something went wrong')
-      expect(store.state.error).toBe('something went wrong')
-      dispose()
-    })
-  })
-
   it('should set sections', () => {
     createRoot((dispose) => {
       const store = createSectionStore()

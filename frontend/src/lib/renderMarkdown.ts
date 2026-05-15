@@ -115,6 +115,16 @@ const plainProcessor = unified()
 const CACHE_MAX_SIZE = 256
 const markdownCache = new Map<string, string>()
 
+/** Visible for testing: drop all cached entries. */
+export function _resetMarkdownCache(): void {
+  markdownCache.clear()
+}
+
+/** Visible for testing: number of cached entries. */
+export function _getMarkdownCacheSize(): number {
+  return markdownCache.size
+}
+
 export function renderMarkdown(text: string, skipCache = false): string {
   if (!skipCache) {
     const cached = markdownCache.get(text)

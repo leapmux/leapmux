@@ -427,8 +427,8 @@ describe('codex result divider', () => {
     const parsed = {
       turn: { id: 'turn-1', status: 'completed' },
     }
-    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed)
-    expect(result).not.toBeNull()
+    const { container } = render(() => plugin.renderMessage!({ kind: 'result_divider' }, parsed))
+    expect(container.textContent).toContain('Turn completed')
   })
 })
 

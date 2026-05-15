@@ -796,7 +796,25 @@ fn dev_sidecar_metadata_path() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
+    dev_sidecar_metadata_path_in(&base)
+}
+
+#[cfg(windows)]
+fn dev_sidecar_metadata_path_in(base: &Path) -> PathBuf {
     base.join("leapmux-desktop").join("sidecar.json")
+}
+
+#[cfg(windows)]
+fn sanitize_sid_for_pipe(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(windows)]
@@ -804,19 +822,7 @@ fn sidecar_identity() -> Result<String, String> {
     use std::sync::OnceLock;
     static CACHED: OnceLock<Result<String, String>> = OnceLock::new();
     CACHED
-        .get_or_init(|| {
-            current_user_sid().map(|raw| {
-                raw.chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() || c == '-' {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect()
-            })
-        })
+        .get_or_init(|| current_user_sid().map(|raw| sanitize_sid_for_pipe(&raw)))
         .clone()
 }
 
@@ -2426,42 +2432,48 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn sidecar_identity_returns_valid_sid_form() {
-        let sid = sidecar_identity().expect("sidecar_identity");
-        assert!(
-            sid.starts_with("S-1-"),
-            "expected SID to start with S-1-, got: {sid}"
+    fn sanitize_sid_for_pipe_replaces_forbidden_chars() {
+        // A real Windows SID is preserved verbatim.
+        assert_eq!(
+            sanitize_sid_for_pipe("S-1-5-21-1234567890-1234567890-1234567890-1001"),
+            "S-1-5-21-1234567890-1234567890-1234567890-1001"
         );
-        assert!(
-            sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
-            "sanitized SID must contain only alphanumerics and hyphens, got: {sid}"
+        // Forbidden chars become `_`.
+        assert_eq!(
+            sanitize_sid_for_pipe("alice/bob\\carol\\@dave"),
+            "alice_bob_carol__dave"
         );
+        // Whitespace, dot, and other punctuation all map to `_`.
+        assert_eq!(sanitize_sid_for_pipe("a b.c:d"), "a_b_c_d");
+        // Hyphen and ASCII alphanumerics are preserved.
+        assert_eq!(sanitize_sid_for_pipe("Abc-123-XYZ"), "Abc-123-XYZ");
+        // Non-ASCII becomes `_` (one per char).
+        assert_eq!(sanitize_sid_for_pipe("zoé"), "zo_");
     }
 
     #[cfg(windows)]
     #[test]
-    fn dev_sidecar_endpoint_has_expected_shape() {
-        let name = dev_sidecar_endpoint().expect("endpoint");
-        assert!(
-            name.starts_with("\\\\.\\pipe\\leapmux-desktop-"),
-            "unexpected prefix in pipe name: {name}"
-        );
-        assert!(
-            name.ends_with("-sidecar"),
-            "unexpected suffix in pipe name: {name}"
-        );
+    fn dev_sidecar_endpoint_uses_full_pipe_format() {
+        // Pin the full endpoint string, including the variable identity, so a
+        // regression in prefix/suffix or identity placement is caught.
+        let identity = sidecar_identity().expect("sidecar_identity");
+        let expected = format!("\\\\.\\pipe\\leapmux-desktop-{identity}-sidecar");
+        let actual = dev_sidecar_endpoint().expect("endpoint");
+        assert_eq!(actual, expected);
     }
 
     #[cfg(windows)]
     #[test]
-    fn dev_sidecar_metadata_path_ends_with_sidecar_json() {
-        let path = dev_sidecar_metadata_path();
-        let suffix = PathBuf::from("leapmux-desktop").join("sidecar.json");
-        assert!(
-            path.ends_with(&suffix),
-            "expected path to end with {}, got: {}",
-            suffix.display(),
-            path.display()
+    fn dev_sidecar_metadata_path_joins_base_with_subdir_and_file() {
+        // Drive the path builder with a known base so the full result is
+        // pinned, not just the trailing components.
+        let base = PathBuf::from("C:\\Users\\alice\\AppData\\Local");
+        let path = dev_sidecar_metadata_path_in(&base);
+        assert_eq!(
+            path,
+            PathBuf::from("C:\\Users\\alice\\AppData\\Local")
+                .join("leapmux-desktop")
+                .join("sidecar.json")
         );
     }
 

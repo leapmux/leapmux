@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ZOOM_MAX,
-  ZOOM_MIN,
-  ZOOM_STEP,
   zoomIn,
   zoomLabel,
   zoomOut,
 } from '~/components/fileviewer/ImageToolbar'
+
+// Pin the intended numeric values of the production constants. If the
+// constants change, both the production code AND these literals should
+// be updated in lockstep; importing the constants and computing the
+// expected value would silently follow whatever the production value is.
+//
+// ZOOM_STEP = 0.25
+// ZOOM_MIN  = 0.25
+// ZOOM_MAX  = 5
 
 describe('zoomLabel', () => {
   it('returns "Fit" for fit mode without fitScale', () => {
@@ -47,63 +53,68 @@ describe('zoomLabel', () => {
 })
 
 describe('zoomIn', () => {
-  it('increases numeric scale by ZOOM_STEP', () => {
-    expect(zoomIn(1)).toBe(1 + ZOOM_STEP)
-    expect(zoomIn(0.5)).toBe(0.5 + ZOOM_STEP)
-    expect(zoomIn(2)).toBe(2 + ZOOM_STEP)
+  it('increases numeric scale by 0.25', () => {
+    expect(zoomIn(1)).toBe(1.25)
+    expect(zoomIn(0.5)).toBe(0.75)
+    expect(zoomIn(2)).toBe(2.25)
   })
 
   it('treats fit as scale 1 when no fitScale provided', () => {
-    expect(zoomIn('fit')).toBe(1 + ZOOM_STEP)
+    expect(zoomIn('fit')).toBe(1.25)
   })
 
   it('uses fitScale as base when provided for fit mode', () => {
-    expect(zoomIn('fit', 0.5)).toBe(0.5 + ZOOM_STEP)
-    expect(zoomIn('fit', 2)).toBe(2 + ZOOM_STEP)
+    expect(zoomIn('fit', 0.5)).toBe(0.75)
+    expect(zoomIn('fit', 2)).toBe(2.25)
   })
 
   it('ignores fitScale for non-fit modes', () => {
-    expect(zoomIn('actual', 0.5)).toBe(1 + ZOOM_STEP)
-    expect(zoomIn(1.5, 0.5)).toBe(1.5 + ZOOM_STEP)
+    expect(zoomIn('actual', 0.5)).toBe(1.25)
+    expect(zoomIn(1.5, 0.5)).toBe(1.75)
   })
 
   it('treats actual as scale 1 and increases', () => {
-    expect(zoomIn('actual')).toBe(1 + ZOOM_STEP)
+    expect(zoomIn('actual')).toBe(1.25)
   })
 
-  it('clamps at ZOOM_MAX', () => {
-    expect(zoomIn(ZOOM_MAX)).toBe(ZOOM_MAX)
-    expect(zoomIn(ZOOM_MAX - 0.1)).toBe(ZOOM_MAX)
+  it('clamps at 5x', () => {
+    expect(zoomIn(5)).toBe(5)
+    expect(zoomIn(4.9)).toBe(5)
+  })
+
+  it('rounds away binary float drift introduced by the step', () => {
+    // 0.1 + 0.25 = 0.35000000000000003 without rounding.
+    expect(zoomIn(0.1)).toBe(0.35)
   })
 })
 
 describe('zoomOut', () => {
-  it('decreases numeric scale by ZOOM_STEP', () => {
-    expect(zoomOut(1)).toBe(1 - ZOOM_STEP)
-    expect(zoomOut(1.5)).toBe(1.5 - ZOOM_STEP)
-    expect(zoomOut(2)).toBe(2 - ZOOM_STEP)
+  it('decreases numeric scale by 0.25', () => {
+    expect(zoomOut(1)).toBe(0.75)
+    expect(zoomOut(1.5)).toBe(1.25)
+    expect(zoomOut(2)).toBe(1.75)
   })
 
   it('treats fit as scale 1 when no fitScale provided', () => {
-    expect(zoomOut('fit')).toBe(1 - ZOOM_STEP)
+    expect(zoomOut('fit')).toBe(0.75)
   })
 
   it('uses fitScale as base when provided for fit mode', () => {
-    expect(zoomOut('fit', 0.5)).toBe(ZOOM_MIN)
-    expect(zoomOut('fit', 2)).toBe(2 - ZOOM_STEP)
+    expect(zoomOut('fit', 0.5)).toBe(0.25)
+    expect(zoomOut('fit', 2)).toBe(1.75)
   })
 
   it('ignores fitScale for non-fit modes', () => {
-    expect(zoomOut('actual', 0.5)).toBe(1 - ZOOM_STEP)
-    expect(zoomOut(1.5, 0.5)).toBe(1.5 - ZOOM_STEP)
+    expect(zoomOut('actual', 0.5)).toBe(0.75)
+    expect(zoomOut(1.5, 0.5)).toBe(1.25)
   })
 
   it('treats actual as scale 1 and decreases', () => {
-    expect(zoomOut('actual')).toBe(1 - ZOOM_STEP)
+    expect(zoomOut('actual')).toBe(0.75)
   })
 
-  it('clamps at ZOOM_MIN', () => {
-    expect(zoomOut(ZOOM_MIN)).toBe(ZOOM_MIN)
-    expect(zoomOut(ZOOM_MIN + 0.1)).toBe(ZOOM_MIN)
+  it('clamps at 0.25x', () => {
+    expect(zoomOut(0.25)).toBe(0.25)
+    expect(zoomOut(0.35)).toBe(0.25)
   })
 })

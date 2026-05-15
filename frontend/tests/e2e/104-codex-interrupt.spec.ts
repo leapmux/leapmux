@@ -1,44 +1,35 @@
 import { codexTest, expect } from './codex-fixtures'
-import { isMaybeVisible, sendMessage } from './helpers/ui'
+import { sendMessage } from './helpers/ui'
 
 codexTest.describe('Codex Interrupt', () => {
   codexTest('send a prompt and interrupt mid-response', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace // fixture trigger
-    // Send a long prompt to give time to interrupt.
-    await sendMessage(page, 'Write a very detailed essay about the history of computing, at least 2000 words.')
+    // Long prompt to ensure the interrupt window is wide enough that the
+    // stop button is observable. If the stop button never appears, the
+    // assertion below must fail — do not gate it on isMaybeVisible.
+    await sendMessage(page, 'Write a very detailed essay about the history of computing, at least 5000 words across multiple chapters with subheadings.')
 
-    // Wait briefly for the agent to start responding.
-    await page.waitForTimeout(3000)
-
-    // Click the interrupt/stop button.
+    // Click the interrupt/stop button — required to appear within the timeout.
     const stopBtn = page.locator('[data-testid="interrupt-btn"], [data-testid="stop-btn"]')
-    if (await isMaybeVisible(stopBtn)) {
-      await stopBtn.click()
+    await expect(stopBtn).toBeVisible({ timeout: 30_000 })
+    await stopBtn.click()
 
-      // Wait for the turn to complete (interrupted).
-      await page.waitForTimeout(5000)
-
-      // Verify that some content was received before the interrupt.
-      const bubbles = page.locator('[data-testid="message-bubble"]')
-      const count = await bubbles.count()
-      expect(count).toBeGreaterThan(1) // at least user message + partial response
-    }
+    // After interrupt, the thinking indicator must clear, and at least
+    // one user + partial-response bubble must be present.
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 30_000 })
+    const bubbles = page.locator('[data-testid="message-bubble"]')
+    expect(await bubbles.count()).toBeGreaterThan(1)
   })
 
   codexTest('interrupted turn shows completion status', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace // fixture trigger
-    await sendMessage(page, 'Write a 5000-word analysis of quantum computing.')
-
-    await page.waitForTimeout(3000)
+    await sendMessage(page, 'Write a 5000-word analysis of quantum computing with detailed chapters and citations.')
 
     const stopBtn = page.locator('[data-testid="interrupt-btn"], [data-testid="stop-btn"]')
-    if (await isMaybeVisible(stopBtn)) {
-      await stopBtn.click()
-      await page.waitForTimeout(5000)
+    await expect(stopBtn).toBeVisible({ timeout: 30_000 })
+    await stopBtn.click()
 
-      // After interrupt, the thinking indicator should be gone.
-      const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]')
-      await expect(thinkingIndicator).not.toBeVisible()
-    }
+    // After interrupt, the thinking indicator must be gone.
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 30_000 })
   })
 })

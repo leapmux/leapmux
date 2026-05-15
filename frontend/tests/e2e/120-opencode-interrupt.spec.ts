@@ -7,13 +7,18 @@ opencodeTest.describe('OpenCode Interrupt', () => {
   opencodeTest('interrupt button appears during processing', async ({ authenticatedOpencodeWorkspace, page }) => {
     void authenticatedOpencodeWorkspace // fixture trigger
 
-    // Send a prompt that will take a while.
-    await sendMessage(page, 'Write a very long essay about the history of computing, covering all major milestones from the abacus to modern AI.')
+    // Send a prompt long enough that the agent must be visibly streaming
+    // for several seconds — the stop button must appear during that window.
+    await sendMessage(page, 'Write a very long essay about the history of computing, covering all major milestones from the abacus to modern AI. Aim for at least 3000 words across multiple chapters.')
 
-    // The interrupt/stop button should appear while the agent is thinking.
+    // The interrupt/stop button must appear while the agent is processing.
+    // If it never does (regression: button never wired up, or button stays
+    // hidden), the assertion must fail rather than be swallowed.
     const stopButton = page.locator('[data-testid="stop-btn"]')
-    await expect(stopButton).toBeVisible({ timeout: 30_000 }).catch(() => {
-      // Fast responses may complete before we can observe the button.
-    })
+    await expect(stopButton).toBeVisible({ timeout: 30_000 })
+
+    // Click the interrupt and confirm processing stops.
+    await stopButton.click()
+    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible({ timeout: 30_000 })
   })
 })

@@ -222,14 +222,20 @@ describe('kilo result divider renderer', () => {
 
   it('renders "Turn ended" for end_turn', () => {
     const parsed = { stopReason: 'end_turn', usage: { totalTokens: 100 } }
-    const result = acpResultDividerRenderer(parsed)
-    expect(result).not.toBeNull()
+    const { container } = render(() => acpResultDividerRenderer(parsed))
+    expect(container.textContent).toBe('Turn ended')
   })
 
   it('renders "Turn ended" when stopReason is missing', () => {
     const parsed = { usage: { totalTokens: 100 } }
-    const result = acpResultDividerRenderer(parsed)
-    expect(result).not.toBeNull()
+    const { container } = render(() => acpResultDividerRenderer(parsed))
+    expect(container.textContent).toBe('Turn ended')
+  })
+
+  it('renders "Turn ended (reason)" for non-end_turn stopReason', () => {
+    const parsed = { stopReason: 'max_tokens' }
+    const { container } = render(() => acpResultDividerRenderer(parsed))
+    expect(container.textContent).toBe('Turn ended (max_tokens)')
   })
 
   it('returns null for non-object input', () => {
@@ -239,8 +245,8 @@ describe('kilo result divider renderer', () => {
 
   it('is returned by plugin.renderMessage for result_divider', () => {
     const parsed = { stopReason: 'end_turn' }
-    const result = plugin.renderMessage!({ kind: 'result_divider' }, parsed)
-    expect(result).not.toBeNull()
+    const { container } = render(() => plugin.renderMessage!({ kind: 'result_divider' }, parsed))
+    expect(container.textContent).toBe('Turn ended')
   })
 })
 
@@ -259,8 +265,9 @@ describe('kilo tool_call renderer', () => {
     }
     const category = plugin.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
-    const result = plugin.renderMessage!(category, toolUse)
-    expect(result).not.toBeNull()
+    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    // Title and kind label appear in the header.
+    expect(container.textContent).toContain('bash')
   })
 
   it('renders tool_call without kind', () => {
@@ -271,8 +278,8 @@ describe('kilo tool_call renderer', () => {
       status: 'pending',
     }
     const category = plugin.classify(input(toolUse))
-    const result = plugin.renderMessage!(category, toolUse)
-    expect(result).not.toBeNull()
+    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    expect(container.textContent).toContain('custom_tool')
   })
 })
 
@@ -353,8 +360,10 @@ describe('kilo tool_call_update renderer', () => {
     }
     const category = plugin.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
-    const result = plugin.renderMessage!(category, toolUse)
-    expect(result).not.toBeNull()
+    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    // Title is rendered in the header; command appears in the body.
+    expect(container.textContent).toContain('Shows recent commit messages')
+    expect(container.textContent).toContain('git log --oneline -5')
   })
 
   it('renders failed execute tool_call_update', () => {
@@ -369,8 +378,9 @@ describe('kilo tool_call_update renderer', () => {
       content: [],
     }
     const category = plugin.classify(input(toolUse))
-    const result = plugin.renderMessage!(category, toolUse)
-    expect(result).not.toBeNull()
+    const { container } = render(() => plugin.renderMessage!(category, toolUse))
+    expect(container.textContent).toContain('Run failing command')
+    expect(container.textContent).toContain('false')
   })
 
   it('classifies edit kind tool_call_update as tool_use', () => {

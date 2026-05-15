@@ -1,3 +1,4 @@
+import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { providerFor } from '../registry'
@@ -8,10 +9,6 @@ import './plugin'
 
 describe('pi plugin metadata', () => {
   const plugin = providerFor(AgentProvider.PI)!
-
-  it('registers the Pi provider', () => {
-    expect(plugin).toBeDefined()
-  })
 
   it('exposes attachment capabilities (text + image only)', () => {
     expect(plugin.attachments).toEqual({
@@ -54,11 +51,31 @@ describe('pi classify', () => {
   })
 
   it('renders agent_end result_divider via renderMessage', () => {
-    const result = plugin.renderMessage!(
+    const { container } = render(() => plugin.renderMessage!(
       { kind: 'result_divider' },
       { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] },
-    )
-    expect(result).not.toBeNull()
+    ))
+    expect(container.textContent).toBe('Turn ended')
+  })
+
+  it('renders Turn aborted for aborted stopReason via renderMessage', () => {
+    const { container } = render(() => plugin.renderMessage!(
+      { kind: 'result_divider' },
+      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] },
+    ))
+    expect(container.textContent).toBe('Turn aborted')
+  })
+
+  it('renders Turn failed with error message via renderMessage', () => {
+    const { container } = render(() => plugin.renderMessage!(
+      { kind: 'result_divider' },
+      {
+        type: 'agent_end',
+        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }],
+      },
+    ))
+    expect(container.textContent).toContain('Turn failed')
+    expect(container.textContent).toContain('rate limit')
   })
 
   it('classifies message_end with text content as assistant_text', () => {

@@ -19,8 +19,8 @@ describe('confirmDialog', () => {
         <p>Are you sure?</p>
       </ConfirmDialog>
     ))
-    expect(screen.getByText('Delete Item')).toBeDefined()
-    expect(screen.getByText('Are you sure?')).toBeDefined()
+    expect(screen.getByText('Delete Item')).toBeInTheDocument()
+    expect(screen.getByText('Are you sure?')).toBeInTheDocument()
   })
 
   it('shows default button labels', () => {
@@ -33,8 +33,8 @@ describe('confirmDialog', () => {
         <p>Message</p>
       </ConfirmDialog>
     ))
-    expect(screen.getByText('Cancel')).toBeDefined()
-    expect(screen.getByText('OK')).toBeDefined()
+    expect(screen.getByText('Cancel')).toBeInTheDocument()
+    expect(screen.getByText('OK')).toBeInTheDocument()
   })
 
   it('shows custom button labels', () => {
@@ -49,8 +49,8 @@ describe('confirmDialog', () => {
         <p>Message</p>
       </ConfirmDialog>
     ))
-    expect(screen.getByText('Keep')).toBeDefined()
-    expect(screen.getByText('Delete')).toBeDefined()
+    expect(screen.getByText('Keep')).toBeInTheDocument()
+    expect(screen.getByText('Delete')).toBeInTheDocument()
   })
 
   it('calls onConfirm when confirm button is clicked', () => {
@@ -97,10 +97,10 @@ describe('confirmDialog', () => {
     ))
     // In danger mode, the confirm button is a ConfirmButton (requires two clicks)
     const deleteBtn = screen.getByText('Delete')
-    expect(deleteBtn).toBeDefined()
+    expect(deleteBtn).toBeInTheDocument()
     // First click arms it, doesn't trigger confirm
     fireEvent.click(deleteBtn)
-    expect(screen.getByText('Confirm?')).toBeDefined()
+    expect(screen.getByText('Confirm?')).toBeInTheDocument()
   })
 
   it('calls showModal on mount', () => {
@@ -129,9 +129,9 @@ describe('confirmDialog', () => {
         <p>Message</p>
       </ConfirmDialog>
     ))
-    expect(screen.getByTestId('my-dialog')).toBeDefined()
-    expect(screen.getByTestId('my-cancel')).toBeDefined()
-    expect(screen.getByTestId('my-confirm')).toBeDefined()
+    expect(screen.getByTestId('my-dialog')).toBeInTheDocument()
+    expect(screen.getByTestId('my-cancel')).toBeInTheDocument()
+    expect(screen.getByTestId('my-confirm')).toBeInTheDocument()
   })
 
   it('non-danger primary submits via Enter (form submit handler)', () => {
@@ -213,7 +213,7 @@ describe('confirmDialog', () => {
       const footer = screen.getByTestId('my-dialog').querySelector('footer')!
       const labels = [...footer.querySelectorAll('button')].map(b => b.textContent?.trim())
       expect(labels).toEqual(['Cancel', 'Close all', 'Convert'])
-      expect(screen.getByTestId('my-secondary')).toBeDefined()
+      expect(screen.getByTestId('my-secondary')).toBeInTheDocument()
     })
 
     it('non-danger secondary fires on a single click', () => {

@@ -353,9 +353,12 @@ func TestClassicalWrongKey(t *testing.T) {
 }
 
 func TestNonceLimitsConst(t *testing.T) {
-	assert.Equal(t, uint64(1<<31-1), SoftNonceLimit, "SoftNonceLimit should be 2^31-1")
-	assert.Equal(t, uint64(1<<32-1), HardNonceLimit, "HardNonceLimit should be 2^32-1")
-	assert.Equal(t, 65535-16, MaxPlaintextSize, "MaxPlaintextSize should be 65535-16")
+	// Pin the literal nonce limits and plaintext size so a regression in the
+	// constant expression (e.g. shifting the exponent or misplacing a `-1`)
+	// is caught here rather than only by downstream behavior.
+	assert.Equal(t, uint64(2147483647), SoftNonceLimit, "SoftNonceLimit should be 2^31-1")
+	assert.Equal(t, uint64(4294967295), HardNonceLimit, "HardNonceLimit should be 2^32-1")
+	assert.Equal(t, 65519, MaxPlaintextSize, "MaxPlaintextSize should be 65535-16")
 }
 
 func TestMessageSizes(t *testing.T) {
@@ -366,13 +369,13 @@ func TestMessageSizes(t *testing.T) {
 	require.NoError(t, err)
 
 	// message1 = noise_msg1 (48) + mlkem_ciphertext (1568) = 1616
-	assert.Equal(t, 48+MlkemCiphertextSize, len(msg1), "message1 size")
+	assert.Equal(t, 1616, len(msg1), "message1 size")
 
 	msg2, _, err := ResponderHandshake(workerKey, msg1)
 	require.NoError(t, err)
 
 	// message2 = noise_msg2 (48) + slhdsa_signature (49856) = 49904
-	assert.Equal(t, 48+SlhdsaSignatureSize, len(msg2), "message2 size")
+	assert.Equal(t, 49904, len(msg2), "message2 size")
 	_ = hs
 }
 

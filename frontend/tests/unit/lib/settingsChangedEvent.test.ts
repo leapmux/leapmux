@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { _resetListeners, emitSettingsChanged, waitForSettingsChanged } from '~/lib/settingsChangedEvent'
+import { _getListenerCount, _resetListeners, emitSettingsChanged, waitForSettingsChanged } from '~/lib/settingsChangedEvent'
 
 describe('settingsChangedEvent', () => {
   beforeEach(() => {
@@ -47,14 +47,19 @@ describe('settingsChangedEvent', () => {
   })
 
   it('clears timer when resolved before timeout', async () => {
+    const rejectSpy = vi.fn()
     const promise = waitForSettingsChanged(
       c => c.permissionMode?.old === 'plan',
       5000,
-    )
+    ).catch(rejectSpy)
     emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
     await promise
-    // Advancing timers should not cause any issues
+
+    // If the resolve path didn't clear the timer, advancing past the deadline
+    // would trip it and reject the promise (which we'd catch via rejectSpy).
     vi.advanceTimersByTime(10000)
+    await Promise.resolve()
+    expect(rejectSpy).not.toHaveBeenCalled()
   })
 
   it('supports multiple concurrent waiters with different predicates', async () => {
@@ -76,26 +81,26 @@ describe('settingsChangedEvent', () => {
   })
 
   it('removes listener from list after match', async () => {
+    expect(_getListenerCount()).toBe(0)
     const promise = waitForSettingsChanged(
       c => c.permissionMode?.old === 'plan',
       5000,
     )
+    expect(_getListenerCount()).toBe(1)
     emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
     await promise
-
-    // A second emit should not cause errors
-    emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
+    expect(_getListenerCount()).toBe(0)
   })
 
   it('removes listener from list after timeout', async () => {
+    expect(_getListenerCount()).toBe(0)
     const promise = waitForSettingsChanged(
       c => c.permissionMode?.old === 'plan',
       5000,
     )
+    expect(_getListenerCount()).toBe(1)
     vi.advanceTimersByTime(5000)
     await promise.catch(() => {})
-
-    // Emitting after timeout should not cause errors
-    emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
+    expect(_getListenerCount()).toBe(0)
   })
 })

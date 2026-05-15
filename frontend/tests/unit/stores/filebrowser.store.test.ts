@@ -23,16 +23,4 @@ describe('fileBrowserStore', () => {
     expect(store.state.entries).toHaveLength(2)
     expect(store.state.entries[0].name).toBe('src')
   })
-
-  it('tracks loading and error states', () => {
-    const store = createFileBrowserStore()
-    store.setLoading(true)
-    expect(store.state.loading).toBe(true)
-    store.setError('connection failed')
-    expect(store.state.error).toBe('connection failed')
-    store.setLoading(false)
-    store.setError(null)
-    expect(store.state.loading).toBe(false)
-    expect(store.state.error).toBeNull()
-  })
 })

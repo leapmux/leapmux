@@ -36,8 +36,8 @@ describe('tileActionsMenu', () => {
         makeGridLabel="Make grid"
       />
     ))
-    expect(screen.getByText('Split vertically')).toBeDefined()
-    expect(screen.getByText('Split horizontally')).toBeDefined()
+    expect(screen.getByText('Split vertically')).toBeInTheDocument()
+    expect(screen.getByText('Split horizontally')).toBeInTheDocument()
   })
 
   it('hides make-grid when canMakeGrid is false', () => {
@@ -61,7 +61,6 @@ describe('tileActionsMenu', () => {
       />
     ))
     const item = screen.getByTestId('make-grid-menu-item')
-    expect(item).toBeDefined()
     expect(item.textContent).toContain('Make a 2×2 grid')
     fireEvent.click(item)
     expect(onMakeGridClick).toHaveBeenCalledOnce()
@@ -115,7 +114,7 @@ describe('tileActionsMenu', () => {
         pop={{ label: 'Pop out to floating window', testId: 'pop-out-button', onClick: () => {} }}
       />
     ))
-    expect(screen.getByText('Pop out to floating window')).toBeDefined()
+    expect(screen.getByText('Pop out to floating window')).toBeInTheDocument()
     expect(screen.queryByText('Pop in to main window')).toBeNull()
   })
 
@@ -128,7 +127,7 @@ describe('tileActionsMenu', () => {
         pop={{ label: 'Pop in to main window', testId: 'pop-in-button', onClick: () => {} }}
       />
     ))
-    expect(screen.getByText('Pop in to main window')).toBeDefined()
+    expect(screen.getByText('Pop in to main window')).toBeInTheDocument()
     expect(screen.queryByText('Pop out to floating window')).toBeNull()
   })
 

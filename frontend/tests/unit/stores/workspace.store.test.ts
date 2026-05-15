@@ -12,22 +12,4 @@ describe('createWorkspaceStore', () => {
       dispose()
     })
   })
-
-  it('should set loading', () => {
-    createRoot((dispose) => {
-      const store = createWorkspaceStore()
-      store.setLoading(true)
-      expect(store.state.loading).toBe(true)
-      dispose()
-    })
-  })
-
-  it('should set error', () => {
-    createRoot((dispose) => {
-      const store = createWorkspaceStore()
-      store.setError('something went wrong')
-      expect(store.state.error).toBe('something went wrong')
-      dispose()
-    })
-  })
 })

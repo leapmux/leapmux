@@ -36,7 +36,7 @@ describe('compassPhysics', () => {
     sim.start()
 
     expect(states.length).toBe(1)
-    expect(states[0].angle).toBeDefined()
+    expect(Number.isFinite(states[0].angle)).toBe(true)
 
     sim.stop()
   })
@@ -67,15 +67,24 @@ describe('compassPhysics', () => {
   })
 
   it('should not start twice', () => {
-    const states: CompassState[] = []
-    const sim = createCompassSimulation(s => states.push({ ...s }))
-    sim.start()
-    sim.start() // second call should be no-op
+    // Run two simulations for the same duration: one with a single start(),
+    // one with a redundant second start(). If the second start() ever spins
+    // up a second interval, the doubled run would observe ~2x as many ticks.
+    const singleStates: CompassState[] = []
+    const singleSim = createCompassSimulation(s => singleStates.push({ ...s }))
+    singleSim.start()
+    advanceTime(500)
+    singleSim.stop()
 
-    advanceTime(200)
-    sim.stop()
+    const doubleStates: CompassState[] = []
+    const doubleSim = createCompassSimulation(s => doubleStates.push({ ...s }))
+    doubleSim.start()
+    doubleSim.start() // must be a no-op, not a second interval
+    advanceTime(500)
+    doubleSim.stop()
 
-    expect(states.length).toBeGreaterThan(0)
+    expect(singleStates.length).toBeGreaterThan(1)
+    expect(doubleStates.length).toBe(singleStates.length)
   })
 
   it('should produce angular motion (angle changes over time)', () => {

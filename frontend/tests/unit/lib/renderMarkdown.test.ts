@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { renderMarkdown } from '~/lib/renderMarkdown'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { _getMarkdownCacheSize, _resetMarkdownCache, renderMarkdown } from '~/lib/renderMarkdown'
 
 describe('renderMarkdown', () => {
+  beforeEach(() => {
+    _resetMarkdownCache()
+  })
+
   it('should render markdown with syntax highlighting', () => {
     const html = renderMarkdown('```js\nconst x = 1\n```', true)
     expect(html).toContain('class="shiki')
@@ -33,8 +37,18 @@ describe('renderMarkdown', () => {
   })
 
   it('should cache results', () => {
+    expect(_getMarkdownCacheSize()).toBe(0)
     const html1 = renderMarkdown('cached test')
+    expect(_getMarkdownCacheSize()).toBe(1)
     const html2 = renderMarkdown('cached test')
+    // Second call must hit the cache — size stays at 1, not 2.
+    expect(_getMarkdownCacheSize()).toBe(1)
     expect(html1).toBe(html2)
+  })
+
+  it('should bypass cache when skipCache is true', () => {
+    expect(_getMarkdownCacheSize()).toBe(0)
+    renderMarkdown('cached test', true)
+    expect(_getMarkdownCacheSize()).toBe(0)
   })
 })

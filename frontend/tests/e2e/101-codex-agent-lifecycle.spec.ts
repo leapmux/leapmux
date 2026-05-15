@@ -10,34 +10,39 @@ codexTest.describe('Codex Agent Lifecycle', () => {
 
   codexTest('can create multiple Codex agents', async ({ authenticatedCodexWorkspace, page, leapmuxServer }) => {
     void authenticatedCodexWorkspace // fixture trigger
-    const tabsBefore = await page.locator('[data-testid="tab"]').count()
+    void leapmuxServer
+    const tabs = page.locator('[data-testid="tab"]')
+    const tabsBefore = await tabs.count()
 
-    // Click the new agent button to create another agent.
+    // Click the new agent button — must be visible. A regression where the
+    // button never renders or the click is a no-op should fail this test.
     const newAgentBtn = page.locator('[data-testid^="new-agent-button"]').first()
-    if (await isMaybeVisible(newAgentBtn)) {
-      await newAgentBtn.click()
-      // Wait for the new tab to appear.
-      await page.waitForTimeout(5000)
-      const tabsAfter = await page.locator('[data-testid="tab"]').count()
-      expect(tabsAfter).toBeGreaterThanOrEqual(tabsBefore)
-    }
+    await expect(newAgentBtn).toBeVisible()
+    await newAgentBtn.click()
+
+    // A new tab must appear.
+    await expect(tabs).toHaveCount(tabsBefore + 1)
   })
 
   codexTest('can close Codex agent tab', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace // fixture trigger
-    const tabsBefore = await page.locator('[data-testid="tab"]').count()
+    const tabs = page.locator('[data-testid="tab"]')
+    const tabsBefore = await tabs.count()
     expect(tabsBefore).toBeGreaterThan(0)
 
-    // Close the first agent tab via the close button.
+    // Close the first agent tab via the close button — must be visible.
     const closeBtn = page.locator('[data-testid="tab"] [data-testid="close-tab"]').first()
-    if (await closeBtn.isVisible()) {
-      await closeBtn.click()
-      // Confirm if a dialog appears.
-      const confirmBtn = page.locator('button:has-text("Close")')
-      if (await isMaybeVisible(confirmBtn, 2000)) {
-        await confirmBtn.click()
-      }
+    await expect(closeBtn).toBeVisible()
+    await closeBtn.click()
+    // A confirmation dialog may appear — confirm if it does.
+    const confirmBtn = page.locator('button:has-text("Close")')
+    if (await isMaybeVisible(confirmBtn, 2000)) {
+      await confirmBtn.click()
     }
+
+    // The close must take effect: tab count drops by one (or to zero if
+    // this was the only tab — workspace may collapse the tab strip).
+    await expect(tabs).toHaveCount(Math.max(tabsBefore - 1, 0))
   })
 
   codexTest('clear context via /clear command', async ({ authenticatedCodexWorkspace, page }) => {

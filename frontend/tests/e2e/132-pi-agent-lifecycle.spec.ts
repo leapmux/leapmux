@@ -12,17 +12,20 @@ piTest.describe('Pi Agent Lifecycle', () => {
 
   piTest('can close Pi agent tab', async ({ authenticatedPiWorkspace, page }) => {
     void authenticatedPiWorkspace // fixture trigger
-    const tabsBefore = await page.locator('[data-testid="tab"]').count()
+    const tabs = page.locator('[data-testid="tab"]')
+    const tabsBefore = await tabs.count()
     expect(tabsBefore).toBeGreaterThan(0)
 
     const closeBtn = page.locator('[data-testid="tab"] [data-testid="close-tab"]').first()
-    if (await closeBtn.isVisible()) {
-      await closeBtn.click()
-      const confirmBtn = page.locator('button:has-text("Close")')
-      if (await isMaybeVisible(confirmBtn, 2000)) {
-        await confirmBtn.click()
-      }
+    await expect(closeBtn).toBeVisible()
+    await closeBtn.click()
+    const confirmBtn = page.locator('button:has-text("Close")')
+    if (await isMaybeVisible(confirmBtn, 2000)) {
+      await confirmBtn.click()
     }
+
+    // The close must take effect.
+    await expect(tabs).toHaveCount(Math.max(tabsBefore - 1, 0))
   })
 
   piTest('clear context via /clear command resets Pi session', async ({ authenticatedPiWorkspace, page }) => {

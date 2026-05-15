@@ -12,7 +12,11 @@ cursorTest.describe('Cursor Basic Chat', () => {
     await waitForAgentIdle(page, 120_000)
 
     const bubble = await lastAssistantBubble(page)
-    const text = await bubble.textContent()
-    expect(text === null || QUOTA_OR_LIMIT_ERROR_RE.test(text) || text.includes('4')).toBe(true)
+    await expect(bubble).toBeVisible()
+    const text = (await bubble.textContent()) ?? ''
+    // Accept either a quota/limit error (CI may be rate-limited) or the
+    // expected answer. Reject empty/null — the bubble must have content.
+    expect(text.length).toBeGreaterThan(0)
+    expect(QUOTA_OR_LIMIT_ERROR_RE.test(text) || text.includes('4')).toBe(true)
   })
 })

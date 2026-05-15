@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  DYNAMIC_KEY_TTLS,
   getTtlForKey,
   initStorageCleanup,
   isWrappedValue,
   runCleanup,
   STATIC_KEYS,
 } from '~/lib/browserStorage'
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 describe('storageCleanup', () => {
   beforeEach(() => {
@@ -19,10 +20,18 @@ describe('storageCleanup', () => {
   })
 
   describe('getTtlForKey', () => {
-    it('returns correct TTL for each dynamic prefix', () => {
-      for (const { prefix, ttlMs } of DYNAMIC_KEY_TTLS) {
-        expect(getTtlForKey(`${prefix}some-id`)).toBe(ttlMs)
-      }
+    it('returns the registered TTL for each dynamic prefix', () => {
+      // Pin the prefix/TTL pairs so a regression in DYNAMIC_KEY_TTLS (wrong
+      // prefix, wrong number-of-days multiplier, missing entry) is caught.
+      // Iterating DYNAMIC_KEY_TTLS itself would only verify prefix-matching
+      // works, not that the TTL values are correct.
+      expect(getTtlForKey('leapmux:editor-draft:abc')).toBe(7 * DAY_MS)
+      expect(getTtlForKey('leapmux:editor-min-height:abc')).toBe(7 * DAY_MS)
+      expect(getTtlForKey('leapmux:agent-session:abc')).toBe(7 * DAY_MS)
+      expect(getTtlForKey('leapmux:ask-state:agent:req')).toBe(1 * DAY_MS)
+      expect(getTtlForKey('leapmux:worker-info:abc')).toBe(7 * DAY_MS)
+      expect(getTtlForKey('leapmux:local-messages:abc')).toBe(7 * DAY_MS)
+      expect(getTtlForKey('leapmux:files-show-hidden:abc')).toBe(7 * DAY_MS)
     })
 
     it('returns null for known static keys', () => {

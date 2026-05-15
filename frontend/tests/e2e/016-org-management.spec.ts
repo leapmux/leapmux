@@ -15,13 +15,14 @@ test.describe('Organization Management', () => {
     await loginViaUI(page)
     await page.goto('/o/admin/org')
 
-    // Fill in org name and create
+    // The create-org input must be present for an admin user; if it is
+    // gated by a missing capability the test should fail loudly rather
+    // than silently skip its assertion.
     const orgInput = page.getByPlaceholder('Organization name')
-    if (await orgInput.isVisible()) {
-      await orgInput.fill('test-org')
-      await page.getByRole('button', { name: 'Create' }).click()
-      await expect(page.getByText(CREATED_SUCCESS_RE)).toBeVisible()
-    }
+    await expect(orgInput).toBeVisible()
+    await orgInput.fill('test-org')
+    await page.getByRole('button', { name: 'Create' }).click()
+    await expect(page.getByText(CREATED_SUCCESS_RE)).toBeVisible()
   })
 
   test('should switch org via user menu', async ({ page }) => {

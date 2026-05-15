@@ -67,3 +67,8 @@ export function waitForSettingsChanged(
 export function _resetListeners(): void {
   listeners = []
 }
+
+/** Visible for testing: number of pending listeners. */
+export function _getListenerCount(): number {
+  return listeners.length
+}
