@@ -3,7 +3,12 @@
   "mainBinaryName": "LeapMuxDesktop",
   "bundle": {
     "targets": ["msi"],
+    "resources": [],
     "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
       "wix": {
         "template": "windows/main.wxs"
       }

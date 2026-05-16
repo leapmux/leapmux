@@ -23,21 +23,38 @@
        resolves to a per-user-writable location. The
        $(var.PlatformProgramFilesFolder) preprocessor variable from the
        arch block is gone too.
-    3. New CliDir + LeapmuxCliComponent inside the INSTALLDIR
+    3. Path component switched from a File KeyPath to an HKCU
+       RegistryValue KeyPath. ICE38 forbids file KeyPaths on components
+       installed to the user profile.
+    4. New LeapmuxSidecarComponent inside the INSTALLDIR DirectoryRef
+       ships the Go service binary next to LeapMuxDesktop.exe (so the
+       Rust shell's "next to exe" sidecar lookup succeeds). Source is
+       $(env.TAURI_LEAPMUX_SIDECAR_PATH); we bypass Tauri's auto
+       resource pipeline (bundle.resources=[] in
+       tauri.windows.conf.json) because the auto-generated resource
+       components use File KeyPaths that violate ICE38 with no hook to
+       fix them.
+    5. New CliDir + LeapmuxCliComponent inside the INSTALLDIR
        DirectoryRef ships leapmux.exe in a `cli\` subdir and appends
-       that subdir to HKCU PATH via <Environment System="no">.
-       Source path is $(env.TAURI_LEAPMUX_CLI_PATH), set in
-       Taskfile.yaml's build-desktop-windows; the TAURI_ prefix is
-       load-bearing because tauri-bundler's clear_env_for_wix() strips
-       every variable except SYSTEMROOT/TMP/TEMP and TAURI*-prefixed
-       ones before invoking candle.exe.
-    4. LeapmuxCliComponent referenced from the Environment sub-feature
-       so it ships with the main app. The GUID is committed (not
-       regenerated) so MajorUpgrade can match the component across
+       that subdir to HKCU PATH via <Environment System="no">. The
+       component uses an HKCU RegistryValue KeyPath and a RemoveFolder
+       to satisfy ICE38/ICE64. Source path is
+       $(env.TAURI_LEAPMUX_CLI_PATH), set in Taskfile.yaml's
+       build-desktop-windows; the TAURI_ prefix is load-bearing
+       because tauri-bundler's clear_env_for_wix() strips every
+       variable except SYSTEMROOT/TMP/TEMP and TAURI*-prefixed ones
+       before invoking candle.exe.
+    6. CMP_UninstallShortcut grows a second RemoveFolder for
+       LeapmuxProgramsFolder so ICE64 is satisfied for the parent
+       %LOCALAPPDATA%\Programs\ directory we create.
+    7. LeapmuxSidecarComponent referenced from MainProgram, and
+       LeapmuxCliComponent referenced from the Environment sub-feature
+       so both ship with the main app. The GUIDs are committed (not
+       regenerated) so MajorUpgrade can match each component across
        releases.
 
   When upgrading Tauri, diff this file against upstream main.wxs and
-  re-apply the four changes above.
+  re-apply the changes above.
 -->
 <?if $(sys.BUILDARCH)="x86"?>
     <?define Win64 = "no" ?>
@@ -186,7 +203,17 @@
                 {{/each~}}
             </Component>
             <Component Id="Path" Guid="{{path_component_guid}}" Win64="$(var.Win64)">
-                <File Id="Path" Source="{{main_binary_path}}" KeyPath="yes" Checksum="yes"/>
+                <!-- ICE38 forbids a file KeyPath on a component installed
+                     to the user profile; the KeyPath has to be an HKCU
+                     RegistryValue. We keep the file itself but give the
+                     component a marker registry value as its KeyPath. -->
+                <File Id="Path" Source="{{main_binary_path}}" Checksum="yes"/>
+                <RegistryValue Root="HKCU"
+                               Key="Software\\{{manufacturer}}\\{{product_name}}"
+                               Name="PathComponent"
+                               Value="1"
+                               Type="integer"
+                               KeyPath="yes"/>
                 {{#each file_associations as |association| ~}}
                 {{#each association.ext as |ext| ~}}
                 <ProgId Id="{{../../product_name}}.{{ext}}" Advertise="yes" Description="{{association.description}}">
@@ -196,6 +223,38 @@
                 </ProgId>
                 {{/each~}}
                 {{/each~}}
+            </Component>
+
+            <!--
+              LeapMux Desktop Go sidecar (leapmux-desktop-service-*.exe).
+              We ship it next to LeapMuxDesktop.exe so the Rust shell's
+              resolve_sidecar_path() "next to exe" fallback picks it up
+              without needing the "_up_\go\bin\..." resource layout that
+              Tauri's auto-resource pipeline produces.
+
+              We bypass that pipeline by overriding bundle.resources to
+              [] in tauri.windows.conf.json, because Tauri's auto-
+              generated <Component KeyPath="yes"><File .../></Component>
+              uses a file KeyPath and there is no hook to make it use
+              an HKCU RegistryValue instead - which ICE38 rejects for
+              per-user installs.
+
+              $(env.TAURI_LEAPMUX_SIDECAR_PATH) is set by Taskfile.yaml's
+              build-desktop-windows and points at the freshly built
+              sidecar in desktop/go/bin/. The TAURI_ prefix is required;
+              see the file header for why.
+            -->
+            <Component Id="LeapmuxSidecarComponent"
+                       Guid="A4F9C5E1-2B83-4D8C-9F1E-7D0A6B5C8E42"
+                       Win64="$(var.Win64)">
+                <File Id="LeapmuxSidecarExe"
+                      Source="$(env.TAURI_LEAPMUX_SIDECAR_PATH)"/>
+                <RegistryValue Root="HKCU"
+                               Key="Software\\{{manufacturer}}\\{{product_name}}"
+                               Name="SidecarComponent"
+                               Value="1"
+                               Type="integer"
+                               KeyPath="yes"/>
             </Component>
             {{#each binaries as |bin| ~}}
             <Component Id="{{ bin.id }}" Guid="{{bin.guid}}" Win64="$(var.Win64)">
@@ -225,6 +284,16 @@
 				<RemoveFolder Id="INSTALLDIR"
 							  On="uninstall" />
 
+				<!-- Per ICE64: LeapmuxProgramsFolder lives under the
+				     user profile (%LOCALAPPDATA%\Programs) and so needs
+				     a RemoveFile/RemoveFolder entry. The "uninstall"
+				     timing + RemoveFolder's empty-only semantics mean
+				     we only drop the directory if no other app left
+				     anything in %LOCALAPPDATA%\Programs. -->
+				<RemoveFolder Id="RemoveLeapmuxProgramsFolder"
+							  Directory="LeapmuxProgramsFolder"
+							  On="uninstall" />
+
 				<RegistryValue Root="HKCU"
 							   Key="Software\\{{manufacturer}}\\{{product_name}}"
 							   Name="Uninstaller Shortcut"
@@ -246,8 +315,20 @@
                            Guid="E1435041-FC1D-45F9-9733-4D7B50B9667F"
                            Win64="$(var.Win64)">
                     <File Id="LeapmuxCliExe"
-                          Source="$(env.TAURI_LEAPMUX_CLI_PATH)"
-                          KeyPath="yes"/>
+                          Source="$(env.TAURI_LEAPMUX_CLI_PATH)"/>
+                    <!-- Per ICE38: per-user components need an HKCU
+                         registry KeyPath, not a file KeyPath. -->
+                    <RegistryValue Root="HKCU"
+                                   Key="Software\\{{manufacturer}}\\{{product_name}}"
+                                   Name="LeapmuxCliComponent"
+                                   Value="1"
+                                   Type="integer"
+                                   KeyPath="yes"/>
+                    <!-- Per ICE64: directories created under the user
+                         profile need to be removed on uninstall.
+                         RemoveFolder only removes the directory if it
+                         is empty, so this is safe. -->
+                    <RemoveFolder Id="RemoveCliDir" On="uninstall"/>
                     <Environment Id="LeapmuxCliPath"
                                  Name="PATH"
                                  Value="[CliDir]"
@@ -295,6 +376,7 @@
                 Absent="disallow">
 
             <ComponentRef Id="RegistryEntries"/>
+            <ComponentRef Id="LeapmuxSidecarComponent"/>
 
             {{#each resource_file_ids as |resource_file_id| ~}}
                 <ComponentRef Id="{{ resource_file_id }}"/>
