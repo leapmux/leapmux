@@ -104,26 +104,34 @@ test.describe('Git File Status', () => {
       await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
       await expect(page.locator('[data-testid="files-filter-tab-bar"]')).toBeVisible()
 
+      // Helper: find the file as a tree row, not as raw text. The label
+      // is duplicated in the Tooltip portal (now rendered for every
+      // truncated-only tooltip), and the tooltip's text matches
+      // getByText even when visually hidden, so a bare `getByText(...)`
+      // assertion never goes to `not visible` after filtering.
+      const treeRow = (name: string) =>
+        page.locator('[data-testid="tree-row"]').filter({ hasText: name })
+
       // "All" tab (default) should show all files including clean.txt.
-      await expect(page.getByText('clean.txt')).toBeVisible()
-      await expect(page.getByText('file_a.txt')).toBeVisible()
-      await expect(page.getByText('file_b.txt')).toBeVisible()
+      await expect(treeRow('clean.txt')).toBeVisible()
+      await expect(treeRow('file_a.txt')).toBeVisible()
+      await expect(treeRow('file_b.txt')).toBeVisible()
 
       // Switch to "Changed" tab — should show only changed files.
       await page.locator('[data-testid="files-filter-changed"]').click()
-      await expect(page.getByText('file_a.txt')).toBeVisible()
-      await expect(page.getByText('file_b.txt')).toBeVisible()
-      await expect(page.getByText('clean.txt')).not.toBeVisible()
+      await expect(treeRow('file_a.txt')).toBeVisible()
+      await expect(treeRow('file_b.txt')).toBeVisible()
+      await expect(treeRow('clean.txt')).not.toBeVisible()
 
       // Switch to "Staged" tab — should show only file_a.
       await page.locator('[data-testid="files-filter-staged"]').click()
-      await expect(page.getByText('file_a.txt')).toBeVisible()
-      await expect(page.getByText('file_b.txt')).not.toBeVisible()
+      await expect(treeRow('file_a.txt')).toBeVisible()
+      await expect(treeRow('file_b.txt')).not.toBeVisible()
 
       // Switch to "Unstaged" tab — should show only file_b.
       await page.locator('[data-testid="files-filter-unstaged"]').click()
-      await expect(page.getByText('file_b.txt')).toBeVisible()
-      await expect(page.getByText('file_a.txt')).not.toBeVisible()
+      await expect(treeRow('file_b.txt')).toBeVisible()
+      await expect(treeRow('file_a.txt')).not.toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

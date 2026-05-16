@@ -2,30 +2,52 @@
 import type { Buffer } from 'node:buffer'
 import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { test as base, expect } from '@playwright/test'
 import {
-  approveRegistrationViaAPI,
   authedHeaders,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
   getAdminOrgId,
+  listOnlineWorkerIDsViaAPI,
   loginViaAPI,
+  mintRegistrationKeyViaAPI,
   openAgentViaAPI,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
+  waitForNewOnlineWorkerViaAPI,
 } from './helpers/api'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, waitForWorkspaceReady } from './helpers/ui'
 
-const TOKEN_JSON_RE = /"token"\s*:\s*"([^"]+)"/
-const TOKEN_URL_RE = /\/register\/(\S+)/
+// Per-fixture PID registry written under `<dataDir>/pids.json`. The
+// global-teardown sweep picks this up so any process that survived a
+// crash (timeout, ungraceful worker shutdown, restart that throws
+// before mutableState catches up) is reaped before the Playwright run
+// exits. We append rather than overwrite so a sequence of restart
+// calls leaves a full history; the teardown loops over `pids` and
+// silently ignores already-dead entries.
+const PIDS_FILE = 'pids.json'
+
+export function trackSpawnedPid(dataDir: string, pid: number): void {
+  const path = join(dataDir, PIDS_FILE)
+  let pids: number[] = []
+  if (existsSync(path)) {
+    try {
+      pids = JSON.parse(readFileSync(path, 'utf-8'))
+    }
+    catch { /* corrupted; start over */ }
+  }
+  if (!pids.includes(pid))
+    pids.push(pid)
+  writeFileSync(path, JSON.stringify(pids))
+}
 
 export interface SeparateServerInfo {
   hubUrl: string
@@ -146,24 +168,40 @@ export async function restartWorker(serverInfo: SeparateServerInfo) {
     env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
   })
   workerProc.unref()
+  // Track immediately so a crash before state update still gets cleaned
+  // up by the fixture teardown / global-teardown sweep.
+  trackSpawnedPid(serverInfo.dataDir, workerProc.pid!)
 
-  // Wait for the worker to connect to the hub
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Worker restart timed out')), 30_000)
-    const onData = (chunk: Buffer) => {
-      const text = chunk.toString()
-      if (text.includes('connected to hub')) {
-        clearTimeout(timeout)
-        workerProc.stderr?.off('data', onData)
-        workerProc.stdout?.off('data', onData)
-        workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-ERR] ${c}`))
-        workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-OUT] ${c}`))
-        resolve()
+  try {
+    // Wait for the worker to connect to the hub
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Worker restart timed out')), 30_000)
+      const onData = (chunk: Buffer) => {
+        const text = chunk.toString()
+        if (text.includes('connected to hub')) {
+          clearTimeout(timeout)
+          workerProc.stderr?.off('data', onData)
+          workerProc.stdout?.off('data', onData)
+          workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-ERR] ${c}`))
+          workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-OUT] ${c}`))
+          resolve()
+        }
       }
+      workerProc.stderr?.on('data', onData)
+      workerProc.stdout?.on('data', onData)
+    })
+  }
+  catch (err) {
+    // The new worker didn't come up in time; kill it so it doesn't leak.
+    // Without this, mutableState still points at the previous (already
+    // stopped) PID and the fixture teardown sees no surviving process,
+    // leaving the just-spawned one orphaned for the OS.
+    try {
+      workerProc.kill('SIGKILL')
     }
-    workerProc.stderr?.on('data', onData)
-    workerProc.stdout?.on('data', onData)
-  })
+    catch { /* already dead */ }
+    throw err
+  }
 
   // Update mutable state
   const state = getMutableState()
@@ -207,24 +245,39 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
     env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
   })
   hubProc.unref()
+  // Track immediately so a crash before state update still gets cleaned
+  // up by the fixture teardown / global-teardown sweep.
+  trackSpawnedPid(serverInfo.dataDir, hubProc.pid!)
 
   hubProc.stdout?.resume()
   hubProc.stderr?.resume()
 
-  // Wait for the hub to become ready
-  await waitForServer(serverInfo.hubUrl)
+  try {
+    // Wait for the hub to become ready
+    await waitForServer(serverInfo.hubUrl)
 
-  // Verify the hub is fully operational by testing login
-  for (let i = 0; i < 10; i++) {
+    // Verify the hub is fully operational by testing login
+    for (let i = 0; i < 10; i++) {
+      try {
+        await loginViaAPI(serverInfo.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+        break
+      }
+      catch {
+        if (i === 9)
+          throw new Error('Hub restart: login health check failed')
+        await new Promise(r => setTimeout(r, 500))
+      }
+    }
+  }
+  catch (err) {
+    // Same rationale as restartWorker: a startup failure must not leave
+    // the just-spawned hub orphaned. mutableState still points at the
+    // stopped predecessor, so fixture teardown wouldn't see this one.
     try {
-      await loginViaAPI(serverInfo.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-      break
+      hubProc.kill('SIGKILL')
     }
-    catch {
-      if (i === 9)
-        throw new Error('Hub restart: login health check failed')
-      await new Promise(r => setTimeout(r, 500))
-    }
+    catch { /* already dead */ }
+    throw err
   }
 
   // Update mutable state
@@ -271,6 +324,7 @@ export const processTest = base.extend<
       env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
     })
     hubProc.unref()
+    trackSpawnedPid(dataDir, hubProc.pid!)
     hubProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[HUB-OUT] ${c}`))
     hubProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[HUB-ERR] ${c}`))
 
@@ -281,14 +335,25 @@ export const processTest = base.extend<
     const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
     const adminOrgId = await getAdminOrgId(hubUrl, adminToken)
 
+    // Mint a registration key (new flow: admin creates key, hands it to
+    // worker via --registration-key). The old self-serve token flow
+    // (worker prints token, admin approves) was removed in #216.
+    const registrationKey = await mintRegistrationKeyViaAPI(hubUrl, adminToken)
+
+    // Snapshot online workers BEFORE spawning so we can identify the
+    // new worker by diffing.
+    const beforeIds = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, adminToken))
+
     // Start worker in its own process group so stray signals from the test
     // runner's process group don't kill it prematurely.
     console.log('[e2e] Starting separate worker...')
     const workerProc = spawn(globalState.binaryPath, [
       'worker',
-      '-hub',
+      '--hub',
       hubUrl,
-      '-data-dir',
+      '--registration-key',
+      registrationKey,
+      '--data-dir',
       workerDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -296,52 +361,12 @@ export const processTest = base.extend<
       env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_WORKER_NAME: 'test-worker' },
     })
     workerProc.unref()
+    trackSpawnedPid(dataDir, workerProc.pid!)
+    workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-ERR] ${c}`))
+    workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-OUT] ${c}`))
 
-    // Wait for registration token
-    const registrationToken = await new Promise<string>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker registration token')), 30_000)
-      const onData = (chunk: Buffer) => {
-        const text = chunk.toString()
-        const jsonMatch = text.match(TOKEN_JSON_RE)
-        const urlMatch = text.match(TOKEN_URL_RE)
-        const token = jsonMatch?.[1] ?? urlMatch?.[1]
-        if (token) {
-          clearTimeout(timeout)
-          workerProc.stderr?.off('data', onData)
-          workerProc.stdout?.off('data', onData)
-          workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-ERR] ${c}`))
-          workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[WORKER-OUT] ${c}`))
-          resolve(token)
-        }
-      }
-      workerProc.stderr?.on('data', onData)
-      workerProc.stdout?.on('data', onData)
-    })
-
-    // Approve worker
-    const workerId = await approveRegistrationViaAPI(
-      hubUrl,
-      adminToken,
-      registrationToken,
-    )
-    console.log(`[e2e] Worker approved: ${workerId}`)
-
-    // Wait for worker to come online
-    const start = Date.now()
-    while (Date.now() - start < 30_000) {
-      const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
-        method: 'POST',
-        headers: authedHeaders(adminToken),
-        body: JSON.stringify({}),
-      })
-      if (res.ok) {
-        const data = await res.json() as { workers: Array<{ id: string, online: boolean }> }
-        if (data.workers.some(w => w.id === workerId && w.online))
-          break
-      }
-      await new Promise(r => setTimeout(r, 500))
-    }
-    console.log('[e2e] Worker connected')
+    const workerId = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, beforeIds)
+    console.log(`[e2e] Worker connected: ${workerId}`)
 
     // Create newuser
     const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')

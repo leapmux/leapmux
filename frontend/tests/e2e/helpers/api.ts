@@ -230,23 +230,75 @@ export async function deregisterWorkerViaAPI(
 }
 
 /**
- * Approve a worker registration via the Connect API. Returns the worker ID.
+ * Mint a registration key as an authenticated user. Mirrors the
+ * production UI flow: an admin (or any authorized user) calls
+ * `WorkerManagementService.CreateRegistrationKey` and hands the
+ * resulting key to the worker process via `--registration-key`.
  */
-export async function approveRegistrationViaAPI(
+export async function mintRegistrationKeyViaAPI(
   hubUrl: string,
   cookie: string,
-  registrationToken: string,
 ): Promise<string> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ApproveRegistration`, {
+  const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/CreateRegistrationKey`, {
     method: 'POST',
     headers: authedHeaders(cookie),
-    body: JSON.stringify({ registrationToken }),
+    body: '{}',
   })
   if (!res.ok) {
-    throw new Error(`approveRegistrationViaAPI failed: ${res.status}`)
+    throw new Error(`mintRegistrationKeyViaAPI failed: ${res.status} ${await res.text()}`)
   }
-  const data = await res.json() as { workerId: string }
-  return data.workerId
+  const data = await res.json() as { registrationKey?: string }
+  if (!data.registrationKey)
+    throw new Error('mintRegistrationKeyViaAPI: empty key in response')
+  return data.registrationKey
+}
+
+/**
+ * Poll `ListWorkers` until a worker that was NOT in `before` shows
+ * up online and return its ID. Mirrors `multiWorker.waitForNewOnlineWorker`.
+ */
+export async function waitForNewOnlineWorkerViaAPI(
+  hubUrl: string,
+  cookie: string,
+  before: Set<string>,
+  timeoutMs = 30_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
+      method: 'POST',
+      headers: authedHeaders(cookie),
+      body: '{}',
+    })
+    if (res.ok) {
+      const data = await res.json() as { workers?: Array<{ id: string, online: boolean }> }
+      const online = (data.workers ?? []).filter(w => w.online).map(w => w.id)
+      const fresh = online.find(id => !before.has(id))
+      if (fresh)
+        return fresh
+    }
+    if (Date.now() >= deadline)
+      throw new Error(`waitForNewOnlineWorkerViaAPI: no new worker came online within ${timeoutMs}ms`)
+    await new Promise(r => setTimeout(r, 500))
+  }
+}
+
+/**
+ * List IDs of every currently-online worker visible to `cookie`.
+ */
+export async function listOnlineWorkerIDsViaAPI(
+  hubUrl: string,
+  cookie: string,
+): Promise<string[]> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.WorkerManagementService/ListWorkers`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: '{}',
+  })
+  if (!res.ok)
+    throw new Error(`listOnlineWorkerIDsViaAPI: ListWorkers ${res.status}`)
+  const data = await res.json() as { workers?: Array<{ id: string, online: boolean }> }
+  return (data.workers ?? []).filter(w => w.online).map(w => w.id)
 }
 
 // ---- Worker E2EE helpers (Agent) ----

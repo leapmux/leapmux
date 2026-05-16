@@ -51,6 +51,8 @@ export interface OrgEventsSubscription {
   awaitRootNodeId: (workspaceId: string, timeoutMs?: number) => Promise<string>
   /** Best-effort current epoch (from initial bootstrap, refreshed if a later frame surfaces one). */
   currentEpoch: () => bigint
+  /** Whether the underlying WebSocket has closed (locally or remotely). */
+  isClosed: () => boolean
   close: () => void
 }
 
@@ -196,9 +198,18 @@ export async function openOrgEventsSubscription(
     })
   }
 
+  // Detect remote closure (hub stopped, process killed, etc.) so a stale
+  // entry in the process-wide cache doesn't get reused. A pending
+  // awaitRootNodeId call gets rejected explicitly via the `closed`
+  // guard inside that function.
+  ws.addEventListener('close', () => {
+    closed = true
+  })
+
   return {
     awaitRootNodeId,
     currentEpoch: () => epoch,
+    isClosed: () => closed,
     close,
   }
 }
@@ -231,8 +242,22 @@ export function getOrgEventsSubscription(
 ): Promise<OrgEventsSubscription> {
   const key = orgEventsCacheKey(hubUrl, orgId, cookie)
   const existing = orgEventsSubs.get(key)
-  if (existing)
-    return existing
+  if (existing) {
+    return existing.then((sub) => {
+      // A previously cached subscription may have been killed when the
+      // hub restarted (full-restart tests). Drop the stale entry and
+      // open a fresh subscription so the next workspace creation can
+      // observe seed ops on a live socket.
+      if (!sub.isClosed())
+        return sub
+      orgEventsSubs.delete(key)
+      return getOrgEventsSubscription(hubUrl, cookie, orgId)
+    }, () => {
+      // Cached promise rejected — drop it and retry.
+      orgEventsSubs.delete(key)
+      return getOrgEventsSubscription(hubUrl, cookie, orgId)
+    })
+  }
   const p = openOrgEventsSubscription(hubUrl, cookie, orgId).catch((err) => {
     orgEventsSubs.delete(key)
     throw err

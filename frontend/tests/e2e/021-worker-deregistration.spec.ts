@@ -3,7 +3,12 @@ import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
-import { approveRegistrationViaAPI, deregisterWorkerViaAPI } from './helpers/api'
+import {
+  deregisterWorkerViaAPI,
+  listOnlineWorkerIDsViaAPI,
+  mintRegistrationKeyViaAPI,
+  waitForNewOnlineWorkerViaAPI,
+} from './helpers/api'
 import { expectAnyVisible, loginViaUI } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -11,15 +16,6 @@ import { expect, restartWorker, stopWorker, processTest as test, waitForWorkerOf
 // does not affect the main worker used by other tests in this file.
 let tempWorkerPid: number | undefined
 let tempWorkerId: string | undefined
-
-const TOKEN_JSON_RE = /"token"\s*:\s*"([^"]+)"/
-const TOKEN_URL_RE = /\/register\/(\S+)/
-
-function extractRegistrationToken(output: string): string | null {
-  const jsonMatch = output.match(TOKEN_JSON_RE)
-  const urlMatch = output.match(TOKEN_URL_RE)
-  return jsonMatch?.[1] ?? urlMatch?.[1] ?? null
-}
 
 /**
  * Navigate to a workspace and expand the Workers sidebar section.
@@ -40,13 +36,17 @@ async function openWorkersSidebar(page: import('@playwright/test').Page) {
 
 /**
  * Find a worker item by name within the Workers section and open its context menu.
+ * Uses the `worker-row` testid scoped to the matching worker-name span so the
+ * lookup doesn't collide with name text inside an open WorkerContextMenu popover.
  */
 async function openWorkerContextMenu(
   page: import('@playwright/test').Page,
   workersSection: import('@playwright/test').Locator,
   workerName: string,
 ) {
-  const workerItem = workersSection.getByText(workerName).locator('..')
+  const workerItem = workersSection
+    .getByTestId('worker-row')
+    .filter({ has: page.getByTestId('worker-name').filter({ hasText: workerName }) })
   await expect(workerItem).toBeVisible()
   await workerItem.hover()
   await workerItem.locator('button[aria-expanded]').click()
@@ -59,50 +59,28 @@ test.describe('Worker Deregistration', () => {
     const workerDataDir = join(dataDir, 'worker-deregister-data')
     mkdirSync(workerDataDir, { recursive: true })
 
+    // Mint a registration key (new flow from #216).
+    const registrationKey = await mintRegistrationKeyViaAPI(hubUrl, adminToken)
+    const beforeIds = new Set(await listOnlineWorkerIDsViaAPI(hubUrl, adminToken))
+
     // Spawn a temporary worker
     const workerProc = spawn(binaryPath, [
       'worker',
-      '-hub',
+      '--hub',
       hubUrl,
-      '-data-dir',
+      '--registration-key',
+      registrationKey,
+      '--data-dir',
       workerDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, LEAPMUX_WORKER_NAME: 'deregister-test-worker' },
     })
     tempWorkerPid = workerProc.pid
+    workerProc.stderr?.on('data', (c: Buffer) => process.stderr.write(`[TEMP-WORKER-ERR] ${c}`))
+    workerProc.stdout?.on('data', (c: Buffer) => process.stderr.write(`[TEMP-WORKER-OUT] ${c}`))
 
-    // Wait for registration token
-    const registrationToken = await new Promise<string>((resolve, reject) => {
-      let output = ''
-      const timeout = setTimeout(() => {
-        reject(new Error('Timed out waiting for temp worker registration token'))
-      }, 30_000)
-
-      const onData = (chunk: Buffer) => {
-        const text = chunk.toString()
-        output += text
-        const token = extractRegistrationToken(output)
-        if (token) {
-          clearTimeout(timeout)
-          workerProc.stderr?.off('data', onData)
-          workerProc.stdout?.off('data', onData)
-          workerProc.stderr?.resume()
-          workerProc.stdout?.resume()
-          resolve(token)
-        }
-      }
-
-      workerProc.stderr?.on('data', onData)
-      workerProc.stdout?.on('data', onData)
-    })
-
-    // Approve the temporary worker via API
-    tempWorkerId = await approveRegistrationViaAPI(
-      hubUrl,
-      adminToken,
-      registrationToken,
-    )
+    tempWorkerId = await waitForNewOnlineWorkerViaAPI(hubUrl, adminToken, beforeIds)
   })
 
   test.afterAll(async ({ separateHubWorker }) => {
@@ -131,7 +109,7 @@ test.describe('Worker Deregistration', () => {
 
     // Open context menu for the temp worker and click Deregister
     await openWorkerContextMenu(page, workersSection, 'deregister-test-worker')
-    await page.getByRole('menuitem', { name: 'Deregister' }).click()
+    await page.getByRole('menuitem', { name: 'Deregister...' }).click()
 
     // Confirmation dialog should appear
     const dialog = page.getByTestId('worker-settings-dialog')
@@ -152,7 +130,7 @@ test.describe('Worker Deregistration', () => {
 
     // Open deregister dialog
     await openWorkerContextMenu(page, workersSection, 'deregister-test-worker')
-    await page.getByRole('menuitem', { name: 'Deregister' }).click()
+    await page.getByRole('menuitem', { name: 'Deregister...' }).click()
     await expect(page.getByTestId('worker-settings-dialog')).toBeVisible()
 
     // Cancel
@@ -160,7 +138,7 @@ test.describe('Worker Deregistration', () => {
     await expect(page.getByTestId('worker-settings-dialog')).not.toBeVisible()
 
     // Worker should still be visible
-    await expect(workersSection.getByText('deregister-test-worker')).toBeVisible()
+    await expect(workersSection.getByTestId('worker-name').filter({ hasText: 'deregister-test-worker' })).toBeVisible()
   })
 
   test('should deregister worker after confirmation', async ({ page }) => {
@@ -168,7 +146,7 @@ test.describe('Worker Deregistration', () => {
 
     // Open deregister dialog
     await openWorkerContextMenu(page, workersSection, 'deregister-test-worker')
-    await page.getByRole('menuitem', { name: 'Deregister' }).click()
+    await page.getByRole('menuitem', { name: 'Deregister...' }).click()
     await expect(page.getByTestId('worker-settings-dialog')).toBeVisible()
 
     // Confirm deregistration
@@ -178,7 +156,7 @@ test.describe('Worker Deregistration', () => {
     await expect(page.getByTestId('worker-settings-dialog')).not.toBeVisible()
 
     // The deregister-test-worker should disappear from the list
-    await expect(workersSection.getByText('deregister-test-worker')).not.toBeVisible()
+    await expect(workersSection.getByTestId('worker-name').filter({ hasText: 'deregister-test-worker' })).not.toBeVisible()
 
     // Mark as deregistered so afterAll doesn't try again
     tempWorkerId = undefined
@@ -188,15 +166,15 @@ test.describe('Worker Deregistration', () => {
     const workersSection = await openWorkersSidebar(page)
 
     // The deregister-test-worker should be gone
-    await expect(workersSection.getByText('deregister-test-worker')).not.toBeVisible()
+    await expect(workersSection.getByTestId('worker-name').filter({ hasText: 'deregister-test-worker' })).not.toBeVisible()
 
     // The main worker should still be listed.
     // Worker names are fetched via E2EE and may not be available on the
     // org page (no active workspace), so check for the worker name OR
     // the em-dash fallback that appears when the name is unavailable.
     await expectAnyVisible(
-      workersSection.getByText('test-worker', { exact: true }),
-      workersSection.getByText('\u2014'),
+      workersSection.getByTestId('worker-name').filter({ hasText: /^test-worker$/ }),
+      workersSection.getByTestId('worker-name').filter({ hasText: /^\u2014$/ }),
     )
   })
 })

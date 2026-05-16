@@ -140,12 +140,15 @@ test.describe('Quote and Mention', () => {
       // Wait for the file tree to load — package.json should be visible
       await expect(page.getByText('package.json')).toBeVisible()
 
-      // Find the tree node row containing package.json and hover it
-      const packageJsonNode = page.getByText('package.json')
-      await packageJsonNode.hover()
+      // Find the tree row containing package.json and hover it. We scope to
+      // the tree-row testid because the displayName text was wrapped in a
+      // Tooltip+labelWithStats span pair in c84657aa, so `.locator('..')`
+      // from the text no longer lands on the row that hosts the context
+      // button.
+      const treeRow = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' }).first()
+      await treeRow.hover()
 
       // Click the context menu button (three dots) that appears on hover
-      const treeRow = packageJsonNode.locator('..')
       const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
       await expect(contextButton).toBeVisible()
       await contextButton.click()
@@ -278,9 +281,9 @@ test.describe('Quote and Mention', () => {
       await expect(page.getByText('package.json')).toBeVisible()
 
       // First mention: hover, open context menu, and click mention for package.json
-      const packageJsonNode = page.getByText('package.json')
-      await packageJsonNode.hover()
-      const treeRow1 = packageJsonNode.locator('..')
+      // (See note in the single-mention test about why we scope to tree-row.)
+      const treeRow1 = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' }).first()
+      await treeRow1.hover()
       const contextButton1 = treeRow1.locator('[data-testid="tree-context-button"]')
       await expect(contextButton1).toBeVisible()
       await contextButton1.click()
@@ -293,9 +296,8 @@ test.describe('Quote and Mention', () => {
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toHaveCount(0)
 
       // Second mention: hover, open context menu, and click mention for tsconfig.json
-      const tsconfigNode = page.getByText('tsconfig.json')
-      await tsconfigNode.hover()
-      const treeRow2 = tsconfigNode.locator('..')
+      const treeRow2 = page.locator('[data-testid="tree-row"]').filter({ hasText: 'tsconfig.json' }).first()
+      await treeRow2.hover()
       const contextButton2 = treeRow2.locator('[data-testid="tree-context-button"]')
       await expect(contextButton2).toBeVisible()
       await contextButton2.click()

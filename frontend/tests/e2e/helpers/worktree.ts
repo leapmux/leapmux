@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import {
   CloseAgentRequestSchema,
   CloseAgentResponseSchema,
@@ -116,6 +116,25 @@ export async function createWorkspaceWithWorktreeViaAPI(
     createWorktree: true,
     worktreeBranch,
   })
+
+  // OpenAgent now returns synchronously with status=STARTING and the
+  // worktree is created asynchronously during phased startup (#194).
+  // Tests expect `existsSync(worktreeDir)` to be true immediately
+  // after this helper returns, so wait until the worker has actually
+  // materialized the worktree on disk. The path matches the worker's
+  // worktree placement convention: `<dirname(workingDir)>/<basename(workingDir)>-worktrees/<branch>`.
+  const parent = dirname(realpathSync(workingDir))
+  const expectedWorktreeDir = join(parent, `${basename(workingDir)}-worktrees`, worktreeBranch)
+  const deadline = Date.now() + 30_000
+  while (!existsSync(expectedWorktreeDir)) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `createWorkspaceWithWorktreeViaAPI: worktree did not appear at ${expectedWorktreeDir} within 30s`,
+      )
+    }
+    await new Promise(r => setTimeout(r, 200))
+  }
+
   return workspaceId
 }
 

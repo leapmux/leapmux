@@ -251,7 +251,13 @@ export function streamCLI(cfg: CLIConfigDir, args: string[]): {
 export async function cliAgentOpen(cli: CLIConfigDir, params: {
   workspaceId: string
   workerId: string
+  provider?: string
 }): Promise<string> {
+  // Dev-mode workers register every provider they detect on PATH, so
+  // the CLI rejects `tab open` with `ambiguous_provider` unless one is
+  // specified. Default to Claude Code (matches `LEAPMUX_CLAUDE_DEFAULT_MODEL`
+  // in the dev fixture) so existing call sites keep working.
+  const provider = params.provider ?? 'claude'
   const data = await runCLI(cli, [
     'tab',
     'open',
@@ -261,6 +267,8 @@ export async function cliAgentOpen(cli: CLIConfigDir, params: {
     params.workspaceId,
     '--worker-id',
     params.workerId,
+    '--provider',
+    provider,
   ]) as { tab_id?: string, id?: string } | null
   const id = data?.tab_id ?? data?.id
   if (!id || typeof id !== 'string')

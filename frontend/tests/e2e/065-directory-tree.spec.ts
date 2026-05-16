@@ -76,10 +76,12 @@ test.describe('DirectoryTree', () => {
       // Wait for the file tree to load
       await expect(page.getByText('package.json')).toBeVisible()
 
-      // Hover on package.json file and open context menu
-      const fileNode = page.getByText('package.json')
-      await fileNode.hover()
-      const treeRow = fileNode.locator('..')
+      // Hover on package.json file and open context menu. We anchor on the
+      // tree-row testid because the label is now nested inside a Tooltip
+      // span pair, so `.locator('..')` from the text no longer lands on the
+      // row hosting the context button.
+      const treeRow = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' }).first()
+      await treeRow.hover()
       const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
       await expect(contextButton).toBeVisible()
       await contextButton.click()
@@ -141,10 +143,10 @@ test.describe('DirectoryTree', () => {
       // Wait for file tree
       await expect(page.getByText('package.json')).toBeVisible()
 
-      // Open context menu on package.json
-      const fileNode = page.getByText('package.json')
-      await fileNode.hover()
-      const treeRow = fileNode.locator('..')
+      // Open context menu on package.json (anchored to tree-row testid; see
+      // earlier note about the Tooltip span wrap).
+      const treeRow = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' }).first()
+      await treeRow.hover()
       const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
       await expect(contextButton).toBeVisible()
       await contextButton.click()
