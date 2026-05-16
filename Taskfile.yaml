@@ -362,8 +362,12 @@ tasks:
       # embedded leapmux CLI binary and that Gatekeeper accepts it. Without
       # this check, a regression in sign-macos.sh's Mach-O discovery could
       # silently ship an unsigned CLI inside an otherwise-notarized .app.
-      - codesign --verify --strict --verbose=2 "{{.APP_PATH}}/Contents/MacOS/leapmux"
-      - spctl --assess --verbose --type exec "{{.APP_PATH}}/Contents/MacOS/leapmux"
+      # APP_PATH already wraps the bundle name in quotes (see vars: above),
+      # so concatenating a literal path tail must NOT re-wrap in quotes —
+      # `"{{.APP_PATH}}/...` would expand to `""LeapMux Desktop.app"/...`,
+      # which the shell parses as two arguments (`LeapMux` and the rest).
+      - codesign --verify --strict --verbose=2 {{.APP_PATH}}/Contents/MacOS/leapmux
+      - spctl --assess --verbose --type exec {{.APP_PATH}}/Contents/MacOS/leapmux
       # Confirm Gatekeeper accepts the now-stapled .app before we wrap it.
       - spctl --assess --verbose --type exec {{.APP_PATH}}
       # Rebuild the DMG from the stapled .app, then sign + notarize + staple
