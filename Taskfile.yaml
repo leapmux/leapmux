@@ -359,15 +359,20 @@ tasks:
       - xcrun stapler validate {{.APP_PATH}}
       - rm -f notarize-app.zip
       # Explicit assertion that the inside-out signer actually picked up the
-      # embedded leapmux CLI binary and that Gatekeeper accepts it. Without
-      # this check, a regression in sign-macos.sh's Mach-O discovery could
-      # silently ship an unsigned CLI inside an otherwise-notarized .app.
+      # embedded leapmux CLI binary. Without this check, a regression in
+      # sign-macos.sh's Mach-O discovery could silently ship an unsigned
+      # CLI inside an otherwise-notarized .app. `codesign --verify --strict`
+      # fails if the inner binary is unsigned or tampered with, so it's the
+      # right tool here; an `spctl --assess --type exec` on the inner Mach-O
+      # would instead fail with "the code is valid but does not seem to be
+      # an app" because Gatekeeper's assessment is bundle-scoped and the
+      # notarization staple lives on the .app, not on individual inner
+      # binaries — the outer `spctl --assess` below covers that.
       # APP_PATH already wraps the bundle name in quotes (see vars: above),
       # so concatenating a literal path tail must NOT re-wrap in quotes —
       # `"{{.APP_PATH}}/...` would expand to `""LeapMux Desktop.app"/...`,
       # which the shell parses as two arguments (`LeapMux` and the rest).
       - codesign --verify --strict --verbose=2 {{.APP_PATH}}/Contents/MacOS/leapmux
-      - spctl --assess --verbose --type exec {{.APP_PATH}}/Contents/MacOS/leapmux
       # Confirm Gatekeeper accepts the now-stapled .app before we wrap it.
       - spctl --assess --verbose --type exec {{.APP_PATH}}
       # Rebuild the DMG from the stapled .app, then sign + notarize + staple
