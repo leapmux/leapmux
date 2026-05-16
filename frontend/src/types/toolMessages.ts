@@ -84,6 +84,47 @@ export interface TaskStopInput {
   task_id?: string
 }
 
+/**
+ * Claude Code 2.1.142+ to-do list tools. TaskCreate / TaskUpdate /
+ * TaskGet / TaskList replace TodoWrite's single snapshot model with
+ * incremental mutations addressed by `taskId`.
+ */
+export interface TaskCreateInput {
+  subject?: string
+  description?: string
+  activeForm?: string
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Wire sentinel passed in `TaskUpdateInput.status` (or echoed as
+ * `tool_use_result.statusChange.to`) to permanently remove a task.
+ * Not a real status — handle it as a delete request, not a status
+ * value to display.
+ */
+export const TASK_DELETE_SENTINEL = 'deleted'
+
+export interface TaskUpdateInput {
+  taskId?: string
+  subject?: string
+  description?: string
+  activeForm?: string
+  status?: 'pending' | 'in_progress' | 'completed' | typeof TASK_DELETE_SENTINEL
+  addBlocks?: string[]
+  addBlockedBy?: string[]
+  owner?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface TaskGetInput {
+  taskId?: string
+}
+
+export interface TaskListInput {
+  // intentionally empty — TaskList takes no arguments.
+  [key: string]: never
+}
+
 export interface AskUserQuestionInput {
   questions?: Array<{
     question?: string
@@ -119,6 +160,10 @@ export const CLAUDE_TOOL = {
   WEB_FETCH: 'WebFetch',
   WEB_SEARCH: 'WebSearch',
   TODO_WRITE: 'TodoWrite',
+  TASK_CREATE: 'TaskCreate',
+  TASK_UPDATE: 'TaskUpdate',
+  TASK_GET: 'TaskGet',
+  TASK_LIST: 'TaskList',
   TASK_OUTPUT: 'TaskOutput',
   TASK_STOP: 'TaskStop',
   TOOL_SEARCH: 'ToolSearch',
@@ -144,6 +189,10 @@ export type KnownToolInput
     | { toolName: typeof CLAUDE_TOOL.WEB_FETCH, input: WebFetchInput }
     | { toolName: typeof CLAUDE_TOOL.WEB_SEARCH, input: WebSearchInput }
     | { toolName: typeof CLAUDE_TOOL.TODO_WRITE, input: TodoWriteInput }
+    | { toolName: typeof CLAUDE_TOOL.TASK_CREATE, input: TaskCreateInput }
+    | { toolName: typeof CLAUDE_TOOL.TASK_UPDATE, input: TaskUpdateInput }
+    | { toolName: typeof CLAUDE_TOOL.TASK_GET, input: TaskGetInput }
+    | { toolName: typeof CLAUDE_TOOL.TASK_LIST, input: TaskListInput }
     | { toolName: typeof CLAUDE_TOOL.TASK_OUTPUT, input: TaskOutputInput }
     | { toolName: typeof CLAUDE_TOOL.TOOL_SEARCH, input: ToolSearchInput }
     | { toolName: typeof CLAUDE_TOOL.TASK_STOP, input: TaskStopInput }
@@ -166,6 +215,10 @@ const KNOWN_TOOLS = new Set<string>([
   CLAUDE_TOOL.WEB_SEARCH,
   CLAUDE_TOOL.TASK_OUTPUT,
   CLAUDE_TOOL.TODO_WRITE,
+  CLAUDE_TOOL.TASK_CREATE,
+  CLAUDE_TOOL.TASK_UPDATE,
+  CLAUDE_TOOL.TASK_GET,
+  CLAUDE_TOOL.TASK_LIST,
   CLAUDE_TOOL.TOOL_SEARCH,
   CLAUDE_TOOL.TASK_STOP,
   CLAUDE_TOOL.ASK_USER_QUESTION,

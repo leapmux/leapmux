@@ -30,7 +30,6 @@ func decodeMessageContent(t *testing.T, content []byte, compression leapmuxv1.Co
 func TestSendControlResponse_PersistsCodexUserInputAnswer(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
@@ -94,7 +93,6 @@ func TestSendControlResponse_PersistsCodexUserInputAnswer(t *testing.T) {
 func TestSendControlResponse_PersistsCodexFeedbackMessage(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
@@ -153,7 +151,6 @@ func TestSendControlResponse_PersistsCodexFeedbackMessage(t *testing.T) {
 func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
@@ -220,7 +217,6 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 func TestSendControlResponse_PersistsOpenCodeQuestionAnswer(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
@@ -279,7 +275,6 @@ func TestSendControlResponse_PersistsOpenCodeQuestionAnswer(t *testing.T) {
 func TestSendControlResponse_PersistsGeminiPermissionSelectionLabel(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",

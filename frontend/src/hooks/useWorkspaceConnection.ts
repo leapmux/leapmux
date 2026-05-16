@@ -585,6 +585,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.removeMessage(md.agentId, md.messageId)
         break
       }
+      case 'todosChanged': {
+        // Sole driver of the sidebar to-do list. The worker persists
+        // every to-do event in agent_todos and ships the post-mutation
+        // snapshot here; clients replace wholesale.
+        const tc = inner.value
+        chatStore.replaceTodos(tc.agentId, tc.todos)
+        break
+      }
       case 'catchUpComplete':
         catchUpPhases.set(agentId, 'live')
         break

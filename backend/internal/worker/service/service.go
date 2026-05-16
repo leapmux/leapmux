@@ -161,7 +161,7 @@ func (svc *Context) agentAPITimeout() time.Duration {
 func NewContext(sqlDB *sql.DB, agents *agent.Manager, terminals *terminal.Manager, homeDir, dataDir string, wl *wakelock.ActivityTracker) *Context {
 	queries := db.New(sqlDB)
 	watchers := NewWatcherManager()
-	output := NewOutputHandler(queries, watchers, agents, wl)
+	output := NewOutputHandler(sqlDB, queries, watchers, agents, wl)
 	output.DataDir = dataDir
 	svc := &Context{
 		DB:              sqlDB,

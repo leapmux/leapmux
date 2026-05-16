@@ -10,6 +10,7 @@ import { renderExitPlanMode } from './exitPlanMode'
 import { ToolUseMessage } from './genericToolUse'
 import { toolIconFor } from './icons'
 import { deriveToolSummary } from './summary'
+import { renderTaskCreate, renderTaskUpdate } from './taskTools'
 import { renderClaudeToolTitle } from './title'
 import { renderTodoWrite } from './todoWrite'
 
@@ -25,6 +26,15 @@ export function renderClaudeToolUse(
   // Special tool_use renderers
   if (toolName === CLAUDE_TOOL.TODO_WRITE)
     return renderTodoWrite(toolUse, context)
+  if (toolName === CLAUDE_TOOL.TASK_CREATE)
+    return renderTaskCreate(toolUse, context)
+  if (toolName === CLAUDE_TOOL.TASK_UPDATE)
+    return renderTaskUpdate(toolUse, context)
+  // TaskList/TaskGet render the full content on the tool_result side
+  // (TaskListResultView / TaskGetResultView). Suppress the tool_use
+  // bubble so the timeline doesn't double-up.
+  if (toolName === CLAUDE_TOOL.TASK_LIST || toolName === CLAUDE_TOOL.TASK_GET)
+    return null
   if (toolName === CLAUDE_TOOL.ASK_USER_QUESTION)
     return renderAskUserQuestion(toolUse, context)
   if (toolName === CLAUDE_TOOL.EXIT_PLAN_MODE)

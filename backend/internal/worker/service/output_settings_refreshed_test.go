@@ -22,7 +22,6 @@ func newRefreshTestFixture(t *testing.T, seed db.UpdateAgentAllSettingsParams) r
 	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",

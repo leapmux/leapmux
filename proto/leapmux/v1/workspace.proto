@@ -231,6 +231,7 @@ message AgentEvent {
     AgentMessageError message_error = 8;
     AgentMessageDeleted message_deleted = 9;
     CatchUpComplete catch_up_complete = 10;
+    AgentTodosChanged todos_changed = 11;
   }
 }
 

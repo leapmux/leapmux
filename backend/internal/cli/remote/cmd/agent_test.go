@@ -151,9 +151,7 @@ func TestResolveProvider_EmptyPropagatesCodedRPCError(t *testing.T) {
 // up a transport. Without this, scripts that forget the flag would
 // see a network error rather than a clear hint.
 func TestRunAgentInterrupt_RequiresAgentID(t *testing.T) {
-	t.Setenv("LEAPMUX_HUB", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_ID", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_TYPE", "")
+	clearRemoteEnv(t)
 	out := withCapturedStdout(t, func() {
 		err := RunAgentInterrupt(fakeCmdCtx{}, []string{"--hub", "https://stub"})
 		require.Error(t, err)
@@ -170,9 +168,7 @@ func TestRunAgentInterrupt_RequiresAgentID(t *testing.T) {
 // provided. The CLI must surface this clearly so scripts don't send
 // empty turns to the agent by accident.
 func TestRunAgentSend_RequiresMessageOrStdin(t *testing.T) {
-	t.Setenv("LEAPMUX_HUB", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_ID", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_TYPE", "")
+	clearRemoteEnv(t)
 	out := withCapturedStdout(t, func() {
 		err := RunAgentSend(fakeCmdCtx{}, []string{"--hub", "https://stub", "--tab-id", "ag-1"})
 		require.Error(t, err)
@@ -266,9 +262,7 @@ func TestApplyPermissionMode_FailureReturnsErrorMessage(t *testing.T) {
 // (the agent treats absent content as "no decision provided"), so
 // missing --content must hard-fail rather than silently send "{}".
 func TestRunAgentSendControlResponse_RequiresAgentAndContent(t *testing.T) {
-	t.Setenv("LEAPMUX_HUB", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_ID", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_TYPE", "")
+	clearRemoteEnv(t)
 	out := withCapturedStdout(t, func() {
 		err := RunAgentSendControlResponse(fakeCmdCtx{}, []string{"--hub", "https://stub", "--tab-id", "ag-1"})
 		require.Error(t, err)

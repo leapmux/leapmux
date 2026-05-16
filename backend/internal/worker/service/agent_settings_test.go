@@ -20,7 +20,6 @@ import (
 func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	workDir := t.TempDir()
 
@@ -217,8 +216,6 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
 
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
-
 	// Create an agent with a session ID.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-1",
@@ -259,7 +256,6 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
@@ -468,7 +464,6 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testi
 func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-gemini",
@@ -537,7 +532,6 @@ func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) 
 func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",

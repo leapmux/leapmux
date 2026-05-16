@@ -27,7 +27,6 @@ import (
 func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	released := make(chan struct{})
 	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
@@ -66,7 +65,6 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	releaseAfter := 150 * time.Millisecond
 	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
@@ -116,7 +114,6 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	startCalled := make(chan agent.Options, 1)
 	releaseStart := make(chan struct{})
@@ -216,7 +213,6 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	startCalled := make(chan agent.Options, 1)
 	releaseStart := make(chan struct{})
@@ -310,7 +306,6 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	agentID := "agent-late-mode"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -361,7 +356,6 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	agentID := "agent-pre-start-mode"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -414,7 +408,6 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	startCalled := make(chan agent.Options, 1)
 	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
@@ -461,7 +454,6 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	blocked := make(chan struct{})
 	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
@@ -716,7 +708,6 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	// Block startAgent so the goroutine settles after setting phase 2
 	// ("Starting Claude Code…") and waits there — the registry entry
 	// then holds that phase label for replay.
@@ -783,7 +774,6 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	// Block startAgent briefly so the test can subscribe before ACTIVE lands.
 	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
@@ -911,7 +901,6 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced startup failure")
 	}
@@ -959,7 +948,6 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	var startCalls sync.WaitGroup
 	startCalls.Add(1)
@@ -1030,7 +1018,6 @@ func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
 func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced start failure")
 	}

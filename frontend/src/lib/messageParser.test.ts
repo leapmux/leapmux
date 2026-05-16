@@ -9,8 +9,6 @@ import {
   extractRateLimitInfo,
   extractResultMetadata,
   extractSettingsChanges,
-  extractTodos,
-  findLatestTodos,
   getInnerMessage,
   getInnerMessageType,
   NOTIFICATION_THREAD_TYPE,
@@ -18,8 +16,14 @@ import {
 } from './messageParser'
 
 /** Build a mock AgentChatMessage with the given JSON content (uncompressed). */
-function makeMsg(source: MessageSource, content: unknown, opts?: { seq?: bigint }) {
-  return makeMessage({ source, content: rawContent(content), seq: opts?.seq })
+function makeMsg(source: MessageSource, content: unknown, opts?: { seq?: bigint, spanId?: string, spanType?: string }) {
+  return makeMessage({
+    source,
+    content: rawContent(content),
+    seq: opts?.seq,
+    spanId: opts?.spanId,
+    spanType: opts?.spanType,
+  })
 }
 
 /** Wrap inner messages in a notification-thread wrapper envelope. */
@@ -136,171 +140,6 @@ describe('getInnerMessageType', () => {
   it('returns undefined when no type', () => {
     const msg = makeMsg(MessageSource.AGENT, { message: {} })
     expect(getInnerMessageType(parseMessageContent(msg))).toBeUndefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// extractTodos
-// ---------------------------------------------------------------------------
-
-describe('extractTodos', () => {
-  const todoContent = {
-    type: 'assistant',
-    message: {
-      content: [
-        {
-          type: 'tool_use',
-          name: 'TodoWrite',
-          input: {
-            todos: [
-              { content: 'Write tests', status: 'completed', activeForm: 'Writing tests' },
-              { content: 'Deploy', status: 'in_progress', activeForm: 'Deploying' },
-              { content: 'Review', status: 'pending', activeForm: 'Reviewing' },
-            ],
-          },
-        },
-      ],
-    },
-  }
-
-  it('extracts todos from a valid TodoWrite message', () => {
-    const msg = makeMsg(MessageSource.AGENT, todoContent)
-    const parsed = parseMessageContent(msg)
-    const todos = extractTodos(msg, parsed)
-
-    expect(todos).toEqual([
-      { content: 'Write tests', status: 'completed', activeForm: 'Writing tests' },
-      { content: 'Deploy', status: 'in_progress', activeForm: 'Deploying' },
-      { content: 'Review', status: 'pending', activeForm: 'Reviewing' },
-    ])
-  })
-
-  it('returns null for non-AGENT source', () => {
-    const msg = makeMsg(MessageSource.USER, todoContent)
-    const parsed = parseMessageContent(msg)
-    expect(extractTodos(msg, parsed)).toBeNull()
-  })
-
-  it('returns null for non-TodoWrite tool_use', () => {
-    const content = {
-      type: 'assistant',
-      message: {
-        content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls' } }],
-      },
-    }
-    const msg = makeMsg(MessageSource.AGENT, content)
-    const parsed = parseMessageContent(msg)
-    expect(extractTodos(msg, parsed)).toBeNull()
-  })
-
-  it('returns null for assistant message with only text', () => {
-    const content = {
-      type: 'assistant',
-      message: { content: [{ type: 'text', text: 'Hello' }] },
-    }
-    const msg = makeMsg(MessageSource.AGENT, content)
-    const parsed = parseMessageContent(msg)
-    expect(extractTodos(msg, parsed)).toBeNull()
-  })
-
-  it('defaults unknown status to pending', () => {
-    const content = {
-      type: 'assistant',
-      message: {
-        content: [{
-          type: 'tool_use',
-          name: 'TodoWrite',
-          input: { todos: [{ content: 'Task', status: 'unknown_status', activeForm: 'Working' }] },
-        }],
-      },
-    }
-    const msg = makeMsg(MessageSource.AGENT, content)
-    const parsed = parseMessageContent(msg)
-    const todos = extractTodos(msg, parsed)
-    expect(todos![0].status).toBe('pending')
-  })
-
-  it('extracts todos from a Codex turn/plan/updated message', () => {
-    const msg = makeMsg(MessageSource.AGENT, {
-      method: 'turn/plan/updated',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-        explanation: 'Need a plan',
-        plan: [
-          { step: 'Inspect messages', status: 'inProgress' },
-          { step: 'Patch renderer', status: 'pending' },
-          { step: 'Run tests', status: 'completed' },
-        ],
-      },
-    })
-    const parsed = parseMessageContent(msg)
-    const todos = extractTodos(msg, parsed)
-
-    expect(todos).toEqual([
-      { content: 'Inspect messages', status: 'in_progress', activeForm: 'Inspect messages' },
-      { content: 'Patch renderer', status: 'pending', activeForm: 'Patch renderer' },
-      { content: 'Run tests', status: 'completed', activeForm: 'Run tests' },
-    ])
-  })
-})
-
-// ---------------------------------------------------------------------------
-// findLatestTodos
-// ---------------------------------------------------------------------------
-
-describe('findLatestTodos', () => {
-  const makeTodoMsg = (seq: bigint, tasks: Array<{ content: string, status: string, activeForm: string }>) =>
-    makeMsg(MessageSource.AGENT, {
-      type: 'assistant',
-      message: {
-        content: [{
-          type: 'tool_use',
-          name: 'TodoWrite',
-          input: { todos: tasks },
-        }],
-      },
-    }, { seq })
-
-  it('finds the latest TodoWrite scanning backward', () => {
-    const messages = [
-      makeMsg(MessageSource.USER, { type: 'user', message: { content: 'hello' } }, { seq: 1n }),
-      makeTodoMsg(2n, [{ content: 'Old task', status: 'completed', activeForm: 'Old' }]),
-      makeMsg(MessageSource.AGENT, { type: 'assistant', message: { content: [{ type: 'text', text: 'response' }] } }, { seq: 3n }),
-      makeTodoMsg(4n, [{ content: 'New task', status: 'in_progress', activeForm: 'New' }]),
-      makeMsg(MessageSource.USER, { type: 'user', message: { content: 'bye' } }, { seq: 5n }),
-    ]
-    const todos = findLatestTodos(messages)
-    expect(todos).toEqual([{ content: 'New task', status: 'in_progress', activeForm: 'New' }])
-  })
-
-  it('returns null when no TodoWrite exists', () => {
-    const messages = [
-      makeMsg(MessageSource.USER, { type: 'user', message: { content: 'hello' } }, { seq: 1n }),
-      makeMsg(MessageSource.AGENT, { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }, { seq: 2n }),
-    ]
-    expect(findLatestTodos(messages)).toBeNull()
-  })
-
-  it('returns null for empty array', () => {
-    expect(findLatestTodos([])).toBeNull()
-  })
-
-  it('finds the latest Codex turn/plan/updated scanning backward', () => {
-    const messages = [
-      makeTodoMsg(2n, [{ content: 'Old task', status: 'completed', activeForm: 'Old' }]),
-      makeMsg(MessageSource.AGENT, {
-        method: 'turn/plan/updated',
-        params: {
-          threadId: 'thread-1',
-          turnId: 'turn-1',
-          explanation: null,
-          plan: [{ step: 'New Codex task', status: 'inProgress' }],
-        },
-      }, { seq: 4n }),
-    ]
-    const todos = findLatestTodos(messages)
-    expect(todos).toEqual([{ content: 'New Codex task', status: 'in_progress', activeForm: 'New Codex task' }])
   })
 })
 

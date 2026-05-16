@@ -93,9 +93,7 @@ func TestTerminalInfoToMap_ScreenEmittedAsString(t *testing.T) {
 // invalid_request rather than silently shipping a zero-byte write to
 // the PTY. Mirrors TestRunAgentSend_RequiresMessageOrStdin.
 func TestRunTerminalSend_RequiresDataOrStdin(t *testing.T) {
-	t.Setenv("LEAPMUX_HUB", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_ID", "")
-	t.Setenv("LEAPMUX_REMOTE_TAB_TYPE", "")
+	clearRemoteEnv(t)
 	out := withCapturedStdout(t, func() {
 		err := RunTerminalSend(fakeCmdCtx{}, []string{"--hub", "https://stub", "--tab-id", "term-1"})
 		require.Error(t, err)

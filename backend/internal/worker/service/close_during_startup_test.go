@@ -42,7 +42,6 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	// Subscribe before OpenAgent so an accidental ACTIVE broadcast would
 	// be captured regardless of where in the sequence it fires.
@@ -137,7 +136,6 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 
 	svc, d, w := setupTestService(t, "ws-1")
 	defer drainAllInFlight(svc)
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	var closeOnce sync.Once
 	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {

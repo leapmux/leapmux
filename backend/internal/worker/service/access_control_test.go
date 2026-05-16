@@ -106,7 +106,6 @@ func TestAccessControl_AgentHandlers_RejectInaccessibleWorkspace(t *testing.T) {
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
 			svc, d, w := setupTestService(t, "ws-1")
-			svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 			seedAgent(t, svc, "agent-other", "ws-other")
 
 			dispatch(d, tc.method, tc.req("agent-other"), w)
@@ -123,8 +122,7 @@ func TestAccessControl_AgentHandlers_RejectInaccessibleWorkspace(t *testing.T) {
 func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			svc, d, w := setupTestService(t, "ws-1")
-			svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+			_, d, w := setupTestService(t, "ws-1")
 
 			dispatch(d, tc.method, tc.req("agent-missing"), w)
 
@@ -140,8 +138,7 @@ func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
 func TestAccessControl_AgentHandlers_EmptyID(t *testing.T) {
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			svc, d, w := setupTestService(t, "ws-1")
-			svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
+			_, d, w := setupTestService(t, "ws-1")
 
 			dispatch(d, tc.method, tc.req(""), w)
 
@@ -204,7 +201,6 @@ func TestAccessControl_TerminalHandlers_EmptyID(t *testing.T) {
 func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 	t.Run("RenameAgent", func(t *testing.T) {
 		svc, d, w := setupTestService(t, "ws-1")
-		svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 		seedAgent(t, svc, "agent-1", "ws-1")
 
 		dispatch(d, "RenameAgent", &leapmuxv1.RenameAgentRequest{
@@ -218,7 +214,6 @@ func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 
 	t.Run("ListAgentMessages", func(t *testing.T) {
 		svc, d, w := setupTestService(t, "ws-1")
-		svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 		seedAgent(t, svc, "agent-1", "ws-1")
 
 		dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{AgentId: "agent-1"}, w)
@@ -336,7 +331,6 @@ func TestCleanupWorkspace_RejectsInaccessibleWorkspace(t *testing.T) {
 
 func TestCleanupWorkspace_AllowsAccessibleWorkspace(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	seedAgent(t, svc, "agent-1", "ws-1")
 
 	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{
