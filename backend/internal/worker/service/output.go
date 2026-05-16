@@ -5,6 +5,8 @@ package service
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
+	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 )
 
@@ -553,10 +556,41 @@ func unwrapNotifContent(data []byte) (*notifThreadWrapper, error) {
 
 // --- OutputHandler ---
 
+// agentTodoCache mirrors an agent's agent_todos rows in memory so the
+// worker can build the post-mutation broadcast without re-fetching
+// after each event, and pick the next seq for an INSERT without a
+// pre-SELECT round-trip. Initialized lazily from the DB on first
+// touch per agent; the cache and DB stay in lock-step because every
+// successful write goes through applyTodoEvent.
+//
+// `mu` serializes the multi-step "check existence → DB write →
+// in-place mutation" sequences and also gates the lazy DB seed.
+type agentTodoCache struct {
+	mu      sync.Mutex
+	seeded  bool
+	rows    []cachedTodo
+	nextSeq int64
+}
+
+// cachedTodo pairs an Item with the agent_todos `row_key` it persists
+// under. The row_key is the Item's ID when set (incremental Task*
+// path) and a synthetic `snap-N` otherwise (snapshot path for
+// providers without stable per-task ids — TodoWrite / Codex plan /
+// ACP plan). Eviction and per-row updates address rows by row_key.
+type cachedTodo struct {
+	item   todoevents.Item
+	rowKey string
+}
+
 // OutputHandler manages agent output persistence and broadcasting.
 // It holds shared state accessed by per-agent OutputSink instances.
 type OutputHandler struct {
 	queries *db.Queries
+	// db backs the agent_todos snapshot transaction (delete-all + N
+	// inserts). Tests that don't exercise the snapshot path may pass
+	// nil; the snapshot writer then falls back to a non-transactional
+	// loop.
+	db      *sql.DB
 	watcher *WatcherManager
 	agents  *agent.Manager
 	DataDir string
@@ -567,6 +601,12 @@ type OutputHandler struct {
 
 	// Per-agent span tracking (concurrent access).
 	spanTrackers sync.Map // agentID -> *SpanTracker
+
+	// Per-agent in-memory to-do mirror. Keyed by agent_id; each
+	// agentTodoCache carries its own mutex for the multi-step event
+	// transitions, matching the sync.Map pattern used by the other
+	// per-agent state above.
+	todos sync.Map // agentID -> *agentTodoCache
 
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
@@ -584,10 +624,13 @@ type OutputHandler struct {
 	now func() time.Time
 }
 
-// NewOutputHandler creates a new OutputHandler.
-func NewOutputHandler(queries *db.Queries, watcher *WatcherManager, agents *agent.Manager, wl *wakelock.ActivityTracker) *OutputHandler {
+// NewOutputHandler creates a new OutputHandler. sqlDB is used for the
+// agent_todos snapshot transaction; tests that never trigger a
+// snapshot may pass nil.
+func NewOutputHandler(sqlDB *sql.DB, queries *db.Queries, watcher *WatcherManager, agents *agent.Manager, wl *wakelock.ActivityTracker) *OutputHandler {
 	return &OutputHandler{
 		queries:  queries,
+		db:       sqlDB,
 		watcher:  watcher,
 		agents:   agents,
 		wakeLock: wl,
@@ -616,6 +659,7 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.notifMu.Delete(agentID)
 	h.lastNotifThread.Delete(agentID)
 	h.spanTrackers.Delete(agentID)
+	h.todos.Delete(agentID)
 	h.cleanupAutoContinue(agentID)
 }
 
@@ -1145,7 +1189,410 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		SpanColor:          spanColor,
 		SpanLines:          spanLines,
 	})
+
+	// Update the provider-neutral to-do list off the just-persisted
+	// message. Failures are logged but do not propagate — the chat
+	// transcript is the source of truth, and the next event can
+	// reconcile any transient inconsistency.
+	if err := h.applyTodoEventForMessage(agentID, span, contentJSON); err != nil {
+		slog.Warn("apply todo event", "agent_id", agentID, "span_type", span.SpanType, "error", err)
+	}
 	return nil
+}
+
+// couldProduceTodoEvent is a cheap gate keeping the >99% of messages
+// that can't produce a to-do mutation out of the extract / paired-use
+// lookup hot path. Claude tool spans carry span_type for every message
+// — when one is present, only the to-do family matters. Only the
+// span-typeless path (Codex JSON-RPC notifications, ACP session
+// updates) needs the byte-pattern probe.
+func couldProduceTodoEvent(span agent.SpanInfo, contentJSON []byte) bool {
+	if span.SpanType != "" {
+		return todoevents.IsTodoToolSpanType(span.SpanType)
+	}
+	return todoevents.LooksLikeProviderPlan(contentJSON)
+}
+
+// applyTodoEventForMessage extracts a to-do event from the just-persisted
+// message, applies it to agent_todos, and broadcasts AgentTodosChanged
+// on mutation. No-ops (unknown-id update, unknown-id delete, empty
+// snapshot replay) skip the broadcast.
+func (h *OutputHandler) applyTodoEventForMessage(agentID string, span agent.SpanInfo, contentJSON []byte) error {
+	if !couldProduceTodoEvent(span, contentJSON) {
+		return nil
+	}
+	pairedJSON, err := h.lookupPairedToolUseJSON(agentID, span)
+	if err != nil {
+		return err
+	}
+	ev, ok := todoevents.Extract(span.SpanType, contentJSON, pairedJSON)
+	if !ok {
+		return nil
+	}
+	items, mutated, err := h.applyTodoEvent(agentID, ev)
+	if err != nil {
+		return err
+	}
+	if !mutated {
+		return nil
+	}
+	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event: &leapmuxv1.AgentEvent_TodosChanged{
+			TodosChanged: &leapmuxv1.AgentTodosChanged{
+				AgentId: agentID,
+				Todos:   todoevents.ItemsToProto(items),
+			},
+		},
+	})
+	return nil
+}
+
+// lookupPairedToolUseJSON returns the decompressed JSON of the paired
+// tool_use message for Claude Task* tool_results that need their input
+// fields. Returns nil with no error when not applicable.
+func (h *OutputHandler) lookupPairedToolUseJSON(agentID string, span agent.SpanInfo) ([]byte, error) {
+	switch span.SpanType {
+	case todoevents.ToolTaskCreate, todoevents.ToolTaskUpdate:
+		// fall through — these need the paired tool_use input.
+	default:
+		return nil, nil
+	}
+	if span.SpanID == "" {
+		return nil, nil
+	}
+	row, err := h.queries.GetAgentMessageBySpanIDAndSource(bgCtx(), db.GetAgentMessageBySpanIDAndSourceParams{
+		AgentID: agentID,
+		SpanID:  span.SpanID,
+		Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		// Race or rolled-up tool_use — extraction proceeds with the
+		// result-only fields and returns a less detailed row.
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup paired tool_use %s: %w", span.SpanID, err)
+	}
+	return msgcodec.Decompress(row.Content, row.ContentCompression)
+}
+
+// applyTodoEvent persists a single to-do event into agent_todos AND
+// applies it to the in-memory mirror. Returns the post-mutation list
+// (so the caller can broadcast without re-fetching) and a `mutated`
+// flag that is false when the event was a no-op (unknown-id update,
+// unknown-id delete, empty id).
+func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]todoevents.Item, bool, error) {
+	ctx := bgCtx()
+	cache := h.todoCache(agentID)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if err := cache.ensureSeededLocked(ctx, h.queries, agentID); err != nil {
+		return nil, false, err
+	}
+
+	switch ev.Kind {
+	case todoevents.KindSnapshot:
+		return h.applySnapshotLocked(ctx, agentID, cache, ev.Snapshot)
+
+	case todoevents.KindCreate, todoevents.KindDetail:
+		if ev.Item.ID == "" {
+			return nil, false, nil
+		}
+		existingIdx := cache.indexByID(ev.Item.ID)
+		merged := ev.Item
+		if existingIdx >= 0 {
+			if ev.Kind == todoevents.KindDetail {
+				merged = todoevents.MergeDetail(cache.rows[existingIdx].item, ev.Item)
+			}
+			// Idempotent replay: skip the DB write and the broadcast
+			// when the post-merge row equals the existing row.
+			if cache.rows[existingIdx].item == merged {
+				return cache.snapshot(), false, nil
+			}
+		} else if len(cache.rows) >= todoevents.MaxTodos {
+			// At cap: evict the oldest completed row to make room for
+			// the new task. When no completed row exists, drop the new
+			// task and log so operators see the cap pressure.
+			evicted, err := h.evictOldestCompletedLocked(ctx, agentID, cache)
+			if err != nil {
+				return nil, false, err
+			}
+			if !evicted {
+				slog.Warn("agent_todos cap reached, no completed task to evict; dropping new task",
+					"agent_id", agentID, "task_id", ev.Item.ID, "cap", todoevents.MaxTodos)
+				return cache.snapshot(), false, nil
+			}
+		}
+		// Pick the next seq from the in-memory mirror so a fresh insert
+		// gets the right ordering without a `MAX(seq)` round-trip. On
+		// CONFLICT the existing row's seq is preserved (the UPSERT
+		// excludes seq from the SET list), so the choice is harmless
+		// when we end up updating in place.
+		if err := h.queries.UpsertAgentTodo(ctx, db.UpsertAgentTodoParams{
+			AgentID:     agentID,
+			RowKey:      ev.Item.ID,
+			Seq:         cache.nextSeq,
+			TaskID:      ev.Item.ID,
+			Content:     merged.Content,
+			ActiveForm:  merged.ActiveForm,
+			Description: merged.Description,
+			Status:      todoevents.StatusWire(merged.Status),
+		}); err != nil {
+			return nil, false, err
+		}
+		if existingIdx < 0 {
+			cache.rows = append(cache.rows, cachedTodo{item: merged, rowKey: ev.Item.ID})
+			cache.nextSeq++
+		} else {
+			cache.rows[existingIdx].item = merged
+		}
+		return cache.snapshot(), true, nil
+
+	case todoevents.KindUpdate:
+		if ev.ID == "" {
+			return nil, false, nil
+		}
+		idx := cache.indexByID(ev.ID)
+		if idx < 0 {
+			return nil, false, nil
+		}
+		merged := todoevents.ApplyPatch(cache.rows[idx].item, ev.Patch)
+		// No-op patch (every Patch field nil or already-matching): skip
+		// the DB write and broadcast.
+		if merged == cache.rows[idx].item {
+			return cache.snapshot(), false, nil
+		}
+		if err := h.queries.UpdateAgentTodo(ctx, db.UpdateAgentTodoParams{
+			Content:     merged.Content,
+			ActiveForm:  merged.ActiveForm,
+			Description: merged.Description,
+			Status:      todoevents.StatusWire(merged.Status),
+			AgentID:     agentID,
+			RowKey:      cache.rows[idx].rowKey,
+		}); err != nil {
+			return nil, false, err
+		}
+		cache.rows[idx].item = merged
+		return cache.snapshot(), true, nil
+
+	case todoevents.KindDelete:
+		if ev.ID == "" {
+			return nil, false, nil
+		}
+		idx := cache.indexByID(ev.ID)
+		if idx < 0 {
+			return nil, false, nil
+		}
+		res, err := h.queries.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
+			AgentID: agentID,
+			RowKey:  cache.rows[idx].rowKey,
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			return nil, false, nil
+		}
+		cache.rows = slices.Delete(cache.rows, idx, idx+1)
+		return cache.snapshot(), true, nil
+	}
+	return nil, false, nil
+}
+
+// evictOldestCompletedLocked removes the oldest completed row from
+// the cache and the DB. Returns false (with no error) when no
+// completed row exists; the caller drops the incoming event in that
+// case. Caller must hold cache.mu.
+func (h *OutputHandler) evictOldestCompletedLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
+	evictIdx := slices.IndexFunc(cache.rows, func(r cachedTodo) bool {
+		return r.item.Status == todoevents.StatusCompleted
+	})
+	if evictIdx < 0 {
+		return false, nil
+	}
+	evicted := cache.rows[evictIdx]
+	if _, err := h.queries.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
+		AgentID: agentID,
+		RowKey:  evicted.rowKey,
+	}); err != nil {
+		return false, fmt.Errorf("evict agent_todo: %w", err)
+	}
+	cache.rows = slices.Delete(cache.rows, evictIdx, evictIdx+1)
+	slog.Info("agent_todos cap reached; evicted oldest completed task",
+		"agent_id", agentID, "evicted_task_id", evicted.item.ID, "cap", todoevents.MaxTodos)
+	return true, nil
+}
+
+// applySnapshotLocked replaces every agent_todos row with the supplied
+// list, capped at todoevents.MaxTodos. The delete-all + N inserts are
+// wrapped in a transaction when h.db is set (production); tests that
+// construct the handler with a nil *sql.DB fall through to a
+// non-transactional loop.
+func (h *OutputHandler) applySnapshotLocked(ctx context.Context, agentID string, cache *agentTodoCache, snapshot []todoevents.Item) ([]todoevents.Item, bool, error) {
+	capped := snapshot
+	if len(capped) > todoevents.MaxTodos {
+		capped = capped[:todoevents.MaxTodos]
+	}
+	// Re-emitted plans (Codex re-broadcasts on every tick; TaskList
+	// polled twice with no change) carry a structurally identical
+	// snapshot. Skip the delete-and-insert tx + broadcast on a no-op.
+	if cache.itemsEqual(capped) {
+		return cache.snapshot(), false, nil
+	}
+	if err := h.snapshotWriteToDB(ctx, agentID, capped); err != nil {
+		return nil, false, err
+	}
+	cache.rows = make([]cachedTodo, len(capped))
+	for i, it := range capped {
+		cache.rows[i] = cachedTodo{item: it, rowKey: rowKeyFor(it, i+1)}
+	}
+	cache.nextSeq = int64(len(capped)) + 1
+	return cache.snapshot(), true, nil
+}
+
+func (h *OutputHandler) snapshotWriteToDB(ctx context.Context, agentID string, capped []todoevents.Item) error {
+	if h.db == nil {
+		return h.snapshotWriteNonTx(ctx, h.queries, agentID, capped)
+	}
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := h.snapshotWriteNonTx(ctx, h.queries.WithTx(tx), agentID, capped); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit snapshot: %w", err)
+	}
+	return nil
+}
+
+func (h *OutputHandler) snapshotWriteNonTx(ctx context.Context, q *db.Queries, agentID string, capped []todoevents.Item) error {
+	if err := q.DeleteAllAgentTodos(ctx, agentID); err != nil {
+		return fmt.Errorf("delete agent_todos: %w", err)
+	}
+	for i, it := range capped {
+		if err := q.InsertAgentTodo(ctx, db.InsertAgentTodoParams{
+			AgentID:     agentID,
+			RowKey:      rowKeyFor(it, i+1),
+			Seq:         int64(i + 1),
+			TaskID:      it.ID,
+			Content:     it.Content,
+			ActiveForm:  it.ActiveForm,
+			Description: it.Description,
+			Status:      todoevents.StatusWire(it.Status),
+		}); err != nil {
+			return fmt.Errorf("insert agent_todo: %w", err)
+		}
+	}
+	return nil
+}
+
+// rowKeyFor returns the agent_todos.row_key for a snapshot Item:
+// the Item's ID when set (Claude TaskList), else a synthetic
+// `snap-<seq>` (TodoWrite / Codex / ACP carry no stable per-row id).
+func rowKeyFor(it todoevents.Item, seq int) string {
+	if it.ID != "" {
+		return it.ID
+	}
+	return fmt.Sprintf("snap-%d", seq)
+}
+
+// itemFromRow projects a persisted agent_todos row into the in-memory
+// Item shape. Used by ensureSeededLocked when populating the cache
+// from DB.
+func itemFromRow(r db.AgentTodo) todoevents.Item {
+	return todoevents.Item{
+		ID:          r.TaskID,
+		Content:     r.Content,
+		Status:      todoevents.StatusFromWire(r.Status),
+		ActiveForm:  r.ActiveForm,
+		Description: r.Description,
+	}
+}
+
+// todoCache returns the per-agent cache, creating an empty (unseeded)
+// one if none exists. Concurrent first-touch callers receive the same
+// instance via sync.Map.LoadOrStore; the actual DB seed runs once via
+// ensureSeededLocked under the cache's own mutex.
+func (h *OutputHandler) todoCache(agentID string) *agentTodoCache {
+	if v, ok := h.todos.Load(agentID); ok {
+		return v.(*agentTodoCache)
+	}
+	fresh := &agentTodoCache{}
+	actual, _ := h.todos.LoadOrStore(agentID, fresh)
+	return actual.(*agentTodoCache)
+}
+
+// LoadTodos returns the agent's to-do list, seeding the in-memory
+// cache from agent_todos on first access. Cold-start RPCs route
+// through here so a warm cache returns without a DB read and every
+// subsequent caller observes the same authoritative snapshot.
+func (h *OutputHandler) LoadTodos(ctx context.Context, agentID string) ([]todoevents.Item, error) {
+	cache := h.todoCache(agentID)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if err := cache.ensureSeededLocked(ctx, h.queries, agentID); err != nil {
+		return nil, err
+	}
+	return cache.snapshot(), nil
+}
+
+// ensureSeededLocked loads the agent's existing rows from the DB on
+// first touch. On failure the cache remains unseeded so a later call
+// can retry. Caller must hold c.mu.
+func (c *agentTodoCache) ensureSeededLocked(ctx context.Context, queries *db.Queries, agentID string) error {
+	if c.seeded {
+		return nil
+	}
+	rows, err := queries.ListAgentTodos(ctx, db.ListAgentTodosParams{
+		AgentID: agentID,
+		Limit:   todoevents.MaxTodos,
+	})
+	if err != nil {
+		return fmt.Errorf("list agent_todos: %w", err)
+	}
+	c.rows = make([]cachedTodo, len(rows))
+	for i, r := range rows {
+		c.rows[i] = cachedTodo{item: itemFromRow(r), rowKey: r.RowKey}
+	}
+	c.nextSeq = int64(len(rows)) + 1
+	c.seeded = true
+	return nil
+}
+
+// snapshot returns a freshly-allocated slice of the cache's items
+// (no row_keys). Used to build the post-mutation broadcast payload.
+// Caller must hold c.mu.
+func (c *agentTodoCache) snapshot() []todoevents.Item {
+	out := make([]todoevents.Item, len(c.rows))
+	for i, r := range c.rows {
+		out[i] = r.item
+	}
+	return out
+}
+
+// indexByID returns the row index for the given task id, or -1 when
+// not present. Caller must hold c.mu.
+func (c *agentTodoCache) indexByID(id string) int {
+	return slices.IndexFunc(c.rows, func(r cachedTodo) bool { return r.item.ID == id })
+}
+
+// itemsEqual reports whether the cache's items are element-wise equal
+// to `other`. Used by the snapshot path to short-circuit no-op
+// re-broadcasts. Caller must hold c.mu.
+func (c *agentTodoCache) itemsEqual(other []todoevents.Item) bool {
+	if len(c.rows) != len(other) {
+		return false
+	}
+	for i := range c.rows {
+		if c.rows[i].item != other[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // persistNotificationThreaded persists a notification message, appending it

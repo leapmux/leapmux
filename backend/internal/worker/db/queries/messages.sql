@@ -44,6 +44,16 @@ LIMIT ?;
 -- name: GetMessageByAgentAndID :one
 SELECT * FROM messages WHERE id = ? AND agent_id = ?;
 
+-- GetAgentMessageBySpanIDAndSource finds the first message that opened the
+-- given span (the tool_use / item-started side). Used by the to-do extractor
+-- when a tool_result arrives and needs the paired request's input fields
+-- (subject/description/activeForm for Claude TaskCreate).
+-- name: GetAgentMessageBySpanIDAndSource :one
+SELECT * FROM messages
+WHERE agent_id = ? AND span_id = ? AND source = ?
+ORDER BY seq ASC
+LIMIT 1;
+
 -- name: SetMessageDeliveryError :exec
 UPDATE messages SET delivery_error = ? WHERE id = ? AND agent_id = ?;
 

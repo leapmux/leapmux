@@ -23,17 +23,35 @@ export function shallowEqual(a: unknown, b: unknown): boolean {
   return true
 }
 
-/** Element-wise `Object.is` equality for two arrays. Same-reference early-exit. */
-export function shallowEqualArrays(a: readonly unknown[], b: readonly unknown[]): boolean {
+function arraysEqualBy(
+  a: readonly unknown[],
+  b: readonly unknown[],
+  eq: (x: unknown, y: unknown) => boolean,
+): boolean {
   if (Object.is(a, b))
     return true
   if (a.length !== b.length)
     return false
   for (let i = 0; i < a.length; i++) {
-    if (!Object.is(a[i], b[i]))
+    if (!eq(a[i], b[i]))
       return false
   }
   return true
+}
+
+/** Element-wise `Object.is` equality for two arrays. Same-reference early-exit. */
+export function shallowEqualArrays(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return arraysEqualBy(a, b, Object.is)
+}
+
+/**
+ * Like `shallowEqualArrays`, but compares each element with `shallowEqual`
+ * (per-key Object.is) instead of by reference. Useful for stores that
+ * rebuild element objects every update — same content, different refs —
+ * where reference equality would always fail.
+ */
+export function shallowEqualArraysDeep(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return arraysEqualBy(a, b, shallowEqual)
 }
 
 /**

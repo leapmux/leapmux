@@ -1,10 +1,11 @@
-import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, TodoItem as ProtoTodoItem } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { createStore } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
-import { ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { ContentCompression, MessageSource, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
 import { PREFIX_LOCAL_MESSAGES, safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/browserStorage'
-import { extractTodos, findLatestTodos, parseMessageContent } from '~/lib/messageParser'
+import { parseMessageContent } from '~/lib/messageParser'
+import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
 
 // ---------------------------------------------------------------------------
 // Local (optimistic) message persistence via localStorage
@@ -116,9 +117,18 @@ function hydrateLocalMessage(p: PersistedLocalMessage): AgentChatMessage {
 }
 
 export interface TodoItem {
+  /**
+   * Stable identifier for incremental providers (Claude TaskCreate /
+   * TaskUpdate / TaskGet target rows by this). Snapshot-only providers
+   * (TodoWrite, Codex turn/plan/updated, ACP sessionUpdate=plan) leave
+   * this undefined.
+   */
+  id?: string
   content: string
   status: 'pending' | 'in_progress' | 'completed'
   activeForm: string
+  /** Long-form description from Claude Task* tools; absent elsewhere. */
+  description?: string
 }
 
 /**
@@ -133,6 +143,26 @@ export function normalizeTodoStatus(raw: unknown): TodoItem['status'] {
   if (raw === 'in_progress' || raw === 'inProgress')
     return 'in_progress'
   return 'pending'
+}
+
+/**
+ * Convert a server-authoritative proto TodoItem (delivered via
+ * ListAgentMessages or AgentTodosChanged) into the store shape. Maps
+ * the proto TodoStatus enum to the canonical string union.
+ */
+export function protoTodoToStore(t: ProtoTodoItem): TodoItem {
+  let status: TodoItem['status'] = 'pending'
+  if (t.status === TodoStatus.IN_PROGRESS)
+    status = 'in_progress'
+  else if (t.status === TodoStatus.COMPLETED)
+    status = 'completed'
+  return {
+    id: t.id || undefined,
+    content: t.content,
+    status,
+    activeForm: t.activeForm,
+    description: t.description || undefined,
+  }
 }
 
 /**
@@ -297,11 +327,6 @@ export function createChatStore() {
         setState('messageErrors', msg.id, msg.deliveryError)
       }
     }
-    // Extract todos from the last TodoWrite message in the loaded history.
-    const todos = findLatestTodos(messages)
-    if (todos) {
-      setState('todosByAgent', agentId, todos)
-    }
   }
 
   return {
@@ -450,13 +475,6 @@ export function createChatStore() {
         setState('messageErrors', message.id, message.deliveryError)
       }
 
-      // Track latest TodoWrite
-      const parsed = parsedFor(message)
-      const todos = extractTodos(message, parsed)
-      if (todos) {
-        setState('todosByAgent', agentId, todos)
-      }
-
       // Bump version so auto-scroll effects can detect notification updates
       // (which don't change messages.length).
       setState('messageVersion', agentId, (prev = 0) => prev + 1)
@@ -598,6 +616,23 @@ export function createChatStore() {
       setState('todosByAgent', agentId, [])
     },
 
+    /**
+     * Replace the agent's to-do list with the server-authoritative value
+     * delivered via AgentTodosChanged broadcasts or the initial cold-start
+     * ListAgentMessages response. Converts the proto-shape TodoItem to the
+     * store-shape in one place.
+     */
+    replaceTodos(agentId: string, protoTodos: ProtoTodoItem[]) {
+      const next = protoTodos.map(protoTodoToStore)
+      const prev = state.todosByAgent[agentId]
+      // KindDetail / no-op patches can re-broadcast a structurally
+      // identical list; skip the setState so reactive consumers
+      // (sidebar list, badges) don't re-run on identical content.
+      if (prev && shallowEqualArraysDeep(prev, next))
+        return
+      setState('todosByAgent', agentId, next)
+    },
+
     setLoading(loading: boolean) {
       setState('loading', loading)
     },
@@ -613,6 +648,14 @@ export function createChatStore() {
           limit: 50,
         })
         applyMessages(agentId, resp.messages, resp.hasMore)
+        // The server ships the authoritative to-do list on the
+        // cold-start page; subsequent live updates arrive via
+        // AgentTodosChanged broadcasts. An empty array is meaningful
+        // ("no todos") and overwrites; only an undefined field is
+        // left alone.
+        if (resp.todos !== undefined) {
+          this.replaceTodos(agentId, resp.todos)
+        }
       }
       finally {
         setState('fetchingOlder', agentId, false)
@@ -647,13 +690,6 @@ export function createChatStore() {
             return [...newMsgs, ...prev]
           })
           indexBySpanId(agentId, ...resp.messages)
-          // Extract todos from older messages if none found yet.
-          if (!state.todosByAgent[agentId] || state.todosByAgent[agentId].length === 0) {
-            const todos = findLatestTodos(resp.messages)
-            if (todos) {
-              setState('todosByAgent', agentId, todos)
-            }
-          }
         }
         setState('hasMoreOlder', agentId, resp.hasMore)
       }

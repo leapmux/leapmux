@@ -23,7 +23,6 @@ import (
 func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	// Mock a successful auto-start so the happy path is exercised without
 	// spawning a real subprocess.
@@ -82,7 +81,6 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, assert.AnError

@@ -285,6 +285,36 @@ message ListAgentMessagesRequest {
 message ListAgentMessagesResponse {
   repeated AgentChatMessage messages = 1;
   bool has_more = 2;
+  // Authoritative provider-agnostic to-do list at the time the response is
+  // served. Drives the sidebar without re-scanning message history; survives
+  // page reloads and cross-client opens via the worker's agent_todos table.
+  repeated TodoItem todos = 3;
+}
+
+// TodoItem is the provider-neutral to-do row used by the sidebar list and
+// inline TaskCreate/TaskUpdate/TaskList/TaskGet cards. Sources include
+// Claude TodoWrite/Task*, Codex turn/plan/updated, and ACP sessionUpdate=plan.
+message TodoItem {
+  string id = 1;          // Claude Task* taskId; empty for snapshot-only providers
+  string content = 2;     // Imperative title (e.g. "Run tests")
+  TodoStatus status = 3;
+  string active_form = 4; // Present-continuous label shown while in_progress
+  string description = 5; // Claude Task* description; empty elsewhere
+}
+
+enum TodoStatus {
+  TODO_STATUS_UNSPECIFIED = 0;
+  TODO_STATUS_PENDING = 1;
+  TODO_STATUS_IN_PROGRESS = 2;
+  TODO_STATUS_COMPLETED = 3;
+}
+
+// AgentTodosChanged is broadcast whenever a message mutates an agent's
+// to-do list (after persistence). Recipients should replace the agent's
+// list with todos verbatim — this event is authoritative.
+message AgentTodosChanged {
+  string agent_id = 1;
+  repeated TodoItem todos = 2;
 }
 
 // --- Control Request/Response ---

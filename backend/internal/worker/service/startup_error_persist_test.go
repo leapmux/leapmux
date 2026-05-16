@@ -105,7 +105,6 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 func TestOpenAgent_PersistsStartupErrorOnFailure(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("boom: forced start failure")
 	}
@@ -144,7 +143,6 @@ func TestOpenAgent_PersistsStartupErrorOnFailure(t *testing.T) {
 func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	agentID := "agent-clear-1"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -186,7 +184,6 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("doom")
 	}
@@ -229,7 +226,6 @@ func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing
 func TestSendAgentMessage_RejectedByPersistedStartupError(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	agentID := "agent-send-reject"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -261,7 +257,6 @@ func TestSendAgentMessage_RejectedByPersistedStartupError(t *testing.T) {
 // persisted DB column.
 func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("kaput")
 	}

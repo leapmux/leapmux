@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
 
 // Mock workerRpc for loadInitialMessages / loadOlderMessages / loadNewerMessages
@@ -636,90 +636,77 @@ describe('createChatStore', () => {
     })
   })
 
-  describe('todo extraction', () => {
+  describe('to-do list (server-authoritative)', () => {
+    // The chat store does not extract todos from message content — the
+    // worker persists every event in agent_todos and ships the current
+    // snapshot via ListAgentMessagesResponse.todos and the
+    // AgentTodosChanged broadcast. These tests cover the
+    // server-authoritative hydration path.
+
     const sampleTodos = [
-      { content: 'Write tests', status: 'completed', activeForm: 'Writing tests' },
-      { content: 'Deploy', status: 'in_progress', activeForm: 'Deploying' },
+      create(TodoItemSchema, { content: 'Write tests', status: TodoStatus.COMPLETED, activeForm: 'Writing tests' }),
+      create(TodoItemSchema, { content: 'Deploy', status: TodoStatus.IN_PROGRESS, activeForm: 'Deploying' }),
     ]
 
-    it('should extract todos from setMessages', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.setMessages('a1', [
-          makeMessage('m1', 1n),
-          makeTodoWriteMessage('m2', 2n, sampleTodos),
-          makeMessage('m3', 3n),
-        ])
-        expect(store.getTodos('a1')).toEqual(sampleTodos)
-        dispose()
-      })
-    })
-
-    it('should extract todos from addMessage', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.addMessage('a1', makeTodoWriteMessage('m1', 1n, sampleTodos))
-        expect(store.getTodos('a1')).toEqual(sampleTodos)
-        dispose()
-      })
-    })
-
-    it('should extract todos from loadInitialMessages', async () => {
+    it('hydrates todos from ListAgentMessagesResponse.todos on cold start', async () => {
       await createRoot(async (dispose) => {
         const store = createChatStore()
-        const messages = [
-          makeMessage('m1', 1n),
-          makeTodoWriteMessage('m2', 2n, sampleTodos),
-          makeMessage('m3', 3n),
-        ]
-        mockListAgentMessages.mockResolvedValueOnce({ messages, hasMore: false })
+        mockListAgentMessages.mockResolvedValueOnce({
+          messages: [makeMessage('m1', 1n)],
+          hasMore: false,
+          todos: sampleTodos,
+        })
 
         await store.loadInitialMessages('w1', 'a1')
-        expect(store.getTodos('a1')).toEqual(sampleTodos)
+        expect(store.getTodos('a1')).toEqual([
+          { id: undefined, content: 'Write tests', status: 'completed', activeForm: 'Writing tests', description: undefined },
+          { id: undefined, content: 'Deploy', status: 'in_progress', activeForm: 'Deploying', description: undefined },
+        ])
         dispose()
       })
     })
 
-    it('should extract todos from loadOlderMessages when none found yet', async () => {
+    it('treats an empty todos response as authoritative ("agent has none")', async () => {
       await createRoot(async (dispose) => {
         const store = createChatStore()
-        // Initial messages have no TodoWrite
-        store.setMessages('a1', [makeMessage('m10', 10n)], true)
+        mockListAgentMessages.mockResolvedValueOnce({
+          messages: [makeMessage('m1', 1n)],
+          hasMore: false,
+          todos: [],
+        })
+
+        await store.loadInitialMessages('w1', 'a1')
         expect(store.getTodos('a1')).toEqual([])
-
-        // Older messages contain a TodoWrite
-        const older = [makeTodoWriteMessage('m5', 5n, sampleTodos)]
-        mockListAgentMessages.mockResolvedValueOnce({ messages: older, hasMore: false })
-
-        await store.loadOlderMessages('w1', 'a1')
-        expect(store.getTodos('a1')).toEqual(sampleTodos)
         dispose()
       })
     })
 
-    it('should not overwrite existing todos from loadOlderMessages', async () => {
-      await createRoot(async (dispose) => {
-        const store = createChatStore()
-        const newerTodos = [{ content: 'New task', status: 'pending', activeForm: 'New' }]
-        // Initial messages have a TodoWrite
-        store.setMessages('a1', [makeTodoWriteMessage('m10', 10n, newerTodos)], true)
-        expect(store.getTodos('a1')).toEqual(newerTodos)
-
-        // Older messages also contain a TodoWrite — should NOT overwrite
-        const olderTodos = [{ content: 'Old task', status: 'completed', activeForm: 'Old' }]
-        const older = [makeTodoWriteMessage('m5', 5n, olderTodos)]
-        mockListAgentMessages.mockResolvedValueOnce({ messages: older, hasMore: false })
-
-        await store.loadOlderMessages('w1', 'a1')
-        expect(store.getTodos('a1')).toEqual(newerTodos)
-        dispose()
-      })
-    })
-
-    it('should return empty array for agent with no todos', () => {
+    it('addMessage does not mutate todos (broadcasts drive the list)', () => {
       createRoot((dispose) => {
         const store = createChatStore()
-        store.setMessages('a1', [makeMessage('m1', 1n)])
+        store.addMessage('a1', makeTodoWriteMessage('m1', 1n, [
+          { content: 'Write tests', status: 'completed', activeForm: 'Writing tests' },
+        ]))
+        expect(store.getTodos('a1')).toEqual([])
+        dispose()
+      })
+    })
+
+    it('replaceTodos applies the wire payload wholesale', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
+        store.replaceTodos('a1', sampleTodos)
+        expect(store.getTodos('a1')).toHaveLength(2)
+        // A subsequent broadcast wins, including a clear.
+        store.replaceTodos('a1', [])
+        expect(store.getTodos('a1')).toEqual([])
+        dispose()
+      })
+    })
+
+    it('returns empty array for an agent with no todos', () => {
+      createRoot((dispose) => {
+        const store = createChatStore()
         expect(store.getTodos('a1')).toEqual([])
         dispose()
       })

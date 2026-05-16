@@ -77,12 +77,12 @@ func setupAgentWithWatcher(t *testing.T, svc *Context, w *testResponseWriter, ag
 }
 
 func TestSnapshotPassthroughSpanLines_EmptyTracker(t *testing.T) {
-	h := NewOutputHandler(nil, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	assert.Equal(t, "[]", h.snapshotPassthroughSpanLines("agent-1"))
 }
 
 func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
-	h := NewOutputHandler(nil, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	h.spanTracker("agent-1").OpenSpan("span-A", "")
 
 	parsed := parseSpanLinesJSON(t, h.snapshotPassthroughSpanLines("agent-1"))
@@ -94,7 +94,7 @@ func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
 }
 
 func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
-	h := NewOutputHandler(nil, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	h.spanTracker("agent-1").OpenSpan("span-A", "")
 	h.spanTracker("agent-1").OpenSpan("span-B", "span-A")
 
@@ -109,7 +109,7 @@ func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
 }
 
 func TestSnapshotPassthroughSpanLines_PerAgentIsolation(t *testing.T) {
-	h := NewOutputHandler(nil, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	h.spanTracker("agent-1").OpenSpan("span-A", "")
 
 	// Other agents must see an empty snapshot — span trackers are per-agent.

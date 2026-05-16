@@ -87,7 +87,6 @@ func decodeAgentChatMessageContent(t *testing.T, msg *leapmuxv1.AgentChatMessage
 func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	// Mock a successful restart so we can validate the happy-path ordering
 	// without spawning a real agent process. context_cleared is only
@@ -154,7 +153,6 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	// Mock a successful restart so we exercise the happy path without
 	// spawning a real agent process.
@@ -232,7 +230,6 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-1",
@@ -286,7 +283,6 @@ func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing
 func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-codex",
@@ -338,7 +334,6 @@ func TestIsInterruptRequestRecognizesProviderFormats(t *testing.T) {
 func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-claude",

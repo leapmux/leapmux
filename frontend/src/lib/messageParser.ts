@@ -1,11 +1,10 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { TodoItem } from '~/stores/chat.store'
-import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { decompressContentToString } from '~/lib/decompress'
 import { isObject, pickFirstNumber, pickNumber } from '~/lib/jsonPick'
 import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
-import { normalizeTodoStatus, rawTodosToItems } from '~/stores/chat.store'
+import { normalizeTodoStatus } from '~/stores/chat.store'
 
 /**
  * Content-type discriminator emitted by the backend's `wrapNotifContent`
@@ -39,8 +38,8 @@ const EMPTY_PARSED: ParsedMessageContent = {
 // AgentChatMessage is immutable once persisted, so caching by message
 // reference avoids the repeated decompress + JSON.parse cost across
 // every caller of parseMessageContent (isAgentWorking scans, the
-// MessageBubble render path, findLatestTodos, etc.). The WeakMap lets
-// trimmed/replaced messages get GC'd without manual eviction.
+// MessageBubble render path, the to-do extractor, etc.). The WeakMap
+// lets trimmed/replaced messages get GC'd without manual eviction.
 const parseCache = new WeakMap<AgentChatMessage, ParsedMessageContent>()
 
 /**
@@ -151,54 +150,6 @@ export function codexPlanToTodos(plan: unknown[]): TodoItem[] {
       activeForm: step,
     }]
   })
-}
-
-/** Extract TodoWrite todos from a parsed assistant message. Returns null if not applicable. */
-export function extractTodos(message: AgentChatMessage, parsed: ParsedMessageContent): TodoItem[] | null {
-  // Source gate: a USER-side row may legitimately echo back an
-  // assistant-shape tool_use envelope (Claude tool_result chunks
-  // arrive with role:"user" on the wire). Treating those as todos
-  // would surface stale TodoWrite contents on the user side.
-  if (message.source !== MessageSource.AGENT)
-    return null
-  const parent = parsed.parentObject
-  if (!parent)
-    return null
-
-  if (parent.type === 'assistant') {
-    const msg = parent.message as Record<string, unknown> | undefined
-    const content = msg?.content
-    if (!Array.isArray(content))
-      return null
-    const toolUse = content.find(
-      (c: Record<string, unknown>) => typeof c === 'object' && c !== null && c.type === 'tool_use' && c.name === 'TodoWrite',
-    )
-    if (!toolUse?.input?.todos || !Array.isArray(toolUse.input.todos))
-      return null
-    return rawTodosToItems(toolUse.input.todos)
-  }
-
-  if (parent.method === 'turn/plan/updated') {
-    const params = parent.params as Record<string, unknown> | undefined
-    const plan = params?.plan
-    if (!Array.isArray(plan))
-      return null
-    const todos = codexPlanToTodos(plan)
-    return todos.length > 0 ? todos : null
-  }
-
-  return null
-}
-
-/** Scan messages backward for the latest TodoWrite, returning todos or null. */
-export function findLatestTodos(messages: AgentChatMessage[]): TodoItem[] | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const parsed = parseMessageContent(messages[i])
-    const todos = extractTodos(messages[i], parsed)
-    if (todos)
-      return todos
-  }
-  return null
 }
 
 /** Normalize a snake_case context_usage broadcast payload into AgentSessionInfo shape. */

@@ -33,6 +33,28 @@ func withCapturedStdout(t *testing.T, fn func()) []byte {
 	return buf.Bytes()
 }
 
+// clearRemoteEnv blanks every LEAPMUX_REMOTE_*_ID env var that
+// resolve.BindEntityFlags consults as a flag default, plus the related
+// LEAPMUX_HUB / LEAPMUX_REMOTE_TAB_TYPE pair. Without this, tests that
+// pin the "missing flag" code paths flake (and produce `resolve_failed`
+// instead of `invalid_request`) when run inside a worker-spawned
+// process that inherits these variables.
+func clearRemoteEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"LEAPMUX_HUB",
+		"LEAPMUX_REMOTE_TAB_ID",
+		"LEAPMUX_REMOTE_TAB_TYPE",
+		"LEAPMUX_REMOTE_WORKER_ID",
+		"LEAPMUX_REMOTE_WORKSPACE_ID",
+		"LEAPMUX_REMOTE_TILE_ID",
+		"LEAPMUX_REMOTE_ORG_ID",
+		"LEAPMUX_REMOTE_USER_ID",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 // TestRunVersion_NoHubPrintsCLIOnly is the happy-path case when no
 // `--hub` is provided: the envelope's data carries only the cli
 // fields, never a hub key.

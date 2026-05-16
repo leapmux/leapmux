@@ -12,6 +12,7 @@ import { ReadFileResultBody } from '../../../results/readFileResult'
 import { SearchResultBody } from '../../../results/searchResult'
 import { WebFetchResultBody } from '../../../results/webFetchResult'
 import { WebSearchResultsBody } from '../../../results/webSearchResults'
+import { TodoListMessage } from '../../../todoListMessage'
 import { ToolResultMessage } from '../../../toolRenderers'
 import { getAssistantContent, getMessageContentArray } from '../extractors/assistantContent'
 import { claudeBashFromToolResult } from '../extractors/bash'
@@ -20,6 +21,7 @@ import { claudeGlobFromToolResult, claudeGrepFromToolResult } from '../extractor
 import { claudeMcpFromToolResult, isClaudeMcpTool } from '../extractors/mcp'
 import { claudeReadFromToolResult } from '../extractors/read'
 import { claudeRemoteTriggerFromToolResult } from '../extractors/remoteTrigger'
+import { buildTaskCreateSource, buildTaskUpdateSource } from '../extractors/taskCard'
 import { claudeWebFetchFromToolResult } from '../extractors/webFetch'
 import { claudeWebSearchFromToolResult } from '../extractors/webSearch'
 import { AgentResultView } from './agent'
@@ -27,6 +29,7 @@ import { AskUserQuestionResultView } from './askUserQuestion'
 import { ExitPlanModeResultView } from './exitPlanMode'
 import { RemoteTriggerResultView } from './remoteTrigger'
 import { TaskOutputResultView } from './taskOutput'
+import { TaskGetResultView, TaskListResultView } from './taskTools'
 import { ToolSearchResultView } from './toolSearch'
 
 /** Extract tool name and input from a parsed tool_use message. */
@@ -167,6 +170,47 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
     if (!source)
       return null
     return <RemoteTriggerResultView source={source} context={ctx} />
+  },
+
+  // Claude TaskCreate result: re-render the single-row card now that
+  // the assigned task.id is known. The use-side renderer also tries
+  // to surface the id via context.toolResultParsed, so this is for the
+  // case where the result message is rendered standalone (e.g. when
+  // its tool_use has been trimmed from the window).
+  [CLAUDE_TOOL.TASK_CREATE]: (info, ctx) => {
+    if (!info.toolUseResult)
+      return null
+    return <TodoListMessage source={buildTaskCreateSource(info.toolInput, info.toolUseResult)} context={ctx} />
+  },
+
+  // Claude TaskUpdate result: re-render with the resolved status.
+  [CLAUDE_TOOL.TASK_UPDATE]: (info, ctx) => {
+    if (!info.toolUseResult)
+      return null
+    const source = buildTaskUpdateSource(info.toolInput, info.toolUseResult)
+    if (!source)
+      return null
+    return <TodoListMessage source={source} context={ctx} />
+  },
+
+  // Claude TaskList result: render the full snapshot as a TodoList.
+  [CLAUDE_TOOL.TASK_LIST]: (info, ctx) => {
+    if (!info.toolUseResult || !Array.isArray(info.toolUseResult.tasks))
+      return null
+    return <TaskListResultView tasks={info.toolUseResult.tasks} context={ctx} />
+  },
+
+  // Claude TaskGet result: render a single-row card with secondary
+  // detail lines (description, blockedBy, blocks).
+  [CLAUDE_TOOL.TASK_GET]: (info, ctx) => {
+    if (!info.toolUseResult || !isObject(info.toolUseResult.task))
+      return null
+    return (
+      <TaskGetResultView
+        task={info.toolUseResult.task as Record<string, unknown>}
+        context={ctx}
+      />
+    )
   },
 }
 

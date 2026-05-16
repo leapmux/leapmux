@@ -46,6 +46,10 @@ CREATE TABLE messages (
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, seq)
 );
+-- Covers the (agent_id, span_id, source, seq) lookup the to-do extractor
+-- uses to find a tool_result's paired tool_use, so SQLite serves the
+-- ORDER BY seq ASC LIMIT 1 from the index rather than re-sorting matches.
+CREATE INDEX idx_messages_span_id ON messages(agent_id, span_id, source, seq) WHERE span_id <> '';
 
 -- Pending control requests
 CREATE TABLE control_requests (
@@ -126,7 +130,29 @@ CREATE TABLE worker_file_tabs (
 );
 CREATE INDEX idx_worker_file_tabs_workspace ON worker_file_tabs(org_id, workspace_id);
 
+-- Provider-neutral to-do rows. Populated incrementally by the worker
+-- output handler in response to Claude TodoWrite/Task*, Codex
+-- turn/plan/updated, and ACP sessionUpdate=plan events so the sidebar
+-- survives page reloads and cross-machine opens. row_key is the
+-- task_id for Claude Task* (which addresses rows by id) and a synthetic
+-- "snap-<seq>" for snapshot-only providers; snapshot replacements
+-- delete-all-then-insert-all in a single transaction.
+CREATE TABLE agent_todos (
+    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    row_key     TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    task_id     TEXT NOT NULL DEFAULT '',
+    content     TEXT NOT NULL,
+    active_form TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL CHECK (status IN ('pending','in_progress','completed')),
+    updated_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (agent_id, row_key)
+);
+CREATE INDEX idx_agent_todos_seq ON agent_todos(agent_id, seq);
+
 -- +goose Down
+DROP TABLE IF EXISTS agent_todos;
 DROP TABLE IF EXISTS worker_file_tabs;
 DROP TABLE IF EXISTS terminals;
 DROP TABLE IF EXISTS worktree_tabs;

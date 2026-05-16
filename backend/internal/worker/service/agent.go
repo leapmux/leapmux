@@ -23,6 +23,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/leapmux/leapmux/util/validate"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -532,6 +533,19 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		afterSeq := r.GetAfterSeq()
 		beforeSeq := r.GetBeforeSeq()
 
+		// Only ship the to-do list on the initial "latest" page — scroll
+		// pagination requests don't need to re-fetch it (the client
+		// already has the authoritative snapshot from cold start and
+		// receives live mutations via AgentTodosChanged broadcasts).
+		var todoItems []todoevents.Item
+		if afterSeq == 0 && beforeSeq == 0 {
+			items, todoErr := svc.Output.LoadTodos(bgCtx(), agentID)
+			if todoErr != nil {
+				slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
+			}
+			todoItems = items
+		}
+
 		var dbMessages []db.Message
 		var queryErr error
 
@@ -584,6 +598,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{
 			Messages: protoMessages,
 			HasMore:  hasMore,
+			Todos:    todoevents.ItemsToProto(todoItems),
 		})
 	})
 

@@ -17,7 +17,6 @@ import (
 func TestSendAgentMessage_OneCharMinimum(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-1",
@@ -37,7 +36,6 @@ func TestSendAgentMessage_OneCharMinimum(t *testing.T) {
 func TestSendAgentMessage_EmptyTextRejectedWithoutAttachments(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-2",
@@ -58,7 +56,6 @@ func TestSendAgentMessage_EmptyTextRejectedWithoutAttachments(t *testing.T) {
 func TestSendAgentMessage_EmptyTextAllowedWithAttachments(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-3",
@@ -81,7 +78,6 @@ func TestSendAgentMessage_EmptyTextAllowedWithAttachments(t *testing.T) {
 func TestSendAgentMessage_AttachmentSizeLimitEnforced(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-4",
@@ -106,7 +102,6 @@ func TestSendAgentMessage_AttachmentSizeLimitEnforced(t *testing.T) {
 func TestSendAgentMessage_AttachmentMetadataPersistedInJSON(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-5",
@@ -161,7 +156,6 @@ func TestSendAgentMessage_AttachmentMetadataPersistedInJSON(t *testing.T) {
 func TestSendAgentMessage_TextOnlyNoAttachmentsFieldInJSON(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, "ws-1")
-	svc.Output = NewOutputHandler(svc.Queries, svc.Watchers, svc.Agents, nil)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-6",

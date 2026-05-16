@@ -7,6 +7,7 @@ import FilePen from 'lucide-solid/icons/file-pen'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import FolderSearch from 'lucide-solid/icons/folder-search'
 import Globe from 'lucide-solid/icons/globe'
+import ListChecks from 'lucide-solid/icons/list-checks'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import OctagonX from 'lucide-solid/icons/octagon-x'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
@@ -34,6 +35,10 @@ export function toolIconFor(name: string): LucideIcon {
     case CLAUDE_TOOL.WEB_FETCH: return Globe
     case CLAUDE_TOOL.WEB_SEARCH: return Globe
     case CLAUDE_TOOL.TODO_WRITE: return ListTodo
+    case CLAUDE_TOOL.TASK_CREATE: return ListTodo
+    case CLAUDE_TOOL.TASK_UPDATE: return ListTodo
+    case CLAUDE_TOOL.TASK_LIST: return ListTodo
+    case CLAUDE_TOOL.TASK_GET: return ListChecks
     case CLAUDE_TOOL.ENTER_PLAN_MODE: return TicketsPlane
     case CLAUDE_TOOL.EXIT_PLAN_MODE: return PlaneTakeoff
     case CLAUDE_TOOL.ASK_USER_QUESTION: return Vote

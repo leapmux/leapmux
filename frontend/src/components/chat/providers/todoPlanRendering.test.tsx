@@ -107,6 +107,43 @@ describe('claude TodoWrite renders via shared TodoListMessage', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Claude Code TaskCreate / TaskUpdate / TaskList / TaskGet (2.1.142+)
+// ---------------------------------------------------------------------------
+
+describe('claude TaskCreate renders a single-row card via TodoListMessage', () => {
+  it('renders the subject as the only row with pending status', () => {
+    const { container } = renderClaudeToolUse('TaskCreate', {
+      subject: 'Add proto messages',
+      description: 'Edit proto/agent.proto',
+      activeForm: 'Adding proto',
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Task created')
+    expect(text).toContain('Add proto messages')
+  })
+})
+
+describe('claude TaskUpdate renders a single-row card', () => {
+  it('renders the new status in the title (status-only patch)', () => {
+    const { container } = renderClaudeToolUse('TaskUpdate', {
+      taskId: '1',
+      status: 'in_progress',
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Task #1 updated')
+  })
+
+  it('renders the deleted sentinel when status=deleted', () => {
+    const { container } = renderClaudeToolUse('TaskUpdate', {
+      taskId: '5',
+      status: 'deleted',
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Task #5 deleted')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Codex turn/plan/updated
 // ---------------------------------------------------------------------------
 

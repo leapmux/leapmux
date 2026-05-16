@@ -77,7 +77,7 @@ func newPlanHandler(t *testing.T) (*OutputHandler, *db.Queries, string) {
 	t.Helper()
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
-	h := NewOutputHandler(queries, NewWatcherManager(), nil, nil)
+	h := NewOutputHandler(nil, queries, NewWatcherManager(), nil, nil)
 	h.DataDir = dataDir
 	h.now = func() time.Time { return time.Date(2026, time.April, 14, 9, 0, 0, 0, time.UTC) }
 	return h, queries, dataDir
