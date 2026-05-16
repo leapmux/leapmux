@@ -5,8 +5,7 @@
     "targets": ["msi"],
     "windows": {
       "wix": {
-        "fragmentPaths": ["windows/wix-peruser.wxs"],
-        "componentRefs": ["LeapmuxCliComponent"]
+        "template": "windows/main.wxs"
       }
     }
   }
