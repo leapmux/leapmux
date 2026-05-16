@@ -98,14 +98,51 @@ export function buildCloseTileOps(
   const sibKind = sibling?.kind?.value ?? NodeKind.LEAF
   if (sibKind !== NodeKind.LEAF)
     return ops
+
+  // The "natural" undo-split target is `parentId` — flip it to LEAF
+  // and migrate sibling's tabs onto it. But if `parentId` is itself
+  // already the only live child of an enclosing SPLIT, the projection
+  // will collapse that SPLIT too and re-key its rendered leaf to the
+  // ancestor's id. Migrating tabs to `parentId` then strands them on
+  // a node that doesn't appear in the rendered tree (tabs go on
+  // `parentId`, the rendered leaf advertises the ancestor's id, the
+  // renderer queries `tabs[ancestor]` and finds none).
+  //
+  // Walk upward to find the topmost SPLIT in the single-child chain
+  // and collapse the whole chain in one batch: tabs go to that
+  // ancestor, every intermediate SPLIT is tombstoned, and the
+  // topmost ancestor flips to LEAF. The walk terminates at any
+  // non-SPLIT, tombstoned, or multi-child ancestor — those don't
+  // collapse in projection so the rendered leaf would already match
+  // the migration destination there.
+  let destId = parentId
+  const intermediates: string[] = []
+  let curNode = parent
+  for (;;) {
+    const upId = curNode.parentId
+    if (upId === '')
+      break
+    const up = state.nodes[upId]
+    if (!up || up.kind?.value !== NodeKind.SPLIT || !hlcIsZero(up.tombstoneAt))
+      break
+    const upLive = (idx.get(upId) ?? []).map(n => n.nodeId)
+    if (upLive.length !== 1 || upLive[0] !== destId)
+      break
+    intermediates.push(destId)
+    destId = upId
+    curNode = up
+  }
+
   const sibTabs = liveTabsOnTile(state, siblingId)
   for (let i = 0; i < sibTabs.length; i++) {
     const t = sibTabs[i]
-    ops.push(setTabTileId(ctx, t.tabType, t.tabId, parentId))
+    ops.push(setTabTileId(ctx, t.tabType, t.tabId, destId))
     ops.push(setTabPosition(ctx, t.tabType, t.tabId, lexorankAt(i)))
   }
   ops.push(tombstoneNode(ctx, siblingId))
-  ops.push(setNodeKind(ctx, parentId, NodeKind.LEAF))
+  for (const id of intermediates)
+    ops.push(tombstoneNode(ctx, id))
+  ops.push(setNodeKind(ctx, destId, NodeKind.LEAF))
   return ops
 }
 

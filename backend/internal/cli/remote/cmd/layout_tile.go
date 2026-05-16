@@ -394,15 +394,67 @@ func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.OrgOp {
 	if sibKind != leapmuxv1.NodeKind_NODE_KIND_LEAF && sibKind != leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED {
 		return ops
 	}
+
+	// The "natural" undo-split target is parentID — flip it to LEAF
+	// and migrate the sibling's tabs there. But if parentID is itself
+	// already the only live child of an enclosing SPLIT, the
+	// projection's single-child collapse will re-key that SPLIT to
+	// the ancestor's id. Migrating tabs to parentID then strands them
+	// on a node that doesn't appear in the rendered tree (tabs sit
+	// on parentID, the rendered leaf advertises the ancestor's id,
+	// the renderer queries tabs[ancestor] and finds none).
+	//
+	// Walk upward to find the topmost SPLIT in the single-child chain
+	// and collapse the whole chain in one batch: tabs go to that
+	// ancestor, every intermediate SPLIT is tombstoned, and the
+	// topmost ancestor flips to LEAF. The walk terminates at any
+	// non-SPLIT, tombstoned, or multi-child ancestor — those don't
+	// collapse in projection so the rendered leaf would already match
+	// the migration destination there. Workspace / floating-window
+	// roots are safe targets for the kind flip (set-once root_node_id,
+	// but kind is a normal LWW register).
+	destID := parentID
+	intermediates := []string{}
+	curNode := parent
+	for {
+		upID := curNode.GetParentId()
+		if upID == "" {
+			break
+		}
+		up := state.GetNodes()[upID]
+		if up == nil || up.GetKind().GetValue() != leapmuxv1.NodeKind_NODE_KIND_SPLIT || !crdt.HLCIsZero(up.GetTombstoneAt()) {
+			break
+		}
+		upLive := make([]string, 0, 2)
+		for _, n := range state.GetNodes() {
+			if n.GetParentId() != upID {
+				continue
+			}
+			if !crdt.HLCIsZero(n.GetTombstoneAt()) {
+				continue
+			}
+			upLive = append(upLive, n.GetNodeId())
+		}
+		if len(upLive) != 1 || upLive[0] != destID {
+			break
+		}
+		intermediates = append(intermediates, destID)
+		destID = upID
+		curNode = up
+	}
+
 	sibTabs := crdt.TabsOnTile(state, siblingID)
 	sibPos := lexorank.First()
 	for _, t := range sibTabs {
-		ops = append(ops, opSetTabTileID(bs, t.TabType, t.TabID, parentID))
+		ops = append(ops, opSetTabTileID(bs, t.TabType, t.TabID, destID))
 		ops = append(ops, opSetTabPosition(bs, t.TabType, t.TabID, sibPos))
 		sibPos = lexorank.After(sibPos)
 	}
 	ops = append(ops, opTombstoneNode(bs, siblingID))
-	ops = append(ops, opSetNodeKind(bs, parentID, leapmuxv1.NodeKind_NODE_KIND_LEAF))
+	for _, id := range intermediates {
+		ops = append(ops, opTombstoneNode(bs, id))
+	}
+	ops = append(ops, opSetNodeKind(bs, destID, leapmuxv1.NodeKind_NODE_KIND_LEAF))
 	return ops
 }
 
