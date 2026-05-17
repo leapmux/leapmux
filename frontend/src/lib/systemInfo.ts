@@ -1,15 +1,9 @@
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
+import type { BuildInfo } from '~/lib/buildEnv'
 import { authClient } from '~/api/clients'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
+import { frontendBuildInfo } from '~/lib/buildEnv'
 import { formatLocalDateTime } from './dateFormat'
-
-export interface BuildInfo {
-  version: string
-  commitHash: string
-  commitTime: string
-  buildTime: string
-  branch: string
-}
 
 let soloMode = false
 let signupEnabled = false
@@ -19,14 +13,6 @@ let emailEnabled = false
 let loaded = false
 
 let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' }
-
-const frontendBuildInfo: BuildInfo = {
-  version: import.meta.env.LEAPMUX_VERSION || '',
-  commitHash: import.meta.env.LEAPMUX_COMMIT_HASH || '',
-  commitTime: import.meta.env.LEAPMUX_COMMIT_TIME || '',
-  buildTime: import.meta.env.LEAPMUX_BUILD_TIME || '',
-  branch: import.meta.env.LEAPMUX_BRANCH || '',
-}
 
 export async function loadSystemInfo(force = false): Promise<void> {
   if (loaded && !force)

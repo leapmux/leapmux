@@ -94,7 +94,7 @@ interface TileRendererOpts {
   }
   /** Shell chrome state and sidebar toggles. */
   chrome: {
-    isMobile: () => boolean
+    isMobileLayout: () => boolean
     toggleLeftSidebar: () => void
     toggleRightSidebar: () => void
   }
@@ -140,7 +140,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     setShowNewAgentDialog,
     setShowNewTerminalDialog,
   } = opts.newTab
-  const { isMobile, toggleLeftSidebar, toggleRightSidebar } = opts.chrome
+  const { isMobileLayout, toggleLeftSidebar, toggleRightSidebar } = opts.chrome
   const { focusEditorRef, getScrollStateRef, forceScrollToBottomRef } = opts.refs
   const { settingsLoading } = opts
   const floatingWindowStore = opts.floatingWindow?.store
@@ -460,11 +460,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
           newShellLoading: newShellLoading(),
           hasActiveTabContext: !!getCurrentTabContext().workerId,
         }}
-        mobile={{
-          isMobile: isMobile(),
-          onToggleLeftSidebar: toggleLeftSidebar,
-          onToggleRightSidebar: toggleRightSidebar,
-        }}
+        mobile={isMobileLayout()
+          ? {
+              onToggleLeftSidebar: toggleLeftSidebar,
+              onToggleRightSidebar: toggleRightSidebar,
+            }
+          : undefined}
         tileActions={liveActions()}
       />
     )

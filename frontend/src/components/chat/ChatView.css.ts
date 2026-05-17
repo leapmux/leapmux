@@ -1,5 +1,6 @@
 import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
+import { breakpoints } from '~/styles/tokens'
 
 export const editorResizeHandle = style({
   height: '4px',
@@ -157,7 +158,7 @@ export const settingsMenu = style({
 export const settingsMenuWide = style({
   'minWidth': '460px',
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       minWidth: 'auto',
     },
   },
@@ -168,7 +169,7 @@ export const settingsPanelColumns = style({
   'alignItems': 'flex-start',
   'gap': 'var(--space-4)',
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       flexDirection: 'column',
       gap: 'var(--space-1)',
     },

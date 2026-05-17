@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { breakpoints } from '~/styles/tokens'
 
 // Dialog container
 
@@ -9,7 +10,7 @@ export const standard = style({
   'display': 'flex',
   'flexDirection': 'column',
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       minWidth: 'unset',
       maxWidth: '100vw',
       width: '100vw',
@@ -114,7 +115,7 @@ export const topTwoColumn = style({
   'gridTemplateColumns': '1fr 1fr',
   'gap': 'var(--space-4)',
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       gridTemplateColumns: '1fr',
     },
   },
@@ -129,7 +130,7 @@ export const twoColumn = style({
   'flex': 1,
   'minHeight': 0,
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       gridTemplateColumns: '1fr',
     },
   },

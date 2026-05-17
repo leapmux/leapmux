@@ -78,7 +78,9 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
           <div class={styles.mobileTabBar}>
             {props.tabBarElement}
           </div>
-          {props.tileContent}
+          <div class={styles.mobileTilePaneSlot}>
+            {props.tileContent}
+          </div>
           {props.editorPanel}
         </div>
       </div>

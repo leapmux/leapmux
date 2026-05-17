@@ -30,8 +30,9 @@ import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
-import { useIsMobile } from '~/hooks/useIsMobile'
+import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
 import { useShortcuts } from '~/hooks/useShortcuts'
+import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { HLCClock, PendingOpsManager, projectWorkspaceTabs, setCRDTBridge } from '~/lib/crdt'
 import { hlcIsZero } from '~/lib/crdt/hlc'
@@ -190,8 +191,12 @@ export const AppShell: ParentComponent = (props) => {
   )
   setGetUserId(() => auth.user()?.id ?? '')
 
+  // Publish `--vvh` (visible viewport height in px) for mobile layout.
+  // No-op on desktop beyond a one-time write of window.innerHeight.
+  useVisualViewportInset()
+
   // Mobile layout state
-  const isMobile = useIsMobile()
+  const isMobileLayout = useIsMobileLayout()
   const {
     leftSidebarOpen,
     rightSidebarOpen,
@@ -911,7 +916,7 @@ export const AppShell: ParentComponent = (props) => {
       setShowNewTerminalDialog,
     },
     chrome: {
-      isMobile,
+      isMobileLayout,
       toggleLeftSidebar,
       toggleRightSidebar,
     },
@@ -938,7 +943,7 @@ export const AppShell: ParentComponent = (props) => {
     hasActiveWorkspace: () => activeWorkspace() !== null,
     toggleFloatingTab: handleToggleFloatingTab,
     toggleLeftSidebar: () => {
-      if (isMobile()) {
+      if (isMobileLayout()) {
         toggleLeftSidebar()
       }
       else {
@@ -1143,7 +1148,7 @@ export const AppShell: ParentComponent = (props) => {
   const WorkspaceShellLayer = () => (
     <GridPopoverHostProvider>
       <div style={{ '--mono-font-family': preferences.monoFontFamily(), '--ui-font-family': preferences.uiFontFamily(), 'position': 'relative', 'height': '100%', 'width': '100%' }}>
-        <Show when={!isMobile()} fallback={<MobileShellLayer />}>
+        <Show when={!isMobileLayout()} fallback={<MobileShellLayer />}>
           <DesktopShellLayer />
         </Show>
       </div>

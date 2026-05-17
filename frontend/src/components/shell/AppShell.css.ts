@@ -1,5 +1,6 @@
 import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
+import { breakpoints } from '~/styles/tokens'
 
 export const shell = style({
   height: '100%',
@@ -69,9 +70,20 @@ export const tilePaneHidden = style({
 })
 
 export const fullWindow = style({
-  height: '100%',
-  width: '100%',
-  overflow: 'auto',
+  'height': '100%',
+  'width': '100%',
+  'overflow': 'auto',
+  // Mobile only: when the AppShell falls back to rendering non-workspace
+  // routes (dashboard etc.) inside this wrapper, we must NOT let it
+  // become page-scrollable underneath any nested mobile UI. iOS Safari
+  // happily scrolls the outer container while a focused contenteditable
+  // is in the inner column, pushing the composer above the visible
+  // viewport. Locking the scroll here keeps the chosen layout in charge.
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      overflow: 'hidden',
+    },
+  },
 })
 
 export const placeholder = style({
@@ -131,41 +143,82 @@ export const mobileShell = style({
 export const mobileCenter = style({
   display: 'flex',
   flexDirection: 'column',
+  // Fill the body's *content* area (body now consumes safe-area insets
+  // via padding + border-box, so `100%` here = visible region inside
+  // the system bars). Previously this was `var(--vvh, 100dvh)` which
+  // double-counted the height and let the layout overshoot the bottom
+  // safe-area in standalone PWA mode. The body still holds the `--vvh`
+  // contract for keyboard-up shrinkage.
   height: '100%',
   width: '100%',
+  minHeight: 0,
   overflow: 'hidden',
 })
 
 export const mobileSidebar = style({
   position: 'fixed',
-  top: 0,
+  // Match body's `padding-top: env(safe-area-inset-top)` so the drawer
+  // starts below the system status bar / Dynamic Island. Body's
+  // `transform` makes body the containing block for fixed descendants
+  // (resolved against body's *padding-box*, which extends up under the
+  // status bar), so a literal `top: 0` would land the drawer's content
+  // over the system area on a notched iPhone in standalone PWA mode.
+  top: 'env(safe-area-inset-top)',
   bottom: 0,
   width: '80%',
   maxWidth: '320px',
   zIndex: 100,
   backgroundColor: 'var(--card)',
   transform: 'translateX(-100%)',
-  transition: 'transform 0.2s ease',
-  boxShadow: '2px 0 8px rgba(0, 0, 0, 0.3)',
+  transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+  // Box-shadow only applied while open — when the drawer is translated
+  // off-screen the residual 2px+8px shadow projects into the viewport
+  // edge and reads as a gray "gradient" along the left/right side of
+  // the screen. Gating it on the open state eliminates that artifact.
   overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
+  // Clip the drawer's outgoing box-shadow so it only escapes on the
+  // *side* facing the page, not above/below. Without this the shadow's
+  // 8px blur radius bleeds upward into the safe-area-top region (now
+  // visible as white html background above the drawer since the
+  // drawer's own `top: env(safe-area-inset-top)` leaves room there)
+  // and reads as an awkward gradient on the white. `inset(0 -16px 0 0)`
+  // = clip to the drawer's box vertically, plus 16px past the right
+  // edge for the side shadow. The right-side drawer overrides this
+  // below to mirror the inset on the opposite axis.
+  clipPath: 'inset(0 -16px 0 0)',
 })
 
 export const mobileSidebarRight = style({
   left: 'auto',
   right: 0,
   transform: 'translateX(100%)',
-  boxShadow: '-2px 0 8px rgba(0, 0, 0, 0.3)',
+  clipPath: 'inset(0 0 0 -16px)',
 })
 
 export const mobileSidebarOpen = style({
   transform: 'translateX(0)',
+  // Box-shadow on the drawer's exposed edge while open. The side is
+  // discriminated by the sibling `mobileSidebarRight` class so the two
+  // shadow rules live together instead of being split across a base
+  // style + a globalStyle override.
+  selectors: {
+    [`&:not(.${mobileSidebarRight})`]: {
+      boxShadow: '2px 0 8px rgba(0, 0, 0, 0.3)',
+    },
+    [`&.${mobileSidebarRight}`]: {
+      boxShadow: '-2px 0 8px rgba(0, 0, 0, 0.3)',
+    },
+  },
 })
 
 export const mobileOverlay = style({
   position: 'fixed',
-  top: 0,
+  // Keep the dim out of the system status bar / Dynamic Island area —
+  // dimming over the status bar reads as a glass tint on the iOS chrome
+  // and feels wrong. Matches the drawer's own safe-area-inset-top.
+  top: 'env(safe-area-inset-top)',
   left: 0,
   right: 0,
   bottom: 0,
@@ -176,6 +229,19 @@ export const mobileOverlay = style({
 export const mobileTabBar = style({
   position: 'relative',
   zIndex: 100,
+})
+
+// Positioning + flex slot for the absolutely-positioned tilePane fragment
+// returned by `renderTileContent`. Without this wrapper the tilePanes fall
+// out of flow (`position: absolute; inset: 0`) and only the tab bar +
+// composer end up in mobileCenter's flex flow — collapsing the composer
+// up against the tab bar at the top of the viewport. Mirrors the desktop
+// `tileContent` style at `Tile.css.ts`.
+export const mobileTilePaneSlot = style({
+  flex: 1,
+  minHeight: 0,
+  position: 'relative',
+  overflow: 'hidden',
 })
 
 // --- End mobile layout styles ---

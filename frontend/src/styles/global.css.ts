@@ -14,6 +14,7 @@
 //   --z-{dropdown,modal}
 
 import { globalFontFace, globalStyle } from '@vanilla-extract/css'
+import { breakpoints } from '~/styles/tokens'
 
 globalFontFace('Hack NF', {
   src: 'url("/fonts/HackNerdFont-3.003-Regular.woff2") format("woff2")',
@@ -47,6 +48,78 @@ globalStyle('html, body, #app', {
   height: '100%',
   width: '100%',
   overflow: 'hidden',
+})
+
+// iOS Safari viewport lock.
+//
+//  1. `position: fixed` + `height: 100dvh` ties the body to the dynamic
+//     visible viewport. `dvh` tracks iOS 16.4+ keyboard-up shrinkage on
+//     its own, so we don't drive body height from JS.
+//  2. `padding-top: env(safe-area-inset-top)` keeps content out from
+//     under the system status bar in standalone PWA mode. No bottom
+//     padding — the composer sits flush with the screen bottom and the
+//     home indicator overlays it translucently (KakaoTalk-style).
+//  3. `transform: translateY(calc(-1 * var(--vv-offset, 0px)))` cancels
+//     the residual `visualViewport.offsetTop` that iOS 26 WebKit leaves
+//     non-zero after keyboard dismiss (FB19889436). `window.scrollTo(0,0)`
+//     can't fix this — body is `overflow: hidden`, there's nothing to
+//     scroll. The hook only sets `--vv-offset` while the keyboard is
+//     *down*; during keyboard-up iOS' own visual-viewport translate
+//     brings the composer into view and a counter-translate would
+//     double-shift.
+//
+// Note: the body's `transform` makes body the containing block for
+// descendant `position: fixed` elements. Native HTML `popover` API
+// consumers (DropdownMenu, Tooltip, GridSizePopover, LinkPopover)
+// escape via the top layer. The one non-top-layered fixed consumer is
+// `SelectionQuotePopover`, which counter-translates by
+// `var(--vv-offset, 0px)` to stay viewport-relative.
+globalStyle('body', {
+  position: 'fixed',
+  top: 0,
+  left: 0,
+  width: '100%',
+  height: '100dvh',
+  paddingTop: 'env(safe-area-inset-top)',
+  // NO padding-bottom: keep KakaoTalk-style intrusion (composer flush
+  // with screen bottom, home-indicator translucently overlaying it).
+  boxSizing: 'border-box',
+  // iOS-26 mitigation: cancel any residual visualViewport.offsetTop the
+  // OS leaves non-zero after keyboard dismiss. Default 0 on every other
+  // platform; the hook only sets it when it's actually non-zero.
+  transform: 'translateY(calc(-1 * var(--vv-offset, 0px)))',
+  willChange: 'transform',
+})
+
+// Kill iOS Safari's rubber-band overscroll on the page itself.
+// `overscroll-behavior` alone isn't enough on iOS WebKit — the bounce
+// is dispatched below that layer. `touch-action: none` on html+body
+// refuses the pan gesture entirely at the page level; inner scroll
+// regions opt back in (e.g. messageList → `pan-y`).
+globalStyle('html, body', {
+  overscrollBehavior: 'none',
+  touchAction: 'none',
+})
+
+// Mobile form-control font-size floor. iOS Safari (browser + standalone
+// PWA) auto-zooms when focusing an `<input>` / `<textarea>` / `<select>`
+// whose computed font-size is < 16px. The zoom is NOT undone on blur
+// and persists across in-app navigations (e.g. after submitting the
+// login form), leaving the user on the next screen at ~1.15x scale with
+// no easy way back. Anchoring form-control font-size at 16px on mobile
+// is the standard suppression and does not affect desktop styling or
+// disable user pinch-zoom.
+globalStyle('input, textarea, select', {
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      // iOS auto-zoom threshold; must be >= 16 CSS px. Hard-coded
+      // because this is a WebKit-imposed value, not a design choice —
+      // `rem` would scale with the user's root font-size and could fall
+      // below the threshold, and Oat's `--text-*` tokens track design
+      // intent for body text, which is a different concern.
+      fontSize: '16px',
+    },
+  },
 })
 
 // LeapMux color scheme overrides (light theme)

@@ -91,7 +91,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string) {
         setShowNewTerminalDialog: () => {},
       },
       chrome: {
-        isMobile: () => false,
+        isMobileLayout: () => false,
         toggleLeftSidebar: () => {},
         toggleRightSidebar: () => {},
       },

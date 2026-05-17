@@ -1,12 +1,20 @@
 import { createHandler, StartServer } from '@solidjs/start/server'
+import { frontendBuildInfo } from '~/lib/buildEnv'
 
 export default createHandler(() => (
   <StartServer
     document={({ assets, children, scripts }) => (
-      <html lang="en">
+      <html
+        lang="en"
+        data-version={frontendBuildInfo.version || undefined}
+        data-commit-hash={frontendBuildInfo.commitHash || undefined}
+        data-commit-time={frontendBuildInfo.commitTime || undefined}
+        data-build-time={frontendBuildInfo.buildTime || undefined}
+        data-branch={frontendBuildInfo.branch || undefined}
+      >
         <head>
           <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
           <link rel="icon" href="/icons/leapmux-icon.ico" sizes="48x48" />
           <link rel="icon" href="/icons/leapmux-icon.svg" type="image/svg+xml" />
           <link rel="manifest" href="/manifest.webmanifest" />

@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { breakpoints } from '~/styles/tokens'
 
 // Bump the minimum dialog width so the footer row (Cancel / Send email /
 // Copy command) stays on a single line. The default 360px wraps the third
@@ -7,7 +8,7 @@ import { style } from '@vanilla-extract/css'
 export const dialog = style({
   'minWidth': '560px',
   '@media': {
-    '(max-width: 639px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       minWidth: 'unset',
     },
   },

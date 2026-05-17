@@ -1,5 +1,5 @@
+import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
-import type { BuildInfo } from '~/lib/systemInfo'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'

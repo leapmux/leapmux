@@ -89,9 +89,12 @@ interface TabBarNewTabProps {
   hasActiveTabContext?: boolean
 }
 
-/** Mobile sidebar toggles rendered in the tab bar header. */
+/**
+ * Mobile sidebar toggles rendered in the tab bar header. The presence
+ * of the prop bundle itself signals "we're in mobile-layout mode" —
+ * pass `undefined` (or omit) on desktop.
+ */
 interface TabBarMobileProps {
-  isMobile: boolean
   onToggleLeftSidebar?: () => void
   onToggleRightSidebar?: () => void
 }
@@ -375,7 +378,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
 
   return (
     <div class={styles.tabBar} data-testid="tab-bar">
-      <Show when={props.mobile?.isMobile}>
+      <Show when={props.mobile}>
         <IconButton
           icon={Menu}
           iconSize="lg"
@@ -544,7 +547,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           </DropdownMenu>
         </div>
       </Show>
-      <Show when={props.mobile?.isMobile}>
+      <Show when={props.mobile}>
         <IconButton
           icon={PanelRight}
           iconSize="lg"
