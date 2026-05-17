@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { createSectionStore } from '~/stores/section.store'
-import { createSignal, Show } from 'solid-js'
+import { createSignal } from 'solid-js'
 import * as styles from './AppShell.css'
 import { SectionDragProvider } from './SectionDragContext'
 
@@ -56,9 +56,11 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
       onMoveSectionServer={props.onMoveSectionServer}
     >
       <div class={styles.mobileShell}>
-        <Show when={props.leftSidebarOpen || props.rightSidebarOpen}>
-          <div class={styles.mobileOverlay} onClick={() => props.closeAllSidebars()} />
-        </Show>
+        <div
+          class={styles.mobileOverlay}
+          classList={{ [styles.mobileOverlayOpen]: props.leftSidebarOpen || props.rightSidebarOpen }}
+          onClick={() => props.closeAllSidebars()}
+        />
 
         <div
           class={styles.mobileSidebar}

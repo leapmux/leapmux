@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
-import { breakpoints } from '~/styles/tokens'
+import { breakpoints, motion } from '~/styles/tokens'
 
 export const shell = style({
   height: '100%',
@@ -170,7 +170,7 @@ export const mobileSidebar = style({
   zIndex: 100,
   backgroundColor: 'var(--card)',
   transform: 'translateX(-100%)',
-  transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+  transition: `transform ${motion.medium}ms ease, box-shadow ${motion.medium}ms ease`,
   // Box-shadow only applied while open — when the drawer is translated
   // off-screen the residual 2px+8px shadow projects into the viewport
   // edge and reads as a gray "gradient" along the left/right side of
@@ -213,17 +213,34 @@ export const mobileSidebarOpen = style({
   },
 })
 
+// Rendered unconditionally; opacity + pointer-events flip via
+// `mobileOverlayOpen` so the dim fades in *and* out alongside the
+// drawer's own 200ms transform slide. Mounting on demand via `<Show>`
+// would skip the fade entirely.
 export const mobileOverlay = style({
-  position: 'fixed',
+  'position': 'fixed',
   // Keep the dim out of the system status bar / Dynamic Island area —
   // dimming over the status bar reads as a glass tint on the iOS chrome
   // and feels wrong. Matches the drawer's own safe-area-inset-top.
-  top: 'env(safe-area-inset-top)',
-  left: 0,
-  right: 0,
-  bottom: 0,
-  backgroundColor: 'rgba(0, 0, 0, 0.4)',
-  zIndex: 99,
+  'top': 'env(safe-area-inset-top)',
+  'left': 0,
+  'right': 0,
+  'bottom': 0,
+  'backgroundColor': 'rgba(0, 0, 0, 0.4)',
+  'zIndex': 99,
+  'opacity': 0,
+  'pointerEvents': 'none',
+  'transition': `opacity ${motion.medium}ms ease`,
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
+})
+
+export const mobileOverlayOpen = style({
+  opacity: 1,
+  pointerEvents: 'auto',
 })
 
 export const mobileTabBar = style({

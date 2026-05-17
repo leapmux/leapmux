@@ -15,6 +15,17 @@ export const iconSize = {
 export const headerHeightPx = 34
 export const headerHeight = `${headerHeightPx}px`
 
+// Motion durations in milliseconds. Use `motion.X` in JS (timers,
+// tests) and `${motion.X}ms` in vanilla-extract CSS template strings,
+// so the JS timeout and the CSS animation can never drift apart.
+//
+//   fast    — popover / dialog fade, small chrome animations.
+//   medium  — drawer slide, overlay fade, panel resize.
+export const motion = {
+  fast: 150,
+  medium: 200,
+}
+
 // Min-width thresholds in CSS pixels, matching Tailwind's defaults.
 // Use the complement (`${breakpoints.sm - 1}px`) inside `max-width`
 // queries — vanilla-extract evaluates the template at build time so

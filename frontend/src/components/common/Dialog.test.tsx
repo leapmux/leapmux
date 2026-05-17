@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import { render } from '@solidjs/testing-library'
+import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal, Show } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { Dialog } from './Dialog'
@@ -69,7 +69,7 @@ describe('dialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('closes on Escape when not busy', () => {
+  it('closes on Escape when not busy', async () => {
     const onClose = vi.fn()
     const { container } = render(() => (
       <Dialog title="Test" onClose={onClose}>
@@ -79,10 +79,12 @@ describe('dialog', () => {
 
     const dialog = container.querySelector('dialog')!
     dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    expect(onClose).toHaveBeenCalled()
+    // User-initiated close paths run an exit animation before calling
+    // `onClose` (see `Dialog.tsx`'s `beginClose`); poll until it fires.
+    await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
-  it('closes on backdrop click when not busy', () => {
+  it('closes on backdrop click when not busy', async () => {
     const onClose = vi.fn()
     const { container } = render(() => (
       <Dialog title="Test" onClose={onClose}>
@@ -96,7 +98,7 @@ describe('dialog', () => {
     // Simulate a full press+release on the backdrop (target is dialog, coordinates outside content).
     dialog.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }))
     dialog.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 10, clientY: 10 }))
-    expect(onClose).toHaveBeenCalled()
+    await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
   it('does not close on backdrop click when busy', () => {

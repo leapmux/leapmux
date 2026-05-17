@@ -1,5 +1,5 @@
-import { globalStyle, style } from '@vanilla-extract/css'
-import { breakpoints } from '~/styles/tokens'
+import { globalStyle, keyframes, style } from '@vanilla-extract/css'
+import { breakpoints, motion } from '~/styles/tokens'
 
 // Dialog container
 
@@ -16,6 +16,96 @@ export const standard = style({
       width: '100vw',
     },
   },
+})
+
+// The dialog enters the top layer the instant `[open]` is set, with
+// no prior state to transition from -- the modern fix is
+// `@starting-style` + `transition-behavior: allow-discrete`, but
+// vanilla-extract's at-rule registry only knows `@media`, `@supports`,
+// `@container`, and `@layer`, so there is no clean way to emit
+// `@starting-style { ... }` rules from `.css.ts` files. Open is
+// driven by `@keyframes` keyed off the `[open]` selector (the
+// animation property is added to a matching element, the animation
+// fires from frame 0). Close is orchestrated in `Dialog.tsx`: a
+// `closing` marker class triggers an exit keyframe and the actual
+// `dialogRef.close()` is deferred until the animation has finished
+// playing -- without that orchestration the UA would yank the dialog
+// out of the top layer synchronously and the exit keyframe would
+// never run.
+// Pure opacity fade -- no translate. A centered dialog has no natural
+// origin direction; a slide reads as positional imprecision rather
+// than intentional motion, especially against the fixed `wide`/`tall`
+// dimensions that lock the dialog's box.
+const dialogEnter = keyframes({
+  from: { opacity: 0 },
+  to: { opacity: 1 },
+})
+
+const dialogExit = keyframes({
+  from: { opacity: 1 },
+  to: { opacity: 0 },
+})
+
+const backdropEnter = keyframes({
+  from: { backgroundColor: 'rgba(0, 0, 0, 0)' },
+  to: { backgroundColor: 'rgba(0, 0, 0, 0.4)' },
+})
+
+const backdropExit = keyframes({
+  from: { backgroundColor: 'rgba(0, 0, 0, 0.4)' },
+  to: { backgroundColor: 'rgba(0, 0, 0, 0)' },
+})
+
+// Re-impose `display: none` when the dialog is not in the top layer.
+// `.standard`'s `display: flex` author rule beats the UA's
+// `dialog:not([open]) { display: none }`, so without this rule the
+// dialog briefly paints in normal flow between component mount and
+// the `showModal()` call inside `onMount` -- visible as a flash at
+// the top-left of the page on dialogs whose initial content varies
+// in size (e.g. anything carrying `AgentProviderSelector`).
+globalStyle(`.${standard}:not([open])`, {
+  display: 'none',
+})
+
+// Marker class applied by `Dialog.tsx` for the brief window between
+// the user initiating a close and the actual `dialogRef.close()`
+// call. The exit keyframes run during this window.
+export const closing = style({})
+
+// `prefers-reduced-motion: reduce` override spread into each animated
+// rule below so the four sites don't each redeclare the same nested
+// media block.
+const animationOff = {
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      animation: 'none',
+    },
+  },
+}
+
+// `animation-fill-mode: both` closes the one-frame window where the
+// element could paint at its non-animation state (opacity: 1) before
+// the keyframe animation's `from` (opacity: 0) takes effect. Without
+// it the dialog briefly flashes at full opacity before fading in.
+globalStyle(`.${standard}[open]`, {
+  animation: `${dialogEnter} ${motion.fast}ms ease-out both`,
+  ...animationOff,
+})
+
+globalStyle(`.${standard}.${closing}[open]`, {
+  animation: `${dialogExit} ${motion.fast}ms ease-in both`,
+  ...animationOff,
+})
+
+globalStyle(`.${standard}::backdrop`, {
+  backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  animation: `${backdropEnter} ${motion.fast}ms ease-out both`,
+  ...animationOff,
+})
+
+globalStyle(`.${standard}.${closing}[open]::backdrop`, {
+  animation: `${backdropExit} ${motion.fast}ms ease-in both`,
+  ...animationOff,
 })
 
 export const wide = style({

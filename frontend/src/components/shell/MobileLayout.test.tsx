@@ -61,9 +61,11 @@ describe('mobileLayout', () => {
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
   })
 
-  it('does not render the overlay when both sidebars are closed', () => {
+  it('overlay is rendered but not active when both sidebars are closed', () => {
     const { container } = renderMobile({})
-    expect(container.querySelector(`.${styles.mobileOverlay}`)).toBeNull()
+    const overlay = container.querySelector(`.${styles.mobileOverlay}`)
+    expect(overlay).not.toBeNull()
+    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(false)
   })
 
   it('applies the open class to the left sidebar when leftSidebarOpen is true', () => {
@@ -84,7 +86,7 @@ describe('mobileLayout', () => {
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(true)
   })
 
-  it('renders the overlay when either sidebar is open and removes it when both close', () => {
+  it('toggles the overlay-open class when either sidebar opens or both close', () => {
     const [leftOpen, setLeftOpen] = createSignal(true)
     const [rightOpen, setRightOpen] = createSignal(false)
     const { container } = render(() => (
@@ -103,15 +105,17 @@ describe('mobileLayout', () => {
       />
     ))
 
-    expect(container.querySelector(`.${styles.mobileOverlay}`)).not.toBeNull()
+    const overlay = container.querySelector(`.${styles.mobileOverlay}`)
+    expect(overlay).not.toBeNull()
+    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(true)
 
     setLeftOpen(false)
     setRightOpen(true)
-    expect(container.querySelector(`.${styles.mobileOverlay}`)).not.toBeNull()
+    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(true)
 
     setLeftOpen(false)
     setRightOpen(false)
-    expect(container.querySelector(`.${styles.mobileOverlay}`)).toBeNull()
+    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(false)
   })
 
   it('invokes closeAllSidebars when the overlay is clicked', () => {

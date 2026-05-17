@@ -1,6 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import X from 'lucide-solid/icons/x'
-import { onCleanup, onMount } from 'solid-js'
+import { createSignal, onCleanup, onMount } from 'solid-js'
+import { motion } from '~/styles/tokens'
 import * as styles from './Dialog.css'
 import { IconButton, IconButtonState } from './IconButton'
 
@@ -15,22 +16,46 @@ interface DialogProps {
   'children': JSX.Element
 }
 
+// The modern way to bind the close animation to `dialogRef.close()`
+// would be `@starting-style` + `transition-behavior: allow-discrete`,
+// but vanilla-extract's at-rule registry doesn't expose
+// `@starting-style`, so we orchestrate manually here. `motion.fast`
+// is the same constant the keyframes in `Dialog.css.ts` consume.
+
 export const Dialog: Component<DialogProps> = (props) => {
   let dialogRef!: HTMLDialogElement
   let bodyRef!: HTMLDivElement
   let unmounting = false
   let pointerDownOnBackdrop = false
+  let closeTimer: ReturnType<typeof setTimeout> | undefined
+  const [closing, setClosing] = createSignal(false)
 
   const isOutsideDialogRect = (clientX: number, clientY: number) => {
     const rect = dialogRef.getBoundingClientRect()
     return clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom
   }
 
+  // Begin the close animation; after `motion.fast`, call
+  // `props.onClose()` so the parent unmounts us. The dialog stays in
+  // the top layer during the animation -- the actual `close()` only
+  // happens later, inside `onCleanup`, which is also where programmatic
+  // / external close paths land (form submit success, route navigation,
+  // etc.) so those paths are instant by design.
+  const beginClose = () => {
+    if (closing() || props.busy)
+      return
+    setClosing(true)
+    closeTimer = setTimeout(() => {
+      closeTimer = undefined
+      if (!unmounting)
+        props.onClose()
+    }, motion.fast)
+  }
+
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
       e.preventDefault()
-      if (!props.busy)
-        dialogRef.close()
+      beginClose()
       return
     }
     if (
@@ -62,6 +87,8 @@ export const Dialog: Component<DialogProps> = (props) => {
   })
   onCleanup(() => {
     unmounting = true
+    if (closeTimer)
+      clearTimeout(closeTimer)
     dialogRef.removeEventListener('keydown', handleKeyDown)
     if (dialogRef.open) {
       dialogRef.close()
@@ -72,6 +99,7 @@ export const Dialog: Component<DialogProps> = (props) => {
     <dialog
       ref={dialogRef}
       class={`${styles.standard}${props.tall ? ` ${styles.tall}` : ''}${props.wide ? ` ${styles.wide}` : ''}${props.class ? ` ${props.class}` : ''}`}
+      classList={{ [styles.closing]: closing() }}
       data-testid={props['data-testid']}
       data-busy={props.busy ? '' : undefined}
       aria-label={props.title}
@@ -89,7 +117,7 @@ export const Dialog: Component<DialogProps> = (props) => {
         const startedOnBackdrop = pointerDownOnBackdrop
         pointerDownOnBackdrop = false
         if (startedOnBackdrop && e.target === dialogRef && !props.busy && isOutsideDialogRect(e.clientX, e.clientY)) {
-          dialogRef.close()
+          beginClose()
         }
       }}
       onClose={() => {
@@ -104,10 +132,7 @@ export const Dialog: Component<DialogProps> = (props) => {
           size="sm"
           class={styles.closeButton}
           state={props.busy ? IconButtonState.Disabled : undefined}
-          onClick={() => {
-            if (!props.busy)
-              props.onClose()
-          }}
+          onClick={() => beginClose()}
           aria-label="Close"
         />
       </header>
