@@ -140,10 +140,8 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		startupCtx, cancel := context.WithCancel(context.Background())
 		svc.AgentStartup.begin(agentID, cancel)
 
-		var remoteEnvs []string
-		var remoteCleanup func()
-		if svc.RemoteIPC != nil {
-			envs, cleanup, ipErr := svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
+		remoteEnvs := svc.spawnRemoteIPC("agent", agentID, "", svc.registerAgentCleanup, func() ([]string, func(), error) {
+			return svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
 				UserID:        userID,
 				OrgID:         r.GetOrgId(),
 				WorkspaceID:   r.GetWorkspaceId(),
@@ -152,17 +150,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				WorkingDir:    plan.PlannedWorkingDir,
 				AgentProvider: agentlabels.CLIAlias(agentProvider),
 			})
-			if ipErr != nil {
-				slog.Warn("remote IPC factory failed; agent will start without remote control", "agent_id", agentID, "error", ipErr)
-			} else {
-				remoteEnvs = envs
-				remoteCleanup = cleanup
-			}
-		}
-		// Track the cleanup so we can fire it on agent close.
-		if remoteCleanup != nil {
-			svc.registerAgentCleanup(agentID, remoteCleanup)
-		}
+		})
 
 		agentOpts := agent.Options{
 			AgentID:         agentID,

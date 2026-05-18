@@ -11,6 +11,7 @@ import { GitOptions } from '~/components/shell/GitOptions'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createWorkerDialogState } from '~/hooks/createWorkerDialogState'
+import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
 import { spinner } from '~/styles/animations.css'
 import { errorText } from '~/styles/shared.css'
 
@@ -72,8 +73,8 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       const resp = await workerRpc.openTerminal(state.workerId(), {
         orgId: state.org.orgId(),
         workspaceId: props.workspaceId,
-        cols: 80,
-        rows: 25,
+        cols: DEFAULT_TERMINAL_COLS,
+        rows: DEFAULT_TERMINAL_ROWS,
         workingDir: state.workingDir(),
         shell: shell(),
         workerId: state.workerId(),

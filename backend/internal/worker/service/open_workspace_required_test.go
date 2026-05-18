@@ -10,7 +10,7 @@ import (
 )
 
 func TestOpenAgent_RejectsMissingWorkspaceID(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-1")
+	_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkingDir: t.TempDir(),
@@ -23,7 +23,7 @@ func TestOpenAgent_RejectsMissingWorkspaceID(t *testing.T) {
 }
 
 func TestOpenTerminal_RejectsMissingWorkspaceID(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-1")
+	_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
@@ -36,7 +36,7 @@ func TestOpenTerminal_RejectsMissingWorkspaceID(t *testing.T) {
 }
 
 func TestOpenAgent_RejectsInaccessibleWorkspaceID(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-1")
+	_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
 		WorkspaceId: "ws-other",
@@ -50,7 +50,7 @@ func TestOpenAgent_RejectsInaccessibleWorkspaceID(t *testing.T) {
 }
 
 func TestOpenTerminal_RejectsInaccessibleWorkspaceID(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-1")
+	_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
 		WorkspaceId: "ws-other",

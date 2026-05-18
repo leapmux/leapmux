@@ -42,7 +42,7 @@ func collectTerminalData(t *testing.T, w *testResponseWriter, terminalID string)
 // has, which manifests as duplicated prompt output in the live UI.
 func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, "ws-1")
+	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
 	startTestTerminal(t, svc, ctx, "t-resub", "ws-1")
 
 	require.NoError(t, svc.Terminals.SendInput("t-resub", []byte("echo resubscribe_test"+testutil.TestShellEnter())))
@@ -53,7 +53,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 
 	// First subscribe: after_offset=0 delivers a cold-catch-up event with
 	// the current screen contents.
-	w1 := &testResponseWriter{channelID: "test-ch"}
+	w1 := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: 0}},
 	}, w1)
@@ -77,7 +77,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 	_, currentOffset, _ := svc.Terminals.ScreenSnapshotSince("t-resub", 0)
 	require.Greater(t, currentOffset, int64(0))
 
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: currentOffset}},
 	}, w2)
@@ -101,7 +101,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 // and can't collide with the markers we assert on.
 func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, "ws-1")
+	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
 	startTestTerminal(t, svc, ctx, "t-delta", "ws-1")
 
 	firstMarker := []byte("FIRST_CHUNK_MARKER_BYTES\r\n")
@@ -115,7 +115,7 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 
 	// Resubscribe at firstOffset. Must receive an incremental delta with
 	// is_snapshot=false containing only the new bytes.
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-delta", AfterOffset: firstOffset}},
 	}, w2)
@@ -146,11 +146,11 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 // program repaints.
 func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, "ws-1")
+	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
 	startTestTerminal(t, svc, ctx, "t-altrecover", "ws-1")
 	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrecover")
 
-	w := &testResponseWriter{channelID: "test-ch"}
+	w := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-altrecover", AfterOffset: 0}},
 	}, w)
@@ -206,7 +206,7 @@ func injectAltScreenAndFlushPastRing(t *testing.T, svc *Context, terminalID stri
 // branch of SnapshotSince in the WatchEvents handler.
 func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, "ws-1")
+	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
 	startTestTerminal(t, svc, ctx, "t-wrap", "ws-1")
 
 	// Inject >100KB synthetic output directly so we don't have to wait on
@@ -224,7 +224,7 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 
 	// Cold subscribe — after_offset=0 is now well below the retained
 	// window.
-	w := &testResponseWriter{channelID: "test-ch"}
+	w := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-wrap", AfterOffset: 0}},
 	}, w)

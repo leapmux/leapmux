@@ -392,9 +392,9 @@ func TestManager_ScreenSnapshotSince_UnknownTerminal(t *testing.T) {
 
 // TestManager_SnapshotAfterExit: after the shell exits, the Terminal
 // stays in the Manager until RemoveTerminal is called, so snapshots must
-// continue to return the final screen state + offset. The disconnect
-// notice is appended to the buffer on exit (via appendTerminalDisconnectNotice
-// in the service layer), and subscribers that reconnect need those bytes.
+// continue to return the final screen state + offset. The exit notice
+// is appended to the buffer on exit by the service layer, and
+// subscribers that reconnect need those bytes.
 func TestManager_SnapshotAfterExit(t *testing.T) {
 	m := NewManager()
 	var mu sync.Mutex
@@ -459,11 +459,7 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 		Rows:       24,
 	}, func(data []byte, _ int64) {}, nil)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		m.StopTerminal("tm-append")
-		testutil.AssertEventually(t, func() bool { return m.IsExited("tm-append") }, "exit")
-		m.RemoveTerminal("tm-append")
-	})
+	testutil.RegisterTerminalCleanup(t, m, "tm-append")
 
 	// Wait for the shell's initial prompt to *finish* writing before
 	// capturing baseline. `/bin/sh -i -l` (and pwsh, zsh, etc.) emit
@@ -563,11 +559,7 @@ func newTestManagerWithTerminal(t *testing.T, opts Options) *Manager {
 	m := NewManager()
 	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64) {}, nil)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		m.StopTerminal(id)
-		testutil.AssertEventually(t, func() bool { return m.IsExited(id) }, "exit")
-		m.RemoveTerminal(id)
-	})
+	testutil.RegisterTerminalCleanup(t, m, id)
 	return m
 }
 
@@ -837,4 +829,104 @@ func TestResolveShellEnv_Empty(t *testing.T) {
 func TestResolveShellEnv_BareNameNotFound(t *testing.T) {
 	t.Setenv("TEST_SHELL_ENV", "nonexistent-shell-xyz")
 	assert.Equal(t, "", resolveShellEnv("TEST_SHELL_ENV"))
+}
+
+// TestRestart_PreservesScreenBufferOffset exercises the live-exit path:
+// the previous *Terminal struct is still in the manager when restart
+// runs, so the new spawn reuses its *ScreenBuffer (same pointer) and the
+// cumulative byte counter continues across the PTY boundary.
+func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
+	m := NewManager()
+	const id = "tm-restart-preserve"
+	opts := Options{
+		ID:          id,
+		WorkspaceID: "ws",
+		Shell:       testutil.TestShell(),
+		WorkingDir:  t.TempDir(),
+		Cols:        80,
+		Rows:        24,
+	}
+
+	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64) {}, nil), "StartTerminal")
+
+	require.NoError(t, m.SendInput(id, []byte("echo first"+testutil.TestShellEnter())))
+	testutil.AssertEventually(t, func() bool {
+		s, _ := m.SnapshotTerminal(id)
+		return strings.Contains(string(s.Screen), "first")
+	}, "expected first command output")
+
+	// Tear down the shell to mirror the post-exit state, then snapshot the
+	// pre-restart cumulative offset (the value the frontend has cached as
+	// its resume cursor).
+	m.StopTerminal(id)
+	testutil.AssertEventually(t, func() bool { return m.IsExited(id) }, "exit")
+	preTerm := m.terminals[id]
+	_, preTotal, _ := m.ScreenSnapshotSince(id, 0)
+	require.Greater(t, preTotal, int64(0), "should have written some bytes pre-restart")
+
+	require.NoError(t, m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64) {}, nil), "RestartTerminal")
+	testutil.RegisterTerminalCleanup(t, m, id)
+
+	newTerm := m.terminals[id]
+	require.NotSame(t, preTerm, newTerm, "manager should swap in a fresh *Terminal on restart")
+	// Observable contract: cumulative offset doesn't regress across the
+	// restart, and the retained bytes from the prior session remain
+	// visible. Together these prove the ScreenBuffer was carried over —
+	// without relying on a private accessor.
+	postScreen, postTotal, _ := m.ScreenSnapshotSince(id, 0)
+	assert.GreaterOrEqual(t, postTotal, preTotal,
+		"cumulative byte counter must not regress across restart")
+	assert.Contains(t, string(postScreen), "first",
+		"retained ring contents from the prior session must survive the restart")
+}
+
+// TestRestart_NewBufferWithFallbackOffset exercises the worker-restart
+// path: the prior *Terminal is gone (e.g. removed during Shutdown), so
+// RestartTerminal must create a new ScreenBuffer seeded with the
+// fallback offset so the frontend's cached lastOffset stays consistent.
+func TestRestart_NewBufferWithFallbackOffset(t *testing.T) {
+	m := NewManager()
+	const id = "tm-restart-fallback"
+	const fallback = int64(4096)
+	opts := Options{
+		ID:          id,
+		WorkspaceID: "ws",
+		Shell:       testutil.TestShell(),
+		WorkingDir:  t.TempDir(),
+		Cols:        80,
+		Rows:        24,
+	}
+
+	require.NoError(t, m.RestartTerminal(context.Background(), opts, fallback, func([]byte, int64) {}, nil), "RestartTerminal")
+	testutil.RegisterTerminalCleanup(t, m, id)
+
+	newTerm := m.terminals[id]
+	require.NotNil(t, newTerm, "manager should have a *Terminal after restart")
+	_, total, _ := m.ScreenSnapshotSince(id, 0)
+	assert.GreaterOrEqual(t, total, fallback,
+		"new screen buffer must start at >= fallback offset")
+}
+
+// TestRestart_FailsIfStillRunning rejects restarts on a live terminal:
+// the previous shell hasn't exited, so accepting the restart would
+// orphan it (or worse, hand two PTYs the same id).
+func TestRestart_FailsIfStillRunning(t *testing.T) {
+	m := NewManager()
+	const id = "tm-restart-running"
+	opts := Options{
+		ID:          id,
+		WorkspaceID: "ws",
+		Shell:       testutil.TestShell(),
+		WorkingDir:  t.TempDir(),
+		Cols:        80,
+		Rows:        24,
+	}
+	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64) {}, nil), "StartTerminal")
+	testutil.RegisterTerminalCleanup(t, m, id)
+
+	original := m.terminals[id]
+	err := m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64) {}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still running")
+	assert.Same(t, original, m.terminals[id], "failed restart must not swap out the live *Terminal")
 }

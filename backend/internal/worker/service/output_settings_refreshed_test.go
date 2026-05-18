@@ -21,7 +21,7 @@ type refreshTestFixture struct {
 func newRefreshTestFixture(t *testing.T, seed db.UpdateAgentAllSettingsParams) refreshTestFixture {
 	t.Helper()
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",

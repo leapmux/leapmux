@@ -37,7 +37,7 @@ type closeTabFixture struct {
 
 func setupCloseTabFixture(t *testing.T, tabType leapmuxv1.TabType, scenario string) closeTabFixture {
 	t.Helper()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// The fixture only adds a worktree on a fresh branch named after
 	// the scenario, so a shared base repo is safe and saves ~4 git
@@ -136,7 +136,7 @@ func TestCloseAgent_WithWorktreeActionUnspecified_PreservesWorktree(t *testing.T
 }
 
 func TestCloseAgent_NoWorktree_Succeeds(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	// Agent without any worktree association.
@@ -187,7 +187,7 @@ func TestCloseAgent_WorktreeRemove_OtherTabsStillOpen_PreservesWorktree(t *testi
 }
 
 func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	// Create a worktree DB row pointing at a path that is NOT a git
@@ -262,7 +262,7 @@ func TestCloseAgent_WorktreeRemove_DiskAlreadyGone_StillDeletesDBRow(t *testing.
 }
 
 func TestCloseAgent_AlreadyClosed_Idempotent(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
@@ -330,7 +330,7 @@ func TestCloseTerminal_WithWorktreeActionUnspecified_PreservesWorktree(t *testin
 }
 
 func TestCloseTerminal_NoWorktree_Succeeds(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
@@ -370,7 +370,7 @@ func TestCloseTerminal_WithWorktreeActionKeep_PreservesWorktree(t *testing.T) {
 // --- removeWorktreeFromDisk direct coverage ---------------------------
 
 func TestRemoveWorktreeFromDisk_Success_ReturnsNil(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
@@ -389,7 +389,7 @@ func TestRemoveWorktreeFromDisk_Success_ReturnsNil(t *testing.T) {
 }
 
 func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
@@ -422,7 +422,7 @@ func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T)
 }
 
 func TestRemoveWorktreeFromDisk_PathMissing_ReturnsNil(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
@@ -449,7 +449,7 @@ func TestRemoveWorktreeFromDisk_PathMissing_ReturnsNil(t *testing.T) {
 }
 
 func TestForceRemoveWorktree_GitFailure_PathIntact_ReturnsInternalError(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
@@ -471,7 +471,7 @@ func TestForceRemoveWorktree_GitFailure_PathIntact_ReturnsInternalError(t *testi
 // --- Shutdown waiting -------------------------------------------------
 
 func TestShutdown_WaitsForInFlightClose(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	// Intentionally do NOT defer drainAllInFlight — this test invokes
 	// Shutdown explicitly, which performs the same wait.
 
@@ -513,7 +513,7 @@ func TestShutdown_WaitsForInFlightClose(t *testing.T) {
 }
 
 func TestShutdown_WaitsForCloseAfterHandlerPanic(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Simulate a handler that panics: Add(1) has been called, and the
 	// deferred Done() MUST still fire.

@@ -12,6 +12,14 @@ import { createLogger } from './logger'
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
 const log = createLogger('terminal')
 
+// Default PTY dimensions used by OpenTerminal / RestartTerminal callers
+// when no measured size is available yet (new-terminal dialog before
+// xterm mount, or a restart on a tab whose ResizeObserver hasn't
+// reported dims). Kept in this module so the openTerminal call sites
+// and the restart fallback share a single source of truth.
+export const DEFAULT_TERMINAL_COLS = 80
+export const DEFAULT_TERMINAL_ROWS = 25
+
 export type TerminalThemePreference = 'light' | 'dark' | 'match-ui'
 type ResolvedTerminalRenderer = 'webgl' | 'canvas'
 

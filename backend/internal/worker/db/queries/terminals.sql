@@ -1,6 +1,11 @@
 -- name: UpsertTerminal :exec
-INSERT INTO terminals (id, workspace_id, working_dir, home_dir, shell_start_dir, title, cols, rows, screen, exit_code, closed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+-- shell is intentionally NOT updated on conflict: it is the binary the
+-- terminal was spawned with and never changes for the lifetime of the
+-- row. Only the initial OpenTerminal INSERT writes it; subsequent
+-- exit/restart upserts pass whatever value (commonly empty) and the
+-- existing column survives unchanged.
+INSERT INTO terminals (id, workspace_id, working_dir, home_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, closed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
   workspace_id    = excluded.workspace_id,
   working_dir     = excluded.working_dir,
@@ -15,6 +20,27 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- name: GetTerminal :one
 SELECT * FROM terminals WHERE id = ?;
+
+-- name: GetTerminalForReady :one
+-- Narrow lookup used by the post-spawn tail of runTerminalStartup /
+-- runTerminalRestart. closed_at drives the close-race teardown; title
+-- absorbs the value the frontend may have persisted between the
+-- handler returning and StartTerminal registering in-memory metadata
+-- (restart ignores the title field). Two columns in one round-trip,
+-- avoiding the SELECT * scan of the screen BLOB.
+SELECT closed_at, title FROM terminals WHERE id = ?;
+
+-- name: GetTerminalForRestart :one
+-- Restart hot path: returns the metadata the handler needs to respawn
+-- (workspace, shell, dimensions, working directory) plus length(screen)
+-- so it can seed the cumulative byte counter when no in-memory
+-- ScreenBuffer exists. Reading length(screen) instead of screen avoids
+-- loading the BLOB on every Enter-press restart, which is wasted work
+-- in the common case (in-memory entry still present, Respawn carries
+-- the live buffer forward and length is ignored).
+SELECT workspace_id, working_dir, shell_start_dir, shell, cols, rows,
+       length(screen) AS screen_length
+FROM terminals WHERE id = ?;
 
 -- name: CloseTerminal :exec
 UPDATE terminals SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')

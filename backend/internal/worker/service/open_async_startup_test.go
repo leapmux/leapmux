@@ -25,7 +25,7 @@ import (
 // blocks for seconds, the OpenAgent RPC response lands in the test writer
 // within ~200 ms — the whole point of the OpenAgent split.
 func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	released := make(chan struct{})
@@ -63,7 +63,7 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 // TestOpenAgent_DelayedStartupBroadcastsActive asserts the goroutine
 // emits ACTIVE once startAgent eventually returns.
 func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	releaseAfter := 150 * time.Millisecond
@@ -85,7 +85,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	require.NotEmpty(t, agentID)
 
 	// Watch the agent to capture broadcasts.
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
 	}, wWatch)
@@ -112,7 +112,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 
 func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	startCalled := make(chan agent.Options, 1)
@@ -162,7 +162,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	}
 	require.Equal(t, agent.CodexDefaultCollaborationMode, startedOpts.ExtraSettings[agent.CodexExtraCollaborationMode])
 
-	wUpdate := &testResponseWriter{channelID: "test-ch"}
+	wUpdate := newTestWriter()
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: agentID,
 		Settings: &leapmuxv1.AgentSettings{
@@ -177,7 +177,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	require.NoError(t, err)
 	require.Equal(t, agent.CodexCollaborationPlan, loadExtraSettings(row.ExtraSettings, row.AgentProvider)[agent.CodexExtraCollaborationMode])
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
 	}, wWatch)
@@ -211,7 +211,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 
 func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	startCalled := make(chan agent.Options, 1)
@@ -259,7 +259,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 		t.Fatal("startAgentFn not invoked within 5s")
 	}
 
-	wRaw := &testResponseWriter{channelID: "test-ch"}
+	wRaw := newTestWriter()
 	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: agentID,
 		Content: `{"type":"control_request","request_id":"test-set-mode","request":{"subtype":"set_permission_mode","mode":"plan"}}`,
@@ -270,7 +270,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	require.NoError(t, err)
 	require.Equal(t, agent.PermissionModePlan, row.PermissionMode)
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
 	}, wWatch)
@@ -304,7 +304,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 
 func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	agentID := "agent-late-mode"
@@ -354,7 +354,7 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 
 func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	agentID := "agent-pre-start-mode"
@@ -406,7 +406,7 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 
 func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	startCalled := make(chan agent.Options, 1)
@@ -452,7 +452,7 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 // off the sync path and emitted via a subsequent STARTING broadcast so
 // the RPC returns without forking `git status`.
 func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	blocked := make(chan struct{})
@@ -489,7 +489,7 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 // TerminalStartup registry so deriveTerminalStatus → the WatchEvents
 // catch-up replay can surface it to the just-arriving subscriber.
 func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	// Block the PTY spawn indefinitely so the terminal stays in STARTING
 	// long enough for the WatchEvents catch-up replay to read the
@@ -513,7 +513,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	terminalID := openResp.GetTerminalId()
 	require.NotEmpty(t, terminalID)
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID}},
 	}, wWatch)
@@ -547,7 +547,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 // generic "Starting terminal…". Regression test for the bug where the
 // label was computed from r.GetShell() before resolution.
 func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	blocked := make(chan struct{})
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
@@ -580,7 +580,7 @@ func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 // this, a client refreshing mid-startup (e.g. hard reload during PTY
 // spawn) falls back to the generic "Starting terminal…" label.
 func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	blocked := make(chan struct{})
 	svc.startTerminalFn = func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error {
@@ -599,7 +599,7 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	terminalID := openResp.GetTerminalId()
 
-	wList := &testResponseWriter{channelID: "test-ch"}
+	wList := newTestWriter()
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{terminalID},
 	}, wList)
@@ -616,7 +616,7 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 
 func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	releaseStart := make(chan struct{})
@@ -627,15 +627,9 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 			close(releaseStart)
 		}
 	}()
-	exitDone := make(chan struct{})
 	svc.startTerminalFn = func(ctx context.Context, opts terminal.Options, outFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
 		<-releaseStart
-		return svc.Terminals.StartTerminal(ctx, opts, outFn, func(id string, code int) {
-			if exitFn != nil {
-				exitFn(id, code)
-			}
-			close(exitDone)
-		})
+		return svc.Terminals.StartTerminal(ctx, opts, outFn, exitFn)
 	}
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
@@ -651,7 +645,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 	require.NotEmpty(t, terminalID)
 
 	const title = "Terminal Ada"
-	wTitle := &testResponseWriter{channelID: "test-ch"}
+	wTitle := newTestWriter()
 	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
 		WorkspaceId: "ws-1",
 		TerminalId:  terminalID,
@@ -662,7 +656,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 	require.NoError(t, err)
 	require.Equal(t, title, rowBeforeStart.Title)
 
-	wResize := &testResponseWriter{channelID: "test-ch"}
+	wResize := newTestWriter()
 	dispatch(d, "ResizeTerminal", &leapmuxv1.ResizeTerminalRequest{
 		WorkspaceId: "ws-1",
 		TerminalId:  terminalID,
@@ -686,19 +680,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 	assert.Equal(t, title, row.Title,
 		"shutdown snapshot must not overwrite the pre-start title with empty manager metadata")
 
-	svc.Terminals.StopTerminal(terminalID)
-	require.Eventually(t, func() bool {
-		return svc.Terminals.IsExited(terminalID)
-	}, 5*time.Second, 20*time.Millisecond)
-	require.Eventually(t, func() bool {
-		select {
-		case <-exitDone:
-			return true
-		default:
-			return false
-		}
-	}, 5*time.Second, 20*time.Millisecond)
-	svc.Terminals.RemoveTerminal(terminalID)
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 }
 
 // TestOpenAgent_CatchUpReplaySurfacesStartupMessage mirrors the
@@ -706,7 +688,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 // attaches after the initial STARTING broadcast should see the current
 // phase label via catch-up replay, not an empty string.
 func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	// Block startAgent so the goroutine settles after setting phase 2
 	// ("Starting Claude Code…") and waits there — the registry entry
@@ -740,7 +722,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond,
 		"expected runAgentStartup to reach phase 2 before startAgent blocks")
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
 	}, wWatch)
@@ -772,7 +754,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 // TestBuildAgentStatusChange verifies the phase/error/gitStatus field
 // mapping directly, race-free.
 func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	// Block startAgent briefly so the test can subscribe before ACTIVE lands.
@@ -792,7 +774,7 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	agentID := openResp.GetAgent().GetId()
 	require.NotEmpty(t, agentID)
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
 	}, wWatch)
@@ -818,7 +800,7 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 // constructors. Race-free companion to TestOpenAgent_ActiveBroadcastCarriesGitStatus:
 // locks in the field mapping without routing through the broadcast fan-out.
 func TestBuildAgentStatusChange(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	dbAgent := &db.Agent{
 		ID:            "agent-bac",
 		WorkspaceID:   "ws-1",
@@ -899,7 +881,7 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 // gitStatus computed during the pre-startAgent phase, so the frontend
 // can render branch info alongside the error.
 func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced startup failure")
@@ -915,7 +897,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	agentID := openResp.GetAgent().GetId()
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, AfterSeq: 0}},
 	}, wWatch)
@@ -946,7 +928,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 // string visible to a subscribed watcher, and that the agent is closed.
 func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	var startCalls sync.WaitGroup
@@ -994,7 +976,7 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 // input in a real RPC, but this bypass proves the execute-side error path
 // is clean — the caller gets err, no rollback metadata, and no DB row.
 func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	bogusRoot := t.TempDir() // not a git repo
 	plan := gitModePlan{
 		Mode:         gitModeCreateWorktree,
@@ -1016,7 +998,7 @@ func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
 // (subprocess startup) fails: the tab sees "Creating worktree …" then
 // "Rolling back worktree …" then STARTUP_FAILED with the injected error.
 func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, errors.New("forced start failure")
@@ -1028,7 +1010,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	// registry message, so if the goroutine advances to phase 1 before a
 	// post-OpenAgent WatchEvents dispatch reads the registry, the phase-0
 	// "Creating worktree" label is lost (observed on Windows CI).
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 	svc.createAgentRecordFn = func(ctx context.Context, params db.CreateAgentParams) error {
 		if err := svc.Queries.CreateAgent(ctx, params); err != nil {
 			return err
@@ -1113,7 +1095,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 // unit-level guarantee that CloseAgent / CloseTerminal mid-phase-0 does
 // not run expensive git commands against a doomed tab.
 func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled before call
 

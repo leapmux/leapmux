@@ -31,7 +31,7 @@ import (
 // Manager, so the frontend's size is visible to the first process that
 // queries TIOCGWINSZ (e.g. vim on its first draw).
 func TestResizeTerminal_DuringStartup_LandsOnPTY(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Gate the real StartTerminal behind a channel so the test can
 	// dispatch ResizeTerminal while the goroutine is parked with the
@@ -72,7 +72,7 @@ func TestResizeTerminal_DuringStartup_LandsOnPTY(t *testing.T) {
 		t.Fatal("startTerminalFn never invoked — runTerminalStartup did not reach PTY spawn")
 	}
 
-	wResize := &testResponseWriter{channelID: "test-ch"}
+	wResize := newTestWriter()
 	dispatch(d, "ResizeTerminal", &leapmuxv1.ResizeTerminalRequest{
 		TerminalId: terminalID,
 		Cols:       180,

@@ -70,7 +70,7 @@ func (m *sessionInfoCapturingWriter) snapshot() []map[string]interface{} {
 func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturingWriter) {
 	t.Helper()
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",

@@ -62,6 +62,21 @@ message CloseTerminalResponse {
   CloseTabResult result = 1;
 }
 
+// RestartTerminalRequest respawns the shell process for an exited
+// terminal in place, reusing the tab's working_dir / shell / shell_start_dir
+// and freshly minting LEAPMUX_REMOTE_* env vars. The screen buffer
+// (including the "[Terminal process exited (N) - Press Enter to restart]"
+// notice) is preserved so the new shell's prompt appears below it.
+message RestartTerminalRequest {
+  string org_id = 1;
+  string workspace_id = 2;
+  string terminal_id = 3;
+  uint32 cols = 4;
+  uint32 rows = 5;
+}
+
+message RestartTerminalResponse {}
+
 message SendInputRequest {
   string org_id = 1;
   string workspace_id = 2;

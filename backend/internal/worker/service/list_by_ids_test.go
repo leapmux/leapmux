@@ -18,7 +18,7 @@ import (
 
 func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	for _, id := range []string{"a1", "a2", "a3"} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -39,7 +39,7 @@ func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 }
 
 func TestListAgents_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-A")
+	_, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{},
@@ -52,7 +52,7 @@ func TestListAgents_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
 }
 
 func TestListAgents_NonexistentIDs_ReturnsEmpty(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-A")
+	_, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"nonexistent-1", "nonexistent-2"},
@@ -66,7 +66,7 @@ func TestListAgents_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 
 func TestListAgents_ClosedTabsFiltered(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
@@ -85,7 +85,7 @@ func TestListAgents_ClosedTabsFiltered(t *testing.T) {
 
 func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
@@ -106,7 +106,7 @@ func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 
 func TestListAgents_AccessibleWorkspaceAllowed(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
@@ -125,7 +125,7 @@ func TestListAgents_AccessibleWorkspaceAllowed(t *testing.T) {
 func TestListAgents_InaccessibleWorkspaceDenied(t *testing.T) {
 	ctx := context.Background()
 	// Channel only has access to ws-A.
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	// Agent is in ws-B (not accessible).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -144,7 +144,7 @@ func TestListAgents_InaccessibleWorkspaceDenied(t *testing.T) {
 
 func TestListAgents_MixedAccess(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
@@ -170,7 +170,7 @@ func TestListAgents_MixedAccess(t *testing.T) {
 
 func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	for _, id := range []string{"t1", "t2", "t3"} {
 		require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -192,7 +192,7 @@ func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 }
 
 func TestListTerminals_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-A")
+	_, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{},
@@ -205,7 +205,7 @@ func TestListTerminals_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
 }
 
 func TestListTerminals_NonexistentIDs_ReturnsEmpty(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-A")
+	_, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"nonexistent"},
@@ -219,7 +219,7 @@ func TestListTerminals_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 
 func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID: "t1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
@@ -244,7 +244,7 @@ func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 // against a dead terminal resolves to "caught up" with no replay.
 func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	screen := []byte("some persisted screen content")
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -278,7 +278,7 @@ func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
 // ScreenSnapshotSince read at different moments diverged.
 func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 	startTestTerminal(t, svc, ctx, "t-live", "ws-A")
 
 	marker := []byte("live_offset_test_marker")
@@ -313,7 +313,7 @@ func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 // retained ring.
 func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 	startTestTerminal(t, svc, ctx, "t-altrefresh", "ws-A")
 	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrefresh")
 
@@ -340,7 +340,7 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 
 func TestListTerminals_InaccessibleWorkspaceDenied(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-A")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
 
 	// Terminal in inaccessible workspace.
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{

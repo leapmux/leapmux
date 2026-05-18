@@ -432,7 +432,7 @@ func waitForPathToDisappear(t *testing.T, path string) {
 }
 
 func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "inspect-clean-wt")
 	run(t, repoDir, "git", "worktree", "add", "-b", "inspect-clean", wtDir)
@@ -454,7 +454,7 @@ func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
 }
 
 func TestInspectLastTabClose_BranchLastTabCleanDoesNotPrompt(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	repoDir := initRepo(t)
 	createAgentForPath(t, svc, "agent-branch-clean", repoDir)
 
@@ -465,7 +465,7 @@ func TestInspectLastTabClose_BranchLastTabCleanDoesNotPrompt(t *testing.T) {
 }
 
 func TestInspectLastTabClose_BranchLastTabDirtyPrompts(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	repoDir := initRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
 	createAgentForPath(t, svc, "agent-branch-dirty", repoDir)
@@ -478,7 +478,7 @@ func TestInspectLastTabClose_BranchLastTabDirtyPrompts(t *testing.T) {
 }
 
 func TestInspectLastTabClose_BranchMissingRemotePrompts(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	bareDir := filepath.Join(t.TempDir(), "missing-remote.git")
 	require.NoError(t, os.MkdirAll(bareDir, 0o755))
 	run(t, bareDir, "git", "init", "--bare")
@@ -506,7 +506,7 @@ func TestInspectLastTabClose_BranchMissingRemotePrompts(t *testing.T) {
 // assert that the diff_* and push_* fields are left zero — those are
 // only populated when the full inspect path runs.
 func TestInspectLastTabClose_WorktreeMultiTabFastPath(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "multi-tab-wt")
 	run(t, repoDir, "git", "worktree", "add", "-b", "multi-tab", wtDir)
@@ -544,7 +544,7 @@ func TestInspectLastTabClose_WorktreeMultiTabFastPath(t *testing.T) {
 // Fast path: a non-worktree tab with other non-worktree tabs on the
 // same branch must not prompt, and must not pay for diff/push.
 func TestInspectLastTabClose_BranchMultiTabFastPath(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	repoDir := initRepo(t)
 	// Dirty the branch — the slow path would set hasUncommittedChanges=true.
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
@@ -561,7 +561,7 @@ func TestInspectLastTabClose_BranchMultiTabFastPath(t *testing.T) {
 }
 
 func TestPushBranchForClose_CreatesWIPCommitAndPushes(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	bareDir := filepath.Join(t.TempDir(), "push-dirty.git")
 	require.NoError(t, os.MkdirAll(bareDir, 0o755))
 	run(t, bareDir, "git", "init", "--bare")
@@ -590,7 +590,7 @@ func TestPushBranchForClose_CreatesWIPCommitAndPushes(t *testing.T) {
 }
 
 func TestPushBranchForClose_RecreatesUpstream(t *testing.T) {
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	bareDir := filepath.Join(t.TempDir(), "push-upstream.git")
 	require.NoError(t, os.MkdirAll(bareDir, 0o755))
 	run(t, bareDir, "git", "init", "--bare")

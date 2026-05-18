@@ -26,7 +26,7 @@ import (
 
 func TestValidateGitMode_CreateWorktreeHappyPath(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateWorktree:     true,
@@ -48,7 +48,7 @@ func TestValidateGitMode_CreateWorktreeHappyPath(t *testing.T) {
 
 func TestValidateGitMode_CreateBranchHappyPath(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateBranch: "feature/fresh",
@@ -63,7 +63,7 @@ func TestValidateGitMode_CheckoutExistingLocalBranch(t *testing.T) {
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/local")
 	run(t, repoDir, "git", "checkout", "-")
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CheckoutBranch: "feature/local",
@@ -80,7 +80,7 @@ func TestValidateGitMode_CheckoutRemoteRef(t *testing.T) {
 	run(t, remote, "git", "commit", "--allow-empty", "-m", "c")
 	run(t, local, "git", "remote", "add", "origin", remote)
 	run(t, local, "git", "fetch", "origin")
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(local, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CheckoutBranch: "origin/feature/remote",
@@ -91,7 +91,7 @@ func TestValidateGitMode_CheckoutRemoteRef(t *testing.T) {
 
 func TestValidateGitMode_UseCurrentDefault(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{}))
 	require.NoError(t, err)
@@ -107,7 +107,7 @@ func TestValidateGitMode_CreateWorktreeWithRemoteBaseBranch(t *testing.T) {
 	run(t, remote, "git", "commit", "--allow-empty", "-m", "c")
 	run(t, local, "git", "remote", "add", "origin", remote)
 	run(t, local, "git", "fetch", "origin")
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(local, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateWorktree:     true,
@@ -122,7 +122,7 @@ func TestValidateGitMode_CreateWorktreeWithRemoteBaseBranch(t *testing.T) {
 
 func TestExecuteGitMode_CreateWorktreeSucceeds(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateWorktree: true,
@@ -140,7 +140,7 @@ func TestExecuteGitMode_CreateWorktreeSucceeds(t *testing.T) {
 
 func TestExecuteGitMode_CreateBranchSucceeds(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		CreateBranch: "feature/exec-branch",
@@ -195,7 +195,7 @@ func TestValidateGitMode_WorktreePathNormalization(t *testing.T) {
 	run(t, repoDir, "git", "worktree", "add", "-b", "feature/deep/nest", filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", "feature/deep/nest"))
 	sym := filepath.Join(t.TempDir(), "symlink")
 	require.NoError(t, osSymlink(filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", "feature/deep/nest"), sym))
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	plan, err := svc.validateGitMode(repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
 		UseWorktreePath: sym,
@@ -233,7 +233,7 @@ func osSymlink(target, link string) error { return os.Symlink(target, link) }
 //   - No stray connect errors surface.
 
 func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return &leapmuxv1.AgentSettings{}, nil
@@ -270,7 +270,7 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 }
 
 func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return &leapmuxv1.AgentSettings{}, nil

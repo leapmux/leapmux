@@ -108,8 +108,10 @@ if (import.meta.hot) {
 }
 
 if (typeof window !== 'undefined') {
-  (window as any).__getActiveTerminalText = () => {
-    const instance = lastActiveTerminalId ? instances.get(lastActiveTerminalId) : undefined
+  const getActiveInstance = () => (lastActiveTerminalId ? instances.get(lastActiveTerminalId) : undefined)
+
+  ;(window as any).__getActiveTerminalText = () => {
+    const instance = getActiveInstance()
     if (!instance)
       return ''
     const buffer = instance.terminal.buffer.active
@@ -121,12 +123,18 @@ if (typeof window !== 'undefined') {
     }
     return text
   }
-  ;(window as any).__getActiveTerminalRows = () => {
-    return (lastActiveTerminalId ? instances.get(lastActiveTerminalId)?.terminal.rows : 0) ?? 0
-  }
-  ;(window as any).__getActiveTerminalBufferType = () => {
-    const instance = lastActiveTerminalId ? instances.get(lastActiveTerminalId) : undefined
-    return instance?.terminal.buffer.active.type ?? 'normal'
+  ;(window as any).__getActiveTerminalRows = () => getActiveInstance()?.terminal.rows ?? 0
+  ;(window as any).__getActiveTerminalBufferType = () => getActiveInstance()?.terminal.buffer.active.type ?? 'normal'
+  // E2E hook: drive input through the same sendInput callback xterm's
+  // onData handler uses, so the test exercises the full handleTerminalInput
+  // routing (READY → SendInput RPC, EXITED → RestartTerminal RPC) without
+  // depending on Playwright's keyboard focusing xterm's hidden textarea.
+  ;(window as any).__sendActiveTerminalInput = (text: string) => {
+    const instance = getActiveInstance()
+    if (!instance?.sendInput)
+      return false
+    instance.sendInput(new TextEncoder().encode(text))
+    return true
   }
 }
 

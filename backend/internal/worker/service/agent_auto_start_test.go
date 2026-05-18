@@ -22,7 +22,7 @@ import (
 // pulses but no progress affordance is shown beneath it.
 func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Mock a successful auto-start so the happy path is exercised without
 	// spawning a real subprocess.
@@ -80,7 +80,7 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 // surfacing the failure as a per-message delivery_error instead).
 func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
 		return nil, assert.AnError

@@ -175,10 +175,11 @@ func runWorker(args []string) error {
 	svcCtx.Channels = channelMgr
 	svcCtx.Init()
 	// svcCtx.Shutdown persists terminal screen snapshots and broadcasts the
-	// "Connection to the terminal was lost" notice to live watchers. Wrap it
-	// in sync.Once so all exit paths (signal, OnDeregister, defer fallback)
-	// converge on a single invocation that runs *before* the bidi stream is
-	// torn down — otherwise the broadcast races a closed connection.
+	// "[Worker disconnected - Press Enter to restart]" notice to live
+	// watchers. Wrap it in sync.Once so all exit paths (signal,
+	// OnDeregister, defer fallback) converge on a single invocation that
+	// runs *before* the bidi stream is torn down — otherwise the broadcast
+	// races a closed connection.
 	var shutdownOnce sync.Once
 	runShutdown := func() {
 		shutdownOnce.Do(func() {

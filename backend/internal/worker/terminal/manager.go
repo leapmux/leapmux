@@ -14,7 +14,18 @@ import (
 // is still being spawned in the background startup goroutine.
 var ErrTerminalNotFound = errors.New("terminal not found")
 
+// ErrTerminalStillRunning is returned by RestartTerminal when its target
+// has not exited. Both the service handler (synchronous reject for better
+// UX) and the manager (defense-in-depth for direct callers) surface this
+// — sharing the sentinel keeps the user-visible message in one place and
+// lets callers errors.Is instead of string-matching.
+var ErrTerminalStillRunning = errors.New("terminal still running")
+
 // TerminalMeta holds the workspace ID and dimensions for a terminal.
+// Shell is intentionally NOT mirrored here: RestartTerminal reads the
+// shell from the DB row via GetTerminalForRestart, which is the single
+// source of truth (the column is written once at OpenTerminal time and
+// never updated thereafter).
 type TerminalMeta struct {
 	WorkspaceID   string
 	WorkingDir    string
@@ -33,8 +44,9 @@ type TerminalSnapshot struct {
 // Manager tracks active terminal sessions.
 type Manager struct {
 	mu        sync.RWMutex
-	terminals map[string]*Terminal    // terminalID -> Terminal
-	meta      map[string]TerminalMeta // terminalID -> metadata
+	terminals map[string]*Terminal     // terminalID -> Terminal
+	meta      map[string]TerminalMeta  // terminalID -> metadata
+	exitDone  map[string]chan struct{} // terminalID -> closed when the exit-handler goroutine has finished
 }
 
 // NewManager creates a new terminal Manager.
@@ -42,6 +54,7 @@ func NewManager() *Manager {
 	return &Manager{
 		terminals: make(map[string]*Terminal),
 		meta:      make(map[string]TerminalMeta),
+		exitDone:  make(map[string]chan struct{}),
 	}
 }
 
@@ -67,29 +80,50 @@ func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn Outp
 		return err
 	}
 
+	m.installTerminal(opts.ID, t, exitFn, func(TerminalMeta) TerminalMeta {
+		return TerminalMeta{
+			WorkspaceID:   opts.WorkspaceID,
+			WorkingDir:    opts.WorkingDir,
+			ShellStartDir: opts.ShellStartDir,
+			Cols:          uint32(opts.Cols),
+			Rows:          uint32(opts.Rows),
+		}
+	})
+	return nil
+}
+
+// installTerminal records a freshly-spawned *Terminal in the manager
+// and starts the goroutine that waits on its exit. Used by both
+// StartTerminal and RestartTerminal. composeMeta is called under
+// m.mu.Lock with the previous meta (zero value if none) and returns
+// the meta to install: StartTerminal ignores prev and returns a fresh
+// struct; RestartTerminal overlays opts onto prev so non-Options
+// fields (Title) survive. Reading prev under the install lock closes
+// the gap with concurrent UpdateTitle calls that would otherwise be
+// silently overwritten by an outside-the-lock overlay.
+//
+// Notify when the terminal exits but keep it in the map so that
+// ScreenSnapshot and ListTerminals still work. The entry is removed by
+// RemoveTerminal (explicit close). The freshly-allocated exitDone chan
+// is closed once the exit handler has finished, so WaitForExit callers
+// observe a definitive "the exit goroutine is done" signal.
+func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, composeMeta func(prev TerminalMeta) TerminalMeta) {
+	done := make(chan struct{})
+
 	m.mu.Lock()
-	m.terminals[opts.ID] = t
-	m.meta[opts.ID] = TerminalMeta{
-		WorkspaceID:   opts.WorkspaceID,
-		WorkingDir:    opts.WorkingDir,
-		ShellStartDir: opts.ShellStartDir,
-		Cols:          uint32(opts.Cols),
-		Rows:          uint32(opts.Rows),
-	}
+	meta := composeMeta(m.meta[id])
+	m.terminals[id] = t
+	m.meta[id] = meta
+	m.exitDone[id] = done
 	m.mu.Unlock()
 
-	// Notify when the terminal exits but keep it in the map
-	// so that ScreenSnapshot and ListTerminals still work.
-	// The entry is removed by RemoveTerminal (explicit close).
 	go func() {
 		exitCode := t.Wait()
-
 		if exitFn != nil {
-			exitFn(opts.ID, exitCode)
+			exitFn(id, exitCode)
 		}
+		close(done)
 	}()
-
-	return nil
 }
 
 // SendInput routes input to a terminal.
@@ -144,6 +178,61 @@ func (m *Manager) Resize(terminalID string, cols, rows uint16) error {
 	return nil
 }
 
+// RestartTerminal respawns a PTY for a terminal that has already exited,
+// preserving the cumulative screen-buffer offset so the frontend's
+// resume cursor stays valid across the restart. If no in-memory entry
+// exists (e.g. after a worker restart), a new ScreenBuffer is created
+// with its cumulative counter seeded from fallbackOffset so future
+// end_offset broadcasts stay ahead of the client's lastOffset.
+//
+// The lock is intentionally released across the PTY spawn (Respawn /
+// startWithScreenBuffer) and reacquired for the install. This mirrors
+// StartTerminal: a slow fork must not block unrelated manager calls
+// (SendInput, Resize, GetMeta, …) on the same Manager. Concurrent
+// restarts of the same id are serialized one level up by the service
+// handler's TerminalStartup.status + HasTerminal/!IsExited gates, so
+// the second install's overwrite is a no-op-or-superseding swap rather
+// than a race. The Title overlay is read inside installTerminal's
+// lock so a concurrent UpdateTitle that lands during the spawn is not
+// clobbered.
+func (m *Manager) RestartTerminal(
+	ctx context.Context,
+	opts Options,
+	fallbackOffset int64,
+	outputFn OutputHandler,
+	exitFn ExitHandler,
+) error {
+	m.mu.Lock()
+	prev, hasPrev := m.terminals[opts.ID]
+	m.mu.Unlock()
+
+	var (
+		t   *Terminal
+		err error
+	)
+	if hasPrev {
+		if !prev.IsExited() {
+			return fmt.Errorf("%w: %s", ErrTerminalStillRunning, opts.ID)
+		}
+		t, err = prev.Respawn(ctx, opts, outputFn)
+	} else {
+		t, err = startWithScreenBuffer(ctx, opts, NewScreenBufferWithOffset(fallbackOffset), outputFn)
+	}
+	if err != nil {
+		return err
+	}
+
+	m.installTerminal(opts.ID, t, exitFn, func(prev TerminalMeta) TerminalMeta {
+		prev.WorkspaceID = opts.WorkspaceID
+		prev.WorkingDir = opts.WorkingDir
+		prev.ShellStartDir = opts.ShellStartDir
+		prev.Cols = uint32(opts.Cols)
+		prev.Rows = uint32(opts.Rows)
+		return prev
+	})
+	return nil
+}
+
 // StopTerminal stops a specific terminal's process without removing it.
 func (m *Manager) StopTerminal(terminalID string) {
 	m.mu.RLock()
@@ -162,6 +251,7 @@ func (m *Manager) RemoveTerminal(terminalID string) {
 	if ok {
 		delete(m.terminals, terminalID)
 		delete(m.meta, terminalID)
+		delete(m.exitDone, terminalID)
 	}
 	m.mu.Unlock()
 
@@ -176,6 +266,33 @@ func (m *Manager) HasTerminal(terminalID string) bool {
 	defer m.mu.RUnlock()
 	_, ok := m.terminals[terminalID]
 	return ok
+}
+
+// IsRunning returns true iff the terminal exists in the manager AND its
+// PTY has not yet exited. Combines HasTerminal + !IsExited into one
+// RLock so the RestartTerminal handler can decide synchronously
+// whether to reject the request.
+func (m *Manager) IsRunning(terminalID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	t, ok := m.terminals[terminalID]
+	return ok && !t.IsExited()
+}
+
+// WaitForExit blocks until the terminal's exit-handler goroutine has
+// finished (PTY exited AND the install-time ExitHandler returned).
+// Returns immediately if no in-memory entry exists. Use this in test
+// teardown rather than polling IsExited — the poll only sees the PTY
+// state and misses the gap before the exit handler completes, leaving
+// callers' assertions racy.
+func (m *Manager) WaitForExit(terminalID string) {
+	m.mu.RLock()
+	done, ok := m.exitDone[terminalID]
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+	<-done
 }
 
 // IsExited returns true if the terminal exists and has exited.
@@ -372,6 +489,7 @@ func (m *Manager) StopAll() {
 	}
 	m.terminals = make(map[string]*Terminal)
 	m.meta = make(map[string]TerminalMeta)
+	m.exitDone = make(map[string]chan struct{})
 	m.mu.Unlock()
 
 	for _, t := range terminals {

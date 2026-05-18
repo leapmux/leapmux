@@ -15,9 +15,10 @@ import (
 // The following codes mirror the connect/gRPC codes used by sendInvalid /
 // sendPermissionDenied / sendNotFoundError (see service.go).
 const (
-	codeInvalidArgument  = int32(3)
-	codeNotFound         = int32(5)
-	codePermissionDenied = int32(7)
+	codeInvalidArgument    = int32(3)
+	codeNotFound           = int32(5)
+	codePermissionDenied   = int32(7)
+	codeFailedPrecondition = int32(9)
 )
 
 // seedAgent and seedTerminal create minimal DB rows in the given workspace.
@@ -88,11 +89,14 @@ var terminalHandlerCases = []terminalHandlerCase{
 	{"CloseTerminal", func(id string) proto.Message {
 		return &leapmuxv1.CloseTerminalRequest{TerminalId: id}
 	}},
+	{"RestartTerminal", func(id string) proto.Message {
+		return &leapmuxv1.RestartTerminalRequest{TerminalId: id, Cols: 80, Rows: 25}
+	}},
 	{"SendInput", func(id string) proto.Message {
 		return &leapmuxv1.SendInputRequest{TerminalId: id, Data: []byte("x")}
 	}},
 	{"ResizeTerminal", func(id string) proto.Message {
-		return &leapmuxv1.ResizeTerminalRequest{TerminalId: id, Cols: 80, Rows: 24}
+		return &leapmuxv1.ResizeTerminalRequest{TerminalId: id, Cols: 80, Rows: 25}
 	}},
 	{"UpdateTerminalTitle", func(id string) proto.Message {
 		return &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: id, Title: "renamed"}
@@ -105,7 +109,7 @@ var terminalHandlerCases = []terminalHandlerCase{
 func TestAccessControl_AgentHandlers_RejectInaccessibleWorkspace(t *testing.T) {
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			svc, d, w := setupTestService(t, "ws-1")
+			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 			seedAgent(t, svc, "agent-other", "ws-other")
 
 			dispatch(d, tc.method, tc.req("agent-other"), w)
@@ -122,7 +126,7 @@ func TestAccessControl_AgentHandlers_RejectInaccessibleWorkspace(t *testing.T) {
 func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, "ws-1")
+			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 			dispatch(d, tc.method, tc.req("agent-missing"), w)
 
@@ -138,7 +142,7 @@ func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
 func TestAccessControl_AgentHandlers_EmptyID(t *testing.T) {
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, "ws-1")
+			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 			dispatch(d, tc.method, tc.req(""), w)
 
@@ -153,7 +157,7 @@ func TestAccessControl_AgentHandlers_EmptyID(t *testing.T) {
 func TestAccessControl_TerminalHandlers_RejectInaccessibleWorkspace(t *testing.T) {
 	for _, tc := range terminalHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			svc, d, w := setupTestService(t, "ws-1")
+			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 			seedTerminal(t, svc, "term-other", "ws-other")
 
 			dispatch(d, tc.method, tc.req("term-other"), w)
@@ -168,7 +172,7 @@ func TestAccessControl_TerminalHandlers_RejectInaccessibleWorkspace(t *testing.T
 func TestAccessControl_TerminalHandlers_NotFound(t *testing.T) {
 	for _, tc := range terminalHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, "ws-1")
+			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 			dispatch(d, tc.method, tc.req("term-missing"), w)
 
@@ -182,7 +186,7 @@ func TestAccessControl_TerminalHandlers_NotFound(t *testing.T) {
 func TestAccessControl_TerminalHandlers_EmptyID(t *testing.T) {
 	for _, tc := range terminalHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, "ws-1")
+			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 			dispatch(d, tc.method, tc.req(""), w)
 
@@ -200,7 +204,7 @@ func TestAccessControl_TerminalHandlers_EmptyID(t *testing.T) {
 
 func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 	t.Run("RenameAgent", func(t *testing.T) {
-		svc, d, w := setupTestService(t, "ws-1")
+		svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 		seedAgent(t, svc, "agent-1", "ws-1")
 
 		dispatch(d, "RenameAgent", &leapmuxv1.RenameAgentRequest{
@@ -213,7 +217,7 @@ func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 	})
 
 	t.Run("ListAgentMessages", func(t *testing.T) {
-		svc, d, w := setupTestService(t, "ws-1")
+		svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 		seedAgent(t, svc, "agent-1", "ws-1")
 
 		dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{AgentId: "agent-1"}, w)
@@ -223,7 +227,7 @@ func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 }
 
 func TestAccessControl_TerminalHandlers_HappyPath(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	seedTerminal(t, svc, "term-1", "ws-1")
 
 	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
@@ -240,7 +244,7 @@ func TestAccessControl_TerminalHandlers_HappyPath(t *testing.T) {
 // validated — any tab could be stolen into a workspace the caller owns.
 
 func TestMoveTabWorkspace_RejectsStealingAgentFromOtherWorkspace(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-mine")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-mine"))
 	seedAgent(t, svc, "agent-theirs", "ws-theirs")
 
 	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
@@ -260,7 +264,7 @@ func TestMoveTabWorkspace_RejectsStealingAgentFromOtherWorkspace(t *testing.T) {
 }
 
 func TestMoveTabWorkspace_RejectsStealingTerminalFromOtherWorkspace(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-mine")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-mine"))
 	seedTerminal(t, svc, "term-theirs", "ws-theirs")
 
 	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
@@ -278,7 +282,7 @@ func TestMoveTabWorkspace_RejectsStealingTerminalFromOtherWorkspace(t *testing.T
 }
 
 func TestMoveTabWorkspace_RejectsInaccessibleDestination(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	seedAgent(t, svc, "agent-1", "ws-1")
 
 	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
@@ -296,7 +300,7 @@ func TestMoveTabWorkspace_RejectsInaccessibleDestination(t *testing.T) {
 }
 
 func TestMoveTabWorkspace_AllowsMoveBetweenAccessibleWorkspaces(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-src", "ws-dst")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-src", "ws-dst"))
 	seedAgent(t, svc, "agent-1", "ws-src")
 
 	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
@@ -318,7 +322,7 @@ func TestMoveTabWorkspace_AllowsMoveBetweenAccessibleWorkspaces(t *testing.T) {
 // A workspace never added to the set must be rejected.
 
 func TestCleanupWorkspace_RejectsInaccessibleWorkspace(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-1")
+	_, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{
 		WorkspaceId: "ws-other",
@@ -330,7 +334,7 @@ func TestCleanupWorkspace_RejectsInaccessibleWorkspace(t *testing.T) {
 }
 
 func TestCleanupWorkspace_AllowsAccessibleWorkspace(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	seedAgent(t, svc, "agent-1", "ws-1")
 
 	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{

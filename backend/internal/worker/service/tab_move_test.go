@@ -14,7 +14,7 @@ import (
 
 func TestMoveTabWorkspace_Agent(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1", "ws-2")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1", "ws-2"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-1",
@@ -42,7 +42,7 @@ func TestMoveTabWorkspace_Agent(t *testing.T) {
 
 func TestMoveTabWorkspace_Terminal(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1", "ws-2")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1", "ws-2"))
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:          "term-1",
@@ -71,7 +71,7 @@ func TestMoveTabWorkspace_Terminal(t *testing.T) {
 
 func TestMoveTabWorkspace_TargetNotAccessible(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1") // only ws-1 accessible
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1")) // only ws-1 accessible
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:          "agent-1",
@@ -97,7 +97,7 @@ func TestMoveTabWorkspace_TargetNotAccessible(t *testing.T) {
 }
 
 func TestMoveTabWorkspace_MissingFields(t *testing.T) {
-	_, d, _ := setupTestService(t, "ws-1")
+	_, d, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	tests := []struct {
 		name string
@@ -118,7 +118,7 @@ func TestMoveTabWorkspace_MissingFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := &testResponseWriter{channelID: "test-ch"}
+			w := newTestWriter()
 			dispatch(d, "MoveTabWorkspace", tt.req, w)
 			require.Len(t, w.errors, 1)
 			assert.Equal(t, int32(3), w.errors[0].code, "expected INVALID_ARGUMENT")
@@ -127,7 +127,7 @@ func TestMoveTabWorkspace_MissingFields(t *testing.T) {
 }
 
 func TestMoveTabWorkspace_UnsupportedTabType(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-1", "ws-2")
+	_, d, w := setupTestService(t, withWorkspaces("ws-1", "ws-2"))
 
 	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
 		TabType:        leapmuxv1.TabType_TAB_TYPE_FILE,
@@ -140,7 +140,7 @@ func TestMoveTabWorkspace_UnsupportedTabType(t *testing.T) {
 }
 
 func TestMoveTabWorkspace_NonexistentAgent(t *testing.T) {
-	_, d, w := setupTestService(t, "ws-1", "ws-2")
+	_, d, w := setupTestService(t, withWorkspaces("ws-1", "ws-2"))
 
 	// Moving a non-existent agent must be rejected so callers cannot probe
 	// for valid IDs or fabricate rows. The source-side access check happens

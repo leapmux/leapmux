@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,15 +86,12 @@ type Context struct {
 	// them even if a handler panics.
 	Cleanup sync.WaitGroup
 
-	// agentRemoteCleanups maps agentID → cleanup func to run on close.
-	// Populated by RemoteIPC.AgentSpawning.
-	agentRemoteMu       sync.Mutex
-	agentRemoteCleanups map[string]func()
-
-	// terminalRemoteCleanups is the equivalent map for opted-in
-	// terminals.
-	terminalRemoteMu       sync.Mutex
-	terminalRemoteCleanups map[string]func()
+	// agentCleanups / terminalCleanups hold per-tab cleanup callbacks
+	// registered by spawn*RemoteIPC and fired on close (or before a
+	// restart mints a new token). Same shape, two embeddings keep the
+	// terminal-vs-agent intent at the call site.
+	agentCleanups    cleanupRegistry
+	terminalCleanups cleanupRegistry
 
 	// localAuthorizers maps synthetic local-IPC stream ids to their
 	// LocalIPCAuthorizer. The router populates the entry around each
@@ -102,42 +100,80 @@ type Context struct {
 	localAuthorizers sync.Map
 }
 
-func (svc *Context) registerAgentCleanup(agentID string, cleanupFn func()) {
-	svc.agentRemoteMu.Lock()
-	defer svc.agentRemoteMu.Unlock()
-	if svc.agentRemoteCleanups == nil {
-		svc.agentRemoteCleanups = map[string]func(){}
+// cleanupRegistry holds id → cleanup callbacks under a single mutex.
+// Used twice on Context (agentCleanups, terminalCleanups) so the two
+// tab kinds keep distinct namespaces.
+type cleanupRegistry struct {
+	mu sync.Mutex
+	m  map[string]func()
+}
+
+func (r *cleanupRegistry) register(id string, fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.m == nil {
+		r.m = map[string]func(){}
 	}
-	svc.agentRemoteCleanups[agentID] = cleanupFn
+	r.m[id] = fn
+}
+
+func (r *cleanupRegistry) run(id string) {
+	r.mu.Lock()
+	fn, ok := r.m[id]
+	delete(r.m, id)
+	r.mu.Unlock()
+	if ok && fn != nil {
+		fn()
+	}
+}
+
+func (svc *Context) registerAgentCleanup(agentID string, cleanupFn func()) {
+	svc.agentCleanups.register(agentID, cleanupFn)
 }
 
 func (svc *Context) runAgentCleanup(agentID string) {
-	svc.agentRemoteMu.Lock()
-	fn, ok := svc.agentRemoteCleanups[agentID]
-	delete(svc.agentRemoteCleanups, agentID)
-	svc.agentRemoteMu.Unlock()
-	if ok && fn != nil {
-		fn()
-	}
+	svc.agentCleanups.run(agentID)
 }
 
 func (svc *Context) registerTerminalCleanup(terminalID string, cleanupFn func()) {
-	svc.terminalRemoteMu.Lock()
-	defer svc.terminalRemoteMu.Unlock()
-	if svc.terminalRemoteCleanups == nil {
-		svc.terminalRemoteCleanups = map[string]func(){}
-	}
-	svc.terminalRemoteCleanups[terminalID] = cleanupFn
+	svc.terminalCleanups.register(terminalID, cleanupFn)
 }
 
 func (svc *Context) runTerminalCleanup(terminalID string) {
-	svc.terminalRemoteMu.Lock()
-	fn, ok := svc.terminalRemoteCleanups[terminalID]
-	delete(svc.terminalRemoteCleanups, terminalID)
-	svc.terminalRemoteMu.Unlock()
-	if ok && fn != nil {
-		fn()
+	svc.terminalCleanups.run(terminalID)
+}
+
+// spawnRemoteIPC mints LEAPMUX_REMOTE_* env vars and registers the
+// matching cleanup so a later close (or pre-restart re-mint) retires
+// the token. kind is the user-facing tab type ("agent" or "terminal")
+// — embedded in the log message and the slog id field. phase is an
+// optional correlation tag ("open" / "restart" for terminals, empty
+// for agents). Returns nil envs when RemoteIPC is disabled or the
+// factory errors; in both cases the tab still spawns, just without
+// remote control. The factory call is supplied as a closure so the
+// generic helper doesn't have to know about the AgentSpawnInfo /
+// TerminalSpawnInfo type split.
+func (svc *Context) spawnRemoteIPC(
+	kind, tabID, phase string,
+	register func(string, func()),
+	call func() ([]string, func(), error),
+) []string {
+	if svc.RemoteIPC == nil {
+		return nil
 	}
+	envs, cleanup, err := call()
+	if err != nil {
+		attrs := []any{kind + "_id", tabID, "error", err}
+		if phase != "" {
+			attrs = append(attrs, "phase", phase)
+		}
+		slog.Warn("remote IPC factory failed; "+kind+" will start without remote control", attrs...)
+		return nil
+	}
+	if cleanup != nil {
+		register(tabID, cleanup)
+	}
+	return envs
 }
 
 // agentStartupTimeout returns the configured agent startup timeout,
@@ -253,69 +289,106 @@ func (svc *Context) Shutdown() {
 	svc.Cleanup.Wait()
 
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
-		svc.appendTerminalDisconnectNotice(tid)
-
-		// Try to get a full snapshot (metadata + screen). If the screen
-		// is empty (e.g. terminal was killed before rendering), fall back
-		// to metadata-only so the title and other fields are still saved.
-		snap, ok := svc.Terminals.SnapshotTerminal(tid)
-		if ok {
-			if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
-				ID:            tid,
-				WorkspaceID:   snap.WorkspaceID,
-				WorkingDir:    snap.WorkingDir,
-				ShellStartDir: snap.ShellStartDir,
-				Title:         snap.Title,
-				Cols:          int64(snap.Cols),
-				Rows:          int64(snap.Rows),
-				Screen:        appendTerminalDisconnectNotice(snap.Screen),
-			}); err != nil {
-				slog.Error("failed to save terminal on shutdown", "terminal_id", tid, "error", err)
-			}
+		// Already-exited terminals were persisted with their real exit
+		// code by makeTerminalExitFn; don't clobber it with the shutdown
+		// sentinel.
+		if svc.Terminals.IsExited(tid) {
 			continue
 		}
-
-		// No screen available — still persist metadata (title, etc.)
-		// so it survives the restart.
-		meta, hasMeta := svc.Terminals.GetMeta(tid)
-		if !hasMeta {
-			continue
-		}
-		if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
-			ID:            tid,
-			WorkspaceID:   meta.WorkspaceID,
-			WorkingDir:    meta.WorkingDir,
-			ShellStartDir: meta.ShellStartDir,
-			Title:         meta.Title,
-			Cols:          int64(meta.Cols),
-			Rows:          int64(meta.Rows),
-			Screen:        appendTerminalDisconnectNotice(nil),
-		}); err != nil {
-			slog.Error("failed to save terminal metadata on shutdown", "terminal_id", tid, "error", err)
-		}
+		svc.persistTerminalOnExit(tid, exitCodeUnknown)
 	}
 }
 
-var terminalDisconnectNotice = []byte("\r\n\r\n[Connection to the terminal was lost.]\r\n")
+// exitCodeUnknown is the sentinel used when the worker never observed
+// the child's exit (forced Shutdown: the worker is tearing the child
+// down without waiting for its exit code). Renders as the "Worker
+// disconnected" wording rather than a literal "?" because in this path
+// we *know* the worker killed the child — the exit code is unobserved,
+// not unknown.
+const exitCodeUnknown = -1
 
-func appendTerminalDisconnectNotice(screen []byte) []byte {
-	if bytes.HasSuffix(screen, terminalDisconnectNotice) {
-		out := make([]byte, len(screen))
-		copy(out, screen)
-		return out
+// terminalExitedNoticeSuffix is the constant trailing portion of every
+// formatted notice. Idempotency checks use HasSuffix against this so a
+// repeat call on a screen that already ends with any prior notice is a
+// no-op. Both the "Terminal process exited (N)" and "Worker
+// disconnected" notices end with this suffix so one check covers both.
+var terminalExitedNoticeSuffix = []byte(" - Press Enter to restart]\r\n")
+
+// formatTerminalExitedNotice renders the per-exit notice. The
+// exitCodeUnknown sentinel produces the worker-disconnected wording;
+// any other value produces the standard "Terminal process exited (N)"
+// wording.
+func formatTerminalExitedNotice(exitCode int) []byte {
+	if exitCode == exitCodeUnknown {
+		return []byte("\r\n\r\n[Worker disconnected - Press Enter to restart]\r\n")
 	}
-
-	out := make([]byte, 0, len(screen)+len(terminalDisconnectNotice))
-	out = append(out, screen...)
-	out = append(out, terminalDisconnectNotice...)
-	return out
+	return []byte("\r\n\r\n[Terminal process exited (" + strconv.Itoa(exitCode) + ") - Press Enter to restart]\r\n")
 }
 
-func (svc *Context) appendTerminalDisconnectNotice(terminalID string) {
-	if svc.Terminals.ScreenHasSuffix(terminalID, terminalDisconnectNotice) {
-		return
+// persistTerminalOnExit injects the exit notice into the live terminal's
+// screen buffer (so any subscriber sees it via the next broadcast) and
+// writes the resulting row to the DB so it survives a worker restart.
+// Single snapshot pass — the snapshot taken up front feeds both the
+// idempotency check (skip AppendOutput when the notice is already there)
+// and the DB-bound screen, avoiding the redundant RLock + HasSuffix that
+// a separate appendTerminalExitedNotice + persist sequence would do.
+// Falls back to metadata-only when no screen exists (e.g. terminal was
+// killed before rendering) so title/dims are still saved. Returns false
+// when neither snapshot nor meta is available — the row stays untouched.
+//
+// Always writes exitCode into the exit_code column EXCEPT when called
+// with exitCodeUnknown on a screen that already carries the exit-notice
+// suffix: that means the exit handler raced ahead and persisted the
+// real exit code, so we skip to avoid clobbering it with the
+// "worker disconnected" sentinel. The non-shutdown caller path (the
+// exit handler itself) never passes exitCodeUnknown.
+func (svc *Context) persistTerminalOnExit(tid string, exitCode int) bool {
+	var (
+		src    terminal.TerminalMeta
+		screen []byte
+		hasRow bool
+	)
+	if snap, ok := svc.Terminals.SnapshotTerminal(tid); ok {
+		src, screen, hasRow = snap.TerminalMeta, snap.Screen, true
+	} else if meta, ok := svc.Terminals.GetMeta(tid); ok {
+		src, hasRow = meta, true
 	}
-	_ = svc.Terminals.AppendOutput(terminalID, terminalDisconnectNotice)
+	if !hasRow {
+		return false
+	}
+	hasNotice := bytes.HasSuffix(screen, terminalExitedNoticeSuffix)
+	if exitCode == exitCodeUnknown && hasNotice {
+		// Shutdown lost the race to the exit handler — its persist already
+		// landed a real exit code, leave the row alone.
+		return true
+	}
+	if !hasNotice {
+		notice := formatTerminalExitedNotice(exitCode)
+		_ = svc.Terminals.AppendOutput(tid, notice)
+		// SnapshotTerminal returns a freshly-allocated slice (tailBytesLocked),
+		// so append can extend it directly without aliasing the manager's buffer.
+		screen = append(screen, notice...)
+	}
+	// Shell column is INSERT-only (see UpsertTerminal SQL): UPDATE
+	// preserves whatever was written at OpenTerminal time, so passing
+	// the zero value here is a no-op on the existing row.
+	params := db.UpsertTerminalParams{
+		ID:            tid,
+		WorkspaceID:   src.WorkspaceID,
+		WorkingDir:    src.WorkingDir,
+		HomeDir:       svc.HomeDir,
+		ShellStartDir: src.ShellStartDir,
+		Title:         src.Title,
+		Cols:          int64(src.Cols),
+		Rows:          int64(src.Rows),
+		Screen:        screen,
+		ExitCode:      int64(exitCode),
+	}
+	if err := svc.Queries.UpsertTerminal(bgCtx(), params); err != nil {
+		slog.Error("failed to save terminal on exit", "terminal_id", tid, "error", err)
+		return false
+	}
+	return true
 }
 
 // RegisterAll registers all service handlers with the dispatcher.
@@ -505,47 +578,65 @@ func (svc *Context) requireAccessibleWorkspace(sender *channel.Sender, workspace
 // and returns ok=false on empty id, missing row, db error, or denial. The
 // returned Agent is the freshly-loaded row so callers can reuse it.
 func (svc *Context) requireAccessibleAgent(sender *channel.Sender, agentID string) (db.Agent, bool) {
-	if agentID == "" {
-		sendInvalidArgument(sender, "agent_id is required")
-		return db.Agent{}, false
-	}
-	agentRow, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			sendNotFoundError(sender, "agent not found")
-			return db.Agent{}, false
-		}
-		slog.Error("failed to load agent for access check", "agent_id", agentID, "error", err)
-		sendInternalError(sender, "failed to load agent")
-		return db.Agent{}, false
-	}
-	if !svc.requireAccessibleWorkspace(sender, agentRow.WorkspaceID) {
-		return db.Agent{}, false
-	}
-	return agentRow, true
+	return requireAccessibleRow(
+		svc, sender, agentID, "agent",
+		svc.Queries.GetAgentByID,
+		func(a db.Agent) string { return a.WorkspaceID },
+	)
 }
 
 // requireAccessibleTerminal looks up the terminal and verifies its workspace
 // is accessible on the sender's channel. Mirror of requireAccessibleAgent.
 func (svc *Context) requireAccessibleTerminal(sender *channel.Sender, terminalID string) (db.Terminal, bool) {
-	if terminalID == "" {
-		sendInvalidArgument(sender, "terminal_id is required")
-		return db.Terminal{}, false
+	return requireAccessibleRow(
+		svc, sender, terminalID, "terminal",
+		svc.Queries.GetTerminal,
+		func(t db.Terminal) string { return t.WorkspaceID },
+	)
+}
+
+// requireAccessibleTerminalForRestart is the narrow-query variant used
+// by the RestartTerminal handler: returns metadata + length(screen)
+// without loading the screen BLOB. See GetTerminalForRestart for why.
+func (svc *Context) requireAccessibleTerminalForRestart(sender *channel.Sender, terminalID string) (db.GetTerminalForRestartRow, bool) {
+	return requireAccessibleRow(
+		svc, sender, terminalID, "terminal",
+		svc.Queries.GetTerminalForRestart,
+		func(t db.GetTerminalForRestartRow) string { return t.WorkspaceID },
+	)
+}
+
+// requireAccessibleRow factors the ACL + error-mapping shell shared by
+// every "load a row by id, then check workspace access" helper. kind is
+// the user-facing entity label embedded in error messages ("agent",
+// "terminal"); fetch is the sqlc query; workspaceID extracts the row's
+// workspace id for the access check.
+func requireAccessibleRow[T any](
+	svc *Context,
+	sender *channel.Sender,
+	id, kind string,
+	fetch func(context.Context, string) (T, error),
+	workspaceID func(T) string,
+) (T, bool) {
+	var zero T
+	if id == "" {
+		sendInvalidArgument(sender, kind+"_id is required")
+		return zero, false
 	}
-	termRow, err := svc.Queries.GetTerminal(bgCtx(), terminalID)
+	row, err := fetch(bgCtx(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			sendNotFoundError(sender, "terminal not found")
-			return db.Terminal{}, false
+			sendNotFoundError(sender, kind+" not found")
+			return zero, false
 		}
-		slog.Error("failed to load terminal for access check", "terminal_id", terminalID, "error", err)
-		sendInternalError(sender, "failed to load terminal")
-		return db.Terminal{}, false
+		slog.Error("failed to load "+kind+" for access check", kind+"_id", id, "error", err)
+		sendInternalError(sender, "failed to load "+kind)
+		return zero, false
 	}
-	if !svc.requireAccessibleWorkspace(sender, termRow.WorkspaceID) {
-		return db.Terminal{}, false
+	if !svc.requireAccessibleWorkspace(sender, workspaceID(row)) {
+		return zero, false
 	}
-	return termRow, true
+	return row, true
 }
 
 // sanitizeOptionalTitle normalizes an OpenAgent/OpenTerminal title. An empty
