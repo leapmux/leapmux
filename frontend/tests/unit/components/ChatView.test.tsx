@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ChatView } from '~/components/chat/ChatView'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObservers } from '../helpers/resizeObserverStub'
 
 const A_TXT_RE = /a\.txt/
@@ -406,7 +407,7 @@ describe('chatView', () => {
   })
 
   it('preserves expanded codex reasoning state when the message updates and new messages are appended', async () => {
-    localStorage.setItem('leapmux:browser-prefs', JSON.stringify({ expandAgentThoughts: false }))
+    localStorageSet(KEY_BROWSER_PREFS, { expandAgentThoughts: false })
 
     const initialMessages = [
       makeCodexReasoningMessage({
@@ -1206,7 +1207,7 @@ describe('chatView', () => {
   })
 
   it('starts codex reasoning collapsed when expandAgentThoughts is disabled', () => {
-    localStorage.setItem('leapmux:browser-prefs', JSON.stringify({ expandAgentThoughts: false }))
+    localStorageSet(KEY_BROWSER_PREFS, { expandAgentThoughts: false })
 
     const messages = [
       makeCodexReasoningMessage({ id: 'reason-done', seq: 1n, spanId: 'reason-1', summary: ['done'] }),

@@ -5,7 +5,7 @@ import type { ProviderSettingChange } from './providers/registry'
 import type { ControlRequest } from '~/stores/control.store'
 import { createEffect, createMemo, on } from 'solid-js'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { PREFIX_ASK_STATE, safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/browserStorage'
+import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_ASK_STATE } from '~/lib/browserStorage'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
 import { decidePlanModeToggle } from './planModeToggle'
@@ -107,7 +107,7 @@ export function useControlResponseHandling(
     (requestId) => {
       if (requestId && props.agentId) {
         const key = `${PREFIX_ASK_STATE}${props.agentId}:${requestId}`
-        const saved = safeGetJson<{ selections?: Record<number, string[]>, customTexts?: Record<number, string>, currentPage?: number }>(key)
+        const saved = localStorageGet<{ selections?: Record<number, string[]>, customTexts?: Record<number, string>, currentPage?: number }>(key)
         if (saved) {
           askState.setSelections(saved.selections ?? {})
           askState.setCustomTexts(saved.customTexts ?? {})
@@ -127,7 +127,7 @@ export function useControlResponseHandling(
     if (!req || !props.agentId || !isAskUserQuestion())
       return
     const key = `${PREFIX_ASK_STATE}${props.agentId}:${req.requestId}`
-    safeSetJson(key, {
+    localStorageSet(key, {
       selections: askState.selections(),
       customTexts: askState.customTexts(),
       currentPage: askState.currentPage(),
@@ -148,7 +148,7 @@ export function useControlResponseHandling(
     for (let page = 0; page < 20; page++) {
       clearDraft(`${props.agentId}-ctrl-${requestId}-q-${page}`)
     }
-    safeRemoveItem(`${PREFIX_ASK_STATE}${props.agentId}:${requestId}`)
+    localStorageRemove(`${PREFIX_ASK_STATE}${props.agentId}:${requestId}`)
   }
 
   const handleControlSend = (content: string): boolean | void => {

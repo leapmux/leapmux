@@ -13,6 +13,7 @@ import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { Icon } from '~/components/common/Icon'
 import { StartupSpinner } from '~/components/common/StartupPanel'
 import { Tooltip } from '~/components/common/Tooltip'
+import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, tildify, untildify } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
@@ -549,13 +550,13 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     })
   })
 
-  const storageKey = () => `directoryTree:state:${props.rootPath ?? '~'}:${props.showFiles ? 'files' : 'dirs'}`
+  const storageKey = () => `${PREFIX_DIRECTORY_TREE}${props.rootPath ?? '~'}:${props.showFiles ? 'files' : 'dirs'}`
 
   // Restore state from sessionStorage when rootPath changes
   createEffect(() => {
     const key = storageKey()
     try {
-      const stored = sessionStorage.getItem(key)
+      const stored = sessionStorageGet<string>(key)
       if (stored) {
         const restored = deserializeState(stored)
         if (restored) {
@@ -579,10 +580,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     const expanded = state.expandedPaths
     const cache = state.childrenCache
     const truncated = state.truncatedDirs
-    try {
-      sessionStorage.setItem(storageKey(), serializeState(expanded, cache, truncated))
-    }
-    catch { /* quota exceeded — ignore */ }
+    sessionStorageSet(storageKey(), serializeState(expanded, cache, truncated))
   })
 
   const isNodeExpanded = (path: string) => !!state.expandedPaths[path]

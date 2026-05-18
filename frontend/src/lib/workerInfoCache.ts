@@ -3,7 +3,7 @@
  * Persists across page reloads so offline workers still show last-known info.
  */
 
-import { PREFIX_WORKER_INFO, safeGetJson, safeRemoveItem, safeSetJson } from './browserStorage'
+import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_WORKER_INFO } from './browserStorage'
 
 export interface WorkerInfo {
   name: string
@@ -17,13 +17,13 @@ export interface WorkerInfo {
 }
 
 export function getWorkerInfo(workerId: string): WorkerInfo | null {
-  return safeGetJson<WorkerInfo>(PREFIX_WORKER_INFO + workerId) ?? null
+  return localStorageGet<WorkerInfo>(PREFIX_WORKER_INFO + workerId) ?? null
 }
 
 export function setWorkerInfo(workerId: string, info: WorkerInfo): void {
-  safeSetJson(PREFIX_WORKER_INFO + workerId, info)
+  localStorageSet(PREFIX_WORKER_INFO + workerId, info)
 }
 
 export function clearWorkerInfo(workerId: string): void {
-  safeRemoveItem(PREFIX_WORKER_INFO + workerId)
+  localStorageRemove(PREFIX_WORKER_INFO + workerId)
 }

@@ -3,7 +3,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { createStore } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { ContentCompression, MessageSource, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
-import { PREFIX_LOCAL_MESSAGES, safeGetJson, safeRemoveItem, safeSetJson } from '~/lib/browserStorage'
+import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_LOCAL_MESSAGES } from '~/lib/browserStorage'
 import { parseMessageContent } from '~/lib/messageParser'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
 
@@ -20,13 +20,13 @@ interface PersistedLocalMessage {
 }
 
 function getPersistedLocalMessages(agentId: string): PersistedLocalMessage[] {
-  return safeGetJson<PersistedLocalMessage[]>(`${PREFIX_LOCAL_MESSAGES}${agentId}`) ?? []
+  return localStorageGet<PersistedLocalMessage[]>(`${PREFIX_LOCAL_MESSAGES}${agentId}`) ?? []
 }
 
 function persistLocalMessage(agentId: string, msg: PersistedLocalMessage) {
   const list = getPersistedLocalMessages(agentId)
   list.push(msg)
-  safeSetJson(`${PREFIX_LOCAL_MESSAGES}${agentId}`, list)
+  localStorageSet(`${PREFIX_LOCAL_MESSAGES}${agentId}`, list)
 }
 
 function removePersistedLocalMessage(agentId: string, messageId: string) {
@@ -35,10 +35,10 @@ function removePersistedLocalMessage(agentId: string, messageId: string) {
     return
   const filtered = list.filter(m => m.id !== messageId)
   if (filtered.length === 0) {
-    safeRemoveItem(`${PREFIX_LOCAL_MESSAGES}${agentId}`)
+    localStorageRemove(`${PREFIX_LOCAL_MESSAGES}${agentId}`)
   }
   else {
-    safeSetJson(`${PREFIX_LOCAL_MESSAGES}${agentId}`, filtered)
+    localStorageSet(`${PREFIX_LOCAL_MESSAGES}${agentId}`, filtered)
   }
 }
 

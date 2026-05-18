@@ -6,7 +6,7 @@ import type { TerminalThemePreference } from '~/lib/terminal'
 import { createContext, createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { DiffView, TurnEndSound } from '~/generated/leapmux/v1/user_pb'
-import { KEY_BROWSER_PREFS, loadBrowserPrefs, safeSetJson } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, loadBrowserPrefs, localStorageSet } from '~/lib/browserStorage'
 import { setDebugEnabled } from '~/lib/logger'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
@@ -132,7 +132,7 @@ function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPreferen
   else {
     (prefs as Record<string, unknown>)[key] = value
   }
-  safeSetJson(KEY_BROWSER_PREFS, prefs)
+  localStorageSet(KEY_BROWSER_PREFS, prefs)
 }
 
 export const PreferencesProvider: ParentComponent = (props) => {

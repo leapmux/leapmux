@@ -12,11 +12,12 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
 import { activeTabKey as buildActiveTabStorageKey } from '~/components/shell/tabPersistenceKeys'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
+import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { spinner } from '~/styles/animations.css'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
-import { EXPANDED_WORKSPACES_KEY, readExpandedWorkspaceIds } from './expandedWorkspaces'
+import { readExpandedWorkspaceIds } from './expandedWorkspaces'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
@@ -104,10 +105,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   // Persist expanded state to sessionStorage.
   createEffect(() => {
     const ids = expandedIds()
-    try {
-      sessionStorage.setItem(EXPANDED_WORKSPACES_KEY, JSON.stringify([...ids]))
-    }
-    catch { /* ignore quota errors */ }
+    sessionStorageSet(KEY_EXPANDED_WORKSPACES, [...ids])
   })
 
   // Auto-expand the active workspace when it changes (if it has tabs).
@@ -315,7 +313,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         onTabClick={(type, tabId) => {
                           if (id !== props.activeWorkspaceId) {
                             // Store desired tab so workspace restore activates it.
-                            sessionStorage.setItem(buildActiveTabStorageKey(id), `${type}:${tabId}`)
+                            sessionStorageSet(buildActiveTabStorageKey(id), `${type}:${tabId}`)
                             props.onSelect(id)
                           }
                           else {

@@ -55,6 +55,24 @@ Does NOT apply to non-spacing px values: `borderRadius`, fixed `width`/`height` 
 
 Prefer direct imports over re-export aliases. Do NOT add `export { foo as bar } from '...'` in a sibling barrel/style file just to give a symbol a context-specific name — import the canonical name directly at every call site. If the canonical name is too generic, rename the canonical export instead. Existing re-export aliases: leave them unless touching that file for another reason.
 
+### Browser storage
+
+Never call `localStorage` or `sessionStorage` directly. Route every read, write, and delete through `~/lib/browserStorage` (`localStorageGet`/`localStorageSet`/`localStorageRemove` for localStorage; `sessionStorageGet`/`sessionStorageSet`/`sessionStorageHas`/`sessionStorageRemove` for sessionStorage).
+
+Why: every `leapmux:`-prefixed key is swept on each page load by `runCleanup` in `~/lib/browserStorage`. Every value is wrapped as `{ v, e }` with an expiration timestamp; reads unwrap and refresh the timestamp on access, so a key stays alive as long as the app is touched within its TTL. The sweep deletes any `leapmux:`-family key whose wrapper is missing, malformed, or expired — a raw `setItem(...)` write survives the current page but is wiped on the next refresh.
+
+Four registries divide keys by storage and match-type:
+
+- `EXACT_KEY_TTLS` — localStorage, exact match. Long-lived singletons (prefs, key-pins).
+- `DYNAMIC_KEY_TTLS` — localStorage, prefix match. Templated per-feature keys.
+- `SESSION_EXACT_KEY_TTLS` — sessionStorage, exact match.
+- `SESSION_DYNAMIC_KEY_TTLS` — sessionStorage, prefix match.
+
+Adding a new key:
+
+1. Add the constant (`KEY_*`) or prefix (`PREFIX_*`) to `browserStorage.ts` and register it in the right table with a TTL.
+2. Read/write through the helpers. They throw at write time if the key isn't registered, so a missed registration fails loudly instead of silently disappearing on the next reload.
+
 ## Git
 
 Never commit generated files. Output under `generated/` directories (sqlc, proto stubs, etc.) is gitignored — exclude anything generated when staging.

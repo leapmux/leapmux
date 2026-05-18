@@ -5,6 +5,7 @@ import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
 // jsdom does not provide ResizeObserver or Worker
@@ -204,7 +205,7 @@ describe('thinking message expansion preference', () => {
   })
 
   it('starts collapsed when expandAgentThoughts is disabled and toggles on click', () => {
-    localStorage.setItem('leapmux:browser-prefs', JSON.stringify({ expandAgentThoughts: false }))
+    localStorageSet(KEY_BROWSER_PREFS, { expandAgentThoughts: false })
 
     renderThinkingBubble('Collapsed by preference')
 

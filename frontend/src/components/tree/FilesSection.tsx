@@ -14,7 +14,7 @@ import { createEffect, createMemo, createSignal, For, on, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
-import { PREFIX_FILES_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { localStorageGet, localStorageSet, PREFIX_FILES_SHOW_HIDDEN } from '~/lib/browserStorage'
 import { join, sep, trimLastSegment } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { fileEntryToDiffStats } from '~/stores/gitFileStatus.store'
@@ -134,17 +134,17 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   const [activeFilter, setActiveFilter] = createSignal<GitFilterTab>('all')
   const [flatListMode, setFlatListMode] = createSignal(false)
   const showHiddenStorageKey = () => `${PREFIX_FILES_SHOW_HIDDEN}${props.workerId}:${props.workingDir}`
-  const [showHiddenFiles, setShowHiddenFiles] = createSignal(safeGetJson<boolean>(showHiddenStorageKey()) ?? true)
+  const [showHiddenFiles, setShowHiddenFiles] = createSignal(localStorageGet<boolean>(showHiddenStorageKey()) ?? true)
   let treeHandle: DirectoryTreeHandle | undefined
 
   // Re-read from localStorage when the storage key changes (workerId/workingDir changed).
   createEffect(on(showHiddenStorageKey, (key) => {
-    setShowHiddenFiles(safeGetJson<boolean>(key) ?? true)
+    setShowHiddenFiles(localStorageGet<boolean>(key) ?? true)
   }, { defer: true }))
 
   // Persist showHiddenFiles when it changes (skip initial mount).
   createEffect(on(showHiddenFiles, (value) => {
-    safeSetJson(showHiddenStorageKey(), value)
+    localStorageSet(showHiddenStorageKey(), value)
   }, { defer: true }))
 
   const isFiltered = () => activeFilter() !== 'all'

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { loadBrowserPrefs } from '~/lib/browserStorage'
 import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
 
@@ -92,7 +93,7 @@ function makeTab(type: TabType, id: string, title?: string) {
 }
 
 function getBrowserPrefs() {
-  return JSON.parse(localStorage.getItem('leapmux:browser-prefs') ?? '{}') as Record<string, unknown>
+  return loadBrowserPrefs() as Record<string, unknown>
 }
 
 beforeEach(() => {

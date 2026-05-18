@@ -1,14 +1,20 @@
 /**
  * Centralized browser storage management.
  *
- * All localStorage keys must be registered here (STATIC_KEYS or DYNAMIC_KEY_TTLS).
- * Dynamic keys (per-agent/per-worker) are wrapped as { v: T, e: number }
- * with an expiration timestamp and cleaned up automatically. Static keys
- * (preferences, key-pins) are stored raw and never expire.
+ * Every `leapmux:`-family key is registered in one of four registries:
+ *   - `EXACT_KEY_TTLS`         (localStorage,   exact match)
+ *   - `DYNAMIC_KEY_TTLS`       (localStorage,   prefix match)
+ *   - `SESSION_EXACT_KEY_TTLS` (sessionStorage, exact match)
+ *   - `SESSION_DYNAMIC_KEY_TTLS` (sessionStorage, prefix match)
  *
- * sessionStorage shares the same wrapped layout and registry mechanism
- * via `SESSION_DYNAMIC_KEY_TTLS` and the `session*` helpers — only the
- * underlying Storage object differs. Cleanup sweeps both stores.
+ * Every value is wrapped as `{ v: T, e: number }` with an expiration
+ * timestamp; reads unwrap and may refresh the timestamp on access.
+ * Long-lived preferences use a 1-year TTL plus the refresh-on-read
+ * mechanism, so opening the app at any point in a year keeps them
+ * alive; total inactivity for a year is the only way they expire.
+ *
+ * `runCleanup` sweeps both stores on a timer, deleting any
+ * `leapmux:`-family key whose wrapper is missing/malformed/expired.
  */
 
 // ---------------------------------------------------------------------------
@@ -55,21 +61,12 @@ export interface BrowserPreferences {
 // Key registry
 // ---------------------------------------------------------------------------
 
-/** Static key constants — single source of truth for all consumers. */
+/** Long-lived localStorage singletons (exact-match in the TTL registry). */
 export const KEY_BROWSER_PREFS = 'leapmux:browser-prefs'
 export const KEY_MRU_AGENT_PROVIDERS = 'leapmux:mru-agent-providers'
 export const KEY_KEY_PINS = 'leapmux:key-pins'
 export const KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN = 'leapmux:directory-selector-show-hidden'
 export const KEY_PREFERRED_EDITOR = 'leapmux:preferred-editor'
-
-/** Keys that are never cleaned up and stored without wrapping. */
-export const STATIC_KEYS = new Set([
-  KEY_BROWSER_PREFS,
-  KEY_MRU_AGENT_PROVIDERS,
-  KEY_KEY_PINS,
-  KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
-  KEY_PREFERRED_EDITOR,
-])
 
 /** Dynamic key prefixes — single source of truth for all consumers. */
 export const PREFIX_EDITOR_DRAFT = 'leapmux:editor-draft:'
@@ -82,11 +79,40 @@ export const PREFIX_FILES_SHOW_HIDDEN = 'leapmux:files-show-hidden:'
 
 /** sessionStorage dynamic key prefixes. */
 export const PREFIX_FILE_SCROLL = 'leapmux:fileScroll:'
+export const PREFIX_ACTIVE_TAB = 'leapmux:activeTab:'
+export const PREFIX_TILE_ACTIVE_TABS = 'leapmux:tileActiveTabs:'
+export const PREFIX_FOCUSED_TILE = 'leapmux:focusedTile:'
+export const PREFIX_SIDEBAR = 'leapmux:sidebar:'
+export const PREFIX_TAB_TREE = 'leapmux:tabTree:'
+export const PREFIX_DIRECTORY_TREE = 'leapmux:directoryTree:'
+/** Singleton sessionStorage keys (exact-match in the TTL registry). */
+export const KEY_ACTIVE_WORKSPACE = 'leapmux:activeWorkspace'
+export const KEY_CLI_PATH_CHECKED = 'leapmux:cli-path-checked'
+export const KEY_EXPANDED_WORKSPACES = 'leapmux:expandedWorkspaces'
+export const KEY_CLIENT_ID = 'leapmux:client-id'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
 const REFRESH_THRESHOLD_MS = 3 * HOUR_MS
 const CLEANUP_INTERVAL_MS = HOUR_MS
+const YEAR_MS = 365 * DAY_MS
+
+/**
+ * Singleton localStorage keys (matched by exact string). User-level
+ * preferences and trust state — values that should outlive ordinary
+ * idle gaps but still self-clean if the app goes unopened for a year.
+ * The on-read refresh in `readDynamic` pushes the expiration forward
+ * on every access, so a user who opens the app at any point during
+ * the year keeps these forever; a year of total inactivity expires
+ * them.
+ */
+export const EXACT_KEY_TTLS: ReadonlyMap<string, number> = new Map([
+  [KEY_BROWSER_PREFS, YEAR_MS],
+  [KEY_MRU_AGENT_PROVIDERS, YEAR_MS],
+  [KEY_KEY_PINS, YEAR_MS],
+  [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, YEAR_MS],
+  [KEY_PREFERRED_EDITOR, YEAR_MS],
+])
 
 /** Dynamic key prefixes and their TTLs (localStorage). */
 export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> = [
@@ -100,21 +126,62 @@ export const DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> 
 ]
 
 /**
- * Dynamic key prefixes and their TTLs (sessionStorage). sessionStorage
- * normally clears on tab close, but PWAs and "restore tabs on restart"
- * can keep it alive across sessions — capping retention bounds the key
- * set without depending on tab-close cleanup.
+ * Templated sessionStorage keys (matched by `startsWith` against the
+ * prefix). sessionStorage normally clears on tab close, but PWAs and
+ * "restore tabs on restart" can keep it alive across sessions —
+ * capping retention bounds the key set without depending on tab-close
+ * cleanup.
+ *
+ * Per-workspace UI state (active tab, tile active tabs, focused tile,
+ * sidebar layout, tab-tree group collapse, directory-tree expansion)
+ * is restored by `useWorkspaceRestore` on page refresh. Without
+ * registration the on-load sweep wipes these and the restore path
+ * falls back to "activate the first tab" / "navigate to the first
+ * workspace". 30 days lets a user return after a long break and still
+ * land on their last tab.
  */
 export const SESSION_DYNAMIC_KEY_TTLS: ReadonlyArray<{ prefix: string, ttlMs: number }> = [
   { prefix: PREFIX_FILE_SCROLL, ttlMs: 1 * DAY_MS },
+  { prefix: PREFIX_ACTIVE_TAB, ttlMs: 30 * DAY_MS },
+  { prefix: PREFIX_TILE_ACTIVE_TABS, ttlMs: 30 * DAY_MS },
+  { prefix: PREFIX_FOCUSED_TILE, ttlMs: 30 * DAY_MS },
+  { prefix: PREFIX_SIDEBAR, ttlMs: 30 * DAY_MS },
+  { prefix: PREFIX_TAB_TREE, ttlMs: 30 * DAY_MS },
+  { prefix: PREFIX_DIRECTORY_TREE, ttlMs: 30 * DAY_MS },
 ]
+
+/**
+ * Singleton sessionStorage keys (matched by exact string). Separating
+ * these from the prefix-match table means a future key whose name
+ * accidentally begins with one of these strings can't silently inherit
+ * its TTL — every singleton has to be registered by its exact value.
+ *
+ * - `KEY_ACTIVE_WORKSPACE` / `KEY_EXPANDED_WORKSPACES`: the workspace
+ *   currently active and the set of expanded workspaces in the sidebar
+ *   tree. Match the 30-day lifetime of the per-workspace UI snapshot.
+ * - `KEY_CLIENT_ID`: per-session CRDT client identity. Long-lived so a
+ *   refresh keeps the same id; the TTL bounds retention if the tab
+ *   survives for weeks without being closed.
+ * - `KEY_CLI_PATH_CHECKED`: one-shot gate for the macOS "install
+ *   leapmux on PATH" prompt. At most once per session; the TTL is a
+ *   backstop in case sessionStorage is preserved across sessions.
+ */
+export const SESSION_EXACT_KEY_TTLS: ReadonlyMap<string, number> = new Map([
+  [KEY_ACTIVE_WORKSPACE, 30 * DAY_MS],
+  [KEY_EXPANDED_WORKSPACES, 30 * DAY_MS],
+  [KEY_CLIENT_ID, 30 * DAY_MS],
+  [KEY_CLI_PATH_CHECKED, 1 * DAY_MS],
+])
 
 // ---------------------------------------------------------------------------
 // Key helpers
 // ---------------------------------------------------------------------------
 
-/** Returns the TTL in ms for a dynamic key, or null if the key is static or unknown. */
+/** Returns the TTL in ms for a registered localStorage key, or null if unknown. */
 export function getTtlForKey(key: string): number | null {
+  const exact = EXACT_KEY_TTLS.get(key)
+  if (exact !== undefined)
+    return exact
   for (const { prefix, ttlMs } of DYNAMIC_KEY_TTLS) {
     if (key.startsWith(prefix))
       return ttlMs
@@ -122,8 +189,11 @@ export function getTtlForKey(key: string): number | null {
   return null
 }
 
-/** Returns the TTL in ms for a dynamic sessionStorage key, or null if unknown. */
+/** Returns the TTL in ms for a registered sessionStorage key, or null if unknown. */
 export function getSessionTtlForKey(key: string): number | null {
+  const exact = SESSION_EXACT_KEY_TTLS.get(key)
+  if (exact !== undefined)
+    return exact
   for (const { prefix, ttlMs } of SESSION_DYNAMIC_KEY_TTLS) {
     if (key.startsWith(prefix))
       return ttlMs
@@ -153,47 +223,26 @@ export function shouldRefreshExpiration(e: number, ttlMs: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Browser preferences
-// ---------------------------------------------------------------------------
-
-/** Load the consolidated browser preferences from localStorage. */
-export function loadBrowserPrefs(): BrowserPreferences {
-  try {
-    const raw = localStorage.getItem(KEY_BROWSER_PREFS)
-    if (raw !== null)
-      return JSON.parse(raw) as BrowserPreferences
-  }
-  catch { /* ignore parse errors */ }
-  return {}
-}
-
-// ---------------------------------------------------------------------------
 // Safe localStorage wrappers
 // ---------------------------------------------------------------------------
 
-/**
- * Validate the key and return its TTL. Throws if the key is not registered.
- * Returns null for static keys, the TTL in ms for dynamic keys.
- */
-function requireKnownKey(key: string): number | null {
+function requireKnownKey(key: string): number {
   const ttl = getTtlForKey(key)
-  if (ttl !== null)
-    return ttl
-  if (!STATIC_KEYS.has(key)) {
+  if (ttl === null) {
     throw new Error(
       `Unknown localStorage key: "${key}". Register it in browserStorage.ts `
-      + `(STATIC_KEYS or DYNAMIC_KEY_TTLS).`,
+      + `(EXACT_KEY_TTLS for singletons, DYNAMIC_KEY_TTLS for templated keys).`,
     )
   }
-  return null
+  return ttl
 }
 
 /**
  * Read and unwrap a dynamic key's value, handling expiration and refresh.
  * Returns the unwrapped value, or undefined if missing/expired/malformed.
  */
-function readDynamic(key: string, ttl: number): unknown | undefined {
-  const raw = localStorage.getItem(key)
+function readDynamic(storage: Storage, key: string, ttl: number): unknown | undefined {
+  const raw = storage.getItem(key)
   if (raw === null)
     return undefined
 
@@ -202,82 +251,53 @@ function readDynamic(key: string, ttl: number): unknown | undefined {
     return undefined
 
   if (parsed.e <= Date.now()) {
-    localStorage.removeItem(key)
+    storage.removeItem(key)
     return undefined
   }
 
   if (shouldRefreshExpiration(parsed.e, ttl)) {
     parsed.e = Date.now() + ttl
-    localStorage.setItem(key, JSON.stringify(parsed))
+    storage.setItem(key, JSON.stringify(parsed))
   }
 
   return parsed.v
 }
 
-/** Read and parse a JSON value from localStorage. Returns undefined on missing key or parse error. */
-export function safeGetJson<T>(key: string): T | undefined {
+/** Write a value wrapped with a TTL expiration to `storage`. */
+function writeWrapped(storage: Storage, key: string, value: unknown, ttl: number): void {
+  storage.setItem(key, JSON.stringify({ v: value, e: Date.now() + ttl }))
+}
+
+/** Read and unwrap a value from localStorage. Returns undefined on missing/expired/malformed. */
+export function localStorageGet<T>(key: string): T | undefined {
   const ttl = requireKnownKey(key)
   try {
-    if (ttl !== null)
-      return readDynamic(key, ttl) as T | undefined
-
-    const raw = localStorage.getItem(key)
-    if (raw === null)
-      return undefined
-    return JSON.parse(raw) as T
+    return readDynamic(localStorage, key, ttl) as T | undefined
   }
   catch { /* ignore parse errors */ }
   return undefined
 }
 
-/** Stringify and write a JSON value to localStorage. Silently ignores write errors. */
-export function safeSetJson(key: string, value: unknown): void {
+/** Stringify and write a value to localStorage wrapped with a TTL. Silently ignores write errors. */
+export function localStorageSet(key: string, value: unknown): void {
   const ttl = requireKnownKey(key)
   try {
-    if (ttl !== null) {
-      localStorage.setItem(key, JSON.stringify({ v: value, e: Date.now() + ttl }))
-    }
-    else {
-      localStorage.setItem(key, JSON.stringify(value))
-    }
+    writeWrapped(localStorage, key, value, ttl)
   }
   catch { /* ignore write errors (e.g. quota exceeded) */ }
 }
 
-/** Read a raw string from localStorage. Returns null on missing key or access error. */
-export function safeGetString(key: string): string | null {
-  const ttl = requireKnownKey(key)
-  try {
-    if (ttl !== null) {
-      const v = readDynamic(key, ttl)
-      return v !== undefined ? String(v) : null
-    }
-    return localStorage.getItem(key)
-  }
-  catch { /* ignore access errors */ }
-  return null
-}
-
-/** Write a raw string to localStorage. Silently ignores write errors. */
-export function safeSetString(key: string, value: string): void {
-  const ttl = requireKnownKey(key)
-  try {
-    if (ttl !== null) {
-      localStorage.setItem(key, JSON.stringify({ v: value, e: Date.now() + ttl }))
-    }
-    else {
-      localStorage.setItem(key, value)
-    }
-  }
-  catch { /* ignore write errors */ }
-}
-
 /** Remove a key from localStorage. Silently ignores errors. */
-export function safeRemoveItem(key: string): void {
+export function localStorageRemove(key: string): void {
   try {
     localStorage.removeItem(key)
   }
   catch { /* ignore errors */ }
+}
+
+/** Load the consolidated browser preferences from localStorage. */
+export function loadBrowserPrefs(): BrowserPreferences {
+  return localStorageGet<BrowserPreferences>(KEY_BROWSER_PREFS) ?? {}
 }
 
 // ---------------------------------------------------------------------------
@@ -289,52 +309,47 @@ function requireKnownSessionKey(key: string): number {
   if (ttl === null) {
     throw new Error(
       `Unknown sessionStorage key: "${key}". Register it in browserStorage.ts `
-      + `(SESSION_DYNAMIC_KEY_TTLS).`,
+      + `(SESSION_EXACT_KEY_TTLS for singletons, SESSION_DYNAMIC_KEY_TTLS for templated keys).`,
     )
   }
   return ttl
 }
 
-function readDynamicSession(key: string, ttl: number): unknown | undefined {
-  const raw = sessionStorage.getItem(key)
-  if (raw === null)
-    return undefined
-  const parsed = JSON.parse(raw)
-  if (!isWrappedValue(parsed))
-    return undefined
-  if (parsed.e <= Date.now()) {
-    sessionStorage.removeItem(key)
-    return undefined
-  }
-  if (shouldRefreshExpiration(parsed.e, ttl)) {
-    parsed.e = Date.now() + ttl
-    sessionStorage.setItem(key, JSON.stringify(parsed))
-  }
-  return parsed.v
-}
-
-/** Read a wrapped string from sessionStorage. Returns null on missing/expired/malformed. */
-export function sessionGetString(key: string): string | null {
+/** Read and unwrap a value from sessionStorage. Returns undefined on missing/expired/malformed. */
+export function sessionStorageGet<T>(key: string): T | undefined {
   const ttl = requireKnownSessionKey(key)
   try {
-    const v = readDynamicSession(key, ttl)
-    return v !== undefined ? String(v) : null
+    return readDynamic(sessionStorage, key, ttl) as T | undefined
   }
-  catch { /* ignore access/parse errors */ }
-  return null
+  catch { /* ignore parse errors */ }
+  return undefined
 }
 
-/** Write a wrapped string to sessionStorage. Silently ignores write errors. */
-export function sessionSetString(key: string, value: string): void {
+/** Stringify and write a value to sessionStorage wrapped with a TTL. Silently ignores write errors. */
+export function sessionStorageSet(key: string, value: unknown): void {
   const ttl = requireKnownSessionKey(key)
   try {
-    sessionStorage.setItem(key, JSON.stringify({ v: value, e: Date.now() + ttl }))
+    writeWrapped(sessionStorage, key, value, ttl)
   }
   catch { /* ignore write errors */ }
 }
 
+/**
+ * Cheap existence check: true iff the key has any value in sessionStorage.
+ * Skips the wrapper parse / TTL refresh that `sessionStorageGet` performs —
+ * use this when callers only need "did anything write here?".
+ */
+export function sessionStorageHas(key: string): boolean {
+  requireKnownSessionKey(key)
+  try {
+    return sessionStorage.getItem(key) !== null
+  }
+  catch { /* ignore access errors */ }
+  return false
+}
+
 /** Remove a key from sessionStorage. Silently ignores errors. */
-export function sessionRemoveItem(key: string): void {
+export function sessionStorageRemove(key: string): void {
   try {
     sessionStorage.removeItem(key)
   }
@@ -347,7 +362,6 @@ export function sessionRemoveItem(key: string): void {
 
 function sweepStorage(
   storage: Storage,
-  staticKeys: ReadonlySet<string>,
   ttlFor: (key: string) => number | null,
 ): void {
   const now = Date.now()
@@ -358,10 +372,7 @@ function sweepStorage(
       continue
     if (!key.startsWith('leapmux:') && !key.startsWith('leapmux-'))
       continue
-    if (staticKeys.has(key))
-      continue
-    const ttl = ttlFor(key)
-    if (ttl !== null) {
+    if (ttlFor(key) !== null) {
       try {
         const raw = storage.getItem(key)
         if (raw !== null) {
@@ -382,18 +393,14 @@ function sweepStorage(
   }
 }
 
-const EMPTY_KEYS: ReadonlySet<string> = new Set()
-
 /**
- * Scan localStorage and sessionStorage and delete any `leapmux:`-family
- * key that is NOT a known static key AND NOT a valid non-expired
- * wrapped dynamic key.
+ * Scan localStorage and sessionStorage and delete every `leapmux:`-family
+ * key that is unregistered or whose wrapper is missing / malformed /
+ * expired.
  */
 export function runCleanup(): void {
-  sweepStorage(localStorage, STATIC_KEYS, getTtlForKey)
-  // sessionStorage has no static-key concept; every registered prefix
-  // is dynamic and any unknown leapmux key is stale.
-  sweepStorage(sessionStorage, EMPTY_KEYS, getSessionTtlForKey)
+  sweepStorage(localStorage, getTtlForKey)
+  sweepStorage(sessionStorage, getSessionTtlForKey)
 }
 
 /**

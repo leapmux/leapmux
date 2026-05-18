@@ -7,7 +7,7 @@ import { labelRow, treeContainer } from '~/components/common/Dialog.css'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
-import { KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { registerDialogFileTreeOps } from '~/lib/fileTreeOps'
 import { flavorFromOs } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
@@ -18,10 +18,10 @@ interface DirectorySelectorProps {
 }
 
 export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
-  const [showHiddenFiles, setShowHiddenFiles] = createSignal(safeGetJson<boolean>(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN) ?? true)
+  const [showHiddenFiles, setShowHiddenFiles] = createSignal(localStorageGet<boolean>(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN) ?? true)
 
   createEffect(on(showHiddenFiles, (value) => {
-    safeSetJson(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, value)
+    localStorageSet(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, value)
   }, { defer: true }))
 
   createEffect(() => {

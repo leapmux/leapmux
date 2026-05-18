@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_BROWSER_PREFS } from './browserStorage'
+import { KEY_BROWSER_PREFS, localStorageSet } from './browserStorage'
 import { createTerminalInstance, getTerminalRendererPreference, resolveTerminalRendererPreference, resolveTerminalThemeMode, serializeXtermBuffer } from './terminal'
 
 // xterm.js requires a DOM element for open(), but we can still test
@@ -187,13 +187,13 @@ describe('getTerminalRendererPreference', () => {
   })
 
   it('accepts the canvas experiment override', () => {
-    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ terminalRenderer: 'canvas' }))
+    localStorageSet(KEY_BROWSER_PREFS, { terminalRenderer: 'canvas' })
 
     expect(getTerminalRendererPreference()).toBe('canvas')
   })
 
   it('ignores unknown values', () => {
-    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ terminalRenderer: 'invalid' }))
+    localStorageSet(KEY_BROWSER_PREFS, { terminalRenderer: 'invalid' })
 
     expect(getTerminalRendererPreference()).toBe('auto')
   })

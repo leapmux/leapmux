@@ -1,7 +1,8 @@
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
 import { createEffect } from 'solid-js'
-import { ACTIVE_WORKSPACE_KEY, activeTabKey, focusedTileKey, tileActiveTabsKey } from './tabPersistenceKeys'
+import { KEY_ACTIVE_WORKSPACE, sessionStorageHas, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
+import { activeTabKey, focusedTileKey, tileActiveTabsKey } from './tabPersistenceKeys'
 
 /**
  * Persists the view-state slices that `useWorkspaceRestore` reads back
@@ -36,14 +37,14 @@ export interface UseTabPersistenceOpts {
 function writeIfChanged(key: string, value: string, last: Map<string, string>) {
   if (last.get(key) === value)
     return
-  sessionStorage.setItem(key, value)
+  sessionStorageSet(key, value)
   last.set(key, value)
 }
 
 function clearIfPresent(key: string, last: Map<string, string>) {
-  if (!last.has(key) && sessionStorage.getItem(key) == null)
+  if (!last.has(key) && !sessionStorageHas(key))
     return
-  sessionStorage.removeItem(key)
+  sessionStorageRemove(key)
   last.delete(key)
 }
 
@@ -89,6 +90,6 @@ export function useTabPersistence(opts: UseTabPersistenceOpts) {
     const wsId = getActiveWorkspaceId()
     if (!wsId || workspaceLoading())
       return
-    writeIfChanged(ACTIVE_WORKSPACE_KEY, wsId, lastWritten)
+    writeIfChanged(KEY_ACTIVE_WORKSPACE, wsId, lastWritten)
   })
 }

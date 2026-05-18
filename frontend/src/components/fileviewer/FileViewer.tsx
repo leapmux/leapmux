@@ -16,7 +16,7 @@ import { showWarnToast } from '~/components/common/Toast'
 import { usePreferences } from '~/context/PreferencesContext'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { GitFileRef } from '~/generated/leapmux/v1/git_pb'
-import { PREFIX_FILE_SCROLL, sessionGetString, sessionRemoveItem, sessionSetString } from '~/lib/browserStorage'
+import { PREFIX_FILE_SCROLL, sessionStorageGet, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
 import { detectFileViewModeFromExt, isImageExt, isLikelyBinaryExt, isSvgExt } from '~/lib/fileType'
 import { formatBytes } from '~/lib/formatBytes'
 import { basename, detectFlavor, extname } from '~/lib/paths'
@@ -86,11 +86,8 @@ function binaryDiffMessageFromGit(
 
 /** Parse the wrapped scroll-position value, returning null when stale or malformed. */
 function readScrollEntry(key: string): number | null {
-  const raw = sessionGetString(key)
-  if (raw === null)
-    return null
-  const scroll = Number(raw)
-  return Number.isFinite(scroll) ? scroll : null
+  const scroll = sessionStorageGet<number>(key)
+  return scroll !== undefined && Number.isFinite(scroll) ? scroll : null
 }
 
 export const FileViewer: Component<{
@@ -494,15 +491,15 @@ export const FileViewer: Component<{
   const scrollStorageKey = () => `${scrollStoragePrefix}:${props.fileViewMode ?? 'working'}`
 
   // Save scroll position when the view mode changes or on unmount.
-  // Values are TTL-wrapped via `sessionSetString` so stale entries get
+  // Values are TTL-wrapped via `sessionStorageSet` so stale entries get
   // dropped by `runCleanup` on next app load.
   let lastSavedKey: string | undefined
   const saveScrollPosition = () => {
     const key = lastSavedKey ?? scrollStorageKey()
     if (contentRef && contentRef.scrollTop > 0)
-      sessionSetString(key, String(contentRef.scrollTop))
+      sessionStorageSet(key, contentRef.scrollTop)
     else
-      sessionRemoveItem(key)
+      sessionStorageRemove(key)
   }
   onCleanup(saveScrollPosition)
 
@@ -521,7 +518,7 @@ export const FileViewer: Component<{
 
       const savedScroll = readScrollEntry(key)
       if (savedScroll != null) {
-        sessionRemoveItem(key)
+        sessionStorageRemove(key)
         requestAnimationFrame(() => {
           if (contentRef)
             contentRef.scrollTop = savedScroll

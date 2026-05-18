@@ -8,6 +8,7 @@ import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { KEY_MRU_AGENT_PROVIDERS, localStorageSet } from '~/lib/browserStorage'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
@@ -103,7 +104,7 @@ describe('useAgentOperations', () => {
               agentProvider: AgentProvider.CODEX,
             }),
           })
-          localStorage.setItem('leapmux:mru-agent-providers', JSON.stringify([AgentProvider.CLAUDE_CODE]))
+          localStorageSet(KEY_MRU_AGENT_PROVIDERS, [AgentProvider.CLAUDE_CODE])
 
           const { tabStore, ops } = setup()
           tabStore.addTab({
@@ -141,7 +142,7 @@ describe('useAgentOperations', () => {
               agentProvider: AgentProvider.CODEX,
             }),
           })
-          localStorage.setItem('leapmux:mru-agent-providers', JSON.stringify([AgentProvider.CODEX, AgentProvider.CLAUDE_CODE]))
+          localStorageSet(KEY_MRU_AGENT_PROVIDERS, [AgentProvider.CODEX, AgentProvider.CLAUDE_CODE])
 
           const { tabStore, ops } = setup()
           tabStore.addTab({

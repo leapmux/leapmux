@@ -9,8 +9,8 @@ vi.mock('~/components/tree/DirectoryTree', () => ({
 
 vi.mock('~/lib/browserStorage', () => ({
   KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN: 'directory-selector-show-hidden',
-  safeGetJson: vi.fn(() => true),
-  safeSetJson: vi.fn(),
+  localStorageGet: vi.fn(() => true),
+  localStorageSet: vi.fn(),
 }))
 
 vi.mock('~/lib/shortcuts/display', () => ({

@@ -11,6 +11,7 @@ import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { PREFIX_TAB_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { basename } from '~/lib/paths'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
 import { canCloseTab, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
@@ -155,7 +156,7 @@ export interface WorkspaceTabTreeProps {
 
 export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const tree = createMemo(() => buildTree(props.tabs, props.tileOrder))
-  const storageKey = () => `leapmux:tabTree:${props.workspaceId}`
+  const storageKey = () => `${PREFIX_TAB_TREE}${props.workspaceId}`
 
   // --- Tab rename editing state ---
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
@@ -188,13 +189,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   }
 
   function loadCollapsedState(): Record<string, boolean> {
-    try {
-      const stored = sessionStorage.getItem(storageKey())
-      return stored ? JSON.parse(stored) : {}
-    }
-    catch {
-      return {}
-    }
+    return sessionStorageGet<Record<string, boolean>>(storageKey()) ?? {}
   }
 
   // Collapse state keyed by group label
@@ -207,10 +202,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   function toggleCollapsed(key: string) {
     setCollapsed((prev) => {
       const next = { ...prev, [key]: !prev[key] }
-      try {
-        sessionStorage.setItem(storageKey(), JSON.stringify(next))
-      }
-      catch { /* quota */ }
+      sessionStorageSet(storageKey(), next)
       return next
     })
   }

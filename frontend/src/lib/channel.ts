@@ -28,7 +28,7 @@ import {
   InnerRpcRequestSchema,
   UserIdClaimSchema,
 } from '~/generated/leapmux/v1/channel_pb'
-import { KEY_KEY_PINS, safeGetJson, safeRemoveItem, safeSetJson } from './browserStorage'
+import { KEY_KEY_PINS, localStorageGet, localStorageRemove, localStorageSet } from './browserStorage'
 import { createInflightCache } from './inflightCache'
 import { createLogger } from './logger'
 import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, concatBytes } from './noise'
@@ -240,7 +240,7 @@ export class ChannelManager {
     // 2. Key pinning (TOFU model) — pin composite key.
     const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
     const publicKeyHex = bytesToHex(compositeKeyBytes)
-    const allPins = safeGetJson<KeyPinMap>(KEY_KEY_PINS) ?? {}
+    const allPins = localStorageGet<KeyPinMap>(KEY_KEY_PINS) ?? {}
     const pinned = allPins[workerId] ?? null
 
     if (pinned && pinned.publicKeyHex !== publicKeyHex) {
@@ -262,7 +262,7 @@ export class ChannelManager {
       }
       // User accepted the new key.
       allPins[workerId] = { publicKeyHex, firstSeen: Date.now() }
-      safeSetJson(KEY_KEY_PINS, allPins)
+      localStorageSet(KEY_KEY_PINS, allPins)
     }
 
     // 3. Perform handshake based on encryption mode.
@@ -302,7 +302,7 @@ export class ChannelManager {
     // 5. Pin key on first use (TOFU).
     if (!pinned) {
       allPins[workerId] = { publicKeyHex, firstSeen: Date.now() }
-      safeSetJson(KEY_KEY_PINS, allPins)
+      localStorageSet(KEY_KEY_PINS, allPins)
     }
 
     // 6. Send UserIdClaim as first encrypted message.
@@ -538,14 +538,14 @@ export class ChannelManager {
 
   /** Remove a pinned key for a worker. */
   static clearKeyPin(workerId: string): void {
-    const allPins = safeGetJson<KeyPinMap>(KEY_KEY_PINS) ?? {}
+    const allPins = localStorageGet<KeyPinMap>(KEY_KEY_PINS) ?? {}
     delete allPins[workerId]
-    safeSetJson(KEY_KEY_PINS, allPins)
+    localStorageSet(KEY_KEY_PINS, allPins)
   }
 
   /** Remove all pinned keys. */
   static clearAllKeyPins(): void {
-    safeRemoveItem(KEY_KEY_PINS)
+    localStorageRemove(KEY_KEY_PINS)
   }
 
   // ---- Private methods ----

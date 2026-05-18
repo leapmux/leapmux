@@ -35,7 +35,9 @@ describe('mru editor preference', () => {
   it('round-trips through localStorage', () => {
     setPreferredEditorId('vscode')
     expect(getPreferredEditorId()).toBe('vscode')
-    expect(localStorage.getItem(KEY_PREFERRED_EDITOR)).toBe(JSON.stringify('vscode'))
+    const raw = localStorage.getItem(KEY_PREFERRED_EDITOR)
+    expect(raw).not.toBeNull()
+    expect(JSON.parse(raw!).v).toBe('vscode')
   })
 
   it('handles overwrite', () => {

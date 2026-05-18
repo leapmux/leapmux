@@ -2,6 +2,7 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { KEY_PREFERRED_EDITOR, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { _resetEditorCacheForTests } from '~/lib/externalEditors'
 import { OpenInEditorButton } from './OpenInEditorButton'
 
@@ -114,7 +115,7 @@ describe('open in editor button', () => {
       { id: 'vscode', displayName: 'Visual Studio Code' },
       { id: 'zed', displayName: 'Zed' },
     ])
-    localStorage.setItem('leapmux:preferred-editor', JSON.stringify('zed'))
+    localStorageSet(KEY_PREFERRED_EDITOR, 'zed')
     renderButton()
     const main = await screen.findByTestId('open-in-editor-main')
     await waitFor(() => expect(main.textContent).toContain('Open in Zed'))
@@ -124,7 +125,7 @@ describe('open in editor button', () => {
     listEditorsMock.mockResolvedValue([
       { id: 'vscode', displayName: 'Visual Studio Code' },
     ])
-    localStorage.setItem('leapmux:preferred-editor', JSON.stringify('vscode'))
+    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
     renderButton('/home/u/proj')
     const main = await screen.findByTestId('open-in-editor-main')
     await waitFor(() => expect(main.textContent).toContain('Open in Visual Studio Code'))
@@ -141,7 +142,7 @@ describe('open in editor button', () => {
     const item = await screen.findByTestId('open-in-editor-item-zed')
     fireEvent.click(item)
     expect(openInEditorMock).not.toHaveBeenCalled()
-    expect(localStorage.getItem('leapmux:preferred-editor')).toBe(JSON.stringify('zed'))
+    expect(localStorageGet<string>(KEY_PREFERRED_EDITOR)).toBe('zed')
     // …and the next click on the main face uses the freshly chosen editor.
     const main = await screen.findByTestId('open-in-editor-main')
     await waitFor(() => expect(main.textContent).toContain('Open in Zed'))
@@ -151,7 +152,7 @@ describe('open in editor button', () => {
 
   it('falls back to "Open in …" when MRU points at an editor that is no longer detected', async () => {
     listEditorsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
-    localStorage.setItem('leapmux:preferred-editor', JSON.stringify('zed'))
+    localStorageSet(KEY_PREFERRED_EDITOR, 'zed')
     renderButton()
     const main = await screen.findByTestId('open-in-editor-main')
     await waitFor(() => expect(main.textContent).toContain('Open in …'))
@@ -206,7 +207,7 @@ describe('open in editor button', () => {
           { id: 'zed', displayName: 'Zed' },
         ])
         .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code' }])
-      localStorage.setItem('leapmux:preferred-editor', JSON.stringify('zed'))
+      localStorageSet(KEY_PREFERRED_EDITOR, 'zed')
       renderButton('/p')
       // MRU is `zed` initially.
       const main = await screen.findByTestId('open-in-editor-main')
@@ -216,21 +217,21 @@ describe('open in editor button', () => {
       fireEvent.click(refreshBtn)
       // After refresh, Zed is gone; MRU migrates to VS Code.
       await waitFor(() => expect(main.textContent).toContain('Open in VS Code'))
-      expect(localStorage.getItem('leapmux:preferred-editor')).toBe(JSON.stringify('vscode'))
+      expect(localStorageGet<string>(KEY_PREFERRED_EDITOR)).toBe('vscode')
     })
 
     it('clears in-memory MRU when refresh returns no editors but leaves storage alone', async () => {
       listEditorsMock
         .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code' }])
         .mockResolvedValueOnce([])
-      localStorage.setItem('leapmux:preferred-editor', JSON.stringify('vscode'))
+      localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
       renderButton('/p')
       const refreshBtn = await screen.findByTestId('open-in-editor-refresh')
       fireEvent.click(refreshBtn)
       await waitFor(() => expect(listEditorsMock).toHaveBeenCalledTimes(2))
       // localStorage MRU is preserved so the user's choice returns when they
       // re-install the editor — only the in-memory signal is cleared.
-      expect(localStorage.getItem('leapmux:preferred-editor')).toBe(JSON.stringify('vscode'))
+      expect(localStorageGet<string>(KEY_PREFERRED_EDITOR)).toBe('vscode')
     })
 
     it('disables the chevron and shows a spinner there while the refresh is in flight', async () => {

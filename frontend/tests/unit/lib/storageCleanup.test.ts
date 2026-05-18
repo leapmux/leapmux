@@ -1,21 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  EXACT_KEY_TTLS,
+  getSessionTtlForKey,
   getTtlForKey,
   initStorageCleanup,
   isWrappedValue,
+  KEY_CLIENT_ID,
+  localStorageSet,
   runCleanup,
-  STATIC_KEYS,
+  sessionStorageSet,
 } from '~/lib/browserStorage'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const YEAR_MS = 365 * DAY_MS
 
 describe('storageCleanup', () => {
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
     vi.useFakeTimers()
   })
 
   afterEach(() => {
+    sessionStorage.clear()
     vi.useRealTimers()
   })
 
@@ -34,9 +41,10 @@ describe('storageCleanup', () => {
       expect(getTtlForKey('leapmux:files-show-hidden:abc')).toBe(7 * DAY_MS)
     })
 
-    it('returns null for known static keys', () => {
-      for (const key of STATIC_KEYS) {
-        expect(getTtlForKey(key)).toBeNull()
+    it('returns 1-year TTL for every registered exact localStorage key', () => {
+      for (const [key, ttlMs] of EXACT_KEY_TTLS) {
+        expect(getTtlForKey(key), key).toBe(ttlMs)
+        expect(ttlMs).toBe(YEAR_MS)
       }
     })
 
@@ -94,14 +102,20 @@ describe('storageCleanup', () => {
       expect(localStorage.getItem('leapmux:some-unknown-key')).toBeNull()
     })
 
-    it('preserves static keys', () => {
-      for (const key of STATIC_KEYS) {
-        localStorage.setItem(key, '"test-value"')
-      }
+    it('preserves wrapped exact localStorage keys', () => {
+      for (const key of EXACT_KEY_TTLS.keys())
+        localStorageSet(key, 'test-value')
       runCleanup()
-      for (const key of STATIC_KEYS) {
-        expect(localStorage.getItem(key)).toBe('"test-value"')
-      }
+      for (const key of EXACT_KEY_TTLS.keys())
+        expect(localStorage.getItem(key), key).not.toBeNull()
+    })
+
+    it('deletes unwrapped exact localStorage keys (legacy raw format)', () => {
+      for (const key of EXACT_KEY_TTLS.keys())
+        localStorage.setItem(key, '"raw-legacy-value"')
+      runCleanup()
+      for (const key of EXACT_KEY_TTLS.keys())
+        expect(localStorage.getItem(key), key).toBeNull()
     })
 
     it('preserves fresh (non-expired) wrapped dynamic keys', () => {
@@ -117,6 +131,48 @@ describe('storageCleanup', () => {
       runCleanup()
       expect(localStorage.getItem('other-app-key')).toBe('some value')
       expect(localStorage.getItem('random')).toBe('123')
+    })
+
+    // Regression: every per-feature `leapmux:`-prefixed sessionStorage
+    // key must be registered (SESSION_DYNAMIC_KEY_TTLS for templated
+    // keys, SESSION_EXACT_KEY_TTLS for singletons), otherwise the sweep
+    // wipes it on the next page load. The original instance of this bug
+    // was `useTabPersistence` losing the active tab on every refresh,
+    // but the same trap applied to sidebar widths, the workspace-tree
+    // expansion set, the tab-tree collapse state, the per-session client
+    // id, the directory-tree expansion state, and the CLI-path one-shot.
+    it('preserves every registered sessionStorage key under runCleanup', () => {
+      const samples: Array<[string, unknown]> = [
+        ['leapmux:activeTab:ws-1', '1:agent-abc'],
+        ['leapmux:tileActiveTabs:ws-1', { tile: '1:agent-abc' }],
+        ['leapmux:focusedTile:ws-1', 'tile-1'],
+        ['leapmux:activeWorkspace', 'ws-1'],
+        ['leapmux:cli-path-checked', true],
+        ['leapmux:sidebar:ws-1', { leftSize: 240 }],
+        ['leapmux:expandedWorkspaces', ['ws-1', 'ws-2']],
+        ['leapmux:tabTree:ws-1', { group: true }],
+        ['leapmux:client-id', 'c-abcdef'],
+        ['leapmux:directoryTree:~:files', { expandedPaths: {} }],
+        ['leapmux:fileScroll:abc', 42],
+      ]
+      for (const [key, value] of samples)
+        sessionStorageSet(key, value)
+
+      runCleanup()
+
+      for (const [key] of samples)
+        expect(sessionStorage.getItem(key), key).not.toBeNull()
+    })
+
+    // Singleton sessionStorage keys live in SESSION_EXACT_KEY_TTLS and
+    // are matched by exact string. A neighbour key whose name starts
+    // with the singleton (e.g. `${KEY_CLIENT_ID}-extra`) must NOT
+    // inherit the singleton's TTL via prefix matching — that's the
+    // whole reason the exact-match table exists.
+    it('does not bleed exact-match TTLs into prefix-matched neighbours', () => {
+      expect(getSessionTtlForKey(KEY_CLIENT_ID)).not.toBeNull()
+      expect(getSessionTtlForKey(`${KEY_CLIENT_ID}-extra`)).toBeNull()
+      expect(getSessionTtlForKey(`${KEY_CLIENT_ID}:foo`)).toBeNull()
     })
   })
 

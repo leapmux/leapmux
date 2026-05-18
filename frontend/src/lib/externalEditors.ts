@@ -1,6 +1,6 @@
 import type { DetectedEditor } from '~/api/platformBridge'
 import { platformBridge } from '~/api/platformBridge'
-import { KEY_PREFERRED_EDITOR, safeGetJson, safeSetJson } from './browserStorage'
+import { KEY_PREFERRED_EDITOR, localStorageGet, localStorageSet } from './browserStorage'
 import { createIdentityCache } from './identityCache'
 import { createInflightCache } from './inflightCache'
 
@@ -76,11 +76,11 @@ export function _resetEditorCacheForTests(): void {
 }
 
 export function getPreferredEditorId(): string | undefined {
-  return safeGetJson<string>(KEY_PREFERRED_EDITOR)
+  return localStorageGet<string>(KEY_PREFERRED_EDITOR)
 }
 
 export function setPreferredEditorId(id: string): void {
-  safeSetJson(KEY_PREFERRED_EDITOR, id)
+  localStorageSet(KEY_PREFERRED_EDITOR, id)
 }
 
 /**

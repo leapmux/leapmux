@@ -1,13 +1,7 @@
-/** sessionStorage key holding the JSON-encoded set of expanded workspace IDs. */
-export const EXPANDED_WORKSPACES_KEY = 'leapmux:expandedWorkspaces'
+import { KEY_EXPANDED_WORKSPACES, sessionStorageGet } from '~/lib/browserStorage'
 
 /** Reads the persisted expanded-workspace IDs from sessionStorage. */
 export function readExpandedWorkspaceIds(): Set<string> {
-  try {
-    const stored = sessionStorage.getItem(EXPANDED_WORKSPACES_KEY)
-    return stored ? new Set(JSON.parse(stored) as string[]) : new Set()
-  }
-  catch {
-    return new Set()
-  }
+  const stored = sessionStorageGet<string[]>(KEY_EXPANDED_WORKSPACES)
+  return stored ? new Set(stored) : new Set()
 }

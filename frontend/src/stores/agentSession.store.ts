@@ -1,5 +1,5 @@
 import { createStore } from 'solid-js/store'
-import { PREFIX_AGENT_SESSION, safeGetJson, safeSetJson } from '~/lib/browserStorage'
+import { localStorageGet, localStorageSet, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
 import { shallowEqual } from '~/lib/shallowEqual'
 
 export interface ContextUsageInfo {
@@ -33,11 +33,11 @@ export interface AgentSessionInfo {
 }
 
 function loadFromStorage(agentId: string): AgentSessionInfo {
-  return safeGetJson<AgentSessionInfo>(`${PREFIX_AGENT_SESSION}${agentId}`) ?? {}
+  return localStorageGet<AgentSessionInfo>(`${PREFIX_AGENT_SESSION}${agentId}`) ?? {}
 }
 
 function saveToStorage(agentId: string, info: AgentSessionInfo) {
-  safeSetJson(`${PREFIX_AGENT_SESSION}${agentId}`, info)
+  localStorageSet(`${PREFIX_AGENT_SESSION}${agentId}`, info)
 }
 
 interface AgentSessionStoreState {

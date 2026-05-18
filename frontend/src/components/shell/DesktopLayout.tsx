@@ -7,6 +7,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
 import { Icon } from '~/components/common/Icon'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
+import { PREFIX_SIDEBAR, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { trailingDebounce } from '~/lib/debounce'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import * as styles from './AppShell.css'
@@ -276,16 +277,11 @@ function useSidebarSide(opts: {
 
 export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   // Read saved sidebar state (read-once at mount time).
-  // eslint-disable-next-line solid/reactivity -- read-once at mount time, matching original IIFE behavior
+  // eslint-disable-next-line solid/reactivity -- read-once at mount time
   const wsId = props.activeWorkspaceId
-  const savedSidebar: SidebarState | null = (() => {
-    if (!wsId)
-      return null
-    try {
-      return JSON.parse(sessionStorage.getItem(`leapmux:sidebar:${wsId}`) ?? '')
-    }
-    catch { return null }
-  })()
+  const savedSidebar: SidebarState | null = wsId
+    ? sessionStorageGet<SidebarState>(`${PREFIX_SIDEBAR}${wsId}`) ?? null
+    : null
 
   // Sidebar widths stored as pixels. Clamp to minimum.
   const initLeftPx = Math.max(savedSidebar?.leftSize ?? DEFAULT_SIDEBAR_PX, MIN_SIDEBAR_PX)
@@ -317,7 +313,7 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
       rightOpenSections,
       rightSectionSizes,
     }
-    sessionStorage.setItem(`leapmux:sidebar:${id}`, JSON.stringify(state))
+    sessionStorageSet(`${PREFIX_SIDEBAR}${id}`, state)
   }
   // trailingDebounce reads signals at fire time; the lint can't see through it.
   // eslint-disable-next-line solid/reactivity

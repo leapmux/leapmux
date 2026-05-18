@@ -12,6 +12,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { readExpandedWorkspaceIds } from '~/components/workspace/expandedWorkspaces'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { sessionStorageGet } from '~/lib/browserStorage'
 import { getCRDTBridge } from '~/lib/crdt/bridge'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { createInflightCache } from '~/lib/inflightCache'
@@ -231,7 +232,7 @@ function restoreActiveAndFocusedTab(
   for (const t of ctx.tabStore.state.tabs)
     liveByKey.set(tabKey(t), t)
   try {
-    const tileActiveJson = sessionStorage.getItem(tileActiveTabsKey(activeId))
+    const tileActiveJson = sessionStorageGet<string>(tileActiveTabsKey(activeId))
     if (tileActiveJson) {
       const tileActiveTabs = JSON.parse(tileActiveJson) as Record<string, string>
       for (const [tileId, key] of Object.entries(tileActiveTabs)) {
@@ -250,7 +251,7 @@ function restoreActiveAndFocusedTab(
   // Ensure every tile with tabs has an active tab
   ctx.tabStore.initMissingTileActiveTabs()
 
-  const savedKey = sessionStorage.getItem(activeTabKey(activeId))
+  const savedKey = sessionStorageGet<string>(activeTabKey(activeId))
   const parsedSaved = savedKey ? parseTabKey(savedKey) : null
   if (savedKey && parsedSaved && liveByKey.has(savedKey)) {
     const { type: tabType, id: tabId } = parsedSaved
@@ -266,7 +267,7 @@ function restoreActiveAndFocusedTab(
   }
 
   // Restore focused tile from sessionStorage
-  const savedFocusedTile = sessionStorage.getItem(focusedTileKey(activeId))
+  const savedFocusedTile = sessionStorageGet<string>(focusedTileKey(activeId))
   if (savedFocusedTile && ctx.validTileIds.has(savedFocusedTile)) {
     layoutStore.setFocusedTile(savedFocusedTile)
   }
@@ -372,7 +373,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       tabStore.initMissingTileActiveTabs()
 
       // Activate the tab the user clicked in the sidebar (if any).
-      const savedKey = sessionStorage.getItem(activeTabKey(activeId))
+      const savedKey = sessionStorageGet<string>(activeTabKey(activeId))
       const parsedSaved = savedKey ? parseTabKey(savedKey) : null
       if (savedKey && parsedSaved && tabStore.state.tabs.some(t => tabKey(t) === savedKey)) {
         const { type: tabType, id: tabId } = parsedSaved

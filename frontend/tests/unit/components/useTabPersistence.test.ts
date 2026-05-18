@@ -1,7 +1,9 @@
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { activeTabKey, focusedTileKey, tileActiveTabsKey } from '~/components/shell/tabPersistenceKeys'
 import { useTabPersistence } from '~/components/shell/useTabPersistence'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { KEY_ACTIVE_WORKSPACE, sessionStorageGet } from '~/lib/browserStorage'
 import { setCRDTBridge } from '~/lib/crdt'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
@@ -45,7 +47,7 @@ describe('useTabPersistence', () => {
 
           Promise.resolve().then(() => {
             try {
-              expect(sessionStorage.getItem(`leapmux:activeTab:${wsId}`)).toBe(`${TabType.AGENT}:second`)
+              expect(sessionStorageGet<string>(activeTabKey(wsId))).toBe(`${TabType.AGENT}:second`)
               dispose()
               resolve()
             }
@@ -86,8 +88,8 @@ describe('useTabPersistence', () => {
 
           Promise.resolve().then(() => {
             try {
-              const raw = sessionStorage.getItem(`leapmux:tileActiveTabs:${wsId}`)
-              expect(raw, 'tileActiveTabs key present').not.toBeNull()
+              const raw = sessionStorageGet<string>(tileActiveTabsKey(wsId))
+              expect(raw, 'tileActiveTabs key present').not.toBeUndefined()
               const parsed = JSON.parse(raw!)
               expect(parsed['tile-A']).toBe(`${TabType.AGENT}:a`)
               expect(parsed['tile-B']).toBe(`${TabType.AGENT}:b`)
@@ -135,7 +137,7 @@ describe('useTabPersistence', () => {
 
           Promise.resolve().then(() => {
             try {
-              expect(sessionStorage.getItem(`leapmux:focusedTile:${wsId}`)).toBe(tileId)
+              expect(sessionStorageGet<string>(focusedTileKey(wsId))).toBe(tileId)
               dispose()
               resolve()
             }
@@ -170,12 +172,12 @@ describe('useTabPersistence', () => {
           })
 
           Promise.resolve().then(() => {
-            expect(sessionStorage.getItem('leapmux:activeWorkspace')).toBe('ws-A')
+            expect(sessionStorageGet<string>(KEY_ACTIVE_WORKSPACE)).toBe('ws-A')
             setActiveWorkspaceId('ws-B')
             return Promise.resolve()
           }).then(() => {
             try {
-              expect(sessionStorage.getItem('leapmux:activeWorkspace')).toBe('ws-B')
+              expect(sessionStorageGet<string>(KEY_ACTIVE_WORKSPACE)).toBe('ws-B')
               dispose()
               resolve()
             }
@@ -218,9 +220,9 @@ describe('useTabPersistence', () => {
 
           Promise.resolve().then(() => {
             try {
-              expect(sessionStorage.getItem(`leapmux:activeTab:${wsId}`)).toBeNull()
-              expect(sessionStorage.getItem(`leapmux:focusedTile:${wsId}`)).toBeNull()
-              expect(sessionStorage.getItem(`leapmux:tileActiveTabs:${wsId}`)).toBeNull()
+              expect(sessionStorageGet(activeTabKey(wsId))).toBeUndefined()
+              expect(sessionStorageGet(focusedTileKey(wsId))).toBeUndefined()
+              expect(sessionStorageGet(tileActiveTabsKey(wsId))).toBeUndefined()
               dispose()
               resolve()
             }

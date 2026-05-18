@@ -1,4 +1,4 @@
-import { PREFIX_EDITOR_MIN_HEIGHT, safeGetString, safeRemoveItem, safeSetString } from '~/lib/browserStorage'
+import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_EDITOR_MIN_HEIGHT } from '~/lib/browserStorage'
 
 /** Minimum height (px) of the markdown editor wrapper. */
 export const EDITOR_MIN_HEIGHT = 38
@@ -23,12 +23,9 @@ export function clampEditorHeight(rawHeight: number, maxHeight: number): number 
  * pre-clamp data).
  */
 export function getStoredEditorMinHeight(agentId: string): number | undefined {
-  const stored = safeGetString(editorMinHeightKey(agentId))
-  if (stored) {
-    const val = Number.parseInt(stored, 10)
-    if (!Number.isNaN(val) && val >= EDITOR_MIN_HEIGHT)
-      return val
-  }
+  const stored = localStorageGet<number>(editorMinHeightKey(agentId))
+  if (stored !== undefined && stored >= EDITOR_MIN_HEIGHT)
+    return stored
   return undefined
 }
 
@@ -40,15 +37,13 @@ export function getStoredEditorMinHeight(agentId: string): number | undefined {
  */
 export function persistEditorMinHeight(agentId: string, value: number | undefined): void {
   const key = editorMinHeightKey(agentId)
-  if (value !== undefined && value > EDITOR_MIN_HEIGHT) {
-    safeSetString(key, String(value))
-  }
-  else {
-    safeRemoveItem(key)
-  }
+  if (value !== undefined && value > EDITOR_MIN_HEIGHT)
+    localStorageSet(key, value)
+  else
+    localStorageRemove(key)
 }
 
 /** Unconditionally clear a per-agent override (used by the double-click reset). */
 export function clearEditorMinHeight(agentId: string): void {
-  safeRemoveItem(editorMinHeightKey(agentId))
+  localStorageRemove(editorMinHeightKey(agentId))
 }

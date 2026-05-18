@@ -1,7 +1,7 @@
 import { render, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, loadBrowserPrefs, localStorageSet } from '~/lib/browserStorage'
 
 // Mock the user preferences API to avoid hitting a real network and to keep
 // account-level fields at their hardcoded defaults during tests.
@@ -92,7 +92,7 @@ describe('preferencesContext — browser-level theme override', () => {
 
   it('hydrates the browser theme from localStorage on provider mount (simulated reload)', () => {
     // Pre-seed localStorage with a stored preference and mount fresh.
-    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ theme: 'dark' }))
+    localStorageSet(KEY_BROWSER_PREFS, { theme: 'dark' })
     const ctx = captureContext()
     expect(ctx.get().browserTheme()).toBe('dark')
     expect(ctx.get().theme()).toBe('dark')
@@ -146,7 +146,7 @@ describe('preferencesContext — browser-level diff view override', () => {
   })
 
   it('hydrates the browser diff view from localStorage on provider mount', () => {
-    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ diffView: 'split' }))
+    localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
     const ctx = captureContext()
     expect(ctx.get().browserDiffView()).toBe('split')
     expect(ctx.get().diffView()).toBe('split')
@@ -208,7 +208,7 @@ describe('preferencesContext — revealAfterDownload (default-on)', () => {
   })
 
   it('hydrates a stored `false` from localStorage on provider mount', () => {
-    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ revealAfterDownload: false }))
+    localStorageSet(KEY_BROWSER_PREFS, { revealAfterDownload: false })
     const ctx = captureContext()
     expect(ctx.get().revealAfterDownload()).toBe(false)
   })

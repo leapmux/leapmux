@@ -16,7 +16,6 @@ import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
-import { ACTIVE_WORKSPACE_KEY, CLI_PATH_CHECKED_KEY } from '~/components/shell/tabPersistenceKeys'
 import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
@@ -34,11 +33,13 @@ import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
 import { useShortcuts } from '~/hooks/useShortcuts'
 import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, KEY_CLIENT_ID, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { HLCClock, PendingOpsManager, projectWorkspaceTabs, setCRDTBridge } from '~/lib/crdt'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { createFileTabPathsStore } from '~/lib/fileTabPaths'
 import { createIdentityCache } from '~/lib/identityCache'
+import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
 import { parentDirectory } from '~/lib/paths'
@@ -234,18 +235,12 @@ export const AppShell: ParentComponent = (props) => {
   // `OrgMaterialized.subscriber_client_id`; the gate compares
   // `activeClient.activeFor(wsId)` against `effectiveClientId()`.
   const ownClientId = (() => {
-    try {
-      const k = 'leapmux:client-id'
-      const cur = sessionStorage.getItem(k)
-      if (cur)
-        return cur
-      const fresh = `c-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`
-      sessionStorage.setItem(k, fresh)
-      return fresh
-    }
-    catch {
-      return `c-${Date.now().toString(36)}`
-    }
+    const cur = sessionStorageGet<string>(KEY_CLIENT_ID)
+    if (cur)
+      return cur
+    const fresh = `c-${randomUUID()}`
+    sessionStorageSet(KEY_CLIENT_ID, fresh)
+    return fresh
   })()
 
   // Effective identity reported by the hub via OrgMaterialized; the
@@ -532,13 +527,13 @@ export const AppShell: ParentComponent = (props) => {
       return
     if (!isTauriApp() || !isMac())
       return
-    if (sessionStorage.getItem(CLI_PATH_CHECKED_KEY) === '1')
+    if (sessionStorageGet<boolean>(KEY_CLI_PATH_CHECKED))
       return
     void (async () => {
       const runtime = await platformBridge.getRuntimeState()
       if (runtime.shellMode !== 'solo')
         return
-      sessionStorage.setItem(CLI_PATH_CHECKED_KEY, '1')
+      sessionStorageSet(KEY_CLI_PATH_CHECKED, true)
       const status = await platformBridge.cliPathStatus()
       if (!status)
         return
@@ -606,7 +601,7 @@ export const AppShell: ParentComponent = (props) => {
     // found").
     if (showNewWorkspace())
       return
-    const savedId = sessionStorage.getItem(ACTIVE_WORKSPACE_KEY)
+    const savedId = sessionStorageGet<string>(KEY_ACTIVE_WORKSPACE)
     const target = (savedId && workspaces.some(w => w.id === savedId))
       ? savedId
       : workspaces[0].id

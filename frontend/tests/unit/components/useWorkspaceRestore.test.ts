@@ -2,11 +2,11 @@ import { create } from '@bufbuild/protobuf'
 import { createEffect, createRoot, createSignal, untrack } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceRestore } from '~/components/shell/useWorkspaceRestore'
-import { EXPANDED_WORKSPACES_KEY } from '~/components/workspace/expandedWorkspaces'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { HLCSchema, LWWStringSchema, TabRecordSchema } from '~/generated/leapmux/v1/org_crdt_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge, project, setCRDTBridge } from '~/lib/crdt'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -72,10 +72,7 @@ async function flushEffects(): Promise<void> {
 
 describe('useWorkspaceRestore sibling pre-fetch', () => {
   it('fires onExpandWorkspace for every expanded sibling in the same tick as the active ListTabs', async () => {
-    sessionStorage.setItem(
-      EXPANDED_WORKSPACES_KEY,
-      JSON.stringify(['active-ws', 'sib-1', 'sib-2']),
-    )
+    sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['active-ws', 'sib-1', 'sib-2'])
     const onExpandWorkspace = vi.fn()
     const [activeId, setActiveId] = createSignal<string | null>(null)
     const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
@@ -107,7 +104,7 @@ describe('useWorkspaceRestore sibling pre-fetch', () => {
   })
 
   it('does not fire onExpandWorkspace when the active workspace is restored from cache', async () => {
-    sessionStorage.setItem(EXPANDED_WORKSPACES_KEY, JSON.stringify(['active-ws', 'sib-1']))
+    sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['active-ws', 'sib-1'])
     const onExpandWorkspace = vi.fn()
     const [activeId, setActiveId] = createSignal<string | null>(null)
     const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
