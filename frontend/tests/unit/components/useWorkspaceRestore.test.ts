@@ -263,6 +263,105 @@ describe('useWorkspaceRestore terminal hydration retry', () => {
     dispose()
   })
 
+  // Per-worker retry slot cleanup. When a worker disappears from the
+  // missing-tabs map (its tabs were closed, it disconnected, or every
+  // pending tab hydrated), the next failure on the same worker id must
+  // restart the backoff at `initialMs` — not resume mid-sequence from
+  // a stale `lastBaseDelays` entry the helper would otherwise keep
+  // until unmount. Verified by pinning Math.random so the un-jittered
+  // base equals the scheduled delay, then comparing arm-times across
+  // a dropout cycle.
+  it('resets per-worker retry state when a worker drops out of the candidate map', async () => {
+    vi.useFakeTimers()
+    // Pin jitter to its symmetric midpoint so scheduled delays match
+    // the un-jittered base (500ms → 1000ms → …) exactly.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+    try {
+      mockListTerminals.mockReset()
+      // Every call rejects → every effect run schedules a retry.
+      mockListTerminals.mockRejectedValue(new Error('worker unavailable'))
+
+      const opts = makeBaseOpts()
+      const workerId = 'flaky-worker'
+      opts.registry.set('active-ws', {
+        workspaceId: 'active-ws',
+        tabs: [{
+          type: TabType.TERMINAL,
+          id: 'term-1',
+          workerId,
+          status: TerminalStatus.READY,
+        }],
+        activeTabKey: null,
+        layout: { root: { type: 'leaf', id: 'default' }, focusedTileId: null },
+        restored: true,
+        tabsLoaded: true,
+      })
+
+      const [activeId, setActiveId] = createSignal<string | null>(null)
+      const [orgId, setOrgId] = createSignal<string | undefined>(undefined)
+
+      const dispose = createRoot((dispose) => {
+        useWorkspaceRestore({
+          ...opts,
+          getActiveWorkspaceId: activeId,
+          getOrgId: orgId,
+        })
+        setActiveId('active-ws')
+        setOrgId('org-1')
+        return dispose
+      })
+
+      // First effect tick: one listTerminals fire, fails, retry armed.
+      await flushEffects()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockListTerminals).toHaveBeenCalledTimes(1)
+
+      // Advance just past the first retry delay (500ms). The retry
+      // bumps the tick → effect runs again → second listTerminals →
+      // rejects → next retry armed at 1000ms.
+      await vi.advanceTimersByTimeAsync(500)
+      expect(mockListTerminals).toHaveBeenCalledTimes(2)
+
+      // Worker drops out: close the only tab that needs hydration.
+      // `tabsNeedingHydration` now returns an empty map for this
+      // worker, and the effect's keyset-diff must call `reset` for it.
+      opts.tabStore.removeTab(TabType.TERMINAL, 'term-1')
+      await flushEffects()
+
+      // Re-introduce a tab on the same worker, still un-hydrated. The
+      // effect fires immediately (candidate map changed) and the third
+      // listTerminals call rejects.
+      mockListTerminals.mockClear()
+      opts.tabStore.addTab({
+        type: TabType.TERMINAL,
+        id: 'term-2',
+        workerId,
+        status: TerminalStatus.READY,
+      })
+      await flushEffects()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockListTerminals).toHaveBeenCalledTimes(1)
+      mockListTerminals.mockClear()
+
+      // The retry slot was reset, so the next retry must fire at
+      // 500ms — NOT 2000ms (which would be the un-reset doubled value
+      // after 500ms → 1000ms → 2000ms). Tick at 499ms: no fire yet.
+      // Tick at 501ms: the retry must have fired, re-running the
+      // effect → fourth listTerminals call.
+      await vi.advanceTimersByTimeAsync(499)
+      expect(mockListTerminals).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(2)
+      expect(mockListTerminals).toHaveBeenCalledTimes(1)
+
+      dispose()
+    }
+    finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
+  })
+
   // Mixed fixture: two tabs on the same worker, one fully hydrated and
   // one missing its payload. Proves the filter is per-tab (not
   // per-workspace) and that the RPC carries only the un-hydrated id.

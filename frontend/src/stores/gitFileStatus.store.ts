@@ -132,11 +132,21 @@ export function createGitFileStatusStore() {
     return flavor === 'posix' ? rel : toPosixSeparators(rel)
   }
 
+  // O(1) lookup by relative path. Rebuilds whenever state.files changes;
+  // sameFileEntries() in refresh() keeps the array reference stable on
+  // no-op refreshes, so this memo doesn't re-run on a quiet repo.
+  const filesByPath = createMemo(() => {
+    const m = new Map<string, GitFileStatusEntry>()
+    for (const f of state.files)
+      m.set(f.path, f)
+    return m
+  })
+
   const getFileStatus = (absPath: string): GitFileStatusEntry | undefined => {
     const rel = relToRepo(absPath)
     if (rel === null)
       return undefined
-    return state.files.find(f => f.path === rel)
+    return filesByPath().get(rel)
   }
 
   const getChangedFiles = (filter: GitFilterTab): GitFileStatusEntry[] => {
@@ -160,7 +170,13 @@ export function createGitFileStatusStore() {
   // knowing queries, so we track them separately and check at lookup time.
   const prefixIndex = createMemo(() => {
     const prefixStats = new Map<string, DiffStats>()
-    const untrackedDirs: string[] = []
+    const untrackedDirSet = new Set<string>()
+    // Per-prefixIndex-generation cache of merged dir stats. Returning the
+    // same object reference across calls keeps downstream `createMemo`s
+    // (one per TreeNode row) stable across no-op refreshes — without it,
+    // any row whose ancestor is in `untrackedDirSet` re-invalidates every
+    // refresh because `lookupDirStats` allocated a fresh object.
+    const dirStatsCache = new Map<string, DiffStats>()
 
     const bump = (key: string, f: GitFileStatusEntry, isUntracked: boolean) => {
       let s = prefixStats.get(key)
@@ -182,7 +198,7 @@ export function createGitFileStatusStore() {
       const isDirEntry = f.path.endsWith('/')
       const basePath = isDirEntry ? f.path.slice(0, -1) : f.path
       if (isDirEntry)
-        untrackedDirs.push(basePath)
+        untrackedDirSet.add(basePath)
       bump('', f, isUntracked)
       let i = 0
       while (i < basePath.length) {
@@ -195,27 +211,38 @@ export function createGitFileStatusStore() {
         i = next + 1
       }
     }
-    return { prefixStats, untrackedDirs }
+    return { prefixStats, untrackedDirSet, dirStatsCache }
   })
 
   // An untracked "build/" also covers descendants like "build/bin"; the
-  // ancestor/self case is already in prefixStats.
-  const untrackedAncestorMatches = (relDir: string, untrackedDirs: string[]): number => {
+  // ancestor/self case is already in prefixStats. Walks `relDir`'s
+  // ancestor segments and probes the set — O(depth) per node instead of
+  // O(untrackedDirs) per node.
+  const untrackedAncestorMatches = (relDir: string, untrackedDirSet: Set<string>): number => {
+    if (untrackedDirSet.size === 0)
+      return 0
     let n = 0
-    for (const d of untrackedDirs) {
-      if (relDir.length > d.length && relDir.startsWith(`${d}/`))
+    let i = relDir.lastIndexOf('/')
+    while (i > 0) {
+      if (untrackedDirSet.has(relDir.slice(0, i)))
         n++
+      i = relDir.lastIndexOf('/', i - 1)
     }
     return n
   }
 
   const lookupDirStats = (relDir: string): DiffStats => {
-    const { prefixStats, untrackedDirs } = prefixIndex()
+    const { prefixStats, untrackedDirSet, dirStatsCache } = prefixIndex()
+    const cached = dirStatsCache.get(relDir)
+    if (cached)
+      return cached
     const base = prefixStats.get(relDir) ?? ZERO_DIFF_STATS
-    const extraUntracked = untrackedAncestorMatches(relDir, untrackedDirs)
-    if (extraUntracked === 0)
-      return base
-    return { added: base.added, deleted: base.deleted, untracked: base.untracked + extraUntracked }
+    const extraUntracked = untrackedAncestorMatches(relDir, untrackedDirSet)
+    const result = extraUntracked === 0
+      ? base
+      : { added: base.added, deleted: base.deleted, untracked: base.untracked + extraUntracked }
+    dirStatsCache.set(relDir, result)
+    return result
   }
 
   const getNodeDiffStats = (absPath: string, isDir: boolean): DiffStats => {
@@ -231,8 +258,8 @@ export function createGitFileStatusStore() {
     const relDir = relToRepo(dirPath)
     if (relDir === null)
       return false
-    const { prefixStats, untrackedDirs } = prefixIndex()
-    return prefixStats.has(relDir) || untrackedAncestorMatches(relDir, untrackedDirs) > 0
+    const { prefixStats, untrackedDirSet } = prefixIndex()
+    return prefixStats.has(relDir) || untrackedAncestorMatches(relDir, untrackedDirSet) > 0
   }
 
   return {

@@ -231,6 +231,7 @@ let cachedTauriEvents: Promise<typeof import('@tauri-apps/api/event')> | null = 
 let cachedTauriDpi: Promise<typeof import('@tauri-apps/api/dpi')> | null = null
 let cachedTauriWindow: Promise<typeof import('@tauri-apps/api/window')> | null = null
 let cachedTauriClipboard: Promise<typeof import('@tauri-apps/plugin-clipboard-manager')> | null = null
+let cachedTauriOpener: Promise<typeof import('@tauri-apps/plugin-opener')> | null = null
 
 function loadTauriCore() {
   return (cachedTauriCore ??= import('@tauri-apps/api/core'))
@@ -250,6 +251,10 @@ function loadTauriWindow() {
 
 function loadTauriClipboard() {
   return (cachedTauriClipboard ??= import('@tauri-apps/plugin-clipboard-manager'))
+}
+
+function loadTauriOpener() {
+  return (cachedTauriOpener ??= import('@tauri-apps/plugin-opener'))
 }
 
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -470,6 +475,53 @@ export async function readClipboardImage(): Promise<File | null> {
   }
 }
 
+/**
+ * Write `bytes` to the OS Downloads directory as `filename` and return
+ * the absolute path written. Tauri-only — call sites must gate on
+ * `isTauriApp()` first. The Rust command sanitizes `filename` to its
+ * basename so callers can't escape the Downloads dir.
+ *
+ * Bytes ride the Tauri IPC as a raw request body (transferred without
+ * JSON or base64 conversion). The filename goes through a header,
+ * base64-encoded so non-ASCII names survive the HTTP-style header
+ * value restrictions.
+ */
+export async function saveBytesToDownloads(bytes: Uint8Array, filename: string): Promise<string> {
+  const { invoke } = await loadTauriCore()
+  return invoke<string>('save_bytes_to_downloads', bytes, {
+    headers: { 'filename-b64': arrayBufferToBase64(filename) },
+  })
+}
+
+/**
+ * Show a native save-as dialog, write `bytes` to the chosen path, and
+ * return the absolute path. Returns `null` if the user cancelled the
+ * dialog. Tauri-only.
+ */
+export async function saveBytesAs(bytes: Uint8Array, defaultName: string): Promise<string | null> {
+  const { invoke } = await loadTauriCore()
+  return invoke<string | null>('save_bytes_as', bytes, {
+    headers: { 'default-name-b64': arrayBufferToBase64(defaultName) },
+  })
+}
+
+/**
+ * Open the OS file manager (Finder / Explorer / Files) with the given
+ * path selected. Best-effort: failures are swallowed since this is a
+ * post-save nicety, not a load-bearing operation.
+ */
+export async function revealInFileManager(path: string): Promise<void> {
+  if (!isTauriApp())
+    return
+  try {
+    const { revealItemInDir } = await loadTauriOpener()
+    await revealItemInDir(path)
+  }
+  catch (err) {
+    log.warn('revealInFileManager failed', err)
+  }
+}
+
 export const windowMinimize = () => tauriWindowOp(w => w.minimize())
 export const windowClose = () => tauriWindowOp(w => w.close())
 export const windowToggleMaximize = () => tauriWindowOp(w => w.toggleMaximize())
@@ -533,6 +585,9 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
 export const platformBridge = {
   getCapabilities,
   getRuntimeState,
+  saveBytesToDownloads,
+  saveBytesAs,
+  revealInFileManager,
   async connectSolo(): Promise<void> {
     await tauriInvoke('connect_solo')
     await refreshRuntimeState()

@@ -2,24 +2,18 @@ import type { Component } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
 import type { PathFlavor } from '~/lib/paths'
 import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
-import AtSign from 'lucide-solid/icons/at-sign'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import ClipboardCopy from 'lucide-solid/icons/clipboard-copy'
-import Copy from 'lucide-solid/icons/copy'
 import File from 'lucide-solid/icons/file'
 import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
-import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
-import TerminalIcon from 'lucide-solid/icons/terminal'
 import { createContext, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
-import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { Icon } from '~/components/common/Icon'
-import { IconButton } from '~/components/common/IconButton'
 import { StartupSpinner } from '~/components/common/StartupPanel'
 import { Tooltip } from '~/components/common/Tooltip'
-import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, relativizePath, tildify, untildify } from '~/lib/paths'
+import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, tildify, untildify } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
 import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
@@ -214,71 +208,20 @@ const TreeContextMenu: Component<{
   isDir: boolean
 }> = (props) => {
   const tree = useTree()
-
   return (
-    <DropdownMenu
-      trigger={triggerProps => (
-        <IconButton
-          icon={MoreHorizontal}
-          iconSize="sm"
-          size="sm"
-          class={menuTrigger}
-          onClick={(e: MouseEvent) => {
-            e.stopPropagation()
-            triggerProps.onClick()
-          }}
-          ref={triggerProps.ref}
-          onPointerDown={(e: PointerEvent) => {
-            e.stopPropagation()
-            triggerProps.onPointerDown()
-          }}
-          aria-expanded={triggerProps['aria-expanded']}
-          data-testid="tree-context-button"
-        />
-      )}
-    >
-      <Show when={tree.onMention}>
-        <button
-          role="menuitem"
-          data-testid="tree-mention-button"
-          onClick={() => tree.onMention?.(props.path)}
-        >
-          <Icon icon={AtSign} size="sm" />
-          Mention in chat
-        </button>
-      </Show>
-      <Show when={props.isDir && tree.onOpenTerminal}>
-        <button
-          role="menuitem"
-          data-testid="tree-open-terminal-button"
-          onClick={() => tree.onOpenTerminal?.(props.path)}
-        >
-          <Icon icon={TerminalIcon} size="sm" />
-          Open a terminal tab here
-        </button>
-      </Show>
-      <button
-        role="menuitem"
-        data-testid="tree-copy-path-button"
-        onClick={() => navigator.clipboard.writeText(props.path)}
-      >
-        <Icon icon={Copy} size="sm" />
-        Copy path
-      </button>
-      <button
-        role="menuitem"
-        data-testid="tree-copy-relative-path-button"
-        onClick={() => {
-          const rel = props.path === tree.rootPath
-            ? '.'
-            : relativizePath(props.path, tree.rootPath, tree.homeDir, tree.flavor())
-          navigator.clipboard.writeText(rel)
-        }}
-      >
-        <Icon icon={ClipboardCopy} size="sm" />
-        Copy relative path
-      </button>
-    </DropdownMenu>
+    <FileActionsMenu
+      workerId={tree.workerId}
+      path={props.path}
+      flavor={tree.flavor()}
+      isDir={props.isDir}
+      rootPath={tree.rootPath}
+      homeDir={tree.homeDir}
+      onMention={tree.onMention}
+      onOpenTerminal={tree.onOpenTerminal}
+      triggerClass={menuTrigger}
+      triggerTestId="tree-context-button"
+      itemTestIdPrefix="tree"
+    />
   )
 }
 

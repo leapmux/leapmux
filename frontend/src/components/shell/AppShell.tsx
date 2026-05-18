@@ -51,7 +51,7 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
-import { createLayoutStore } from '~/stores/layout.store'
+import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
 import { agentTabToInfo, isTabReadyForGitStatus, tabKey } from '~/stores/tab.helpers'
 import { createTabStore } from '~/stores/tab.store'
@@ -89,6 +89,11 @@ import { useWorkspaceHydration } from './useWorkspaceHydration'
 import { useWorkspaceLoader } from './useWorkspaceLoader'
 import { useWorkspaceRestore } from './useWorkspaceRestore'
 import { useWorkspaceSwitchSnapshot } from './useWorkspaceSwitchSnapshot'
+
+// Stable empty-array reference for the inactive-workspace tile-order
+// path. Returning a fresh `[]` per call would defeat the WeakMap-based
+// memoization that keeps `WorkspaceTabTree`'s `buildTree` memo stable.
+const EMPTY_TILE_ORDER: string[] = []
 
 export const AppShell: ParentComponent = (props) => {
   const auth = useAuth()
@@ -960,6 +965,14 @@ export const AppShell: ParentComponent = (props) => {
     customKeybindings: preferences.customKeybindings,
   })
 
+  // Per-`layout.root` cache for inactive-workspace tile orders. Keyed by
+  // the layout root's object identity so each `getTileOrderForWorkspace`
+  // call returns the same array reference as long as the registry's
+  // snapshot is unchanged. Without this cache, every call would allocate
+  // a fresh array via `getAllTileIds(root).flatMap(...)`, invalidating
+  // `WorkspaceTabTree`'s `buildTree` memo on each tick.
+  const inactiveTileOrderCache = new WeakMap<object, string[]>()
+
   // Sidebar element factories
   // Use getters for reactive values so that LeftSidebar/RightSidebar props
   // remain reactive when accessed through the intermediate opts object.
@@ -1030,6 +1043,32 @@ export const AppShell: ParentComponent = (props) => {
       get closingKeys() { return tabOps.closingTabKeys() },
     },
     onExpandWorkspace: handleExpandWorkspace,
+    // Tile order for sidebar leaf ordering. The active workspace's
+    // layout lives on `layoutStore` (the registry snapshot is taken at
+    // workspace-switch time, so it's stale for the active workspace);
+    // other workspaces read from the snapshot. The active path uses
+    // the store's memoized accessor so the WorkspaceTabTree memo
+    // downstream isn't invalidated by a fresh array on every unrelated
+    // reactive tick. The inactive path caches by `root` reference so
+    // repeated calls return the same array identity for as long as the
+    // registry snapshot's layout tree is unchanged — without that, a
+    // fresh `flatMap`-allocated array would invalidate the downstream
+    // `buildTree` memo on every render tick. Returns `[]` when no
+    // layout is loaded yet (cold registry); the tree falls back to a
+    // position-only sort.
+    getTileOrderForWorkspace: (wsId: string) => {
+      if (wsId === workspace.activeWorkspaceId())
+        return layoutStore.getAllTileIds()
+      const root = registry.get(wsId)?.layout.root
+      if (!root)
+        return EMPTY_TILE_ORDER
+      const cached = inactiveTileOrderCache.get(root)
+      if (cached)
+        return cached
+      const fresh = getAllTileIds(root)
+      inactiveTileOrderCache.set(root, fresh)
+      return fresh
+    },
   })
 
   // Refresh git status only when workerId or workingDir actually changes

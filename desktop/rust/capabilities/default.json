@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "clipboard-manager:allow-read-image",
+    "dialog:allow-save",
     "opener:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",

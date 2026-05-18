@@ -185,6 +185,29 @@ export function parentDirectory(p: string, flavor?: PathFlavor): string {
   return `${volume}${s}${rest.slice(0, -1).join(s)}`
 }
 
+/**
+ * Lowercase file extension (without the leading dot), or empty string
+ * if the last path component has none. Accepts both POSIX and Windows
+ * separators without needing a flavor — extensions are universally
+ * defined by the last dot inside the final path segment.
+ *
+ * Examples:
+ *   extname('photo.PNG')       → 'png'
+ *   extname('archive.tar.gz')  → 'gz'
+ *   extname('/etc/hosts')      → ''
+ *   extname('.gitignore')      → 'gitignore'
+ *   extname('dir.zip/file')    → ''   (dot before last separator)
+ */
+export function extname(p: string): string {
+  const dot = p.lastIndexOf('.')
+  if (dot < 0)
+    return ''
+  const sep = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  if (dot <= sep)
+    return ''
+  return p.substring(dot + 1).toLowerCase()
+}
+
 // Last component of the path, or empty string if none.
 export function basename(p: string, flavor?: PathFlavor): string {
   if (!p)

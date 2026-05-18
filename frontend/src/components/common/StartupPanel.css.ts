@@ -6,8 +6,12 @@ export const startupSpinner = style({
   gap: '0.5em',
 })
 
-/** Two-row layout for the startup-failure body (heading on top, details below). */
-export const startupErrorBody = style({
+/**
+ * Vertical column shared by `StartupBody` and `StartupErrorBody`. Used
+ * for both the neutral fallback body (informational) and the
+ * danger-flavored failure body. The wrapping caller sets the text color.
+ */
+export const startupBody = style({
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'stretch',
@@ -16,9 +20,19 @@ export const startupErrorBody = style({
   maxWidth: '100%',
 })
 
-export const startupErrorTitle = style({
+export const startupTitle = style({
   margin: 0,
   textAlign: 'start',
+})
+
+/** Centered, wrap-friendly row for action buttons rendered under a body. */
+export const startupActions = style({
+  display: 'flex',
+  flexDirection: 'row',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 'var(--space-2)',
 })
 
 /**

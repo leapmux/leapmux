@@ -1,5 +1,4 @@
 import type { JSX } from 'solid-js'
-import AtSign from 'lucide-solid/icons/at-sign'
 import Code from 'lucide-solid/icons/code'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Eye from 'lucide-solid/icons/eye'
@@ -10,11 +9,15 @@ import * as styles from './FileViewer.css'
 
 export type ViewMode = 'render' | 'source' | 'split'
 
+/**
+ * Segmented view-mode toggle row used by markdown and SVG-image
+ * viewers. Positioning is owned by the parent — this component just
+ * paints the button chrome.
+ */
 export function ViewToggle(props: {
   mode: ViewMode
   onToggle: (mode: ViewMode) => void
   showSplit?: boolean
-  onMention?: () => void
 }): JSX.Element {
   return (
     <div class={styles.viewToggle}>
@@ -47,18 +50,6 @@ export function ViewToggle(props: {
           <Icon icon={Code} size="sm" />
         </button>
       </Tooltip>
-      <Show when={props.onMention}>
-        <div style={{ 'border-left': '1px solid var(--border)' }} />
-        <Tooltip text="Mention in the chat" ariaLabel>
-          <button
-            class={styles.viewToggleButton}
-            onClick={() => props.onMention?.()}
-            data-testid="file-mention-button"
-          >
-            <Icon icon={AtSign} size="sm" />
-          </button>
-        </Tooltip>
-      </Show>
     </div>
   )
 }

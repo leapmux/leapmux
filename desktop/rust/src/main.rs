@@ -1468,9 +1468,7 @@ async fn proxy_http(
     let body = if payload.body_base64.is_empty() {
         Vec::new()
     } else {
-        base64::engine::general_purpose::STANDARD
-            .decode(&payload.body_base64)
-            .map_err(|err| format!("decode request body: {err}"))?
+        decode_b64(&payload.body_base64).map_err(|err| format!("decode request body: {err}"))?
     };
 
     let resp = check_response(
@@ -1579,9 +1577,7 @@ async fn send_channel_message(
     shell: State<'_, Arc<DesktopShell>>,
     b64_data: String,
 ) -> Result<(), String> {
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(&b64_data)
-        .map_err(|err| format!("decode channel message: {err}"))?;
+    let data = decode_b64(&b64_data).map_err(|err| format!("decode channel message: {err}"))?;
 
     check_response(
         shell
@@ -1766,6 +1762,139 @@ async fn open_in_editor(
             .await?,
     )?;
     Ok(())
+}
+
+fn decode_b64(b64: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| e.to_string())
+}
+
+// File-save commands used by the frontend's download flow.
+//
+// Bytes traverse the Tauri IPC as the raw request body (`InvokeBody::Raw`),
+// not base64 — for multi-MB downloads the encode/decode round-trip plus
+// the ~33% wire bloat was the dominant cost. The filename rides along
+// in a custom header, base64-encoded so HTTP-style ASCII restrictions
+// don't mangle Unicode names.
+//
+// File I/O runs on `spawn_blocking` so the Tokio executor thread that
+// services other Tauri commands isn't tied up by a slow disk write.
+
+fn read_bytes_from_request(request: &tauri::ipc::Request<'_>) -> Result<Vec<u8>, String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(b) => Ok(b.clone()),
+        _ => Err("expected raw bytes body".to_string()),
+    }
+}
+
+fn read_b64_header(request: &tauri::ipc::Request<'_>, name: &str) -> Result<String, String> {
+    let value = request
+        .headers()
+        .get(name)
+        .ok_or_else(|| format!("missing {name} header"))?
+        .to_str()
+        .map_err(|err| format!("invalid {name} header: {err}"))?;
+    let bytes = decode_b64(value)?;
+    String::from_utf8(bytes).map_err(|err| format!("invalid {name} utf-8: {err}"))
+}
+
+async fn write_bytes_blocking(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || std::fs::write(&path, &bytes))
+        .await
+        .map_err(|err| format!("spawn_blocking join: {err}"))?
+        .map_err(|err| format!("write file: {err}"))
+}
+
+/// Cap on collision-dedup attempts. With "foo (N).ext" picking from
+/// `1..MAX`, this bounds the directory scan and the suffix the user
+/// sees ("foo (1023).ext" is well past the point where a different
+/// filename is more useful than another increment).
+const MAX_SAVE_COLLISION_ATTEMPTS: u32 = 1024;
+
+/// Write `bytes` into `dir` under a name derived from `filename`,
+/// appending " (N)" before the extension to avoid clobbering an
+/// existing file. Returns the final absolute path written.
+///
+/// Race-free: each attempt opens with `create_new(true)`, so
+/// concurrent saves of the same name produce distinct files instead
+/// of one silently overwriting the other.
+async fn write_bytes_unique(dir: PathBuf, filename: String, bytes: Vec<u8>) -> Result<PathBuf, String> {
+    tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
+        use std::io::Write;
+        let as_path = std::path::Path::new(&filename);
+        let stem = as_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = as_path.extension().map(|s| s.to_string_lossy().into_owned());
+        for i in 0..MAX_SAVE_COLLISION_ATTEMPTS {
+            let candidate_name = if i == 0 {
+                filename.clone()
+            } else {
+                match &ext {
+                    Some(e) if !e.is_empty() => format!("{stem} ({i}).{e}"),
+                    _ => format!("{stem} ({i})"),
+                }
+            };
+            let candidate = dir.join(&candidate_name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(mut f) => {
+                    f.write_all(&bytes).map_err(|err| format!("write file: {err}"))?;
+                    return Ok(candidate);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(format!("create file: {err}")),
+            }
+        }
+        Err(format!(
+            "too many collisions for {filename} (gave up after {MAX_SAVE_COLLISION_ATTEMPTS})"
+        ))
+    })
+    .await
+    .map_err(|err| format!("spawn_blocking join: {err}"))?
+}
+
+#[tauri::command]
+async fn save_bytes_to_downloads(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let filename = read_b64_header(&request, "filename-b64")?;
+    let bytes = read_bytes_from_request(&request)?;
+    let downloads = dirs::download_dir().ok_or_else(|| "no downloads directory".to_string())?;
+    // Disallow separators in the supplied filename so callers can't
+    // escape the Downloads directory.
+    let safe_name = std::path::Path::new(&filename)
+        .file_name()
+        .ok_or_else(|| "invalid filename".to_string())?
+        .to_string_lossy()
+        .into_owned();
+    let path = write_bytes_unique(downloads, safe_name, bytes).await?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn save_bytes_as(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let default_name = read_b64_header(&request, "default-name-b64")?;
+    let bytes = read_bytes_from_request(&request)?;
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&default_name)
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let path_opt = rx.await.map_err(|e| e.to_string())?;
+    let Some(file_path) = path_opt else {
+        return Ok(None);
+    };
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    write_bytes_blocking(path.clone(), bytes).await?;
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -2078,6 +2207,7 @@ fn main() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main_window(app);
@@ -2179,6 +2309,8 @@ fn main() {
             list_tunnels,
             list_editors,
             open_in_editor,
+            save_bytes_to_downloads,
+            save_bytes_as,
             switch_mode,
             #[cfg(target_os = "macos")]
             restart_app,

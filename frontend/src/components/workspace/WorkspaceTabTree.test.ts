@@ -100,14 +100,107 @@ describe('buildTree', () => {
     expect(tree.groups[1].repoLabel).toBe('github.com/org/repo2')
   })
 
-  it('sorts agents before terminals within a branch', () => {
+  it('sorts tabs by tile-layout order, then LexoRank position', () => {
+    // Visual layout: two tiles. `tile-A` is the top-left tile, `tile-B`
+    // sits to its right (top-left-first DFS order: A then B). Within
+    // each tile, LexoRank position drives left-to-right order in the
+    // tab bar.
     const tabs = [
-      makeTab({ id: 't1', type: TabType.TERMINAL, gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
-      makeTab({ id: 'a1', type: TabType.AGENT, gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      // Out-of-input-order on purpose; the sort must reorder them to
+      // match the visual layout.
+      makeTab({ id: 'b2', type: TabType.TERMINAL, tileId: 'tile-B', position: '0|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'a2', type: TabType.TERMINAL, tileId: 'tile-A', position: '1|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'b1', type: TabType.AGENT, tileId: 'tile-B', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'a1', type: TabType.AGENT, tileId: 'tile-A', position: '0|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs, ['tile-A', 'tile-B'])
+    expect(tree.groups[0].branches[0].tabs.map(t => t.id)).toEqual(['a1', 'a2', 'b1', 'b2'])
+  })
+
+  it('falls back to position-then-id order when no tile order is provided', () => {
+    // Without layout context (e.g. test harness, cold registry), every
+    // tab gets the same primary rank → sort by `position` then `id`.
+    const tabs = [
+      makeTab({ id: 'z', tileId: 'tile-1', position: '1|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'm', tileId: 'tile-1', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'a', tileId: 'tile-1', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
     ]
     const tree = buildTree(tabs)
-    expect(tree.groups[0].branches[0].tabs[0].type).toBe(TabType.AGENT)
-    expect(tree.groups[0].branches[0].tabs[1].type).toBe(TabType.TERMINAL)
+    // `a` and `m` share position '0'; id breaks the tie. `z` at
+    // position '1|' sorts after both.
+    expect(tree.groups[0].branches[0].tabs.map(t => t.id)).toEqual(['a', 'm', 'z'])
+  })
+
+  it('applies the tile-order sort to the ungrouped bucket too', () => {
+    // Non-git tabs (no origin/toplevel) land in `ungrouped`. They still
+    // need to track the visual layout — e.g. a terminal in the left
+    // tile should appear above a terminal in the right tile even when
+    // neither carries git metadata.
+    const tabs = [
+      makeTab({ id: 'right', type: TabType.TERMINAL, tileId: 'tile-B', position: '0|' }),
+      makeTab({ id: 'left', type: TabType.TERMINAL, tileId: 'tile-A', position: '0|' }),
+    ]
+    const tree = buildTree(tabs, ['tile-A', 'tile-B'])
+    expect(tree.groups).toHaveLength(0)
+    expect(tree.ungrouped.map(t => t.id)).toEqual(['left', 'right'])
+  })
+
+  it('orders tabs independently inside each branch of the same repo', () => {
+    // Two branches under the same remote, each containing tabs from
+    // both tiles. The sort must apply per-branch — branch A's order
+    // must not leak into branch B's.
+    const tabs = [
+      makeTab({ id: 'feat-B', tileId: 'tile-B', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'feature' }),
+      makeTab({ id: 'main-B', tileId: 'tile-B', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'feat-A', tileId: 'tile-A', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'feature' }),
+      makeTab({ id: 'main-A', tileId: 'tile-A', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs, ['tile-A', 'tile-B'])
+    const branches = tree.groups[0].branches
+    expect(branches.map(b => b.branchName)).toEqual(['feature', 'main'])
+    expect(branches[0].tabs.map(t => t.id)).toEqual(['feat-A', 'feat-B'])
+    expect(branches[1].tabs.map(t => t.id)).toEqual(['main-A', 'main-B'])
+  })
+
+  it('interleaves FILE tabs with AGENT / TERMINAL tabs by position within the same tile', () => {
+    // No type-based bucketing anymore — the layout's `position` is the
+    // single source of left-to-right order. A FILE tab opened between
+    // two agent tabs must show up between them.
+    const tabs = [
+      makeTab({ id: 'agent-right', type: TabType.AGENT, tileId: 'tile-A', position: '2', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'file', type: TabType.FILE, tileId: 'tile-A', position: '1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'agent-left', type: TabType.AGENT, tileId: 'tile-A', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs, ['tile-A'])
+    expect(tree.groups[0].branches[0].tabs.map(t => t.id))
+      .toEqual(['agent-left', 'file', 'agent-right'])
+  })
+
+  it('tolerates an empty tileOrder for the active branch (legacy/test harness)', () => {
+    // Empty tileOrder ⇒ every tile gets the same Infinity rank, so the
+    // sort effectively becomes position-then-id. Real-world equivalent:
+    // a workspace whose layout hasn't been hydrated yet but whose tabs
+    // already arrived via the CRDT projection.
+    const tabs = [
+      makeTab({ id: 'b', tileId: 'tile-x', position: '1', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'a', tileId: 'tile-y', position: '0', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs, [])
+    // 'a' has earlier position, comes first; 'b' second — tile-x vs
+    // tile-y irrelevant under empty tileOrder.
+    expect(tree.groups[0].branches[0].tabs.map(t => t.id)).toEqual(['a', 'b'])
+  })
+
+  it('sinks tabs with unknown tile ids to the end of their branch', () => {
+    // A tab whose `tileId` isn't in `tileOrder` (layout/registry race,
+    // or a never-assigned ghost) appears after every known-tile tab
+    // but stays grouped with other unknown-tile tabs by position/id.
+    const tabs = [
+      makeTab({ id: 'ghost', tileId: 'tile-gone', position: '0|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+      makeTab({ id: 'real', tileId: 'tile-A', position: '0|', gitOriginUrl: 'https://github.com/org/repo.git', gitBranch: 'main' }),
+    ]
+    const tree = buildTree(tabs, ['tile-A'])
+    expect(tree.groups[0].branches[0].tabs.map(t => t.id)).toEqual(['real', 'ghost'])
   })
 
   it('uses "(no branch)" for tabs without gitBranch', () => {

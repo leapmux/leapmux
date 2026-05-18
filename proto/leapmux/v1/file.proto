@@ -21,6 +21,13 @@ message ReadFileRequest {
   string path = 3;
   int64 offset = 4;
   int64 limit = 5; // Max bytes; 0 = default (64KB)
+  // When true and the file size exceeds the read window
+  // (offset + effective limit), the server returns an empty content
+  // payload with the file's total_size populated, skipping the actual
+  // bytes. Lets the file viewer detect oversize files (e.g. images we
+  // refuse to preview) in a single round trip — combining what would
+  // otherwise be a StatFile + ReadFile pair.
+  bool meta_only_if_truncated = 6;
 }
 
 message ReadFileResponse {

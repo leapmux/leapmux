@@ -12,37 +12,27 @@ vi.mock('~/components/fileviewer/FileViewer.css', () => ({
 function noop() {}
 
 describe('viewToggle', () => {
-  it('shows mention button when onMention is provided', () => {
-    render(() => (
-      <ViewToggle
-        mode="render"
-        onToggle={noop}
-        onMention={() => {}}
-      />
-    ))
-    expect(screen.getByTestId('file-mention-button')).toBeInTheDocument()
+  it('renders the render / source toggle buttons', () => {
+    render(() => <ViewToggle mode="render" onToggle={noop} />)
+    // The render toggle button (Eye icon) is the first toggle in the row.
+    expect(screen.getAllByRole('button').length).toBeGreaterThanOrEqual(2)
   })
 
-  it('hides mention button when onMention is undefined', () => {
-    render(() => (
-      <ViewToggle
-        mode="render"
-        onToggle={noop}
-      />
+  it('shows the side-by-side toggle when showSplit is true', () => {
+    const { container } = render(() => (
+      <ViewToggle mode="render" onToggle={noop} showSplit />
     ))
-    expect(screen.queryByTestId('file-mention-button')).not.toBeInTheDocument()
+    // Three toggle buttons total: render, split, source.
+    expect(container.querySelectorAll('button').length).toBe(3)
   })
 
-  it('calls onMention when mention button is clicked', () => {
-    const onMention = vi.fn()
-    render(() => (
-      <ViewToggle
-        mode="render"
-        onToggle={noop}
-        onMention={onMention}
-      />
+  it('calls onToggle when a toggle button is clicked', () => {
+    const onToggle = vi.fn()
+    const { container } = render(() => (
+      <ViewToggle mode="render" onToggle={onToggle} showSplit />
     ))
-    screen.getByTestId('file-mention-button').click()
-    expect(onMention).toHaveBeenCalledOnce()
+    const buttons = container.querySelectorAll('button')
+    buttons[1].click() // split
+    expect(onToggle).toHaveBeenCalledWith('split')
   })
 })
