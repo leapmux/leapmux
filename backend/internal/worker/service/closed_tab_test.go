@@ -67,6 +67,18 @@ func (w *testResponseWriter) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 
 func (w *testResponseWriter) ChannelID() string { return w.channelID }
 
+// testChannelID is the channel id setupTestService's handshake
+// registers; every fresh testResponseWriter in this package shares it
+// so AuthorizerForSender resolves the same accessible-workspace set.
+const testChannelID = "test-ch"
+
+// newTestWriter returns a testResponseWriter bound to the package's
+// canonical channel id. Use instead of the literal so a future channel
+// id change is a single edit here.
+func newTestWriter() *testResponseWriter {
+	return &testResponseWriter{channelID: testChannelID}
+}
+
 // streamsSnapshot returns a copy of streams under the lock so callers can
 // iterate without racing concurrent SendStream writes from handler
 // goroutines. The lock also establishes happens-before with the writer so
@@ -77,10 +89,38 @@ func (w *testResponseWriter) streamsSnapshot() []*leapmuxv1.InnerStreamMessage {
 	return append([]*leapmuxv1.InnerStreamMessage(nil), w.streams...)
 }
 
+// setupOption configures setupTestService. Use the with* helpers below
+// rather than constructing setupConfig directly.
+type setupOption func(*setupConfig)
+
+type setupConfig struct {
+	workspaceIDs []string
+	remoteIPC    RemoteIPCFactory
+}
+
+// withWorkspaces grants the test channel access to the given workspace
+// IDs. Without this option AccessibleWorkspaceIDs is empty, so every
+// requireAccessibleWorkspace check returns PERMISSION_DENIED.
+func withWorkspaces(ids ...string) setupOption {
+	return func(c *setupConfig) { c.workspaceIDs = ids }
+}
+
+// withRemoteIPC wires the worker's RemoteIPC factory before handlers are
+// registered so tests can assert mint/release semantics for the
+// LEAPMUX_REMOTE_* token without poking svc.RemoteIPC directly.
+func withRemoteIPC(ipc RemoteIPCFactory) setupOption {
+	return func(c *setupConfig) { c.remoteIPC = ipc }
+}
+
 // setupTestService creates a minimal service.Context with an in-memory DB
-// and a channel manager that grants access to the given workspace IDs.
-func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.Dispatcher, *testResponseWriter) {
+// and a channel manager configured per the supplied options.
+func setupTestService(t *testing.T, opts ...setupOption) (*Context, *channel.Dispatcher, *testResponseWriter) {
 	t.Helper()
+
+	var cfg setupConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -96,10 +136,10 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
 	require.NoError(t, err)
 	chmgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
-		ChannelId:              "test-ch",
+		ChannelId:              testChannelID,
 		UserId:                 "user-1",
 		HandshakePayload:       msg1,
-		AccessibleWorkspaceIds: workspaceIDs,
+		AccessibleWorkspaceIds: cfg.workspaceIDs,
 	})
 
 	svc := &Context{
@@ -113,6 +153,7 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 		Terminals:       terminal.NewManager(),
 		AgentStartup:    newAgentStartupRegistry(),
 		TerminalStartup: newTerminalStartupRegistry(),
+		RemoteIPC:       cfg.remoteIPC,
 	}
 	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil)
 	svc.Output.DataDir = svc.DataDir
@@ -120,8 +161,7 @@ func setupTestService(t *testing.T, workspaceIDs ...string) (*Context, *channel.
 	d := channel.NewDispatcher()
 	RegisterAll(d, svc)
 
-	w := &testResponseWriter{channelID: "test-ch"}
-	return svc, d, w
+	return svc, d, newTestWriter()
 }
 
 // startTestTerminal spawns a live PTY via svc.Terminals, persists a
@@ -138,17 +178,88 @@ func startTestTerminal(t *testing.T, svc *Context, ctx context.Context, id, work
 		Shell: testutil.TestShell(), WorkingDir: workingDir,
 		Cols: 80, Rows: 24,
 	}, func([]byte, int64) {}, nil))
-	t.Cleanup(func() {
-		svc.Terminals.StopTerminal(id)
-		testutil.AssertEventually(t, func() bool { return svc.Terminals.IsExited(id) }, "exit")
-		svc.Terminals.RemoveTerminal(id)
-	})
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID: id, WorkspaceID: workspaceID, WorkingDir: workingDir, HomeDir: "/tmp",
 		Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	return workingDir
+}
+
+// openTerminalViaRPC drives the OpenTerminal RPC end-to-end: dispatch,
+// unmarshal, and wait for the PTY to register in the manager. Returns
+// the terminal id minted by the worker. Tests that need to assert
+// against the dispatch response should call dispatch directly.
+func openTerminalViaRPC(t *testing.T, svc *Context, d *channel.Dispatcher, w *testResponseWriter, workspaceID, workingDir string) string {
+	t.Helper()
+	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+		WorkspaceId: workspaceID,
+		Shell:       testutil.TestShell(),
+		WorkingDir:  workingDir,
+		// 200 cols rather than 80 so cmd.exe's long t.TempDir-derived
+		// prompt (e.g. `C:\Users\RUNNER~1\AppData\Local\Temp\<long
+		// test name>\<id>>` ~ 90 chars) plus the trailing input does
+		// not wrap. ConPTY's cooked-mode line editor can read partial
+		// `exit 42` as `exit` when the line wraps, losing the digits
+		// and exiting with errorlevel 0 instead of 42.
+		Cols: 200,
+		Rows: 24,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var openResp leapmuxv1.OpenTerminalResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	terminalID := openResp.GetTerminalId()
+	require.NotEmpty(t, terminalID)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	return terminalID
+}
+
+// sendShellLine writes a complete shell command to the PTY. On Windows
+// it writes one byte at a time so each char becomes its own ConPTY
+// KEY_EVENT_RECORD — bulk writes can land out of order in the console
+// input queue (e.g. `\r` processed ahead of trailing digits), so cmd
+// sees `exit` instead of `exit 7`. On Unix the line goes through as a
+// single write.
+func sendShellLine(t *testing.T, d *channel.Dispatcher, terminalID string, line []byte) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		for i := 0; i < len(line); i++ {
+			dispatch(d, "SendInput", &leapmuxv1.SendInputRequest{
+				TerminalId: terminalID,
+				Data:       []byte{line[i]},
+			}, newTestWriter())
+		}
+		return
+	}
+	dispatch(d, "SendInput", &leapmuxv1.SendInputRequest{
+		TerminalId: terminalID,
+		Data:       line,
+	}, newTestWriter())
+}
+
+// exitTerminalAndWait sends `exit <code>` followed by Enter and waits
+// for the PTY to register as exited. Use exitArg="" for a clean exit
+// (code 0) or " 42" for a non-zero exit. The returned writer is
+// retained for API compatibility; no current caller inspects it.
+//
+// The exit command is always sent with an explicit code (empty exitArg
+// becomes " 0") so the shell's exit status does not depend on its
+// inherited `$?`. macOS GitHub runners occasionally leave `$?` non-zero
+// after `/bin/sh -i -l` init scripts, which would make a bare `exit`
+// pick up that code instead of 0. The input is allowed to sit in the
+// PTY's stdin buffer until the shell finishes its init scripts and
+// reads it — no prompt-ready handshake is required because the parsed
+// exit code does not depend on the shell having drained `$?`.
+func exitTerminalAndWait(t *testing.T, svc *Context, d *channel.Dispatcher, terminalID, exitArg string) *testResponseWriter {
+	t.Helper()
+	if exitArg == "" {
+		exitArg = " 0"
+	}
+	sendShellLine(t, d, terminalID, []byte("exit"+exitArg+testutil.TestShellEnter()))
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.IsExited(terminalID) }, "exit")
+	return newTestWriter()
 }
 
 // drainAllInFlight joins any runAgentStartup / runTerminalStartup
@@ -180,7 +291,7 @@ func dispatch(d *channel.Dispatcher, method string, req proto.Message, w *testRe
 
 func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create an agent and add a message.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -211,7 +322,7 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 	require.NoError(t, svc.Queries.CloseAgent(ctx, "agent-1"))
 
 	// Verify empty response for closed agent.
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: "agent-1",
 	}, w2)
@@ -224,7 +335,7 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 
 func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create two agents.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -255,7 +366,7 @@ func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 
 func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create two terminals via DB.
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -291,7 +402,7 @@ func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 
 func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create an agent, add a message, then close it.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -330,7 +441,7 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 
 func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create a terminal and close it.
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -362,7 +473,7 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 
 func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	workingDir := t.TempDir()
 
 	// Start a real terminal.
@@ -407,7 +518,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, len(dbTerm.Screen) > 0, "screen should be persisted after Shutdown")
 	assert.Contains(t, string(dbTerm.Screen), "shutdown_test")
-	assert.Contains(t, string(dbTerm.Screen), "[Connection to the terminal was lost.]")
+	assert.Contains(t, string(dbTerm.Screen), "[Worker disconnected - Press Enter to restart]")
 	assert.Equal(t, "user@host: ~/dir", dbTerm.Title, "title should be persisted after Shutdown")
 	assert.False(t, dbTerm.ClosedAt.Valid, "Shutdown should not set closed_at")
 
@@ -415,41 +526,62 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	svc.Terminals.StopAll()
 }
 
-func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
+// TestShutdown_PreservesNaturalExitCode pins the contract that
+// `Shutdown` does not clobber a previously-persisted exit code for a
+// terminal that already exited naturally. Without the IsExited skip in
+// Shutdown the exit_code column would be overwritten with
+// exitCodeUnknown (-1) on every shutdown.
+func TestShutdown_PreservesNaturalExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// cmd.exe under ConPTY on the GitHub Windows runner exits with
+		// errorlevel 0 regardless of the `exit N` argument typed at the
+		// prompt, even when the input is echoed back to the screen
+		// correctly. Reproduced with widened cols, byte-by-byte input,
+		// /D to skip AutoRun, and explicit exit codes — none restore
+		// the expected exit-code propagation. The contract under test
+		// (Shutdown must not clobber a previously-persisted exit code)
+		// is exercised cross-platform by
+		// TestPersistTerminalOnExit_ShutdownDoesNotClobberRealExitCode
+		// via a direct persistTerminalOnExit call.
+		t.Skip("cmd.exe + ConPTY does not propagate `exit N` to OS exit code on this runner")
+	}
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
-	workingDir := t.TempDir()
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId: "ws-1",
-		Shell:       testutil.TestShell(),
-		WorkingDir:  workingDir,
-		Cols:        80,
-		Rows:        24,
-	}, w)
-	require.Len(t, w.responses, 1)
-
-	var openResp leapmuxv1.OpenTerminalResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	terminalID := openResp.GetTerminalId()
-	require.NotEmpty(t, terminalID)
-
-	// Wait for the async PTY spawn to finish before sending input.
+	terminalID := openTerminalViaRPC(t, svc, d, w, "ws-1", t.TempDir())
+	// Exit with a non-zero, non-sentinel code so a regression that
+	// writes the shutdown sentinel (-1) or the zero-value default (0)
+	// is unambiguous.
+	exitTerminalAndWait(t, svc, d, terminalID, " 42")
 	testutil.AssertEventually(t, func() bool {
-		return svc.Terminals.HasTerminal(terminalID)
-	}, "expected terminal to be ready")
+		row, err := svc.Queries.GetTerminal(ctx, terminalID)
+		return err == nil && row.ExitCode == 42
+	}, "exit handler must persist exit_code=42")
 
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	svc.Shutdown()
+
+	dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), dbTerm.ExitCode,
+		"Shutdown must not clobber the natural exit code of an already-exited terminal")
+}
+
+func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
+	ctx := context.Background()
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+
+	terminalID := openTerminalViaRPC(t, svc, d, w, "ws-1", t.TempDir())
+
 	enter := testutil.TestShellEnter()
+	w2 := newTestWriter()
+	// Send the echo marker as a separate input so exitTerminalAndWait
+	// can drive the canonical `exit + enter` flow and wait for IsExited.
 	dispatch(d, "SendInput", &leapmuxv1.SendInputRequest{
 		TerminalId: terminalID,
-		Data:       []byte("echo exit_notice_test" + enter + "exit" + enter),
+		Data:       []byte("echo exit_notice_test" + enter),
 	}, w2)
 	require.Empty(t, w2.errors)
-
-	testutil.AssertEventually(t, func() bool {
-		return svc.Terminals.IsExited(terminalID)
-	}, "expected terminal to exit")
+	exitTerminalAndWait(t, svc, d, terminalID, "")
 
 	// Assertions are split so a failure on any individual condition
 	// surfaces a specific error message rather than a generic "condition
@@ -463,8 +595,8 @@ func TestOpenTerminal_ExitPersistsDisconnectNotice(t *testing.T) {
 
 	testutil.AssertEventually(t, func() bool {
 		dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
-		return err == nil && strings.Contains(string(dbTerm.Screen), "[Connection to the terminal was lost.]")
-	}, "expected disconnect notice to be persisted in screen snapshot")
+		return err == nil && strings.Contains(string(dbTerm.Screen), "[Terminal process exited (0) - Press Enter to restart]")
+	}, "expected exit notice with exit code to be persisted in screen snapshot")
 
 	// Skip the echoed-command substring check on Windows: cmd.exe under
 	// ConPTY renders its banner and prompt through VT sequences that can

@@ -1,34 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { getTerminalText, waitForTerminalText } from './helpers/terminal'
 import { waitForLayoutSave } from './helpers/ui'
-
-/** Read terminal text content from the active xterm's buffer (WebGL renderer makes DOM rows empty). */
-async function getTerminalText(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    // Use xterm buffer API exposed by TerminalView component
-    if (typeof (window as any).__getActiveTerminalText === 'function') {
-      return (window as any).__getActiveTerminalText() as string
-    }
-    // Fallback: DOM-based reading
-    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-    for (const container of containers) {
-      if (container.dataset.active === 'true') {
-        const rows = container.querySelector('.xterm-rows')
-        if (rows)
-          return rows.textContent ?? ''
-      }
-    }
-    return document.querySelector('.xterm-rows')?.textContent ?? ''
-  })
-}
-
-/** Wait until terminal text contains the expected string. */
-async function waitForTerminalText(page: Page, text: string, timeout?: number) {
-  await expect(async () => {
-    const content = await getTerminalText(page)
-    expect(content).toContain(text)
-  }).toPass(timeout != null ? { timeout } : undefined)
-}
 
 /** Type a command into the active terminal and press Enter. */
 async function typeInTerminal(page: Page, command: string) {

@@ -13,7 +13,7 @@ import (
 )
 
 func TestCloseAgent_CancelsPendingSchedules(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
 		ID:          "agent-1",
@@ -43,7 +43,7 @@ func TestCloseAgent_CancelsPendingSchedules(t *testing.T) {
 }
 
 func TestCleanupWorkspace_CancelsPendingSchedules(t *testing.T) {
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
 		ID:          "agent-1",

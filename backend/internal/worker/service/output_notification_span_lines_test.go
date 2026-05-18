@@ -18,7 +18,7 @@ import (
 // subagent's tool_use is open renders with passthrough vertical bars.
 func TestPersistNotification_StandaloneCapturesActiveSpans(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	svc.Output.spanTracker("agent-1").OpenSpan("span-A", "")
@@ -53,7 +53,7 @@ func TestPersistNotification_StandaloneCapturesActiveSpans(t *testing.T) {
 // whatever was active when the thread was first created.
 func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})
@@ -101,7 +101,7 @@ func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
 // bar.
 func TestPersistNotification_AppendDropsClosedSpan(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	svc.Output.spanTracker("agent-1").OpenSpan("span-A", "")
@@ -131,7 +131,7 @@ func TestPersistNotification_AppendDropsClosedSpan(t *testing.T) {
 // exactly the same as before this change — no left-side bars.
 func TestPersistNotification_StandaloneEmptyTracker(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	notif, err := json.Marshal(map[string]any{"type": "context_cleared"})

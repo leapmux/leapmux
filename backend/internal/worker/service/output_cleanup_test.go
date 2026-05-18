@@ -20,7 +20,7 @@ import (
 // for a reconnect-and-replay round trip.
 func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
@@ -60,7 +60,7 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 // was open.
 func TestClearAgentRuntimeState_NoPendingIsNoOp(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-empty",

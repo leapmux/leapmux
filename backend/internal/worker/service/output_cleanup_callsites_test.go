@@ -65,7 +65,7 @@ func assertControlRequestsCleared(t *testing.T, ctx context.Context, svc *Contex
 // the next WatchEvents replay would re-emit as unanswerable prompts.
 func TestCloseAgent_ClearsPendingControlRequests(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	requestID := seedPendingControlRequest(t, ctx, svc, w, "agent-close", "ws-1")
@@ -84,7 +84,7 @@ func TestCloseAgent_ClearsPendingControlRequests(t *testing.T) {
 // namespace, so any stale row would be unanswerable by it.
 func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	// Mock a successful restart so the test exercises only the cleanup
@@ -107,7 +107,7 @@ func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T)
 // with a fresh context.
 func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
@@ -129,7 +129,7 @@ func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 // is the sole guard.
 func TestSubprocessCrash_FiresClearAgentRuntimeState(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, "ws-1")
+	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	// Mirror runner.go's wiring: every subprocess exit should run the

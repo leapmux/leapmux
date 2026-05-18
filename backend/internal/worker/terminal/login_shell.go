@@ -40,7 +40,12 @@ func ShellBaseName(p string) string {
 //   - powershell(-preview):     nil  — Windows PowerShell 5.1 has no -Login
 //     and parses the unknown switch as a command name, raising
 //     "ObjectNotFound: (-Login:String), CommandNotFoundException".
-//   - cmd.exe:                  nil  — no login concept; rejects POSIX flags
+//   - cmd.exe:                  ["/D"] — no login concept; /D suppresses
+//     the registry AutoRun command (HKLM/HKCU\Software\Microsoft\Command
+//     Processor\AutoRun) so spawned cmd sessions behave the same on every
+//     machine. Without this a user-set AutoRun runs before every prompt
+//     and can leave %ERRORLEVEL% non-zero or otherwise mutate state in
+//     ways that surface as flaky `exit N` parsing.
 //   - tcsh/csh:                 ["-l"]  — tcsh requires -l as the only flag
 //   - all others:               ["-i", "-l"]
 func LoginShellArgs(shellPath string) []string {
@@ -51,7 +56,7 @@ func LoginShellArgs(shellPath string) []string {
 	case IsPwsh(name):
 		return nil
 	case name == "cmd":
-		return nil
+		return []string{"/D"}
 	case name == "tcsh" || name == "csh":
 		return []string{"-l"}
 	default:

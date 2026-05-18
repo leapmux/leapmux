@@ -40,12 +40,12 @@ import (
 // branch is already covered by TestOpenAgent_StartupFailure* tests.
 func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	// Subscribe before OpenAgent so an accidental ACTIVE broadcast would
 	// be captured regardless of where in the sequence it fires.
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 
 	var (
 		closeOnce    sync.Once
@@ -63,7 +63,7 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 			// Drive CloseAgent synchronously. dispatch returns only
 			// after the full handler runs, so when control comes back
 			// here the ctx is cancelled and closed_at is set in the DB.
-			wClose := &testResponseWriter{channelID: "test-ch"}
+			wClose := newTestWriter()
 			dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: opts.AgentID}, wClose)
 		})
 		<-sCtx.Done()
@@ -134,7 +134,7 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 	branchName := "feature/close-during-startup"
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
 	var closeOnce sync.Once
@@ -145,7 +145,7 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 			require.DirExists(t, worktreePath)
 			require.True(t, localBranchExists(t, repoDir, branchName))
 
-			wClose := &testResponseWriter{channelID: "test-ch"}
+			wClose := newTestWriter()
 			dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: opts.AgentID}, wClose)
 		})
 		<-sCtx.Done()
@@ -204,10 +204,10 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 	branchName := "feature/close-term-during-startup"
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
-	wWatch := &testResponseWriter{channelID: "test-ch"}
+	wWatch := newTestWriter()
 
 	var closeOnce sync.Once
 	svc.startTerminalFn = func(sCtx context.Context, opts terminal.Options, _ terminal.OutputHandler, _ terminal.ExitHandler) error {
@@ -220,7 +220,7 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 				Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: opts.ID}},
 			}, wWatch)
 
-			wClose := &testResponseWriter{channelID: "test-ch"}
+			wClose := newTestWriter()
 			dispatch(d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{TerminalId: opts.ID}, wClose)
 		})
 		// Return sCtx.Err() to simulate "spawn aborted" — exercises the

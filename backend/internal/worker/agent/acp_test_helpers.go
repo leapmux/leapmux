@@ -86,8 +86,12 @@ func newACPAgentForRPCWithResponder[T any](
 
 	t.Cleanup(func() {
 		cancel()
-		_ = readPipe.Close()
+		// Close the write end first so the scanner's pending blocking
+		// Read returns EOF. On Windows, closing the read end while a
+		// Read is in flight deadlocks on the FD refcount (the Close
+		// waits for the in-flight Read, which never returns).
 		_ = writePipe.Close()
+		_ = readPipe.Close()
 	})
 
 	return agent, func() []recordedRequest {

@@ -1,25 +1,23 @@
 import type { CloseTerminalResponse } from '~/generated/leapmux/v1/terminal_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 
-import { createRoot } from 'solid-js'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createRoot, createSignal } from 'solid-js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as workerRpc from '~/api/workerRpc'
+import { showWarnToast } from '~/components/common/Toast'
 import { useTerminalOperations } from '~/components/shell/useTerminalOperations'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
 
-const mockCloseTerminal = vi.fn<(workerId: string, req: { terminalId: string, worktreeAction?: WorktreeAction }) => Promise<CloseTerminalResponse>>()
-const mockShowWarnToast = vi.fn()
+vi.mock('~/components/common/Toast', () => ({
+  showWarnToast: vi.fn(),
+}))
 
-vi.mock('~/api/workerRpc', () => ({
-  createTerminal: vi.fn(),
-  createTerminalWithShell: vi.fn(),
-  sendTerminalInput: vi.fn(),
-  resizeTerminal: vi.fn(),
-  closeTerminal: (...args: unknown[]) => mockCloseTerminal(...args as [string, { terminalId: string, worktreeAction?: WorktreeAction }]),
-  updateTerminalTitle: vi.fn(),
-  listAvailableShells: vi.fn().mockResolvedValue({ shells: [], defaultShell: '' }),
+vi.mock('~/components/terminal/TerminalView', () => ({
+  disposeTerminalInstance: vi.fn(),
 }))
 
 vi.mock('~/api/clients', () => ({
@@ -29,146 +27,279 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-vi.mock('~/components/common/Toast', () => ({
-  showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
+// `closeFailureToast` is intentionally unmocked so the close tests
+// exercise its real implementation, which formats the worktree-failure
+// message and forwards to the mocked showWarnToast.
+vi.mock('~/api/workerRpc', () => ({
+  sendInput: vi.fn(async () => ({})),
+  restartTerminal: vi.fn(async () => ({})),
+  listAvailableShells: vi.fn(async () => ({ shells: [], defaultShell: '' })),
+  openTerminal: vi.fn(async () => ({ terminalId: 'new-tid', title: '' })),
+  closeTerminal: vi.fn(async () => ({ result: { worktreeId: '', failureMessage: '' } })),
+  resizeTerminal: vi.fn(async () => ({})),
+  updateTerminalTitle: vi.fn(async () => ({})),
 }))
 
-function setup() {
-  const tabStore = createTabStore()
-  const layoutStore = createLayoutStore()
-
-  const ops = useTerminalOperations({
-    org: { orgId: () => 'org-1' },
-    tabStore,
-    layoutStore,
-    activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
-    isActiveWorkspaceMutatable: () => true,
-    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp' }),
-    setShowNewTerminalDialog: vi.fn(),
-    setNewTerminalLoading: vi.fn(),
-    setNewShellLoading: vi.fn(),
-  })
-
-  return { tabStore, ops }
-}
+const sendInputMock = workerRpc.sendInput as unknown as ReturnType<typeof vi.fn>
+const restartTerminalMock = workerRpc.restartTerminal as unknown as ReturnType<typeof vi.fn>
+const closeTerminalMock = workerRpc.closeTerminal as unknown as ReturnType<typeof vi.fn>
+const showWarnToastMock = showWarnToast as unknown as ReturnType<typeof vi.fn>
 
 async function flushMicrotasks() {
   await Promise.resolve()
   await Promise.resolve()
 }
 
-describe('useTerminalOperations', () => {
-  afterEach(() => {
-    mockCloseTerminal.mockReset()
-    mockShowWarnToast.mockReset()
+interface TabOverrides {
+  id?: string
+  cols?: number
+  rows?: number
+}
+
+const disposers: Array<() => void> = []
+
+beforeEach(() => {
+  sendInputMock.mockClear()
+  restartTerminalMock.mockClear()
+  closeTerminalMock.mockClear()
+  showWarnToastMock.mockClear()
+  // Reset to default success — individual tests override per scenario.
+  restartTerminalMock.mockImplementation(async () => ({}))
+  sendInputMock.mockImplementation(async () => ({}))
+  closeTerminalMock.mockImplementation(async () => ({ result: { worktreeId: '', failureMessage: '' } }))
+})
+
+afterEach(() => {
+  while (disposers.length > 0) {
+    disposers.pop()?.()
+  }
+})
+
+/**
+ * Build a useTerminalOperations instance. When `status` is provided a
+ * single terminal tab is registered with the requested status so the
+ * input/restart tests can call handlers directly; pass `undefined` for
+ * tests that prefer to register tabs themselves (bell / close tests).
+ *
+ * `tabOverrides` keys override the default tab fields; pass `cols:
+ * undefined` (or `rows: undefined`) to exercise the "tab is missing
+ * dims" path.
+ */
+function setup(status: TerminalStatus | undefined = undefined, tabOverrides: TabOverrides = {}) {
+  const tabStore = createTabStore()
+  const layoutStore = createLayoutStore()
+  const [activeWorkspace] = createSignal<Workspace | null>({ id: 'ws-1' } as Workspace)
+  if (status !== undefined) {
+    tabStore.addTab({
+      type: TabType.TERMINAL,
+      id: 'tid-1',
+      title: 'Terminal',
+      workerId: 'worker-1',
+      workingDir: '/tmp',
+      cols: 100,
+      rows: 30,
+      status,
+      ...tabOverrides,
+    })
+  }
+
+  let ops!: ReturnType<typeof useTerminalOperations>
+  const dispose = createRoot((d) => {
+    ops = useTerminalOperations({
+      org: { orgId: () => 'org-1' },
+      tabStore,
+      layoutStore,
+      activeWorkspace,
+      isActiveWorkspaceMutatable: () => true,
+      getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/tmp' }),
+      setShowNewTerminalDialog: () => {},
+      setNewTerminalLoading: () => {},
+      setNewShellLoading: () => {},
+    })
+    return d
+  })
+  disposers.push(dispose)
+  return { ops, tabStore }
+}
+
+describe('useterminaloperations.handleterminalinput', () => {
+  it('routes input to sendInput when status is READY', async () => {
+    const { ops } = setup(TerminalStatus.READY)
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x61])) // 'a'
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
+    expect(restartTerminalMock).not.toHaveBeenCalled()
+    const arg = sendInputMock.mock.calls[0][1]
+    expect(arg.terminalId).toBe('tid-1')
+    expect(arg.workspaceId).toBe('ws-1')
   })
 
+  it('calls restartTerminal when Enter (CR) is pressed on an EXITED terminal', async () => {
+    const { ops } = setup(TerminalStatus.EXITED)
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    expect(restartTerminalMock).toHaveBeenCalledTimes(1)
+    expect(sendInputMock).not.toHaveBeenCalled()
+    const arg = restartTerminalMock.mock.calls[0][1]
+    expect(arg).toMatchObject({
+      orgId: 'org-1',
+      workspaceId: 'ws-1',
+      terminalId: 'tid-1',
+      cols: 100,
+      rows: 30,
+    })
+  })
+
+  it('ignores non-Enter input on an EXITED terminal', async () => {
+    const { ops } = setup(TerminalStatus.EXITED)
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x61])) // 'a'
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0A])) // LF (not CR)
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D, 0x0A])) // multi-byte
+    expect(restartTerminalMock).not.toHaveBeenCalled()
+    expect(sendInputMock).not.toHaveBeenCalled()
+  })
+
+  it('drops input on STARTING/DISCONNECTED/STARTUP_FAILED', async () => {
+    for (const status of [TerminalStatus.STARTING, TerminalStatus.DISCONNECTED, TerminalStatus.STARTUP_FAILED]) {
+      sendInputMock.mockClear()
+      restartTerminalMock.mockClear()
+      const { ops } = setup(status)
+      await ops.handleTerminalInput('tid-1', new Uint8Array([0x61]))
+      await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+      expect(sendInputMock, `status=${status}`).not.toHaveBeenCalled()
+      expect(restartTerminalMock, `status=${status}`).not.toHaveBeenCalled()
+    }
+  })
+
+  it('shows a toast and does not throw when restartTerminal fails', async () => {
+    restartTerminalMock.mockImplementation(async () => {
+      throw new Error('worker offline')
+    })
+    const { ops } = setup(TerminalStatus.EXITED)
+    // Must not propagate — the keystroke handler is called from xterm's
+    // onData callback, which has no error sink.
+    await expect(ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))).resolves.toBeUndefined()
+    expect(restartTerminalMock).toHaveBeenCalledTimes(1)
+    expect(showWarnToastMock).toHaveBeenCalledTimes(1)
+    expect(showWarnToastMock.mock.calls[0][0]).toMatch(/restart/i)
+  })
+
+  it('does not call any RPC when the tab is missing', async () => {
+    // Setup with a status — the tab is registered. Then call with an
+    // unknown id so getTerminalTab returns undefined.
+    const { ops } = setup(TerminalStatus.EXITED)
+    await ops.handleTerminalInput('unknown-tid', new Uint8Array([0x0D]))
+    expect(sendInputMock).not.toHaveBeenCalled()
+    expect(restartTerminalMock).not.toHaveBeenCalled()
+  })
+
+  it('drops overlapping Enter presses while a restart is in flight', async () => {
+    // Keep the first restart unresolved so the in-flight guard stays
+    // armed. A held Enter (autorepeat) would otherwise fire one RPC
+    // per keystroke and toast-spam the user with FailedPrecondition
+    // rejects from the backend.
+    let releaseRestart: (() => void) | undefined
+    restartTerminalMock.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseRestart = () => resolve({})
+    }))
+    const { ops } = setup(TerminalStatus.EXITED)
+    const firstPress = ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    // Second/third presses must be no-ops while the first call is pending.
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    expect(restartTerminalMock).toHaveBeenCalledTimes(1)
+    expect(showWarnToastMock).not.toHaveBeenCalled()
+    releaseRestart?.()
+    await firstPress
+  })
+
+  it('falls back to default cols/rows when the tab is missing dims', async () => {
+    // Build a tab without explicit cols/rows; handler should fall back
+    // to the documented 80x25 default rather than sending undefined.
+    const { ops } = setup(TerminalStatus.EXITED, { cols: undefined, rows: undefined })
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    expect(restartTerminalMock).toHaveBeenCalledTimes(1)
+    const arg = restartTerminalMock.mock.calls[0][1]
+    expect(arg.cols).toBe(80)
+    expect(arg.rows).toBe(25)
+  })
+})
+
+describe('useterminaloperations.handleterminalbell', () => {
   it('does not notify the active terminal tab on bell', () => {
-    createRoot((dispose) => {
-      const { tabStore, ops } = setup()
-      tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', tileId: 'tile-1' })
+    const { tabStore, ops } = setup()
+    tabStore.addTab({ type: TabType.TERMINAL, id: 'term-1', tileId: 'tile-1' })
 
-      ops.handleTerminalBell('term-1')
+    ops.handleTerminalBell('term-1')
 
-      expect(tabStore.state.tabs[0].hasNotification).not.toBe(true)
-      dispose()
-    })
+    expect(tabStore.state.tabs[0].hasNotification).not.toBe(true)
+  })
+})
+
+describe('useterminaloperations.handleterminalclose', () => {
+  it('removes the terminal tab synchronously and fires closeTerminal with KEEP by default', () => {
+    const { tabStore, ops } = setup()
+    tabStore.addTab({ type: TabType.TERMINAL, id: 'term-close', tileId: 'tile-1', workerId: 'w-1' })
+
+    // Never resolves so the test stays in the synchronous-effects window.
+    closeTerminalMock.mockReturnValueOnce(new Promise(() => {}))
+
+    ops.handleTerminalClose('term-close')
+
+    expect(tabStore.state.tabs.find(t => t.id === 'term-close')).toBeUndefined()
+    expect(closeTerminalMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
+      terminalId: 'term-close',
+      worktreeAction: WorktreeAction.KEEP,
+    }))
   })
 
-  describe('handleTerminalClose', () => {
-    it('removes the terminal tab synchronously and fires closeTerminal with KEEP by default', async () => {
-      await createRoot(async (dispose) => {
-        try {
-          const { tabStore, ops } = setup()
-          tabStore.addTab({ type: TabType.TERMINAL, id: 'term-close', tileId: 'tile-1', workerId: 'w-1' })
+  it('passes through the worktreeAction argument', async () => {
+    const { tabStore, ops } = setup()
+    tabStore.addTab({ type: TabType.TERMINAL, id: 'term-remove', tileId: 'tile-1', workerId: 'w-1' })
 
-          mockCloseTerminal.mockReturnValueOnce(new Promise(() => {}))
+    closeTerminalMock.mockResolvedValueOnce({
+      result: {
+        worktreeId: '',
+        failureMessage: '',
+      },
+    } as CloseTerminalResponse)
 
-          ops.handleTerminalClose('term-close')
+    ops.handleTerminalClose('term-remove', WorktreeAction.REMOVE)
+    await flushMicrotasks()
 
-          expect(tabStore.state.tabs.find(t => t.id === 'term-close')).toBeUndefined()
-          expect(mockCloseTerminal).toHaveBeenCalledWith('w-1', expect.objectContaining({
-            terminalId: 'term-close',
-            worktreeAction: WorktreeAction.KEEP,
-          }))
-        }
-        finally {
-          dispose()
-        }
-      })
-    })
+    expect(closeTerminalMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
+      terminalId: 'term-remove',
+      worktreeAction: WorktreeAction.REMOVE,
+    }))
+  })
 
-    it('passes through the worktreeAction argument', async () => {
-      await createRoot(async (dispose) => {
-        try {
-          const { tabStore, ops } = setup()
-          tabStore.addTab({ type: TabType.TERMINAL, id: 'term-remove', tileId: 'tile-1', workerId: 'w-1' })
+  it('toasts a failure_message on partial failure', async () => {
+    const { tabStore, ops } = setup()
+    tabStore.addTab({ type: TabType.TERMINAL, id: 'term-fail', tileId: 'tile-1', workerId: 'w-1' })
 
-          mockCloseTerminal.mockResolvedValueOnce({
-            result: {
-              worktreeId: '',
-              failureMessage: '',
-            },
-          } as CloseTerminalResponse)
+    closeTerminalMock.mockResolvedValueOnce({
+      result: {
+        worktreeId: 'wt-1',
+        worktreePath: '/some/wt',
+        failureMessage: 'Failed to remove worktree',
+        failureDetail: 'git worktree remove exit 128',
+      },
+    } as CloseTerminalResponse)
 
-          ops.handleTerminalClose('term-remove', WorktreeAction.REMOVE)
-          await flushMicrotasks()
+    ops.handleTerminalClose('term-fail', WorktreeAction.REMOVE)
+    await flushMicrotasks()
 
-          expect(mockCloseTerminal).toHaveBeenCalledWith('w-1', expect.objectContaining({
-            terminalId: 'term-remove',
-            worktreeAction: WorktreeAction.REMOVE,
-          }))
-        }
-        finally {
-          dispose()
-        }
-      })
-    })
+    expect(showWarnToastMock).toHaveBeenCalledWith('Failed to remove worktree: git worktree remove exit 128')
+  })
 
-    it('toasts a failure_message on partial failure', async () => {
-      await createRoot(async (dispose) => {
-        try {
-          const { tabStore, ops } = setup()
-          tabStore.addTab({ type: TabType.TERMINAL, id: 'term-fail', tileId: 'tile-1', workerId: 'w-1' })
+  it('toasts a generic failure on RPC reject', async () => {
+    const { tabStore, ops } = setup()
+    tabStore.addTab({ type: TabType.TERMINAL, id: 'term-reject', tileId: 'tile-1', workerId: 'w-1' })
 
-          mockCloseTerminal.mockResolvedValueOnce({
-            result: {
-              worktreeId: 'wt-1',
-              worktreePath: '/some/wt',
-              failureMessage: 'Failed to remove worktree',
-              failureDetail: 'git worktree remove exit 128',
-            },
-          } as CloseTerminalResponse)
+    const err = new Error('offline')
+    closeTerminalMock.mockRejectedValueOnce(err)
 
-          ops.handleTerminalClose('term-fail', WorktreeAction.REMOVE)
-          await flushMicrotasks()
+    ops.handleTerminalClose('term-reject')
+    await flushMicrotasks()
 
-          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to remove worktree: git worktree remove exit 128')
-        }
-        finally {
-          dispose()
-        }
-      })
-    })
-
-    it('toasts a generic failure on RPC reject', async () => {
-      await createRoot(async (dispose) => {
-        try {
-          const { tabStore, ops } = setup()
-          tabStore.addTab({ type: TabType.TERMINAL, id: 'term-reject', tileId: 'tile-1', workerId: 'w-1' })
-
-          const err = new Error('offline')
-          mockCloseTerminal.mockRejectedValueOnce(err)
-
-          ops.handleTerminalClose('term-reject')
-          await flushMicrotasks()
-
-          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to close terminal', err)
-        }
-        finally {
-          dispose()
-        }
-      })
-    })
+    expect(showWarnToastMock).toHaveBeenCalledWith('Failed to close terminal', err)
   })
 })

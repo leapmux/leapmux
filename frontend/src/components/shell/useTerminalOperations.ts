@@ -13,7 +13,14 @@ import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createInflightCache } from '~/lib/inflightCache'
+import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
 import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
+
+// xterm emits Enter as a single CR byte (0x0D) on a non-modifier press.
+// We gate the EXITED-tab restart flow on exactly that one byte so a stray
+// keystroke (or the autorepeat from a held key) doesn't fire a restart.
+const ENTER_KEY_CR = 0x0D
 
 export interface UseTerminalOperationsProps {
   org: { orgId: () => string }
@@ -30,6 +37,13 @@ export interface UseTerminalOperationsProps {
 export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const [availableShells, setAvailableShells] = createSignal<string[]>([])
   const [defaultShell, setDefaultShell] = createSignal('')
+  // Dedup concurrent restartTerminal RPCs. Held Enter (autorepeat) would
+  // otherwise fire one RPC per keystroke, and the backend rejects every
+  // redundant call with FailedPrecondition while the first restart is
+  // starting up — yielding a toast burst. The has-check below early-
+  // returns on overlapping presses so they never reach the shared
+  // promise's eventual rejection (which would multi-toast).
+  const restartInflight = createInflightCache<string, void>()
 
   /** Load available shells on demand (e.g. when the new-terminal dialog opens). */
   const loadAvailableShells = () => {
@@ -78,8 +92,8 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       const resp = await workerRpc.openTerminal(ctx.workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
-        cols: 80,
-        rows: 25,
+        cols: DEFAULT_TERMINAL_COLS,
+        rows: DEFAULT_TERMINAL_ROWS,
         workingDir: ctx.workingDir,
         shell: '',
         workerId: ctx.workerId,
@@ -121,8 +135,8 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       const resp = await workerRpc.openTerminal(ctx.workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
-        cols: 80,
-        rows: 25,
+        cols: DEFAULT_TERMINAL_COLS,
+        rows: DEFAULT_TERMINAL_ROWS,
         workingDir: ctx.workingDir,
         shell,
         workerId: ctx.workerId,
@@ -144,15 +158,42 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   }
 
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
-    try {
-      const ws = props.activeWorkspace()
-      const tab = props.tabStore.getTerminalTab(terminalId)
-      if (!ws || tab?.status !== TerminalStatus.READY)
-        return
-      await workerRpc.sendInput(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
+    const ws = props.activeWorkspace()
+    const tab = props.tabStore.getTerminalTab(terminalId)
+    if (!ws || !tab)
+      return
+
+    if (tab.status === TerminalStatus.READY) {
+      try {
+        await workerRpc.sendInput(tab.workerId ?? '', { orgId: props.org.orgId(), workspaceId: ws.id, terminalId, data })
+      }
+      catch {
+        // ignore input errors
+      }
+      return
     }
-    catch {
-      // ignore input errors
+
+    // On an exited terminal, the only key that does something is Enter,
+    // which restarts the shell. Other input is silently swallowed.
+    if (tab.status === TerminalStatus.EXITED) {
+      if (data.length !== 1 || data[0] !== ENTER_KEY_CR)
+        return
+      if (restartInflight.has(terminalId))
+        return
+      try {
+        await restartInflight.run(terminalId, async () => {
+          await workerRpc.restartTerminal(tab.workerId ?? '', {
+            orgId: props.org.orgId(),
+            workspaceId: ws.id,
+            terminalId,
+            cols: tab.cols ?? DEFAULT_TERMINAL_COLS,
+            rows: tab.rows ?? DEFAULT_TERMINAL_ROWS,
+          })
+        })
+      }
+      catch (err) {
+        showWarnToast('Failed to restart terminal', err)
+      }
     }
   }
 
@@ -215,6 +256,12 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       const tab = props.tabStore.getTerminalTab(terminalId)
       if (!ws || !tab)
         return
+      // Mirror the live xterm dims into the tab so a later
+      // RestartTerminal sends the user's actual window size, not the
+      // dims persisted at last exit. Updated on every fit() (including
+      // for EXITED tabs) so the post-exit window shrink/grow is captured.
+      if (tab.cols !== cols || tab.rows !== rows)
+        props.tabStore.updateTab(TabType.TERMINAL, terminalId, { cols, rows })
       // Skip the RPC once the PTY can't be the target of a SIGWINCH.
       // xterm's fitAddon.fit() in TerminalView still runs (frontend-only
       // reflow of the existing buffer for users reading dead output);

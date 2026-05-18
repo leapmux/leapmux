@@ -31,7 +31,7 @@ func decodeNotifWrapper(t *testing.T, content []byte, compression leapmuxv1.Cont
 func setupNotifThreadTest(t *testing.T, provider leapmuxv1.AgentProvider) (agent.OutputSink, func() []db.Message) {
 	t.Helper()
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",

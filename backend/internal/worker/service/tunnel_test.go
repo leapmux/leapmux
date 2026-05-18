@@ -42,7 +42,7 @@ func TestOpenTunnelConn_HappyPath(t *testing.T) {
 
 func TestOpenTunnelConn_OwnershipEnforcement(t *testing.T) {
 	_, d, _ := tunnelTestSetup(t)
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	// Dispatch as user-2 (not the owner "user-1").
 	payload, _ := proto.Marshal(&leapmuxv1.OpenTunnelConnRequest{
 		TargetAddr: "127.0.0.1",
@@ -107,7 +107,7 @@ func TestSendTunnelData_HappyPath(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	connID := openResp.GetConnId()
 
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("hello"),
@@ -142,7 +142,7 @@ func TestCloseTunnelConn_HappyPath(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	connID := openResp.GetConnId()
 
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{
 		ConnId: connID,
 	}, w2)
@@ -151,7 +151,7 @@ func TestCloseTunnelConn_HappyPath(t *testing.T) {
 	require.Len(t, w2.responses, 1, "expected success response")
 
 	// Subsequent SendTunnelData should fail.
-	w3 := &testResponseWriter{channelID: "test-ch"}
+	w3 := newTestWriter()
 	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("hello"),
@@ -228,7 +228,7 @@ func TestTunnelConcurrentConnections(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			w := &testResponseWriter{channelID: "test-ch"}
+			w := newTestWriter()
 			dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
 				TargetAddr: host,
 				TargetPort: port,
@@ -252,7 +252,7 @@ func TestTunnelConcurrentConnections(t *testing.T) {
 
 	// Close all connections.
 	for _, connID := range connIDs {
-		w := &testResponseWriter{channelID: "test-ch"}
+		w := newTestWriter()
 		dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{
 			ConnId: connID,
 		}, w)
@@ -276,7 +276,7 @@ func TestTunnelEchoIntegration(t *testing.T) {
 	connID := openResp.GetConnId()
 
 	// Send data.
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("echo test"),
@@ -293,7 +293,7 @@ func TestTunnelEchoIntegration(t *testing.T) {
 	assert.Equal(t, "echo test", string(echoed), "expected echoed data")
 
 	// Clean up.
-	w3 := &testResponseWriter{channelID: "test-ch"}
+	w3 := newTestWriter()
 	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{
 		ConnId: connID,
 	}, w3)
@@ -315,12 +315,12 @@ func TestSendTunnelData_AfterClose(t *testing.T) {
 	connID := openResp.GetConnId()
 
 	// Close the connection.
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w2)
 	require.Len(t, w2.errors, 0)
 
 	// Sending data after close should fail.
-	w3 := &testResponseWriter{channelID: "test-ch"}
+	w3 := newTestWriter()
 	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("should fail"),
@@ -352,7 +352,7 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 	}
 
 	for sent := 0; sent < totalSize; sent += chunkSize {
-		w2 := &testResponseWriter{channelID: "test-ch"}
+		w2 := newTestWriter()
 		dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
 			ConnId: connID,
 			Data:   chunk,
@@ -370,7 +370,7 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 	}, "expected all echoed data via stream")
 	assert.Equal(t, totalSize, totalReceived(), "expected all data echoed back")
 
-	w3 := &testResponseWriter{channelID: "test-ch"}
+	w3 := newTestWriter()
 	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w3)
 	require.Len(t, w3.errors, 0)
 }
@@ -382,7 +382,7 @@ func TestTunnelMultipleSequentialConnections(t *testing.T) {
 	_, d, _ := tunnelTestSetup(t)
 
 	for i := 0; i < 5; i++ {
-		w := &testResponseWriter{channelID: "test-ch"}
+		w := newTestWriter()
 		dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
 			TargetAddr: host,
 			TargetPort: port,
@@ -395,7 +395,7 @@ func TestTunnelMultipleSequentialConnections(t *testing.T) {
 		connID := openResp.GetConnId()
 
 		// Send and verify data.
-		w2 := &testResponseWriter{channelID: "test-ch"}
+		w2 := newTestWriter()
 		dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
 			ConnId: connID,
 			Data:   []byte(fmt.Sprintf("msg-%d", i)),
@@ -403,7 +403,7 @@ func TestTunnelMultipleSequentialConnections(t *testing.T) {
 		require.Len(t, w2.errors, 0)
 
 		// Close.
-		w3 := &testResponseWriter{channelID: "test-ch"}
+		w3 := newTestWriter()
 		dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w3)
 		require.Len(t, w3.errors, 0)
 	}
@@ -447,7 +447,7 @@ func TestTunnelHalfClose_TargetClosesFirst(t *testing.T) {
 	connID := openResp.GetConnId()
 
 	// Send data.
-	w2 := &testResponseWriter{channelID: "test-ch"}
+	w2 := newTestWriter()
 	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("half-close-test"),

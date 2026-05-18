@@ -19,7 +19,7 @@ import (
 
 func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	workDir := t.TempDir()
 
@@ -73,7 +73,7 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 
 func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create an agent with resumed=1 (simulates a resumed session).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -102,7 +102,7 @@ func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
 
 func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create an agent (non-resumed).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -168,7 +168,7 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 
 func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create a non-resumed agent (simulates opening a fresh tab).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -214,7 +214,7 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 
 func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Create an agent with a session ID.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -255,7 +255,7 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 
 func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
@@ -319,7 +319,7 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 
 func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-opencode",
@@ -358,7 +358,7 @@ func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T
 // include a non-empty old value.
 func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	// Agent created with empty extra_settings (like the OpenAgent handler does
 	// when no extraSettings are provided by the frontend).
@@ -409,7 +409,7 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 
 func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, "ws-1")
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-gemini",
@@ -463,7 +463,7 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testi
 
 func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-gemini",
@@ -531,7 +531,7 @@ func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) 
 
 func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",

@@ -54,6 +54,17 @@ func NewScreenBuffer() *ScreenBuffer {
 	return &ScreenBuffer{buf: make([]byte, screenBufferSize)}
 }
 
+// NewScreenBufferWithOffset creates a new screen buffer whose cumulative
+// byte counter starts at initialOffset. Used by RestartTerminal when no
+// in-memory *Terminal exists (e.g. after a worker restart): seeding the
+// counter with len(persistedScreen) keeps the cumulative offset above
+// the frontend's hydrated lastOffset, so newly-emitted end_offset values
+// stay monotonically ahead and don't trip the snapshot-replay path on
+// the next WatchEvents resubscribe.
+func NewScreenBufferWithOffset(initialOffset int64) *ScreenBuffer {
+	return &ScreenBuffer{buf: make([]byte, screenBufferSize), total: initialOffset}
+}
+
 // Write appends data to the ring buffer and returns the cumulative byte
 // offset at the end of the write. Callers forward that offset to watchers
 // so they can persist it as their resume cursor.
@@ -263,6 +274,13 @@ type Options struct {
 // owns the long-running Terminal — its lifetime is independent of ctx
 // once Start returns successfully.
 func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal, error) {
+	return startWithScreenBuffer(ctx, opts, NewScreenBuffer(), outputFn)
+}
+
+// startWithScreenBuffer is the actual spawn implementation, parameterized
+// over the ScreenBuffer so RestartTerminal can carry the cumulative
+// offset (and any retained bytes) across PTY incarnations.
+func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenBuffer, outputFn OutputHandler) (*Terminal, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -323,7 +341,6 @@ func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal
 		)
 	}
 
-	screenBuf := NewScreenBuffer()
 	wrappedOutput := func(data []byte) {
 		endOffset := screenBuf.Write(data)
 		outputFn(data, endOffset)
@@ -440,6 +457,19 @@ func (t *Terminal) ID() string {
 // byte offset at its end.
 func (t *Terminal) ScreenSnapshot() ([]byte, int64) {
 	return t.screenBuf.Snapshot()
+}
+
+// Respawn forks a fresh PTY for this terminal, transferring the existing
+// ScreenBuffer to the new instance so the cumulative byte counter and any
+// retained ring bytes survive across PTY incarnations. Returns the new
+// *Terminal; the caller (Manager.RestartTerminal) is responsible for
+// swapping this terminal out of the manager's map.
+//
+// Caller must guarantee t has exited (IsExited == true) so the prior PTY
+// is no longer writing to t.screenBuf. Manager.RestartTerminal enforces
+// this under m.mu; external callers must do their own ordering.
+func (t *Terminal) Respawn(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal, error) {
+	return startWithScreenBuffer(ctx, opts, t.screenBuf, outputFn)
 }
 
 // ScreenSnapshotSince returns the bytes a subscriber needs to advance

@@ -20,7 +20,7 @@ import (
 // Leapmux to a specific effort name that older CLIs may not recognize).
 func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	var capturedMu sync.Mutex
 	var captured agent.Options
@@ -74,7 +74,7 @@ func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 func TestOpenAgent_RespectsEnvOverride(t *testing.T) {
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_EFFORT", "high")
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	var capturedMu sync.Mutex
 	var captured agent.Options
@@ -114,7 +114,7 @@ func TestOpenAgent_RespectsEnvOverride(t *testing.T) {
 func TestOpenAgent_PreservesExplicitEffort(t *testing.T) {
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_EFFORT", "high")
 
-	svc, d, w := setupTestService(t, "ws-1")
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	var capturedMu sync.Mutex
 	var captured agent.Options
