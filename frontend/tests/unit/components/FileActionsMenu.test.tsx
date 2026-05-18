@@ -111,7 +111,7 @@ describe('fileActionsMenu — web mode', () => {
     expect(screen.queryByTestId('file-actions-save-as-button')).not.toBeInTheDocument()
     expect(screen.queryByTestId('file-actions-save-to-downloads-button')).not.toBeInTheDocument()
     fireEvent.click(dl)
-    await waitFor(() => expect(spies.downloadImpl).toHaveBeenCalledWith('w1', '/repo/src/file.ts', 'posix'))
+    await waitFor(() => expect(spies.downloadImpl).toHaveBeenCalledWith('w1', '/repo/src/file.ts', 'posix', expect.any(Function)))
   })
 })
 
@@ -130,7 +130,7 @@ describe('fileActionsMenu — desktop mode', () => {
   it('save to Downloads reveals when the preference is on', async () => {
     renderMenu()
     fireEvent.click(screen.getByTestId('file-actions-save-to-downloads-button'))
-    await waitFor(() => expect(spies.saveToDownloadsImpl).toHaveBeenCalledWith('w1', '/repo/src/file.ts', 'posix'))
+    await waitFor(() => expect(spies.saveToDownloadsImpl).toHaveBeenCalledWith('w1', '/repo/src/file.ts', 'posix', expect.any(Function)))
     await waitFor(() => expect(spies.revealImpl).toHaveBeenCalledWith('/home/alice/Downloads/file.ts'))
   })
 

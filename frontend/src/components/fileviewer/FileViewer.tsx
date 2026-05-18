@@ -641,7 +641,7 @@ export const FileViewer: Component<{
                       flavor={flavor()}
                       totalSize={totalSize()}
                       reason={cardReason()!}
-                      currentOp={saveActions.currentOp()}
+                      op={saveActions.op()}
                       loadingAnyway={loadingAnyway()}
                       canShowAnyway={totalSize() > 0}
                       onDownload={saveActions.handleDownload}

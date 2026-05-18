@@ -35,9 +35,30 @@ export function platformBridgeMock(spies: SaveActionsSpies) {
     isTauriApp: () => spies.isTauriAppImpl(),
     platformBridge: {
       revealInFileManager: (...args: unknown[]) => spies.revealImpl(...args),
-      saveBytesToDownloads: () => Promise.resolve(''),
-      saveBytesAs: () => Promise.resolve(null),
+      ...platformBridgeFileSaveStubs(),
     },
+  }
+}
+
+/**
+ * The five `fileSave*` methods on `platformBridge`, stubbed to no-op
+ * resolved promises. Tests that don't exercise the save-stream flow but
+ * mock `~/api/platformBridge` (e.g. components that just need
+ * `platformBridge` defined) can spread this into their mock so the
+ * stubs stay in sync with the production interface.
+ *
+ * `fileSaveOpen` resolves a non-empty sentinel path so callers that
+ * propagate it into `revealInFileManager` see a truthy value (matching
+ * production behavior); tests asserting on the exact path should pin
+ * their own mock.
+ */
+export function platformBridgeFileSaveStubs() {
+  return {
+    fileSaveOpen: () => Promise.resolve({ id: 1, path: '/tmp/stub' }),
+    fileSaveOpenDialog: () => Promise.resolve(null),
+    fileSaveWrite: () => Promise.resolve(),
+    fileSaveCommit: () => Promise.resolve(),
+    fileSaveAbort: () => Promise.resolve(),
   }
 }
 

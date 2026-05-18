@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { platformBridgeFileSaveStubs } from '../helpers/saveActionsMocks'
+import { readResp, statResp } from '../helpers/workerRpcMocks'
 
 const statFileImpl = vi.fn()
 const readFileImpl = vi.fn()
@@ -63,25 +65,13 @@ vi.mock('~/api/platformBridge', () => ({
   isTauriApp: () => false,
   platformBridge: {
     revealInFileManager: () => Promise.resolve(),
-    saveBytesToDownloads: () => Promise.resolve(''),
-    saveBytesAs: () => Promise.resolve(null),
+    ...platformBridgeFileSaveStubs(),
   },
 }))
 
 const { FileViewer } = await import('~/components/fileviewer/FileViewer')
 
 const MAX = 256 * 1024
-
-function statResp(size: number) {
-  return { info: { size: BigInt(size) } }
-}
-
-function readResp(content: Uint8Array, totalSize?: number) {
-  return {
-    content,
-    totalSize: BigInt(totalSize ?? content.length),
-  }
-}
 
 describe('fileViewer dispatch with unsupported view', () => {
   beforeEach(() => {
@@ -270,7 +260,7 @@ describe('fileViewer dispatch with unsupported view', () => {
     )
     fireEvent.click(screen.getByTestId('unsupported-download-button'))
     await waitFor(() => expect(downloadImpl).toHaveBeenCalledTimes(1))
-    expect(downloadImpl).toHaveBeenCalledWith('w-42', '/repo/archive.zip', 'posix')
+    expect(downloadImpl).toHaveBeenCalledWith('w-42', '/repo/archive.zip', 'posix', expect.any(Function))
   })
 
   it('discards lazy-fetched bytes if filePath changes during the in-flight readFile', async () => {
