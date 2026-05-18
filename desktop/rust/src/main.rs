@@ -1778,32 +1778,63 @@ fn decode_b64(b64: &str) -> Result<Vec<u8>, String> {
 // in a custom header, base64-encoded so HTTP-style ASCII restrictions
 // don't mangle Unicode names.
 //
-// File I/O runs on `spawn_blocking` so the Tokio executor thread that
-// services other Tauri commands isn't tied up by a slow disk write.
+// Saves are streamed through a `file_save_open[_dialog] → file_save_write* →
+// file_save_commit | file_save_abort` chain. The Rust side keeps the
+// destination `File` open in a registry between calls, so the JS caller
+// can pipe each 1 MiB worker chunk straight through `file_save_write`
+// without ever materializing the whole file. This bounds the peak
+// transient memory (per chunk × ~3 copies across the IPC boundary) to
+// a few MiB even for multi-hundred-MB downloads.
+//
+// Writes go to a sibling `.tmp` file (`<final>.tmp`); on commit we
+// atomic-rename `.tmp` → final, and on abort we delete the `.tmp`.
+// Consequence: the final name never appears on disk until the save is
+// complete, and (for Save as...) the user's existing file at the chosen
+// path is preserved if the save fails. The Downloads variant iterates
+// candidate names ("foo.ext",
+// "foo (1).ext", ...) skipping any whose final path already exists and
+// claiming each candidate's `<name>.tmp` with `create_new` — that
+// single open both reserves the iteration spot against concurrent
+// LeapMux saves of the same basename and provides the file the bytes
+// stream into.
 
-fn read_bytes_from_request(request: &tauri::ipc::Request<'_>) -> Result<Vec<u8>, String> {
-    match request.body() {
-        tauri::ipc::InvokeBody::Raw(b) => Ok(b.clone()),
-        _ => Err("expected raw bytes body".to_string()),
-    }
-}
-
-fn read_b64_header(request: &tauri::ipc::Request<'_>, name: &str) -> Result<String, String> {
-    let value = request
+fn read_header_str<'a>(
+    request: &'a tauri::ipc::Request<'_>,
+    name: &str,
+) -> Result<&'a str, String> {
+    request
         .headers()
         .get(name)
         .ok_or_else(|| format!("missing {name} header"))?
         .to_str()
-        .map_err(|err| format!("invalid {name} header: {err}"))?;
-    let bytes = decode_b64(value)?;
+        .map_err(|err| format!("invalid {name} header: {err}"))
+}
+
+fn read_b64_header(request: &tauri::ipc::Request<'_>, name: &str) -> Result<String, String> {
+    let bytes = decode_b64(read_header_str(request, name)?)?;
     String::from_utf8(bytes).map_err(|err| format!("invalid {name} utf-8: {err}"))
 }
 
-async fn write_bytes_blocking(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || std::fs::write(&path, &bytes))
+/// Parse the decimal `handle-id` header shared by `file_save_write`,
+/// `file_save_commit`, and `file_save_abort`.
+fn read_handle_id(request: &tauri::ipc::Request<'_>) -> Result<u64, String> {
+    read_header_str(request, "handle-id")?
+        .parse()
+        .map_err(|err| format!("invalid handle-id: {err}"))
+}
+
+/// Run a blocking closure on the dedicated blocking-thread pool and
+/// return its result, surfacing a join failure as an error string. Used
+/// for save-stream operations that touch the disk and shouldn't tie up
+/// the async executor thread servicing other Tauri commands.
+async fn run_blocking<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
         .await
         .map_err(|err| format!("spawn_blocking join: {err}"))?
-        .map_err(|err| format!("write file: {err}"))
 }
 
 /// Cap on collision-dedup attempts. With "foo (N).ext" picking from
@@ -1812,54 +1843,266 @@ async fn write_bytes_blocking(path: PathBuf, bytes: Vec<u8>) -> Result<(), Strin
 /// filename is more useful than another increment).
 const MAX_SAVE_COLLISION_ATTEMPTS: u32 = 1024;
 
-/// Write `bytes` into `dir` under a name derived from `filename`,
-/// appending " (N)" before the extension to avoid clobbering an
-/// existing file. Returns the final absolute path written.
-///
-/// Race-free: each attempt opens with `create_new(true)`, so
-/// concurrent saves of the same name produce distinct files instead
-/// of one silently overwriting the other.
-async fn write_bytes_unique(dir: PathBuf, filename: String, bytes: Vec<u8>) -> Result<PathBuf, String> {
-    tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
-        use std::io::Write;
-        let as_path = std::path::Path::new(&filename);
-        let stem = as_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let ext = as_path.extension().map(|s| s.to_string_lossy().into_owned());
-        for i in 0..MAX_SAVE_COLLISION_ATTEMPTS {
-            let candidate_name = if i == 0 {
-                filename.clone()
-            } else {
-                match &ext {
-                    Some(e) if !e.is_empty() => format!("{stem} ({i}).{e}"),
-                    _ => format!("{stem} ({i})"),
-                }
-            };
-            let candidate = dir.join(&candidate_name);
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
-                Ok(mut f) => {
-                    f.write_all(&bytes).map_err(|err| format!("write file: {err}"))?;
-                    return Ok(candidate);
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => return Err(format!("create file: {err}")),
-            }
-        }
-        Err(format!(
-            "too many collisions for {filename} (gave up after {MAX_SAVE_COLLISION_ATTEMPTS})"
-        ))
-    })
-    .await
-    .map_err(|err| format!("spawn_blocking join: {err}"))?
+/// How often the idle-handle GC scans the registry for handles whose
+/// JS pump appears to have died. 60s keeps the scan cost negligible
+/// while still bounding orphan-disk-junk lifetime to roughly
+/// `SAVE_HANDLE_GC_INTERVAL + SAVE_HANDLE_IDLE_TIMEOUT`.
+const SAVE_HANDLE_GC_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long a handle can sit without a `write_chunk` (or `close`)
+/// before the GC discards it. An active save touches `last_write_at`
+/// per chunk, so the gap can only widen if the JS pump is wedged or
+/// the renderer process died. 5 min is well above any realistic
+/// per-chunk latency (1 MiB chunks rarely take more than seconds) but
+/// short enough that an orphan `.tmp` is gone before the user notices.
+const SAVE_HANDLE_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Registry entry for a save in progress: the open file plus the
+/// paths needed to finalize or discard. Distinct from
+/// `SaveStreamHandle`, which is the id+path token JS holds; this
+/// struct is Rust-only and never crosses the IPC boundary.
+struct OpenSaveStream {
+    /// `Arc<Mutex<File>>` rather than `Mutex<File>` so `write_chunk` can
+    /// short-lock the registry to clone the Arc, drop the registry
+    /// lock, and then take the per-file lock — writes to different
+    /// streams run in parallel instead of serializing on a registry-
+    /// wide mutex.
+    file: Arc<Mutex<std::fs::File>>,
+    /// Sibling `<final>.tmp` path that bytes stream into.
+    tmp_path: PathBuf,
+    /// Final destination — `.tmp` is atomic-renamed onto this on success.
+    final_path: PathBuf,
+    /// Updated on insert and on every `write_chunk`. The idle-handle
+    /// GC compares this against `SAVE_HANDLE_IDLE_TIMEOUT` to detect
+    /// JS pumps that died without calling `file_save_commit` or
+    /// `file_save_abort`. Lives under the registry `Mutex<HashMap>`
+    /// lock so it shares the existing critical section instead of
+    /// needing its own atomic.
+    last_write_at: Instant,
 }
 
+/// Open destination files keyed by a monotonic u64 id. The JS caller
+/// receives the id from `file_save_open[_dialog]` and submits it back
+/// with each `file_save_write` and the final `file_save_commit` or
+/// `file_save_abort`.
+struct SaveStreamRegistry {
+    /// Starts at 1 so a freshly constructed registry never hands out 0 —
+    /// keeps "0 == sentinel" assumptions on the JS side safe.
+    next_id: AtomicU64,
+    handles: Mutex<HashMap<u64, OpenSaveStream>>,
+}
+
+impl SaveStreamRegistry {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Insert a freshly-opened file into the registry and return the
+    /// JS-facing handle (id + the final path as a UTF-8 string).
+    /// Both `file_save_open` and `file_save_open_dialog` end with this,
+    /// so it lives here to keep the id/path packaging in one spot.
+    fn insert(
+        &self,
+        file: std::fs::File,
+        tmp_path: PathBuf,
+        final_path: PathBuf,
+    ) -> SaveStreamHandle {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let path = final_path.to_string_lossy().into_owned();
+        self.handles.lock().unwrap().insert(
+            id,
+            OpenSaveStream {
+                file: Arc::new(Mutex::new(file)),
+                tmp_path,
+                final_path,
+                last_write_at: Instant::now(),
+            },
+        );
+        SaveStreamHandle { id, path }
+    }
+
+    fn take(&self, id: u64) -> Option<OpenSaveStream> {
+        self.handles.lock().unwrap().remove(&id)
+    }
+
+    fn write_chunk(&self, id: u64, bytes: &[u8]) -> Result<(), String> {
+        // Lock the registry only long enough to refresh the idle
+        // timestamp and clone the per-handle Arc, then drop the
+        // registry lock before acquiring the file lock. Concurrent
+        // writes targeting different handles can then proceed in
+        // parallel.
+        let file = {
+            let mut guard = self.handles.lock().unwrap();
+            let handle = guard
+                .get_mut(&id)
+                .ok_or_else(|| format!("unknown save handle {id}"))?;
+            handle.last_write_at = Instant::now();
+            handle.file.clone()
+        };
+        let mut guard = file.lock().unwrap();
+        guard
+            .write_all(bytes)
+            .map_err(|err| format!("write: {err}"))
+    }
+
+    /// Drop all open handles and remove any partial files. Called from
+    /// the app exit path so an interrupted save doesn't leave junk on
+    /// disk.
+    fn cleanup_all(&self) {
+        let drained: Vec<_> = self.handles.lock().unwrap().drain().collect();
+        for (_, stream) in drained {
+            discard_stream(stream);
+        }
+    }
+
+    /// Discard handles whose `last_write_at` is older than `max_idle`.
+    /// Two-phase: snapshot stale ids under a brief lock, then `take`
+    /// each individually so the per-discard `remove_file` syscalls
+    /// never run under the registry lock. A handle being actively
+    /// written to during the scan window is fine — a racing
+    /// `write_chunk` refreshes `last_write_at`, and the take in phase
+    /// 2 re-checks against `max_idle` and skips it.
+    fn gc_idle(&self, max_idle: Duration) {
+        let now = Instant::now();
+        let stale_ids: Vec<u64> = {
+            let guard = self.handles.lock().unwrap();
+            guard
+                .iter()
+                .filter(|(_, h)| now.duration_since(h.last_write_at) >= max_idle)
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        for id in stale_ids {
+            // Re-check under lock: a `write_chunk` racing between
+            // snapshot and take may have refreshed the timestamp. If
+            // it has, leave the stream alone.
+            let stream = {
+                let mut guard = self.handles.lock().unwrap();
+                match guard.get(&id) {
+                    Some(h) if now.duration_since(h.last_write_at) >= max_idle => {
+                        guard.remove(&id)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(stream) = stream {
+                discard_stream(stream);
+            }
+        }
+    }
+}
+
+/// Append `.tmp` to `path` while preserving the existing OsString
+/// (handles non-UTF-8 paths cleanly).
+fn tmp_path_for(final_path: &Path) -> PathBuf {
+    let mut name = final_path.as_os_str().to_owned();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+/// Open (or create+truncate) the `.tmp` sibling of `final_path` for
+/// streaming writes. Shared by `file_save_open` and
+/// `file_save_open_dialog`; the Downloads-flow caller wraps the error
+/// to also undo its name reservation.
+fn open_tmp_for_write(final_path: &Path) -> Result<(std::fs::File, PathBuf), String> {
+    let tmp_path = tmp_path_for(final_path);
+    let tmp_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp_path)
+        .map_err(|err| format!("open tmp file: {err}"))?;
+    Ok((tmp_file, tmp_path))
+}
+
+/// Remove the partial `.tmp`. Used by both `discard_stream` and the
+/// failure branches of `file_save_commit`, which have already dropped
+/// the `File` themselves. The final path is never ours to remove —
+/// nothing was ever created there.
+fn discard_partials(tmp_path: &Path) {
+    let _ = std::fs::remove_file(tmp_path);
+}
+
+/// Drop the file handle and remove the partial `.tmp`.
+fn discard_stream(stream: OpenSaveStream) {
+    let OpenSaveStream { file, tmp_path, .. } = stream;
+    // Drop before remove: Windows refuses `remove_file` while the
+    // file handle is open.
+    drop(file);
+    discard_partials(&tmp_path);
+}
+
+/// JS-facing handle to an open save stream. Returned by
+/// `file_save_open[_dialog]` and submitted back (as `id`) with each
+/// `file_save_write` and the final `file_save_commit` /
+/// `file_save_abort`. Mirrors the `SaveStreamHandle` interface in
+/// `platformBridge.ts`.
+#[derive(Serialize)]
+struct SaveStreamHandle {
+    id: u64,
+    path: String,
+}
+
+/// Pick a non-colliding "foo (N).ext" candidate under `dir` and open
+/// its `<candidate>.tmp` sibling with `create_new`. The `.tmp` open
+/// serves double duty: it both reserves the iteration spot against
+/// concurrent LeapMux saves of the same basename and provides the file
+/// the bytes stream into. The candidate itself is skipped if it already
+/// exists, preserving the "don't silently overwrite a user file in
+/// Downloads" behavior.
+fn open_unique_tmp(
+    dir: PathBuf,
+    filename: String,
+) -> Result<(std::fs::File, PathBuf, PathBuf), String> {
+    let as_path = std::path::Path::new(&filename);
+    let stem = as_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = as_path.extension().map(|s| s.to_string_lossy().into_owned());
+    for i in 0..MAX_SAVE_COLLISION_ATTEMPTS {
+        let candidate_name = if i == 0 {
+            filename.clone()
+        } else {
+            match &ext {
+                Some(e) if !e.is_empty() => format!("{stem} ({i}).{e}"),
+                _ => format!("{stem} ({i})"),
+            }
+        };
+        let final_path = dir.join(&candidate_name);
+        match final_path.try_exists() {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(err) => return Err(format!("stat {candidate_name}: {err}")),
+        }
+        let tmp_path = tmp_path_for(&final_path);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(f) => return Ok((f, tmp_path, final_path)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(format!("create tmp file: {err}")),
+        }
+    }
+    Err(format!(
+        "too many collisions for {filename} (gave up after {MAX_SAVE_COLLISION_ATTEMPTS})"
+    ))
+}
+
+/// Open a destination in the OS Downloads directory and return a
+/// streaming handle. `filename` (from the `filename-b64` header) is
+/// sanitized to its basename and collision-dedupped with " (N)".
 #[tauri::command]
-async fn save_bytes_to_downloads(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+async fn file_save_open(
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<SaveStreamHandle, String> {
     let filename = read_b64_header(&request, "filename-b64")?;
-    let bytes = read_bytes_from_request(&request)?;
     let downloads = dirs::download_dir().ok_or_else(|| "no downloads directory".to_string())?;
     // Disallow separators in the supplied filename so callers can't
     // escape the Downloads directory.
@@ -1868,19 +2111,25 @@ async fn save_bytes_to_downloads(request: tauri::ipc::Request<'_>) -> Result<Str
         .ok_or_else(|| "invalid filename".to_string())?
         .to_string_lossy()
         .into_owned();
-    let path = write_bytes_unique(downloads, safe_name, bytes).await?;
-    Ok(path.to_string_lossy().into_owned())
+    let registry = registry.inner().clone();
+    let (file, tmp_path, final_path) =
+        run_blocking(move || open_unique_tmp(downloads, safe_name)).await?;
+    Ok(registry.insert(file, tmp_path, final_path))
 }
 
+/// Show a native save-as dialog and return a streaming handle for the
+/// chosen path. Returns `None` when the user cancels — JS callers
+/// should short-circuit before any worker fetch so a cancellation
+/// costs nothing.
 #[tauri::command]
-async fn save_bytes_as(
+async fn file_save_open_dialog(
     app: tauri::AppHandle,
+    registry: State<'_, Arc<SaveStreamRegistry>>,
     request: tauri::ipc::Request<'_>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<SaveStreamHandle>, String> {
     use tauri_plugin_dialog::DialogExt;
 
     let default_name = read_b64_header(&request, "default-name-b64")?;
-    let bytes = read_bytes_from_request(&request)?;
     let (tx, rx) = oneshot::channel();
     app.dialog()
         .file()
@@ -1892,9 +2141,121 @@ async fn save_bytes_as(
     let Some(file_path) = path_opt else {
         return Ok(None);
     };
-    let path = file_path.into_path().map_err(|e| e.to_string())?;
-    write_bytes_blocking(path.clone(), bytes).await?;
-    Ok(Some(path.to_string_lossy().into_owned()))
+    let final_path = file_path.into_path().map_err(|e| e.to_string())?;
+    let registry = registry.inner().clone();
+    let (file, tmp_path) = run_blocking({
+        let final_path = final_path.clone();
+        move || open_tmp_for_write(&final_path)
+    })
+    .await?;
+    Ok(Some(registry.insert(file, tmp_path, final_path)))
+}
+
+/// Append the request body bytes to the open file identified by the
+/// decimal `handle-id` header. Uses `block_in_place` rather than
+/// `spawn_blocking` so the body slice can be borrowed directly from
+/// the request without a per-chunk clone — for a 100 MB save that
+/// avoids ~100 MiB of memcpy traffic.
+#[tauri::command]
+async fn file_save_write(
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let handle_id = read_handle_id(&request)?;
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(b) => b.as_slice(),
+        _ => return Err("expected raw bytes body".to_string()),
+    };
+    // Tauri's command executor runs on a multi-thread tokio runtime,
+    // so `block_in_place` is safe here: it parks the current worker
+    // for the duration of the write and lets the runtime steal other
+    // tasks. The write is bounded to one chunk (~1 MiB). The debug
+    // assertion makes a future runtime-config regression (e.g. switching
+    // to `current_thread`) fail with a clear message instead of tokio's
+    // generic "can call `blocking` only from a `MultiThread`" panic.
+    debug_assert_eq!(
+        tokio::runtime::Handle::current().runtime_flavor(),
+        tokio::runtime::RuntimeFlavor::MultiThread,
+        "file_save_write uses block_in_place; requires a multi-thread runtime",
+    );
+    tokio::task::block_in_place(|| registry.write_chunk(handle_id, bytes))
+}
+
+/// Finalize the save identified by `handle-id`: sync bytes to disk and
+/// atomic-rename `.tmp` onto the final path. Discards partials on
+/// failure so a partial sync doesn't leave a junk file under the
+/// chosen name.
+#[tauri::command]
+async fn file_save_commit(
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let handle_id = read_handle_id(&request)?;
+    let registry = registry.inner().clone();
+    run_blocking(move || {
+        let Some(stream) = registry.take(handle_id) else {
+            return Err(format!("unknown save handle {handle_id}"));
+        };
+        let OpenSaveStream {
+            file,
+            tmp_path,
+            final_path,
+            last_write_at: _,
+        } = stream;
+        // No `sync_all` before the rename — intentional. A `sync_all`
+        // on a multi-hundred-MB save blocks for seconds while the OS
+        // flushes the page cache, and neither flow has a contract that
+        // needs it: the Downloads variant only ever writes to a path
+        // that was empty when we picked the name (so a power-loss
+        // window between rename and OS flush just loses the new file,
+        // it can't corrupt anything else), and the Save-as variant's
+        // overwrite is already non-atomic at the user-content level
+        // (the user picked a path knowing it would be replaced, and
+        // can re-save on crash). Don't add a sync here without
+        // matching the latency cost to a concrete guarantee we
+        // actually need to make.
+        //
+        // Drop the Arc<Mutex<File>> before the rename: Windows refuses
+        // `rename`/`remove_file` while the handle is open. `take` above
+        // removed the registry's clone, so unless a concurrent
+        // `write_chunk` is still holding a clone (impossible while the
+        // caller awaits each write sequentially) this drop releases
+        // the underlying File.
+        drop(file);
+        // `std::fs::rename` replaces the destination on both Unix and
+        // Windows. For save-as that overwrites the user's prior content
+        // (the path they chose). For the Downloads flow the final path
+        // was empty when we picked the name (`open_unique_tmp` skips
+        // candidates whose final already exists); a file appearing
+        // there mid-stream is a TOCTOU race we accept.
+        let result = std::fs::rename(&tmp_path, &final_path)
+            .map_err(|err| format!("rename: {err}"));
+        if result.is_err() {
+            discard_partials(&tmp_path);
+        }
+        result
+    })
+    .await
+}
+
+/// Discard the save identified by `handle-id`: drop the open file and
+/// remove the partial `.tmp`. Idempotent against an already-removed
+/// handle (e.g. the idle GC raced the JS pump) so the failure path on
+/// the JS side stays simple.
+#[tauri::command]
+async fn file_save_abort(
+    registry: State<'_, Arc<SaveStreamRegistry>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let handle_id = read_handle_id(&request)?;
+    let registry = registry.inner().clone();
+    run_blocking(move || {
+        if let Some(stream) = registry.take(handle_id) {
+            discard_stream(stream);
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2287,6 +2648,22 @@ fn main() {
                 }
             }
             app.manage(shell);
+            let save_registry = Arc::new(SaveStreamRegistry::new());
+            // Background GC for orphan save handles: when the renderer
+            // dies mid-stream (page reload, crash) the JS pump never
+            // calls `file_save_commit` or `file_save_abort`, leaving
+            // the handle + its `.tmp` file alive until `cleanup_all`
+            // at app exit. The GC bounds that lifetime to roughly
+            // `IDLE_TIMEOUT + GC_INTERVAL`.
+            let gc_registry = save_registry.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(SAVE_HANDLE_GC_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    gc_registry.gc_idle(SAVE_HANDLE_IDLE_TIMEOUT);
+                }
+            });
+            app.manage(save_registry);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2309,8 +2686,11 @@ fn main() {
             list_tunnels,
             list_editors,
             open_in_editor,
-            save_bytes_to_downloads,
-            save_bytes_as,
+            file_save_open,
+            file_save_open_dialog,
+            file_save_write,
+            file_save_commit,
+            file_save_abort,
             switch_mode,
             #[cfg(target_os = "macos")]
             restart_app,
@@ -2328,6 +2708,13 @@ fn main() {
             if let RunEvent::ExitRequested { api, .. } = event {
                 if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
                     if !shell.exit_in_progress.load(Ordering::SeqCst) {
+                        // Drop any open save handles and remove their
+                        // partial files before shutting the sidecar
+                        // down. The CAS inside `handle_app_exit`
+                        // guarantees we run this exactly once.
+                        if let Some(registry) = app.try_state::<Arc<SaveStreamRegistry>>() {
+                            registry.cleanup_all();
+                        }
                         api.prevent_exit();
                         handle_app_exit(shell.inner().clone());
                     }

@@ -95,7 +95,7 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
     return ownedActions
   }
   const actions = (): FileSaveActions => props.actions ?? ensureOwnedActions()
-  // Reading `actions().currentOp()` here triggers `ensureOwnedActions`.
+  // Reading `actions().op()` here triggers `ensureOwnedActions`.
   // Gate it on `menuOpen()` so the disabled-binding refire at mount
   // (popover hidden) doesn't allocate for rows the user never opens.
   // Externally-injected actions skip the gate — their busy state is
@@ -103,8 +103,8 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
   // menu's popover is closed.
   const busy = () => {
     if (props.actions)
-      return props.actions.currentOp() !== null
-    return menuOpen() && actions().currentOp() !== null
+      return props.actions.op() !== null
+    return menuOpen() && actions().op() !== null
   }
 
   return (

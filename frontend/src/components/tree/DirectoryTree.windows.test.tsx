@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { platformBridgeFileSaveStubs } from '../../../tests/unit/helpers/saveActionsMocks'
 import { DirectoryTree } from './DirectoryTree'
 
 // Stub the listDirectory RPC — these tests only exercise the path-input.
@@ -19,8 +20,7 @@ vi.mock('~/api/platformBridge', () => ({
   isTauriApp: () => false,
   platformBridge: {
     revealInFileManager: () => Promise.resolve(),
-    saveBytesToDownloads: () => Promise.resolve(''),
-    saveBytesAs: () => Promise.resolve(null),
+    ...platformBridgeFileSaveStubs(),
   },
 }))
 

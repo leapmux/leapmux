@@ -10,7 +10,7 @@ function renderView(overrides: Partial<Parameters<typeof UnsupportedFileView>[0]
     flavor: 'posix' as const,
     totalSize: 2048,
     reason: 'binary' as const,
-    currentOp: null,
+    op: null,
     loadingAnyway: false,
     canShowAnyway: true,
     onDownload: noop,
@@ -66,11 +66,24 @@ describe('unsupportedFileView', () => {
     expect(screen.getByTestId('unsupported-download-button')).toBeInTheDocument()
   })
 
-  it('disables Download and shows a spinner while currentOp is "download"', () => {
-    renderView({ currentOp: 'download' })
+  it('disables Download and shows a spinner while op.kind is "download"', () => {
+    renderView({ op: { kind: 'download', progress: null } })
     const btn = screen.getByTestId('unsupported-download-button') as HTMLButtonElement
     expect(btn.disabled).toBe(true)
     expect(btn.textContent).toMatch(/Downloading/i)
+  })
+
+  it('appends a percent to the busy label when op.progress is non-null', () => {
+    renderView({ op: { kind: 'download', progress: 45 } })
+    const btn = screen.getByTestId('unsupported-download-button') as HTMLButtonElement
+    expect(btn.textContent).toMatch(/Downloading\.\.\. 45%/)
+  })
+
+  it('omits the percent when op.progress is null', () => {
+    renderView({ op: { kind: 'download', progress: null } })
+    const btn = screen.getByTestId('unsupported-download-button') as HTMLButtonElement
+    expect(btn.textContent).toMatch(/Downloading\.\.\./)
+    expect(btn.textContent).not.toMatch(/%/)
   })
 
   it('disables Show anyway and shows a spinner while loadingAnyway is true', () => {
@@ -148,15 +161,15 @@ describe('unsupportedFileView', () => {
     })
 
     it('disables both save buttons while a save is in flight', () => {
-      renderDesktopView({ currentOp: 'save-as' })
+      renderDesktopView({ op: { kind: 'save-as', progress: null } })
       const saveAs = screen.getByTestId('unsupported-save-as-button') as HTMLButtonElement
       const toDownloads = screen.getByTestId('unsupported-save-to-downloads-button') as HTMLButtonElement
       expect(saveAs.disabled).toBe(true)
       expect(toDownloads.disabled).toBe(true)
     })
 
-    it('shows the spinner on the Save-as button when currentOp is "save-as"', () => {
-      renderDesktopView({ currentOp: 'save-as' })
+    it('shows the spinner on the Save-as button when op.kind is "save-as"', () => {
+      renderDesktopView({ op: { kind: 'save-as', progress: null } })
       const saveAs = screen.getByTestId('unsupported-save-as-button') as HTMLButtonElement
       const toDownloads = screen.getByTestId('unsupported-save-to-downloads-button') as HTMLButtonElement
       expect(saveAs.textContent).toMatch(/Saving/i)
@@ -164,8 +177,20 @@ describe('unsupportedFileView', () => {
       expect(toDownloads.textContent).toMatch(/Save to Downloads/i)
     })
 
-    it('shows the spinner on the Save-to-Downloads button when currentOp is "save-to-downloads"', () => {
-      renderDesktopView({ currentOp: 'save-to-downloads' })
+    it('shows percent progress alongside the spinner during a Save as...', () => {
+      renderDesktopView({ op: { kind: 'save-as', progress: 25 } })
+      const saveAs = screen.getByTestId('unsupported-save-as-button') as HTMLButtonElement
+      expect(saveAs.textContent).toMatch(/Saving\.\.\. 25%/)
+    })
+
+    it('shows percent progress during a Save to Downloads', () => {
+      renderDesktopView({ op: { kind: 'save-to-downloads', progress: 90 } })
+      const toDownloads = screen.getByTestId('unsupported-save-to-downloads-button') as HTMLButtonElement
+      expect(toDownloads.textContent).toMatch(/Saving\.\.\. 90%/)
+    })
+
+    it('shows the spinner on the Save-to-Downloads button when op.kind is "save-to-downloads"', () => {
+      renderDesktopView({ op: { kind: 'save-to-downloads', progress: null } })
       const saveAs = screen.getByTestId('unsupported-save-as-button') as HTMLButtonElement
       const toDownloads = screen.getByTestId('unsupported-save-to-downloads-button') as HTMLButtonElement
       expect(toDownloads.textContent).toMatch(/Saving/i)

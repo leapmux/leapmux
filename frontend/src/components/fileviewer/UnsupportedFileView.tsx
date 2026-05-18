@@ -1,5 +1,5 @@
 import type { Component, JSX } from 'solid-js'
-import type { FileSaveOp } from '~/components/common/fileSaveActions'
+import type { ActiveOp } from '~/components/common/fileSaveActions'
 import type { PathFlavor } from '~/lib/paths'
 import { createMemo, createUniqueId, Show } from 'solid-js'
 import { StartupBody, StartupSpinner } from '~/components/common/StartupPanel'
@@ -7,13 +7,19 @@ import { formatBytes } from '~/lib/formatBytes'
 import { basename } from '~/lib/paths'
 import * as styles from './FileViewer.css'
 
-// Save-button content: idle label, or spinner when this button's op is
-// in flight. Three call sites in this file (Download, Save as, Save to
-// Downloads) only differ in the `active`/`label`/`busyLabel` triple.
-function SaveButtonContent(props: { active: boolean, label: string, busyLabel: string }): JSX.Element {
+// Save-button content: idle label, or spinner-plus-percent when this
+// button's op is in flight. Three call sites in this file (Download,
+// Save as, Save to Downloads) only differ in the
+// `active`/`label`/`busyLabel` triple.
+function SaveButtonContent(props: {
+  active: boolean
+  label: string
+  busyLabel: string
+  progress: number | null
+}): JSX.Element {
   return (
     <Show when={props.active} fallback={<>{props.label}</>}>
-      <StartupSpinner label={props.busyLabel} />
+      <StartupSpinner label={props.progress === null ? props.busyLabel : `${props.busyLabel} ${props.progress}%`} />
     </Show>
   )
 }
@@ -24,11 +30,11 @@ export type UnsupportedReason = 'binary' | 'oversize-image'
  * Desktop-mode save controls: render two save buttons (Save as / Save
  * to Downloads) and a "reveal in file manager" checkbox below.
  *
- * The in-flight save (or null) is read from the parent `currentOp`
- * prop — both buttons disable while any save runs, but only the active
- * one shows the spinner. Web-mode callers leave this slot undefined and
- * pass `onDownload` instead, yielding a single anchor-click Download
- * button.
+ * The in-flight save (or null) is read from the parent `op` prop —
+ * both buttons disable while any save runs, but only the active one
+ * (matching `op.kind`) shows the spinner. Web-mode callers leave this
+ * slot undefined and pass `onDownload` instead, yielding a single
+ * anchor-click Download button.
  */
 export interface DesktopSaveControls {
   onSaveAs: () => void
@@ -49,11 +55,16 @@ export interface UnsupportedFileViewProps {
    */
   canShowAnyway: boolean
   onShowAnyway: () => void
-  // Web variant: single "Download" anchor-click button.
-  // `currentOp === 'download'` shows the spinner; both other ops also
-  // disable the button (UnsupportedFileView never sees those today,
-  // but the shared signal means it's well-defined).
-  currentOp: FileSaveOp
+  /**
+   * In-flight save/download state, or `null` when idle. Drives the
+   * per-button spinner (`op.kind` selects which button is active) and
+   * the percent label suffix (`op.progress` becomes "... 45%" when
+   * non-null; `null` keeps the bare spinner — used during the save-as
+   * dialog and the first worker round-trip before the total is known).
+   * Both web and desktop variants share this state; the web variant
+   * only ever sees `kind === 'download'`.
+   */
+  op: ActiveOp | null
   onDownload: () => void
   // Desktop variant: when present, replaces the single "Download" with
   // "Save as..." / "Save to Downloads" and shows the reveal checkbox.
@@ -79,7 +90,8 @@ export const UnsupportedFileView: Component<UnsupportedFileViewProps> = (props) 
   const name = createMemo(() => basename(props.filePath, props.flavor))
   const titleId = createUniqueId()
   const revealId = createUniqueId()
-  const busy = () => props.currentOp !== null
+  const busy = () => props.op !== null
+  const progress = () => props.op?.progress ?? null
 
   return (
     <div
@@ -108,9 +120,10 @@ export const UnsupportedFileView: Component<UnsupportedFileViewProps> = (props) 
               onClick={() => props.onDownload()}
             >
               <SaveButtonContent
-                active={props.currentOp === 'download'}
+                active={props.op?.kind === 'download'}
                 label="Download"
                 busyLabel="Downloading..."
+                progress={progress()}
               />
             </button>
           )}
@@ -125,9 +138,10 @@ export const UnsupportedFileView: Component<UnsupportedFileViewProps> = (props) 
                 onClick={() => desktop().onSaveAs()}
               >
                 <SaveButtonContent
-                  active={props.currentOp === 'save-as'}
+                  active={props.op?.kind === 'save-as'}
                   label="Save as..."
                   busyLabel="Saving..."
+                  progress={progress()}
                 />
               </button>
               <button
@@ -139,9 +153,10 @@ export const UnsupportedFileView: Component<UnsupportedFileViewProps> = (props) 
                 onClick={() => desktop().onSaveToDownloads()}
               >
                 <SaveButtonContent
-                  active={props.currentOp === 'save-to-downloads'}
+                  active={props.op?.kind === 'save-to-downloads'}
                   label="Save to Downloads"
                   busyLabel="Saving..."
+                  progress={progress()}
                 />
               </button>
             </>

@@ -257,9 +257,13 @@ function loadTauriOpener() {
   return (cachedTauriOpener ??= import('@tauri-apps/plugin-opener'))
 }
 
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+async function tauriInvoke<T>(
+  cmd: string,
+  args?: import('@tauri-apps/api/core').InvokeArgs,
+  options?: import('@tauri-apps/api/core').InvokeOptions,
+): Promise<T> {
   const { invoke } = await loadTauriCore()
-  return invoke<T>(cmd, args)
+  return invoke<T>(cmd, args, options)
 }
 
 export function resetPlatformRuntimeState(): void {
@@ -476,32 +480,77 @@ export async function readClipboardImage(): Promise<File | null> {
 }
 
 /**
- * Write `bytes` to the OS Downloads directory as `filename` and return
- * the absolute path written. Tauri-only — call sites must gate on
- * `isTauriApp()` first. The Rust command sanitizes `filename` to its
- * basename so callers can't escape the Downloads dir.
+ * Streaming save handle returned by `fileSaveOpen` / `fileSaveOpenDialog`.
+ * `id` is the Rust-side registry id (a monotonic u64); `path` is the
+ * absolute path that was opened so callers can pass it to
+ * `revealInFileManager` after a successful close.
+ */
+export interface SaveStreamHandle {
+  id: number
+  path: string
+}
+
+/**
+ * Open a destination file under the OS Downloads directory and return
+ * a streaming handle. The Rust side keeps the `File` open between
+ * calls; the caller streams bytes through `fileSaveWrite` and finalizes
+ * with `fileSaveCommit` (or `fileSaveAbort` on failure).
  *
- * Bytes ride the Tauri IPC as a raw request body (transferred without
- * JSON or base64 conversion). The filename goes through a header,
+ * The Rust command sanitizes `filename` to its basename so callers can't
+ * escape the Downloads dir. The filename rides through a header,
  * base64-encoded so non-ASCII names survive the HTTP-style header
  * value restrictions.
  */
-export async function saveBytesToDownloads(bytes: Uint8Array, filename: string): Promise<string> {
-  const { invoke } = await loadTauriCore()
-  return invoke<string>('save_bytes_to_downloads', bytes, {
+export async function fileSaveOpen(filename: string): Promise<SaveStreamHandle> {
+  return tauriInvoke<SaveStreamHandle>('file_save_open', undefined, {
     headers: { 'filename-b64': arrayBufferToBase64(filename) },
   })
 }
 
 /**
- * Show a native save-as dialog, write `bytes` to the chosen path, and
- * return the absolute path. Returns `null` if the user cancelled the
- * dialog. Tauri-only.
+ * Show a native save-as dialog, open the chosen path, and return a
+ * streaming handle. Returns `null` if the user cancelled the dialog —
+ * callers should short-circuit before any worker fetch so a cancelled
+ * save doesn't pay the full read cost. Tauri-only.
  */
-export async function saveBytesAs(bytes: Uint8Array, defaultName: string): Promise<string | null> {
-  const { invoke } = await loadTauriCore()
-  return invoke<string | null>('save_bytes_as', bytes, {
+export async function fileSaveOpenDialog(defaultName: string): Promise<SaveStreamHandle | null> {
+  return tauriInvoke<SaveStreamHandle | null>('file_save_open_dialog', undefined, {
     headers: { 'default-name-b64': arrayBufferToBase64(defaultName) },
+  })
+}
+
+/**
+ * Append `chunk` to the file identified by `id`. Bytes ride the Tauri
+ * IPC as a raw request body (no JSON / base64 conversion). Per-chunk,
+ * so the transient memory peak is bounded to the chunk size across the
+ * entire JS-webview-Rust copy chain.
+ */
+export async function fileSaveWrite(id: number, chunk: Uint8Array): Promise<void> {
+  await tauriInvoke<void>('file_save_write', chunk, {
+    headers: { 'handle-id': String(id) },
+  })
+}
+
+/**
+ * Finalize the handle identified by `id` by atomic-renaming the `.tmp`
+ * onto the final path. Errors on rename remove the partial so a
+ * half-save doesn't land under the user's chosen name.
+ */
+export async function fileSaveCommit(id: number): Promise<void> {
+  await tauriInvoke<void>('file_save_commit', undefined, {
+    headers: { 'handle-id': String(id) },
+  })
+}
+
+/**
+ * Discard the handle identified by `id` and remove its partial file.
+ * Idempotent against an already-removed handle, so the JS pump's
+ * failure path can call this without checking whether the Rust side
+ * already cleaned up.
+ */
+export async function fileSaveAbort(id: number): Promise<void> {
+  await tauriInvoke<void>('file_save_abort', undefined, {
+    headers: { 'handle-id': String(id) },
   })
 }
 
@@ -585,8 +634,11 @@ export function observeWindowMaximized(onChange: (maximized: boolean) => void): 
 export const platformBridge = {
   getCapabilities,
   getRuntimeState,
-  saveBytesToDownloads,
-  saveBytesAs,
+  fileSaveOpen,
+  fileSaveOpenDialog,
+  fileSaveWrite,
+  fileSaveCommit,
+  fileSaveAbort,
   revealInFileManager,
   async connectSolo(): Promise<void> {
     await tauriInvoke('connect_solo')
