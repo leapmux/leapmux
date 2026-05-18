@@ -1,31 +1,22 @@
 import type { JSX } from 'solid-js'
 import type { ViewMode } from './ViewToggle'
 import type { ParsedCatLine } from '~/components/chat/results/ReadResultView'
-import { createMemo, createSignal, Show, untrack } from 'solid-js'
+import { createMemo, Show } from 'solid-js'
 import { markdownContent } from '~/components/chat/markdownEditor/markdownContent.css'
 import { ReadResultView } from '~/components/chat/results/ReadResultView'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import * as styles from './FileViewer.css'
 import { TextFileView } from './TextFileView'
-import { ViewToggle } from './ViewToggle'
 
 export function MarkdownFileView(props: {
   content: Uint8Array
   filePath: string
   totalSize: number
-  displayMode?: string
-  onDisplayModeChange?: (mode: string) => void
+  /** Controlled view mode (render / source / split). */
+  mode: ViewMode
   onQuote?: (text: string, startLine?: number, endLine?: number) => void
-  onMention?: () => void
 }): JSX.Element {
-  const [mode, setMode] = createSignal<ViewMode>(untrack(() => props.displayMode as ViewMode) || 'render')
-
-  const handleModeChange = (m: ViewMode) => {
-    setMode(m)
-    props.onDisplayModeChange?.(m)
-  }
-
   const text = createMemo(() => new TextDecoder().decode(props.content))
   const html = createMemo(() => renderMarkdown(text()))
 
@@ -59,14 +50,13 @@ export function MarkdownFileView(props: {
 
   return (
     <div class={styles.toggleViewContainer}>
-      <ViewToggle mode={mode()} onToggle={handleModeChange} showSplit onMention={props.onMention} />
-      <Show when={mode() === 'render'}>
+      <Show when={props.mode === 'render'}>
         <div class={styles.markdownContainer}>
           {/* eslint-disable-next-line solid/no-innerhtml -- intentional: rendered markdown */}
           <div class={markdownContent} innerHTML={html()} />
         </div>
       </Show>
-      <Show when={mode() === 'split'}>
+      <Show when={props.mode === 'split'}>
         <div class={styles.splitContainer}>
           <div
             class={styles.splitPane}
@@ -93,7 +83,7 @@ export function MarkdownFileView(props: {
           </div>
         </div>
       </Show>
-      <Show when={mode() === 'source'}>
+      <Show when={props.mode === 'source'}>
         <TextFileView
           content={props.content}
           filePath={props.filePath}

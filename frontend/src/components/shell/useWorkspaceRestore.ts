@@ -16,6 +16,7 @@ import { getCRDTBridge } from '~/lib/crdt/bridge'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createLogger } from '~/lib/logger'
+import { createExponentialBackoff } from '~/lib/retry'
 import { agentTabToInfo, parseTabKey, preserveNonEmptyGitFields, preserveTerminalDisplayFields, protoToAgentTabFields, protoToTerminalTab, protoToTerminalTabFields, tabKey, tabsByKey } from '~/stores/tab.helpers'
 import { activeTabKey, focusedTileKey, tileActiveTabsKey } from './tabPersistenceKeys'
 import { fanOutTabsToWorkers } from './workspaceTabHydration'
@@ -303,27 +304,17 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
   let loadGeneration = 0
   const [terminalHydrationTick, setTerminalHydrationTick] = createSignal(0)
   const terminalHydrationInflight = createInflightCache<string, void>()
-  const terminalHydrationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  const terminalHydrationRetryDelayMs = new Map<string, number>()
+  // Per-worker retry: the hydration effect won't re-fire on its own
+  // until either the candidate map changes or the tick signal is
+  // bumped. The retry's `fire` callback bumps the tick so the effect
+  // walks the same candidates again — that's what keeps a transiently-
+  // unreachable worker eventually getting hydrated.
+  const terminalHydrationRetry = createExponentialBackoff<string>({ initialMs: 500, maxMs: 10_000 })
 
-  const clearTerminalHydrationRetry = (workerId: string) => {
-    const timer = terminalHydrationRetryTimers.get(workerId)
-    if (timer) {
-      clearTimeout(timer)
-      terminalHydrationRetryTimers.delete(workerId)
-    }
-  }
+  const clearTerminalHydrationRetry = (workerId: string) => terminalHydrationRetry.reset(workerId)
 
   const scheduleTerminalHydrationRetry = (workerId: string) => {
-    if (terminalHydrationRetryTimers.has(workerId))
-      return
-    const nextDelay = Math.min((terminalHydrationRetryDelayMs.get(workerId) ?? 500) * 2, 10_000)
-    terminalHydrationRetryDelayMs.set(workerId, nextDelay)
-    const timer = setTimeout(() => {
-      terminalHydrationRetryTimers.delete(workerId)
-      setTerminalHydrationTick(v => v + 1)
-    }, nextDelay)
-    terminalHydrationRetryTimers.set(workerId, timer)
+    terminalHydrationRetry.schedule(workerId, () => setTerminalHydrationTick(v => v + 1))
   }
 
   const hydrateTerminalRecord = (workerId: string, term: Awaited<ReturnType<typeof workerRpc.listTerminals>>['terminals'][number]) => {
@@ -341,11 +332,7 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     )
   }
 
-  onCleanup(() => {
-    for (const workerId of terminalHydrationRetryTimers.keys()) {
-      clearTerminalHydrationRetry(workerId)
-    }
-  })
+  onCleanup(() => terminalHydrationRetry.cancelAll())
 
   createEffect(on([getActiveWorkspaceId, getOrgId], ([activeId, currentOrgId]) => {
     if (!activeId || !currentOrgId)
@@ -492,7 +479,17 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
       // its full metadata, so the reconciler's next pass sees no
       // missing tabs and stays quiet.
       batch(() => {
-        tabStore.clear()
+        // Tab clearing happens once, at the top of the non-cached
+        // branch (outgoing-workspace cleanup). Here we keep the store
+        // intact so the CRDT-projection reconciler (`AppShell`'s effect
+        // on `pendingVersion`) and the file-tab path hydrator
+        // (`useTabHydrators`) can pre-populate tabs during this
+        // restore's awaits. Clearing inside this branch would wipe
+        // those entries, after which `mergeHubOnlyTabs` would re-add
+        // file tabs with no `filePath` and the hydrator's
+        // `fileTabPaths.pathFor` guard would suppress re-fetching. The
+        // hydration phases below use `preExistingKeys` to merge worker
+        // metadata onto reconciler-added tabs without removing them.
 
         // Layout / floating-windows hydration is fully driven by the
         // CRDT projection now. The store's `state.root` is a memo over
@@ -604,11 +601,26 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
     { equals: missingMapsEqual },
   )
 
+  // Workers seen on the previous effect run. When a worker disappears
+  // from the missing-tabs map (workspace switched, worker disconnected,
+  // its tabs finished hydrating), we reset its retry slot so a future
+  // failure on the same worker id restarts the backoff at `initialMs`
+  // instead of resuming mid-sequence. `cancelAll()` on unmount handles
+  // the per-mount cleanup; this guards the per-run case.
+  let prevHydrationWorkers: Set<string> = new Set()
+
   createEffect(
     on([terminalHydrationTick, tabsNeedingHydration], ([_, missingByWorker]) => {
       const activeId = getActiveWorkspaceId()
       if (!activeId)
         return
+
+      const currentWorkers = new Set(missingByWorker.keys())
+      for (const w of prevHydrationWorkers) {
+        if (!currentWorkers.has(w))
+          terminalHydrationRetry.reset(w)
+      }
+      prevHydrationWorkers = currentWorkers
 
       for (const [workerId, tabIds] of missingByWorker.entries()) {
         if (terminalHydrationInflight.has(workerId))
@@ -631,7 +643,6 @@ export function useWorkspaceRestore(opts: UseWorkspaceRestoreOpts) {
             }
             else {
               clearTerminalHydrationRetry(workerId)
-              terminalHydrationRetryDelayMs.delete(workerId)
             }
           }
           catch (err) {

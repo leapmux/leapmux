@@ -4,6 +4,7 @@ import { onCleanup } from 'solid-js'
 import { orgCRDTClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
 import { BatchRejectionReason } from '~/generated/leapmux/v1/org_ops_pb'
+import { createExponentialBackoff } from '~/lib/retry'
 
 /**
  * SUBMIT_FLUSH_MS is the aggregator window — every queued batch
@@ -81,6 +82,17 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
   // Per-batch transport-retry counter. Cleared on commit / non-
   // transport rejection / cap hit.
   const transportRetries = new Map<string, number>()
+  // Per-batch transport backoff. Each batchId carries its own delay
+  // sequence (100ms → 200 → 400 → 800 → 1600 → 2000), reset on commit
+  // or non-transport rejection. Repeated failures of the same batch
+  // within its pending timer window are no-ops — schedule's
+  // already-pending guard handles that.
+  const transportBackoff = createExponentialBackoff<string>({
+    initialMs: 100,
+    maxMs: 2000,
+    multiplier: 2,
+    jitterFactor: 0,
+  })
 
   function enqueue(batch: OpBatch): void {
     queue.push(batch)
@@ -93,6 +105,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
 
   function dropTransportRetryCounter(batchId: string): void {
     transportRetries.delete(batchId)
+    transportBackoff.reset(batchId)
   }
 
   // Re-enqueue a batch under the same id+ops for a retry. The pending
@@ -189,11 +202,10 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
   }
 
   function handleTransportFailure(pending: PendingOpsManager, batches: OpBatch[], err: unknown): void {
-    const retryable: OpBatch[] = []
     for (const batch of batches) {
       const attempts = (transportRetries.get(batch.batchId) ?? 0) + 1
       if (attempts > MAX_TRANSPORT_RETRIES) {
-        transportRetries.delete(batch.batchId)
+        dropTransportRetryCounter(batch.batchId)
         // Give up. Drop the batch — the speculative state stays
         // because we never received an authoritative answer; the user
         // can re-issue manually. Surface a toast so the failure isn't
@@ -203,21 +215,19 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
         continue
       }
       transportRetries.set(batch.batchId, attempts)
-      retryable.push(batch)
-    }
-    if (retryable.length > 0) {
-      // Use exponential backoff with a low ceiling so a transient
-      // network blip doesn't tight-loop. attempts==1 → 100ms,
-      // attempts==5 → ~1.6s.
-      const maxAttempts = Math.max(...retryable.map(b => transportRetries.get(b.batchId) ?? 1))
-      const delay = Math.min(2000, 100 * 2 ** (maxAttempts - 1))
-      setTimeout(() => rescheduleForWireRetry(retryable.map(cloneBatch)), delay)
+      // Per-batch backoff timer. `schedule` no-ops if this batchId
+      // already has a pending retry — the existing timer will fire
+      // and re-enqueue, no work lost.
+      transportBackoff.schedule(batch.batchId, () => {
+        rescheduleForWireRetry([cloneBatch(batch)])
+      })
     }
   }
 
   onCleanup(() => {
     if (timer)
       clearTimeout(timer)
+    transportBackoff.cancelAll()
   })
 
   return {

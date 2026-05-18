@@ -48,6 +48,8 @@ export interface SectionDefContext {
   onTabClick?: (type: number, id: string) => void
   tabItemOps?: TabItemOps
   onExpandWorkspace?: (workspaceId: string) => void
+  /** Tile ids in top-left-first traversal order for `workspaceId`. */
+  getTileOrderForWorkspace?: (workspaceId: string) => string[]
 
   // Files section
   workerId: string
@@ -153,6 +155,7 @@ export function buildSectionDef(
           activeTabKey={ctx.tabStore?.state.activeTabKey ?? null}
           getTabsForWorkspace={(wsId: string) => ctx.registry?.get(wsId)?.tabs ?? []}
           getActiveTabKeyForWorkspace={(wsId: string) => ctx.registry?.get(wsId)?.activeTabKey ?? null}
+          getTileOrderForWorkspace={(wsId: string) => ctx.getTileOrderForWorkspace?.(wsId) ?? []}
           onTabClick={ctx.onTabClick ?? (() => {})}
           tabItemOps={ctx.tabItemOps}
           onExpandWorkspace={ctx.onExpandWorkspace}

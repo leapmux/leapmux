@@ -178,6 +178,55 @@ describe('preferencesContext — multiple prefs in one blob', () => {
   })
 })
 
+describe('preferencesContext — revealAfterDownload (default-on)', () => {
+  // The save flow asks the OS to "reveal in Finder/Explorer" after
+  // writing. Most users want it; we only persist an explicit `false`
+  // when the user opts out — `undefined` is implicit consent.
+  it('defaults to true when localStorage is empty', () => {
+    const ctx = captureContext()
+    expect(ctx.get().revealAfterDownload()).toBe(true)
+    // Nothing serialized while no opt-out has happened.
+    expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
+  })
+
+  it('opts out by persisting `false` to the consolidated prefs blob', () => {
+    const ctx = captureContext()
+    ctx.get().setRevealAfterDownload(false)
+    expect(ctx.get().revealAfterDownload()).toBe(false)
+    expect(loadBrowserPrefs().revealAfterDownload).toBe(false)
+  })
+
+  it('opts back in by clearing the key from the blob (not storing `true`)', () => {
+    const ctx = captureContext()
+    ctx.get().setRevealAfterDownload(false)
+    expect(loadBrowserPrefs().revealAfterDownload).toBe(false)
+
+    ctx.get().setRevealAfterDownload(true)
+    expect(ctx.get().revealAfterDownload()).toBe(true)
+    // Default-on prefs round-trip the absence of the key, not `true`.
+    expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
+  })
+
+  it('hydrates a stored `false` from localStorage on provider mount', () => {
+    localStorage.setItem(KEY_BROWSER_PREFS, JSON.stringify({ revealAfterDownload: false }))
+    const ctx = captureContext()
+    expect(ctx.get().revealAfterDownload()).toBe(false)
+  })
+
+  it('does not interact with other persisted prefs in the same blob', () => {
+    const ctx = captureContext()
+    ctx.get().setBrowserTheme('dark')
+    ctx.get().setRevealAfterDownload(false)
+    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect(loadBrowserPrefs().revealAfterDownload).toBe(false)
+
+    // Opting back in must not clobber the theme.
+    ctx.get().setRevealAfterDownload(true)
+    expect(loadBrowserPrefs().theme).toBe('dark')
+    expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
+  })
+})
+
 describe('preferencesContext — reload from API', () => {
   it('runs reload() on mount without throwing when the API returns no preferences', async () => {
     // The default mock returns `{}` (no `preferences` field). Provider should

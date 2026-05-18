@@ -1,33 +1,15 @@
 import type { JSX } from 'solid-js'
 import type { ZoomMode } from './ImageToolbar'
 import type { ViewMode } from './ViewToggle'
-import { createEffect, createMemo, createSignal, Match, onCleanup, Switch, untrack } from 'solid-js'
-import { isSvgExtension } from '~/lib/fileType'
+import { createEffect, createMemo, createSignal, Match, onCleanup, Switch } from 'solid-js'
+import { getImageMimeType, isSvgExtension } from '~/lib/fileType'
 import { basename } from '~/lib/paths'
 import * as styles from './FileViewer.css'
 import { ImageToolbar, ZOOM_MAX, ZOOM_MIN } from './ImageToolbar'
 import { TextFileView } from './TextFileView'
-import { ViewToggle } from './ViewToggle'
-
-const MIME_MAP: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  bmp: 'image/bmp',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  ico: 'image/x-icon',
-  avif: 'image/avif',
-}
 
 const WRAPPER_PADDING_X = 16 // matches var(--space-4) used in imageZoomWrapper
 const WRAPPER_PADDING_TOP = 44 // matches toolbar clearance used in imageZoomWrapper
-
-function getMimeType(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() ?? ''
-  return MIME_MAP[ext] ?? 'application/octet-stream'
-}
 
 function ImageRender(props: {
   content: Uint8Array
@@ -41,8 +23,13 @@ function ImageRender(props: {
   const [naturalSize, setNaturalSize] = createSignal<{ w: number, h: number } | null>(null)
   const [containerSize, setContainerSize] = createSignal({ w: 0, h: 0 })
 
-  const blobUrl = createMemo(() => {
-    const blob = new Blob([props.content as BlobPart], { type: getMimeType(props.filePath) })
+  // Revoke the previous blob URL whenever content/filePath changes
+  // (createMemo re-runs and the old URL would otherwise leak until
+  // component unmount). The final URL is revoked in onCleanup.
+  const blobUrl = createMemo<string>((prev) => {
+    if (prev !== undefined)
+      URL.revokeObjectURL(prev)
+    const blob = new Blob([props.content as BlobPart], { type: getImageMimeType(props.filePath) })
     return URL.createObjectURL(blob)
   })
 
@@ -178,19 +165,16 @@ export function ImageFileView(props: {
   content: Uint8Array
   filePath: string
   totalSize?: number
-  displayMode?: string
-  onDisplayModeChange?: (mode: string) => void
+  /**
+   * Controlled view mode for the SVG render/source/split toggle. Ignored
+   * for raster images (which have no toggle and always render the image
+   * directly).
+   */
+  mode: ViewMode
   onQuote?: (text: string, startLine?: number, endLine?: number) => void
-  onMention?: () => void
 }): JSX.Element {
   const isSvg = () => isSvgExtension(props.filePath)
-  const [mode, setMode] = createSignal<ViewMode>(untrack(() => props.displayMode as ViewMode) || 'render')
   const [zoom, setZoom] = createSignal<ZoomMode>('fit')
-
-  const handleModeChange = (m: ViewMode) => {
-    setMode(m)
-    props.onDisplayModeChange?.(m)
-  }
 
   const renderImage = () => (
     <ImageRender
@@ -208,12 +192,11 @@ export function ImageFileView(props: {
       </Match>
       <Match when={isSvg()}>
         <div class={styles.toggleViewContainer}>
-          <ViewToggle mode={mode()} onToggle={handleModeChange} showSplit onMention={props.onMention} />
           <Switch>
-            <Match when={mode() === 'render'}>
+            <Match when={props.mode === 'render'}>
               {renderImage()}
             </Match>
-            <Match when={mode() === 'split'}>
+            <Match when={props.mode === 'split'}>
               <div class={styles.splitContainer}>
                 <div class={styles.splitPane}>
                   {renderImage()}
@@ -229,7 +212,7 @@ export function ImageFileView(props: {
                 </div>
               </div>
             </Match>
-            <Match when={mode() === 'source'}>
+            <Match when={props.mode === 'source'}>
               <TextFileView
                 content={props.content}
                 filePath={props.filePath}

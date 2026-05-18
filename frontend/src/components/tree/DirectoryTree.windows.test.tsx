@@ -8,6 +8,22 @@ vi.mock('~/api/workerRpc', () => ({
   channelManager: { subscribe: () => () => {} },
 }))
 
+vi.mock('~/context/PreferencesContext', () => ({
+  usePreferences: () => ({
+    revealAfterDownload: () => false,
+    setRevealAfterDownload: () => {},
+  }),
+}))
+
+vi.mock('~/api/platformBridge', () => ({
+  isTauriApp: () => false,
+  platformBridge: {
+    revealInFileManager: () => Promise.resolve(),
+    saveBytesToDownloads: () => Promise.resolve(''),
+    saveBytesAs: () => Promise.resolve(null),
+  },
+}))
+
 function renderTree(props: {
   selectedPath: string
   homeDir: string

@@ -4,18 +4,17 @@ import { createDraggable } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
-import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
 import { createMemo, createSignal, For, Show } from 'solid-js'
-import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
-import { canCloseTab, tabKey } from '~/stores/tab.helpers'
-import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
+import { canCloseTab, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
+import { isTerminalTab } from '~/stores/tab.types'
 import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
@@ -43,7 +42,7 @@ const TabLeaf: Component<{
   /* eslint-disable solid/reactivity -- stable identifier for createDraggable */
   const draggable = createDraggable(
     `${SIDEBAR_TAB_PREFIX}${props.workspaceId}:${props.tab.type}:${props.tab.id}`,
-    { title: props.tab.title || props.tab.id, type: props.tab.type },
+    { title: tabDisplayLabel(props.tab), type: props.tab.type },
   )
   /* eslint-enable solid/reactivity */
 
@@ -73,9 +72,7 @@ const TabLeaf: Component<{
       data-terminal-status={isTerminalTab(props.tab) ? props.tab.status : undefined}
     >
       <div class={shared.chevronPlaceholder} />
-      <Show when={isAgentTab(props.tab)} fallback={<Terminal size={14} class={css.tabIcon} />}>
-        <AgentProviderIcon provider={isAgentTab(props.tab) ? props.tab.agentProvider : undefined} size={14} class={css.tabIcon} />
-      </Show>
+      <TabTypeIcon tab={props.tab} class={css.tabIcon} />
       <Show
         when={!props.isEditing}
         fallback={(
@@ -105,12 +102,12 @@ const TabLeaf: Component<{
           />
         )}
       >
-        <Tooltip text={props.tab.title || props.tab.id} showWhen="clipped">
+        <Tooltip text={tabDisplayLabel(props.tab)} showWhen="clipped">
           <span
             class={css.tabLabel}
             classList={terminalStatusClassList(isTerminalTab(props.tab) ? props.tab.status : undefined)}
           >
-            {props.tab.title || props.tab.id}
+            {tabDisplayLabel(props.tab)}
           </span>
         </Tooltip>
       </Show>
@@ -146,10 +143,18 @@ export interface WorkspaceTabTreeProps {
   tabItemOps?: TabItemOps
   readOnly?: boolean
   workspaceId: string
+  /**
+   * Tile ids in their top-left-first traversal order of the workspace's
+   * layout tree. Drives the per-branch sort: leaves appear in the same
+   * order as their tiles do visually, ties broken by LexoRank `position`
+   * (the tab bar's left-to-right order). Omit (or pass `[]`) and the
+   * sort falls back to type → title.
+   */
+  tileOrder?: string[]
 }
 
 export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
-  const tree = createMemo(() => buildTree(props.tabs))
+  const tree = createMemo(() => buildTree(props.tabs, props.tileOrder))
   const storageKey = () => `leapmux:tabTree:${props.workspaceId}`
 
   // --- Tab rename editing state ---
@@ -158,13 +163,11 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   let editCancelled = false
   const canClose = (tab: Tab) => canCloseTab(props.readOnly, tab)
 
-  const tabLabel = (tab: Tab): string => tab.title || tab.id
-
   const startEditing = (tab: Tab) => {
     if (props.readOnly || tab.type === TabType.FILE || !props.tabItemOps?.onRename)
       return
     setEditingTabKey(tabKey(tab))
-    setEditingValue(tabLabel(tab))
+    setEditingValue(tabDisplayLabel(tab))
   }
 
   const commitEdit = (tab: Tab) => {
@@ -173,7 +176,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
       return
     }
     const value = editingValue().trim()
-    if (value && value !== tabLabel(tab)) {
+    if (value && value !== tabDisplayLabel(tab)) {
       props.tabItemOps?.onRename?.(tab, value)
     }
     setEditingTabKey(null)
@@ -408,7 +411,16 @@ function repoKeyAndLabel(tab: Tab): { key: string, label: string } | null {
   return null
 }
 
-export function buildTree(tabs: Tab[]): TabTree {
+export function buildTree(tabs: Tab[], tileOrder?: readonly string[]): TabTree {
+  // Per-branch sort needs O(1) tile-index lookup; build the map once
+  // here and reuse for every branch / the ungrouped bucket.
+  const tileIndex = new Map<string, number>()
+  if (tileOrder) {
+    for (let i = 0; i < tileOrder.length; i++)
+      tileIndex.set(tileOrder[i], i)
+  }
+  const sort = (xs: Tab[]) => sortTabs(xs, tileIndex)
+
   const ungrouped: Tab[] = []
   // Group by repo-key -> branch, preserving a stable display label per key.
   const repoMap = new Map<string, { label: string, branches: Map<string, Tab[]> }>()
@@ -459,7 +471,7 @@ export function buildTree(tabs: Tab[]): TabTree {
           break
         }
       }
-      return { branchName, tabs: sortTabs(branchTabs), diffAdded, diffDeleted, diffUntracked }
+      return { branchName, tabs: sort(branchTabs), diffAdded, diffDeleted, diffUntracked }
     })
     return {
       repoKey: key,
@@ -471,15 +483,40 @@ export function buildTree(tabs: Tab[]): TabTree {
     }
   })
 
-  return { groups, ungrouped: sortTabs(ungrouped) }
+  return { groups, ungrouped: sort(ungrouped) }
 }
 
-function sortTabs(tabs: Tab[]): Tab[] {
+/**
+ * Order tabs by their visual position in the workspace. Primary key is
+ * the tab's tile in `tileIndex` (top-left tile first; the index is built
+ * from `getAllTileIds(root)` upstream). Within the same tile, fall back
+ * to LexoRank `position` so the sidebar tracks the tab bar's left-to-
+ * right order. Tabs whose tile is absent from `tileIndex` (no `tileId`
+ * yet, or a layout/snapshot race) sink to the bottom but stay grouped
+ * together by tile; `id` is the final, stable tiebreak.
+ *
+ * When `tileIndex` is empty (no tile order supplied — e.g. a test
+ * harness or a workspace whose layout hasn't been hydrated yet) every
+ * tab gets the same primary rank, so the sort effectively becomes
+ * position-then-id. That keeps callers without layout info from
+ * producing arbitrary orderings.
+ */
+function sortTabs(tabs: Tab[], tileIndex: Map<string, number>): Tab[] {
+  const rank = (tileId: string | undefined): number => {
+    if (!tileId)
+      return Number.POSITIVE_INFINITY
+    const idx = tileIndex.get(tileId)
+    return idx === undefined ? Number.POSITIVE_INFINITY : idx
+  }
   return tabs.toSorted((a, b) => {
-    // Agents before terminals
-    if (a.type !== b.type)
-      return a.type === TabType.AGENT ? -1 : 1
-    // Then alphabetical by title
-    return (a.title || a.id).localeCompare(b.title || b.id)
+    const ra = rank(a.tileId)
+    const rb = rank(b.tileId)
+    if (ra !== rb)
+      return ra - rb
+    const pa = a.position ?? ''
+    const pb = b.position ?? ''
+    if (pa !== pb)
+      return pa < pb ? -1 : 1
+    return a.id.localeCompare(b.id)
   })
 }

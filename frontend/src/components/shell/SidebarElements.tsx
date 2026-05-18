@@ -58,6 +58,8 @@ export interface SidebarElementsOpts {
   onTabClick: (type: number, id: string) => void
   tabItemOps?: TabItemOps
   onExpandWorkspace: (workspaceId: string) => void
+  /** Tile ids in top-left-first traversal order for `workspaceId`. */
+  getTileOrderForWorkspace: (workspaceId: string) => string[]
 }
 
 interface SidebarDisplayOpts {
@@ -129,6 +131,7 @@ function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: SidebarDis
     onTabClick: opts.onTabClick,
     tabItemOps: opts.tabItemOps,
     onExpandWorkspace: opts.onExpandWorkspace,
+    getTileOrderForWorkspace: opts.getTileOrderForWorkspace,
   }
 }
 

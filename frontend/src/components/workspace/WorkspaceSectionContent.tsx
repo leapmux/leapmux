@@ -51,6 +51,14 @@ export interface WorkspaceSectionContentProps {
   activeTabKey: string | null
   getTabsForWorkspace: (workspaceId: string) => Tab[]
   getActiveTabKeyForWorkspace: (workspaceId: string) => string | null
+  /**
+   * Tile ids in their top-left-first traversal order for the given
+   * workspace. Drives the in-tree leaf ordering so it tracks the live
+   * tiling layout. Returns `[]` when the workspace's layout hasn't been
+   * loaded yet (cold registry); the tree falls back to position-only
+   * order in that case.
+   */
+  getTileOrderForWorkspace: (workspaceId: string) => string[]
   onTabClick: (type: TabType, id: string) => void
   tabItemOps?: TabItemOps
   readOnly?: boolean
@@ -302,6 +310,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     <div class={shared.childrenInner}>
                       <WorkspaceTabTree
                         tabs={tabsFor(id)}
+                        tileOrder={props.getTileOrderForWorkspace(id)}
                         activeTabKey={activeTabKeyFor(id)}
                         onTabClick={(type, tabId) => {
                           if (id !== props.activeWorkspaceId) {

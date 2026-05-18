@@ -81,6 +81,8 @@ export interface SidebarCommonProps {
   onTabClick?: (type: number, id: string) => void
   tabItemOps?: TabItemOps
   onExpandWorkspace?: (workspaceId: string) => void
+  /** Tile ids in top-left-first traversal order for `workspaceId`. */
+  getTileOrderForWorkspace?: (workspaceId: string) => string[]
 
   // Workers
   workers: Worker[]
@@ -175,6 +177,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get onTabClick() { return props.onTabClick },
     get tabItemOps() { return props.tabItemOps },
     get onExpandWorkspace() { return props.onExpandWorkspace },
+    get getTileOrderForWorkspace() { return props.getTileOrderForWorkspace },
     get workerId() { return props.workerId },
     get workingDir() { return props.workingDir },
     get homeDir() { return props.homeDir },

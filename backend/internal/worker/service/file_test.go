@@ -8,6 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 func TestListDirectory_Truncation(t *testing.T) {
@@ -338,4 +341,112 @@ func TestListDirectory_DirsOnly(t *testing.T) {
 			assert.False(t, e.IsDir, "expected file in last two entries, got dir %q", e.Name)
 		}
 	})
+}
+
+// TestReadFile_MetaOnlyIfTruncated verifies that when the flag is set and the
+// file's total size exceeds the read window, the handler returns total_size
+// with an empty content payload — letting clients detect oversize files in a
+// single round trip without the matching byte payload.
+func TestReadFile_MetaOnlyIfTruncated(t *testing.T) {
+	t.Run("oversize: empty content with total_size", func(t *testing.T) {
+		svc, d, w := setupTestService(t)
+
+		path := filepath.Join(svc.HomeDir, "big.bin")
+		const totalSize = 4096
+		require.NoError(t, os.WriteFile(path, repeatedByte(totalSize, 'a'), 0o644))
+
+		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+			Path:                path,
+			Limit:               1024,
+			MetaOnlyIfTruncated: true,
+		}, w)
+
+		require.Empty(t, w.errors, "expected no error")
+		require.Len(t, w.responses, 1)
+
+		var resp leapmuxv1.ReadFileResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		assert.EqualValues(t, totalSize, resp.GetTotalSize())
+		assert.Empty(t, resp.GetContent(), "expected empty content when truncated and meta-only set")
+	})
+
+	t.Run("within limit: full content with total_size", func(t *testing.T) {
+		svc, d, w := setupTestService(t)
+
+		path := filepath.Join(svc.HomeDir, "small.bin")
+		payload := repeatedByte(100, 'x')
+		require.NoError(t, os.WriteFile(path, payload, 0o644))
+
+		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+			Path:                path,
+			Limit:               1024,
+			MetaOnlyIfTruncated: true,
+		}, w)
+
+		require.Empty(t, w.errors)
+		require.Len(t, w.responses, 1)
+
+		var resp leapmuxv1.ReadFileResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		assert.EqualValues(t, len(payload), resp.GetTotalSize())
+		assert.Equal(t, payload, resp.GetContent())
+	})
+
+	t.Run("flag off: oversize returns truncated content (legacy behavior)", func(t *testing.T) {
+		svc, d, w := setupTestService(t)
+
+		path := filepath.Join(svc.HomeDir, "big-legacy.bin")
+		const totalSize = 4096
+		const limit = 1024
+		require.NoError(t, os.WriteFile(path, repeatedByte(totalSize, 'b'), 0o644))
+
+		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+			Path:  path,
+			Limit: limit,
+		}, w)
+
+		require.Empty(t, w.errors)
+		require.Len(t, w.responses, 1)
+
+		var resp leapmuxv1.ReadFileResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		assert.EqualValues(t, totalSize, resp.GetTotalSize())
+		assert.Len(t, resp.GetContent(), limit, "legacy mode must keep returning truncated bytes")
+	})
+
+	t.Run("offset counted toward the truncation threshold", func(t *testing.T) {
+		svc, d, w := setupTestService(t)
+
+		path := filepath.Join(svc.HomeDir, "with-offset.bin")
+		const totalSize = 4096
+		require.NoError(t, os.WriteFile(path, repeatedByte(totalSize, 'c'), 0o644))
+
+		// offset + limit = 4096 = totalSize, so the read window covers the
+		// whole file and the meta-only short-circuit must NOT fire.
+		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+			Path:                path,
+			Offset:              3072,
+			Limit:               1024,
+			MetaOnlyIfTruncated: true,
+		}, w)
+
+		require.Empty(t, w.errors)
+		require.Len(t, w.responses, 1)
+
+		var resp leapmuxv1.ReadFileResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		assert.EqualValues(t, totalSize, resp.GetTotalSize())
+		assert.Len(t, resp.GetContent(), 1024)
+	})
+}
+
+// repeatedByte returns a slice of length n filled with the given byte. Used
+// by the ReadFile tests to construct payloads of a specific size without
+// staging the expected bytes inline in each case.
+func repeatedByte(n int, b byte) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+	return out
 }

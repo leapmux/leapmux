@@ -81,15 +81,64 @@ export const errorState = style({
   textAlign: 'center',
 })
 
-export const imageSizeError = style({
+/**
+ * Full-pane wrapper for the UnsupportedFileView fallback. Mirrors the
+ * terminal/agent `startupErrorPane` pattern: centered title + body +
+ * actions, no card chrome.
+ */
+export const unsupportedPane = style({
   display: 'flex',
+  flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
+  gap: 'var(--space-2)',
   height: '100%',
-  color: 'var(--muted-foreground)',
-  fontSize: 'var(--text-7)',
+  width: '100%',
   padding: 'var(--space-4)',
   textAlign: 'center',
+  color: 'var(--muted-foreground)',
+  boxSizing: 'border-box',
+})
+
+/** Line under the title carrying the filename and formatted size. */
+export const unsupportedMeta = style({
+  margin: 0,
+  fontSize: 'var(--text-7)',
+  wordBreak: 'break-all',
+})
+
+/** Centered label + checkbox row rendered below the action buttons. */
+export const unsupportedRevealRow = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  marginTop: 'var(--space-2)',
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  cursor: 'pointer',
+  userSelect: 'none',
+})
+
+/**
+ * Status-bar variant that opts back in to pointer events for the
+ * "Show download view" toggle. The default `statusBar` has
+ * `pointerEvents: none` so it doesn't block file-viewer interactions.
+ */
+export const statusBarInteractive = style({
+  pointerEvents: 'auto',
+})
+
+export const statusActionButton = style({
+  all: 'unset',
+  cursor: 'pointer',
+  color: 'var(--foreground)',
+  textDecoration: 'underline',
+  selectors: {
+    '&:focus-visible': {
+      outline: '2px solid var(--ring, var(--foreground))',
+      outlineOffset: '2px',
+    },
+  },
 })
 
 export const hexScroll = style({
@@ -150,12 +199,24 @@ export const toggleViewContainer = style({
   overflow: 'auto',
 })
 
-// Floating segmented toggle button at top-right
+// Absolutely-positioned slot at the top-right of the file viewer that
+// hosts the floating action surfaces — the optional view-mode toggle
+// row and the file-actions menu. Both render as flex children with a
+// gap between them, so callers don't have to coordinate offsets.
+export const floatingTopRight = style({
+  position: 'absolute',
+  top: 'var(--space-2)',
+  right: 'var(--space-3)',
+  zIndex: 10,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+})
+
+// Segmented view-mode toggle row. Placement is owned by the parent
+// `floatingTopRight` slot; this style only handles the segmented-button
+// chrome.
 export const viewToggle = style({
-  'position': 'absolute',
-  'top': 'var(--space-2)',
-  'right': 'var(--space-3)',
-  'zIndex': 10,
   'display': 'flex',
   'borderRadius': 'var(--radius-small)',
   'border': '1px solid var(--border)',

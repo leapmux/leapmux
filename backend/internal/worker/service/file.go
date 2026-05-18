@@ -100,17 +100,31 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 		totalSize := info.Size()
 
 		offset := r.GetOffset()
+		limit := r.GetLimit()
+		if limit <= 0 {
+			limit = defaultReadLimit
+		}
+
+		// meta_only_if_truncated: when the file would be truncated by the
+		// read window, return total_size with an empty content payload so
+		// callers can detect oversize files (e.g. images we won't preview)
+		// without paying for the bytes. Lets the file viewer collapse a
+		// StatFile + ReadFile pair into one round trip.
+		if r.GetMetaOnlyIfTruncated() && totalSize > offset+limit {
+			sendProtoResponse(sender, &leapmuxv1.ReadFileResponse{
+				Path:      filePath,
+				Content:   nil,
+				TotalSize: totalSize,
+			})
+			return
+		}
+
 		if offset > 0 {
 			if _, err := f.Seek(offset, io.SeekStart); err != nil {
 				slog.Error("failed to seek file", "path", filePath, "offset", offset, "error", err)
 				sendInternalError(sender, "failed to seek file")
 				return
 			}
-		}
-
-		limit := r.GetLimit()
-		if limit <= 0 {
-			limit = defaultReadLimit
 		}
 
 		buf := make([]byte, limit)

@@ -662,11 +662,25 @@ export function createTileRenderer(opts: TileRendererOpts) {
               const ctx = getMruAgentContext()
               return relativizePath(ft.filePath ?? '', ctx.workingDir, ctx.homeDir)
             }
+            // Single lookup shared by `gitFileStatus` and
+            // `hasStagedAndUnstaged` so both props read from one memo
+            // cell instead of walking the file-status map on every
+            // reactive tick.
+            const gitEntry = createMemo(() => gitFileStatusStore?.getFileStatus(ft.filePath ?? ''))
+            const hasStagedAndUnstaged = createMemo(() => {
+              const entry = gitEntry()
+              if (!entry)
+                return false
+              return entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
+                && entry.unstagedStatus !== GitFileStatusCode.UNSPECIFIED
+            })
             return (
               <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: fileTab()?.id !== ft.id }}>
                 <FileViewer
                   workerId={ft.workerId ?? ''}
                   filePath={ft.filePath ?? ''}
+                  rootPath={getMruAgentContext().workingDir}
+                  homeDir={getMruAgentContext().homeDir}
                   displayMode={ft.displayMode}
                   onDisplayModeChange={mode => tabStore.setTabDisplayMode(ft.type, ft.id, mode)}
                   onQuote={isActiveWorkspaceArchived()
@@ -683,16 +697,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       }}
                   fileViewMode={ft.fileViewMode}
                   fileDiffBase={ft.fileDiffBase}
-                  hasStagedAndUnstaged={(() => {
-                    const store = gitFileStatusStore
-                    if (!store)
-                      return false
-                    const entry = store.getFileStatus(ft.filePath ?? '')
-                    if (!entry)
-                      return false
-                    return entry.stagedStatus !== GitFileStatusCode.UNSPECIFIED
-                      && entry.unstagedStatus !== GitFileStatusCode.UNSPECIFIED
-                  })()}
+                  gitFileStatus={gitEntry()}
+                  hasStagedAndUnstaged={hasStagedAndUnstaged()}
                   onFileViewModeChange={mode => tabStore.setTabFileViewMode(ft.type, ft.id, mode)}
                   onFileDiffBaseChange={base => tabStore.setTabFileDiffBase(ft.type, ft.id, base)}
                 />

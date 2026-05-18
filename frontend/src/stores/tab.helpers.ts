@@ -4,6 +4,7 @@ import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 
 /**
@@ -298,6 +299,21 @@ export function isTabReadyForGitStatus(
 
 export function tabKey(tab: { type: TabType, id: string }): string {
   return `${tab.type}:${tab.id}`
+}
+
+/**
+ * Human-readable label for a tab. Prefer `tab.title` (server-set or
+ * user-renamed); fall back to a type-aware default. FILE tabs derive
+ * their label from `basename(filePath)` so the workspace tree and the
+ * tab strip stay in sync — both surfaces show the same name once the
+ * worker's path hydrator has filled `filePath` in.
+ */
+export function tabDisplayLabel(tab: Tab): string {
+  if (tab.title)
+    return tab.title
+  if (tab.type === TabType.FILE)
+    return (tab.filePath ? basename(tab.filePath) : '') || 'File'
+  return tab.type === TabType.AGENT ? 'Agent' : 'Terminal'
 }
 
 /**

@@ -1,10 +1,8 @@
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { positionAtInsertIdx } from '~/lib/lexorank'
-import { basename } from '~/lib/paths'
-import { tabKey } from '~/stores/tab.helpers'
+import { tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
 import * as styles from './AppShell.css'
 import { useTileMove } from './useTileMove'
 
@@ -55,23 +53,13 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
     return tabStore.getTabByKey(key)?.tileId
   }
 
-  const dragLabelFor = (tab: { title?: string, type: TabType, filePath?: string }): string => {
-    if (tab.title)
-      return tab.title
-    if (tab.type === TabType.AGENT)
-      return 'Agent'
-    if (tab.type === TabType.FILE)
-      return (tab.filePath && basename(tab.filePath)) || 'File'
-    return 'Terminal'
-  }
-
   const renderDragOverlay = (key: string) => {
     const tab = tabStore.getTabByKey(key)
     if (!tab)
       return <></>
     return (
       <div class={styles.dragPreviewTooltip}>
-        <span>{dragLabelFor(tab)}</span>
+        <span>{tabDisplayLabel(tab)}</span>
       </div>
     )
   }

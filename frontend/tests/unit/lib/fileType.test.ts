@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectFileViewMode, isBinaryContent, isImageExtension, isMarkdownExtension, isSvgExtension } from '~/lib/fileType'
+import { detectFileViewMode, isBinaryContent, isImageExtension, isLikelyBinaryExtension, isMarkdownExtension, isSvgExtension } from '~/lib/fileType'
 
 describe('isImageExtension', () => {
   const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'avif']
@@ -62,6 +62,58 @@ describe('isSvgExtension', () => {
 
   it('returns false for non-svg files', () => {
     expect(isSvgExtension('icon.png')).toBe(false)
+  })
+})
+
+describe('isLikelyBinaryExtension', () => {
+  it('returns true for known archive extensions', () => {
+    expect(isLikelyBinaryExtension('bundle.zip')).toBe(true)
+    expect(isLikelyBinaryExtension('release.tar.gz')).toBe(true)
+    expect(isLikelyBinaryExtension('archive.7z')).toBe(true)
+  })
+
+  it('returns true for known executable / object extensions', () => {
+    expect(isLikelyBinaryExtension('app.exe')).toBe(true)
+    expect(isLikelyBinaryExtension('libfoo.so')).toBe(true)
+    expect(isLikelyBinaryExtension('main.o')).toBe(true)
+  })
+
+  it('returns true for office / PDF / media / font / database / disk-image extensions', () => {
+    expect(isLikelyBinaryExtension('report.pdf')).toBe(true)
+    expect(isLikelyBinaryExtension('slides.pptx')).toBe(true)
+    expect(isLikelyBinaryExtension('song.mp3')).toBe(true)
+    expect(isLikelyBinaryExtension('movie.mkv')).toBe(true)
+    expect(isLikelyBinaryExtension('font.woff2')).toBe(true)
+    expect(isLikelyBinaryExtension('cache.sqlite')).toBe(true)
+    expect(isLikelyBinaryExtension('boot.iso')).toBe(true)
+  })
+
+  it('is case-insensitive', () => {
+    expect(isLikelyBinaryExtension('Bundle.ZIP')).toBe(true)
+    expect(isLikelyBinaryExtension('Report.PDF')).toBe(true)
+  })
+
+  it('returns false for source-code extensions', () => {
+    expect(isLikelyBinaryExtension('index.ts')).toBe(false)
+    expect(isLikelyBinaryExtension('main.go')).toBe(false)
+    expect(isLikelyBinaryExtension('app.py')).toBe(false)
+    expect(isLikelyBinaryExtension('README.md')).toBe(false)
+  })
+
+  it('returns false for image extensions (handled by isImageExtension)', () => {
+    expect(isLikelyBinaryExtension('photo.png')).toBe(false)
+    expect(isLikelyBinaryExtension('icon.svg')).toBe(false)
+  })
+
+  it('returns false for paths without an extension', () => {
+    expect(isLikelyBinaryExtension('Makefile')).toBe(false)
+    expect(isLikelyBinaryExtension('Dockerfile')).toBe(false)
+    expect(isLikelyBinaryExtension('/etc/hosts')).toBe(false)
+  })
+
+  it('does not treat a dot inside a parent directory as an extension', () => {
+    expect(isLikelyBinaryExtension('archive.zip/inside/file')).toBe(false)
+    expect(isLikelyBinaryExtension('C:\\Program Files\\app\\readme')).toBe(false)
   })
 })
 

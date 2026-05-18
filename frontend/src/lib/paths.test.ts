@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   basename,
   detectFlavor,
+  extname,
   flavorFromOs,
   isAbsolute,
   join,
@@ -175,6 +176,39 @@ describe('basename', () => {
 
   it('returns empty for roots', () => {
     expect(basename('/')).toBe('')
+  })
+})
+
+describe('extname', () => {
+  it('returns the lowercase extension of a simple posix path', () => {
+    expect(extname('photo.png')).toBe('png')
+    expect(extname('/home/u/Photo.PNG')).toBe('png')
+  })
+
+  it('returns the lowercase extension of a Windows path', () => {
+    expect(extname('C:\\Users\\u\\photo.PNG')).toBe('png')
+    expect(extname('C:\\x.tar.gz')).toBe('gz')
+  })
+
+  it('returns empty for paths with no extension', () => {
+    expect(extname('/etc/hosts')).toBe('')
+    expect(extname('Makefile')).toBe('')
+    expect(extname('C:\\Users\\u\\Dockerfile')).toBe('')
+  })
+
+  it('returns empty when the dot is inside a parent directory, not the file', () => {
+    expect(extname('dir.zip/file')).toBe('')
+    expect(extname('dir.zip\\file')).toBe('')
+  })
+
+  it('returns the extension when only the final segment has one', () => {
+    expect(extname('archive.zip/inside/file.txt')).toBe('txt')
+    expect(extname('C:\\dir.zip\\inside\\file.txt')).toBe('txt')
+  })
+
+  it('treats a leading-dot file as having an extension equal to the name', () => {
+    expect(extname('.gitignore')).toBe('gitignore')
+    expect(extname('/repo/.bashrc')).toBe('bashrc')
   })
 })
 

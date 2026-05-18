@@ -45,6 +45,12 @@ interface PreferencesState {
   /** Whether hidden messages are shown in the chat view (developer feature). */
   showHiddenMessages: () => boolean
   setShowHiddenMessages: (value: boolean) => void
+  /**
+   * Whether to reveal the saved file in the OS file manager after a
+   * successful download (desktop only).
+   */
+  revealAfterDownload: () => boolean
+  setRevealAfterDownload: (value: boolean) => void
   /** Resolved enter key mode. */
   enterKeyMode: () => EnterKeyMode
   setEnterKeyMode: (value: EnterKeyMode) => void
@@ -220,6 +226,18 @@ export const PreferencesProvider: ParentComponent = (props) => {
     updateBrowserPref('showHiddenMessages', value || undefined)
   }
 
+  // Default-on preference: undefined and true both mean "reveal";
+  // only an explicit `false` opts out. Mirrors the `expandAgentThoughts`
+  // shape — store `false` to opt out, `undefined` to fall back to the
+  // default.
+  const [revealAfterDownload, setRevealAfterDownloadSignal] = createSignal(
+    initialPrefs.revealAfterDownload !== false,
+  )
+  const setRevealAfterDownload = (value: boolean) => {
+    setRevealAfterDownloadSignal(value)
+    updateBrowserPref('revealAfterDownload', value ? undefined : false)
+  }
+
   const [enterKeyMode, setEnterKeyModeSignal] = createSignal<EnterKeyMode>(
     initialPrefs.enterKeyMode ?? 'cmd-enter-sends',
   )
@@ -346,6 +364,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setExpandAgentThoughts,
       showHiddenMessages,
       setShowHiddenMessages,
+      revealAfterDownload,
+      setRevealAfterDownload,
       enterKeyMode,
       setEnterKeyMode,
       customKeybindings,

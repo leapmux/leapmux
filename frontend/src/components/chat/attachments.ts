@@ -2,6 +2,7 @@
 
 import type { AttachmentCapabilities } from './providers/registry'
 import { randomUUID } from '~/lib/idGenerator'
+import { extname } from '~/lib/paths'
 
 const LEADING_SLASHES = /^\/+/
 
@@ -154,16 +155,6 @@ export function buildAcceptAttribute(capabilities: AttachmentCapabilities | unde
   return accepted.size > 0 ? [...accepted].join(',') : undefined
 }
 
-function extensionOf(filename: string): string {
-  const trimmed = filename.trim().toLowerCase()
-  if (!trimmed)
-    return ''
-  const lastDot = trimmed.lastIndexOf('.')
-  if (lastDot <= 0 || lastDot === trimmed.length - 1)
-    return trimmed === 'dockerfile' ? 'dockerfile' : ''
-  return trimmed.slice(lastDot + 1)
-}
-
 function normalizeMimeType(mime: string): string {
   return mime.trim().toLowerCase()
 }
@@ -174,7 +165,7 @@ function inferredMimeTypeFromFilename(filename: string): string {
     return 'text/plain'
   if (lower === '.gitignore' || lower === '.editorconfig' || lower === '.env')
     return 'text/plain'
-  return TEXT_MIME_BY_EXTENSION.get(extensionOf(filename)) ?? ''
+  return TEXT_MIME_BY_EXTENSION.get(extname(filename)) ?? ''
 }
 
 function isTextualMimeType(mime: string): boolean {

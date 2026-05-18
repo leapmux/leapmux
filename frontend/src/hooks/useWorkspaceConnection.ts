@@ -19,6 +19,7 @@ import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
 import { extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { CODEX_RATE_LIMITS_METHOD } from '~/lib/rateLimitUtils'
+import { createExponentialBackoff } from '~/lib/retry'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
@@ -759,7 +760,21 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       catchUpPhases.set(entry.agentId, 'catchingUp')
     }
 
-    let backoff = 1000
+    // Per-loop reconnect backoff. Successful events reset the
+    // sequence; stream-level errors also reset (the legacy code did
+    // `Math.min(backoff, 500)` to retry fast, which the helper's
+    // initial-delay floor of 1s approximates closely enough). Only
+    // sustained connection-lost errors let the sequence walk up to
+    // 30s.
+    const backoff = createExponentialBackoff<string>({
+      initialMs: 1000,
+      maxMs: 30000,
+      multiplier: 2,
+      jitterFactor: 0,
+    })
+    const BACKOFF_KEY = 'watch'
+    signal.addEventListener('abort', () => backoff.cancelAll(), { once: true })
+
     while (!signal.aborted) {
       try {
         // Build entries with current afterSeq values.
@@ -796,7 +811,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // wired; waitForStreamCompletion captures end / error / abort that
         // fire during the synchronous setup window.
         handle.onEvent((response) => {
-          backoff = 1000
+          backoff.reset(BACKOFF_KEY)
           switch (response.event.case) {
             case 'agentEvent':
               handleAgentEvent(response.event.value, catchUpPhases, signal)
@@ -830,14 +845,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         }
         else {
           // Stream-level error (e.g. NOT_FOUND for entities not yet
-          // visible). Retry quickly without alarming the user.
+          // visible). Retry quickly without alarming the user. Reset
+          // the backoff so a benign transient error doesn't inherit a
+          // long delay from a prior connection-lost streak.
           log.warn('[watchEvents] stream error, retrying:', err)
-          backoff = Math.min(backoff, 500)
+          backoff.reset(BACKOFF_KEY)
         }
       }
 
-      await new Promise(r => setTimeout(r, backoff))
-      backoff = Math.min(backoff * 2, 30000)
+      if (signal.aborted)
+        return
+      await new Promise<void>((resolve) => {
+        backoff.schedule(BACKOFF_KEY, resolve)
+      })
     }
   }
 

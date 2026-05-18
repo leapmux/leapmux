@@ -3,6 +3,8 @@
  * Only includes languages loaded by the shared Shiki highlighter instance.
  */
 
+import { extname } from './paths'
+
 const EXT_TO_LANG: Record<string, string> = {
   // TypeScript / JavaScript
   ts: 'typescript',
@@ -68,9 +70,6 @@ const EXT_TO_LANG: Record<string, string> = {
  * Returns undefined if the extension is not recognized or the language is not loaded.
  */
 export function guessLanguage(filePath: string): string | undefined {
-  const lastDot = filePath.lastIndexOf('.')
-  if (lastDot === -1 || lastDot === filePath.length - 1)
-    return undefined
-  const ext = filePath.slice(lastDot + 1).toLowerCase()
-  return EXT_TO_LANG[ext]
+  const ext = extname(filePath)
+  return ext ? EXT_TO_LANG[ext] : undefined
 }
