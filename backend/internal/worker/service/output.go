@@ -1311,15 +1311,16 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 				return cache.snapshot(), false, nil
 			}
 		} else if len(cache.rows) >= todoevents.MaxTodos {
-			// At cap: evict the oldest completed row to make room for
-			// the new task. When no completed row exists, drop the new
-			// task and log so operators see the cap pressure.
-			evicted, err := h.evictOldestCompletedLocked(ctx, agentID, cache)
+			// At cap: evict the oldest terminal row (completed or
+			// deleted) to make room for the new task. When no terminal
+			// row exists, drop the new task and log so operators see
+			// the cap pressure.
+			evicted, err := h.evictOldestTerminalLocked(ctx, agentID, cache)
 			if err != nil {
 				return nil, false, err
 			}
 			if !evicted {
-				slog.Warn("agent_todos cap reached, no completed task to evict; dropping new task",
+				slog.Warn("agent_todos cap reached, no completed or deleted task to evict; dropping new task",
 					"agent_id", agentID, "task_id", ev.Item.ID, "cap", todoevents.MaxTodos)
 				return cache.snapshot(), false, nil
 			}
@@ -1384,29 +1385,33 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 		if idx < 0 {
 			return nil, false, nil
 		}
-		res, err := h.queries.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
-			AgentID: agentID,
-			RowKey:  cache.rows[idx].rowKey,
-		})
-		if err != nil {
-			return nil, false, err
-		}
-		if affected, _ := res.RowsAffected(); affected == 0 {
+		// Soft delete: mark the row deleted instead of removing it.
+		// Keeps the tombstone in the broadcast snapshot so the chat
+		// thread and sidebar can render a "deleted" visual, and lets
+		// the cap-eviction pool include deleted rows.
+		if cache.rows[idx].item.Status == todoevents.StatusDeleted {
 			return nil, false, nil
 		}
-		cache.rows = slices.Delete(cache.rows, idx, idx+1)
+		if err := h.queries.UpdateAgentTodoStatus(ctx, db.UpdateAgentTodoStatusParams{
+			Status:  todoevents.StatusWire(todoevents.StatusDeleted),
+			AgentID: agentID,
+			RowKey:  cache.rows[idx].rowKey,
+		}); err != nil {
+			return nil, false, err
+		}
+		cache.rows[idx].item.Status = todoevents.StatusDeleted
 		return cache.snapshot(), true, nil
 	}
 	return nil, false, nil
 }
 
-// evictOldestCompletedLocked removes the oldest completed row from
-// the cache and the DB. Returns false (with no error) when no
-// completed row exists; the caller drops the incoming event in that
-// case. Caller must hold cache.mu.
-func (h *OutputHandler) evictOldestCompletedLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
+// evictOldestTerminalLocked removes the oldest terminal row
+// (completed or deleted) from the cache and the DB. Returns false
+// (with no error) when no terminal row exists; the caller drops the
+// incoming event in that case. Caller must hold cache.mu.
+func (h *OutputHandler) evictOldestTerminalLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
 	evictIdx := slices.IndexFunc(cache.rows, func(r cachedTodo) bool {
-		return r.item.Status == todoevents.StatusCompleted
+		return r.item.Status.IsTerminal()
 	})
 	if evictIdx < 0 {
 		return false, nil
@@ -1419,8 +1424,8 @@ func (h *OutputHandler) evictOldestCompletedLocked(ctx context.Context, agentID 
 		return false, fmt.Errorf("evict agent_todo: %w", err)
 	}
 	cache.rows = slices.Delete(cache.rows, evictIdx, evictIdx+1)
-	slog.Info("agent_todos cap reached; evicted oldest completed task",
-		"agent_id", agentID, "evicted_task_id", evicted.item.ID, "cap", todoevents.MaxTodos)
+	slog.Info("agent_todos cap reached; evicted oldest completed/deleted task",
+		"agent_id", agentID, "evicted_task_id", evicted.item.ID, "evicted_status", todoevents.StatusWire(evicted.item.Status), "cap", todoevents.MaxTodos)
 	return true, nil
 }
 
@@ -1555,10 +1560,18 @@ func (c *agentTodoCache) ensureSeededLocked(ctx context.Context, queries *db.Que
 		return fmt.Errorf("list agent_todos: %w", err)
 	}
 	c.rows = make([]cachedTodo, len(rows))
+	var maxSeq int64
 	for i, r := range rows {
 		c.rows[i] = cachedTodo{item: itemFromRow(r), rowKey: r.RowKey}
+		if r.Seq > maxSeq {
+			maxSeq = r.Seq
+		}
 	}
-	c.nextSeq = int64(len(rows)) + 1
+	// Eviction physically deletes the oldest terminal row, leaving the
+	// remaining seqs sparse. A `len(rows)+1` start would collide with the
+	// highest surviving seq on the next UpsertAgentTodo, so derive from
+	// the actual max instead.
+	c.nextSeq = maxSeq + 1
 	c.seeded = true
 	return nil
 }

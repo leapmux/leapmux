@@ -125,7 +125,7 @@ export interface TodoItem {
    */
   id?: string
   content: string
-  status: 'pending' | 'in_progress' | 'completed'
+  status: 'pending' | 'in_progress' | 'completed' | 'deleted'
   activeForm: string
   /** Long-form description from Claude Task* tools; absent elsewhere. */
   description?: string
@@ -142,7 +142,27 @@ export function normalizeTodoStatus(raw: unknown): TodoItem['status'] {
     return 'completed'
   if (raw === 'in_progress' || raw === 'inProgress')
     return 'in_progress'
+  if (raw === 'deleted')
+    return 'deleted'
   return 'pending'
+}
+
+/**
+ * A todo is in a terminal state — eligible for cap-eviction on the
+ *  backend and for strike-through styling in the UI.
+ */
+export function isTerminalTodoStatus(status: TodoItem['status']): boolean {
+  return status === 'completed' || status === 'deleted'
+}
+
+/**
+ * Pick the visible label for a todo: the present-continuous `activeForm`
+ *  while in_progress (when set), the imperative `content` otherwise.
+ */
+export function todoDisplayLabel(todo: { status: TodoItem['status'], content: string, activeForm?: string }): string {
+  if (todo.status === 'in_progress' && todo.activeForm)
+    return todo.activeForm
+  return todo.content
 }
 
 /**
@@ -156,6 +176,8 @@ export function protoTodoToStore(t: ProtoTodoItem): TodoItem {
     status = 'in_progress'
   else if (t.status === TodoStatus.COMPLETED)
     status = 'completed'
+  else if (t.status === TodoStatus.DELETED)
+    status = 'deleted'
   return {
     id: t.id || undefined,
     content: t.content,
@@ -610,6 +632,11 @@ export function createChatStore() {
 
     getTodos(agentId: string): TodoItem[] {
       return state.todosByAgent[agentId] ?? []
+    },
+
+    /** Lookup a todo by id within an agent's list, or undefined if none matches. */
+    getTodoById(agentId: string, taskId: string): TodoItem | undefined {
+      return state.todosByAgent[agentId]?.find(t => t.id === taskId)
     },
 
     clearTodos(agentId: string) {

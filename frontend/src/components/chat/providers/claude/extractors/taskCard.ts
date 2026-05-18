@@ -1,88 +1,89 @@
-import type { TodoListSource } from '../../../todoListMessage'
+import type { TaskCardSource } from '../../../taskCardMessage'
+import type { TodoItem } from '~/stores/chat.store'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { normalizeTodoStatus } from '~/stores/chat.store'
-import { CLAUDE_TOOL, TASK_DELETE_SENTINEL } from '~/types/toolMessages'
-
-function isTaskDeleteRequest(
-  toolUseInput: Record<string, unknown> | null | undefined,
-  statusChange: Record<string, unknown> | null,
-): boolean {
-  return pickString(statusChange, 'to') === TASK_DELETE_SENTINEL
-    || pickString(toolUseInput, 'status') === TASK_DELETE_SENTINEL
-}
+import { CLAUDE_TOOL } from '~/types/toolMessages'
 
 /**
- * Build a TodoListSource for an inline TaskCreate card. Accepts the
+ * Build a TaskCardSource for an inline TaskCreate card. Accepts the
  * tool_use input (always present once persisted) and the optional
  * tool_use_result envelope (present after the agent assigns the id).
- * Used from both the tool_use renderer and the tool_result re-render.
  */
 export function buildTaskCreateSource(
   toolUseInput: Record<string, unknown> | null | undefined,
   toolUseResult: Record<string, unknown> | null | undefined,
-): TodoListSource {
+): TaskCardSource {
   const taskFromResult = pickObject(toolUseResult, 'task')
-  const taskId = pickString(taskFromResult, 'id')
-  const subject = pickString(toolUseInput, 'subject') || pickString(taskFromResult, 'subject')
+  const subject = pickString(toolUseInput, 'subject') || pickString(taskFromResult, 'subject') || 'New task'
   const description = pickString(toolUseInput, 'description')
   return {
     toolName: CLAUDE_TOOL.TASK_CREATE,
-    title: taskId ? `Task #${taskId}` : 'Task created',
-    todos: [{
-      id: taskId || undefined,
-      content: subject,
-      status: 'pending',
-      activeForm: pickString(toolUseInput, 'activeForm'),
-      description: description || undefined,
-    }],
-    bordered: false,
+    subject,
+    description: description || undefined,
+    status: 'pending',
+    activeForm: pickString(toolUseInput, 'activeForm') || undefined,
   }
 }
 
 /**
- * Build a TodoListSource for an inline TaskUpdate card. Dispatches to
- * the delete branch when the wire carries the delete sentinel; the
- * regular path funnels status through `normalizeTodoStatus` so
- * `inProgress` / `in_progress` variants normalize uniformly.
+ * Build a TaskCardSource for an inline TaskUpdate card. Status flows
+ * through `normalizeTodoStatus` (which canonicalizes `'deleted'` like
+ * any other state). Falls back to the live todos store (via
+ * `getTodoById`) for `subject` / `description` / `activeForm` on
+ * status-only patches.
  */
 export function buildTaskUpdateSource(
   toolUseInput: Record<string, unknown> | null | undefined,
   toolUseResult: Record<string, unknown> | null | undefined,
-): TodoListSource | null {
+  getTodoById?: (taskId: string) => TodoItem | undefined,
+): TaskCardSource | null {
   const taskId = pickString(toolUseInput, 'taskId') || pickString(toolUseResult, 'taskId')
   if (!taskId)
     return null
+
+  const stored = getTodoById?.(taskId)
+  const subject = pickString(toolUseInput, 'subject')
+    || stored?.content
+    || `Task #${taskId}`
+  const description = pickString(toolUseInput, 'description')
+    || stored?.description
+    || ''
   const statusChange = pickObject(toolUseResult, 'statusChange')
-  if (isTaskDeleteRequest(toolUseInput, statusChange))
-    return buildTaskDeleteSource(taskId, toolUseInput)
+  const rawStatus = pickString(statusChange, 'to') || pickString(toolUseInput, 'status')
+  // No status info on this patch (metadata-only update): preserve the
+  // stored status so the card doesn't flip a completed/in_progress row
+  // back to pending.
+  const status = rawStatus ? normalizeTodoStatus(rawStatus) : (stored?.status ?? 'pending')
+
   return {
     toolName: CLAUDE_TOOL.TASK_UPDATE,
-    title: `Task #${taskId} updated`,
-    todos: [{
-      id: taskId,
-      content: pickString(toolUseInput, 'subject') || `Task #${taskId}`,
-      status: normalizeTodoStatus(pickString(statusChange, 'to') || pickString(toolUseInput, 'status')),
-      activeForm: pickString(toolUseInput, 'activeForm'),
-      description: pickString(toolUseInput, 'description') || undefined,
-    }],
-    bordered: false,
+    subject,
+    description: description || undefined,
+    status,
+    activeForm: pickString(toolUseInput, 'activeForm') || stored?.activeForm || undefined,
   }
 }
 
-function buildTaskDeleteSource(
-  taskId: string,
-  toolUseInput: Record<string, unknown> | null | undefined,
-): TodoListSource {
+/**
+ * Build a TaskCardSource for a TaskGet card. TaskGet's input is
+ * empty; the data lives in `tool_use_result.task`. Returns null when
+ * the result hasn't arrived yet (pre-resolve renders nothing).
+ */
+export function buildTaskGetSource(
+  toolUseResult: Record<string, unknown> | null | undefined,
+): TaskCardSource | null {
+  const task = pickObject(toolUseResult, 'task')
+  if (!task)
+    return null
+  const subject = pickString(task, 'subject')
+  if (!subject)
+    return null
+  const description = pickString(task, 'description')
   return {
-    toolName: CLAUDE_TOOL.TASK_UPDATE,
-    title: `Task #${taskId} deleted`,
-    todos: [{
-      id: taskId,
-      content: pickString(toolUseInput, 'subject') || `Task #${taskId}`,
-      status: 'completed',
-      activeForm: '',
-    }],
-    bordered: false,
+    toolName: CLAUDE_TOOL.TASK_GET,
+    subject,
+    description: description || undefined,
+    status: normalizeTodoStatus(task.status),
   }
 }
 

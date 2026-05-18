@@ -230,13 +230,27 @@ export function buildSectionDef(
       visible: ctx.showTodos,
       draggable: true,
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
-      railBadge: () => (
-        <span class={csStyles.railBadgeText}>
-          {ctx.activeTodos.filter(t => t.status === 'completed').length}
-          /
-          {ctx.activeTodos.length}
-        </span>
-      ),
+      railBadge: () => {
+        // Single pass: numerator counts completed, denominator counts
+        // everything except deleted tombstones (so soft-deleted rows
+        // don't inflate the "X of Y" reading).
+        let completed = 0
+        let visible = 0
+        for (const t of ctx.activeTodos) {
+          if (t.status === 'deleted')
+            continue
+          visible++
+          if (t.status === 'completed')
+            completed++
+        }
+        return (
+          <span class={csStyles.railBadgeText}>
+            {completed}
+            /
+            {visible}
+          </span>
+        )
+      },
       content: () => <TodoList todos={ctx.activeTodos} />,
     }
   }

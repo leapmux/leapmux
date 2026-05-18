@@ -145,11 +145,15 @@ CREATE TABLE agent_todos (
     content     TEXT NOT NULL,
     active_form TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
-    status      TEXT NOT NULL CHECK (status IN ('pending','in_progress','completed')),
+    status      TEXT NOT NULL CHECK (status IN ('pending','in_progress','completed','deleted')),
     updated_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (agent_id, row_key)
+    PRIMARY KEY (agent_id, row_key),
+    -- Matches messages.UNIQUE(agent_id, seq) so a `nextSeq` collision
+    -- after restart-on-sparse-seqs (eviction creates holes) fails loudly
+    -- instead of producing duplicate orderings. Also serves as the
+    -- ORDER BY seq index for ListAgentTodos, so no separate index needed.
+    UNIQUE (agent_id, seq)
 );
-CREATE INDEX idx_agent_todos_seq ON agent_todos(agent_id, seq);
 
 -- +goose Down
 DROP TABLE IF EXISTS agent_todos;

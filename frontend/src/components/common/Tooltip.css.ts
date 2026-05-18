@@ -6,8 +6,18 @@ export const tooltip = style({
   inset: 'unset',
   padding: 'var(--space-2) var(--space-3)',
   fontSize: 'var(--text-8)',
-  lineHeight: 1,
-  whiteSpace: 'nowrap',
+  // Short button labels stay one line; long content (e.g. Claude
+  // TaskCreate descriptions) soft-wraps at `maxWidth`. We need to
+  // override the popover UA default `width: fit-content` because
+  // `wordBreak: 'break-word'` makes every character a valid break
+  // point, which collapses fit-content to min-content (≈1ch wide).
+  // `width: max-content` keeps the natural single-line width as the
+  // preferred size and lets `max-width` clamp it.
+  width: 'max-content',
+  maxWidth: 'min(28rem, calc(100vw - var(--space-4)))',
+  lineHeight: 1.4,
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
   background: 'var(--card)',
   color: 'var(--foreground)',
   border: '1px solid var(--border)',

@@ -17,7 +17,7 @@ export const todoItem = style({
   color: 'var(--foreground)',
 })
 
-export const todoCompleted = style({
+export const todoStruck = style({
   color: 'var(--muted-foreground)',
   textDecoration: 'line-through',
 })
@@ -33,18 +33,9 @@ export const todoIcon = style({
   flexShrink: 0,
   width: '18px',
   height: '20px',
-})
-
-export const checkIcon = style({
-  color: 'var(--success)',
-})
-
-export const spinnerIcon = style({
-  color: 'var(--primary)',
-})
-
-export const pendingIcon = style({
-  color: 'var(--faint-foreground)',
+  // Nudges the 1rem checkbox down a sub-pixel so it visually sits on
+  // the text baseline of the adjacent label instead of floating above it.
+  marginTop: '0.25px',
 })
 
 export const todoText = style({

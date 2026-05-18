@@ -28,16 +28,29 @@ type Item struct {
 	Description string
 }
 
-// Status is the canonical three-state to-do status. Mirrors
-// leapmuxv1.TodoStatus with friendlier zero-value semantics
-// (zero == pending instead of "unspecified").
+// Status is the canonical to-do status. Mirrors leapmuxv1.TodoStatus
+// with friendlier zero-value semantics (zero == pending instead of
+// "unspecified"). StatusDeleted is a tombstone: KindDelete events set
+// it instead of removing the row, so the chat thread can keep
+// rendering the deletion event and the sidebar can show the deleted
+// row with a distinct visual. Cap eviction treats StatusCompleted and
+// StatusDeleted as a single "terminal" pool.
 type Status int
 
 const (
 	StatusPending Status = iota
 	StatusInProgress
 	StatusCompleted
+	StatusDeleted
 )
+
+// IsTerminal reports whether s is a terminal status — one that makes a
+// row eligible for cap-eviction (Completed | Deleted). Pending and
+// InProgress rows are never evicted; they only leave the list through
+// an explicit Delete event.
+func (s Status) IsTerminal() bool {
+	return s == StatusCompleted || s == StatusDeleted
+}
 
 // Patch carries the fields of a KindUpdate event. Each *string is nil
 // for "no change", non-nil (even if empty) for "set to this value" —
@@ -148,13 +161,15 @@ func ItemsToProto(items []Item) []*leapmuxv1.TodoItem {
 
 // StatusWire returns the lowercase wire-format string used by the
 // agent_todos.status column and the TS reducer ("pending" |
-// "in_progress" | "completed").
+// "in_progress" | "completed" | "deleted").
 func StatusWire(s Status) string {
 	switch s {
 	case StatusInProgress:
 		return "in_progress"
 	case StatusCompleted:
 		return "completed"
+	case StatusDeleted:
+		return "deleted"
 	default:
 		return "pending"
 	}
@@ -168,6 +183,8 @@ func StatusFromWire(s string) Status {
 		return StatusInProgress
 	case "completed":
 		return StatusCompleted
+	case "deleted":
+		return StatusDeleted
 	default:
 		return StatusPending
 	}
@@ -179,6 +196,8 @@ func statusToProto(s Status) leapmuxv1.TodoStatus {
 		return leapmuxv1.TodoStatus_TODO_STATUS_IN_PROGRESS
 	case StatusCompleted:
 		return leapmuxv1.TodoStatus_TODO_STATUS_COMPLETED
+	case StatusDeleted:
+		return leapmuxv1.TodoStatus_TODO_STATUS_DELETED
 	default:
 		return leapmuxv1.TodoStatus_TODO_STATUS_PENDING
 	}

@@ -624,6 +624,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     getToolUseParsedBySpanId={spanId => chatStore.getToolUseParsedBySpanId(agentId, spanId)}
                     getToolResultParsedBySpanId={spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId)}
                     getCommandStreamBySpanId={spanId => chatStore.getCommandStream(agentId, spanId)}
+                    getTodoById={taskId => chatStore.getTodoById(agentId, taskId)}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined
                       : (text) => {

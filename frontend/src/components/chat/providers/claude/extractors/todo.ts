@@ -27,26 +27,21 @@ export function claudeTodoWriteFromInput(
 
 /**
  * Convert one Claude Task* result `task` record to a TodoItem, or null
- * when the record is missing an id. Set `includeDescription` for
- * TaskGet (which carries the long-form description); TaskList's per-
- * task records omit it.
+ * when the record is missing an id. Only TaskList feeds this today
+ * (multi-row card), and TaskList's per-task records omit the long-
+ * form description, so we don't include it.
  */
-export function claudeTaskToTodoItem(
-  task: unknown,
-  options: { includeDescription?: boolean } = {},
-): TodoItem | null {
+function claudeTaskToTodoItem(task: unknown): TodoItem | null {
   if (!isObject(task))
     return null
   const id = pickString(task, 'id')
   if (!id)
     return null
-  const description = options.includeDescription ? pickString(task, 'description') : ''
   return {
     id,
     content: pickString(task, 'subject'),
     status: normalizeTodoStatus(task.status),
     activeForm: '',
-    description: description || undefined,
   }
 }
 
@@ -59,4 +54,22 @@ export function claudeTaskListToTodos(tasks: unknown[]): TodoItem[] {
     const item = claudeTaskToTodoItem(t)
     return item ? [item] : []
   })
+}
+
+/**
+ * Build the TodoListSource for a Claude TaskList tool_use from its
+ * paired `tool_use_result.tasks`. Returns null when the result hasn't
+ * arrived (pre-resolve renders nothing).
+ */
+export function buildTaskListSource(
+  toolUseResult: Record<string, unknown> | null | undefined,
+): TodoListSource | null {
+  if (!toolUseResult || !Array.isArray(toolUseResult.tasks))
+    return null
+  const todos = claudeTaskListToTodos(toolUseResult.tasks)
+  return {
+    toolName: CLAUDE_TOOL.TASK_LIST,
+    title: pluralize(todos.length, 'task'),
+    todos,
+  }
 }
