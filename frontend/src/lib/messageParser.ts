@@ -131,8 +131,12 @@ export function getInnerMessageType(parsed: ParsedMessageContent): string | unde
 /** Convert todo items to a markdown checklist string. */
 export function todosToMarkdown(items: ReadonlyArray<{ status: string, content: string }>): string {
   return items.map((t) => {
-    const mark = t.status === 'completed' ? 'x' : t.status === 'in_progress' ? '~' : ' '
-    return `- [${mark}] ${t.content}`
+    switch (t.status) {
+      case 'completed': return `- [x] ${t.content}`
+      case 'in_progress': return `- [~] ${t.content}`
+      case 'deleted': return `- [-] ~~${t.content}~~`
+      default: return `- [ ] ${t.content}`
+    }
   }).join('\n')
 }
 

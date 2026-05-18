@@ -46,6 +46,20 @@ function buildInterruptRequest(): string {
 const CLAUDE_EXTRA_TYPES = new Set(['plan_execution'])
 /** System message subtypes that should never surface in the UI. */
 const HIDDEN_SYSTEM_SUBTYPES = new Set(['init', 'task_notification', 'task_updated'])
+/**
+ * Tool span types whose `tool_result` row is suppressed because the
+ *  tool_use side already renders the full information (TodoWrite,
+ *  ToolSearch) or the result is the data source for the tool_use side
+ *  (Task* family).
+ */
+const HIDDEN_TOOL_RESULT_SPAN_TYPES = new Set<string>([
+  CLAUDE_TOOL.TODO_WRITE,
+  CLAUDE_TOOL.TOOL_SEARCH,
+  CLAUDE_TOOL.TASK_CREATE,
+  CLAUDE_TOOL.TASK_UPDATE,
+  CLAUDE_TOOL.TASK_GET,
+  CLAUDE_TOOL.TASK_LIST,
+])
 function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
   return isNotificationThreadWrapper(wrapper, CLAUDE_EXTRA_TYPES, (t, st) =>
     t === 'system' && !HIDDEN_SYSTEM_SUBTYPES.has(st ?? ''))
@@ -136,7 +150,7 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
         // tool_result takes priority over agent_prompt (subagent tool results
         // also have parent_tool_use_id but should be rendered as tool results).
         if ((content as Array<Record<string, unknown>>).some(c => isObject(c) && c.type === 'tool_result')) {
-          if (input.spanType === CLAUDE_TOOL.TODO_WRITE || input.spanType === CLAUDE_TOOL.TOOL_SEARCH)
+          if (input.spanType && HIDDEN_TOOL_RESULT_SPAN_TYPES.has(input.spanType))
             return { kind: 'hidden' }
           return { kind: 'tool_result' }
         }

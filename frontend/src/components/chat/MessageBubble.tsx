@@ -5,7 +5,7 @@ import type { MessageUiKey } from './messageUiKeys'
 import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { CommandStreamSegment } from '~/stores/chat.store'
+import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
@@ -121,6 +121,8 @@ export function classifyParsedMessage(
  * (tests, isolated previews) can pass `host={undefined}`.
  */
 export interface MessageBubbleHost {
+  /** O(1) live-todo lookup for this bubble's agent (resolves subjects for status-only TaskUpdate patches). */
+  getTodoById?: (taskId: string) => TodoItem | undefined
   /** Look up the parsed tool_use message by spanId (for tool_result → tool_use linking). */
   getToolUseParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
   /** Look up the parsed tool_result message by spanId (for tool_use → tool_result linking). */
@@ -287,6 +289,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // per component setup) AND per-field reactivity — body components track only
   // the getters they read, so changes to one field don't cascade to siblings.
   const renderContext: RenderContext = {
+    get getTodoById() { return props.host?.getTodoById },
     get workingDir() { return props.workingDir },
     get homeDir() { return props.homeDir },
     diffView,

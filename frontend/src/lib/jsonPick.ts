@@ -64,17 +64,6 @@ export function pickObject(
 }
 
 /**
- * Read a string-array property from an untyped record. Non-string entries
- * are dropped; missing or non-array values yield an empty array.
- */
-export function pickStringArray(obj: Record<string, unknown> | null | undefined, key: string): string[] {
-  const v = obj?.[key]
-  if (!Array.isArray(v))
-    return []
-  return v.filter((x): x is string => typeof x === 'string')
-}
-
-/**
  * Return the first string-typed value found across a list of candidate keys.
  * Useful for payloads that disagree on snake/camelCase naming
  * (`filePath`/`file_path`/`path`). Returns undefined when no key matched.

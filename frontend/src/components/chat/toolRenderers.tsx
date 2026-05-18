@@ -30,6 +30,7 @@ import { parseCatNContent, ReadResultView } from './results/ReadResultView'
 import { useCollapsedLines } from './results/useCollapsedLines'
 import {
   controlResponseTag,
+  toolBodyBorder,
   toolBodyContent,
   toolHeaderActions,
   toolHeaderTimestamp,
@@ -83,8 +84,10 @@ export function EmptyTodoLayout(props: { toolName: string, context?: RenderConte
  * expand/collapse interaction read naturally.
  */
 export function ToolUseLayout(props: {
-  /** Lucide icon component (e.g. ListTodo, Vote, SquareTerminal). */
-  icon: LucideIcon
+  /** Lucide icon component (e.g. ListTodo, Vote, SquareTerminal). Used unless `renderIcon` is set. */
+  icon?: LucideIcon
+  /** Custom icon renderer for non-lucide glyphs (e.g. the Task card's checkbox SVG). Takes precedence over `icon`. */
+  renderIcon?: () => JSX.Element
   /** Tool name, used as the title attribute on the icon. */
   toolName: string
   /** Primary title shown in the header. String auto-wraps in toolInputText; JSX renders as-is. */
@@ -126,7 +129,11 @@ export function ToolUseLayout(props: {
       <div class={toolUseHeader}>
         <Tooltip text={props.toolName} ariaLabel>
           <span class={`${inlineFlex} ${toolUseIcon}`}>
-            <Icon icon={props.icon} size="md" />
+            {props.renderIcon
+              ? props.renderIcon()
+              : props.icon
+                ? <Icon icon={props.icon} size="md" />
+                : null}
           </span>
         </Tooltip>
         {typeof props.title === 'string'
@@ -151,11 +158,14 @@ export function ToolUseLayout(props: {
         </Show>
       </div>
       <Show when={props.summary || (props.children && (props.alwaysVisible || expanded()))}>
-        <div class={props.bordered !== false
-          ? `${toolBodyContent}${props.context?.spanColor != null && props.context.spanColor > 0
-            ? ` ${spanLineColors[spanColorKey(props.context.spanColor)]}`
-            : ''}`
-          : undefined}
+        <div class={[
+          toolBodyContent,
+          props.bordered !== false && toolBodyBorder,
+          props.bordered !== false
+          && props.context?.spanColor != null
+          && props.context.spanColor > 0
+          && spanLineColors[spanColorKey(props.context.spanColor)],
+        ].filter(Boolean).join(' ')}
         >
           <Show when={props.summary}>{props.summary}</Show>
           <Show when={props.children && (props.alwaysVisible || expanded())}>

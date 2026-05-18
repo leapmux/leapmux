@@ -17,6 +17,7 @@ vi.mock('~/lib/tokenCache', () => ({
 }))
 
 const { renderMessageContent } = await import('../messageRenderers')
+const { classifyMessage } = await import('../messageClassification')
 
 interface ToolUsePayload {
   type: string
@@ -110,36 +111,139 @@ describe('claude TodoWrite renders via shared TodoListMessage', () => {
 // Claude Code TaskCreate / TaskUpdate / TaskList / TaskGet (2.1.142+)
 // ---------------------------------------------------------------------------
 
-describe('claude TaskCreate renders a single-row card via TodoListMessage', () => {
-  it('renders the subject as the only row with pending status', () => {
+describe('claude TaskCreate renders a single-row card', () => {
+  it('renders the subject as the title and the description as the summary', () => {
     const { container } = renderClaudeToolUse('TaskCreate', {
       subject: 'Add proto messages',
       description: 'Edit proto/agent.proto',
       activeForm: 'Adding proto',
     })
     const text = container.textContent ?? ''
-    expect(text).toContain('Task created')
     expect(text).toContain('Add proto messages')
+    expect(text).toContain('Edit proto/agent.proto')
+    expect(container.querySelector('[data-task-checkbox="pending"]')).toBeTruthy()
+  })
+
+  it('renders without a summary line when no description is provided', () => {
+    const { container } = renderClaudeToolUse('TaskCreate', { subject: 'Bare task' })
+    expect(container.textContent ?? '').toContain('Bare task')
+    expect(container.querySelector('[data-task-checkbox="pending"]')).toBeTruthy()
+  })
+
+  it('falls back to "New task" when the input has no subject', () => {
+    const { container } = renderClaudeToolUse('TaskCreate', {})
+    expect(container.textContent ?? '').toContain('New task')
   })
 })
 
 describe('claude TaskUpdate renders a single-row card', () => {
-  it('renders the new status in the title (status-only patch)', () => {
+  it('falls back to "Task #ID" when the patch has no subject and the store is empty', () => {
     const { container } = renderClaudeToolUse('TaskUpdate', {
       taskId: '1',
       status: 'in_progress',
     })
     const text = container.textContent ?? ''
-    expect(text).toContain('Task #1 updated')
+    expect(text).toContain('Task #1')
+    expect(container.querySelector('[data-task-checkbox="in_progress"]')).toBeTruthy()
   })
 
-  it('renders the deleted sentinel when status=deleted', () => {
+  it('resolves the subject from the live todos store on a status-only patch', () => {
+    const { container } = renderClaudeToolUse('TaskUpdate', {
+      taskId: '42',
+      status: 'completed',
+    }, {
+      getTodoById: id => id === '42' ? { id: '42', content: 'Stored subject', status: 'pending', activeForm: '' } : undefined,
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Stored subject')
+    expect(text).not.toContain('Task #42')
+    expect(container.querySelector('[data-task-checkbox="completed"]')).toBeTruthy()
+  })
+
+  it('prefers the input subject over a (stale) store entry', () => {
+    const { container } = renderClaudeToolUse('TaskUpdate', {
+      taskId: '7',
+      subject: 'Fresh subject from this patch',
+      status: 'in_progress',
+    }, {
+      getTodoById: id => id === '7' ? { id: '7', content: 'Stale stored subject', status: 'pending', activeForm: '' } : undefined,
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Fresh subject from this patch')
+    expect(text).not.toContain('Stale stored subject')
+  })
+
+  it('also resolves the subject from the store for the deleted card', () => {
+    const { container } = renderClaudeToolUse('TaskUpdate', {
+      taskId: '8',
+      status: 'deleted',
+    }, {
+      getTodoById: id => id === '8' ? { id: '8', content: 'Will be removed', status: 'completed', activeForm: '' } : undefined,
+    })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Will be removed')
+    expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
+  })
+
+  it('renders the deleted checkbox when status=deleted', () => {
     const { container } = renderClaudeToolUse('TaskUpdate', {
       taskId: '5',
+      subject: 'tmp task',
       status: 'deleted',
     })
     const text = container.textContent ?? ''
-    expect(text).toContain('Task #5 deleted')
+    expect(text).toContain('tmp task')
+    expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
+  })
+})
+
+describe('claude TaskGet renders a single-row card from the paired tool_result', () => {
+  it('renders subject + description from tool_use_result.task', () => {
+    const toolUseResult = {
+      parentObject: {
+        tool_use_result: {
+          task: { id: '9', subject: 'Get me', description: 'A long task', status: 'completed' },
+        },
+      },
+    } as Record<string, unknown>
+    const { container } = renderClaudeToolUse('TaskGet', {}, { toolResultParsed: toolUseResult as never })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Get me')
+    expect(text).toContain('A long task')
+    expect(container.querySelector('[data-task-checkbox="completed"]')).toBeTruthy()
+  })
+
+  it('renders the deleted checkbox when the looked-up task is a tombstone', () => {
+    const toolUseResult = {
+      parentObject: {
+        tool_use_result: {
+          task: { id: '11', subject: 'Already gone', status: 'deleted' },
+        },
+      },
+    } as Record<string, unknown>
+    const { container } = renderClaudeToolUse('TaskGet', {}, { toolResultParsed: toolUseResult as never })
+    expect(container.textContent ?? '').toContain('Already gone')
+    expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
+  })
+})
+
+describe('claude TaskList renders the multi-row TodoListMessage on the tool_use side', () => {
+  it('renders the pluralized title and each row from tool_use_result.tasks', () => {
+    const toolUseResult = {
+      parentObject: {
+        tool_use_result: {
+          tasks: [
+            { id: 'a', subject: 'first', status: 'pending' },
+            { id: 'b', subject: 'second', status: 'completed' },
+          ],
+        },
+      },
+    } as Record<string, unknown>
+    const { container } = renderClaudeToolUse('TaskList', {}, { toolResultParsed: toolUseResult as never })
+    const text = container.textContent ?? ''
+    expect(text).toContain('2 tasks')
+    expect(text).toContain('first')
+    expect(text).toContain('second')
   })
 })
 
@@ -202,6 +306,30 @@ describe('codex plan item renders proposed plan markdown', () => {
 // ---------------------------------------------------------------------------
 // OpenCode plan
 // ---------------------------------------------------------------------------
+
+describe('claude classifies Task* tool_result messages as hidden', () => {
+  const taskTools = ['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'] as const
+  for (const tool of taskTools) {
+    it(`hides the ${tool} tool_result`, () => {
+      const category = classifyMessage({
+        rawText: '',
+        topLevel: null,
+        parentObject: {
+          type: 'user',
+          message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: '' }] },
+        },
+        wrapper: null,
+        agentProvider: AgentProvider.CLAUDE_CODE,
+        spanId: 'span',
+        spanType: tool,
+        parentSpanId: '',
+        seq: 0n,
+        createdAt: '',
+      })
+      expect(category.kind).toBe('hidden')
+    })
+  }
+})
 
 describe('opencode plan renders via shared TodoListMessage', () => {
   it('renders the entries as todos', () => {

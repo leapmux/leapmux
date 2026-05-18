@@ -31,6 +31,12 @@ UPDATE agent_todos SET
     updated_at  = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 WHERE agent_id = ? AND row_key = ?;
 
+-- name: UpdateAgentTodoStatus :exec
+UPDATE agent_todos SET
+    status     = ?,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+WHERE agent_id = ? AND row_key = ?;
+
 -- DeleteAgentTodoByRowKey returns the affected-row count so the caller
 -- can short-circuit the broadcast on an unknown-id no-op delete.
 -- name: DeleteAgentTodoByRowKey :execresult

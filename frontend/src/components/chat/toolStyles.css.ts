@@ -227,13 +227,23 @@ export const controlResponseTag = style({
   flexShrink: 0,
 })
 
-// Body content area for tool_use renderers (expand-gated body below header)
-// Uses --span-line-color when set (via spanLineColors class), falling back to --border.
+// Body content indent for tool_use renderers. The transparent border-
+// left reserves the slot so adding `toolBodyBorder` doesn't shift the
+// content horizontally. Padding compensates for the 1px gap between
+// `TOOL_BODY_INDENT + LINE_THICKNESS + space-3` (19) and the header's
+// `iconSize.md + space-1` (20) so summary text aligns with title text.
 export const toolBodyContent = style({
   marginLeft: `${TOOL_BODY_INDENT}px`,
-  paddingLeft: 'var(--space-3)',
+  paddingLeft: 'calc(var(--space-3) + 1px)',
   paddingRight: 'var(--space-3)',
-  borderLeft: `${LINE_THICKNESS}px solid var(--span-line-color, var(--border))`,
+  borderLeft: `${LINE_THICKNESS}px solid transparent`,
+})
+
+// Recolors the slot reserved by `toolBodyContent`. Layered conditionally
+// in `ToolUseLayout` so callers like the Task card can opt out via
+// `bordered={false}`.
+export const toolBodyBorder = style({
+  borderLeftColor: 'var(--span-line-color, var(--border))',
 })
 
 // TodoList inside tool body: remove horizontal padding (toolBodyContent already provides it)

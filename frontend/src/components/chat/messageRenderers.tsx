@@ -4,7 +4,7 @@ import type { MessageCategory } from './messageClassification'
 import type { MessageUiKey } from './messageUiKeys'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { CommandStreamSegment } from '~/stores/chat.store'
+import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileIcon from 'lucide-solid/icons/file'
@@ -41,6 +41,8 @@ const logger = createLogger('messageRenderers')
 export interface RenderContext {
   /** ISO timestamp of the message (for relative time in toolbar). */
   createdAt?: string
+  /** O(1) live-todo lookup for this bubble's agent (resolves subjects for status-only TaskUpdate patches). */
+  getTodoById?: (taskId: string) => TodoItem | undefined
   workingDir?: string
   /** Worker's home directory for tilde (~) path simplification. */
   homeDir?: string

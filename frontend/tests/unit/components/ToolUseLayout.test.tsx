@@ -3,7 +3,7 @@ import { render, screen } from '@solidjs/testing-library'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ToolUseLayout } from '~/components/chat/toolRenderers'
-import { toolBodyContent, toolInputText } from '~/components/chat/toolStyles.css'
+import { toolBodyBorder, toolBodyContent, toolInputText } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 
 // jsdom does not provide ResizeObserver
@@ -140,7 +140,7 @@ describe('toolUseLayout', () => {
     expect(bodyWrapper).toBeInTheDocument()
   })
 
-  it('bordered={false} omits left border', () => {
+  it('bordered={false} keeps the body indent but omits the visible left border', () => {
     const { container } = render(() => (
       <PreferencesProvider>
         <ToolUseLayout
@@ -157,8 +157,52 @@ describe('toolUseLayout', () => {
       </PreferencesProvider>
     ))
 
+    // The indent wrapper (`toolBodyContent`) is always present when
+    // there is body content; only the border-color decoration
+    // (`toolBodyBorder`) is gated by `bordered`.
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).not.toBeInTheDocument()
+    expect(bodyWrapper).toBeInTheDocument()
+    expect(bodyWrapper?.className).not.toMatch(new RegExp(toolBodyBorder))
+  })
+
+  it('bordered={true} layers the visible border on top of the indent', () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <ToolUseLayout
+          icon={ListTodo}
+          toolName="TestTool"
+          title="Header"
+          expanded={true}
+          onToggleExpand={vi.fn()}
+          context={makeContext()}
+        >
+          <div>Body</div>
+        </ToolUseLayout>
+      </PreferencesProvider>
+    ))
+
+    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
+    expect(bodyWrapper).toBeInTheDocument()
+    expect(bodyWrapper?.className).toMatch(new RegExp(toolBodyBorder))
+  })
+
+  it('renderIcon overrides the lucide icon', () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <ToolUseLayout
+          icon={ListTodo}
+          renderIcon={() => <span data-testid="custom-icon">X</span>}
+          toolName="TestTool"
+          title="Header"
+          context={makeContext()}
+        />
+      </PreferencesProvider>
+    ))
+    const customIcon = container.querySelector('[data-testid="custom-icon"]')
+    expect(customIcon).toBeInTheDocument()
+    // The override sits in the icon slot, so its parent has no lucide
+    // <svg> next to it (we'd see two glyphs if `icon` weren't ignored).
+    expect(customIcon?.parentElement?.querySelector('svg')).toBeNull()
   })
 
   it('renders JSX title without toolInputText wrapper', () => {

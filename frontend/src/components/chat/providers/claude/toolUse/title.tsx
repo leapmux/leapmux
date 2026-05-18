@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
-import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, RemoteTriggerInput, TaskCreateInput, TaskStopInput, TaskUpdateInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
+import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, RemoteTriggerInput, TaskStopInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { joinMetaParts } from '../../../rendererUtils'
 import { toolInputCode, toolInputText } from '../../../toolStyles.css'
@@ -77,15 +77,6 @@ export function renderClaudeToolTitle(toolName: string, input: Record<string, un
     }
     case CLAUDE_TOOL.ENTER_PLAN_MODE:
       return <span class={toolInputText}>Entering Plan Mode</span>
-    case CLAUDE_TOOL.TASK_CREATE: {
-      const { subject } = input as TaskCreateInput
-      return <span class={toolInputText}>{subject ? `Create task: ${subject}` : 'Create task'}</span>
-    }
-    case CLAUDE_TOOL.TASK_UPDATE: {
-      const { taskId, status } = input as TaskUpdateInput
-      const label = taskId ? `Update task #${taskId}` : 'Update task'
-      return <span class={toolInputText}>{status ? `${label} → ${status}` : label}</span>
-    }
     case CLAUDE_TOOL.SKILL: {
       const skillName = String(input.skill || '')
       return <span class={toolInputText}>{`Skill: /${skillName}`}</span>
