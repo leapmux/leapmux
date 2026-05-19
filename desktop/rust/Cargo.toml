@@ -19,7 +19,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 dirs = "6"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Tauri 2 already pulls these in transitively (it returns
@@ -30,12 +30,12 @@ gtk = "0.18"
 gdk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
+# Only the SID-lookup and force-kill paths still need raw Win32; the
+# named-pipe transport is delegated to tokio's overlapped-I/O client (see
+# desktop/rust/src/main.rs).
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }

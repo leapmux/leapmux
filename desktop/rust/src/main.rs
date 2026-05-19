@@ -425,9 +425,9 @@ type DevSidecarConnection = (
 );
 
 #[cfg(unix)]
-type SidecarStream = UnixStream;
-#[cfg(windows)]
-type SidecarStream = PipeHandle;
+type SidecarReader = UnixStream;
+#[cfg(unix)]
+type SidecarWriter = UnixStream;
 
 fn try_connect_dev_sidecar(endpoint: &str) -> Result<Option<DevSidecarConnection>, String> {
     match connect_and_handshake_dev_sidecar(endpoint)? {
@@ -440,20 +440,124 @@ fn try_connect_dev_sidecar(endpoint: &str) -> Result<Option<DevSidecarConnection
     }
 }
 
+#[cfg(unix)]
 fn connect_and_handshake_dev_sidecar(
     endpoint: &str,
-) -> Result<Option<(SidecarStream, SidecarStream, proto::SidecarInfo)>, String> {
+) -> Result<Option<(SidecarReader, SidecarWriter, proto::SidecarInfo)>, String> {
     let (mut reader, mut writer) = match connect_sidecar_endpoint(endpoint)? {
         Some(pair) => pair,
         None => return Ok(None),
     };
-    // Unix streams carry per-op timeouts from connect; Windows named pipes
-    // don't, so arm a watchdog that cancels the handshake's synchronous I/O.
-    #[cfg(windows)]
-    let _watchdog = HandshakeWatchdog::arm(DEV_SIDECAR_HANDSHAKE_TIMEOUT)?;
     let info = fetch_sidecar_info(&mut reader, &mut writer)?;
     finalize_sidecar_streams(&reader, &writer)?;
     Ok(Some((reader, writer, info)))
+}
+
+#[cfg(windows)]
+fn connect_and_handshake_dev_sidecar(
+    endpoint: &str,
+) -> Result<Option<(SidecarReader, SidecarWriter, proto::SidecarInfo)>, String> {
+    // `tokio::time::timeout(...)` must be constructed inside a runtime
+    // context so its `Sleep` can register with the timer driver, so the
+    // async block stays.
+    let result = pipe_runtime()
+        .block_on(async {
+            tokio::time::timeout(
+                DEV_SIDECAR_HANDSHAKE_TIMEOUT,
+                windows_handshake_async(endpoint),
+            )
+            .await
+        })
+        .map_err(|_| {
+            format!(
+                "named-pipe handshake timed out after {:?}",
+                DEV_SIDECAR_HANDSHAKE_TIMEOUT
+            )
+        })??;
+    let (client, info) = match result {
+        Some(pair) => pair,
+        None => return Ok(None),
+    };
+    let (r, w) = tokio::io::split(client);
+    Ok(Some((SyncPipeReader { inner: r }, SyncPipeWriter { inner: w }, info)))
+}
+
+#[cfg(windows)]
+async fn windows_handshake_async(
+    pipe_name: &str,
+) -> Result<Option<(NamedPipeClient, proto::SidecarInfo)>, String> {
+    let mut client = match open_named_pipe_client(pipe_name).await? {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let request = proto::Frame {
+        message: Some(proto::frame::Message::Request(proto::Request {
+            id: 1,
+            method: Some(proto::request::Method::GetSidecarInfo(
+                proto::GetSidecarInfoRequest {},
+            )),
+        })),
+    };
+    write_frame_async(&mut client, &request)
+        .await
+        .map_err(|err| format!("request sidecar info: {err}"))?;
+    let frame = read_frame_async(&mut client)
+        .await
+        .map_err(|err| format!("read sidecar info: {err}"))?;
+    let resp = match frame.message {
+        Some(proto::frame::Message::Response(resp)) => resp,
+        _ => return Err("unexpected frame while reading sidecar info".to_string()),
+    };
+    let info = sidecar_info_from_response(check_response(resp)?, "get_sidecar_info")?;
+    Ok(Some((client, info)))
+}
+
+#[cfg(windows)]
+async fn write_frame_async<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    frame: &proto::Frame,
+) -> io::Result<()> {
+    let mut buf = Vec::with_capacity(frame.encoded_len() + 10);
+    frame.encode_length_delimited(&mut buf).map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("encode frame: {err}"))
+    })?;
+    w.write_all(&buf).await?;
+    w.flush().await
+}
+
+#[cfg(windows)]
+async fn read_frame_async<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> io::Result<proto::Frame> {
+    let size = read_varint_async(r).await?;
+    if size > MAX_FRAME_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame too large: {size} bytes (max {MAX_FRAME_SIZE})"),
+        ));
+    }
+    let mut data = vec![0u8; size as usize];
+    r.read_exact(&mut data).await?;
+    proto::Frame::decode(data.as_slice())
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("decode frame: {err}")))
+}
+
+#[cfg(windows)]
+async fn read_varint_async<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> io::Result<u64> {
+    let mut x: u64 = 0;
+    let mut s: u32 = 0;
+    let mut buf = [0u8; 1];
+    for _ in 0..10 {
+        r.read_exact(&mut buf).await?;
+        let b = buf[0];
+        if b < 0x80 {
+            return Ok(x | (b as u64) << s);
+        }
+        x |= ((b & 0x7f) as u64) << s;
+        s += 7;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "varint overflow",
+    ))
 }
 
 fn request_sidecar_shutdown(endpoint: &str, pid: u32) -> Result<(), String> {
@@ -483,7 +587,7 @@ fn request_sidecar_shutdown(endpoint: &str, pid: u32) -> Result<(), String> {
 #[cfg(unix)]
 fn connect_sidecar_endpoint(
     endpoint: &str,
-) -> Result<Option<(SidecarStream, SidecarStream)>, String> {
+) -> Result<Option<(SidecarReader, SidecarWriter)>, String> {
     let stream = match UnixStream::connect(endpoint) {
         Ok(stream) => stream,
         Err(err)
@@ -511,7 +615,7 @@ fn connect_sidecar_endpoint(
 // long-lived reader thread; otherwise reads fail with EAGAIN after a few
 // seconds of idle and tear the connection down.
 #[cfg(unix)]
-fn finalize_sidecar_streams(reader: &SidecarStream, writer: &SidecarStream) -> Result<(), String> {
+fn finalize_sidecar_streams(reader: &SidecarReader, writer: &SidecarWriter) -> Result<(), String> {
     reader
         .set_read_timeout(None)
         .map_err(|err| format!("clear sidecar socket read timeout: {err}"))?;
@@ -526,6 +630,7 @@ fn is_sidecar_gone(endpoint: &str) -> bool {
     !Path::new(endpoint).exists()
 }
 
+#[cfg(unix)]
 fn fetch_sidecar_info(
     reader: &mut impl Read,
     writer: &mut impl Write,
@@ -670,90 +775,121 @@ fn hash_sidecar_binary(sidecar_path: &Path) -> Result<String, String> {
 }
 
 // --- Windows named-pipe dev-mode sidecar reconnect ---
+//
+// Why tokio's overlapped-I/O client and not a raw CreateFileW/ReadFile/
+// WriteFile wrapper: a named-pipe handle opened without FILE_FLAG_OVERLAPPED
+// serializes all I/O through the FILE_OBJECT lock, even across duplicated
+// handles. A blocked long-lived ReadFile would prevent any concurrent
+// WriteFile from making progress and deadlock the reader/writer threads.
 
 #[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, DuplicateHandle, GetLastError, LocalFree, DUPLICATE_SAME_ACCESS,
-        ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE, HLOCAL, INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, LocalFree, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE,
+        HLOCAL,
     },
     Security::{
         Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
         TOKEN_USER,
     },
-    Storage::FileSystem::{
-        CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
-        FILE_GENERIC_WRITE, OPEN_EXISTING,
-    },
-    System::{
-        Pipes::WaitNamedPipeW,
-        Threading::{
-            GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken, TerminateProcess,
-            PROCESS_TERMINATE,
-        },
-        IO::CancelSynchronousIo,
+    System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, TerminateProcess, PROCESS_TERMINATE,
     },
 };
 
 #[cfg(windows)]
-fn finalize_sidecar_streams(_: &SidecarStream, _: &SidecarStream) -> Result<(), String> {
-    Ok(())
+type SidecarReader = SyncPipeReader;
+#[cfg(windows)]
+type SidecarWriter = SyncPipeWriter;
+
+// `new_multi_thread` with one worker is deliberate: the reader and writer
+// threads both call `block_on` on this runtime, and `current_thread` would
+// serialize them through the runtime mutex (defeating the parallelism the
+// FILE_OBJECT-lock fix exists to enable).
+#[cfg(windows)]
+fn pipe_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_io()
+            .enable_time()
+            .thread_name("leapmux-named-pipe")
+            .build()
+            .expect("build named-pipe runtime")
+    })
+}
+
+#[cfg(windows)]
+pub struct SyncPipeReader {
+    inner: tokio::io::ReadHalf<NamedPipeClient>,
+}
+
+#[cfg(windows)]
+impl Read for SyncPipeReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        pipe_runtime().block_on(self.inner.read(buf))
+    }
+}
+
+#[cfg(windows)]
+pub struct SyncPipeWriter {
+    inner: tokio::io::WriteHalf<NamedPipeClient>,
+}
+
+#[cfg(windows)]
+impl Write for SyncPipeWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        pipe_runtime().block_on(self.inner.write(buf))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        pipe_runtime().block_on(self.inner.flush())
+    }
+}
+
+// Returns Ok(None) when the pipe doesn't exist — caller's "try again later"
+// signal. ERROR_PIPE_BUSY gets a short retry loop; any other error is fatal.
+#[cfg(windows)]
+async fn open_named_pipe_client(pipe_name: &str) -> Result<Option<NamedPipeClient>, String> {
+    const MAX_BUSY_RETRIES: u32 = 3;
+    for _ in 0..=MAX_BUSY_RETRIES {
+        match ClientOptions::new().open(pipe_name) {
+            Ok(client) => return Ok(Some(client)),
+            Err(err) if err.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => {
+                return Ok(None);
+            }
+            Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+            Err(err) => return Err(format!("open named pipe {pipe_name}: {err}")),
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(windows)]
 fn is_sidecar_gone(pipe_name: &str) -> bool {
-    matches!(connect_sidecar_endpoint(pipe_name), Ok(None))
+    pipe_runtime().block_on(async {
+        matches!(open_named_pipe_client(pipe_name).await, Ok(None))
+    })
 }
 
 #[cfg(windows)]
 fn connect_sidecar_endpoint(
     pipe_name: &str,
-) -> Result<Option<(SidecarStream, SidecarStream)>, String> {
-    const MAX_BUSY_RETRIES: u32 = 3;
-    let wide = wide_cstring(pipe_name);
-    for _ in 0..=MAX_BUSY_RETRIES {
-        let handle = unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-                0,
-                std::ptr::null(),
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                std::ptr::null_mut(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            let err = unsafe { GetLastError() };
-            if err == ERROR_FILE_NOT_FOUND {
-                return Ok(None);
-            }
-            if err == ERROR_PIPE_BUSY {
-                let waited = unsafe { WaitNamedPipeW(wide.as_ptr(), 5_000) };
-                if waited == 0 {
-                    // Still busy or pipe closed between retries; let the caller
-                    // decide whether to keep trying.
-                    return Ok(None);
-                }
-                continue;
-            }
-            return Err(format!("open named pipe {pipe_name}: error {err}"));
-        }
-
-        let dup = match duplicate_handle(handle) {
-            Ok(dup) => dup,
-            Err(err) => {
-                unsafe {
-                    CloseHandle(handle);
-                }
-                return Err(format!("duplicate pipe handle: error {err}"));
-            }
-        };
-        return Ok(Some((PipeHandle(handle), PipeHandle(dup))));
-    }
-    Ok(None)
+) -> Result<Option<(SidecarReader, SidecarWriter)>, String> {
+    let client = match pipe_runtime().block_on(open_named_pipe_client(pipe_name))? {
+        Some(client) => client,
+        None => return Ok(None),
+    };
+    let (r, w) = tokio::io::split(client);
+    Ok(Some((SyncPipeReader { inner: r }, SyncPipeWriter { inner: w })))
 }
 
 #[cfg(windows)]
@@ -864,150 +1000,6 @@ fn current_user_sid() -> Result<String, String> {
     }
 }
 
-#[cfg(windows)]
-fn duplicate_handle(source: HANDLE) -> Result<HANDLE, u32> {
-    unsafe {
-        let mut dup: HANDLE = std::ptr::null_mut();
-        let proc = GetCurrentProcess();
-        if DuplicateHandle(proc, source, proc, &mut dup, 0, 0, DUPLICATE_SAME_ACCESS) == 0 {
-            return Err(GetLastError());
-        }
-        Ok(dup)
-    }
-}
-
-#[cfg(windows)]
-fn wide_cstring(s: &str) -> Vec<u16> {
-    std::ffi::OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
-// Invariant: .0 is an owned, non-aliased HANDLE — Drop closes it, so
-// constructors (only reachable within this module) must ensure exclusive
-// ownership. Aliased handles would cause double-close and break Send.
-#[cfg(windows)]
-struct PipeHandle(HANDLE);
-
-#[cfg(windows)]
-impl Drop for PipeHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
-}
-
-// Safe given the ownership invariant on PipeHandle.0 above.
-#[cfg(windows)]
-unsafe impl Send for PipeHandle {}
-
-#[cfg(windows)]
-impl Read for PipeHandle {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        const ERROR_BROKEN_PIPE: u32 = 109;
-        const ERROR_PIPE_NOT_CONNECTED: u32 = 233;
-        let mut read: u32 = 0;
-        let ok = unsafe {
-            ReadFile(
-                self.0,
-                buf.as_mut_ptr() as *mut _,
-                buf.len() as u32,
-                &mut read,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            let err = unsafe { GetLastError() };
-            if err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED {
-                return Ok(0);
-            }
-            return Err(io::Error::from_raw_os_error(err as i32));
-        }
-        Ok(read as usize)
-    }
-}
-
-#[cfg(windows)]
-impl Write for PipeHandle {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut written: u32 = 0;
-        let ok = unsafe {
-            WriteFile(
-                self.0,
-                buf.as_ptr() as *const _,
-                buf.len() as u32,
-                &mut written,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
-        }
-        Ok(written as usize)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-// ThreadHandle wraps a duplicated thread HANDLE and closes it on drop. The
-// raw HANDLE is !Send; this newtype asserts the invariant that callers hand
-// ownership to exactly one thread.
-#[cfg(windows)]
-struct ThreadHandle(HANDLE);
-
-#[cfg(windows)]
-impl Drop for ThreadHandle {
-    fn drop(&mut self) {
-        unsafe { CloseHandle(self.0) };
-    }
-}
-
-// Safe: HANDLE is a kernel-object reference; ownership has been duplicated
-// explicitly via DuplicateHandle and is not shared elsewhere.
-#[cfg(windows)]
-unsafe impl Send for ThreadHandle {}
-
-// HandshakeWatchdog bounds a blocking I/O sequence on the arming thread with
-// a deadline. On drop (or deadline), the watchdog thread exits; if the
-// deadline elapses before drop, it calls CancelSynchronousIo on the arming
-// thread so the in-flight ReadFile/WriteFile returns with an error.
-#[cfg(windows)]
-struct HandshakeWatchdog {
-    done_tx: std::sync::mpsc::Sender<()>,
-}
-
-#[cfg(windows)]
-impl HandshakeWatchdog {
-    fn arm(timeout: Duration) -> Result<Self, String> {
-        let target = duplicate_current_thread_handle()?;
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        thread::spawn(move || {
-            if done_rx.recv_timeout(timeout).is_err() {
-                unsafe { CancelSynchronousIo(target.0) };
-            }
-            drop(target);
-        });
-        Ok(HandshakeWatchdog { done_tx })
-    }
-}
-
-#[cfg(windows)]
-impl Drop for HandshakeWatchdog {
-    fn drop(&mut self) {
-        let _ = self.done_tx.send(());
-    }
-}
-
-#[cfg(windows)]
-fn duplicate_current_thread_handle() -> Result<ThreadHandle, String> {
-    duplicate_handle(unsafe { GetCurrentThread() })
-        .map(ThreadHandle)
-        .map_err(|err| format!("duplicate current thread handle: error {err}"))
-}
 
 impl DesktopShell {
     fn new(app_handle: AppHandle) -> Result<Self, String> {
@@ -2734,11 +2726,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[cfg(windows)]
-    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
-    #[cfg(windows)]
-    use windows_sys::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
-    };
+    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -2816,52 +2804,44 @@ mod tests {
         format!("\\\\.\\pipe\\leapmux-test-{pid}-{nanos}-{counter}")
     }
 
+    // `ServerOptions::create` must run inside the pipe runtime so the new
+    // NamedPipeServer registers with the right I/O driver.
+    #[cfg(windows)]
+    fn start_test_pipe_server(pipe_name: &str) -> NamedPipeServer {
+        pipe_runtime().block_on(async {
+            ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(pipe_name)
+                .expect("create named pipe server")
+        })
+    }
+
     #[cfg(windows)]
     fn spawn_fake_sidecar_pipe(pipe_name: String) -> thread::JoinHandle<()> {
-        // Create the pipe synchronously so the client can connect as soon as
-        // this function returns, regardless of when the accept thread runs.
-        let wide = wide_cstring(&pipe_name);
-        let handle = unsafe {
-            CreateNamedPipeW(
-                wide.as_ptr(),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                1,
-                65536,
-                65536,
-                0,
-                std::ptr::null(),
-            )
-        };
-        assert!(
-            handle != INVALID_HANDLE_VALUE,
-            "CreateNamedPipeW failed: error {}",
-            unsafe { GetLastError() },
-        );
-        let server = PipeHandle(handle);
+        let server = start_test_pipe_server(&pipe_name);
         thread::spawn(move || {
-            let mut stream = server;
-            let connected = unsafe { ConnectNamedPipe(stream.0, std::ptr::null_mut()) };
-            if connected == 0 {
-                let err = unsafe { GetLastError() };
-                const ERROR_PIPE_CONNECTED: u32 = 535;
-                assert_eq!(
-                    err, ERROR_PIPE_CONNECTED,
-                    "ConnectNamedPipe failed: error {err}"
-                );
-            }
-            let _ = read_frame(&mut stream).expect("read handshake request");
-            let mut info = sidecar_info(proto::SidecarShellMode::Unspecified, false, "");
-            info.pid = std::process::id() as i64;
-            let response = proto::Frame {
-                message: Some(proto::frame::Message::Response(proto::Response {
-                    id: 1,
-                    error: String::new(),
-                    result: Some(proto::response::Result::SidecarInfo(info)),
-                })),
-            };
-            write_frame(&mut stream, &response).expect("write handshake response");
-            let _ = stream.read(&mut [0u8; 1]);
+            pipe_runtime().block_on(async move {
+                let mut server = server;
+                server.connect().await.expect("connect named pipe");
+                let _ = read_frame_async(&mut server)
+                    .await
+                    .expect("read handshake request");
+                let mut info = sidecar_info(proto::SidecarShellMode::Unspecified, false, "");
+                info.pid = std::process::id() as i64;
+                let response = proto::Frame {
+                    message: Some(proto::frame::Message::Response(proto::Response {
+                        id: 1,
+                        error: String::new(),
+                        result: Some(proto::response::Result::SidecarInfo(info)),
+                    })),
+                };
+                write_frame_async(&mut server, &response)
+                    .await
+                    .expect("write handshake response");
+                // Wait for the client to drop the connection.
+                let mut scratch = [0u8; 1];
+                let _ = server.read(&mut scratch).await;
+            });
         })
     }
 
@@ -2897,56 +2877,215 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn handshake_watchdog_cancels_wedged_read() {
-        // Spawn a server that accepts the connection but never writes back.
-        // With the watchdog armed, the ReadFile should return an error after
-        // the deadline instead of blocking indefinitely.
+    fn handshake_timeout_surfaces_when_server_never_replies() {
         let pipe_name = unique_test_pipe_name();
-        let wide = wide_cstring(&pipe_name);
-        let server_handle = unsafe {
-            CreateNamedPipeW(
-                wide.as_ptr(),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                1,
-                65536,
-                65536,
-                0,
-                std::ptr::null(),
-            )
-        };
-        assert!(server_handle != INVALID_HANDLE_VALUE);
-        let server = PipeHandle(server_handle);
+        // Create the server *before* spawning the accept thread, otherwise
+        // the client races and returns Ok(None) (pipe absent) before the
+        // timeout fires.
+        let server = start_test_pipe_server(&pipe_name);
         let server_thread = thread::spawn(move || {
-            let _stream = server;
-            unsafe { ConnectNamedPipe(_stream.0, std::ptr::null_mut()) };
-            thread::sleep(Duration::from_secs(3));
+            pipe_runtime().block_on(async move {
+                let _ = server.connect().await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            });
         });
 
-        let (mut reader, _writer) = connect_sidecar_endpoint(&pipe_name)
+        let start = Instant::now();
+        let result = pipe_runtime().block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                windows_handshake_async(&pipe_name),
+            )
+            .await
+        });
+        let elapsed = start.elapsed();
+        assert!(result.is_err(), "expected handshake to time out");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "timeout should fire quickly, elapsed {:?}",
+            elapsed
+        );
+
+        let _ = server_thread.join();
+    }
+
+    // Regression test for the FILE_OBJECT-lock deadlock that motivated the
+    // tokio overlapped-I/O switch: under the pre-fix synchronous handles +
+    // DuplicateHandle setup, the writer's WriteFile would queue behind the
+    // reader's in-flight ReadFile on the shared FILE_OBJECT and hang
+    // forever.
+    #[cfg(windows)]
+    #[test]
+    fn split_halves_allow_concurrent_read_and_write() {
+        let pipe_name = unique_test_pipe_name();
+        let server = start_test_pipe_server(&pipe_name);
+        let server_thread = thread::spawn(move || {
+            pipe_runtime().block_on(async move {
+                let mut server = server;
+                server.connect().await.expect("server connect");
+                let request = read_frame_async(&mut server)
+                    .await
+                    .expect("server reads request");
+                let id = match request.message {
+                    Some(proto::frame::Message::Request(r)) => r.id,
+                    other => panic!("expected request, got {other:?}"),
+                };
+                let response = proto::Frame {
+                    message: Some(proto::frame::Message::Response(proto::Response {
+                        id,
+                        error: String::new(),
+                        result: Some(proto::response::Result::BoolValue(proto::BoolValue {
+                            value: true,
+                        })),
+                    })),
+                };
+                write_frame_async(&mut server, &response)
+                    .await
+                    .expect("server writes response");
+                let mut scratch = [0u8; 1];
+                let _ = server.read(&mut scratch).await;
+            });
+        });
+
+        let (mut reader, mut writer) = connect_sidecar_endpoint(&pipe_name)
             .expect("connect ok")
             .expect("server reachable");
 
-        let start = Instant::now();
-        let _watchdog = HandshakeWatchdog::arm(Duration::from_millis(200)).expect("arm");
-        let mut buf = [0u8; 16];
-        let err = reader.read(&mut buf).expect_err("read should fail");
-        let elapsed = start.elapsed();
+        // Park the reader on a blocking read first so the write below is
+        // *concurrent* with an in-flight read — the scenario that deadlocked
+        // under synchronous handles.
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let result = read_frame(&mut reader);
+            let _ = tx.send(result);
+        });
+        thread::sleep(Duration::from_millis(100));
 
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "read should have been cancelled, elapsed {:?}",
-            elapsed
-        );
-        const ERROR_OPERATION_ABORTED: i32 = 995;
-        assert_eq!(
-            err.raw_os_error(),
-            Some(ERROR_OPERATION_ABORTED),
-            "unexpected error: {err}"
-        );
+        let request = proto::Frame {
+            message: Some(proto::frame::Message::Request(proto::Request {
+                id: 42,
+                method: Some(proto::request::Method::GetSidecarInfo(
+                    proto::GetSidecarInfoRequest {},
+                )),
+            })),
+        };
+        write_frame(&mut writer, &request).expect("client write");
 
-        drop(_watchdog);
-        let _ = server_thread.join();
+        let response = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("response not received within 5s — deadlock regression?")
+            .expect("read frame");
+        match response.message {
+            Some(proto::frame::Message::Response(r)) => assert_eq!(r.id, 42),
+            other => panic!("expected response with id=42, got {other:?}"),
+        }
+
+        drop(writer);
+        server_thread.join().expect("server thread");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_sidecar_gone_reports_true_for_absent_pipe() {
+        let pipe_name = unique_test_pipe_name();
+        assert!(is_sidecar_gone(&pipe_name));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_sidecar_gone_reports_false_when_server_listening() {
+        let pipe_name = unique_test_pipe_name();
+        let _server = start_test_pipe_server(&pipe_name);
+        assert!(!is_sidecar_gone(&pipe_name));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_frame_async_roundtrips_multibyte_varint_frame() {
+        // A frame whose encoded body exceeds 127 bytes forces the
+        // length-delimited prefix into a multi-byte varint, exercising the
+        // loop in read_varint_async.
+        pipe_runtime().block_on(async {
+            let (mut writer, mut reader) = tokio::io::duplex(64 * 1024);
+            let mut info = sidecar_info(
+                proto::SidecarShellMode::Distributed,
+                true,
+                "https://example.invalid/path/to/hub",
+            );
+            info.binary_hash = "x".repeat(200);
+            let frame = proto::Frame {
+                message: Some(proto::frame::Message::Response(proto::Response {
+                    id: 7,
+                    error: String::new(),
+                    result: Some(proto::response::Result::SidecarInfo(info)),
+                })),
+            };
+            assert!(
+                frame.encoded_len() > 127,
+                "test precondition: frame must exceed 1-byte varint range, got {}",
+                frame.encoded_len()
+            );
+
+            write_frame_async(&mut writer, &frame).await.expect("write");
+            drop(writer);
+            let received = read_frame_async(&mut reader).await.expect("read");
+            assert_eq!(received.encoded_len(), frame.encoded_len());
+            match received.message {
+                Some(proto::frame::Message::Response(r)) => assert_eq!(r.id, 7),
+                other => panic!("unexpected message: {other:?}"),
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_frame_async_rejects_oversize_varint_before_allocating() {
+        // A length prefix exceeding MAX_FRAME_SIZE must be rejected without
+        // attempting to allocate the payload, so a peer can't make us
+        // allocate gigabytes by sending a bogus varint.
+        pipe_runtime().block_on(async {
+            let (mut writer, mut reader) = tokio::io::duplex(64);
+            let mut buf = Vec::new();
+            let mut v: u64 = MAX_FRAME_SIZE + 1;
+            loop {
+                let byte = (v & 0x7f) as u8;
+                v >>= 7;
+                if v == 0 {
+                    buf.push(byte);
+                    break;
+                }
+                buf.push(byte | 0x80);
+            }
+            tokio::io::AsyncWriteExt::write_all(&mut writer, &buf)
+                .await
+                .expect("write varint");
+            drop(writer);
+
+            let err = read_frame_async(&mut reader)
+                .await
+                .expect_err("oversize frame must error");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                err.to_string().contains("frame too large"),
+                "unexpected error message: {err}"
+            );
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_frame_async_returns_eof_when_peer_closes() {
+        // The reader thread distinguishes UnexpectedEof from real errors so
+        // a clean peer-close doesn't log a noisy error line. Pin that
+        // contract here.
+        pipe_runtime().block_on(async {
+            let (writer, mut reader) = tokio::io::duplex(64);
+            drop(writer);
+            let err = read_frame_async(&mut reader)
+                .await
+                .expect_err("eof must be reported");
+            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        });
     }
 
     #[cfg(windows)]
