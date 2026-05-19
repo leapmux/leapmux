@@ -802,11 +802,6 @@ type IsWorkspaceInArchivedSectionParams struct {
 	WorkspaceID string
 }
 
-type MoveWorkspaceSectionItemsToSectionParams struct {
-	FromSectionID string
-	ToSectionID   string
-}
-
 type CreateOAuthProviderParams struct {
 	ID           string
 	ProviderType string

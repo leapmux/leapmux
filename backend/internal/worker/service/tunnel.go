@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -76,7 +77,7 @@ func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
 	tunnels := newTunnelManager()
 
 	// OpenTunnelConn dials the target address and starts streaming data back.
-	d.Register("OpenTunnelConn", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("OpenTunnelConn", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.OpenTunnelConnRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -126,7 +127,7 @@ func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// SendTunnelData writes data to the target connection.
-	d.Register("SendTunnelData", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("SendTunnelData", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.SendTunnelDataRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -163,7 +164,7 @@ func registerTunnelHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// CloseTunnelConn closes a tunnel connection.
-	d.Register("CloseTunnelConn", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("CloseTunnelConn", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.CloseTunnelConnRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

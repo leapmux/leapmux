@@ -14,12 +14,19 @@ WHERE id IN (sqlc.slice('workspace_ids'))
   AND is_deleted = 0;
 
 -- name: ListAccessibleWorkspaces :many
+-- Secondary sort on `id` is the deterministic tiebreaker: created_at is
+-- only millisecond-precision (see CURRENT_TIMESTAMP3 / strftime('%Y-%m-%dT%H:%M:%fZ')),
+-- and the SELECT DISTINCT over the LEFT JOIN to workspace_access lets
+-- the planner pick its own row order for ties. Without the tiebreaker
+-- the sidebar shuffles workspaces created in the same millisecond on
+-- every refresh -- most reproducibly for fresh accounts whose seed
+-- workspaces land in a batch.
 SELECT DISTINCT w.* FROM workspaces w
 LEFT JOIN workspace_access wa ON w.id = wa.workspace_id AND wa.user_id = sqlc.arg(user_id)
 WHERE w.is_deleted = 0
   AND w.org_id = sqlc.arg(org_id)
   AND (w.owner_user_id = sqlc.arg(user_id) OR wa.user_id IS NOT NULL)
-ORDER BY w.created_at DESC;
+ORDER BY w.created_at DESC, w.id DESC;
 
 -- name: RenameWorkspace :execresult
 UPDATE workspaces SET title = ? WHERE id = ? AND owner_user_id = ?;

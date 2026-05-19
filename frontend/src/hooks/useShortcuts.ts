@@ -1,8 +1,10 @@
 import type { Accessor } from 'solid-js'
+import type { NewWorkspacePayload } from '~/components/shell/AppShellDialogs'
 import type { TabContext } from '~/components/shell/tabContext'
 import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
+import type { DialogState, ToggleDialogState } from '~/hooks/createDialogState'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
@@ -29,9 +31,9 @@ interface UseShortcutsProps {
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
 
-  setShowNewAgentDialog: (v: boolean) => void
-  setShowNewTerminalDialog: (v: boolean) => void
-  setShowNewWorkspace: (v: boolean) => void
+  newAgentDialog: ToggleDialogState
+  newTerminalDialog: ToggleDialogState
+  newWorkspaceDialog: DialogState<NewWorkspacePayload>
   hasActiveWorkspace: Accessor<boolean>
   toggleFloatingTab: () => void
   toggleLeftSidebar: () => void
@@ -71,9 +73,9 @@ export function useShortcuts(props: UseShortcutsProps): void {
     tabOps,
     agentOps,
     termOps,
-    setShowNewAgentDialog,
-    setShowNewTerminalDialog,
-    setShowNewWorkspace,
+    newAgentDialog,
+    newTerminalDialog,
+    newWorkspaceDialog,
     hasActiveWorkspace,
     toggleFloatingTab,
     toggleLeftSidebar,
@@ -101,7 +103,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   // redirect — terminals live inside a workspace).
   cmd('app.newAgent', 'New Agent', () => {
     if (!hasActiveWorkspace()) {
-      setShowNewWorkspace(true)
+      newWorkspaceDialog.open({})
       return
     }
     agentOps.handleOpenAgent()
@@ -113,17 +115,17 @@ export function useShortcuts(props: UseShortcutsProps): void {
   }, 'App')
   cmd('app.newAgentDialog', 'New Agent Dialog', () => {
     if (!hasActiveWorkspace()) {
-      setShowNewWorkspace(true)
+      newWorkspaceDialog.open({})
       return
     }
-    setShowNewAgentDialog(true)
+    newAgentDialog.open()
   }, 'App')
   cmd('app.newTerminalDialog', 'New Terminal Dialog', () => {
     if (!hasActiveWorkspace())
       return
-    setShowNewTerminalDialog(true)
+    newTerminalDialog.open()
   }, 'App')
-  cmd('app.newWorkspaceDialog', 'New Workspace Dialog', () => setShowNewWorkspace(true), 'App')
+  cmd('app.newWorkspaceDialog', 'New Workspace Dialog', () => newWorkspaceDialog.open({}), 'App')
   cmd('app.refreshDirectoryTree', 'Refresh Directory Tree', () => refreshFileTree(), 'Files')
   cmd('app.toggleHiddenFiles', 'Toggle Hidden Files', () => toggleHiddenFiles(), 'Files')
   cmd('app.toggleFloatingTab', 'Toggle Floating Tab', toggleFloatingTab, 'Tab')

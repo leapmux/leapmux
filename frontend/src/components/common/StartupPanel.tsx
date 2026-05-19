@@ -1,8 +1,6 @@
 import type { Component, JSX } from 'solid-js'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
-import { spinner } from '~/styles/animations.css'
+import { Spinner } from '~/components/common/Spinner'
 import * as styles from './StartupPanel.css'
 
 /**
@@ -12,7 +10,7 @@ import * as styles from './StartupPanel.css'
  */
 export const StartupSpinner: Component<{ label: JSX.Element }> = props => (
   <div class={styles.startupSpinner}>
-    <Icon icon={LoaderCircle} size="sm" class={spinner} />
+    <Spinner />
     <span>{props.label}</span>
   </div>
 )

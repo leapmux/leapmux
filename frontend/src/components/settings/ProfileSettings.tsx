@@ -4,6 +4,7 @@ import { userClient } from '~/api/clients'
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
+import { formatErrorMessage } from '~/lib/errors'
 import { sanitizeDisplayName, sanitizeName, sanitizeSlug, validateEmail } from '~/lib/validate'
 import { errorText, successText, warningText } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
@@ -87,7 +88,7 @@ export const ProfileSettings: Component = () => {
       setProfileMessage({ type: 'success', text: 'Profile updated.' })
     }
     catch (e) {
-      setProfileMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update profile' })
+      setProfileMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to update profile') })
     }
     finally {
       setProfileSaving(false)
@@ -119,7 +120,7 @@ export const ProfileSettings: Component = () => {
       auth.refreshUser()
     }
     catch (e) {
-      setEmailMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to request email change' })
+      setEmailMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to request email change') })
     }
     finally {
       setEmailSaving(false)
@@ -143,7 +144,7 @@ export const ProfileSettings: Component = () => {
       auth.refreshUser()
     }
     catch (e) {
-      setPasswordMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to change password' })
+      setPasswordMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to change password') })
     }
     finally {
       setPasswordSaving(false)
@@ -158,7 +159,7 @@ export const ProfileSettings: Component = () => {
       auth.refreshUser()
     }
     catch (e) {
-      setUnlinkMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to unlink provider' })
+      setUnlinkMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to unlink provider') })
     }
     finally {
       setUnlinkingProvider(null)

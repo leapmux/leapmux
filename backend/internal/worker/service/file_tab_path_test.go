@@ -67,7 +67,7 @@ func TestFileTabPath_RevokeRemovesAndEmits(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond)
 
-	require.NoError(t, store.Revoke(ctx, "org", "t1"))
+	require.NoError(t, store.RevokeRow(ctx, "org", "t1"))
 
 	select {
 	case evt := <-got:

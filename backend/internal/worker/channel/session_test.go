@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -225,6 +226,98 @@ func TestAddAccessibleWorkspaceID(t *testing.T) {
 	mgr.AddAccessibleWorkspaceID("ch-unknown", "ws-2")
 }
 
+// TestAccessibleWorkspaceIDs_ConcurrentAddAndRead pins the locking
+// contract of AddAccessibleWorkspaceID + AccessibleWorkspaceIDs: the
+// inner map is now guarded by sess.awsMu, so a hot loop of writes from
+// one goroutine and reads from another must complete without
+// `fatal error: concurrent map writes` (or read/write).
+//
+// Returns a defensive copy from AccessibleWorkspaceIDs so callers can
+// iterate without holding the manager-level lock. Without that copy the
+// previous implementation handed callers a live map reference and a
+// subsequent AddAccessibleWorkspaceID write raced their next read.
+//
+// Best run under `go test -race`. The previous unsynchronised code
+// panics with -race on this test in seconds.
+func TestAccessibleWorkspaceIDs_ConcurrentAddAndRead(t *testing.T) {
+	mgr, kp, _ := setupTestManager(t)
+	_ = performHandshake(t, mgr, kp, "ch-race", "user-1")
+
+	const iter = 200
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iter; i++ {
+			mgr.AddAccessibleWorkspaceID("ch-race", "ws")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iter; i++ {
+			snap := mgr.AccessibleWorkspaceIDs("ch-race")
+			// Touch every key; under the old behaviour the live map
+			// reference was being mutated by the other goroutine here.
+			for range snap {
+			}
+		}
+	}()
+	wg.Wait()
+}
+
+func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
+	// A second ChannelOpen for an already-active channel id is rejected:
+	// the prior session stays intact (ctx live, registered in the map)
+	// and the close callback does NOT fire. The previous defensive
+	// swap-then-cancel design had two unsafe windows — an in-flight
+	// OLD handler could encrypt+send a final response with OLD noise
+	// state after NEW was installed (frontend decodes with NEW's state
+	// → garbage), and closeCallback(channelID) could unregister
+	// subscriptions already attached to NEW. Rejecting the re-open
+	// leaves OLD in charge and surfaces the hub bug as an error
+	// response.
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	sender := newCollectSender()
+	var closeCallbackCount int
+	mgr := NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, sender.send, 0, 0, func(id string) {
+		_ = id
+		closeCallbackCount++
+	})
+
+	_ = performHandshake(t, mgr, ck, "ch-reuse", "user-1")
+
+	mgr.mu.RLock()
+	first := mgr.sessions["ch-reuse"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, first)
+	firstCtx := first.ctx
+	require.NoError(t, firstCtx.Err(), "fresh session ctx must not be cancelled yet")
+
+	// Re-open with the same channel id. Build a valid handshake payload
+	// so the rejection happens at the session-table check, not at the
+	// handshake layer (a bad payload would short-circuit earlier).
+	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+		ChannelId:        "ch-reuse",
+		UserId:           "user-1",
+		HandshakePayload: msg1,
+	})
+	assert.NotEmpty(t, resp.GetError(), "re-open must return an error response")
+	assert.Contains(t, resp.GetError(), "already active")
+
+	// Prior session is intact: ctx still live, still in the map, and the
+	// close callback did NOT fire (rejection doesn't tear down OLD).
+	require.NoError(t, firstCtx.Err(), "prior session ctx must remain live after a rejected re-open")
+	assert.Equal(t, 0, closeCallbackCount, "close callback must not fire on a rejected re-open")
+
+	mgr.mu.RLock()
+	current := mgr.sessions["ch-reuse"]
+	mgr.mu.RUnlock()
+	assert.Same(t, first, current, "the original session must still be the one registered for ch-reuse")
+}
+
 func TestHandleOpen_BadHandshake(t *testing.T) {
 	mgr, _, _ := setupTestManager(t)
 
@@ -330,7 +423,7 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 
 	// Set up a dispatcher with a test handler.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("echo", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
 			Payload: req.GetPayload(),
 		})
@@ -453,6 +546,99 @@ func TestCloseAll(t *testing.T) {
 	assert.Equal(t, 0, count)
 }
 
+// TestHandleClose_CancelsSessionCtx pins the session-ctx → handler-ctx
+// chain that the entire dispatcher refactor was built to enable. The
+// session ctx is what HandleMessage hands to the dispatcher; cancelling
+// it via HandleClose must reach the ctx that any still-running handler
+// holds — otherwise a `git push` started moments before the user closed
+// the dialog would keep running until pushBranchTimeout.
+func TestHandleClose_CancelsSessionCtx(t *testing.T) {
+	mgr, kp, _ := setupTestManager(t)
+	mgr.SetDispatcher(NewDispatcher())
+
+	performHandshake(t, mgr, kp, "ch-close-ctx", "user-1")
+
+	mgr.mu.RLock()
+	sess := mgr.sessions["ch-close-ctx"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, sess)
+	require.NotNil(t, sess.ctx)
+	require.NoError(t, sess.ctx.Err(), "ctx must be live before close")
+
+	mgr.HandleClose("ch-close-ctx")
+
+	// HandleClose drops the session from the map AND cancels the ctx.
+	// Capture the ctx before close so we can still observe it post-close.
+	require.ErrorIs(t, sess.ctx.Err(), context.Canceled, "session ctx must be cancelled by HandleClose")
+}
+
+// TestCloseAll_CancelsEverySessionCtx covers the bulk-shutdown path
+// (worker reconnect / process exit). The snapshot-then-cancel pattern
+// in CloseAll runs the cancels outside the manager lock, so this test
+// also acts as a regression guard against a future refactor moving
+// the cancel back inside the lock and re-introducing the cleanup-
+// path lock-cycle the fix was designed to prevent.
+func TestCloseAll_CancelsEverySessionCtx(t *testing.T) {
+	mgr, kp, _ := setupTestManager(t)
+	mgr.SetDispatcher(NewDispatcher())
+
+	performHandshake(t, mgr, kp, "ch-a", "user-1")
+	performHandshake(t, mgr, kp, "ch-b", "user-2")
+
+	mgr.mu.RLock()
+	a := mgr.sessions["ch-a"]
+	b := mgr.sessions["ch-b"]
+	mgr.mu.RUnlock()
+	require.NotNil(t, a)
+	require.NotNil(t, b)
+
+	mgr.CloseAll()
+
+	require.ErrorIs(t, a.ctx.Err(), context.Canceled)
+	require.ErrorIs(t, b.ctx.Err(), context.Canceled)
+}
+
+// TestHandleMessage_DispatchesUnderSessionCtx is the end-to-end version
+// of the dispatcher ctx-propagation tests: HandleMessage must hand the
+// session-scoped ctx to the dispatched handler so an in-flight handler
+// observes HandleClose's cancel. The TestHandleClose_CancelsSessionCtx
+// covers the session bookkeeping; this one verifies the handler-visible
+// ctx is the same ctx that gets cancelled.
+func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
+	mgr, kp, sender := setupTestManager(t)
+
+	gotCtxC := make(chan context.Context, 1)
+	dispatcher := NewDispatcher()
+	dispatcher.Register("inspect", func(ctx context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+		gotCtxC <- ctx
+		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{})
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	initiatorSession := performHandshakeAndVerify(t, mgr, kp, sender, "ch-inspect", "user-1")
+
+	ct := sendRequest(t, initiatorSession, "ch-inspect", &leapmuxv1.InnerRpcRequest{Method: "inspect"})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-inspect",
+		Ciphertext:      ct,
+		CorrelationId:   1,
+	})
+
+	// Wait for the handler-supplied ctx with a generous deadline so the
+	// dispatcher's `go` doesn't race the assertion.
+	var handlerCtx context.Context
+	select {
+	case handlerCtx = <-gotCtxC:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatcher did not invoke handler within 2s")
+	}
+	require.NoError(t, handlerCtx.Err(), "handler ctx must be live before HandleClose")
+
+	mgr.HandleClose("ch-inspect")
+	require.ErrorIs(t, handlerCtx.Err(), context.Canceled, "handler-visible ctx must cancel when the channel closes")
+}
+
 // TestHandleMessage_NonBlocking verifies that HandleMessage returns promptly
 // even when the underlying sendFn is blocked (e.g., bidi stream full).
 // Before the fix (async sends in receive loop), a blocked sendFn would hold
@@ -481,7 +667,7 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("slow", func(userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("slow", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
 			Payload: []byte("done"),
 		})
@@ -532,7 +718,7 @@ func TestMultipleChannels(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("ping", func(userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("ping", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
 			Payload: []byte("pong-" + userID),
 		})
@@ -588,7 +774,7 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -626,7 +812,7 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("big", func(_ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("big", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: largePayload})
 	})
 	mgr.SetDispatcher(dispatcher)
@@ -707,7 +893,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	exactPayloadSize := findPayloadSize(channelwire.MaxPlaintextPerChunk)
 	require.Greater(t, exactPayloadSize, 0)
 
-	dispatcher.Register("exact", func(_ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("exact", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, exactPayloadSize)})
 	})
 
@@ -727,7 +913,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chMsg.GetFlags())
 
 	// Now add 1 more byte to the payload, which should cause it to overflow.
-	dispatcher.Register("overflow", func(_ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("overflow", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, exactPayloadSize+1)})
 	})
 
@@ -750,7 +936,7 @@ func TestReassembly_E2E(t *testing.T) {
 
 	var receivedPayload []byte
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("echo", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, s *Sender) {
 		receivedPayload = req.GetPayload()
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("ok")})
 	})
@@ -911,7 +1097,7 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 
 	// Register a handler that tries to send a response larger than the limit.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("big", func(_ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
+	dispatcher.Register("big", func(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, s *Sender) {
 		err := s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, 200)})
 		// sendEncrypted should return an error for oversized messages.
 		assert.Error(t, err)

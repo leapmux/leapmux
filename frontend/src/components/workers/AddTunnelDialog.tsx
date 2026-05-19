@@ -1,13 +1,10 @@
 import type { Component } from 'solid-js'
 import type { TunnelInfo } from '~/api/platformBridge'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createMemo, createSignal, Show } from 'solid-js'
-import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
-import { Icon } from '~/components/common/Icon'
+import { Spinner } from '~/components/common/Spinner'
 import { useTunnel } from '~/context/TunnelContext'
-import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { spinner } from '~/styles/animations.css'
+import { useDialogSubmit } from '~/hooks/useDialogSubmit'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './AddTunnelDialog.css'
 
@@ -31,8 +28,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
   const [targetPort, setTargetPort] = createSignal('')
   const [bindAddr, setBindAddr] = createSignal('127.0.0.1')
   const [bindPort, setBindPort] = createSignal('')
-  const [error, setError] = createSignal<string | null>(null)
-  const submitting = createLoadingSignal(apiLoadingTimeoutMs())
+  const { submitting, error, run } = useDialogSubmit()
 
   const targetPortError = createMemo(() => {
     const v = targetPort().trim()
@@ -78,18 +74,14 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
     return false
   })
 
-  const handleSubmit = async (e: Event) => {
+  const handleSubmit = (e: Event) => {
     e.preventDefault()
-    setError(null)
-    submitting.start()
-
-    const effectiveBindPort = bindPort().trim()
-      ? Number(bindPort())
-      : tunnelType() === 'socks5'
-        ? 1080
-        : Number(targetPort())
-
-    try {
+    void run(async () => {
+      const effectiveBindPort = bindPort().trim()
+        ? Number(bindPort())
+        : tunnelType() === 'socks5'
+          ? 1080
+          : Number(targetPort())
       const tunnel = await tunnelStore!.add({
         workerId: props.workerId,
         type: tunnelType(),
@@ -101,11 +93,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
         userId: props.userId,
       })
       props.onCreated(tunnel)
-    }
-    catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      submitting.stop()
-    }
+    })
   }
 
   return (
@@ -205,7 +193,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
             Cancel
           </button>
           <button type="submit" disabled={isDisabled()} data-testid="tunnel-create">
-            <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+            <Show when={submitting.loading()}><Spinner /></Show>
             {submitting.loading() ? 'Creating...' : 'Create'}
           </button>
         </footer>

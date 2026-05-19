@@ -1,13 +1,10 @@
 import type { Component } from 'solid-js'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createSignal, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { workerClient } from '~/api/clients'
-import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
-import { Icon } from '~/components/common/Icon'
-import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { spinner } from '~/styles/animations.css'
+import { Spinner } from '~/components/common/Spinner'
+import { useDialogSubmit } from '~/hooks/useDialogSubmit'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './WorkerSettingsDialog.css'
 
@@ -18,20 +15,15 @@ interface WorkerSettingsDialogProps {
 }
 
 export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props) => {
-  const submitting = createLoadingSignal(apiLoadingTimeoutMs())
-  const [deregisterError, setDeregisterError] = createSignal<string | null>(null)
+  const { submitting, error: deregisterError, run } = useDialogSubmit({
+    fallback: 'Failed to deregister worker',
+  })
 
-  const handleDeregister = async () => {
-    submitting.start()
-    setDeregisterError(null)
-    try {
+  const handleDeregister = () => {
+    void run(async () => {
       await workerClient.deregisterWorker({ workerId: props.worker.id })
       props.onDeregistered()
-    }
-    catch (e) {
-      setDeregisterError(e instanceof Error ? e.message : 'Failed to deregister worker')
-      submitting.stop()
-    }
+    })
   }
 
   return (
@@ -50,7 +42,7 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
           Cancel
         </button>
         <button data-variant="danger" onClick={() => handleDeregister()} disabled={submitting.loading()} data-testid="deregister-confirm">
-          <Show when={submitting.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+          <Show when={submitting.loading()}><Spinner /></Show>
           {submitting.loading() ? 'Deregistering...' : 'Deregister'}
         </button>
       </footer>

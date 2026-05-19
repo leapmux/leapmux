@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import X from 'lucide-solid/icons/x'
-import { createSignal, onCleanup, onMount } from 'solid-js'
+import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { motion } from '~/styles/tokens'
 import * as styles from './Dialog.css'
 import { IconButton, IconButtonState } from './IconButton'
@@ -16,11 +16,19 @@ interface DialogProps {
   'children': JSX.Element
 }
 
-// The modern way to bind the close animation to `dialogRef.close()`
-// would be `@starting-style` + `transition-behavior: allow-discrete`,
-// but vanilla-extract's at-rule registry doesn't expose
-// `@starting-style`, so we orchestrate manually here. `motion.fast`
-// is the same constant the keyframes in `Dialog.css.ts` consume.
+// The open animation (opacity + transform fade-in via
+// `@starting-style`) is supplied by @knadh/oat's `dialog.css`. We
+// own the close animation here: Solid removes the dialog from the
+// DOM the instant the parent's `<Show>` flips, so an exit transition
+// keyed off `[open]` being removed never gets to play.
+// `beginClose` flips a `closing` marker class that:
+//   - reverts the dialog's opacity/transform to Oat's
+//     @starting-style values, which Oat's existing transition
+//     animates (smooth dialog fade-out), and
+//   - triggers our `backdropExit` keyframe so the dim overlay fades
+//     out alongside the dialog.
+// `onClose` is then deferred by `motion.fast` ms (matching both
+// durations) so the parent unmounts only after the exit has played.
 
 export const Dialog: Component<DialogProps> = (props) => {
   let dialogRef!: HTMLDialogElement
@@ -28,6 +36,10 @@ export const Dialog: Component<DialogProps> = (props) => {
   let unmounting = false
   let pointerDownOnBackdrop = false
   let closeTimer: ReturnType<typeof setTimeout> | undefined
+  // Drives the `.closing` marker class -- see Dialog.css.ts for the
+  // rules it triggers (dialog fade-out + backdrop exit keyframe).
+  // Also doubles as a re-entrancy guard so a second Escape / backdrop
+  // click while the timer is still running doesn't re-arm beginClose.
   const [closing, setClosing] = createSignal(false)
 
   const isOutsideDialogRect = (clientX: number, clientY: number) => {
@@ -35,12 +47,12 @@ export const Dialog: Component<DialogProps> = (props) => {
     return clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom
   }
 
-  // Begin the close animation; after `motion.fast`, call
-  // `props.onClose()` so the parent unmounts us. The dialog stays in
-  // the top layer during the animation -- the actual `close()` only
-  // happens later, inside `onCleanup`, which is also where programmatic
-  // / external close paths land (form submit success, route navigation,
-  // etc.) so those paths are instant by design.
+  // Set `.closing` so both the dialog's fade-out (Oat's transition
+  // animating opacity/transform back to @starting-style values) and
+  // the backdrop's exit keyframe run against the still-mounted
+  // dialog. Wait `motion.fast` ms before letting the parent unmount
+  // us so the exit animations have time to play; the dialog stays in
+  // the top layer until `onCleanup` calls `dialogRef.close()`.
   const beginClose = () => {
     if (closing() || props.busy)
       return
@@ -158,9 +170,13 @@ export const DialogColumns: Component<{
   twoColumn?: boolean
   left: JSX.Element
   right?: JSX.Element
-}> = props => (
-  <div class={props.twoColumn !== false ? styles.twoColumn : styles.singleColumn}>
-    <div class={styles.leftPanel}>{props.left}</div>
-    <div class={props.twoColumn !== false ? styles.rightPanel : undefined}>{props.right}</div>
-  </div>
-)
+}> = (props) => {
+  return (
+    <div class={props.twoColumn !== false ? styles.twoColumn : styles.singleColumn}>
+      <div class={styles.leftPanel}>{props.left}</div>
+      <Show when={props.twoColumn !== false && props.right}>
+        <div class={styles.rightPanel}>{props.right}</div>
+      </Show>
+    </div>
+  )
+}

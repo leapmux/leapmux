@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,7 +29,7 @@ const defaultReadLimit int64 = 60 * 1024 // 60 KB
 
 // registerFileHandlers registers handlers for file operations on the local filesystem.
 func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
-	d.Register("ListDirectory", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ListDirectory", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListDirectoryRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -58,7 +59,7 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
-	d.Register("ReadFile", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ReadFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ReadFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -142,7 +143,7 @@ func registerFileHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
-	d.Register("StatFile", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("StatFile", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.StatFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

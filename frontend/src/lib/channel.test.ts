@@ -501,6 +501,57 @@ describe('channelManager', () => {
         vi.useRealTimers()
       }
     })
+
+    it('rejects immediately when an already-aborted signal is passed', async () => {
+      const channelId = await openTestChannel('w1')
+      const controller = new AbortController()
+      controller.abort(new Error('pre-aborted by caller'))
+      const callPromise = mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
+      await expect(callPromise).rejects.toThrow('pre-aborted by caller')
+    })
+
+    it('rejects the pending promise when the signal aborts mid-flight', async () => {
+      const channelId = await openTestChannel('w1')
+      const controller = new AbortController()
+      const callPromise = mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
+      controller.abort(new Error('caller dismissed the dialog'))
+      await expect(callPromise).rejects.toThrow('caller dismissed the dialog')
+    })
+
+    it('drops the pending entry on abort so a late InnerRpcResponse is harmless', async () => {
+      const channelId = await openTestChannel('w1')
+      const controller = new AbortController()
+      const callPromise = mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
+      controller.abort(new Error('aborted'))
+      await expect(callPromise).rejects.toThrow('aborted')
+      // A late worker response for the same correlationId must NOT
+      // throw, double-resolve, or surface as an unhandled rejection.
+      // The pendingRequest entry was deleted at abort time, so the
+      // dispatcher quietly drops the message.
+      sendResponseFromWorker(channelId, 1, new Uint8Array([7, 8, 9]))
+      // No assertion needed beyond "doesn't crash" — vitest fails
+      // the test on unhandled rejections from the now-detached
+      // promise, so the absence of those failures is the signal.
+    })
+
+    it('clears the timeout timer when aborted so it cannot fire later and double-reject', async () => {
+      vi.useFakeTimers()
+      try {
+        const channelId = await openTestChannel('w1')
+        const controller = new AbortController()
+        const callPromise = mgr.call(channelId, 'TestMethod', new Uint8Array(), undefined, controller.signal)
+        controller.abort(new Error('aborted'))
+        await expect(callPromise).rejects.toThrow('aborted')
+        // Advance past the default timeout to prove the timer was
+        // cleared — without cleanup, vitest's unhandled-rejection
+        // detector would fire when the orphan timer rejected a
+        // settled promise.
+        vi.advanceTimersByTime(20_000)
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   describe('stream', () => {

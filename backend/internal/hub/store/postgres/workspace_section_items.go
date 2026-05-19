@@ -66,13 +66,6 @@ func (s *workspaceSectionItemStore) DeleteBySection(ctx context.Context, section
 	return mapErr(s.conn.q.DeleteWorkspaceSectionItemsBySection(ctx, sectionID))
 }
 
-func (s *workspaceSectionItemStore) MoveToSection(ctx context.Context, p store.MoveWorkspaceSectionItemsToSectionParams) error {
-	return mapErr(s.conn.q.MoveWorkspaceSectionItemsToSection(ctx, gendb.MoveWorkspaceSectionItemsToSectionParams{
-		SectionID:   p.ToSectionID,
-		SectionID_2: p.FromSectionID,
-	}))
-}
-
 func (s *workspaceSectionItemStore) HasItemsBySection(ctx context.Context, sectionID string) (bool, error) {
 	ok, err := s.conn.q.HasWorkspaceSectionItemsBySection(ctx, sectionID)
 	return ok, mapErr(err)

@@ -203,6 +203,11 @@ func runWorker(args []string) error {
 	}()
 
 	dispatcher := channel.NewDispatcher()
+	// Bind the service.Context's Cleanup WaitGroup BEFORE registering
+	// handlers so RegisterTracked entries are wired against the same
+	// drain Shutdown.Wait observes. Without this, tracked methods
+	// silently skip the Add(1)/Done() pair.
+	dispatcher.BindCleanup(&svcCtx.Cleanup)
 	service.RegisterAll(dispatcher, svcCtx)
 	channelMgr.SetDispatcher(dispatcher)
 

@@ -16,7 +16,7 @@ import {
 } from '~/lib/crdt'
 import { after, first, positionAtInsertIdx } from '~/lib/lexorank'
 import { createLogger } from '~/lib/logger'
-import { parseTabKey, tabKey } from './tab.helpers'
+import { isSameRepo, parseTabKey, tabKey } from './tab.helpers'
 
 const log = createLogger('tab-store')
 
@@ -175,9 +175,19 @@ export function createTabStore() {
   // so callers passing `TabType.AGENT` get `Partial<AgentTab>`-typed
   // `fields` (and similarly for TERMINAL / FILE). Object-literal method
   // shorthand can't carry TypeScript overloads, hence the indirection.
+  //
+  // The predicate also short-circuits no-op writes: when every field in
+  // `fields` already matches `prev`, the row identity stays stable and
+  // Solid skips fanning the reactive notification (TabBar labels,
+  // sidebar tooltips, git-status-derived memos all read off this row).
   function updateTab(type: TabType, id: string, fields: Partial<AgentTab> | Partial<TerminalTab> | Partial<FileTab>): void {
     const key = tabKey({ type, id })
-    setState('tabs', t => tabKey(t) === key, prev => ({ ...prev, ...fields } as Tab))
+    const keys = Object.keys(fields) as Array<keyof Tab>
+    setState(
+      'tabs',
+      t => tabKey(t) === key && keys.some(k => (t as Tab)[k] !== (fields as Tab)[k]),
+      prev => ({ ...prev, ...fields } as Tab),
+    )
   }
 
   return {
@@ -276,12 +286,21 @@ export function createTabStore() {
 
     updateTabTitle(type: TabType, id: string, title: string) {
       const key = tabKey({ type, id })
-      setState('tabs', t => tabKey(t) === key, 'title', title)
+      // Skip the rewrite when the title hasn't changed: Solid's path-form
+      // setState re-fires every dependent reader on identical assignments
+      // (TabBar labels, sidebar tooltips, document.title effect) — the
+      // CRDT projection re-runs this for every reconcile tick.
+      setState('tabs', t => tabKey(t) === key && t.title !== title, 'title', title)
     },
 
     setNotification(type: TabType, id: string, hasNotification: boolean) {
       const key = tabKey({ type, id })
-      setState('tabs', t => tabKey(t) === key, 'hasNotification', hasNotification)
+      setState(
+        'tabs',
+        t => tabKey(t) === key && !!t.hasNotification !== hasNotification,
+        'hasNotification',
+        hasNotification,
+      )
     },
 
     /** Reorder tabs by moving fromKey to toKey's position. Returns the new LexoRank position. */
@@ -441,7 +460,7 @@ export function createTabStore() {
     /** Set the position of a tab by key. */
     setTabPosition(key: string, position: string) {
       const parsed = parseTabKey(key)
-      setState('tabs', t => tabKey(t) === key, 'position', position)
+      setState('tabs', t => tabKey(t) === key && t.position !== position, 'position', position)
       if (parsed)
         emitOps(ctx => [opSetTabPosition(ctx, parsed.type, parsed.id, position)])
     },
@@ -452,20 +471,34 @@ export function createTabStore() {
       // The path-form `setState(..., 'displayMode', value)` requires
       // every union member to declare the key; FILE-only fields like
       // `displayMode` don't satisfy that, so use the functional form
-      // and only assign when the tab is the right variant.
-      setState('tabs', t => tabKey(t) === key, prev => ({ ...prev, displayMode } as FileTab))
+      // and only assign when the tab is the right variant. The
+      // predicate also short-circuits same-value writes so the row
+      // identity stays stable when nothing changed.
+      setState(
+        'tabs',
+        t => tabKey(t) === key && (t as FileTab).displayMode !== displayMode,
+        prev => ({ ...prev, displayMode } as FileTab),
+      )
     },
 
     /** Set the file view mode for a file tab. */
     setTabFileViewMode(type: TabType, id: string, mode: FileViewMode) {
       const key = tabKey({ type, id })
-      setState('tabs', t => tabKey(t) === key, prev => ({ ...prev, fileViewMode: mode } as FileTab))
+      setState(
+        'tabs',
+        t => tabKey(t) === key && (t as FileTab).fileViewMode !== mode,
+        prev => ({ ...prev, fileViewMode: mode } as FileTab),
+      )
     },
 
     /** Set the file diff base for a file tab. */
     setTabFileDiffBase(type: TabType, id: string, base: FileDiffBase) {
       const key = tabKey({ type, id })
-      setState('tabs', t => tabKey(t) === key, prev => ({ ...prev, fileDiffBase: base } as FileTab))
+      setState(
+        'tabs',
+        t => tabKey(t) === key && (t as FileTab).fileDiffBase !== base,
+        prev => ({ ...prev, fileDiffBase: base } as FileTab),
+      )
     },
 
     /**
@@ -486,9 +519,59 @@ export function createTabStore() {
      * store mutation. Use this when an effect would otherwise call
      * `updateTab` in a loop — each call walks the tabs array, so batching is
      * O(N) instead of O(N·K) for K matches.
+     *
+     * When `equalsFields` is provided, each candidate row is checked
+     * before the spread; rows already carrying `fields` are skipped so
+     * Solid doesn't fire row-level notifications for a no-op write.
+     * Callers that already filter upstream (e.g. `syncGitStatusToTabs`'s
+     * `tabAlreadyMatches`) can omit it.
      */
-    updateMatchingTabs(predicate: (tab: Tab) => boolean, fields: Partial<AgentTab> | Partial<TerminalTab> | Partial<FileTab>) {
-      setState('tabs', predicate, prev => ({ ...prev, ...fields } as Tab))
+    updateMatchingTabs(
+      predicate: (tab: Tab) => boolean,
+      fields: Partial<AgentTab> | Partial<TerminalTab> | Partial<FileTab>,
+      equalsFields?: (prev: Tab) => boolean,
+    ) {
+      const guarded = equalsFields
+        ? (t: Tab) => predicate(t) && !equalsFields(t)
+        : predicate
+      setState('tabs', guarded, prev => ({ ...prev, ...fields } as Tab))
+    },
+
+    /**
+     * Stamp every tab in (workerId, workingDir) with a new gitBranch
+     * label. Skips the store write when no matching tab's gitBranch
+     * actually differs — Solid's path-based setState replaces the row
+     * even when fields are identical, re-firing every dependent memo
+     * (`buildTree`, sidebar diff stats, tooltips). Returns true when a
+     * write was issued.
+     *
+     * Requires non-empty `workerId` AND `workingDir`. Without either guard,
+     * the empty-string repo identity matches every tab that hasn't been
+     * git-stamped yet — a freshly-spawned tab's workerId may still be
+     * unset (BranchGroup.workerId defaults to '' via `tab.workerId ?? ''`
+     * in buildTree) AND its gitToplevel is similarly empty — so a stamp
+     * with either field blank would leak the new label across unrelated
+     * branch groups. Callers must resolve both before calling; passing
+     * '' for either is a no-op rather than a silent cross-repo stamp.
+     *
+     * The gitFileStatusStore singleton only tracks the active repo, so
+     * its refresh-driven sync misses non-active repos; pushing the new
+     * label directly onto every matching tab keeps the sidebar in sync
+     * regardless of which repo the active tab lives on.
+     */
+    stampBranchOnTabs(workerId: string, workingDir: string, newBranch: string): boolean {
+      if (!workerId || !workingDir)
+        return false
+      // Fold the staleness check into the setState predicate so already-
+      // correct rows keep their object identity even when a sibling row
+      // is stale. Without `t.gitBranch !== newBranch` in the predicate,
+      // Solid would re-project every matching row and invalidate every
+      // downstream tab-field memo for the no-op rows.
+      const predicate = (t: Tab) => isSameRepo(t, workerId, workingDir) && t.gitBranch !== newBranch
+      if (!state.tabs.some(predicate))
+        return false
+      setState('tabs', predicate, prev => ({ ...prev, gitBranch: newBranch } as Tab))
+      return true
     },
 
     /** Find a terminal tab by its terminal id. */
@@ -616,22 +699,25 @@ export function createTabStore() {
     moveTabToTile(key: string, targetTileId: string) {
       const sourceTab = tabsByKey().get(key)
       const sourceTileId = sourceTab?.tileId
-      // Drop on debug — the `allTabKeys` snapshot allocates one
-      // entry per tab in the workspace on every drag-drop, just for
-      // diagnostic output that only matters under debug logging.
-      log.debug('moveTabToTile:start', {
-        key,
-        targetTileId,
-        sourceTileId,
-        sourceTabExists: sourceTab !== undefined,
-        allTabKeys: state.tabs.map(t => ({ key: tabKey(t), tileId: t.tileId })),
-      })
+      // The `allTabKeys` snapshot allocates one entry per tab in the
+      // workspace and only feeds diagnostic output, so build it lazily.
+      if (log.isDebug()) {
+        log.debug('moveTabToTile:start', {
+          key,
+          targetTileId,
+          sourceTileId,
+          sourceTabExists: sourceTab !== undefined,
+          allTabKeys: state.tabs.map(t => ({ key: tabKey(t), tileId: t.tileId })),
+        })
+      }
       setState('tabs', t => tabKey(t) === key, 'tileId', targetTileId)
-      log.debug('moveTabToTile:afterSetState', {
-        afterTabsAtSource: sourceTileId ? (tabsByTile().get(sourceTileId)?.length ?? 0) : null,
-        afterTabsAtTarget: tabsByTile().get(targetTileId)?.length ?? 0,
-        affectedTabTileId: tabsByKey().get(key)?.tileId,
-      })
+      if (log.isDebug()) {
+        log.debug('moveTabToTile:afterSetState', {
+          afterTabsAtSource: sourceTileId ? (tabsByTile().get(sourceTileId)?.length ?? 0) : null,
+          afterTabsAtTarget: tabsByTile().get(targetTileId)?.length ?? 0,
+          affectedTabTileId: tabsByKey().get(key)?.tileId,
+        })
+      }
 
       // Per-tile active fallback for the source: if the moved tab was
       // active there, pick the next-highest-mru tab still in that tile.

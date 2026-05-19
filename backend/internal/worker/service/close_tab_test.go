@@ -386,6 +386,48 @@ func TestRemoveWorktreeFromDisk_Success_ReturnsNil(t *testing.T) {
 	assert.NoError(t, err)
 	_, statErr := os.Stat(wtDir)
 	assert.True(t, os.IsNotExist(statErr))
+
+	// The post-`git worktree remove` cleanup fans out two independent
+	// goroutines (branch -D and DB DeleteWorktree). Both must run; the
+	// earlier serial implementation called them in sequence so a
+	// regression that skipped either would slip past the path-removed
+	// assertion above.
+	assert.False(t, localBranchExists(t, repoDir, "rwtfd-ok"), "unused branch should be deleted after worktree remove")
+	row, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
+	require.NoError(t, err)
+	assert.True(t, row.DeletedAt.Valid, "DB row soft-deleted on success path")
+}
+
+// TestRemoveWorktreeFromDisk_BranchInUse_KeepsBranch verifies the
+// IsBranchInUse guard that gates `git branch -D`: if another worktree is
+// still on the branch, the branch must survive. Pins the in-use → keep
+// contract through the post-parallelization code path.
+func TestRemoveWorktreeFromDisk_BranchInUse_KeepsBranch(t *testing.T) {
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	defer drainAllInFlight(svc)
+
+	repoDir := initRepo(t)
+	// Two worktrees, distinct paths, both on the same branch — git
+	// allows this only via `add --force`. The branch outlives the first
+	// removal because the second worktree is still on it.
+	branch := "rwtfd-shared"
+	wtA := filepath.Join(t.TempDir(), "rwtfd-shared-a")
+	wtB := filepath.Join(t.TempDir(), "rwtfd-shared-b")
+	run(t, repoDir, "git", "worktree", "add", "-b", branch, wtA)
+	run(t, repoDir, "git", "worktree", "add", "--force", wtB, branch)
+
+	wtIDA, err := svc.ensureTrackedWorktree(context.Background(), wtA)
+	require.NoError(t, err)
+	wtA_row, err := svc.Queries.GetWorktreeByID(context.Background(), wtIDA)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.removeWorktreeFromDisk(wtA_row, true))
+	assert.True(t, localBranchExists(t, repoDir, branch), "branch must survive when another worktree still uses it")
+	_, statErr := os.Stat(wtA)
+	assert.True(t, os.IsNotExist(statErr), "wtA path removed")
+	// wtB is untouched.
+	_, statErr = os.Stat(wtB)
+	assert.NoError(t, statErr, "wtB path still on disk")
 }
 
 func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T) {

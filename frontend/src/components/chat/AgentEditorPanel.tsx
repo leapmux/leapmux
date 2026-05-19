@@ -6,13 +6,13 @@ import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { PermissionMode } from '~/utils/controlResponse'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -20,7 +20,6 @@ import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
-import { spinner } from '~/styles/animations.css'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AttachmentStrip } from './AttachmentStrip'
@@ -422,7 +421,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           data-testid="interrupt-button"
                         >
                           <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
-                            <Icon icon={LoaderCircle} size="sm" class={spinner} />
+                            <Spinner />
                           </Show>
                           {interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}
                         </button>
@@ -437,7 +436,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         data-testid="send-button"
                       >
                         <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
-                          <Icon icon={LoaderCircle} size="sm" class={spinner} />
+                          <Spinner />
                         </Show>
                         Send
                       </button>

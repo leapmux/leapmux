@@ -1,6 +1,7 @@
 import type { TabContext } from './tabContext'
 import type { ProviderSettingChange } from '~/components/chat/providers/registry'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
+import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
@@ -39,7 +40,7 @@ export interface UseAgentOperationsProps {
   isActiveWorkspaceMutatable: () => boolean
   activeWorkspace: () => Workspace | null
   getCurrentTabContext: () => Pick<TabContext, 'workerId' | 'workingDir'>
-  setShowNewAgentDialog: (show: boolean) => void
+  newAgentDialog: ToggleDialogState
   setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
   focusEditor?: () => void
   forceScrollToBottom?: () => void
@@ -163,12 +164,12 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       return
     const ctx = props.getCurrentTabContext()
     if (!ctx.workerId || !ctx.workingDir) {
-      props.setShowNewAgentDialog(true)
+      props.newAgentDialog.open()
       return
     }
     const provider = providerOverride ?? resolvePreferredProvider()
     if (provider === null) {
-      props.setShowNewAgentDialog(true)
+      props.newAgentDialog.open()
       return
     }
     props.setNewAgentLoadingProvider(provider)
@@ -398,7 +399,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // the caller returns. The worker close RPC and Hub unregister are
   // fire-and-forget; failures are surfaced via toast without blocking
   // the UI or rolling back the local state — the tab is already gone.
-  const handleCloseAgent = (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP) => {
+  const handleAgentClose = (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP) => {
     const workerId = getAgentWorkerId(agentId)
 
     // Synchronous local cleanup: the tab disappears immediately.
@@ -436,7 +437,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleAgentSettingChange,
     handleRetryMessage,
     handleDeleteMessage,
-    handleCloseAgent,
+    handleAgentClose,
   }
 }
 

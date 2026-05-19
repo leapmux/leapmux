@@ -1,13 +1,11 @@
 import type { Component } from 'solid-js'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
-import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import { For, Show } from 'solid-js'
 import { isTunnelAvailable } from '~/api/platformBridge'
 import { RelativeTime } from '~/components/chat/RelativeTime'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
-import { IconButton } from '~/components/common/IconButton'
+import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { showInfoToast } from '~/components/common/Toast'
-import { menuTrigger } from '~/components/tree/sidebarActions.css'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { dangerMenuItem } from '~/styles/shared.css'
 import * as styles from './workerContextMenu.css'
@@ -65,25 +63,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
   }
 
   return (
-    <DropdownMenu
-      trigger={triggerProps => (
-        <IconButton
-          icon={MoreHorizontal}
-          size="sm"
-          class={menuTrigger}
-          onClick={(e: MouseEvent) => {
-            e.stopPropagation()
-            triggerProps.onClick()
-          }}
-          ref={triggerProps.ref}
-          onPointerDown={(e: PointerEvent) => {
-            e.stopPropagation()
-            triggerProps.onPointerDown()
-          }}
-          aria-expanded={triggerProps['aria-expanded']}
-        />
-      )}
-    >
+    <DropdownMenu trigger={rowContextMenuTrigger()}>
       <Show when={infoRows()}>
         {rows => (
           <button

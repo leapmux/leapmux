@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -204,13 +205,13 @@ func currentBranchName(t *testing.T, repoDir string) string {
 
 func localBranchExists(t *testing.T, repoDir, branchName string) bool {
 	t.Helper()
-	_, err := gitOutput(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/"+branchName)
+	_, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/"+branchName)
 	return err == nil
 }
 
 func mustGitOutput(t *testing.T, ctx context.Context, repoDir string, args ...string) string {
 	t.Helper()
-	out, err := gitOutput(ctx, repoDir, args...)
+	out, err := gitutil.Output(ctx, repoDir, args...)
 	require.NoError(t, err)
 	return out
 }

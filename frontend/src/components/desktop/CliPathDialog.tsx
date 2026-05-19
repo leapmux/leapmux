@@ -5,6 +5,7 @@ import { platformBridge } from '~/api/platformBridge'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
 import { useCopyButton } from '~/hooks/useCopyButton'
+import { formatErrorMessage } from '~/lib/errors'
 
 // When the install action will clobber a real (non-symlink) file at the
 // destination, render the primary action as a two-click danger ConfirmButton
@@ -83,7 +84,7 @@ export const CliPathDialog: Component<CliPathDialogProps> = (props) => {
       handleResult(result)
     }
     catch (err) {
-      setOutcome({ kind: 'io_error', message: err instanceof Error ? err.message : String(err) })
+      setOutcome({ kind: 'io_error', message: formatErrorMessage(err) })
     }
     finally {
       setBusy(false)

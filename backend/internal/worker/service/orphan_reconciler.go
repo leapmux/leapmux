@@ -208,8 +208,31 @@ func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[o
 		k := ownedTabKey{tabType: leapmuxv1.TabType_TAB_TYPE_FILE, tabID: row.TabID}
 		hub, ok := hubByKey[k]
 		if !ok {
+			// Order matters: drop the worktree_tabs link FIRST, then the
+			// file_tab row. The two calls are intentionally split (so
+			// orphan reconciliation never takes the worktree-removal
+			// branch closeTabCommon owns), but they aren't atomic — a
+			// failure between them on the OTHER order (file_tab first,
+			// worktree_tabs second) would permanently leak the
+			// worktree_tabs link: the next reconciler tick wouldn't see
+			// the file_tab row, so it wouldn't try to clean it up, and
+			// CountWorktreeTabs would over-count for that worktree
+			// forever. Doing it in THIS order lets eventual consistency
+			// recover: if the link drop fails we don't delete the
+			// file_tab row, so the next tick re-enters this branch and
+			// retries.
+			if err := r.queries.DeleteWorktreeTabsByTabID(ctx, db.DeleteWorktreeTabsByTabIDParams{
+				TabType: leapmuxv1.TabType_TAB_TYPE_FILE,
+				TabID:   row.TabID,
+			}); err != nil {
+				r.logger.Warn("orphan reconciler: drop worktree association for stale file tab",
+					"tab_id", row.TabID, "err", err)
+				// Leave the file_tab row in place so the next tick
+				// retries from the top.
+				continue
+			}
 			if r.files != nil {
-				if err := r.files.Revoke(ctx, row.OrgID, row.TabID); err != nil {
+				if err := r.files.RevokeRow(ctx, row.OrgID, row.TabID); err != nil {
 					r.logger.Warn("orphan reconciler: revoke stale file tab",
 						"tab_id", row.TabID, "err", err)
 				}

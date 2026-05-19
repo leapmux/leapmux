@@ -9,6 +9,7 @@ import { useAuth } from '~/context/AuthContext'
 import { useOrg } from '~/context/OrgContext'
 import { OrgMemberRole } from '~/generated/leapmux/v1/org_pb'
 import { formatLocalDateTime } from '~/lib/dateFormat'
+import { formatErrorMessage } from '~/lib/errors'
 import { isSoloMode } from '~/lib/systemInfo'
 import { sanitizeSlug } from '~/lib/validate'
 import { emptyState, errorText, successText } from '~/styles/shared.css'
@@ -69,7 +70,7 @@ export const OrgManagementPage: Component = () => {
       setMembers(resp.members)
     }
     catch (e) {
-      setMembersError(e instanceof Error ? e.message : 'Failed to load members')
+      setMembersError(formatErrorMessage(e, 'Failed to load members'))
     }
     finally {
       setMembersLoading(false)
@@ -103,7 +104,7 @@ export const OrgManagementPage: Component = () => {
       await org.refetch()
     }
     catch (e) {
-      setNameError(e instanceof Error ? e.message : 'Failed to update name')
+      setNameError(formatErrorMessage(e, 'Failed to update name'))
     }
     finally {
       setSavingName(false)
@@ -133,7 +134,7 @@ export const OrgManagementPage: Component = () => {
       await fetchMembers()
     }
     catch (e) {
-      setInviteError(e instanceof Error ? e.message : 'Failed to invite member')
+      setInviteError(formatErrorMessage(e, 'Failed to invite member'))
     }
     finally {
       setInviting(false)
@@ -153,7 +154,7 @@ export const OrgManagementPage: Component = () => {
       await fetchMembers()
     }
     catch (e) {
-      setMembersError(e instanceof Error ? e.message : 'Failed to remove member')
+      setMembersError(formatErrorMessage(e, 'Failed to remove member'))
     }
   }
 
@@ -166,7 +167,7 @@ export const OrgManagementPage: Component = () => {
       await fetchMembers()
     }
     catch (e) {
-      setMembersError(e instanceof Error ? e.message : 'Failed to update role')
+      setMembersError(formatErrorMessage(e, 'Failed to update role'))
     }
   }
 
@@ -186,7 +187,7 @@ export const OrgManagementPage: Component = () => {
       await org.refetch()
     }
     catch (e) {
-      setCreateOrgError(e instanceof Error ? e.message : 'Failed to create organization')
+      setCreateOrgError(formatErrorMessage(e, 'Failed to create organization'))
     }
     finally {
       setCreatingOrg(false)
@@ -208,7 +209,7 @@ export const OrgManagementPage: Component = () => {
       await org.refetch()
     }
     catch (e) {
-      setDeleteError(e instanceof Error ? e.message : 'Failed to delete organization')
+      setDeleteError(formatErrorMessage(e, 'Failed to delete organization'))
     }
     finally {
       setDeletingOrg(false)

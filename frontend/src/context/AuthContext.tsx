@@ -5,6 +5,7 @@ import { createContext, createSignal, onMount, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { loadTimeouts, setOnAuthError } from '~/api/transport'
 import { LoginRequestSchema } from '~/generated/leapmux/v1/auth_pb'
+import { formatErrorMessage } from '~/lib/errors'
 import { isSoloMode, loadSystemInfo } from '~/lib/systemInfo'
 
 interface AuthState {
@@ -57,7 +58,7 @@ export const AuthProvider: ParentComponent = (props) => {
       loadTimeouts().catch(() => {})
     }
     catch (e) {
-      const msg = e instanceof Error ? e.message : 'Login failed'
+      const msg = formatErrorMessage(e, 'Login failed')
       setError(msg)
       throw e
     }

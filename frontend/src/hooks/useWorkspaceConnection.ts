@@ -141,7 +141,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               }
             }
             if (sc.gitStatus) {
-              const next = toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel)
+              const next = toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel, sc.gitStatus.isWorktree)
               const i = (tabs === snap.tabs ? snap.tabs : tabs).findIndex(t => t.type === TabType.AGENT && t.id === agentId)
               if (i >= 0 && gitTabFieldsDiffer(tabs[i], next)) {
                 tabs = tabs === snap.tabs ? tabs.slice() : tabs
@@ -468,6 +468,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         if ((sc.availableModels && sc.availableModels.length > 0) || (sc.availableOptionGroups && sc.availableOptionGroups.length > 0))
           updateSettingsLabelCache(sc.availableModels, sc.availableOptionGroups)
 
+        // Consolidate every per-status field into one updateTab so the
+        // store walks state.tabs once. The `agentGitStatus` (full proto)
+        // and the three string git fields are derived from the same
+        // sc.gitStatus payload — splitting them across two calls (the
+        // historical pattern) walked the tabs array twice per push.
         tabStore.updateTab(TabType.AGENT, sc.agentId, {
           ...(hasStatus ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId } : {}),
           // Carry startupError alongside status transitions so the tab's
@@ -501,15 +506,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           ...(sc.availableOptionGroups && sc.availableOptionGroups.length > 0
             ? { availableOptionGroups: sc.availableOptionGroups }
             : {}),
-          ...(sc.gitStatus ? { agentGitStatus: sc.gitStatus } : {}),
+          ...(sc.gitStatus
+            ? {
+                agentGitStatus: sc.gitStatus,
+                ...toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel, sc.gitStatus.isWorktree),
+              }
+            : {}),
         })
-        if (sc.gitStatus) {
-          tabStore.updateTab(
-            TabType.AGENT,
-            sc.agentId,
-            toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel),
-          )
-        }
         if (!pendingSettings) {
           settingsLoading.stop()
         }
@@ -626,7 +629,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           const key = tabKey({ type: TabType.TERMINAL, id: terminalId })
           const owningWsId = params.registry.findContaining(s => s.tabs.some(t => tabKey(t) === key))?.workspaceId
           if (owningWsId) {
-            const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel)
+            const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel, sc.gitIsWorktree)
             params.registry.update(owningWsId, (snap) => {
               const i = snap.tabs.findIndex(t => tabKey(t) === key)
               if (i < 0 || !gitTabFieldsDiffer(snap.tabs[i], next))
@@ -680,7 +683,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // arrives so a reconnect or a late worktree-creation refreshes the
         // badge.
         if (existingTab && (sc.gitBranch || sc.gitOriginUrl || sc.gitToplevel)) {
-          const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel)
+          const next = toGitTabFields(sc.gitBranch, sc.gitOriginUrl, sc.gitToplevel, sc.gitIsWorktree)
           if (gitTabFieldsDiffer(existingTab, next))
             tabStore.updateTab(TabType.TERMINAL, terminalId, next)
         }

@@ -13,7 +13,12 @@ import { getAvailableAgentProviders, sortAgentProvidersByName } from '~/lib/agen
 import * as styles from './AgentProviderSelector.css'
 
 interface AgentProviderSelectorProps {
-  value: Accessor<AgentProvider>
+  // Accept `| undefined` because `useAgentProviderSelection` types its
+  // signal that way: when the worker has zero providers, the runtime
+  // value is undefined and the type now reflects that honestly. The
+  // currentProvider memo below already handles the missing case by
+  // falling through to the first available provider or CLAUDE_CODE.
+  value: Accessor<AgentProvider | undefined>
   onChange: (provider: AgentProvider) => void
   availableProviders?: AgentProvider[]
   onRefresh?: () => void
@@ -23,7 +28,9 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
   const providers = createMemo(() => sortAgentProvidersByName(getAvailableAgentProviders(props.availableProviders)))
   const currentProvider = createMemo(() => {
     const current = props.value()
-    return providers().includes(current) ? current : providers()[0] ?? AgentProvider.CLAUDE_CODE
+    if (current !== undefined && providers().includes(current))
+      return current
+    return providers()[0] ?? AgentProvider.CLAUDE_CODE
   })
 
   return (

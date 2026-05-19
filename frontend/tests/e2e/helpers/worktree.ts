@@ -16,8 +16,8 @@ import {
   InspectLastTabCloseResponseSchema,
   KeepWorktreeRequestSchema,
   KeepWorktreeResponseSchema,
-  PushBranchForCloseRequestSchema,
-  PushBranchForCloseResponseSchema,
+  PushBranchRequestSchema,
+  PushBranchResponseSchema,
 } from '../../../src/generated/leapmux/v1/git_pb'
 import {
   CloseTerminalRequestSchema,
@@ -320,23 +320,24 @@ export async function inspectLastTabCloseViaAPI(
     InspectLastTabCloseResponseSchema,
     { tabType, tabId },
   )
+  const gs = resp.gitState
   return {
     target: resp.target,
     shouldPrompt: resp.shouldPrompt,
     worktreePath: resp.worktreePath,
     worktreeId: resp.worktreeId,
     branchName: resp.branchName,
-    canPush: resp.canPush,
-    hasUncommittedChanges: resp.hasUncommittedChanges,
-    unpushedCommitCount: resp.unpushedCommitCount,
-    remoteBranchMissing: resp.remoteBranchMissing,
+    canPush: gs?.canPush ?? false,
+    hasUncommittedChanges: gs?.hasUncommittedChanges ?? false,
+    unpushedCommitCount: gs?.unpushedCommitCount ?? 0,
+    remoteBranchMissing: gs?.remoteBranchMissing ?? false,
   }
 }
 
 /**
- * Push or commit-and-push for close via E2EE channel.
+ * Push or commit-and-push the branch a tab lives on, via E2EE channel.
  */
-export async function pushBranchForCloseViaAPI(
+export async function pushBranchViaAPI(
   hubUrl: string,
   token: string,
   workerId: string,
@@ -346,9 +347,9 @@ export async function pushBranchForCloseViaAPI(
   const channel = await getTestChannel(hubUrl, token)
   await channel.callWorker(
     workerId,
-    'PushBranchForClose',
-    PushBranchForCloseRequestSchema,
-    PushBranchForCloseResponseSchema,
+    'PushBranch',
+    PushBranchRequestSchema,
+    PushBranchResponseSchema,
     { tabType, tabId },
   )
 }

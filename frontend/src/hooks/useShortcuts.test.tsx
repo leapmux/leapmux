@@ -121,9 +121,9 @@ function makeProps() {
     termOps: {
       handleOpenTerminal: vi.fn(),
     },
-    setShowNewAgentDialog: vi.fn(),
-    setShowNewTerminalDialog: vi.fn(),
-    setShowNewWorkspace: vi.fn(),
+    newAgentDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
+    newTerminalDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
+    newWorkspaceDialog: { open: vi.fn(), close: vi.fn(), value: () => null },
     hasActiveWorkspace: () => true,
     toggleFloatingTab: vi.fn(),
     toggleLeftSidebar: vi.fn(),
@@ -133,7 +133,7 @@ function makeProps() {
     splitFocusedTile: vi.fn(),
     scrollFocusedTabPage: vi.fn(),
     writeToFocusedTerminal: vi.fn(),
-    getCurrentTabContext: () => ({ workerId: '', workingDir: '', homeDir: '' }),
+    getCurrentTabContext: () => ({ workerId: '', workingDir: '', homeDir: '', gitToplevel: '' }),
     customKeybindings: () => [],
   }
 }
@@ -249,7 +249,7 @@ describe('useShortcuts', () => {
     function makeNoWorkspaceProps() {
       const props = makeProps() as any
       props.hasActiveWorkspace = () => false
-      props.setShowNewWorkspace = vi.fn()
+      props.newWorkspaceDialog = { open: vi.fn(), close: vi.fn(), value: () => null }
       return props
     }
 
@@ -262,12 +262,12 @@ describe('useShortcuts', () => {
       })
 
       executeCommand('app.newAgent')
-      expect(props.setShowNewWorkspace).toHaveBeenCalledWith(true)
+      expect(props.newWorkspaceDialog.open).toHaveBeenCalledWith({})
       expect(props.agentOps.handleOpenAgent).not.toHaveBeenCalled()
 
       executeCommand('app.newAgentDialog')
-      expect(props.setShowNewWorkspace).toHaveBeenCalledTimes(2)
-      expect(props.setShowNewAgentDialog).not.toHaveBeenCalled()
+      expect(props.newWorkspaceDialog.open).toHaveBeenCalledTimes(2)
+      expect(props.newAgentDialog.open).not.toHaveBeenCalled()
     })
 
     it('makes newTerminal and newTerminalDialog a no-op', () => {
@@ -282,8 +282,8 @@ describe('useShortcuts', () => {
       executeCommand('app.newTerminalDialog')
 
       expect(props.termOps.handleOpenTerminal).not.toHaveBeenCalled()
-      expect(props.setShowNewTerminalDialog).not.toHaveBeenCalled()
-      expect(props.setShowNewWorkspace).not.toHaveBeenCalled()
+      expect(props.newTerminalDialog.open).not.toHaveBeenCalled()
+      expect(props.newWorkspaceDialog.open).not.toHaveBeenCalled()
     })
   })
 
@@ -374,6 +374,7 @@ describe('useShortcuts', () => {
         workerId: '',
         workingDir: workingDir ?? '',
         homeDir: '',
+        gitToplevel: '',
       })
       return props
     }

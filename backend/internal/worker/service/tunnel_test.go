@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -48,7 +49,7 @@ func TestOpenTunnelConn_OwnershipEnforcement(t *testing.T) {
 		TargetAddr: "127.0.0.1",
 		TargetPort: 1234,
 	})
-	d.DispatchWith("user-2", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), "user-2", &leapmuxv1.InnerRpcRequest{
 		Method:  "OpenTunnelConn",
 		Payload: payload,
 	}, w2)

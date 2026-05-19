@@ -10,10 +10,20 @@ SELECT * FROM workspace_section_items
 WHERE user_id = $1 AND workspace_id = $2;
 
 -- name: ListWorkspaceSectionItemsByUser :many
+-- workspace_id is the deterministic tiebreaker. wsi.position is a
+-- lexorank string with NO uniqueness constraint, and two items
+-- legitimately share a position: lexorank.first() always returns 'n',
+-- so dragging two workspaces as the first item into two different
+-- sections both produce position='n'. Section deletion's cascade
+-- (SectionService.DeleteSection re-stamps positions via lexorank.After
+-- in a single RunInTransaction loop) walks items in the order this
+-- query returns them; two 'n' items can coexist mid-iteration.
+-- Without the workspace_id tiebreaker the planner flips their
+-- relative order across refreshes.
 SELECT wsi.* FROM workspace_section_items wsi
 JOIN workspace_sections ws ON wsi.section_id = ws.id
 WHERE wsi.user_id = $1
-ORDER BY ws.position, wsi.position;
+ORDER BY ws.position, wsi.position, wsi.workspace_id;
 
 -- name: DeleteWorkspaceSectionItem :exec
 DELETE FROM workspace_section_items
@@ -22,10 +32,6 @@ WHERE user_id = $1 AND workspace_id = $2;
 -- name: DeleteWorkspaceSectionItemsBySection :exec
 DELETE FROM workspace_section_items
 WHERE section_id = $1;
-
--- name: MoveWorkspaceSectionItemsToSection :exec
-UPDATE workspace_section_items SET section_id = $1
-WHERE section_id = $2;
 
 -- name: HasWorkspaceSectionItemsBySection :one
 SELECT EXISTS(SELECT 1 FROM workspace_section_items WHERE section_id = $1) AS has_items;

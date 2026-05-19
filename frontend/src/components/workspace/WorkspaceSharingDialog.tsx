@@ -1,15 +1,14 @@
 import type { Component } from 'solid-js'
 import type { OrgMember } from '~/generated/leapmux/v1/org_pb'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { orgClient, workspaceClient } from '~/api/clients'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
-import { Icon } from '~/components/common/Icon'
+import { Spinner } from '~/components/common/Spinner'
 import { useOrg } from '~/context/OrgContext'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { spinner } from '~/styles/animations.css'
+import { formatErrorMessage } from '~/lib/errors'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './WorkspaceSharingDialog.css'
 
@@ -39,7 +38,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
       setMembers(membersResp.members)
     }
     catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load sharing info')
+      setError(formatErrorMessage(e, 'Failed to load sharing info'))
     }
     finally {
       setLoading(false)
@@ -64,7 +63,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
       props.onSaved()
     }
     catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update sharing')
+      setError(formatErrorMessage(e, 'Failed to update sharing'))
     }
     finally {
       saving.stop()
@@ -118,7 +117,7 @@ export const WorkspaceSharingDialog: Component<WorkspaceSharingDialogProps> = (p
             Cancel
           </button>
           <button onClick={() => handleSave()} disabled={saving.loading()}>
-            <Show when={saving.loading()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+            <Show when={saving.loading()}><Spinner /></Show>
             {saving.loading() ? 'Saving...' : 'Save'}
           </button>
         </footer>

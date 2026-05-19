@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createLogger, setDebugEnabled } from './logger'
+import { createLogger, isDebugEnabled, setDebugEnabled } from './logger'
 
 describe('createLogger', () => {
   it('returns the same instance for the same name (singleton)', () => {
@@ -82,6 +82,39 @@ describe('createLogger', () => {
       expect(infoSpy).toHaveBeenCalledWith('[test-other-levels]', 'i')
       expect(warnSpy).toHaveBeenCalledWith('[test-other-levels]', 'w')
       expect(errorSpy).toHaveBeenCalledWith('[test-other-levels]', 'e')
+    })
+  })
+
+  describe('isDebug predicate', () => {
+    afterEach(() => setDebugEnabled(false))
+
+    it('mirrors setDebugEnabled state for both the module helper and per-logger isDebug', () => {
+      const log = createLogger('test-isdebug')
+      // Default state: debug off, both predicates agree.
+      expect(isDebugEnabled()).toBe(false)
+      expect(log.isDebug()).toBe(false)
+      setDebugEnabled(true)
+      expect(isDebugEnabled()).toBe(true)
+      expect(log.isDebug()).toBe(true)
+      setDebugEnabled(false)
+      expect(isDebugEnabled()).toBe(false)
+      expect(log.isDebug()).toBe(false)
+    })
+
+    it('lets callers skip expensive payload construction when debug is disabled', () => {
+      // Stand-in for the moveTabToTile pattern: a payload-building thunk
+      // that should NOT run when debug is disabled. The whole point of
+      // log.isDebug() is to gate this without a separate import.
+      const log = createLogger('test-payload-gate')
+      const buildPayload = vi.fn(() => ({ heavy: 'allocation' }))
+      if (log.isDebug())
+        log.debug('moveTabToTile:start', buildPayload())
+      expect(buildPayload).not.toHaveBeenCalled()
+      // Enable debug — the same call site now runs the builder.
+      setDebugEnabled(true)
+      if (log.isDebug())
+        log.debug('moveTabToTile:start', buildPayload())
+      expect(buildPayload).toHaveBeenCalledTimes(1)
     })
   })
 })

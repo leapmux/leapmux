@@ -1,40 +1,31 @@
 import type { Component } from 'solid-js'
+import type { LastTabConfirmState } from './LastTabCloseDialog'
 import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
-import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
+import type { useTabOperations } from './useTabOperations'
+import type { useTerminalOperations } from './useTerminalOperations'
+import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { DialogState, ToggleDialogState } from '~/hooks/createDialogState'
 import type { KeyPinDecision } from '~/lib/channel'
 import type { createLayoutStore } from '~/stores/layout.store'
+import type { createSectionStore } from '~/stores/section.store'
 import type { createTabStore } from '~/stores/tab.store'
-import type { createWorkspaceStore } from '~/stores/workspace.store'
+import type { Tab } from '~/stores/tab.types'
 import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import { createSignal, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { sectionClient } from '~/api/clients'
-import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
-import { Dialog } from '~/components/common/Dialog'
-import { Icon } from '~/components/common/Icon'
 import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
-import { showWarnToast } from '~/components/common/Toast'
-import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
+import { ChangeBranchDialog } from '~/components/workspace/ChangeBranchDialog'
+import { DeleteBranchDialog } from '~/components/workspace/DeleteBranchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
-import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { pluralize } from '~/lib/plural'
-import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
+import { mid } from '~/lib/lexorank'
 import { protoToAgentTabFields } from '~/stores/tab.helpers'
-import { spinner } from '~/styles/animations.css'
+import { LastTabCloseDialog } from './LastTabCloseDialog'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
-
-type LastTabCloseChoice = 'cancel' | 'schedule-delete' | 'close-anyway'
-
-interface LastTabConfirmState extends InspectLastTabCloseResponse {
-  resolve: (choice: LastTabCloseChoice) => void
-  onPush: () => Promise<void>
-}
 
 export interface KeyPinConfirmState {
   workerId: string
@@ -43,31 +34,101 @@ export interface KeyPinConfirmState {
   resolve: (decision: KeyPinDecision) => void
 }
 
+export interface ChangeBranchState {
+  workerId: string
+  /**
+   * `git rev-parse --show-toplevel` of the branch group's working dir.
+   * For a main repo this is the repo root; for a linked worktree it's
+   * the worktree root. Matches `Tab.gitToplevel`.
+   */
+  gitToplevel: string
+  workspaceId: string
+  /**
+   * Current branch label on the row that opened the dialog. Threaded so
+   * the dialog can seed its path-info snapshot synchronously instead of
+   * flashing an empty `currentBranch` until the probe lands. `null`
+   * when the row groups tabs that have no current branch.
+   */
+  branchName: string | null
+  /**
+   * True iff `gitToplevel` resolves to a linked worktree (mirrors the
+   * sidebar's BranchGroup.isWorktree). Threaded so the dialog can seed
+   * `isWorktreeRoot` / `isRepoRoot` correctly before the inspect RPC
+   * lands — without this, a worktree-opened dialog would briefly paint
+   * a main-repo shape and any GitOptions memo branching on the seeded
+   * fields (e.g. the suggested worktree-path computation) would compute
+   * against the wrong values until the RPC corrects them.
+   */
+  isWorktree: boolean
+}
+
+export interface DeleteBranchState {
+  workerId: string
+  /** See ChangeBranchState.gitToplevel. */
+  gitToplevel: string
+  /**
+   * Current branch label, threaded so the dialog can seed its path-info
+   * snapshot and skip the mount-time getGitInfo probe. `null` when the
+   * tab group has no current branch (sidebar's "(no branch)" bucket).
+   */
+  branchName: string | null
+  tabs: Tab[]
+}
+
+export interface WorkspaceConfirmPayload {
+  workspaceId: string
+  resolve: (confirmed: boolean) => void
+}
+
+/**
+ * Open-time payload for the NewWorkspaceDialog. Both fields are optional:
+ *   - `preselectedWorkerId` seeds the worker dropdown (`?newWorkspace=true&workerId=`
+ *     from the URL, or the workspace-sidebar "+ workspace" button on a specific worker).
+ *   - `targetSectionId` is the section the freshly-created workspace will be moved into
+ *     post-CreateWorkspace (a left-sidebar "+" inside a section header).
+ * The shortcut path opens with `{}` (no preselection, default section).
+ */
+export interface NewWorkspacePayload {
+  preselectedWorkerId?: string
+  targetSectionId?: string | null
+}
+
+/**
+ * All app-shell dialog handles, bundled at the AppShell boundary so adding
+ * a new dialog touches three places (AppShell creation, this prop, the
+ * dialog component) instead of threading a fresh show/set pair through
+ * every layer.
+ */
+export interface AppShellDialogStates {
+  newAgent: ToggleDialogState
+  newTerminal: ToggleDialogState
+  newWorkspace: DialogState<NewWorkspacePayload>
+  confirmDeleteWs: DialogState<WorkspaceConfirmPayload>
+  confirmArchiveWs: DialogState<WorkspaceConfirmPayload>
+  lastTabConfirm: DialogState<LastTabConfirmState>
+  keyPinConfirm: DialogState<KeyPinConfirmState>
+  changeBranch: DialogState<ChangeBranchState>
+  deleteBranch: DialogState<DeleteBranchState>
+}
+
 interface AppShellDialogsProps {
-  showNewAgentDialog: boolean
-  setShowNewAgentDialog: (v: boolean) => void
-  showNewTerminalDialog: boolean
-  setShowNewTerminalDialog: (v: boolean) => void
-  showNewWorkspace: boolean
-  setShowNewWorkspace: (v: boolean) => void
-  preselectedWorkerId: string | undefined
-  setPreselectedWorkerId: (v: string | undefined) => void
-  newWorkspaceTargetSectionId: string | null
-  setNewWorkspaceTargetSectionId: (v: string | null) => void
-  confirmDeleteWs: { workspaceId: string, resolve: (confirmed: boolean) => void } | null
-  setConfirmDeleteWs: (v: { workspaceId: string, resolve: (confirmed: boolean) => void } | null) => void
-  confirmArchiveWs: { workspaceId: string, resolve: (confirmed: boolean) => void } | null
-  setConfirmArchiveWs: (v: { workspaceId: string, resolve: (confirmed: boolean) => void } | null) => void
-  lastTabConfirm: LastTabConfirmState | null
-  setLastTabConfirm: (v: LastTabConfirmState | null) => void
-  keyPinConfirm: KeyPinConfirmState | null
-  setKeyPinConfirm: (v: KeyPinConfirmState | null) => void
+  dialogs: AppShellDialogStates
+  /**
+   * Called after a successful Change branch / non-worktree Delete
+   * branch with the branch the working directory is now on. The
+   * parent stamps every tab in `(workerId, gitToplevel)` with the new
+   * label and, if that repo is the active tab's repo, refreshes the
+   * gitFileStatusStore so diff stats track the new HEAD.
+   */
+  onBranchChanged?: (workerId: string, gitToplevel: string, newBranch: string) => void
   activeWorkspace: () => { id: string } | null
   getCurrentTabContext: () => TabContext
   agentOps: ReturnType<typeof useAgentOperations>
+  termOps: ReturnType<typeof useTerminalOperations>
+  tabOps: ReturnType<typeof useTabOperations>
   tabStore: ReturnType<typeof createTabStore>
   layoutStore: ReturnType<typeof createLayoutStore>
-  workspaceStore: ReturnType<typeof createWorkspaceStore>
+  sectionStore: ReturnType<typeof createSectionStore>
   registry: WorkspaceStoreRegistryType
   focusEditor: () => void
   orgSlug: string
@@ -78,9 +139,30 @@ interface AppShellDialogsProps {
 }
 
 export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
+  // Full per-agent metadata lives on the Tab record now;
+  // protoToAgentTabFields also primes settingsLabelCache.
+  const addAgentTabToFocusedTile = (agent: AgentInfo) => {
+    const tileId = props.layoutStore.focusedTileId()
+    const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
+    props.tabStore.addTab({
+      type: TabType.AGENT,
+      id: agent.id,
+      tileId,
+      ...protoToAgentTabFields(agent.workerId, agent),
+    }, { afterKey })
+    props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, agent.id)
+  }
+
+  const addTerminalTabToFocusedTile = (terminalId: string, workerId: string, workingDir: string, title: string) => {
+    const tileId = props.layoutStore.focusedTileId()
+    const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
+    props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir, status: TerminalStatus.READY }, { afterKey })
+    props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, terminalId)
+  }
+
   return (
     <>
-      <Show when={props.showNewAgentDialog}>
+      <Show when={props.dialogs.newAgent.isOpen()}>
         <NewAgentDialog
           workspaceId={props.activeWorkspace()?.id ?? ''}
           defaultWorkerId={props.getCurrentTabContext().workerId}
@@ -88,79 +170,68 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           availableProviders={props.availableProviders}
           onRefreshProviders={props.onRefreshProviders}
           onCreated={(agent) => {
-            props.setShowNewAgentDialog(false)
-            const tileId = props.layoutStore.focusedTileId()
-            const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-            // Full per-agent metadata lives on the Tab record now;
-            // protoToAgentTabFields also primes settingsLabelCache.
-            props.tabStore.addTab({
-              type: TabType.AGENT,
-              id: agent.id,
-              tileId,
-              ...protoToAgentTabFields(agent.workerId, agent),
-            }, { afterKey })
-            props.tabStore.setActiveTabForTile(tileId, TabType.AGENT, agent.id)
+            props.dialogs.newAgent.close()
+            addAgentTabToFocusedTile(agent)
             requestAnimationFrame(() => props.focusEditor())
           }}
-          onClose={() => props.setShowNewAgentDialog(false)}
+          onClose={() => props.dialogs.newAgent.close()}
         />
       </Show>
 
-      <Show when={props.showNewTerminalDialog}>
+      <Show when={props.dialogs.newTerminal.isOpen()}>
         <NewTerminalDialog
           workspaceId={props.activeWorkspace()?.id ?? ''}
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
           onCreated={(terminalId, workerId, workingDir, title) => {
-            props.setShowNewTerminalDialog(false)
-            const ws = props.activeWorkspace()
-            if (!ws)
+            props.dialogs.newTerminal.close()
+            if (!props.activeWorkspace())
               return
-            const tileId = props.layoutStore.focusedTileId()
-            const afterKey = props.tabStore.getActiveTabKeyForTile(tileId)
-            props.tabStore.addTab({ type: TabType.TERMINAL, id: terminalId, title, tileId, workerId, workingDir, status: TerminalStatus.READY }, { afterKey })
-            props.tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, terminalId)
+            addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title)
           }}
-          onClose={() => props.setShowNewTerminalDialog(false)}
+          onClose={() => props.dialogs.newTerminal.close()}
         />
       </Show>
 
-      <Show when={props.showNewWorkspace}>
-        <NewWorkspaceDialog
-          preselectedWorkerId={props.preselectedWorkerId}
-          availableProviders={props.availableProviders}
-          onRefreshProviders={props.onRefreshProviders}
-          registry={props.registry}
-          onCreated={(workspaceId, _wid) => {
-            props.setShowNewWorkspace(false)
-            props.setPreselectedWorkerId(undefined)
-            const targetSectionId = props.newWorkspaceTargetSectionId
-            const refreshWorkspaces = props.loadWorkspaces
-            const clearTargetSection = props.setNewWorkspaceTargetSectionId
-            if (targetSectionId) {
-              sectionClient.moveWorkspace({
-                workspaceId,
-                sectionId: targetSectionId,
-                position: 'N',
-              }).catch(() => {}).finally(() => {
-                clearTargetSection(null)
+      <Show when={props.dialogs.newWorkspace.value()}>
+        {payload => (
+          <NewWorkspaceDialog
+            preselectedWorkerId={payload().preselectedWorkerId}
+            availableProviders={props.availableProviders}
+            onRefreshProviders={props.onRefreshProviders}
+            registry={props.registry}
+            onCreated={(workspaceId) => {
+              const targetSectionId = payload().targetSectionId ?? null
+              props.dialogs.newWorkspace.close()
+              const refreshWorkspaces = props.loadWorkspaces
+              if (targetSectionId) {
+                // Append past the section's existing items so the new
+                // workspace gets a unique lexorank rather than colliding
+                // with whichever item already sits at lexorank.first()
+                // ("n"). A hardcoded 'N' position would land every new
+                // workspace at the same rank, and the SQL planner would
+                // then shuffle the tied rows on every page refresh.
+                const lastItem = props.sectionStore.getItemsForSection(targetSectionId).at(-1)
+                const position = lastItem ? mid(lastItem.position, '') : mid('', '')
+                sectionClient.moveWorkspace({
+                  workspaceId,
+                  sectionId: targetSectionId,
+                  position,
+                }).catch(() => {}).finally(() => {
+                  refreshWorkspaces()
+                })
+              }
+              else {
                 refreshWorkspaces()
-              })
-            }
-            else {
-              refreshWorkspaces()
-            }
-            props.navigate(`/o/${props.orgSlug}/workspace/${workspaceId}`)
-          }}
-          onClose={() => {
-            props.setShowNewWorkspace(false)
-            props.setPreselectedWorkerId(undefined)
-            props.setNewWorkspaceTargetSectionId(null)
-          }}
-        />
+              }
+              props.navigate(`/o/${props.orgSlug}/workspace/${workspaceId}`)
+            }}
+            onClose={() => props.dialogs.newWorkspace.close()}
+          />
+        )}
       </Show>
 
-      <Show when={props.confirmDeleteWs}>
+      <Show when={props.dialogs.confirmDeleteWs.value()}>
         {state => (
           <ConfirmDialog
             title="Delete workspace"
@@ -168,11 +239,11 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             danger
             onConfirm={() => {
               state().resolve(true)
-              props.setConfirmDeleteWs(null)
+              props.dialogs.confirmDeleteWs.close()
             }}
             onCancel={() => {
               state().resolve(false)
-              props.setConfirmDeleteWs(null)
+              props.dialogs.confirmDeleteWs.close()
             }}
           >
             <p>Are you sure you want to delete this workspace? This cannot be undone.</p>
@@ -180,18 +251,18 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.confirmArchiveWs}>
+      <Show when={props.dialogs.confirmArchiveWs.value()}>
         {state => (
           <ConfirmDialog
             title="Archive workspace"
             confirmLabel="Archive"
             onConfirm={() => {
               state().resolve(true)
-              props.setConfirmArchiveWs(null)
+              props.dialogs.confirmArchiveWs.close()
             }}
             onCancel={() => {
               state().resolve(false)
-              props.setConfirmArchiveWs(null)
+              props.dialogs.confirmArchiveWs.close()
             }}
           >
             <p>Are you sure you want to archive this workspace? All active agents and terminals will be stopped.</p>
@@ -199,105 +270,17 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.lastTabConfirm}>
-        {(confirm) => {
-          const handleCancel = () => {
-            confirm().resolve('cancel')
-            props.setLastTabConfirm(null)
-          }
-          const [pushing, setPushing] = createSignal(false)
-          const handlePush = async () => {
-            setPushing(true)
-            try {
-              await confirm().onPush()
-            }
-            catch (err) {
-              showWarnToast('Failed to push branch', err)
-            }
-            finally {
-              setPushing(false)
-            }
-          }
-          const handleScheduleDelete = () => {
-            confirm().resolve('schedule-delete')
-            props.setLastTabConfirm(null)
-          }
-          const handleCloseAnyway = () => {
-            confirm().resolve('close-anyway')
-            props.setLastTabConfirm(null)
-          }
-          return (
-            <Dialog title="Close last tab" onClose={handleCancel}>
-              <section>
-                <p>
-                  <Show
-                    when={confirm().target === LastTabCloseTarget.WORKTREE}
-                    fallback={(
-                      <>
-                        You are closing the last non-worktree tab for branch
-                        {' '}
-                        <code>{confirm().branchName}</code>
-                        .
-                      </>
-                    )}
-                  >
-                    You are closing the last tab for worktree
-                    {' '}
-                    <code>{confirm().worktreePath}</code>
-                    .
-                  </Show>
-                </p>
-                <p>
-                  Branch:
-                  {' '}
-                  <code>{confirm().branchName}</code>
-                </p>
-                <Show when={confirm().hasUncommittedChanges}>
-                  <p>
-                    Uncommitted changes:
-                    {' '}
-                    <DiffStatsBadge stats={diffStatsFromTabFields(confirm())} />
-                  </p>
-                </Show>
-                <Show when={confirm().unpushedCommitCount > 0}>
-                  <p>
-                    {pluralize(confirm().unpushedCommitCount, 'commit')}
-                    {' '}
-                    not pushed.
-                  </p>
-                </Show>
-                <Show when={confirm().remoteBranchMissing || (!confirm().upstreamExists && confirm().canPush)}>
-                  <p>Branch not pushed to remote.</p>
-                </Show>
-                <Show when={!confirm().hasUncommittedChanges && confirm().unpushedCommitCount === 0 && !confirm().remoteBranchMissing && confirm().upstreamExists}>
-                  <p>No uncommitted changes or unpushed commits.</p>
-                </Show>
-              </section>
-              <footer>
-                <button type="button" class="outline" onClick={handleCancel}>
-                  Cancel
-                </button>
-                <Show when={confirm().canPush}>
-                  <button type="button" onClick={handlePush} disabled={pushing()}>
-                    {confirm().hasUncommittedChanges ? 'Commit and Push' : 'Push'}
-                    <Show when={pushing()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
-                  </button>
-                </Show>
-                <Show when={confirm().target === LastTabCloseTarget.WORKTREE}>
-                  <ConfirmButton data-variant="danger" onClick={handleScheduleDelete}>
-                    Delete
-                  </ConfirmButton>
-                </Show>
-                <ConfirmButton data-variant="danger" onClick={handleCloseAnyway}>
-                  Close anyway
-                </ConfirmButton>
-              </footer>
-            </Dialog>
-          )
-        }}
+      <Show when={props.dialogs.lastTabConfirm.value()}>
+        {confirm => (
+          <LastTabCloseDialog
+            state={confirm()}
+            onDismiss={() => props.dialogs.lastTabConfirm.close()}
+            onStatusRefreshed={refreshed => props.dialogs.lastTabConfirm.update(refreshed)}
+          />
+        )}
       </Show>
 
-      <Show when={props.keyPinConfirm}>
+      <Show when={props.dialogs.keyPinConfirm.value()}>
         {state => (
           <KeyPinMismatchDialog
             workerId={state().workerId}
@@ -305,8 +288,56 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             actualFingerprint={state().actualFingerprint}
             resolve={(decision) => {
               state().resolve(decision)
-              props.setKeyPinConfirm(null)
+              props.dialogs.keyPinConfirm.close()
             }}
+          />
+        )}
+      </Show>
+
+      <Show when={props.dialogs.changeBranch.value()}>
+        {state => (
+          <ChangeBranchDialog
+            workerId={state().workerId}
+            gitToplevel={state().gitToplevel}
+            workspaceId={state().workspaceId}
+            branchName={state().branchName}
+            isWorktree={state().isWorktree}
+            availableProviders={props.availableProviders}
+            onRefreshProviders={props.onRefreshProviders}
+            onBranchChanged={newBranch => props.onBranchChanged?.(state().workerId, state().gitToplevel, newBranch)}
+            // Local-UI tab insertion only applies when the dialog's
+            // target workspace IS the active one — addAgentTabToFocusedTile
+            // and addTerminalTabToFocusedTile write into the ACTIVE
+            // workspace's tabStore + layoutStore, so calling them on a
+            // dialog opened against a non-active workspace's branch row
+            // would land the new tab in the wrong workspace's tree. For
+            // non-active dialogs the new tab still arrives in the target
+            // workspace via its CRDT projection on the next refresh; no
+            // immediate local UI write is needed (and the user isn't
+            // looking at that workspace's tile to feel the latency).
+            onAgentCreated={(agent) => {
+              if (state().workspaceId === props.activeWorkspace()?.id)
+                addAgentTabToFocusedTile(agent)
+            }}
+            onTerminalCreated={(terminalId, workerId, workingDir, title) => {
+              if (state().workspaceId === props.activeWorkspace()?.id)
+                addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title)
+            }}
+            onClose={() => props.dialogs.changeBranch.close()}
+          />
+        )}
+      </Show>
+
+      <Show when={props.dialogs.deleteBranch.value()}>
+        {state => (
+          <DeleteBranchDialog
+            workerId={state().workerId}
+            gitToplevel={state().gitToplevel}
+            branchName={state().branchName}
+            tabs={state().tabs}
+            closeTab={props.tabOps.closeTabWithAction}
+            onBranchChanged={newBranch => props.onBranchChanged?.(state().workerId, state().gitToplevel, newBranch)}
+            onClose={() => props.dialogs.deleteBranch.close()}
           />
         )}
       </Show>

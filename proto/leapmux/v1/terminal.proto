@@ -134,6 +134,7 @@ message TerminalInfo {
   // `after_offset` from this so a resubscribe picks up exactly where
   // the snapshot left off instead of replaying `screen`.
   int64 screen_end_offset = 15;
+  bool git_is_worktree = 16;    // True if `git_toplevel` is a linked worktree (not the main repo root)
 }
 
 message TerminalData {
@@ -169,6 +170,7 @@ message TerminalStatusChange {
   string git_branch = 5;
   string git_origin_url = 6;
   string git_toplevel = 7;
+  bool git_is_worktree = 8;   // True if `git_toplevel` is a linked worktree
 }
 
 message ListAvailableShellsRequest {

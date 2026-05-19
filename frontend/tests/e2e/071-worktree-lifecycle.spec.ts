@@ -18,7 +18,7 @@ import {
   createWorkspaceWithWorktreeViaAPI,
   inspectLastTabCloseViaAPI,
   openNewWorkspaceDialog,
-  pushBranchForCloseViaAPI,
+  pushBranchViaAPI,
   setWorkingDir,
   waitForAgentsViaAPI,
   waitForOrgPageReady,
@@ -330,7 +330,7 @@ test.describe('Worktree Lifecycle', () => {
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.hasUncommittedChanges).toBe(true)
 
-    await pushBranchForCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    await pushBranchViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     const lastMessage = execSync('git log -1 --pretty=%s', { cwd: worktreeDir }).toString().trim()

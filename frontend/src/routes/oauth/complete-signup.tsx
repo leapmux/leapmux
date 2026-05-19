@@ -1,16 +1,15 @@
 import type { Component } from 'solid-js'
 
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
-import { Icon } from '~/components/common/Icon'
 import * as styles from '~/components/common/LoginPage.css'
+import { Spinner } from '~/components/common/Spinner'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
+import { formatErrorMessage } from '~/lib/errors'
 import { setPageTitle } from '~/lib/pageTitle'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
-import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 
 const OAuthCompleteSignupPage: Component = () => {
@@ -90,7 +89,7 @@ const OAuthCompleteSignupPage: Component = () => {
       }
     }
     catch (e) {
-      setError(e instanceof Error ? e.message : 'Sign up failed')
+      setError(formatErrorMessage(e, 'Sign up failed'))
       setSubmitting(false)
     }
   }
@@ -101,7 +100,7 @@ const OAuthCompleteSignupPage: Component = () => {
         <h1>Complete Sign Up</h1>
         <Show when={loading()}>
           <div class={styles.loadingCenter}>
-            <Icon icon={LoaderCircle} size="md" class={spinner} />
+            <Spinner size="md" />
           </div>
         </Show>
         <Show when={!loading() && tokenError()}>
@@ -143,7 +142,7 @@ const OAuthCompleteSignupPage: Component = () => {
               <div class={errorText}>{error()}</div>
             </Show>
             <button type="submit" disabled={submitting() || !username()}>
-              <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+              <Show when={submitting()}><Spinner /></Show>
               {submitting() ? 'Creating account...' : 'Create account'}
             </button>
           </form>

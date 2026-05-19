@@ -70,6 +70,17 @@ export function isValidBranchName(name: string): boolean {
 }
 
 /**
+ * Strips the remote prefix from a branch ref so the local-branch name
+ * remains: `"origin/foo"` → `"foo"`. A bare local name is returned
+ * unchanged. Matches the worker's `checkoutBranchInDir`, which checks
+ * out remote-tracking refs as the suffix after the first `/`.
+ */
+export function stripRemotePrefix(ref: string): string {
+  const slash = ref.indexOf('/')
+  return slash === -1 ? ref : ref.slice(slash + 1)
+}
+
+/**
  * Validates a session ID for resuming an agent session.
  * Delegates to sanitizeName for control-character and length checks,
  * and additionally rejects input that contains forbidden characters.

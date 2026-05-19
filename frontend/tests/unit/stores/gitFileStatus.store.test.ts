@@ -264,6 +264,48 @@ describe('gitFileStatusStore', () => {
         dispose()
       })
     })
+
+    it('does not rewrite the empty state on consecutive refresh errors', async () => {
+      // First failure clears state from valid → empty. Second failure
+      // hitting already-empty state must NOT trigger reactive writes —
+      // the guard short-circuits when each field already matches its
+      // zero value, so dependent memos (e.g. the file tree's prefix
+      // index) don't re-fire on every flaky-probe poll.
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        // Populate, then fail once to reach the all-empty error state.
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          originUrl: 'https://github.com/test/repo.git',
+          currentBranch: 'main',
+          isWorktree: false,
+          files: [],
+        })
+        await store.refresh('worker1', '/repo')
+        mockGetGitFileStatus.mockRejectedValueOnce(new Error('first failure'))
+        await store.refresh('worker1', '/repo')
+
+        // Snapshot identities — store proxies expose stable references
+        // for unchanged fields. The `files` array reference is the most
+        // sensitive one (its identity drives the prefixIndex memo).
+        const filesBefore = store.state.files
+        const repoRootBefore = store.state.repoRoot
+
+        mockGetGitFileStatus.mockRejectedValueOnce(new Error('second failure'))
+        await store.refresh('worker1', '/repo')
+
+        // Same references → no setState fired for any field.
+        expect(store.state.files).toBe(filesBefore)
+        expect(store.state.repoRoot).toBe(repoRootBefore)
+        expect(store.state.isGitRepo).toBe(false)
+        expect(store.state.originUrl).toBe('')
+        expect(store.state.currentBranch).toBe('')
+        expect(store.state.isWorktree).toBe(false)
+
+        dispose()
+      })
+    })
   })
 
   describe('getChangedFiles', () => {
@@ -393,6 +435,86 @@ describe('gitFileStatusStore', () => {
         await store.refresh('worker1', '/repo')
 
         expect(store.hasChanges('/repo')).toBe(false)
+
+        dispose()
+      })
+    })
+  })
+
+  describe('toplevel field (worktree-aware tab stamping identity)', () => {
+    it('stores resp.toplevel separately from repoRoot for a worktree query', async () => {
+      // For a worktree query the worker returns the MAIN repo root via
+      // `repo_root` and the WORKTREE dir via `toplevel`. The frontend
+      // store has to keep them separate so syncGitStatusToTabs uses
+      // toplevel for tab matching — otherwise a focused worktree's
+      // branch leaks onto every main-tree tab whose gitToplevel equals
+      // the canonical repo root.
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          toplevel: '/repo-wts/feature',
+          originUrl: '',
+          currentBranch: 'feature',
+          isWorktree: true,
+          files: [],
+        })
+
+        await store.refresh('worker1', '/repo-wts/feature')
+
+        expect(store.state.repoRoot).toBe('/repo')
+        expect(store.state.toplevel).toBe('/repo-wts/feature')
+        expect(store.state.isWorktree).toBe(true)
+
+        dispose()
+      })
+    })
+
+    it('falls back to resp.repoRoot when resp.toplevel is missing (older worker shim)', async () => {
+      // Defense-in-depth: a pre-toplevel worker (or a response-shape
+      // regression) leaves toplevel empty. The store collapses to
+      // repoRoot in that case, restoring pre-fix behaviour — the only
+      // path that would behave wrong is the worktree-cross-stamp bug
+      // we're fixing, and that requires a worker that DOES populate
+      // toplevel. Without this fallback, tab stamping would silently
+      // stop firing for every existing deployment.
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          // toplevel intentionally omitted.
+          originUrl: '',
+          currentBranch: 'main',
+          isWorktree: false,
+          files: [],
+        })
+        await store.refresh('worker1', '/repo')
+        expect(store.state.toplevel).toBe('/repo')
+
+        dispose()
+      })
+    })
+
+    it('clears toplevel on refresh error alongside the other reset fields', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          toplevel: '/repo-wts/feature',
+          originUrl: '',
+          currentBranch: 'feature',
+          isWorktree: true,
+          files: [],
+        })
+        await store.refresh('worker1', '/repo-wts/feature')
+        expect(store.state.toplevel).toBe('/repo-wts/feature')
+
+        mockGetGitFileStatus.mockRejectedValueOnce(new Error('network blip'))
+        await store.refresh('worker1', '/repo-wts/feature')
+        expect(store.state.toplevel).toBe('')
 
         dispose()
       })

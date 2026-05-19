@@ -1,12 +1,13 @@
 import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { Tab } from '~/stores/tab.types'
-import { createRoot } from 'solid-js'
+import { createEffect, createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { isTabReadyForGitStatus, preserveTerminalDisplayFields, protoToTerminalTabFields, tabKey } from '~/stores/tab.helpers'
 import { createTabStore } from '~/stores/tab.store'
+import { flush } from '../helpers/async'
 
 describe('tabKey', () => {
   it('should create composite key from type and id', () => {
@@ -753,6 +754,543 @@ describe('createTabStore', () => {
       expect(store.getActiveTabKeyForTile('tile-2')).toBe('1:a3')
 
       dispose()
+    })
+  })
+})
+
+describe('stampBranchOnTabs', () => {
+  it('writes gitBranch onto every tab matching (workerId, workingDir) and returns true', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        gitToplevel: '/repo',
+        gitBranch: 'old',
+      })
+      store.addTab({
+        type: TabType.TERMINAL,
+        id: 't1',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        gitToplevel: '/repo',
+        gitBranch: 'old',
+      })
+
+      const wrote = store.stampBranchOnTabs('w1', '/repo', 'new')
+
+      expect(wrote).toBe(true)
+      expect(store.state.tabs.find(t => t.id === 'a1')?.gitBranch).toBe('new')
+      expect(store.state.tabs.find(t => t.id === 't1')?.gitBranch).toBe('new')
+      dispose()
+    })
+  })
+
+  it('returns false and does not write when every matching tab already has the new branch', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        gitToplevel: '/repo',
+        gitBranch: 'main',
+      })
+      // Snapshot the array reference; with no write, setState should not
+      // produce a fresh array. Solid's path-based setState replaces the
+      // mutated index even when fields are identical — the guard is what
+      // keeps this no-op cheap downstream.
+      const before = store.state.tabs[0]
+
+      const wrote = store.stampBranchOnTabs('w1', '/repo', 'main')
+
+      expect(wrote).toBe(false)
+      // Identity preserved — the row was not re-projected.
+      expect(store.state.tabs[0]).toBe(before)
+      dispose()
+    })
+  })
+
+  it('returns true and writes when at least one matching tab is stale, even if others already match', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        gitToplevel: '/repo',
+        gitBranch: 'new', // already correct
+      })
+      store.addTab({
+        type: TabType.TERMINAL,
+        id: 't1',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        gitToplevel: '/repo',
+        gitBranch: 'old', // stale
+      })
+
+      const wrote = store.stampBranchOnTabs('w1', '/repo', 'new')
+
+      expect(wrote).toBe(true)
+      expect(store.state.tabs.find(t => t.id === 't1')?.gitBranch).toBe('new')
+      // The behavior we care about: a single stale entry forces a write
+      // that covers every matching row uniformly.
+      dispose()
+    })
+  })
+
+  it('only rewrites stale rows; already-correct siblings stay untouched at the field level', async () => {
+    // The setState predicate now folds the staleness check in — only
+    // rows whose gitBranch actually differs get rewritten. Without
+    // this, every matching row's gitBranch field would be set to the
+    // same value via Solid's setState path, and even though Solid
+    // dedupes by ===, the updater itself runs once per matched row.
+    //
+    // Observable contract: per-tab effects that subscribe to
+    // `gitBranch` refire only for the stale row, not the
+    // already-correct one. Pin the count so a regression to the
+    // broader matches() predicate would refire both.
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const store = createTabStore()
+        store.addTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: 'tile-1',
+          workerId: 'w1',
+          gitToplevel: '/repo',
+          gitBranch: 'new', // already correct
+        })
+        store.addTab({
+          type: TabType.TERMINAL,
+          id: 't1',
+          tileId: 'tile-1',
+          workerId: 'w1',
+          gitToplevel: '/repo',
+          gitBranch: 'old', // stale
+        })
+
+        const correctTab = store.state.tabs.find(t => t.id === 'a1')!
+        const staleTab = store.state.tabs.find(t => t.id === 't1')!
+        let correctRuns = 0
+        let staleRuns = 0
+        createEffect(() => {
+          void correctTab.gitBranch
+          correctRuns++
+        })
+        createEffect(() => {
+          void staleTab.gitBranch
+          staleRuns++
+        })
+        await flush()
+        expect(correctRuns).toBe(1)
+        expect(staleRuns).toBe(1)
+
+        const wrote = store.stampBranchOnTabs('w1', '/repo', 'new')
+        await flush()
+        expect(wrote).toBe(true)
+        // Already-correct row's gitBranch was NOT touched by setState,
+        // so its subscribers don't refire.
+        expect(correctRuns).toBe(1)
+        // Stale row's gitBranch advances from 'old' → 'new', firing its
+        // subscriber exactly once.
+        expect(staleRuns).toBe(2)
+        expect(store.state.tabs.find(t => t.id === 't1')?.gitBranch).toBe('new')
+        dispose()
+        done()
+      })
+    })
+  })
+
+  it('does not touch tabs in a different worker or different working dir', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'target',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        gitToplevel: '/repo',
+        gitBranch: 'old',
+      })
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'other-worker',
+        tileId: 'tile-1',
+        workerId: 'w2',
+        gitToplevel: '/repo',
+        gitBranch: 'old',
+      })
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'other-dir',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        gitToplevel: '/elsewhere',
+        gitBranch: 'old',
+      })
+
+      store.stampBranchOnTabs('w1', '/repo', 'new')
+
+      expect(store.state.tabs.find(t => t.id === 'target')?.gitBranch).toBe('new')
+      expect(store.state.tabs.find(t => t.id === 'other-worker')?.gitBranch).toBe('old')
+      expect(store.state.tabs.find(t => t.id === 'other-dir')?.gitBranch).toBe('old')
+      dispose()
+    })
+  })
+
+  it('returns false when workingDir is empty (no real repo identity → no stamp)', () => {
+    // Regression: an earlier revision treated `workingDir = ''` as a
+    // wildcard via `(t.gitToplevel ?? '') === ''`, so a stamp call on
+    // an unstamped repo bled the new branch name onto every other
+    // unstamped repo's tabs on the same worker. The empty-workingDir
+    // path is now a no-op; callers must resolve a real repo path first.
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        // gitToplevel intentionally omitted — pre-fix, the empty
+        // workingDir argument would have matched this.
+        gitBranch: 'old',
+      })
+
+      const wrote = store.stampBranchOnTabs('w1', '', 'new')
+
+      expect(wrote).toBe(false)
+      expect(store.state.tabs[0].gitBranch).toBe('old')
+      dispose()
+    })
+  })
+
+  it('returns false when workerId is empty (no real worker identity → no stamp)', () => {
+    // Symmetric companion to the workingDir='' guard: BranchGroup.workerId
+    // defaults to '' for tabs whose workerId hasn't landed yet (buildTree
+    // resolves it via `tab.workerId ?? ''`), so a Change/Delete branch
+    // dispatched from that row before its worker id lands would otherwise
+    // cross-stamp every other unworker-bound tab whose gitToplevel
+    // matches. The empty-workerId path must be a no-op.
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: 'tile-1',
+        // workerId intentionally omitted to mirror the buildTree default.
+        gitToplevel: '/repo',
+        gitBranch: 'old',
+      })
+
+      const wrote = store.stampBranchOnTabs('', '/repo', 'new')
+
+      expect(wrote).toBe(false)
+      expect(store.state.tabs[0].gitBranch).toBe('old')
+      dispose()
+    })
+  })
+
+  it('returns false when no tab matches the predicate at all', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: 'tile-1',
+        workerId: 'w1',
+        gitToplevel: '/repo',
+        gitBranch: 'main',
+      })
+
+      const wrote = store.stampBranchOnTabs('w2', '/elsewhere', 'feature')
+
+      expect(wrote).toBe(false)
+      expect(store.state.tabs[0].gitBranch).toBe('main')
+      dispose()
+    })
+  })
+})
+
+describe('updateMatchingTabs', () => {
+  it('spreads fields onto every tab matching the predicate in one mutation', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1', gitBranch: 'old' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1', workerId: 'w1', gitBranch: 'old' })
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-2', workerId: 'w2', gitBranch: 'old' })
+
+      store.updateMatchingTabs(t => t.workerId === 'w1', { gitBranch: 'new' })
+
+      expect(store.state.tabs.find(t => t.id === 'a1')?.gitBranch).toBe('new')
+      expect(store.state.tabs.find(t => t.id === 't1')?.gitBranch).toBe('new')
+      // Non-matching worker is untouched.
+      expect(store.state.tabs.find(t => t.id === 'a2')?.gitBranch).toBe('old')
+      dispose()
+    })
+  })
+
+  it('equalsFields short-circuits rows already carrying the target fields', () => {
+    // Without the guard, Solid's path-form setState would replace the
+    // matching row's proxy identity even when no field actually
+    // differs — re-firing every dependent memo (sidebar, tabbar,
+    // tooltip). With equalsFields the no-op rows keep their proxy
+    // identity and the matching-but-stale row is the only one written.
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'stale', tileId: 'tile-1', workerId: 'w1', gitBranch: 'old' })
+      store.addTab({ type: TabType.TERMINAL, id: 'fresh', tileId: 'tile-1', workerId: 'w1', gitBranch: 'new' })
+
+      const freshBefore = store.state.tabs.find(t => t.id === 'fresh')
+
+      store.updateMatchingTabs(
+        t => t.workerId === 'w1',
+        { gitBranch: 'new' },
+        t => t.gitBranch === 'new',
+      )
+
+      // Stale row was projected.
+      expect(store.state.tabs.find(t => t.id === 'stale')?.gitBranch).toBe('new')
+      // Already-matching row kept its proxy identity (no re-spread).
+      expect(store.state.tabs.find(t => t.id === 'fresh')).toBe(freshBefore)
+      dispose()
+    })
+  })
+
+  it('equalsFields=true on every row results in zero writes', () => {
+    createRoot((dispose) => {
+      const store = createTabStore()
+      store.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1', gitBranch: 'main' })
+      store.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1', workerId: 'w1', gitBranch: 'main' })
+
+      const refs = store.state.tabs.map(t => t)
+
+      store.updateMatchingTabs(
+        t => t.workerId === 'w1',
+        { gitBranch: 'main' },
+        () => true,
+      )
+
+      // No proxy identity changed — every tab is the same row object.
+      expect(store.state.tabs[0]).toBe(refs[0])
+      expect(store.state.tabs[1]).toBe(refs[1])
+      dispose()
+    })
+  })
+})
+
+describe('tab.store setter no-op guards', () => {
+  // The setters short-circuit when the incoming value matches the
+  // existing value via a `&& t.field !== value` clause in the path
+  // predicate. Without the guard, Solid's path-form setState replaces
+  // the row identity even when the assignment is a no-op, firing every
+  // reactive consumer of that field — measurable here as createEffect
+  // re-runs.
+  it('updateTabTitle: identical-title write does not re-fire title subscribers', async () => {
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', title: 'Hello' })
+
+        let titleEffectRuns = 0
+        createEffect(() => {
+          // Subscribe specifically to the title field of tab a1.
+          void store.state.tabs.find(t => t.id === 'a1')?.title
+          titleEffectRuns++
+        })
+        await flush()
+        // Initial run from the effect's first execution.
+        expect(titleEffectRuns).toBe(1)
+
+        store.updateTabTitle(TabType.AGENT, 'a1', 'Hello')
+        await flush()
+        // Same-value write must not retrigger the title subscriber.
+        expect(titleEffectRuns).toBe(1)
+
+        store.updateTabTitle(TabType.AGENT, 'a1', 'Different')
+        await flush()
+        // Real change retriggers.
+        expect(titleEffectRuns).toBe(2)
+        dispose()
+        done()
+      })
+    })
+  })
+
+  it('setNotification: identical-flag write does not re-fire hasNotification subscribers', async () => {
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.TERMINAL, id: 't1' })
+
+        let runs = 0
+        createEffect(() => {
+          void store.state.tabs.find(t => t.id === 't1')?.hasNotification
+          runs++
+        })
+        await flush()
+        expect(runs).toBe(1)
+
+        // Tab starts with hasNotification undefined; the guard normalizes
+        // to `!!t.hasNotification !== hasNotification`, so setting to false
+        // on a fresh tab is a no-op.
+        store.setNotification(TabType.TERMINAL, 't1', false)
+        await flush()
+        expect(runs).toBe(1)
+
+        store.setNotification(TabType.TERMINAL, 't1', true)
+        await flush()
+        expect(runs).toBe(2)
+
+        // Re-setting to the same true value is a no-op.
+        store.setNotification(TabType.TERMINAL, 't1', true)
+        await flush()
+        expect(runs).toBe(2)
+        dispose()
+        done()
+      })
+    })
+  })
+
+  it('setTabPosition: identical-position write does not re-fire position subscribers', async () => {
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1' })
+        store.setTabPosition('1:a1', 'pos-1')
+
+        let runs = 0
+        createEffect(() => {
+          void store.state.tabs.find(t => t.id === 'a1')?.position
+          runs++
+        })
+        await flush()
+        expect(runs).toBe(1)
+
+        store.setTabPosition('1:a1', 'pos-1')
+        await flush()
+        expect(runs).toBe(1)
+
+        store.setTabPosition('1:a1', 'pos-2')
+        await flush()
+        expect(runs).toBe(2)
+        dispose()
+        done()
+      })
+    })
+  })
+
+  it('updateTab: identical-fields write does not re-fire field subscribers', async () => {
+    // updateTab is the multi-field cousin of updateTabTitle / setNotification.
+    // The same path-form setState semantics apply: assigning identical
+    // values still replaces the row proxy and re-fires every dependent
+    // memo unless the predicate short-circuits. The guard checks each
+    // supplied field against `prev` and skips the spread when nothing
+    // changed.
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const store = createTabStore()
+        store.addTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          title: 'Hello',
+          gitBranch: 'main',
+        })
+
+        // Track field reads directly: Solid's store proxy registers a
+        // dependency on each field when read, so a setState path-form
+        // assignment to that field fires this effect. Reading via the
+        // tabs[] array (find()) wouldn't track field-level changes.
+        let runs = 0
+        createEffect(() => {
+          const tab = store.state.tabs.find(t => t.id === 'a1')
+          // Touch both fields the test will assert on, so a path-form
+          // write to either re-fires this subscriber.
+          void tab?.title
+          void tab?.gitBranch
+          runs++
+        })
+        await flush()
+        expect(runs).toBe(1)
+
+        // All supplied fields match prev — must be a complete no-op.
+        store.updateTab(TabType.AGENT, 'a1', { title: 'Hello', gitBranch: 'main' })
+        await flush()
+        expect(runs).toBe(1)
+
+        // Partial overlap: one matching field, one new. The mismatch
+        // forces the write so subscribers re-run.
+        store.updateTab(TabType.AGENT, 'a1', { title: 'Hello', gitBranch: 'feature' })
+        await flush()
+        expect(runs).toBe(2)
+        expect(store.state.tabs.find(t => t.id === 'a1')?.gitBranch).toBe('feature')
+
+        // Re-writing the same payload after a real change is also a no-op.
+        store.updateTab(TabType.AGENT, 'a1', { title: 'Hello', gitBranch: 'feature' })
+        await flush()
+        expect(runs).toBe(2)
+        dispose()
+        done()
+      })
+    })
+  })
+
+  it('updateTab: empty fields object is a no-op', async () => {
+    // Defensive: callers that conditionally build the fields object can
+    // end up passing `{}`. The predicate must treat "no keys" as "no
+    // change" rather than replacing the row with a spread of nothing.
+    // `Object.keys({}).some(...)` is `false`, so the predicate never
+    // matches and setState skips the row entirely.
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1', title: 'Hello' })
+
+        let runs = 0
+        createEffect(() => {
+          void store.state.tabs.find(t => t.id === 'a1')?.title
+          runs++
+        })
+        await flush()
+        expect(runs).toBe(1)
+
+        store.updateTab(TabType.AGENT, 'a1', {})
+        await flush()
+        expect(runs).toBe(1)
+        dispose()
+        done()
+      })
+    })
+  })
+
+  it('updateTab: undefined-valued field that matches prev (also undefined) is a no-op', async () => {
+    // A common pattern in useWorkspaceConnection's payload assembly is
+    // `...(cond ? { x: undefined } : {})`. When prev[x] is also
+    // undefined the supplied value is a no-op and the row must stay.
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const store = createTabStore()
+        store.addTab({ type: TabType.AGENT, id: 'a1' })
+
+        let runs = 0
+        createEffect(() => {
+          void store.state.tabs.find(t => t.id === 'a1')?.startupError
+          runs++
+        })
+        await flush()
+        expect(runs).toBe(1)
+
+        store.updateTab(TabType.AGENT, 'a1', { startupError: undefined })
+        await flush()
+        expect(runs).toBe(1)
+        dispose()
+        done()
+      })
     })
   })
 })

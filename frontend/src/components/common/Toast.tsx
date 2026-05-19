@@ -1,3 +1,4 @@
+import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 
 const log = createLogger('toast')
@@ -7,13 +8,13 @@ type ToastType = 'danger' | 'success'
 /** Show a warning toast and log the error at warn level. */
 export function showWarnToast(message: string, err?: unknown) {
   log.warn(message, err)
-  renderToast(err instanceof Error ? err.message : message, 'danger')
+  renderToast(formatErrorMessage(err, message), 'danger')
 }
 
 /** Show an error toast and log the error at error level. */
 export function showErrorToast(message: string, err?: unknown) {
   log.error(message, err)
-  renderToast(err instanceof Error ? err.message : message, 'danger')
+  renderToast(formatErrorMessage(err, message), 'danger')
 }
 
 /** Show an informational (success) toast. */

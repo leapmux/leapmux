@@ -1,6 +1,7 @@
 import type { Accessor, JSX } from 'solid-js'
 import type { TabContext } from './tabContext'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -60,6 +61,8 @@ export interface SidebarElementsOpts {
   onExpandWorkspace: (workspaceId: string) => void
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
   getTileOrderForWorkspace: (workspaceId: string) => string[]
+  onChangeBranch?: (ref: BranchRef) => void
+  onDeleteBranch?: (ref: BranchRef) => void
 }
 
 interface SidebarDisplayOpts {
@@ -132,6 +135,8 @@ function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: SidebarDis
     tabItemOps: opts.tabItemOps,
     onExpandWorkspace: opts.onExpandWorkspace,
     getTileOrderForWorkspace: opts.getTileOrderForWorkspace,
+    onChangeBranch: opts.onChangeBranch,
+    onDeleteBranch: opts.onDeleteBranch,
   }
 }
 

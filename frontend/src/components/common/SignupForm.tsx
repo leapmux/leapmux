@@ -1,14 +1,13 @@
 import type { Component, JSX } from 'solid-js'
 import type { SignUpResponse } from '~/generated/leapmux/v1/auth_pb'
 
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
+import { formatErrorMessage } from '~/lib/errors'
 import { sanitizeDisplayName, sanitizeSlug, validateEmail, validateReservedUsername } from '~/lib/validate'
-import { spinner } from '~/styles/animations.css'
 import { errorText } from '~/styles/shared.css'
-import { Icon } from './Icon'
 import { passwordCanSubmit, PasswordFields } from './PasswordFields'
+import { Spinner } from './Spinner'
 import { UsernameField } from './UsernameField'
 
 interface SignupFormProps {
@@ -71,7 +70,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
       props.onSuccess(resp, slug)
     }
     catch (e) {
-      setError(e instanceof Error ? e.message : (props.errorPrefix ?? 'Sign up failed'))
+      setError(formatErrorMessage(e, props.errorPrefix ?? 'Sign up failed'))
       setSubmitting(false)
     }
   }
@@ -99,7 +98,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
           <div class={errorText}>{error()}</div>
         </Show>
         <button type="submit" disabled={submitting() || !username() || !passwordCanSubmit(pwProps)}>
-          <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+          <Show when={submitting()}><Spinner /></Show>
           {submitting() ? props.submittingLabel : props.submitLabel}
         </button>
       </form>

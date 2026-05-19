@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import { createSignal, For, onMount, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
+import { formatErrorMessage } from '~/lib/errors'
 import { sanitizeName } from '~/lib/validate'
 import { errorText, successText } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
@@ -44,7 +45,7 @@ export const FontSettings: Component = () => {
       setFontMessage({ type: 'success', text: 'Font preferences saved.' })
     }
     catch (e) {
-      setFontMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save font preferences' })
+      setFontMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to save font preferences') })
     }
     finally {
       setFontSaving(false)

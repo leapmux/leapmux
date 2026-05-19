@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { sanitizeName, validateEmail, validatePassword, validateReservedUsername } from './validate'
+import { sanitizeName, stripRemotePrefix, validateEmail, validatePassword, validateReservedUsername } from './validate'
 
 describe('sanitizeName', () => {
   it('returns sanitized value for valid names', () => {
@@ -133,6 +133,39 @@ describe('validatePassword', () => {
 
   it('rejects password exceeding 128 characters', () => {
     expect(validatePassword('a'.repeat(129))).not.toBeNull()
+  })
+})
+
+describe('stripRemotePrefix', () => {
+  it('returns bare local names unchanged', () => {
+    expect(stripRemotePrefix('main')).toBe('main')
+    expect(stripRemotePrefix('feature-branch')).toBe('feature-branch')
+  })
+
+  it('strips a single remote prefix', () => {
+    expect(stripRemotePrefix('origin/main')).toBe('main')
+    expect(stripRemotePrefix('upstream/release')).toBe('release')
+  })
+
+  it('only strips the first slash-delimited segment, leaving deeper slashes intact', () => {
+    // The worker maps `origin/feature/foo` to the local branch
+    // `feature/foo`, so the helper must drop only the first segment.
+    expect(stripRemotePrefix('origin/feature/foo')).toBe('feature/foo')
+    expect(stripRemotePrefix('origin/release/v1/rc1')).toBe('release/v1/rc1')
+  })
+
+  it('returns empty string unchanged', () => {
+    expect(stripRemotePrefix('')).toBe('')
+  })
+
+  it('treats a leading slash as a remote with empty name', () => {
+    // Not a valid ref, but the helper should not crash; it returns
+    // everything after the first slash.
+    expect(stripRemotePrefix('/main')).toBe('main')
+  })
+
+  it('returns empty string when input is just a slash', () => {
+    expect(stripRemotePrefix('/')).toBe('')
   })
 })
 

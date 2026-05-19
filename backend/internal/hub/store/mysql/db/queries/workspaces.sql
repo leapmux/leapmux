@@ -14,12 +14,25 @@ WHERE id IN (sqlc.slice('workspace_ids'))
   AND is_deleted = 0;
 
 -- name: ListAccessibleWorkspaces :many
+-- Secondary sort on `id` is the deterministic tiebreaker: created_at is
+-- only millisecond-precision (DATETIME(3) / NOW(3)), and the SELECT
+-- DISTINCT over the LEFT JOIN to workspace_access lets the planner
+-- pick its own row order for ties. Without the tiebreaker the sidebar
+-- shuffles workspaces created in the same millisecond on every refresh
+-- -- most reproducibly for fresh accounts whose seed workspaces land
+-- in a batch.
+--
+-- BINARY cast on the id tiebreaker pins byte-wise (case-sensitive)
+-- ordering. MySQL's default `utf8mb4_general_ci` collation is
+-- case-INsensitive, so two ids differing only in case (e.g. "Foo..."
+-- vs "foo...") would sort non-deterministically across runs. SQLite
+-- and PostgreSQL already collate case-sensitively by default.
 SELECT DISTINCT w.* FROM workspaces w
 LEFT JOIN workspace_access wa ON w.id = wa.workspace_id AND wa.user_id = sqlc.arg(user_id)
 WHERE w.is_deleted = 0
   AND w.org_id = sqlc.arg(org_id)
   AND (w.owner_user_id = sqlc.arg(user_id) OR wa.user_id IS NOT NULL)
-ORDER BY w.created_at DESC;
+ORDER BY w.created_at DESC, BINARY w.id DESC;
 
 -- name: RenameWorkspace :execresult
 UPDATE workspaces SET title = ? WHERE id = ? AND owner_user_id = ?;
