@@ -105,6 +105,11 @@ func TestRestartTerminal_HappyPath(t *testing.T) {
 	testutil.AssertEventually(t, func() bool {
 		return svc.Terminals.HasTerminal(terminalID) && !svc.Terminals.IsExited(terminalID)
 	}, "restart spawn")
+	// Register cleanup AFTER t.TempDir() above so this t.Cleanup runs
+	// first (LIFO): the respawned PTY must be stopped before the temp
+	// working-dir is removed, or Windows' unlinkat fails because cmd.exe
+	// still has the dir open as its CWD.
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 
 	require.Equal(t, int64(2), ipc.count.Load(), "TerminalSpawning should fire again on restart")
 	tokensAfter, _, cleanupsExecuted := ipc.snapshot()
