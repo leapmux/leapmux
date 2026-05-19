@@ -1,12 +1,12 @@
 module github.com/leapmux/leapmux-desktop
 
-go 1.26.1
+go 1.26.3
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0
-	github.com/leapmux/leapmux v0.0.0-20260429115838-ff6b04b1a39f
+	github.com/leapmux/leapmux v0.0.0-20260519030622-2e0aa2a62008
 	github.com/stretchr/testify v1.11.1
 	github.com/things-go/go-socks5 v0.1.1
 	golang.org/x/sync v0.20.0
@@ -58,7 +58,7 @@ require (
 	github.com/ashanbrown/forbidigo/v2 v2.3.0 // indirect
 	github.com/ashanbrown/makezero/v2 v2.1.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
-	github.com/aymanbagabas/go-pty v0.2.2 // indirect
+	github.com/aymanbagabas/go-pty v0.2.3 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bitfield/gotestdox v0.2.2 // indirect
@@ -96,13 +96,13 @@ require (
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/fatih/structtag v1.2.0 // indirect
 	github.com/firefart/nonamedreturns v1.0.6 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/ghostiam/protogetter v0.3.20 // indirect
 	github.com/go-critic/go-critic v0.14.3 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-sql-driver/mysql v1.9.3 // indirect
+	github.com/go-sql-driver/mysql v1.10.0 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect
 	github.com/go-toolsmith/astcopy v1.1.0 // indirect
 	github.com/go-toolsmith/astequal v1.2.0 // indirect
@@ -152,7 +152,7 @@ require (
 	github.com/karamaru-alpha/copyloopvar v1.2.2 // indirect
 	github.com/kisielk/errcheck v1.10.0 // indirect
 	github.com/kkHAIKE/contextcheck v1.1.6 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/knadh/koanf/parsers/yaml v1.1.0 // indirect
 	github.com/knadh/koanf/providers/confmap v1.0.0 // indirect
@@ -260,25 +260,25 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260209203927-2842357ff358 // indirect
 	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/term v0.42.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/term v0.43.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
-	google.golang.org/grpc v1.80.0 // indirect
+	google.golang.org/grpc v1.81.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gotest.tools/gotestsum v1.13.0 // indirect
 	honnef.co/go/tools v0.7.0 // indirect
-	modernc.org/libc v1.72.1 // indirect
+	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.50.0 // indirect
+	modernc.org/sqlite v1.50.1 // indirect
 	mvdan.cc/gofumpt v0.9.2 // indirect
 	mvdan.cc/unparam v0.0.0-20251027182757-5beb8c8f8f15 // indirect
 )

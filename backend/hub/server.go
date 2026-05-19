@@ -33,8 +33,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 // ServerOption configures optional aspects of a Hub server.
@@ -332,13 +330,17 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		mux.Handle("/", frontend.Handler())
 	}
 
-	h2cHandler := h2c.NewHandler(logging.HTTPMiddleware(metrics.HTTPMiddleware(mux)), &http2.Server{
-		MaxConcurrentStreams: 1000,
-	})
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 
 	server := &http.Server{
-		Handler:           h2cHandler,
+		Handler:           logging.HTTPMiddleware(metrics.HTTPMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
+		Protocols:         protocols,
+		HTTP2: &http.HTTP2Config{
+			MaxConcurrentStreams: 1000,
+		},
 	}
 
 	// Watcher for cross-process revocations: admin CLI commands

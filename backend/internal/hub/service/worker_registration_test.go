@@ -13,8 +13,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -550,9 +548,13 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 	socketURL := locallistentest.UniqueListenURL(t, "hub")
 	ln, err := locallisten.Listen(socketURL)
 	require.NoError(t, err)
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 	srv := &http.Server{
-		Handler:           h2c.NewHandler(env.mux, &http2.Server{}),
+		Handler:           env.mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		Protocols:         protocols,
 	}
 	t.Cleanup(func() { _ = srv.Close() })
 	go func() { _ = srv.Serve(ln) }()

@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -90,8 +88,12 @@ func Listen(opts Options) (*Server, error) {
 	path, h := leapmuxv1connect.NewRemoteIPCServiceHandler(svc)
 	mux.Handle(path, withAuth(svc, h))
 
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 	srv := &http.Server{
-		Handler: h2c.NewHandler(mux, &http2.Server{}),
+		Handler:   mux,
+		Protocols: protocols,
 	}
 	s := &Server{
 		url:      opts.SocketURL,
