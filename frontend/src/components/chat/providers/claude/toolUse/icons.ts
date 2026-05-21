@@ -37,7 +37,6 @@ export function toolIconFor(name: string): LucideIcon {
     case CLAUDE_TOOL.TODO_WRITE: return ListTodo
     case CLAUDE_TOOL.TASK_CREATE: return ListTodo
     case CLAUDE_TOOL.TASK_UPDATE: return ListTodo
-    case CLAUDE_TOOL.TASK_LIST: return ListTodo
     case CLAUDE_TOOL.TASK_GET: return ListChecks
     case CLAUDE_TOOL.ENTER_PLAN_MODE: return TicketsPlane
     case CLAUDE_TOOL.EXIT_PLAN_MODE: return PlaneTakeoff

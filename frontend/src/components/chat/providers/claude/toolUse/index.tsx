@@ -10,7 +10,7 @@ import { renderExitPlanMode } from './exitPlanMode'
 import { ToolUseMessage } from './genericToolUse'
 import { toolIconFor } from './icons'
 import { deriveToolSummary } from './summary'
-import { renderTaskCreate, renderTaskGet, renderTaskList, renderTaskUpdate } from './taskTools'
+import { renderTaskCreate, renderTaskGet, renderTaskUpdate } from './taskTools'
 import { renderClaudeToolTitle } from './title'
 import { renderTodoWrite } from './todoWrite'
 
@@ -32,8 +32,6 @@ export function renderClaudeToolUse(
     return renderTaskUpdate(toolUse, context)
   if (toolName === CLAUDE_TOOL.TASK_GET)
     return renderTaskGet(context)
-  if (toolName === CLAUDE_TOOL.TASK_LIST)
-    return renderTaskList(context)
   if (toolName === CLAUDE_TOOL.ASK_USER_QUESTION)
     return renderAskUserQuestion(toolUse, context)
   if (toolName === CLAUDE_TOOL.EXIT_PLAN_MODE)

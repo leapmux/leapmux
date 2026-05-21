@@ -158,4 +158,18 @@ describe('claude classify', () => {
     }
     expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
+
+  it('hides TaskList tool_use (chat surface is already covered by the todo sidebar)', () => {
+    const parent = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'toolu_tasklist_1', name: 'TaskList', input: {} },
+        ],
+      },
+    }
+    expect(plugin.classify({ ...input(parent), spanType: 'TaskList' }))
+      .toEqual({ kind: 'hidden' })
+  })
 })

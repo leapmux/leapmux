@@ -29,9 +29,9 @@ export const TodoList: Component<TodoListProps> = (props) => {
               <span class={styles.todoText}>{todoDisplayLabel(todo)}</span>
             </div>
           )
-          // The compact list (sidebar + TaskList chat card) doesn't have
-          // room for a description line, so surface it via the Tooltip
-          // component when present.
+          // The compact list (sidebar + TodoWrite / Codex / OpenCode
+          // chat cards) doesn't have room for a description line, so
+          // surface it via the Tooltip component when present.
           return todo.description
             ? <Tooltip text={todo.description}>{row}</Tooltip>
             : row

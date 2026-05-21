@@ -2,14 +2,12 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import { pickObject } from '~/lib/jsonPick'
 import { TaskCardMessage } from '../../../taskCardMessage'
-import { TodoListMessage } from '../../../todoListMessage'
 import {
   buildTaskCreateSource,
   buildTaskGetSource,
   buildTaskUpdateSource,
   readToolUseResult,
 } from '../extractors/taskCard'
-import { buildTaskListSource } from '../extractors/todo'
 
 /**
  * Render a Claude TaskCreate tool_use as a single-row card. Subject
@@ -50,17 +48,4 @@ export function renderTaskGet(context?: RenderContext): JSX.Element | null {
   if (!source)
     return null
   return <TaskCardMessage source={source} context={context} />
-}
-
-/**
- * Render a Claude TaskList tool_use as the multi-row TodoListMessage
- * ("N tasks" header + per-task rows). The input is empty; the tasks
- * array lives in the paired tool_use_result. Mirrors the layout that
- * the result-side renderer produced before this rework.
- */
-export function renderTaskList(context?: RenderContext): JSX.Element | null {
-  const source = buildTaskListSource(readToolUseResult(context?.toolResultParsed))
-  if (!source)
-    return null
-  return <TodoListMessage source={source} context={context} />
 }

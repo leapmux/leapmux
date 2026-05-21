@@ -227,23 +227,26 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
   })
 })
 
-describe('claude TaskList renders the multi-row TodoListMessage on the tool_use side', () => {
-  it('renders the pluralized title and each row from tool_use_result.tasks', () => {
-    const toolUseResult = {
+describe('claude classifies TaskList tool_use as hidden', () => {
+  it('hides the TaskList tool_use so the chat surface stays quiet', () => {
+    const category = classifyMessage({
+      rawText: '',
+      topLevel: null,
       parentObject: {
-        tool_use_result: {
-          tasks: [
-            { id: 'a', subject: 'first', status: 'pending' },
-            { id: 'b', subject: 'second', status: 'completed' },
-          ],
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 'toolu_x', name: 'TaskList', input: {} }],
         },
       },
-    } as Record<string, unknown>
-    const { container } = renderClaudeToolUse('TaskList', {}, { toolResultParsed: toolUseResult as never })
-    const text = container.textContent ?? ''
-    expect(text).toContain('2 tasks')
-    expect(text).toContain('first')
-    expect(text).toContain('second')
+      wrapper: null,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      spanId: 'span',
+      spanType: 'TaskList',
+      parentSpanId: '',
+      seq: 0n,
+      createdAt: '',
+    })
+    expect(category.kind).toBe('hidden')
   })
 })
 
