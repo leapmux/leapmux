@@ -49,6 +49,15 @@ export interface BaseTab {
    * the same repo, different toplevels mean different repos.
    */
   gitToplevel?: string
+  /**
+   * True iff `gitToplevel` resolves to a linked worktree (i.e. `git
+   * rev-parse --git-dir` differs from `--git-common-dir`). Drives the
+   * sidebar's BranchGroup.isWorktree disposition, which ChangeBranchDialog
+   * reads to seed `isWorktreeRoot`/`isRepoRoot` before its inspect RPC
+   * lands. Undefined when the tab hasn't been git-resolved yet, matching
+   * the convention used by the other git fields on this tab.
+   */
+  gitIsWorktree?: boolean
   gitDiffAdded?: number
   gitDiffDeleted?: number
   gitDiffUntracked?: number
@@ -152,8 +161,18 @@ export function isFileTab(t: Tab): t is FileTab {
   return t.type === TabType.FILE
 }
 
-/** The three tab fields derived from git status. */
-export type GitTabFields = Pick<BaseTab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel'>
+/**
+ * True for the tab kinds the worker can push a branch from. FILE tabs
+ * carry no working dir on the worker side (the file path is encrypted
+ * client-side and resolved through fileTabPaths), so they can't anchor
+ * a push or any other branch-context operation.
+ */
+export function isPushableTab(t: Tab): t is AgentTab | TerminalTab {
+  return t.type === TabType.AGENT || t.type === TabType.TERMINAL
+}
+
+/** The four tab fields derived from git status. */
+export type GitTabFields = Pick<BaseTab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel' | 'gitIsWorktree'>
 
 export interface TabItemOps {
   onClose?: (tab: Tab) => void

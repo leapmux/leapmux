@@ -29,15 +29,19 @@ import type {
   StatFileResponse,
 } from '~/generated/leapmux/v1/file_pb'
 import type {
-  CheckWorktreeStatusResponse,
+  CheckoutBranchResponse,
+  CreateBranchResponse,
+  DeleteBranchResponse,
   ForceRemoveWorktreeResponse,
   GetGitFileStatusResponse,
   GetGitInfoResponse,
+  InspectBranchChangeResponse,
+  InspectBranchDeletionResponse,
   InspectLastTabCloseResponse,
   KeepWorktreeResponse,
   ListGitBranchesResponse,
   ListGitWorktreesResponse,
-  PushBranchForCloseResponse,
+  PushBranchResponse,
   ReadGitFileResponse,
 } from '~/generated/leapmux/v1/git_pb'
 import type {
@@ -106,14 +110,22 @@ import {
   StatFileResponseSchema,
 } from '~/generated/leapmux/v1/file_pb'
 import {
-  CheckWorktreeStatusRequestSchema,
-  CheckWorktreeStatusResponseSchema,
+  CheckoutBranchRequestSchema,
+  CheckoutBranchResponseSchema,
+  CreateBranchRequestSchema,
+  CreateBranchResponseSchema,
+  DeleteBranchRequestSchema,
+  DeleteBranchResponseSchema,
   ForceRemoveWorktreeRequestSchema,
   ForceRemoveWorktreeResponseSchema,
   GetGitFileStatusRequestSchema,
   GetGitFileStatusResponseSchema,
   GetGitInfoRequestSchema,
   GetGitInfoResponseSchema,
+  InspectBranchChangeRequestSchema,
+  InspectBranchChangeResponseSchema,
+  InspectBranchDeletionRequestSchema,
+  InspectBranchDeletionResponseSchema,
   InspectLastTabCloseRequestSchema,
   InspectLastTabCloseResponseSchema,
   KeepWorktreeRequestSchema,
@@ -122,8 +134,8 @@ import {
   ListGitBranchesResponseSchema,
   ListGitWorktreesRequestSchema,
   ListGitWorktreesResponseSchema,
-  PushBranchForCloseRequestSchema,
-  PushBranchForCloseResponseSchema,
+  PushBranchRequestSchema,
+  PushBranchResponseSchema,
   ReadGitFileRequestSchema,
   ReadGitFileResponseSchema,
 } from '~/generated/leapmux/v1/git_pb'
@@ -370,7 +382,7 @@ function callWorker<
   reqSchema: ReqSchema,
   respSchema: RespSchema,
   req: MessageInitShape<ReqSchema>,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number, signal?: AbortSignal },
 ): Promise<MessageShape<RespSchema>> {
   emitDevEvent('leapmux:rpc-send', () => ({ method, at: performance.now() }))
   const p = channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
@@ -543,28 +555,24 @@ export function statFile(workerId: string, req: MessageInitShape<typeof StatFile
 // Git
 // ---------------------------------------------------------------------------
 
-export function getGitInfo(workerId: string, req: MessageInitShape<typeof GetGitInfoRequestSchema>): Promise<GetGitInfoResponse> {
-  return callWorker(workerId, 'GetGitInfo', GetGitInfoRequestSchema, GetGitInfoResponseSchema, req)
+export function getGitInfo(workerId: string, req: MessageInitShape<typeof GetGitInfoRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetGitInfoResponse> {
+  return callWorker(workerId, 'GetGitInfo', GetGitInfoRequestSchema, GetGitInfoResponseSchema, req, opts)
 }
 
-export function getGitFileStatus(workerId: string, req: MessageInitShape<typeof GetGitFileStatusRequestSchema>): Promise<GetGitFileStatusResponse> {
-  return callWorker(workerId, 'GetGitFileStatus', GetGitFileStatusRequestSchema, GetGitFileStatusResponseSchema, req)
+export function getGitFileStatus(workerId: string, req: MessageInitShape<typeof GetGitFileStatusRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetGitFileStatusResponse> {
+  return callWorker(workerId, 'GetGitFileStatus', GetGitFileStatusRequestSchema, GetGitFileStatusResponseSchema, req, opts)
 }
 
 export function readGitFile(workerId: string, req: MessageInitShape<typeof ReadGitFileRequestSchema>): Promise<ReadGitFileResponse> {
   return callWorker(workerId, 'ReadGitFile', ReadGitFileRequestSchema, ReadGitFileResponseSchema, req)
 }
 
-export function checkWorktreeStatus(workerId: string, req: MessageInitShape<typeof CheckWorktreeStatusRequestSchema>): Promise<CheckWorktreeStatusResponse> {
-  return callWorker(workerId, 'CheckWorktreeStatus', CheckWorktreeStatusRequestSchema, CheckWorktreeStatusResponseSchema, req)
+export function inspectLastTabClose(workerId: string, req: MessageInitShape<typeof InspectLastTabCloseRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectLastTabCloseResponse> {
+  return callWorker(workerId, 'InspectLastTabClose', InspectLastTabCloseRequestSchema, InspectLastTabCloseResponseSchema, req, opts)
 }
 
-export function inspectLastTabClose(workerId: string, req: MessageInitShape<typeof InspectLastTabCloseRequestSchema>): Promise<InspectLastTabCloseResponse> {
-  return callWorker(workerId, 'InspectLastTabClose', InspectLastTabCloseRequestSchema, InspectLastTabCloseResponseSchema, req)
-}
-
-export function pushBranchForClose(workerId: string, req: MessageInitShape<typeof PushBranchForCloseRequestSchema>): Promise<PushBranchForCloseResponse> {
-  return callWorker(workerId, 'PushBranchForClose', PushBranchForCloseRequestSchema, PushBranchForCloseResponseSchema, req)
+export function pushBranch(workerId: string, req: MessageInitShape<typeof PushBranchRequestSchema>): Promise<PushBranchResponse> {
+  return callWorker(workerId, 'PushBranch', PushBranchRequestSchema, PushBranchResponseSchema, req)
 }
 
 export function forceRemoveWorktree(workerId: string, req: MessageInitShape<typeof ForceRemoveWorktreeRequestSchema>): Promise<ForceRemoveWorktreeResponse> {
@@ -581,6 +589,26 @@ export function listGitBranches(workerId: string, req: MessageInitShape<typeof L
 
 export function listGitWorktrees(workerId: string, req: MessageInitShape<typeof ListGitWorktreesRequestSchema>): Promise<ListGitWorktreesResponse> {
   return callWorker(workerId, 'ListGitWorktrees', ListGitWorktreesRequestSchema, ListGitWorktreesResponseSchema, req)
+}
+
+export function inspectBranchDeletion(workerId: string, req: MessageInitShape<typeof InspectBranchDeletionRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectBranchDeletionResponse> {
+  return callWorker(workerId, 'InspectBranchDeletion', InspectBranchDeletionRequestSchema, InspectBranchDeletionResponseSchema, req, opts)
+}
+
+export function inspectBranchChange(workerId: string, req: MessageInitShape<typeof InspectBranchChangeRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectBranchChangeResponse> {
+  return callWorker(workerId, 'InspectBranchChange', InspectBranchChangeRequestSchema, InspectBranchChangeResponseSchema, req, opts)
+}
+
+export function checkoutBranch(workerId: string, req: MessageInitShape<typeof CheckoutBranchRequestSchema>): Promise<CheckoutBranchResponse> {
+  return callWorker(workerId, 'CheckoutBranch', CheckoutBranchRequestSchema, CheckoutBranchResponseSchema, req)
+}
+
+export function createBranch(workerId: string, req: MessageInitShape<typeof CreateBranchRequestSchema>): Promise<CreateBranchResponse> {
+  return callWorker(workerId, 'CreateBranch', CreateBranchRequestSchema, CreateBranchResponseSchema, req)
+}
+
+export function deleteBranch(workerId: string, req: MessageInitShape<typeof DeleteBranchRequestSchema>): Promise<DeleteBranchResponse> {
+  return callWorker(workerId, 'DeleteBranch', DeleteBranchRequestSchema, DeleteBranchResponseSchema, req)
 }
 
 // ---------------------------------------------------------------------------

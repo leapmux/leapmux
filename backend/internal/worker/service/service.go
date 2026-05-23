@@ -553,6 +553,25 @@ func sendFailedPrecondition(sender *channel.Sender, msg string) {
 	_ = sender.SendError(int32(codes.FailedPrecondition), msg)
 }
 
+// sendValidationError routes a validation failure to the most accurate
+// gRPC code: context cancellation/timeout (client disconnect, hub-side
+// deadline) maps to Canceled / DeadlineExceeded; everything else is the
+// caller's bad input → InvalidArgument. Without the split, a client
+// disconnect during a slow `git worktree list` validation surfaced as
+// "invalid_argument: context canceled", which is misleading both for
+// the user-facing toast and for any client-side telemetry that filters
+// by code.
+func sendValidationError(sender *channel.Sender, err error) {
+	switch {
+	case errors.Is(err, context.Canceled):
+		_ = sender.SendError(int32(codes.Canceled), err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		_ = sender.SendError(int32(codes.DeadlineExceeded), err.Error())
+	default:
+		sendInvalidArgument(sender, err.Error())
+	}
+}
+
 // requireAccessibleWorkspace verifies the workspace_id is accessible on the
 // sender's channel. Sends PERMISSION_DENIED and returns false when the channel
 // has no context or the workspace is not in its accessible set (populated at

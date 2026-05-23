@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import type { SectionDefContext } from './buildSectionDef'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
+import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
@@ -83,6 +84,8 @@ export interface SidebarCommonProps {
   onExpandWorkspace?: (workspaceId: string) => void
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
   getTileOrderForWorkspace?: (workspaceId: string) => string[]
+  onChangeBranch?: (ref: BranchRef) => void
+  onDeleteBranch?: (ref: BranchRef) => void
 
   // Workers
   workers: Worker[]
@@ -178,6 +181,8 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get tabItemOps() { return props.tabItemOps },
     get onExpandWorkspace() { return props.onExpandWorkspace },
     get getTileOrderForWorkspace() { return props.getTileOrderForWorkspace },
+    get onChangeBranch() { return props.onChangeBranch },
+    get onDeleteBranch() { return props.onDeleteBranch },
     get workerId() { return props.workerId },
     get workingDir() { return props.workingDir },
     get homeDir() { return props.homeDir },

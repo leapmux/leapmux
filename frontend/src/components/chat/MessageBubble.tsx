@@ -15,6 +15,7 @@ import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
+import { formatErrorMessage } from '~/lib/errors'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
 import { parseMessageContent } from '~/lib/messageParser'
@@ -34,7 +35,7 @@ const logger = createLogger('MessageBubble')
 function renderErrorFallback(label: string) {
   return (err: unknown) => {
     logger.warn(label, err)
-    const message = err instanceof Error ? err.message : String(err)
+    const message = formatErrorMessage(err)
     const rawStack = err instanceof Error ? err.stack : undefined
     const [resolved] = createResource(
       () => rawStack,

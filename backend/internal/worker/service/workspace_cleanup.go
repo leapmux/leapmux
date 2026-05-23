@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -16,7 +17,7 @@ func registerCleanupHandlers(d *channel.Dispatcher, svc *Context) {
 // worktrees) for a deleted workspace. This is called via E2EE channel by the
 // frontend after the hub deletes the workspace.
 func handleCleanupWorkspace(svc *Context) channel.HandlerFunc {
-	return func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	return func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.CleanupWorkspaceRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

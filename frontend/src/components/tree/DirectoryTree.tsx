@@ -14,6 +14,7 @@ import { Icon } from '~/components/common/Icon'
 import { StartupSpinner } from '~/components/common/StartupPanel'
 import { Tooltip } from '~/components/common/Tooltip'
 import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { formatErrorMessage } from '~/lib/errors'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, tildify, untildify } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
@@ -685,7 +686,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       .catch((err) => {
         if (version !== loadVersion)
           return
-        setError(err instanceof Error ? err.message : 'Failed to load directory')
+        setError(formatErrorMessage(err, 'Failed to load directory'))
         setLoading(false)
       })
   })

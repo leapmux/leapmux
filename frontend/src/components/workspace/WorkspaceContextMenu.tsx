@@ -1,13 +1,11 @@
 import type { Component } from 'solid-js'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import { For, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
-import { IconButton } from '~/components/common/IconButton'
+import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
-import { menuTrigger } from '~/components/tree/sidebarActions.css'
 import { isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 
@@ -26,25 +24,7 @@ interface WorkspaceContextMenuProps {
 
 export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props) => {
   return (
-    <DropdownMenu
-      trigger={triggerProps => (
-        <IconButton
-          icon={MoreHorizontal}
-          size="sm"
-          class={menuTrigger}
-          onClick={(e: MouseEvent) => {
-            e.stopPropagation()
-            triggerProps.onClick()
-          }}
-          ref={triggerProps.ref}
-          onPointerDown={(e: PointerEvent) => {
-            e.stopPropagation()
-            triggerProps.onPointerDown()
-          }}
-          aria-expanded={triggerProps['aria-expanded']}
-        />
-      )}
-    >
+    <DropdownMenu trigger={rowContextMenuTrigger()}>
       <Show when={props.isOwner}>
         <button role="menuitem" onClick={() => props.onRename()}>
           Rename

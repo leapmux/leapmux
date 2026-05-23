@@ -1,11 +1,10 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { Component, ComponentProps, JSX } from 'solid-js'
 import type { IconSizeName } from './Icon'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Show, splitProps } from 'solid-js'
-import { spinner } from '~/styles/animations.css'
 import { Icon } from './Icon'
 import * as styles from './IconButton.css'
+import { Spinner } from './Spinner'
 import { Tooltip } from './Tooltip'
 
 // ---------------------------------------------------------------------------
@@ -102,7 +101,7 @@ export const IconButton: Component<IconButtonProps> = (props) => {
         {...rest}
       >
         <Show when={isLoading()} fallback={<Icon icon={local.icon} size={iconSz()} />}>
-          <Icon icon={LoaderCircle} size={iconSz()} class={spinner} />
+          <Spinner size={iconSz()} />
         </Show>
         {local.children}
       </button>

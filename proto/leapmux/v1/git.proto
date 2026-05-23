@@ -20,6 +20,15 @@ message GetGitInfoResponse {
   bool is_dirty = 7;          // True if the working directory has uncommitted changes
   string current_branch = 8;  // Current branch name of the working directory
   string origin_url = 9;      // Remote origin URL
+  // Non-empty when the worker could not classify the path as a git
+  // repo but the failure was NOT "git says this isn't a repo" — e.g.
+  // dubious-ownership rejection, permission denied, transient I/O.
+  // The dialog uses this to render an inline diagnostic alongside the
+  // non-git fallback UX. Empty when is_git_repo=true or when the
+  // path is genuinely not a repo. Carries git's stderr verbatim so
+  // the user can run `git config --add safe.directory ...` or fix
+  // permissions without context-switching to a terminal.
+  string error_hint = 10;
 }
 
 message ForceRemoveWorktreeRequest {
@@ -27,11 +36,6 @@ message ForceRemoveWorktreeRequest {
 }
 
 message ForceRemoveWorktreeResponse {}
-
-message CheckWorktreeStatusRequest {
-  TabType tab_type = 1;
-  string tab_id = 2;
-}
 
 enum LastTabCloseTarget {
   LAST_TAB_CLOSE_TARGET_UNSPECIFIED = 0;
@@ -45,39 +49,51 @@ message InspectLastTabCloseRequest {
   string tab_id = 2;
 }
 
+// BranchGitState bundles the diff/push fields that both
+// InspectLastTabCloseResponse and InspectBranchDeletionResponse return so
+// the dialog rendering code can read one consistent shape.
+message BranchGitState {
+  int32 diff_added = 1;
+  int32 diff_deleted = 2;
+  int32 diff_untracked = 3;
+  int32 unpushed_commit_count = 4;
+  bool has_uncommitted_changes = 5;
+  bool upstream_exists = 6;
+  bool remote_branch_missing = 7;
+  bool origin_exists = 8;
+  bool can_push = 9;
+}
+
 message InspectLastTabCloseResponse {
+  // Tags 7..15 used to carry the scalar int32/bool fields that were
+  // collapsed into BranchGitState (see `git_state` below). Tag 7 in
+  // particular changed wire type (int32 → LEN-delimited message), which
+  // is a hard proto3 backward-compat violation: a mixed-binary rolling
+  // upgrade would decode garbage if both versions ever shared the wire.
+  // Reserve 7..15 explicitly so future maintainers can't reuse a tag
+  // whose old wire form may still be alive in caches or proxies.
+  reserved 7 to 15;
+  reserved "diff_added", "diff_deleted", "diff_untracked",
+           "unpushed_commit_count", "has_uncommitted_changes",
+           "upstream_exists", "remote_branch_missing", "origin_exists",
+           "can_push";
   LastTabCloseTarget target = 1;
   bool should_prompt = 2;
   string repo_root = 3;
   string worktree_path = 4;
   string worktree_id = 5;
   string branch_name = 6;
-  int32 diff_added = 7;
-  int32 diff_deleted = 8;
-  int32 diff_untracked = 9;
-  int32 unpushed_commit_count = 10;
-  bool has_uncommitted_changes = 11;
-  bool upstream_exists = 12;
-  bool remote_branch_missing = 13;
-  bool origin_exists = 14;
-  bool can_push = 15;
+  // Fresh tag (16) for the BranchGitState bundle. Picking a new number
+  // avoids the wire-type-reuse hazard on tag 7 above.
+  BranchGitState git_state = 16;
 }
 
-message PushBranchForCloseRequest {
+message PushBranchRequest {
   TabType tab_type = 1;
   string tab_id = 2;
 }
 
-message PushBranchForCloseResponse {}
-
-message CheckWorktreeStatusResponse {
-  bool has_worktree = 1;             // True if this tab is associated with a managed worktree
-  bool is_last_tab = 2;             // True if this is the last tab referencing the worktree
-  bool is_dirty = 3;                // True if the worktree has uncommitted changes or unpushed commits
-  string worktree_path = 4;         // Path of the worktree (for display in confirmation dialog)
-  string worktree_id = 5;           // Worktree ID (for ForceRemoveWorktree/KeepWorktree)
-  string branch_name = 6;           // Branch name associated with the worktree
-}
+message PushBranchResponse {}
 
 message KeepWorktreeRequest {
   string worktree_id = 1;
@@ -96,9 +112,40 @@ message GetGitFileStatusResponse {
   string origin_url = 2;
   string current_branch = 3;
   repeated GitFileStatusEntry files = 4;  // Paths are relative to repo root
+  // Mirrors GetGitInfoResponse.error_hint: non-empty when the worker
+  // could not classify the path as a git repo for a non-"not a repo"
+  // reason (dubious-ownership, EACCES, transient I/O). The sidebar
+  // renders an inline warning rather than the previous "Internal
+  // error" toast that left the user with no actionable diagnostic.
+  string error_hint = 7;
+  // True if the QUERIED path (request.path) is a linked worktree. This
+  // describes the path the caller asked about, NOT `repo_root` — when
+  // the queried dir is inside a worktree, `repo_root` is the main repo
+  // root (so the sidebar groups worktree tabs with their parent repo).
+  // Consumers must NOT mass-stamp this onto every tab in `repo_root`:
+  // tabs in the main tree and tabs in a sibling worktree can both have
+  // gitToplevel == repo_root but only one of them is a worktree. The
+  // field is useful as a UX hint for dialogs opened against the queried
+  // dir; authoritative per-tab worktree state should come from inspect
+  // RPCs against the tab's own path.
+  bool is_worktree = 5;
+  // Working-tree root of the QUERIED path: the worktree directory when
+  // `is_worktree` is true, else equal to `repo_root`. The frontend uses
+  // this for tab-stamping containment so a Change/Delete branch run on
+  // a worktree row updates ONLY that worktree's tabs — not every tab
+  // in `repo_root`. `current_branch` reports the queried path's branch
+  // (which differs from the main tree's HEAD when in a worktree), so
+  // stamping by `repo_root` would smear the worktree's branch across
+  // unrelated main-tree tabs.
+  string toplevel = 6;
 }
 
 // GitFileRef specifies which version of a file to read.
+// GIT_FILE_REF_UNSPECIFIED is REJECTED by the server with InvalidArgument
+// — callers MUST set `ref` explicitly. The default-to-HEAD behavior of
+// earlier revisions silently coerced unknown future enum values, so
+// rejecting unspecified now keeps the API forward-compatible with new
+// ref kinds added to this enum.
 enum GitFileRef {
   GIT_FILE_REF_UNSPECIFIED = 0;
   GIT_FILE_REF_HEAD = 1;
@@ -149,3 +196,115 @@ message ListGitWorktreesRequest {
 message ListGitWorktreesResponse {
   repeated GitWorktreeEntry worktrees = 1;
 }
+
+// InspectBranchDeletion returns the shared BranchGitState plus the
+// worktree fields so the UI can decide which dialog variant to show.
+// Always returns full info (no fast-path skip), since callers always
+// want to see it.
+message InspectBranchDeletionRequest {
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;             // working directory of the branch group
+  // Optional branch label the caller already knows (from the branch
+  // group row that opened the dialog). When set, the worker skips its
+  // own queryGitPathInfo rev-parse fork and uses this name directly,
+  // saving one round trip per dialog open. The diff/push probes still
+  // run against `path` regardless. Pass empty to fall back to a probe.
+  string branch_name_hint = 4;
+}
+
+message InspectBranchDeletionResponse {
+  bool is_worktree = 1;
+  string worktree_path = 2;
+  string branch_name = 3;
+  BranchGitState git_state = 4;
+  // Branches the dialog can switch to after deletion, excluding the one
+  // being deleted. Populated only when `is_worktree` is false (the
+  // worktree path stops every tab and removes the worktree, so it has
+  // no switch-target picker). When omitted, the dialog has nothing to
+  // render in its picker -- but the worktree path never reaches that
+  // render path, so the absence is correct.
+  repeated GitBranchEntry branches = 5;
+  // Worktree DB row id when `is_worktree` is true; empty otherwise.
+  // Threaded so DeleteBranchDialog can drive worktree removal via
+  // ForceRemoveWorktree directly instead of routing through tab closes
+  // — a branch group with only FILE tabs (or no tabs at all) would
+  // otherwise have nothing whose close ref-counts the worktree down to
+  // zero, leaving the worktree dir on disk while the dialog reported
+  // success.
+  string worktree_id = 6;
+}
+
+// InspectBranchChange bundles every probe ChangeBranchDialog runs at
+// open time into one RPC. Replaces the previous "GetGitInfo then
+// ListGitBranches" sequence, each of which forked `git rev-parse` on
+// the worker; here the path-info probe fans out alongside the branches
+// fetch so the dialog pays one round trip and one shared queryGitPathInfo
+// for everything.
+message InspectBranchChangeRequest {
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;             // working directory of the branch group
+}
+
+message InspectBranchChangeResponse {
+  // Resolved repo root (after worktree → main-repo rewrite). Same value
+  // as `GetGitInfoResponse.repo_root`. Useful to the dialog so it can
+  // confirm the seed it threaded matched the worker's view.
+  string repo_root = 1;
+  // Working-tree root (worktree dir when `is_worktree`, otherwise equal
+  // to `repo_root`).
+  string toplevel = 2;
+  // True iff the probed path is a linked worktree.
+  bool is_worktree = 3;
+  // Branch name the working directory is currently on, or a short SHA
+  // for detached HEAD.
+  string current_branch = 4;
+  // True iff the working directory has uncommitted changes (the
+  // `git status --porcelain` probe). Drives the dirty-tree warning on
+  // Switch / CreateBranch / CreateWorktree modes.
+  bool is_dirty = 5;
+  // Local + remote branches the dialog's Switch / CreateBase selectors
+  // need. Returned in the same shape as ListGitBranches; the dialog
+  // partitions them client-side via `partitionBranches`.
+  repeated GitBranchEntry branches = 6;
+}
+
+// CheckoutBranch switches a working directory to an existing branch.
+// `git checkout <branch>` for local branches; `git checkout -b <local>
+// --track <remote>` for remote-tracking refs (e.g. "origin/foo") when no
+// matching local branch already exists.
+message CheckoutBranchRequest {
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
+  string branch = 4;          // local name; remote refs prefixed e.g. "origin/foo"
+}
+
+message CheckoutBranchResponse {}
+
+// CreateBranch creates a new branch off a base and checks it out in the
+// working directory (`git checkout -b <new_branch> [<base_branch>]`).
+message CreateBranchRequest {
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
+  string new_branch = 4;
+  string base_branch = 5;     // empty = HEAD
+}
+
+message CreateBranchResponse {}
+
+// DeleteBranch deletes a non-worktree branch. It first checks out
+// switch_to_branch in the working directory and then runs
+// `git branch -D <branch_to_delete>`. If the delete fails, the worker
+// attempts to restore the original branch before returning the error.
+message DeleteBranchRequest {
+  string org_id = 1;
+  string worker_id = 2;
+  string path = 3;
+  string branch_to_delete = 4;
+  string switch_to_branch = 5;
+}
+
+message DeleteBranchResponse {}

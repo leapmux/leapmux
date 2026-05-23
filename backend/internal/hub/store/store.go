@@ -487,7 +487,6 @@ type WorkspaceSectionItemStore interface {
 	ListByUser(ctx context.Context, userID string) ([]WorkspaceSectionItem, error)
 	Delete(ctx context.Context, p DeleteWorkspaceSectionItemParams) error
 	DeleteBySection(ctx context.Context, sectionID string) error
-	MoveToSection(ctx context.Context, p MoveWorkspaceSectionItemsToSectionParams) error
 	HasItemsBySection(ctx context.Context, sectionID string) (bool, error)
 	IsInArchivedSection(ctx context.Context, p IsWorkspaceInArchivedSectionParams) (bool, error)
 }

@@ -1,15 +1,13 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, AskQuestionState, EditorContentRef, Question } from './types'
 import type { ControlRequest } from '~/stores/control.store'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createUniqueId, For, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
-import { Icon } from '~/components/common/Icon'
+import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { pluralize } from '~/lib/plural'
-import { spinner } from '~/styles/animations.css'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleList } from './CollapsibleList'
@@ -362,7 +360,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
           disabled={stopping()}
           data-testid="control-stop-btn"
         >
-          <Show when={stopping()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+          <Show when={stopping()}><Spinner /></Show>
           {stopping() ? 'Stopping...' : 'Stop'}
         </button>
         <Tooltip text="Auto-fill unanswered questions and submit">
@@ -402,7 +400,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
           disabled={!allAnswered() || submitting()}
           data-testid="control-submit-btn"
         >
-          <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+          <Show when={submitting()}><Spinner /></Show>
           {submitting() ? 'Submitting...' : 'Submit'}
         </button>
       </div>

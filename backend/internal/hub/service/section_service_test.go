@@ -284,6 +284,120 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 	assert.True(t, found, "workspace should be in 'In progress' section after deleting custom section")
 }
 
+// TestSectionService_DeleteSection_ReassignsPositionsOnMerge pins the
+// position-uniqueness fix: when a custom section is deleted, its items
+// must be appended to "In progress" with FRESH lexorank positions that
+// don't collide with the items already there. The buggy bulk-move
+// preserved the source items' positions, so any source item at
+// lexorank.First() ("n") collided with an in-progress item that also
+// sat at "n" (the common case for fresh accounts dragging "the first
+// item" into each section). On a tie the SQL planner picked an
+// order, and the sidebar shuffled across page refreshes.
+func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
+	env := setupSectionTest(t)
+	ctx := context.Background()
+
+	// Create two workspaces — one for In progress, one for the custom
+	// section that's about to be merged in.
+	wsInProgress := id.Generate()
+	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID:          wsInProgress,
+		OrgID:       env.orgID,
+		OwnerUserID: env.userID,
+		Title:       "ws in progress",
+	}))
+	wsCustom := id.Generate()
+	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID:          wsCustom,
+		OrgID:       env.orgID,
+		OwnerUserID: env.userID,
+		Title:       "ws custom",
+	}))
+
+	// Auto-init.
+	listResp, err := env.client.ListSections(ctx, authedReq(
+		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+	require.NoError(t, err)
+	var inProgressID string
+	for _, s := range listResp.Msg.GetSections() {
+		if s.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
+			inProgressID = s.GetId()
+			break
+		}
+	}
+	require.NotEmpty(t, inProgressID)
+
+	// Drag wsInProgress into the In progress section at lexorank.First().
+	_, err = env.client.MoveWorkspace(ctx, authedReq(
+		&leapmuxv1.MoveWorkspaceRequest{
+			WorkspaceId: wsInProgress,
+			SectionId:   inProgressID,
+			Position:    "n", // lexorank.First()
+		}, env.token))
+	require.NoError(t, err)
+
+	// Create a custom section and drop wsCustom into it at "n" too —
+	// the colliding position that the bug exploited.
+	createResp, err := env.client.CreateSection(ctx, authedReq(
+		&leapmuxv1.CreateSectionRequest{Name: "Custom"}, env.token))
+	require.NoError(t, err)
+	customID := createResp.Msg.GetSectionId()
+	_, err = env.client.MoveWorkspace(ctx, authedReq(
+		&leapmuxv1.MoveWorkspaceRequest{
+			WorkspaceId: wsCustom,
+			SectionId:   customID,
+			Position:    "n",
+		}, env.token))
+	require.NoError(t, err)
+
+	// Delete the custom section. wsCustom must land in In progress
+	// AND its position must differ from wsInProgress's "n".
+	_, err = env.client.DeleteSection(ctx, authedReq(
+		&leapmuxv1.DeleteSectionRequest{SectionId: customID}, env.token))
+	require.NoError(t, err)
+
+	items, err := env.store.WorkspaceSectionItems().ListByUser(ctx, env.userID)
+	require.NoError(t, err)
+	posByWs := map[string]string{}
+	sectionByWs := map[string]string{}
+	for _, item := range items {
+		posByWs[item.WorkspaceID] = item.Position
+		sectionByWs[item.WorkspaceID] = item.SectionID
+	}
+	assert.Equal(t, inProgressID, sectionByWs[wsInProgress])
+	assert.Equal(t, inProgressID, sectionByWs[wsCustom])
+	assert.Equal(t, "n", posByWs[wsInProgress], "untouched in-progress item keeps its position")
+	assert.NotEqual(t, posByWs[wsInProgress], posByWs[wsCustom],
+		"merged item must be reassigned to a unique position")
+	assert.Greater(t, posByWs[wsCustom], posByWs[wsInProgress],
+		"merged item must sort AFTER existing in-progress items")
+}
+
+// TestSectionService_DeleteSection_NotFoundOnBogusID pins the
+// NotFound mapping the DeleteSection rewrite preserves: the move loop
+// runs inside a transaction whose final `WorkspaceSections().Delete`
+// is what decides whether the operation is allowed (custom sections
+// only). When the section id doesn't exist (or isn't custom), the
+// handler returns CodeNotFound and the entire move loop is rolled
+// back atomically — the implementation guarantees this structurally
+// via RunInTransaction; this test verifies the user-visible status
+// code on the cheapest input that triggers the path (no real items to
+// move, but the code path through ListByUserID + the empty move loop +
+// the rows=0 Delete still exercises the sentinel-roll-back branch).
+func TestSectionService_DeleteSection_NotFoundOnBogusID(t *testing.T) {
+	env := setupSectionTest(t)
+	ctx := context.Background()
+	_, err := env.client.ListSections(ctx, authedReq(
+		&leapmuxv1.ListSectionsRequest{OrgId: env.orgID}, env.token))
+	require.NoError(t, err)
+
+	_, err = env.client.DeleteSection(ctx, authedReq(
+		&leapmuxv1.DeleteSectionRequest{SectionId: "section-id-that-does-not-exist"}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"a delete of a missing section must surface NotFound via the rollback sentinel, not Internal")
+}
+
 func TestSectionService_MoveSection(t *testing.T) {
 	env := setupSectionTest(t)
 

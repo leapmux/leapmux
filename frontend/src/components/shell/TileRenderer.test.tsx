@@ -46,7 +46,6 @@ function renderRenderer(s: RendererSetup, focusedTileId: string) {
         controlStore: createControlStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
-        workerInfoStore: { getHomeDir: () => '' },
       },
       ops: {
         agentOps: {
@@ -74,7 +73,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string) {
         isActiveWorkspaceMutatable: () => true,
         isActiveWorkspaceArchived: () => false,
         activeWorkspace: () => ({ id: 'workspace-1' }),
-        getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/repo', homeDir: '/home/me' }),
+        getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/repo', homeDir: '/home/me', gitToplevel: '/repo' }),
         getMruAgentContext: () => ({ workingDir: '/repo', homeDir: '/home/me' }),
       },
       tab: {
@@ -87,8 +86,8 @@ function renderRenderer(s: RendererSetup, focusedTileId: string) {
         newAgentLoadingProvider: () => null,
         newTerminalLoading: () => false,
         newShellLoading: () => false,
-        setShowNewAgentDialog: () => {},
-        setShowNewTerminalDialog: () => {},
+        newAgentDialog: { open: () => {}, close: () => {}, isOpen: () => false },
+        newTerminalDialog: { open: () => {}, close: () => {}, isOpen: () => false },
       },
       chrome: {
         isMobileLayout: () => false,

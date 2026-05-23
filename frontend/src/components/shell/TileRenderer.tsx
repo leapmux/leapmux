@@ -6,6 +6,7 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -40,6 +41,7 @@ import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo } from '~/stores/tab.helpers'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
@@ -62,7 +64,6 @@ interface TileRendererOpts {
     layoutStore: ReturnType<typeof createLayoutStore>
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
     gitFileStatusStore?: ReturnType<typeof createGitFileStatusStore>
-    workerInfoStore: { getHomeDir: (workerId: string) => string }
   }
   /** Tab/agent/terminal lifecycle hooks. */
   ops: {
@@ -84,13 +85,13 @@ interface TileRendererOpts {
     setIsTabEditing: (fn: () => boolean) => void
     closingTabKeys: () => Set<string>
   }
-  /** New-tab loading flags + dialog setters. */
+  /** New-tab loading flags + dialog handles. */
   newTab: {
     newAgentLoadingProvider: () => AgentProvider | null
     newTerminalLoading: () => boolean
     newShellLoading: () => boolean
-    setShowNewAgentDialog: (v: boolean) => void
-    setShowNewTerminalDialog: (v: boolean) => void
+    newAgentDialog: ToggleDialogState
+    newTerminalDialog: ToggleDialogState
   }
   /** Shell chrome state and sidebar toggles. */
   chrome: {
@@ -122,7 +123,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
     layoutStore,
     agentSessionStore,
     gitFileStatusStore,
-    workerInfoStore,
   } = opts.stores
   const { agentOps, termOps } = opts.ops
   const {
@@ -137,8 +137,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
     newAgentLoadingProvider,
     newTerminalLoading,
     newShellLoading,
-    setShowNewAgentDialog,
-    setShowNewTerminalDialog,
+    newAgentDialog,
+    newTerminalDialog,
   } = opts.newTab
   const { isMobileLayout, toggleLeftSidebar, toggleRightSidebar } = opts.chrome
   const { focusEditorRef, getScrollStateRef, forceScrollToBottomRef } = opts.refs
@@ -450,8 +450,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
           onNewAgent: agentOps.handleOpenAgent,
           onNewTerminal: termOps.handleOpenTerminal,
           onNewTerminalWithShell: termOps.handleOpenTerminalWithShell,
-          onNewAgentAdvanced: () => setShowNewAgentDialog(true),
-          onNewTerminalAdvanced: () => setShowNewTerminalDialog(true),
+          onNewAgentAdvanced: () => newAgentDialog.open(),
+          onNewTerminalAdvanced: () => newTerminalDialog.open(),
           availableProviders: agentOps.availableProviders(),
           availableShells: termOps.availableShells(),
           defaultShell: termOps.defaultShell(),

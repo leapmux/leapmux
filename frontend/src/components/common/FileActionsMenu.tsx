@@ -5,14 +5,13 @@ import type { PopoverPositionOptions } from '~/lib/popoverPosition'
 import AtSign from 'lucide-solid/icons/at-sign'
 import Copy from 'lucide-solid/icons/copy'
 import Download from 'lucide-solid/icons/download'
-import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
 import TerminalIcon from 'lucide-solid/icons/terminal'
 import { createSignal, getOwner, runWithOwner, Show } from 'solid-js'
 import { isTauriApp } from '~/api/platformBridge'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { createFileSaveActions } from '~/components/common/fileSaveActions'
 import { Icon } from '~/components/common/Icon'
-import { IconButton } from '~/components/common/IconButton'
+import { moreHorizontalTrigger } from '~/components/common/moreHorizontalTrigger'
 import { copyTextToClipboard } from '~/lib/clipboard'
 import { relativizePath } from '~/lib/paths'
 
@@ -111,25 +110,10 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
     <DropdownMenu
       placement={props.placement}
       onToggle={setMenuOpen}
-      trigger={triggerProps => (
-        <IconButton
-          icon={MoreHorizontal}
-          iconSize="sm"
-          size="sm"
-          class={props.triggerClass}
-          onClick={(e: MouseEvent) => {
-            e.stopPropagation()
-            triggerProps.onClick()
-          }}
-          ref={triggerProps.ref}
-          onPointerDown={(e: PointerEvent) => {
-            e.stopPropagation()
-            triggerProps.onPointerDown()
-          }}
-          aria-expanded={triggerProps['aria-expanded']}
-          data-testid={props.triggerTestId ?? 'file-actions-trigger'}
-        />
-      )}
+      trigger={moreHorizontalTrigger({
+        'class': props.triggerClass,
+        'data-testid': props.triggerTestId ?? 'file-actions-trigger',
+      })}
     >
       <Show when={props.onMention}>
         <button

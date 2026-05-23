@@ -10,6 +10,9 @@ SELECT * FROM worktrees WHERE id = ?;
 -- name: DeleteWorktree :exec
 UPDATE worktrees SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
 
+-- name: UpdateWorktreeBranchName :exec
+UPDATE worktrees SET branch_name = ? WHERE id = ?;
+
 -- name: HardDeleteWorktreesBefore :execresult
 DELETE FROM worktrees WHERE rowid IN (SELECT w.rowid FROM worktrees w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < ? LIMIT 1000);
 

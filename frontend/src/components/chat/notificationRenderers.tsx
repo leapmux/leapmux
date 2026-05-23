@@ -5,6 +5,7 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
+import { Spinner } from '~/components/common/Spinner'
 import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
@@ -82,7 +83,7 @@ export const compactingRenderer: MessageContentRenderer = {
       return null
     return (
       <div class={resultDivider}>
-        <Icon icon={LoaderCircle} size="sm" class={spinner} />
+        <Spinner />
         {' Compacting context...'}
       </div>
     )

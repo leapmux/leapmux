@@ -1,6 +1,7 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/common.proto";
 import "leapmux/v1/workspace.proto";
 
 // WorkspacePrivateService is a worker-side service whose RPCs travel
@@ -31,6 +32,11 @@ service WorkspacePrivateService {
   // RevokeFileTabPath deletes the worker-stored path. Emits
   // FileTabPathRevoked. Authorization falls back to the row's
   // workspace_id when the CRDT TabRecord is gone (rollback path).
+  //
+  // Mirrors the CloseAgent / CloseTerminal contract: the request
+  // carries a WorktreeAction, the response carries a CloseTabResult,
+  // and the worker drives the same closeTabCommon path so worktree
+  // removal stays consistent across tab types.
   rpc RevokeFileTabPath(RevokeFileTabPathRequest) returns (RevokeFileTabPathResponse);
 
   // RelocateFileTabPath updates the worker row's workspace_id when a
@@ -94,9 +100,19 @@ message GetFileTabPathResponse {
 message RevokeFileTabPathRequest {
   string org_id = 1;
   string tab_id = 2;
+  // Worktree disposition chosen by the user when the file tab was the
+  // last tab on a tracked worktree. UNSPECIFIED / KEEP leaves the
+  // worktree in place; REMOVE asks the worker to `git worktree remove`
+  // once no other tabs reference it. Mirrors CloseAgentRequest.
+  WorktreeAction worktree_action = 3;
 }
 
-message RevokeFileTabPathResponse {}
+// RevokeFileTabPathResponse reports the outcome of the close. See
+// CloseTabResult for why partial failures are returned in-band rather
+// than as RPC errors.
+message RevokeFileTabPathResponse {
+  CloseTabResult result = 1;
+}
 
 message RelocateFileTabPathRequest {
   string org_id           = 1;

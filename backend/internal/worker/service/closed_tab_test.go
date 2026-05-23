@@ -283,7 +283,7 @@ func dispatch(d *channel.Dispatcher, method string, req proto.Message, w *testRe
 	if err != nil {
 		panic(err)
 	}
-	d.DispatchWith("user-1", &leapmuxv1.InnerRpcRequest{
+	d.DispatchWith(context.Background(), "user-1", &leapmuxv1.InnerRpcRequest{
 		Method:  method,
 		Payload: payload,
 	}, w)

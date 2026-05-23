@@ -11,4 +11,13 @@ export interface TabContext {
   workerId: string
   workingDir: string
   homeDir: string
+  /**
+   * Active tab's git repo root (the `--show-toplevel` value). Empty
+   * string when the tab is not inside a git repo. Distinct from
+   * `workingDir`: the latter is the agent/terminal start dir (may be a
+   * subdirectory of the repo); this field is the repo root itself, so
+   * (workerId, gitToplevel) uniquely identifies the active repo for
+   * cross-repo refresh routing.
+   */
+  gitToplevel: string
 }

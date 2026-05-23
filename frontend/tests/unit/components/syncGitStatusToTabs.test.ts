@@ -1,7 +1,8 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
+import type { Tab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { syncGitStatusToTabs } from '~/components/shell/syncGitStatusToTabs'
+import { applyGitStatusToTabs, syncGitStatusToTabs } from '~/components/shell/syncGitStatusToTabs'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
@@ -352,6 +353,318 @@ describe('syncGitStatusToTabs', () => {
       expect(tab?.gitDiffDeleted).toBe(2)
 
       dispose()
+    })
+  })
+
+  it('order-independent signature: reordering tabs without changing the set does not refire the effect', async () => {
+    // Regression guard for the Set-equality memo. Drag-reorder mutates
+    // tab `position` and re-sorts the underlying array without changing
+    // the (type,id,workingDir,gitToplevel) tuples we sign. If the
+    // signature were order-sensitive the effect would refire on every
+    // drag, churning store identities for nothing.
+    await createRoot(async (dispose) => {
+      const tabStore = createTabStore()
+      const gitFileStatusStore = createGitFileStatusStore()
+
+      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', workingDir: '/repo/a' })
+      tabStore.addTab({ type: TabType.TERMINAL, id: 't2', workingDir: '/repo/b' })
+
+      syncGitStatusToTabs({ gitFileStatusStore, tabStore })
+
+      mockGetGitFileStatus.mockResolvedValue({
+        repoRoot: '/repo',
+        originUrl: '',
+        currentBranch: 'main',
+        files: [],
+      })
+      await gitFileStatusStore.refresh('worker1', '/repo')
+
+      // Both tabs stamped — record their post-stamp identities.
+      const t1Before = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
+      const t2Before = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't2' }))
+      expect(t1Before?.gitToplevel).toBe('/repo')
+      expect(t2Before?.gitToplevel).toBe('/repo')
+
+      // Reorder via the public API: `position` is NOT one of the signed
+      // tuple fields, so the unstampedTabsSignature set is unchanged.
+      tabStore.setTabPosition(tabKey({ type: TabType.TERMINAL, id: 't1' }), 'z')
+      tabStore.setTabPosition(tabKey({ type: TabType.TERMINAL, id: 't2' }), 'a')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // Same proxy identity → no syncGitStatusToTabs-triggered write. If
+      // the memo were order-sensitive, the effect would have refired and
+      // (even with no-op fields) would have replaced the row.
+      const t1After = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't1' }))
+      const t2After = tabStore.getTabByKey(tabKey({ type: TabType.TERMINAL, id: 't2' }))
+      expect(t1After).toBe(t1Before)
+      expect(t2After).toBe(t2Before)
+
+      dispose()
+    })
+  })
+
+  describe('applyGitStatusToTabs (cross-workspace / registry-snapshot stamping)', () => {
+    // applyGitStatusToTabs replaces the inlined effect body so that
+    // inactive workspace snapshots can use the same containment +
+    // aggregation rules as the active tabStore. The reactive
+    // syncGitStatusToTabs effect routes through this helper too, so
+    // these tests cover the active path indirectly; the assertions
+    // below pin the cross-workspace shape — a snapshot-shaped
+    // TabStampTarget with a custom update fn that rewrites a plain
+    // array (mimicking how AppShell stamps inactive registry
+    // snapshots).
+    it('stamps a snapshot-shaped target without going through tabStore', () => {
+      let tabs: Tab[] = [
+        { type: TabType.TERMINAL, id: 't1', workingDir: '/repo' } as Tab,
+        { type: TabType.TERMINAL, id: 't2', workingDir: '/elsewhere' } as Tab,
+      ]
+      applyGitStatusToTabs({
+        get tabs() {
+          return tabs
+        },
+        update: (predicate, fields) => {
+          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        },
+      }, {
+        repoRoot: '/repo',
+        toplevel: '/repo',
+        originUrl: 'git@example.com:org/repo.git',
+        currentBranch: 'feature',
+        files: [
+          makeEntry({ path: 'a.ts', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 9, linesDeleted: 4 }),
+          makeEntry({ path: 'b/', unstagedStatus: GitFileStatusCode.UNTRACKED }),
+        ],
+      })
+      const t1 = tabs.find(t => t.id === 't1')!
+      expect(t1.gitToplevel).toBe('/repo')
+      expect(t1.gitBranch).toBe('feature')
+      expect(t1.gitOriginUrl).toBe('git@example.com:org/repo.git')
+      expect(t1.gitDiffAdded).toBe(9)
+      expect(t1.gitDiffDeleted).toBe(4)
+      expect(t1.gitDiffUntracked).toBe(1)
+      // Snapshot's other tab stayed untouched — outside the repo path,
+      // outside the predicate.
+      const t2 = tabs.find(t => t.id === 't2')!
+      expect(t2.gitToplevel).toBeUndefined()
+      expect(t2.gitBranch).toBeUndefined()
+    })
+
+    it('is a no-op when no tab matches — does not call update()', () => {
+      const update = vi.fn()
+      const tabs: Tab[] = [{ type: TabType.TERMINAL, id: 't1', workingDir: '/elsewhere' } as Tab]
+      applyGitStatusToTabs({ tabs, update }, {
+        repoRoot: '/repo',
+        toplevel: '/repo',
+        originUrl: '',
+        currentBranch: 'main',
+        files: [],
+      })
+      expect(update).not.toHaveBeenCalled()
+    })
+
+    it('is a no-op when status.toplevel is empty (no working tree to anchor)', () => {
+      const update = vi.fn()
+      const tabs: Tab[] = [{ type: TabType.TERMINAL, id: 't1', workingDir: '/repo' } as Tab]
+      applyGitStatusToTabs({ tabs, update }, {
+        repoRoot: '/repo',
+        toplevel: '',
+        originUrl: '',
+        currentBranch: '',
+        files: [],
+      })
+      expect(update).not.toHaveBeenCalled()
+    })
+
+    it('stamps the worktree variant onto only the worktree tab, NOT main-tree tabs sharing repoRoot', () => {
+      // Regression: the bug this fix exists for. Before the toplevel
+      // split, syncGitStatusToTabs matched containment against the
+      // CANONICAL repo root. A worktree query returns
+      //   { repoRoot: '/repo', toplevel: '/repo-wts/feature', isWorktree: true,
+      //     currentBranch: 'feature' }
+      // and the old logic stamped the worktree's branch onto every tab
+      // whose gitToplevel == '/repo' — i.e. the entire main tree.
+      // After the fix: only tabs whose gitToplevel == toplevel match.
+      let tabs: Tab[] = [
+        // Main-tree tab: gitToplevel === repo_root. Must KEEP its branch.
+        {
+          type: TabType.AGENT,
+          id: 'main',
+          workingDir: '/repo',
+          gitToplevel: '/repo',
+          gitBranch: 'trunk',
+        } as Tab,
+        // Worktree tab: gitToplevel === worktree root. SHOULD pick up new branch.
+        {
+          type: TabType.AGENT,
+          id: 'wt',
+          workingDir: '/repo-wts/feature',
+          gitToplevel: '/repo-wts/feature',
+          gitBranch: 'trunk', // pre-stamp stale label
+        } as Tab,
+      ]
+      applyGitStatusToTabs({
+        get tabs() {
+          return tabs
+        },
+        update: (predicate, fields) => {
+          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        },
+      }, {
+        repoRoot: '/repo',
+        toplevel: '/repo-wts/feature',
+        originUrl: '',
+        currentBranch: 'feature',
+        files: [],
+      })
+      const main = tabs.find(t => t.id === 'main')!
+      const wt = tabs.find(t => t.id === 'wt')!
+      // Main tree tab keeps its branch — the worktree refresh must not
+      // touch it.
+      expect(main.gitBranch).toBe('trunk')
+      expect(main.gitToplevel).toBe('/repo')
+      // Worktree tab gets the worktree's branch.
+      expect(wt.gitBranch).toBe('feature')
+      expect(wt.gitToplevel).toBe('/repo-wts/feature')
+    })
+
+    it('migrates a pre-PR worktree tab whose gitToplevel was stamped as repoRoot', () => {
+      // Pre-PR worker code stamped gitToplevel = repoRoot for BOTH
+      // main-tree and worktree tabs (the worktree-aware `toplevel`
+      // field didn't exist yet). After upgrade, the new worker reports
+      // toplevel = worktreeDir, so the exact-toplevel-match check
+      // would permanently skip the persisted worktree tab and freeze
+      // its branch/diff badges at the pre-upgrade values. The
+      // migration branch detects this exact case (tab.gitToplevel
+      // equals the new status.repoRoot, AND the tab's containment
+      // path sits under the new toplevel) and re-stamps once. After
+      // the re-stamp, subsequent refreshes hit the exact-match path.
+      let tabs: Tab[] = [
+        // Pre-PR worktree tab: containment path is inside the
+        // worktree, but gitToplevel still holds the (stale) repoRoot.
+        {
+          type: TabType.AGENT,
+          id: 'wt-legacy',
+          workingDir: '/repo-wts/feature/cmd',
+          gitToplevel: '/repo', // stale pre-PR stamp
+          gitBranch: 'trunk', // stale pre-PR branch label
+        } as Tab,
+        // Pre-PR main-tree tab: same stale gitToplevel, but
+        // containment path is NOT under the worktree — must NOT be
+        // re-stamped with the worktree's branch.
+        {
+          type: TabType.AGENT,
+          id: 'main-legacy',
+          workingDir: '/repo/cmd',
+          gitToplevel: '/repo',
+          gitBranch: 'trunk',
+        } as Tab,
+      ]
+      applyGitStatusToTabs({
+        get tabs() {
+          return tabs
+        },
+        update: (predicate, fields) => {
+          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        },
+      }, {
+        repoRoot: '/repo',
+        toplevel: '/repo-wts/feature',
+        originUrl: '',
+        currentBranch: 'feature',
+        files: [],
+      })
+
+      const wt = tabs.find(t => t.id === 'wt-legacy')!
+      const main = tabs.find(t => t.id === 'main-legacy')!
+      // Worktree tab migrated to the worktree-aware toplevel + branch.
+      expect(wt.gitToplevel).toBe('/repo-wts/feature')
+      expect(wt.gitBranch).toBe('feature')
+      // Main-tree tab untouched — containment guard rejects it
+      // (containmentPath is not under the worktree's toplevel).
+      expect(main.gitToplevel).toBe('/repo')
+      expect(main.gitBranch).toBe('trunk')
+    })
+
+    it('does NOT migrate when the status is itself a main-tree refresh', () => {
+      // The migration only fires for worktree-shaped status (toplevel
+      // != repoRoot). A main-tree refresh has toplevel === repoRoot,
+      // and pre-PR main-tree tabs already carry gitToplevel ===
+      // repoRoot — these hit the exact-match branch and re-stamp via
+      // tabAlreadyMatches' normal path. Verify that the same input
+      // doesn't trip the migration sub-branch for a sibling-repo tab
+      // that just happens to share the repoRoot value.
+      let tabs: Tab[] = [
+        // A tab in a SIBLING repo at /other-repo whose gitToplevel
+        // legitimately matches /repo (pathological alias case — same
+        // string value, different actual directories). With the
+        // toplevel == repoRoot check + containment guard, this stays
+        // safely skipped.
+        {
+          type: TabType.AGENT,
+          id: 'sibling',
+          workingDir: '/other-repo/cmd',
+          gitToplevel: '/repo',
+          gitBranch: 'trunk',
+        } as Tab,
+      ]
+      applyGitStatusToTabs({
+        get tabs() {
+          return tabs
+        },
+        update: (predicate, fields) => {
+          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        },
+      }, {
+        repoRoot: '/repo',
+        toplevel: '/repo-wts/feature',
+        originUrl: '',
+        currentBranch: 'feature',
+        files: [],
+      })
+
+      const sib = tabs.find(t => t.id === 'sibling')!
+      // Containment guard saved it: /other-repo/cmd is not under
+      // /repo-wts/feature, so the migration branch's second condition
+      // (`relativeUnder(containmentPath, toplevel) !== null`) rejects.
+      expect(sib.gitToplevel).toBe('/repo')
+      expect(sib.gitBranch).toBe('trunk')
+    })
+
+    it('does NOT over-stamp a nested-repo tab via the migration branch', () => {
+      // The migration branch requires `tab.gitToplevel ===
+      // status.repoRoot`. A nested-repo tab carries the INNER repo's
+      // toplevel (e.g. /repo/vendor/inner), NOT the parent's
+      // repoRoot, so the migration condition is false and the
+      // authoritative exact-match check rejects it.
+      let tabs: Tab[] = [
+        {
+          type: TabType.AGENT,
+          id: 'nested',
+          workingDir: '/repo/vendor/inner/cmd',
+          gitToplevel: '/repo/vendor/inner', // nested repo's own toplevel
+          gitBranch: 'nested-branch',
+        } as Tab,
+      ]
+      applyGitStatusToTabs({
+        get tabs() {
+          return tabs
+        },
+        update: (predicate, fields) => {
+          tabs = tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t)
+        },
+      }, {
+        repoRoot: '/repo',
+        toplevel: '/repo',
+        originUrl: '',
+        currentBranch: 'parent-main',
+        files: [],
+      })
+
+      const nested = tabs.find(t => t.id === 'nested')!
+      // Nested repo's stamp survives the parent's refresh.
+      expect(nested.gitToplevel).toBe('/repo/vendor/inner')
+      expect(nested.gitBranch).toBe('nested-branch')
     })
   })
 

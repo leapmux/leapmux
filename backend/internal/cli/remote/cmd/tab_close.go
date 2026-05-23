@@ -85,10 +85,10 @@ func RunTabClose(rawCtx any, args []string) error {
 					return remote.EmitError("invalid_request", lastTabPromptMessage(inspected))
 				}
 				if wt == closeWorktreePush {
-					if !inspected.GetCanPush() {
+					if !inspected.GetGitState().GetCanPush() {
 						return remote.EmitError("invalid_request", "cannot push: "+pushBlockedReason(inspected))
 					}
-					if err := callInnerRPC(ctx, c, got.WorkerID, "PushBranchForClose", &leapmuxv1.PushBranchForCloseRequest{TabType: tt, TabId: got.TabID}, &leapmuxv1.PushBranchForCloseResponse{}); err != nil {
+					if err := callInnerRPC(ctx, c, got.WorkerID, "PushBranch", &leapmuxv1.PushBranchRequest{TabType: tt, TabId: got.TabID}, &leapmuxv1.PushBranchResponse{}); err != nil {
 						return err
 					}
 				}
@@ -186,18 +186,19 @@ func lastTabPromptMessage(r *leapmuxv1.InspectLastTabCloseResponse) string {
 	default:
 		b.WriteString("last tab on tracked branch")
 	}
+	gs := r.GetGitState()
 	var details []string
-	if r.GetHasUncommittedChanges() {
-		details = append(details, fmt.Sprintf("%d added / %d deleted / %d untracked", r.GetDiffAdded(), r.GetDiffDeleted(), r.GetDiffUntracked()))
+	if gs.GetHasUncommittedChanges() {
+		details = append(details, fmt.Sprintf("%d added / %d deleted / %d untracked", gs.GetDiffAdded(), gs.GetDiffDeleted(), gs.GetDiffUntracked()))
 	}
-	if n := r.GetUnpushedCommitCount(); n > 0 {
+	if n := gs.GetUnpushedCommitCount(); n > 0 {
 		noun := "commit"
 		if n != 1 {
 			noun = "commits"
 		}
 		details = append(details, fmt.Sprintf("%d unpushed %s", n, noun))
 	}
-	if r.GetRemoteBranchMissing() {
+	if gs.GetRemoteBranchMissing() {
 		details = append(details, "branch not pushed to remote")
 	}
 	if len(details) > 0 {
@@ -210,7 +211,7 @@ func lastTabPromptMessage(r *leapmuxv1.InspectLastTabCloseResponse) string {
 }
 
 func pushBlockedReason(r *leapmuxv1.InspectLastTabCloseResponse) string {
-	if !r.GetOriginExists() {
+	if !r.GetGitState().GetOriginExists() {
 		return "remote origin does not exist"
 	}
 	if r.GetTarget() != leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE && r.GetTarget() != leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH {

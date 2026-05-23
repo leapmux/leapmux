@@ -4,14 +4,12 @@ import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { CachedToken } from '~/lib/tokenCache'
 import ArrowDownFromLine from 'lucide-solid/icons/arrow-down-from-line'
 import ArrowUpFromLine from 'lucide-solid/icons/arrow-up-from-line'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
+import { Spinner } from '~/components/common/Spinner'
 import { guessLanguage } from '~/lib/languageMap'
 import { pluralize } from '~/lib/plural'
 import { tokenizeAsync } from '~/lib/shikiWorkerClient'
 import { getCachedTokens } from '~/lib/tokenCache'
-import { spinner } from '~/styles/animations.css'
 import { computeGapMap, computeSyntheticGapMap, countHunkLines, extractSidesFromHunks, groupByHunk } from './diffBuilder'
 import {
   diffAdded,
@@ -200,7 +198,7 @@ function DiffGapSeparator(props: {
               {hiddenLabel()}
               <Show when={tokenizing()}>
                 {' '}
-                <Icon icon={LoaderCircle} size="xs" class={spinner} />
+                <Spinner size="xs" />
               </Show>
             </span>
             <span class={diffGapExpandButton} onClick={() => props.onExpandDown()}>

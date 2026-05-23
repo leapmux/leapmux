@@ -85,6 +85,76 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		assert.Len(t, items, 2)
 	})
 
+	// Pins the position-tie tiebreaker that defends the sidebar
+	// against shuffle bugs. `position` is a lexorank string with NO
+	// uniqueness constraint — two items can legitimately end up at the
+	// same rank (e.g. concurrent writes from peer clients before a
+	// projection settles, or a future caller that bypasses the
+	// service-layer position computation). The SQL ORDER BY adds
+	// workspace_id as a tiebreaker so the user sees the same sidebar
+	// ordering across page refreshes regardless of how the duplicate
+	// got there.
+	t.Run("list by user stable order on position ties", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "wsi-tie-org", false)
+		user := SeedUser(t, st, orgID, "wsi-tie-user")
+		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
+
+		// Seed enough items that any planner-driven shuffle is likely
+		// to surface, all sharing the same position. The PRIMARY KEY
+		// is (user_id, workspace_id) so distinct workspace_ids let us
+		// coexist at the same position.
+		const N = 8
+		seeded := make([]string, 0, N)
+		for i := 0; i < N; i++ {
+			wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
+			err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+				UserID:      user.ID,
+				WorkspaceID: wsID,
+				SectionID:   secID,
+				Position:    "n", // lexorank.first()
+			})
+			require.NoError(t, err)
+			seeded = append(seeded, wsID)
+		}
+
+		first, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		require.NoError(t, err)
+		require.Len(t, first, N)
+
+		// Pin the SQL contract: on a position tie, items come back
+		// sorted by workspace_id ASC.
+		for i := 0; i+1 < len(first); i++ {
+			a, b := first[i], first[i+1]
+			if a.Position == b.Position {
+				assert.Lessf(t, a.WorkspaceID, b.WorkspaceID,
+					"position tie must break by workspace_id ASC (got %q then %q)",
+					a.WorkspaceID, b.WorkspaceID)
+			}
+		}
+
+		// Repeated calls return the same order regardless of planner
+		// state or DISTINCT evaluation order.
+		for trial := 0; trial < 3; trial++ {
+			got, err := st.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+			require.NoError(t, err)
+			require.Len(t, got, N)
+			for i := range got {
+				assert.Equalf(t, first[i].WorkspaceID, got[i].WorkspaceID,
+					"trial %d position %d: ListByUser order changed across calls", trial, i)
+			}
+		}
+
+		// Sanity: every seeded workspace is in the result.
+		gotIDs := make(map[string]struct{}, len(first))
+		for _, item := range first {
+			gotIDs[item.WorkspaceID] = struct{}{}
+		}
+		for _, want := range seeded {
+			assert.Contains(t, gotIDs, want)
+		}
+	})
+
 	t.Run("delete", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "wsi-org", false)
@@ -138,36 +208,6 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, items)
 		assert.Empty(t, items)
-	})
-
-	t.Run("move to section", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org", false)
-		user := SeedUser(t, st, orgID, "wsi-move-user")
-		fromSec := seedSection(t, st, user.ID, "From", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		toSec := seedSection(t, st, user.ID, "To", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED)
-		wsID := SeedWorkspace(t, st, orgID, user.ID, "WS")
-
-		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID:      user.ID,
-			WorkspaceID: wsID,
-			SectionID:   fromSec,
-			Position:    "a0",
-		})
-		require.NoError(t, err)
-
-		err = st.WorkspaceSectionItems().MoveToSection(ctx, store.MoveWorkspaceSectionItemsToSectionParams{
-			FromSectionID: fromSec,
-			ToSectionID:   toSec,
-		})
-		require.NoError(t, err)
-
-		item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
-			UserID:      user.ID,
-			WorkspaceID: wsID,
-		})
-		require.NoError(t, err)
-		assert.Equal(t, toSec, item.SectionID)
 	})
 
 	t.Run("is in archived section", func(t *testing.T) {
@@ -235,21 +275,6 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, items)
 		assert.Empty(t, items)
-	})
-
-	t.Run("move to section empty source", func(t *testing.T) {
-		st := s.NewStore(t)
-		orgID := SeedOrg(t, st, "wsi-org", false)
-		user := SeedUser(t, st, orgID, "wsi-moveempty-user")
-		fromSec := seedSection(t, st, user.ID, "From", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		toSec := seedSection(t, st, user.ID, "To", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED)
-
-		// Move from an empty section -- should be a no-op.
-		err := st.WorkspaceSectionItems().MoveToSection(ctx, store.MoveWorkspaceSectionItemsToSectionParams{
-			FromSectionID: fromSec,
-			ToSectionID:   toSec,
-		})
-		require.NoError(t, err)
 	})
 
 	t.Run("set overwrites existing section assignment", func(t *testing.T) {

@@ -86,11 +86,27 @@ export function createSectionStore() {
         .sort((a, b) => a.position.localeCompare(b.position))
     },
 
-    /** Get items for a specific section, sorted by position. */
+    /**
+     * Get items for a specific section, sorted by (position,
+     * workspaceId). The workspaceId tiebreaker mirrors the backend SQL
+     * ORDER BY clause: `position` is a lexorank string with no
+     * uniqueness constraint, so two items can legitimately end up at
+     * the same rank (e.g. each was the first item dragged into a
+     * different section that was later collapsed into this one).
+     * Array.sort is stable only when the comparator returns 0 for
+     * genuinely-equal items — leaving the upstream insertion order to
+     * leak through on ties would reintroduce the sidebar shuffle the
+     * SQL fix already addresses on the server.
+     */
     getItemsForSection(sectionId: string): SectionItem[] {
       return state.items
         .filter(i => i.sectionId === sectionId)
-        .sort((a, b) => a.position.localeCompare(b.position))
+        .sort((a, b) => {
+          const cmp = a.position.localeCompare(b.position)
+          if (cmp !== 0)
+            return cmp
+          return a.workspaceId.localeCompare(b.workspaceId)
+        })
     },
   }
 }

@@ -42,7 +42,7 @@ func (svc *Context) agentLoginShell() bool {
 
 // registerAgentHandlers registers all agent-related inner RPC handlers.
 func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
-	d.Register("OpenAgent", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("OpenAgent", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.OpenAgentRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -87,9 +87,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// branch name, non-existent base branch, worktree path collision,
 		// etc.) fails the RPC with InvalidArgument before we mutate any
 		// state. The actual mutation happens inside runAgentStartup.
-		plan, gmErr := svc.validateGitMode(workingDir, &r)
+		plan, gmErr := svc.validateGitMode(ctx, workingDir, &r)
 		if gmErr != nil {
-			sendInvalidArgument(sender, gmErr.Error())
+			sendValidationError(sender, gmErr)
 			return
 		}
 
@@ -108,9 +108,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		agent.TraceStartupPhase(agentID, "gitmode_validated")
 
-		// Create the agent record using the *planned* working dir, so
-		// a post-refresh read sees the eventual worktree path. The
-		// actual worktree is created later inside runAgentStartup.
+		// Persist the agent row + read it back under a fresh background
+		// context: the DB write must survive a mid-RPC disconnect so a
+		// retry from the same client doesn't observe a half-created agent
+		// (the validation phase above is the only step that should
+		// fail-fast on disconnect). The actual worktree mutation happens
+		// later inside runAgentStartup, which uses its own startupCtx.
 		if err := svc.createAgentRecord(bgCtx(), db.CreateAgentParams{
 			ID:             agentID,
 			WorkspaceID:    r.GetWorkspaceId(),
@@ -179,7 +182,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		go svc.runAgentStartup(startupCtx, dbAgent, plan, agentOpts)
 	})
 
-	d.Register("CloseAgent", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// CloseAgent backgrounds the entire close flow (subprocess stop, DB
+	// close, optional worktree removal) so the work survives a mid-RPC
+	// disconnect from the client that initiated the close. The dispatcher
+	// ctx is intentionally not threaded — using it would cancel the
+	// cleanup partway through if the user clicked away.
+	d.RegisterTracked("CloseAgent", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.CloseAgentRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -191,12 +199,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// The frontend fires this RPC as fire-and-forget after removing
-		// the tab from the UI. closeTabCommon tracks the handler on
-		// svc.Cleanup so a concurrent Shutdown can drain it, then runs
-		// the shared close-tab flow (stop → DB close → unregister →
-		// optional worktree remove). The AgentStartup goroutine's
-		// trailing rollback work is tracked separately by
+		// Tracked via dispatcher RegisterTracked above so a concurrent
+		// Shutdown drains the close flow (stop → DB close → unregister
+		// → optional worktree remove) before tearing down the DB pool.
+		// The frontend fires this RPC fire-and-forget after removing
+		// the tab from the UI. The AgentStartup goroutine's trailing
+		// rollback work is tracked separately by
 		// AgentStartup.WaitForInFlight and drained in Shutdown.
 		result := svc.closeTabCommon(
 			leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -213,7 +221,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{Result: result})
 	})
 
-	d.Register("SendAgentMessage", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// SendAgentMessage persists the user message, forwards it to the agent
+	// subprocess, and broadcasts it to every connected watcher. The
+	// dispatcher ctx is intentionally not threaded — the persist + forward
+	// + broadcast must complete even if the originating client disconnects
+	// a millisecond after firing the RPC, otherwise *other* watchers in
+	// the same workspace would silently miss the message.
+	d.Register("SendAgentMessage", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.SendAgentMessageRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -418,7 +432,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 	})
 
-	d.Register("SendAgentRawMessage", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// SendAgentRawMessage forwards a provider-shaped raw message (Codex
+	// interrupt frames etc.) to the agent subprocess. The forward + any
+	// synthetic-message persistence must complete past a client
+	// disconnect; dispatcher ctx is intentionally not threaded.
+	d.Register("SendAgentRawMessage", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.SendAgentRawMessageRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -439,7 +457,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
 	})
 
-	d.Register("ListAgents", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// ListAgents is a synchronous read-only handler: the response shape is
+	// the only side effect, so the inbound dispatcher ctx is threaded
+	// through the DB and git probes. A mid-call client disconnect cancels
+	// the remaining work instead of wasting subprocess forks against
+	// BatchGetGitStatus.
+	d.Register("ListAgents", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListAgentsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -452,7 +475,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		agents, err := svc.Queries.ListAgentsByIDs(bgCtx(), tabIDs)
+		agents, err := svc.Queries.ListAgentsByIDs(ctx, tabIDs)
 		if err != nil {
 			slog.Error("failed to list agents", "tab_ids", tabIDs, "error", err)
 			sendInternalError(sender, "failed to list agents")
@@ -469,7 +492,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		for i := range agents {
 			workingDirs[i] = agents[i].WorkingDir
 		}
-		gitStatuses := gitutil.BatchGetGitStatus(bgCtx(), workingDirs)
+		gitStatuses := gitutil.BatchGetGitStatus(ctx, workingDirs)
 
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
@@ -494,7 +517,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
-	d.Register("ListAgentMessages", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// ListAgentMessages is a synchronous read-only paginated handler: the
+	// response shape is the only side effect, so the inbound dispatcher
+	// ctx is threaded through every DB read. A mid-call client disconnect
+	// cancels the remaining page query instead of wasting DB load.
+	d.Register("ListAgentMessages", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListAgentMessagesRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -527,7 +554,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// receives live mutations via AgentTodosChanged broadcasts).
 		var todoItems []todoevents.Item
 		if afterSeq == 0 && beforeSeq == 0 {
-			items, todoErr := svc.Output.LoadTodos(bgCtx(), agentID)
+			items, todoErr := svc.Output.LoadTodos(ctx, agentID)
 			if todoErr != nil {
 				slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
 			}
@@ -539,21 +566,21 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 
 		if beforeSeq > 0 {
 			// BACKWARD: fetch messages with seq < before_seq, returned in descending order.
-			dbMessages, queryErr = svc.Queries.ListMessagesByAgentIDReverse(bgCtx(), db.ListMessagesByAgentIDReverseParams{
+			dbMessages, queryErr = svc.Queries.ListMessagesByAgentIDReverse(ctx, db.ListMessagesByAgentIDReverseParams{
 				AgentID: agentID,
 				Seq:     beforeSeq,
 				Limit:   limit + 1, // Fetch one extra to determine has_more.
 			})
 		} else if afterSeq > 0 {
 			// FORWARD: fetch messages with seq > after_seq in ascending order.
-			dbMessages, queryErr = svc.Queries.ListMessagesByAgentID(bgCtx(), db.ListMessagesByAgentIDParams{
+			dbMessages, queryErr = svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
 				AgentID: agentID,
 				Seq:     afterSeq,
 				Limit:   limit + 1,
 			})
 		} else {
 			// LATEST: fetch the most recent messages.
-			dbMessages, queryErr = svc.Queries.ListLatestMessagesByAgentID(bgCtx(), db.ListLatestMessagesByAgentIDParams{
+			dbMessages, queryErr = svc.Queries.ListLatestMessagesByAgentID(ctx, db.ListLatestMessagesByAgentIDParams{
 				AgentID: agentID,
 				Limit:   limit + 1,
 			})
@@ -590,7 +617,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
-	d.Register("RenameAgent", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// RenameAgent persists the new title and broadcasts a TabRenamed event
+	// to other clients in the same workspace. The DB write + broadcast
+	// must complete past a client disconnect (otherwise sibling clients
+	// would miss the rename); dispatcher ctx is intentionally not threaded.
+	d.Register("RenameAgent", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.RenameAgentRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -625,7 +656,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{})
 	})
 
-	d.Register("DeleteAgentMessage", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// DeleteAgentMessage removes the row and broadcasts a MessageDeleted
+	// event to every watcher. The DB write + broadcast must complete past
+	// a client disconnect; dispatcher ctx is intentionally not threaded.
+	d.Register("DeleteAgentMessage", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.DeleteAgentMessageRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -661,7 +695,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
-	d.Register("UpdateAgentSettings", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// UpdateAgentSettings persists the new settings and (for providers
+	// that need it) restarts the agent subprocess. Both must complete past
+	// a client disconnect, otherwise the agent ends up in a half-applied
+	// state mismatched with the persisted row. Dispatcher ctx is
+	// intentionally not threaded.
+	d.Register("UpdateAgentSettings", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.UpdateAgentSettingsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -814,7 +853,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.UpdateAgentSettingsResponse{})
 	})
 
-	d.Register("SendControlResponse", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// SendControlResponse forwards the user's allow/deny on a tool-use
+	// request to the agent subprocess. The forward must reach the agent
+	// even if the originating client window closed (the agent process is
+	// blocked waiting for it); dispatcher ctx is intentionally not threaded.
+	d.Register("SendControlResponse", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.SendControlResponseRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -870,7 +913,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.SendControlResponseResponse{})
 	})
 
-	d.Register("InterruptAgent", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// InterruptAgent sends a signal to the agent subprocess; the signal
+	// delivery must happen even if the requesting client disconnects mid-
+	// RPC. Dispatcher ctx is intentionally not threaded.
+	d.Register("InterruptAgent", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.InterruptAgentRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -893,7 +939,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// existing E2EE channel. The bootstrap-replay sends one
 	// FileTabPathRegistered per row in worker_file_tabs for the
 	// requested workspace before any live events.
-	d.Register("WatchWorkspacePrivateEvents", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// SnapshotAndSubscribe drives the stream lifetime off the sender's
+	// channel directly, not the dispatcher ctx (which only covers the
+	// initial subscribe call). The bgCtx() passed in is the snapshot
+	// cursor's context, intentionally background so a slow snapshot
+	// doesn't get cancelled by the RPC dispatcher unwinding after the
+	// subscribe returns. Dispatcher ctx is intentionally not threaded.
+	d.Register("WatchWorkspacePrivateEvents", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.WatchWorkspacePrivateEventsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -933,7 +985,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		)
 	})
 
-	d.Register("RegisterFileTabPath", func(_ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// RegisterFileTabPath writes the (tab_id → path) registry row. The
+	// write must survive a client disconnect, otherwise a subsequent
+	// GetFileTabPath from a sibling client would see a stale "not found".
+	// Dispatcher ctx is intentionally not threaded.
+	d.Register("RegisterFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.RegisterFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -960,7 +1016,10 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.RegisterFileTabPathResponse{})
 	})
 
-	d.Register("GetFileTabPath", func(_ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// GetFileTabPath is a synchronous read-only handler: the response is
+	// the only side effect, so the inbound dispatcher ctx is threaded
+	// through the store lookup to fail-fast on disconnect.
+	d.Register("GetFileTabPath", func(ctx context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.GetFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -974,7 +1033,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			sendInternalError(sender, "file tab path store unavailable")
 			return
 		}
-		wsID, path, err := svc.FileTabPaths.Get(bgCtx(), r.GetOrgId(), r.GetTabId())
+		wsID, path, err := svc.FileTabPaths.Get(ctx, r.GetOrgId(), r.GetTabId())
 		if err != nil {
 			if errors.Is(err, ErrFileTabPathNotFound) {
 				sendNotFoundError(sender, "file tab path not found")
@@ -992,7 +1051,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		})
 	})
 
-	d.Register("RevokeFileTabPath", func(_ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// RevokeFileTabPath deletes the (tab_id → path) row and runs the
+	// shared closeTabCommon flow so the worktree-tab link (and any
+	// resulting `git worktree remove` when the user picked Delete in
+	// the last-tab dialog) is handled identically to CloseAgent /
+	// CloseTerminal. The write must survive a client disconnect for the
+	// same reason as the register handler — otherwise a stale row would
+	// survive past the user's intended revocation. Dispatcher ctx is
+	// intentionally not threaded.
+	d.RegisterTracked("RevokeFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.RevokeFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1021,14 +1088,19 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		if !svc.requireAccessibleWorkspace(sender, wsID) {
 			return
 		}
-		if err := svc.FileTabPaths.Revoke(bgCtx(), r.GetOrgId(), r.GetTabId()); err != nil {
-			sendInternalError(sender, err.Error())
-			return
-		}
-		sendProtoResponse(sender, &leapmuxv1.RevokeFileTabPathResponse{})
+		// Drive the shared closeTabCommon flow so the worktree-tab link
+		// (and any user-requested `git worktree remove`) is handled
+		// identically to CloseAgent / CloseTerminal.
+		result := svc.closeFileTabCommon(r.GetOrgId(), r.GetTabId(), r.GetWorktreeAction())
+		sendProtoResponse(sender, &leapmuxv1.RevokeFileTabPathResponse{Result: result})
 	})
 
-	d.Register("RelocateFileTabPath", func(_ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	// RelocateFileTabPath moves the (tab_id → path) row across workspaces
+	// after a cross-workspace tab move. The write must survive a client
+	// disconnect — otherwise the destination workspace would observe a
+	// missing path row even though the CRDT moved the tab. Dispatcher ctx
+	// is intentionally not threaded.
+	d.Register("RelocateFileTabPath", func(_ context.Context, _ string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.RelocateFileTabPathRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1067,7 +1139,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		sendProtoResponse(sender, &leapmuxv1.RelocateFileTabPathResponse{})
 	})
 
-	d.Register("ListAvailableProviders", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ListAvailableProviders", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListAvailableProvidersRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1077,7 +1149,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// this deadline is effectively a per-probe wall-clock cap. Uses the
 		// API timeout rather than startup timeout: probing binary presence
 		// should never take as long as the MCP-heavy agent handshake.
-		ctx, cancel := context.WithTimeout(context.Background(), svc.agentAPITimeout())
+		// Derived from the inbound ctx so a dialog dismissal cancels every
+		// probe in flight.
+		ctx, cancel := context.WithTimeout(ctx, svc.agentAPITimeout())
 		defer cancel()
 		providers := agent.ListAvailableProviders(ctx, svc.agentShell(), svc.agentLoginShell())
 		sendProtoResponse(sender, &leapmuxv1.ListAvailableProvidersResponse{
@@ -1090,7 +1164,14 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 	// replays pending control requests, then streams live events.
 	// Access control: only agents/terminals in workspaces accessible to the
 	// user (via the channel's accessible_workspace_ids) are watched.
-	d.Register("WatchEvents", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	//
+	// Dispatcher ctx is intentionally not threaded: the handler returns
+	// after registering watchers + completing the synchronous replay, but
+	// the live-event stream survives indefinitely via the EventWatcher.
+	// Using the dispatcher ctx for the replay's bootstrap reads would
+	// risk cancelling them when the handler unwinds before the bg
+	// goroutines finish writing to the stream.
+	d.Register("WatchEvents", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.WatchEventsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -1727,30 +1808,16 @@ func (svc *Context) broadcastAgentInactive(dbAgent *db.Agent) {
 // mutation. Returns the result (with rollback metadata populated iff a
 // mutation partially succeeded before failing) and any error.
 func (svc *Context) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan gitModePlan) (gitModeResult, error) {
-	if label := plan.PhaseLabel(); label != "" {
-		svc.AgentStartup.setMessage(dbAgent.ID, label)
-		svc.broadcastAgentStarting(dbAgent, label, nil)
-	}
-	return svc.executeGitMode(ctx, plan)
+	return svc.runStartupPhase0(ctx, plan, svc.agentStartupCallbacks(dbAgent, nil))
 }
 
 // failAgentStartup is the common tail for every failure after the sync
-// prologue: it optionally shows a rollback label, rolls back any partial
-// git-mode mutation, persists the error, broadcasts STARTUP_FAILED, and
-// finally marks the registry failed. The order is deliberate: the broadcast
-// and DB write must be durable before any observer sees the terminal state.
+// prologue: rolls back any partial git-mode mutation, persists the
+// error, broadcasts STARTUP_FAILED, and marks the registry failed. The
+// shared `failStartup` enforces the ordering (DB before broadcast
+// before registry) so observers see a durable terminal state.
 func (svc *Context) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.AgentGitStatus) {
-	if gm.Rollback.HasPartialMutation() {
-		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
-			svc.AgentStartup.setMessage(dbAgent.ID, label)
-			svc.broadcastAgentStarting(dbAgent, label, nil)
-		}
-		svc.rollbackGitMode(gm)
-	}
-	errMsg := cause.Error()
-	svc.persistAgentStartupError(dbAgent.ID, errMsg)
-	svc.broadcastAgentFailed(dbAgent, errMsg, gitStatus)
-	svc.AgentStartup.fail(dbAgent.ID, errMsg)
+	svc.failStartup(gm, cause, svc.agentStartupCallbacks(dbAgent, gitStatus))
 }
 
 // persistAgentStartupError writes (or clears when errMsg is "") the

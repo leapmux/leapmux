@@ -89,9 +89,26 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     const groups: SectionGroup[] = []
 
     const getWorkspacesForSection = (sectionId: string): Workspace[] => {
+      // Defense-in-depth tiebreaker on workspaceId: position is a
+      // lexorank string with NO uniqueness constraint (two items can
+      // legitimately share a position, e.g. each was dragged as the
+      // first into a different section and one of those sections was
+      // later deleted into this one). The backend SQL ORDER BY now
+      // tiebreaks on workspace_id, but Array.sort is stable only when
+      // the comparator returns 0 for genuinely-equal items — so on a
+      // tie we MUST keep the comparator's verdict deterministic
+      // ourselves rather than letting the upstream array order leak
+      // through. Without this, a future refactor that swaps the
+      // upstream source (e.g. a Map iteration) could reintroduce the
+      // shuffle.
       const sectionItems = store.state.items
         .filter(i => i.sectionId === sectionId)
-        .sort((a, b) => a.position.localeCompare(b.position))
+        .sort((a, b) => {
+          const cmp = a.position.localeCompare(b.position)
+          if (cmp !== 0)
+            return cmp
+          return a.workspaceId.localeCompare(b.workspaceId)
+        })
       return sectionItems
         .map(i => ownedWorkspaces().find(w => w.id === i.workspaceId))
         .filter((w): w is Workspace => w != null)

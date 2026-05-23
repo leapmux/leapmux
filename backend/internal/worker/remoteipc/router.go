@@ -21,7 +21,7 @@ import (
 // Mirrors the existing dispatcher's DispatchWith signature so the
 // router can inject local-IPC ResponseWriters.
 type LocalDispatcher interface {
-	DispatchWith(userID string, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
+	DispatchWith(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
 }
 
 // CrossWorkerClient sends a unary inner RPC to a sibling worker via the
@@ -124,7 +124,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 	case namespaceWorker:
 		bare := stripNamespace(method)
 		if targetWorkerID == "" || targetWorkerID == r.WorkerID {
-			return r.dispatchLocal(info, bare, payload), nil
+			return r.dispatchLocal(ctx, info, bare, payload), nil
 		}
 		if r.CrossWorker == nil {
 			return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("cross-worker client not configured"))
@@ -163,8 +163,10 @@ func (r *Router) withLocalAuthorizer(info TokenInfo, fn func(streamID string)) {
 
 // dispatchLocal runs a same-worker inner-RPC and synchronously
 // collects the response. Streams aren't expected here — StreamInner
-// handles that path.
-func (r *Router) dispatchLocal(info TokenInfo, method string, payload []byte) *leapmuxv1.CallInnerResponse {
+// handles that path. The caller's ctx propagates to the handler so a
+// cancelled connect-RPC tears down `exec.CommandContext` subprocesses
+// the handler started.
+func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method string, payload []byte) *leapmuxv1.CallInnerResponse {
 	if r.LocalDispatcher == nil {
 		return &leapmuxv1.CallInnerResponse{
 			IsError:      true,
@@ -175,7 +177,7 @@ func (r *Router) dispatchLocal(info TokenInfo, method string, payload []byte) *l
 	collector := &responseCollector{}
 	r.withLocalAuthorizer(info, func(streamID string) {
 		collector.streamID = streamID
-		r.LocalDispatcher.DispatchWith(r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
+		r.LocalDispatcher.DispatchWith(ctx, r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 	})
 	return collector.toResponse()
 }
@@ -230,7 +232,7 @@ func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string,
 	var collector *streamCollector
 	r.withLocalAuthorizer(info, func(streamID string) {
 		collector = newStreamCollector(ctx, streamID, onMsg)
-		r.LocalDispatcher.DispatchWith(r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
+		r.LocalDispatcher.DispatchWith(ctx, r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 		collector.wait()
 	})
 	return collector.err
@@ -382,8 +384,28 @@ func (c *streamCollector) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 	if !c.finish() {
 		return nil
 	}
-	if resp != nil && resp.GetIsError() {
+	if resp == nil {
+		return nil
+	}
+	if resp.GetIsError() {
 		c.err = fmt.Errorf("rpc error: %s", resp.GetErrorMessage())
+		return nil
+	}
+	// A streaming handler that signals completion via SendResponse may
+	// still carry a final payload (a fast-path that produced a single
+	// terminal frame, a unary-shaped result over a streaming Sender, or
+	// a handler reusing the same Sender for both unary and stream
+	// surfaces). Forwarding the payload through onMsg keeps that frame
+	// observable to the IPC caller; dropping it silently corrupted the
+	// stream end. Skip the forward only when there is no payload — an
+	// empty SendResponse is the documented "done, nothing more" signal.
+	if len(resp.GetPayload()) > 0 {
+		if onMsgErr := c.onMsg(&leapmuxv1.StreamInnerEnvelope{
+			Payload: resp.GetPayload(),
+			End:     true,
+		}); onMsgErr != nil {
+			c.err = onMsgErr
+		}
 	}
 	return nil
 }

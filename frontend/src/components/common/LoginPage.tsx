@@ -2,13 +2,11 @@ import type { Component } from 'solid-js'
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createSignal, onMount, Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
+import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
 import { isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
-import { spinner } from '~/styles/animations.css'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -115,7 +113,7 @@ export const LoginPage: Component = () => {
             type="submit"
             disabled={submitting() || !username() || !password()}
           >
-            <Show when={submitting()}><Icon icon={LoaderCircle} size="sm" class={spinner} /></Show>
+            <Show when={submitting()}><Spinner /></Show>
             {submitting() ? 'Signing in...' : 'Sign in'}
           </button>
         </form>

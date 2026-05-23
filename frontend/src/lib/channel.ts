@@ -29,6 +29,7 @@ import {
   UserIdClaimSchema,
 } from '~/generated/leapmux/v1/channel_pb'
 import { KEY_KEY_PINS, localStorageGet, localStorageRemove, localStorageSet } from './browserStorage'
+import { formatErrorMessage } from './errors'
 import { createInflightCache } from './inflightCache'
 import { createLogger } from './logger'
 import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, concatBytes } from './noise'
@@ -359,11 +360,26 @@ export class ChannelManager {
     }
   }
 
-  /** Send a unary RPC request through the encrypted channel. */
-  call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number): Promise<InnerRpcResponse> {
+  /**
+   * Send a unary RPC request through the encrypted channel.
+   *
+   * The optional `signal` lets the caller short-circuit the wait
+   * locally: when it fires, the pendingRequest entry is dropped and
+   * the returned promise rejects with `signal.reason`. The encrypted
+   * channel has no per-call cancellation message today, so any
+   * in-flight worker work continues until it completes — but the
+   * caller no longer holds the pending entry (it'd be dropped on
+   * receipt anyway). Worth threading even without a worker-side
+   * cancel: future channel revisions can add one without changing
+   * any caller.
+   */
+  call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number, signal?: AbortSignal): Promise<InnerRpcResponse> {
     const ch = this.channels.get(channelId)
     if (!ch || ch.closed) {
       return Promise.reject(new ChannelError('client', 'channel not open'))
+    }
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason instanceof Error ? signal.reason : new ChannelError('client', `RPC call '${method}' aborted`))
     }
 
     const requestId = ch.nextRequestId++
@@ -371,24 +387,50 @@ export class ChannelManager {
 
     return new Promise<InnerRpcResponse>((resolve, reject) => {
       const timeoutSec = Math.round(effectiveTimeoutMs / 1000)
+      // timer + cleanup + abortListener form a mutually-referencing
+      // teardown trio; lint-disable so the natural setup order can
+      // stay together instead of being split by the no-use-before-define
+      // rule.
+      /* eslint-disable ts/no-use-before-define */
+      let abortListener: (() => void) | undefined
+      const cleanup = () => {
+        clearTimeout(timer)
+        if (abortListener && signal)
+          signal.removeEventListener('abort', abortListener)
+      }
       const timer = setTimeout(() => {
         ch.pendingRequests.delete(requestId)
+        cleanup()
         log.debug('inner RPC request timed out', { channel_id: ch.channelId, id: requestId, method })
         reject(new ChannelError('client', `RPC call '${method}' timed out after ${timeoutSec}s (channel=${channelId})`))
       }, effectiveTimeoutMs)
+      /* eslint-enable ts/no-use-before-define */
 
       log.debug('sending inner RPC request', { channel_id: ch.channelId, id: requestId, method, payload_len: payload.length })
 
       ch.pendingRequests.set(requestId, {
         resolve: (resp) => {
-          clearTimeout(timer)
+          cleanup()
           resolve(resp)
         },
         reject: (err) => {
-          clearTimeout(timer)
+          cleanup()
           reject(err)
         },
       })
+
+      if (signal) {
+        abortListener = () => {
+          // Drop the pending entry so the eventual InnerRpcResponse
+          // is treated as orphan + ignored. cleanup() also clears
+          // the timer + this listener so no double-resolve fires.
+          ch.pendingRequests.delete(requestId)
+          cleanup()
+          log.debug('inner RPC request aborted by caller', { channel_id: ch.channelId, id: requestId, method })
+          reject(signal.reason instanceof Error ? signal.reason : new ChannelError('client', `RPC call '${method}' aborted`))
+        }
+        signal.addEventListener('abort', abortListener, { once: true })
+      }
 
       const innerReq = create(InnerRpcRequestSchema, {
         method,
@@ -503,18 +545,28 @@ export class ChannelManager {
     reqSchema: ReqSchema,
     respSchema: RespSchema,
     req: MessageInitShape<ReqSchema>,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number, signal?: AbortSignal },
   ): Promise<MessageShape<RespSchema>> {
+    if (opts?.signal?.aborted) {
+      throw opts.signal.reason instanceof Error ? opts.signal.reason : new ChannelError('client', `RPC call '${method}' aborted`)
+    }
     const channelId = await this.getOrOpenChannel(workerId)
+    // Re-check after the (potentially async) channel-open: a long
+    // handshake gives the caller plenty of time to abort. Skipping
+    // this check would still get caught by call()'s pre-check, but
+    // checking here saves the protobuf encode round-trip below.
+    if (opts?.signal?.aborted) {
+      throw opts.signal.reason instanceof Error ? opts.signal.reason : new ChannelError('client', `RPC call '${method}' aborted`)
+    }
     const msg = create(reqSchema, req)
     log.debug('callWorker request', { method, request: toJsonString(reqSchema, msg) })
     const payload = toBinary(reqSchema, msg)
     let resp
     try {
-      resp = await this.call(channelId, method, payload, opts?.timeoutMs)
+      resp = await this.call(channelId, method, payload, opts?.timeoutMs, opts?.signal)
     }
     catch (err) {
-      log.debug('callWorker error', { method, error: err instanceof Error ? err.message : String(err) })
+      log.debug('callWorker error', { method, error: formatErrorMessage(err) })
       throw err
     }
     const result = fromBinary(respSchema, resp.payload)

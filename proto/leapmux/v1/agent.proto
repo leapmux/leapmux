@@ -271,6 +271,7 @@ message AgentGitStatus {
   bool untracked = 11;      // Has untracked files
   string origin_url = 12;   // Remote origin URL
   string toplevel = 13;     // Working-tree root (`git rev-parse --show-toplevel`)
+  bool is_worktree = 14;    // True if `toplevel` is a linked worktree, not the main repo root
 }
 
 // --- Message History ---

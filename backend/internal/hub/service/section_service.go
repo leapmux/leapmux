@@ -196,53 +196,148 @@ func (s *SectionService) DeleteSection(
 
 	sectionID := req.Msg.GetSectionId()
 
-	// Find the "In progress" section to move orphaned workspaces there.
-	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	var inProgressID string
-	for _, sec := range sections {
-		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
-			inProgressID = sec.ID
-			break
+	// The whole move-then-delete sequence runs in one transaction: the
+	// previous code looped N `Set` calls and then a `Delete` outside
+	// any transaction, so a mid-loop failure (ctx cancel, DB blip)
+	// left items split between the doomed section and "In progress"
+	// with the row itself still around. The single bulk UPDATE this
+	// loop replaced was implicitly atomic at SQL level; rebuilding
+	// atomicity at the application boundary restores the same
+	// invariant while keeping the per-item lexorank stamping that
+	// avoids position collisions.
+	var notFound bool
+	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		// Find the "In progress" section to move orphaned workspaces there.
+		sections, err := tx.WorkspaceSections().ListByUserID(ctx, user.ID)
+		if err != nil {
+			return err
 		}
-	}
 
-	if inProgressID == "" {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("in_progress section not found"))
-	}
+		var inProgressID string
+		for _, sec := range sections {
+			if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
+				inProgressID = sec.ID
+				break
+			}
+		}
 
-	// Move items from the deleted section to "In progress".
-	if err := s.store.WorkspaceSectionItems().MoveToSection(ctx, store.MoveWorkspaceSectionItemsToSectionParams{
-		ToSectionID:   inProgressID,
-		FromSectionID: sectionID,
+		if inProgressID == "" {
+			return fmt.Errorf("in_progress section not found")
+		}
+
+		// Move items from the deleted section into "In progress",
+		// reassigning positions so the relocated items APPEND past
+		// the existing in_progress items. A blind bulk UPDATE
+		// preserving each item's old position would collide with
+		// in_progress items at the same lexorank value
+		// (lexorank.First() always returns "n", so any two
+		// "first into a section" items both hold position "n"). The
+		// collision then bubbles up as the sidebar shuffling
+		// workspaces on every refresh -- items in tie come back in
+		// planner-defined order. Iterating in stable order and
+		// stamping fresh `After(lastPos)` ranks keeps the relative
+		// ordering of the moved items intact while guaranteeing
+		// uniqueness against the destination's existing ranks.
+		allItems, err := tx.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		if err != nil {
+			return err
+		}
+		// Find the highest position currently in in_progress so we
+		// can extend past it. ListByUser already orders by
+		// (ws.position, wsi.position, wsi.workspace_id), so the last
+		// in-progress entry in iteration order is the one to append
+		// after.
+		lastInProgressPos := ""
+		for _, item := range allItems {
+			if item.SectionID == inProgressID {
+				lastInProgressPos = item.Position
+			}
+		}
+		// Walk source items in the same sort order so the relocated
+		// block keeps its original relative order in the destination.
+		for _, item := range allItems {
+			if item.SectionID != sectionID {
+				continue
+			}
+			newPos := lexorank.After(lastInProgressPos)
+			if err := tx.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+				UserID:      user.ID,
+				WorkspaceID: item.WorkspaceID,
+				SectionID:   inProgressID,
+				Position:    newPos,
+			}); err != nil {
+				return err
+			}
+			lastInProgressPos = newPos
+		}
+
+		// Verify the section is empty after moving items (race
+		// protection). HasItemsBySection runs inside the same tx so
+		// a sibling SetWorkspaceSectionItem committed between the
+		// loop and this check can't slip past the guard.
+		hasItems, err := tx.WorkspaceSectionItems().HasItemsBySection(ctx, sectionID)
+		if err != nil {
+			return err
+		}
+		if hasItems {
+			return store.ErrSectionNotEmpty
+		}
+
+		rows, err := tx.WorkspaceSections().Delete(ctx, store.DeleteWorkspaceSectionParams{
+			ID:     sectionID,
+			UserID: user.ID,
+		})
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			notFound = true
+			// Roll back so we don't commit the orphan moves against
+			// a phantom delete. The outer handler maps notFound to
+			// CodeNotFound.
+			return errSectionDeleteRollback
+		}
+		return nil
 	}); err != nil {
+		if notFound {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found or not a custom section"))
+		}
+		if errors.Is(err, store.ErrSectionNotEmpty) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, store.ErrSectionNotEmpty)
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Verify the section is empty after moving items (race protection).
-	hasItems, err := s.store.WorkspaceSectionItems().HasItemsBySection(ctx, sectionID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if hasItems {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, store.ErrSectionNotEmpty)
-	}
-
-	rows, err := s.store.WorkspaceSections().Delete(ctx, store.DeleteWorkspaceSectionParams{
-		ID:     sectionID,
-		UserID: user.ID,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found or not a custom section"))
 	}
 
 	return connect.NewResponse(&leapmuxv1.DeleteSectionResponse{}), nil
+}
+
+// errSectionDeleteRollback is a sentinel used only inside DeleteSection
+// to roll back the surrounding transaction when the target section row
+// doesn't exist. The handler swallows it and re-maps to CodeNotFound;
+// callers will never see this value.
+var errSectionDeleteRollback = errors.New("section delete: roll back to surface NotFound")
+
+// requireOwnedSection loads a workspace_sections row by id and verifies
+// it belongs to the caller. Returns the section on success, or a
+// pre-coded *connect.Error suitable for direct `return nil, err` from
+// the RPC handler. Non-owner hits masquerade as CodeNotFound by design
+// — disclosing "exists but not yours" would leak section ids to
+// unrelated users. Both MoveSection and MoveWorkspace need the same
+// existence + ownership gate, and an earlier duplicate-by-hand copy
+// risked one side diverging on the auth contract (e.g. one branch
+// switching to CodePermissionDenied without the other).
+func (s *SectionService) requireOwnedSection(ctx context.Context, userID, sectionID string) (*store.WorkspaceSection, error) {
+	section, err := s.store.WorkspaceSections().GetByID(ctx, sectionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if section.UserID != userID {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+	}
+	return section, nil
 }
 
 func (s *SectionService) MoveSection(
@@ -259,16 +354,8 @@ func (s *SectionService) MoveSection(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("sidebar must be LEFT or RIGHT"))
 	}
 
-	// Verify the section exists and belongs to the user.
-	section, err := s.store.WorkspaceSections().GetByID(ctx, req.Msg.GetSectionId())
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if section.UserID != user.ID {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+	if _, err := s.requireOwnedSection(ctx, user.ID, req.Msg.GetSectionId()); err != nil {
+		return nil, err
 	}
 
 	if err := s.store.WorkspaceSections().UpdateSidebarPosition(ctx, store.UpdateWorkspaceSectionSidebarPositionParams{
@@ -294,16 +381,8 @@ func (s *SectionService) MoveWorkspace(
 
 	workspaceID := req.Msg.GetWorkspaceId()
 
-	// Verify the target section exists and belongs to the user.
-	section, err := s.store.WorkspaceSections().GetByID(ctx, req.Msg.GetSectionId())
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if section.UserID != user.ID {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+	if _, err := s.requireOwnedSection(ctx, user.ID, req.Msg.GetSectionId()); err != nil {
+		return nil, err
 	}
 
 	if err := s.store.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{

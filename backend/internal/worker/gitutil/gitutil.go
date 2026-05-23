@@ -41,8 +41,23 @@ func BatchGetGitStatus(ctx context.Context, dirs []string) []*leapmuxv1.AgentGit
 	sem := make(chan struct{}, batchGetGitStatusMaxConcurrent)
 	var wg sync.WaitGroup
 	for dir, indexes := range unique {
+		// Select on ctx as well as the semaphore: an uninterruptible
+		// kernel syscall in a worker goroutine (NFS in stuck state,
+		// FUSE wedged) holds its slot indefinitely even after
+		// exec.CommandContext fires SIGKILL — D-state processes don't
+		// release until the syscall returns. Without this select, the
+		// producer goroutine wedges on `sem <- struct{}{}` forever and
+		// the caller's goroutine leaks. Bailing on ctx.Done lets
+		// cancellation reclaim the producer (any in-flight workers will
+		// still exit when their syscall eventually returns, but the
+		// dispatcher goroutine that called us doesn't leak).
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return results
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(dir string, indexes []int) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -62,6 +77,17 @@ func IsLinkedWorktreeGitDir(gitDir string) bool {
 	return strings.Contains(filepath.ToSlash(gitDir), ".git/worktrees")
 }
 
+// StripRemotePrefix strips the remote prefix from a branch ref so the
+// local-branch name remains: "origin/foo" -> "foo". A bare local name
+// (no "/") is returned unchanged. Mirrors the frontend
+// stripRemotePrefix helper in src/lib/validate.ts.
+func StripRemotePrefix(ref string) string {
+	if i := strings.IndexByte(ref, '/'); i >= 0 {
+		return ref[i+1:]
+	}
+	return ref
+}
+
 // ResolveGitDir returns the directory whose git status represents a
 // terminal/agent tab's repo state: shellStartDir when set, otherwise
 // workingDir. The frontend `effectiveGitDir` helper in tab.store.ts
@@ -79,9 +105,20 @@ func ResolveGitDir(shellStartDir, workingDir string) string {
 
 // NewGitCmd creates an exec.Cmd for git with terminal interaction disabled
 // and no console window on Windows.
+//
+// `LC_ALL=C` pins git's messages to the C locale so the worker's
+// regex/string parsers (diff --shortstat's `(\d+) insertion`/`deletion`,
+// status header text, error-message substrings) stay byte-for-byte
+// identical across hosts. Without it, a worker on a system with a
+// localized locale (ja_JP.UTF-8, fr_FR.UTF-8, …) emits translated
+// strings — `parseDiffShortstat` silently returns (0, 0) and the
+// close-tab / delete-branch dialogs render "no changes" on a dirty
+// repo. The user-facing trade-off is that bubbled git error messages
+// (stderr surfaced via wrapGitErr) are English-only; we accept that
+// over silent wrong-answer correctness bugs.
 func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	cmd.Stdin = nil
 	procutil.HideConsoleWindow(cmd)
 	return cmd
@@ -99,35 +136,82 @@ func GetGitStatus(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
 	status := &leapmuxv1.AgentGitStatus{}
 
 	// Try porcelain v2 first (git 2.13.2+).
-	cmd := NewGitCmd(ctx, "-C", dir, "status", "--porcelain=v2", "--branch")
-	output, err := cmd.Output()
+	output, err := Output(ctx, dir, "status", "--porcelain=v2", "--branch")
 	if err != nil {
 		slog.Debug("git status --porcelain=v2 failed, falling back to v1", "dir", dir, "error", err)
 		return getGitStatusV1(ctx, dir)
 	}
 	parseStatusV2(output, status)
 
-	// If detached, resolve to short SHA.
-	if status.Branch == "" {
-		status.Branch = getShortHEAD(ctx, dir)
-	}
-
-	// Check for stashes (separate command, not included in status output).
-	checkStash(ctx, dir, status)
-
-	// Get the remote origin URL.
-	status.OriginUrl = GetOriginURL(ctx, dir)
-
-	// Working-tree root so the frontend can distinguish local repos that
-	// share the same (missing) origin URL.
-	status.Toplevel = GetToplevel(ctx, dir)
-
+	fanoutGitStatusProbes(ctx, dir, status)
 	return status
 }
 
+// fanoutGitStatusProbes runs the trailing per-status probes
+// (detached-HEAD SHA, stash, origin URL, toplevel) in parallel. Each
+// probe is a `git` subprocess that doesn't depend on any of the others,
+// so doing them sequentially turned a single `GetGitStatus` into N
+// blocking fork/exec round-trips.
+//
+// Each goroutine writes to a local variable and the merge into `status`
+// happens after wg.Wait() — concurrent writes to disjoint fields of a
+// proto struct are race-free per Go's memory model TODAY, but the
+// protobuf-go contract doesn't promise that future generated accessors
+// won't lazily mutate internal state, and any future probe that touched
+// an already-claimed field would be a silent data race. The
+// goroutine-local + serial-merge pattern keeps this code race-clean
+// regardless of how the goroutine bodies evolve.
+func fanoutGitStatusProbes(ctx context.Context, dir string, status *leapmuxv1.AgentGitStatus) {
+	var (
+		wg          sync.WaitGroup
+		branch      string
+		stashed     bool
+		originURL   string
+		toplevel    string
+		isWorktree  bool
+		needsBranch = status.Branch == ""
+	)
+	if needsBranch {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			branch = getShortHEAD(ctx, dir)
+		}()
+	}
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		stashed = hasStash(ctx, dir)
+	}()
+	go func() {
+		defer wg.Done()
+		originURL = GetOriginURL(ctx, dir)
+	}()
+	go func() {
+		defer wg.Done()
+		// Working-tree root so the frontend can distinguish local repos
+		// that share the same (missing) origin URL; worktree disposition
+		// so the sidebar's BranchGroup.isWorktree (consumed by
+		// ChangeBranchDialog for path-info seeding) can be derived
+		// without a separate probe.
+		info := GetToplevelInfo(ctx, dir)
+		toplevel = info.Toplevel
+		isWorktree = info.IsWorktree
+	}()
+	wg.Wait()
+
+	if needsBranch {
+		status.Branch = branch
+	}
+	status.Stashed = stashed
+	status.OriginUrl = originURL
+	status.Toplevel = toplevel
+	status.IsWorktree = isWorktree
+}
+
 // parseStatusV2 parses the output of `git status --porcelain=v2 --branch`.
-func parseStatusV2(output []byte, status *leapmuxv1.AgentGitStatus) {
-	for _, line := range strings.Split(string(output), "\n") {
+func parseStatusV2(output string, status *leapmuxv1.AgentGitStatus) {
+	for _, line := range strings.Split(output, "\n") {
 		if line == "" {
 			continue
 		}
@@ -191,15 +275,14 @@ func parseXY(x, y byte, status *leapmuxv1.AgentGitStatus) {
 
 // getGitStatusV1 is the fallback for git versions that don't support --porcelain=v2.
 func getGitStatusV1(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
-	cmd := NewGitCmd(ctx, "-C", dir, "status", "--porcelain", "--branch")
-	output, err := cmd.Output()
+	output, err := Output(ctx, dir, "status", "--porcelain", "--branch")
 	if err != nil {
 		slog.Debug("git status --porcelain failed", "dir", dir, "error", err)
 		return nil
 	}
 
 	status := &leapmuxv1.AgentGitStatus{}
-	for _, line := range strings.Split(string(output), "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		if line == "" {
 			continue
 		}
@@ -252,51 +335,38 @@ func getGitStatusV1(ctx context.Context, dir string) *leapmuxv1.AgentGitStatus {
 		}
 	}
 
-	// If detached, resolve to short SHA.
-	if status.Branch == "" || status.Branch == "HEAD (no branch)" {
-		status.Branch = getShortHEAD(ctx, dir)
+	if status.Branch == "HEAD (no branch)" {
+		status.Branch = ""
 	}
-
-	// Check for stashes.
-	checkStash(ctx, dir, status)
-
-	// Get the remote origin URL.
-	status.OriginUrl = GetOriginURL(ctx, dir)
-
-	// Working-tree root so the frontend can distinguish local repos that
-	// share the same (missing) origin URL.
-	status.Toplevel = GetToplevel(ctx, dir)
-
+	fanoutGitStatusProbes(ctx, dir, status)
 	return status
 }
 
-// checkStash checks if the repository has any stashed changes.
-func checkStash(ctx context.Context, dir string, status *leapmuxv1.AgentGitStatus) {
-	cmd := NewGitCmd(ctx, "-C", dir, "rev-parse", "--verify", "refs/stash")
-	if err := cmd.Run(); err == nil {
-		status.Stashed = true
-	}
+// hasStash reports whether the repository has any stashed changes.
+// Pure read with no shared-state mutation so it's safe to call from a
+// fanout goroutine — the caller writes the result back into the proto
+// after wg.Wait().
+func hasStash(ctx context.Context, dir string) bool {
+	return Run(ctx, dir, "rev-parse", "--verify", "refs/stash") == nil
 }
 
 // getShortHEAD returns the short commit SHA for HEAD, or empty string on failure.
 func getShortHEAD(ctx context.Context, dir string) string {
-	cmd := NewGitCmd(ctx, "-C", dir, "rev-parse", "--short", "HEAD")
-	output, err := cmd.Output()
+	output, err := Output(ctx, dir, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(output)
 }
 
 // GetOriginURL returns the remote origin URL for the given directory.
 // Returns an empty string if the directory is not a git repo or has no origin remote.
 func GetOriginURL(ctx context.Context, dir string) string {
-	cmd := NewGitCmd(ctx, "-C", dir, "config", "--get", "remote.origin.url")
-	output, err := cmd.Output()
+	output, err := Output(ctx, dir, "config", "--get", "remote.origin.url")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(output)
 }
 
 // GetToplevel returns the absolute path of the git working-tree root for the
@@ -304,182 +374,195 @@ func GetOriginURL(ctx context.Context, dir string) string {
 // repository. Used by the sidebar grouping to distinguish origin-less local
 // repos that would otherwise collapse under a single "(local repo)" bucket.
 func GetToplevel(ctx context.Context, dir string) string {
-	cmd := NewGitCmd(ctx, "-C", dir, "rev-parse", "--show-toplevel")
-	output, err := cmd.Output()
+	return GetToplevelInfo(ctx, dir).Toplevel
+}
+
+// ToplevelInfo bundles the working-tree root with the worktree disposition
+// so a single `rev-parse` invocation can answer both "where is the repo
+// rooted?" and "is this a linked worktree?". `--git-dir` returns the
+// per-worktree `.git/worktrees/<name>` for a linked worktree and the
+// shared `.git` for the main repo; `--git-common-dir` always points at
+// the shared `.git`. They differ iff the path resolves to a linked
+// worktree.
+type ToplevelInfo struct {
+	Toplevel   string
+	IsWorktree bool
+}
+
+// GetToplevelInfo runs a single rev-parse for both the working-tree root
+// and the worktree disposition. Returns a zero value (empty toplevel,
+// IsWorktree=false) when the path is not inside a git repository or
+// `rev-parse` fails for any other reason.
+//
+// `git rev-parse` emits one line per requested flag with no `-z` mode
+// available for these directory queries. Parse from the END so a path
+// containing embedded newlines (legal POSIX, vanishingly rare) doesn't
+// silently zero the result: the last two lines are always the `.git`
+// paths (which by convention don't contain newlines), and everything
+// before them is the (possibly multi-line) toplevel.
+func GetToplevelInfo(ctx context.Context, dir string) ToplevelInfo {
+	output, err := Output(ctx, dir, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
 	if err != nil {
-		return ""
+		return ToplevelInfo{}
 	}
-	return strings.TrimSpace(string(output))
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) < 3 {
+		return ToplevelInfo{}
+	}
+	gitDir := strings.TrimSpace(lines[len(lines)-2])
+	gitCommonDir := strings.TrimSpace(lines[len(lines)-1])
+	toplevel := strings.TrimSpace(strings.Join(lines[:len(lines)-2], "\n"))
+	return ToplevelInfo{
+		Toplevel:   toplevel,
+		IsWorktree: gitDir != gitCommonDir,
+	}
+}
+
+// HasRefs probes each of the given fully-qualified refs in a single
+// `git show-ref` invocation and returns a map keyed by the input ref
+// strings with `true` values for refs that exist. A non-nil error is
+// returned only when git itself fails to run; a `show-ref` exit code of
+// 1 (no requested ref exists) yields a non-nil empty map.
+func HasRefs(ctx context.Context, dir string, refs ...string) (map[string]bool, error) {
+	found := make(map[string]bool, len(refs))
+	if len(refs) == 0 {
+		return found, nil
+	}
+	args := append([]string{"show-ref"}, refs...)
+	out, runErr := Output(ctx, dir, args...)
+	if runErr != nil {
+		// `git show-ref` exits 1 when none of the requested refs exist;
+		// that's a successful "not found" probe, not a git failure.
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1 {
+			return found, nil
+		}
+		return nil, runErr
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		found[fields[1]] = true
+	}
+	return found, nil
+}
+
+// HasAnyRef reports whether any ref exists under the given prefix
+// (e.g. "refs/remotes/origin/"). A trailing `/` on the prefix scopes
+// the probe to that namespace; an empty prefix matches every ref.
+// Returns a non-nil error only when `git for-each-ref` itself fails to
+// run — a successful command with empty output yields (false, nil).
+func HasAnyRef(ctx context.Context, dir, prefix string) (bool, error) {
+	out, runErr := Output(ctx, dir, "for-each-ref", "--count=1", "--format=%(refname)", prefix)
+	if runErr != nil {
+		return false, runErr
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
+// LookupRef probes whether `name` resolves as a local branch
+// (`refs/heads/<name>`) and/or as a remote-tracking ref
+// (`refs/remotes/<name>`) in a single `git show-ref` invocation.
+// Returns (false, false, nil) when neither ref exists; only returns a
+// non-nil error if git itself fails to run.
+//
+// Used by the worktree validators to halve the subprocess count
+// compared to firing two separate `git rev-parse --verify` probes.
+func LookupRef(ctx context.Context, dir, name string) (local, remote bool, err error) {
+	headRef := "refs/heads/" + name
+	remoteRef := "refs/remotes/" + name
+	found, err := HasRefs(ctx, dir, headRef, remoteRef)
+	if err != nil {
+		return false, false, err
+	}
+	return found[headRef], found[remoteRef], nil
+}
+
+// ErrInvalidArgument is the umbrella sentinel callers wrap their input-
+// validation errors with so RPC handlers can route them to a single
+// "invalid argument" response category via errors.Is. BranchNameError
+// chains to it through Unwrap.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// BranchNameError is the typed error returned by ValidateBranchName for
+// every check-ref-format violation. Unwrap chains to ErrInvalidArgument
+// so callers that only need the routing decision can use errors.Is;
+// callers that need the Reason string can still use
+// errors.As(err, &gitutil.BranchNameError{}).
+type BranchNameError struct {
+	Reason string
+}
+
+func (e *BranchNameError) Error() string {
+	return "invalid branch name: " + e.Reason
+}
+
+func (e *BranchNameError) Unwrap() error {
+	return ErrInvalidArgument
+}
+
+// IsBranchNameError reports whether err (or any wrapped error in its chain)
+// is a *BranchNameError.
+func IsBranchNameError(err error) bool {
+	var target *BranchNameError
+	return errors.As(err, &target)
+}
+
+func branchNameErrorf(format string, args ...any) *BranchNameError {
+	return &BranchNameError{Reason: fmt.Sprintf(format, args...)}
 }
 
 // ValidateBranchName validates a git branch name according to git-check-ref-format rules.
 func ValidateBranchName(name string) error {
 	if name == "" {
-		return fmt.Errorf("branch name must not be empty")
+		return branchNameErrorf("must not be empty")
 	}
 	if len(name) > 256 {
-		return fmt.Errorf("branch name must be at most 256 characters")
+		return branchNameErrorf("must be at most 256 characters")
 	}
 	for _, r := range name {
 		if unicode.IsControl(r) {
-			return fmt.Errorf("branch name must not contain control characters")
+			return branchNameErrorf("must not contain control characters")
 		}
 		switch r {
 		case ' ', '~', '^', ':', '?', '*', '[', ']', '\\':
-			return fmt.Errorf("branch name must not contain '%c'", r)
+			return branchNameErrorf("must not contain '%c'", r)
 		}
 	}
 	if name[0] == '/' || name[0] == '.' || name[0] == '-' || name[0] == '@' {
-		return fmt.Errorf("branch name must not start with '%c'", name[0])
+		return branchNameErrorf("must not start with '%c'", name[0])
 	}
 	if strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") || strings.HasSuffix(name, ".lock") {
-		return fmt.Errorf("branch name must not end with /, ., or .lock")
+		return branchNameErrorf("must not end with /, ., or .lock")
 	}
 	if strings.Contains(name, "..") {
-		return fmt.Errorf("branch name must not contain '..'")
+		return branchNameErrorf("must not contain '..'")
 	}
 	if strings.Contains(name, "//") {
-		return fmt.Errorf("branch name must not contain '//'")
+		return branchNameErrorf("must not contain '//'")
 	}
 	if strings.Contains(name, "/.") {
-		return fmt.Errorf("branch name must not contain '/.'")
+		return branchNameErrorf("must not contain '/.'")
 	}
-	return nil
-}
-
-// CreateWorktree creates a new git worktree at the specified path.
-// startPoint specifies the base commit/branch for the new worktree.
-// If the branch already exists, it checks it out into the new worktree.
-func CreateWorktree(repoRoot, worktreePath, branchName, startPoint string) error {
-	if err := ValidateBranchName(branchName); err != nil {
-		return fmt.Errorf("invalid branch name: %w", err)
-	}
-
-	// Fail fast: verify this is a git repo.
-	info, err := os.Stat(filepath.Join(repoRoot, ".git"))
-	if err != nil || !info.IsDir() {
-		return fmt.Errorf(`"%s" is not a git repository`, repoRoot)
-	}
-
-	// Create parent directory if needed.
-	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
-		return fmt.Errorf("create parent directory: %w", err)
-	}
-
-	// Try creating with new branch first.
-	args := []string{"-C", repoRoot, "worktree", "add", worktreePath, "-b", branchName}
-	args = append(args, startPoint)
-	cmd := NewGitCmd(context.Background(), args...)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		outStr := string(output)
-		// If branch already exists, try without -b (checkout existing branch).
-		if strings.Contains(outStr, "already exists") {
-			cmd2 := NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "add", worktreePath, branchName)
-			if output2, err2 := cmd2.CombinedOutput(); err2 != nil {
-				return fmt.Errorf("git worktree add: %s", strings.TrimSpace(string(output2)))
-			}
-			return nil
-		}
-		return fmt.Errorf("git worktree add: %s", strings.TrimSpace(outStr))
-	}
-
-	return nil
-}
-
-// IsWorktreeClean checks if a worktree has uncommitted changes or unpushed commits.
-// Returns true only if both the working tree is clean and there are no unpushed commits.
-func IsWorktreeClean(worktreePath string) (bool, error) {
-	// Fail fast: verify this path is inside a git repo.
-	dotGit := filepath.Join(worktreePath, ".git")
-	if _, err := os.Lstat(dotGit); err != nil {
-		return false, fmt.Errorf(`"%s" is not a git working tree`, worktreePath)
-	}
-
-	// Check for uncommitted changes.
-	cmd := NewGitCmd(context.Background(), "-C", worktreePath, "status", "--porcelain")
-	output, err := cmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("git status: %w", err)
-	}
-	if len(strings.TrimSpace(string(output))) > 0 {
-		return false, nil
-	}
-
-	// Check for unpushed commits.
-	// First, try comparing against the upstream tracking branch.
-	cmd2 := NewGitCmd(context.Background(), "-C", worktreePath, "log", "@{upstream}..HEAD", "--oneline")
-	output2, err := cmd2.Output()
-	if err == nil {
-		// Upstream exists — check if there are commits ahead of it.
-		if len(strings.TrimSpace(string(output2))) > 0 {
-			return false, nil
-		}
-		return true, nil
-	}
-
-	// No upstream configured. Fall back to checking if the current branch has
-	// commits that don't exist on any other local branch. This catches the case
-	// where a worktree branch was created with `git worktree add -b <name>` and
-	// has local commits that would be lost if the worktree were deleted.
-	currentBranch := ""
-	branchCmd := NewGitCmd(context.Background(), "-C", worktreePath, "branch", "--show-current")
-	if branchOutput, branchErr := branchCmd.Output(); branchErr == nil {
-		currentBranch = strings.TrimSpace(string(branchOutput))
-	}
-	if currentBranch != "" {
-		// Show commits on HEAD that aren't reachable from any other branch.
-		cmd3 := NewGitCmd(context.Background(), "-C", worktreePath, "log", "HEAD",
-			"--not", "--exclude="+currentBranch, "--branches", "--oneline")
-		output3, err3 := cmd3.Output()
-		if err3 == nil && len(strings.TrimSpace(string(output3))) > 0 {
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-// RemoveWorktree removes a git worktree.
-func RemoveWorktree(repoRoot, worktreePath string) error {
-	// Fail fast: verify this is a git repo.
-	info, err := os.Stat(filepath.Join(repoRoot, ".git"))
-	if err != nil || !info.IsDir() {
-		return fmt.Errorf(`"%s" is not a git repository`, repoRoot)
-	}
-
-	cmd := NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "remove", worktreePath, "--force")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// If git worktree remove fails, try to remove the directory manually.
-		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
-			return fmt.Errorf("git worktree remove: %s; manual removal also failed: %w", strings.TrimSpace(string(output)), rmErr)
-		}
-		// Directory removed manually, but we should also prune the worktree list.
-		_ = NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "prune").Run()
-	}
-
-	// Clean up the parent *-worktrees directory if it's now empty.
-	// os.Remove only removes empty directories, so this is a no-op if
-	// other worktrees still exist under the same parent.
-	_ = os.Remove(filepath.Dir(worktreePath))
-
 	return nil
 }
 
 // IsBranchInUse checks if a branch is currently checked out by any worktree
 // (including the main working copy). Uses `git worktree list --porcelain`.
-func IsBranchInUse(repoRoot, branchName string) (bool, error) {
+func IsBranchInUse(ctx context.Context, repoRoot, branchName string) (bool, error) {
 	if err := ValidateBranchName(branchName); err != nil {
-		return false, fmt.Errorf("invalid branch name: %w", err)
+		return false, err
 	}
 
-	cmd := NewGitCmd(context.Background(), "-C", repoRoot, "worktree", "list", "--porcelain")
-	output, err := cmd.Output()
+	output, err := Output(ctx, repoRoot, "worktree", "list", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("git worktree list: %w", err)
 	}
 
 	target := "refs/heads/" + branchName
-	for _, line := range strings.Split(string(output), "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "branch ") {
 			branch := strings.TrimPrefix(line, "branch ")
@@ -492,43 +575,44 @@ func IsBranchInUse(repoRoot, branchName string) (bool, error) {
 	return false, nil
 }
 
-// DeleteBranch force-deletes a local git branch.
-func DeleteBranch(repoRoot, branchName string) error {
+// DeleteBranch force-deletes a local git branch. dir may be any path inside
+// the repository; git resolves the repo root itself.
+func DeleteBranch(ctx context.Context, dir, branchName string) error {
 	if err := ValidateBranchName(branchName); err != nil {
-		return fmt.Errorf("invalid branch name: %w", err)
+		return err
 	}
 
-	cmd := NewGitCmd(context.Background(), "-C", repoRoot, "branch", "-D", branchName)
+	cmd := NewGitCmd(ctx, "-C", dir, "branch", "-D", branchName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git branch -D %s: %s", branchName, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
 
-// ReadFileAtRef reads a file from git at the given ref.
-// ref must be "HEAD" or "STAGED" (empty ref means HEAD).
-// Returns (content, exists, error).
-func ReadFileAtRef(dir, relPath, ref string) ([]byte, bool, error) {
-	var spec string
-	switch strings.ToUpper(ref) {
-	case "STAGED", "":
-		// Staged (index): ":<path>"
-		spec = ":" + relPath
-	case "HEAD":
-		spec = "HEAD:" + relPath
-	default:
-		return nil, false, fmt.Errorf("unsupported ref: %q", ref)
-	}
-
-	cmd := NewGitCmd(context.Background(), "-C", dir, "show", spec)
-	output, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			// Exit code 128 typically means the file doesn't exist at that ref.
-			return nil, false, nil
+// ParseLines splits git output by newlines, trimming whitespace and
+// dropping empty lines. Use for newline-terminated `for-each-ref` /
+// `branch --list` / similar text output.
+func ParseLines(output string) []string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	var result []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			result = append(result, l)
 		}
-		return nil, false, err
 	}
-	return output, true, nil
+	return result
+}
+
+// SplitNUL splits NUL-delimited (`-z`) git output into records, discarding
+// the trailing empty element git emits after the final NUL.
+func SplitNUL(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	parts := strings.Split(string(data), "\x00")
+	if len(parts) > 0 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	return parts
 }

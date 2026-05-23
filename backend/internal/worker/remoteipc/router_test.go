@@ -32,7 +32,7 @@ type fakeLocalDispatcher struct {
 	emitStream  [][]byte
 }
 
-func (f *fakeLocalDispatcher) DispatchWith(userID string, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (f *fakeLocalDispatcher) DispatchWith(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	f.mu.Lock()
 	f.gotUserID = userID
 	f.gotMethod = req.GetMethod()
@@ -417,6 +417,105 @@ func TestRouter_StreamInner_LocalDispatch(t *testing.T) {
 	assert.Equal(t, authorizers.registered[0], authorizers.unregistered[0])
 }
 
+// TestRouter_StreamInner_TerminalResponsePayloadForwarded pins that a
+// streaming handler that signals end-of-stream via SendResponse with a
+// non-empty payload has that payload delivered to the IPC consumer as
+// a terminal envelope (End=true). The earlier streamCollector
+// silently dropped resp.Payload — a streaming-shaped sender that
+// emitted a single final frame via SendResponse (a fast-path that
+// produced one terminal message, or a unary-shaped result reaching a
+// streaming Sender) ended the stream with the payload lost.
+func TestRouter_StreamInner_TerminalResponsePayloadForwarded(t *testing.T) {
+	dispatcher := &fakeLocalDispatcher{
+		// No intermediate frames; the entire response rides on the
+		// terminal SendResponse.
+		respPayload: []byte("final-bytes"),
+	}
+	r := &remoteipc.Router{
+		WorkerID:        "A",
+		UserID:          "u",
+		WorkspaceIDs:    []string{"ws-1"},
+		LocalDispatcher: dispatcher,
+		Authorizers:     &fakeAuthorizers{},
+	}
+
+	got := make(chan *leapmuxv1.StreamInnerEnvelope, 4)
+	streamErr := make(chan error, 1)
+	go func() {
+		streamErr <- r.StreamInner(context.Background(), remoteipc.TokenInfo{}, "worker.OneShotStream", []byte("{}"), "A", "ws-1", "req-1",
+			func(env *leapmuxv1.StreamInnerEnvelope) error {
+				got <- env
+				return nil
+			})
+	}()
+
+	select {
+	case env := <-got:
+		assert.Equal(t, []byte("final-bytes"), env.GetPayload())
+		assert.True(t, env.GetEnd())
+		assert.False(t, env.GetIsError())
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected terminal payload envelope")
+	}
+	select {
+	case err := <-streamErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("StreamInner didn't return after terminal SendResponse")
+	}
+}
+
+// TestRouter_StreamInner_TerminalEmptyResponseNoExtraEnvelope pins the
+// "done, nothing more" path: an empty SendResponse (the slowStreamDispatcher
+// pattern) must NOT push a synthetic empty envelope through onMsg —
+// downstream consumers can't tell that apart from a real empty frame
+// and would mis-render a trailing blank.
+func TestRouter_StreamInner_TerminalEmptyResponseNoExtraEnvelope(t *testing.T) {
+	stop := make(chan struct{})
+	dispatcher := &slowStreamDispatcher{stop: stop, emitted: &atomic.Int32{}}
+	r := &remoteipc.Router{
+		WorkerID:        "A",
+		UserID:          "u",
+		WorkspaceIDs:    []string{"ws-1"},
+		LocalDispatcher: dispatcher,
+		Authorizers:     &fakeAuthorizers{},
+	}
+
+	received := make(chan *leapmuxv1.StreamInnerEnvelope, 32)
+	streamErr := make(chan error, 1)
+	go func() {
+		streamErr <- r.StreamInner(context.Background(), remoteipc.TokenInfo{}, "worker.Slow", []byte("{}"), "A", "ws-1", "req-1",
+			func(env *leapmuxv1.StreamInnerEnvelope) error {
+				received <- env
+				return nil
+			})
+	}()
+
+	// Let at least one streamed frame land, then signal the handler to
+	// terminate via SendResponse{} (empty payload).
+	select {
+	case env := <-received:
+		assert.Equal(t, []byte("tick"), env.GetPayload())
+		assert.False(t, env.GetEnd())
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected at least one streamed frame")
+	}
+	close(stop)
+
+	select {
+	case err := <-streamErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("StreamInner didn't return after terminal SendResponse{}")
+	}
+	// Drain any in-flight ticks. None of them should be the End-marked
+	// envelope: the empty SendResponse path emits nothing.
+	close(received)
+	for env := range received {
+		assert.False(t, env.GetEnd(), "empty SendResponse must not synthesize an End envelope")
+	}
+}
+
 func TestRouter_StreamInner_Cancellable(t *testing.T) {
 	// Slow dispatcher: emits frames forever until ctx cancellation.
 	emitted := atomic.Int32{}
@@ -674,7 +773,7 @@ type slowStreamDispatcher struct {
 	emitted *atomic.Int32
 }
 
-func (d *slowStreamDispatcher) DispatchWith(_ string, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+func (d *slowStreamDispatcher) DispatchWith(_ context.Context, _ string, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	for {
 		select {
 		case <-d.stop:

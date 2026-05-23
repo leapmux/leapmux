@@ -76,6 +76,74 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		assert.Len(t, workspaces, 2)
 	})
 
+	// Tiebreaker: workspaces with identical created_at must come back in
+	// a deterministic order across refreshes. ListAccessible orders by
+	// (created_at DESC, id DESC) — created_at is only millisecond-
+	// precision and rapid-fire seeding (or batch ops) easily ties two
+	// rows in the same ms. Without the `id` tiebreaker the planner picked
+	// its own order via the SELECT DISTINCT over the LEFT JOIN to
+	// workspace_access, so the sidebar shuffled workspaces on every
+	// page refresh.
+	t.Run("list accessible stable order on created_at ties", func(t *testing.T) {
+		st := s.NewStore(t)
+		orgID := SeedOrg(t, st, "ws-order-org", false)
+		user := SeedUser(t, st, orgID, "ws-order-user")
+		// Seed in a tight loop so at least some pairs share a millisecond.
+		// We don't rely on hitting the tie path on every iteration —
+		// instead we assert the result matches the explicit
+		// (created_at DESC, id DESC) sort the SQL promises.
+		const N = 8
+		seeded := make([]string, 0, N)
+		for i := 0; i < N; i++ {
+			seeded = append(seeded, SeedWorkspace(t, st, orgID, user.ID, "WS"))
+		}
+
+		first, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
+			UserID: user.ID,
+			OrgID:  orgID,
+		})
+		require.NoError(t, err)
+		require.Len(t, first, N)
+
+		// Pin the SQL contract: ORDER BY created_at DESC, id DESC.
+		for i := 0; i+1 < len(first); i++ {
+			a, b := first[i], first[i+1]
+			switch {
+			case a.CreatedAt.Equal(b.CreatedAt):
+				assert.Greaterf(t, a.ID, b.ID,
+					"tie on created_at must break by id DESC (got %q then %q at %v)",
+					a.ID, b.ID, a.CreatedAt)
+			default:
+				assert.Truef(t, a.CreatedAt.After(b.CreatedAt),
+					"created_at must be non-increasing (got %v then %v)", a.CreatedAt, b.CreatedAt)
+			}
+		}
+
+		// Multiple calls return the same order regardless of any planner
+		// caching, ANALYZE state, or repeated DISTINCT evaluation.
+		for trial := 0; trial < 3; trial++ {
+			got, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
+				UserID: user.ID,
+				OrgID:  orgID,
+			})
+			require.NoError(t, err)
+			require.Len(t, got, N)
+			for i := range got {
+				assert.Equalf(t, first[i].ID, got[i].ID,
+					"trial %d position %d: ListAccessible order changed across calls", trial, i)
+			}
+		}
+
+		// Every seeded id is in the result (sanity, distinct from order).
+		gotIDs := make(map[string]struct{}, len(first))
+		for _, ws := range first {
+			gotIDs[ws.ID] = struct{}{}
+		}
+		for _, want := range seeded {
+			assert.Contains(t, gotIDs, want)
+		}
+	})
+
 	t.Run("rename", func(t *testing.T) {
 		st := s.NewStore(t)
 		orgID := SeedOrg(t, st, "ws-org", false)

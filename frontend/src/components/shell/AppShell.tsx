@@ -1,17 +1,19 @@
 import type { ParentComponent } from 'solid-js'
-import type { KeyPinConfirmState } from './AppShellDialogs'
+import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, KeyPinConfirmState, NewWorkspacePayload, WorkspaceConfirmPayload } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { BatchOutcome } from './useOpsSubmitter'
 import type { CliPathStatus } from '~/api/platformBridge'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { GetGitFileStatusResponse } from '~/generated/leapmux/v1/git_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
+import type { Tab } from '~/stores/tab.types'
 import { useLocation, useNavigate, useParams, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, Match, on, Show, Switch, untrack } from 'solid-js'
 import { workerClient } from '~/api/clients'
 import { isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs } from '~/api/transport'
-import { channelManager, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
+import { channelManager, getGitFileStatus, renameAgent, setConfirmKeyPin, setGetUserId } from '~/api/workerRpc'
 import { NotFoundPage } from '~/components/common/NotFoundPage'
 import { showWarnToast } from '~/components/common/Toast'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
@@ -27,6 +29,7 @@ import { useWorkspace } from '~/context/WorkspaceContext'
 import { HubControlEvent } from '~/generated/leapmux/v1/channel_pb'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createDialogState, createToggleDialog } from '~/hooks/createDialogState'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
@@ -41,6 +44,7 @@ import { createFileTabPathsStore } from '~/lib/fileTabPaths'
 import { createIdentityCache } from '~/lib/identityCache'
 import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
+import { createLogger } from '~/lib/logger'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
 import { parentDirectory } from '~/lib/paths'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
@@ -54,11 +58,11 @@ import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import { createLayoutStore, getAllTileIds } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { agentTabToInfo, isTabReadyForGitStatus, tabKey } from '~/stores/tab.helpers'
+import { agentTabToInfo, isSameRepo, isTabReadyForGitStatus, tabKey } from '~/stores/tab.helpers'
 import { createTabStore } from '~/stores/tab.store'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
-import { createWorkerInfoStore } from '~/stores/workerInfo.store'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
 import * as styles from './AppShell.css'
@@ -70,7 +74,7 @@ import { FloatingWindowLayer } from './FloatingWindowLayer'
 import { GridPopoverHostProvider } from './GridPopoverHost'
 import { createMobileSidebarToggles, MobileLayout } from './MobileLayout'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
-import { syncGitStatusToTabs } from './syncGitStatusToTabs'
+import { applyGitStatusToTabs, syncGitStatusToTabs, tabStoreTarget } from './syncGitStatusToTabs'
 import { focusTile as focusTileShared } from './tileLifecycle'
 import { createTileRenderer } from './TileRenderer'
 import { useAgentOperations } from './useAgentOperations'
@@ -95,6 +99,8 @@ import { useWorkspaceSwitchSnapshot } from './useWorkspaceSwitchSnapshot'
 // path. Returning a fresh `[]` per call would defeat the WeakMap-based
 // memoization that keeps `WorkspaceTabTree`'s `buildTree` memo stable.
 const EMPTY_TILE_ORDER: string[] = []
+
+const log = createLogger('AppShell')
 
 export const AppShell: ParentComponent = (props) => {
   const auth = useAuth()
@@ -124,26 +130,28 @@ export const AppShell: ParentComponent = (props) => {
   useFocusInvariant({ layoutStore, floatingWindowStore })
   const gitFileStatusStore = createGitFileStatusStore()
   const [fileTreePath, setFileTreePath] = createSignal('')
-  const [showNewWorkspace, setShowNewWorkspace] = createSignal(false)
-  const [preselectedWorkerId, setPreselectedWorkerId] = createSignal<string | undefined>(undefined)
-  const [newWorkspaceTargetSectionId, setNewWorkspaceTargetSectionId] = createSignal<string | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = createSignal(true)
-  const [showNewAgentDialog, setShowNewAgentDialog] = createSignal(false)
-  const [showNewTerminalDialog, setShowNewTerminalDialog] = createSignal(false)
   const [newAgentLoadingProvider, setNewAgentLoadingProvider] = createSignal<AgentProvider | null>(null)
   const [newTerminalLoading, setNewTerminalLoading] = createSignal(false)
   const [newShellLoading, setNewShellLoading] = createSignal(false)
   const settingsLoading = createLoadingSignal(apiLoadingTimeoutMs())
-  const [confirmDeleteWs, setConfirmDeleteWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
-  const [confirmArchiveWs, setConfirmArchiveWs] = createSignal<{ workspaceId: string, resolve: (confirmed: boolean) => void } | null>(null)
-  const [keyPinConfirm, setKeyPinConfirm] = createSignal<KeyPinConfirmState | null>(null)
+  // Dialog handles owned by AppShell. `lastTabConfirm` is owned by
+  // useTabOperations (it drives the close flow) and joined into the
+  // shared `dialogs` record below once tabOps exists.
+  const newAgentDialog = createToggleDialog()
+  const newTerminalDialog = createToggleDialog()
+  const newWorkspaceDialog = createDialogState<NewWorkspacePayload>()
+  const confirmDeleteWsDialog = createDialogState<WorkspaceConfirmPayload>()
+  const confirmArchiveWsDialog = createDialogState<WorkspaceConfirmPayload>()
+  const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
+  const changeBranchDialog = createDialogState<ChangeBranchState>()
+  const deleteBranchDialog = createDialogState<DeleteBranchState>()
   // Set to a `missing` / `mismatch` status when the macOS PATH check should
   // show its dialog. `null` keeps the dialog unmounted (ok / unavailable /
   // not-yet-checked / non-macOS).
   const [cliPathInfo, setCliPathInfo] = createSignal<(CliPathStatus & { state: 'missing' | 'mismatch' }) | null>(null)
 
   // Worker section state
-  const workerInfoStore = createWorkerInfoStore()
   const workerChannelStatusStore = createWorkerChannelStatusStore(channelManager)
   const [workers, setWorkers] = createSignal<Worker[]>([])
   const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
@@ -192,7 +200,7 @@ export const AppShell: ParentComponent = (props) => {
   // Register E2EE channel callbacks (module-level singletons in workerRpc.ts).
   setConfirmKeyPin((workerId, expectedFingerprint, actualFingerprint) =>
     new Promise((resolve) => {
-      setKeyPinConfirm({ workerId, expectedFingerprint, actualFingerprint, resolve })
+      keyPinConfirmDialog.open({ workerId, expectedFingerprint, actualFingerprint, resolve })
     }),
   )
   setGetUserId(() => auth.user()?.id ?? '')
@@ -507,8 +515,9 @@ export const AppShell: ParentComponent = (props) => {
   // Auto-open new workspace dialog from URL search params
   createEffect(() => {
     if (searchParams.newWorkspace === 'true') {
-      setPreselectedWorkerId(searchParams.workerId as string | undefined)
-      setShowNewWorkspace(true)
+      newWorkspaceDialog.open({
+        preselectedWorkerId: searchParams.workerId as string | undefined,
+      })
       setSearchParams({ newWorkspace: undefined, workerId: undefined }, { replace: true })
     }
   })
@@ -599,7 +608,7 @@ export const AppShell: ParentComponent = (props) => {
     // lands on already-emptied stores. The freshly-opened agent ends
     // up rendered as a bare CRDT-projection tab (raw id, "Agent not
     // found").
-    if (showNewWorkspace())
+    if (newWorkspaceDialog.value())
       return
     const savedId = sessionStorageGet<string>(KEY_ACTIVE_WORKSPACE)
     const target = (savedId && workspaces.some(w => w.id === savedId))
@@ -667,14 +676,15 @@ export const AppShell: ParentComponent = (props) => {
   const getCurrentTabContext = (): TabContext => {
     const tab = activeTab()
     if (!tab)
-      return { workerId: '', workingDir: '', homeDir: '' }
+      return { workerId: '', workingDir: '', homeDir: '', gitToplevel: '' }
     const workerId = tab.workerId ?? ''
     const homeDir = workerInfoStore.getHomeDir(workerId)
+    const gitToplevel = tab.gitToplevel ?? ''
     if (tab.type === TabType.FILE) {
       const dir = tab.workingDir || (tab.filePath ? parentDirectory(tab.filePath) : '')
-      return { workerId, workingDir: dir, homeDir }
+      return { workerId, workingDir: dir, homeDir, gitToplevel }
     }
-    return { workerId, workingDir: tab.workingDir ?? '', homeDir }
+    return { workerId, workingDir: tab.workingDir ?? '', homeDir, gitToplevel }
   }
 
   // Refresh git file status when a turn ends. Another agent's turn can
@@ -732,7 +742,7 @@ export const AppShell: ParentComponent = (props) => {
     isActiveWorkspaceMutatable,
     activeWorkspace,
     getCurrentTabContext,
-    setShowNewAgentDialog,
+    newAgentDialog,
     setNewAgentLoadingProvider,
     focusEditor: () => focusEditorRef()?.(),
     forceScrollToBottom: () => forceScrollToBottomRef()?.(),
@@ -746,12 +756,15 @@ export const AppShell: ParentComponent = (props) => {
     activeWorkspace,
     isActiveWorkspaceMutatable,
     getCurrentTabContext,
-    setShowNewTerminalDialog,
+    newTerminalDialog,
     setNewTerminalLoading,
     setNewShellLoading,
   })
 
-  // Tab operations (select, close, file open, worktree confirm)
+  // Tab operations (select, close, file open, worktree confirm).
+  // Owns the LastTabConfirmDialog because the close-flow drives it; hoist
+  // the handle into the shared `dialogs` record so AppShellDialogs sees
+  // one flat dialog map.
   const tabOps = useTabOperations({
     tabStore,
     chatStore,
@@ -768,6 +781,18 @@ export const AppShell: ParentComponent = (props) => {
     getActiveWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
     registry,
   })
+  // Build the final dialog map now that tabOps owns its handle.
+  const dialogs: AppShellDialogStates = {
+    newAgent: newAgentDialog,
+    newTerminal: newTerminalDialog,
+    newWorkspace: newWorkspaceDialog,
+    confirmDeleteWs: confirmDeleteWsDialog,
+    confirmArchiveWs: confirmArchiveWsDialog,
+    lastTabConfirm: tabOps.lastTabConfirmDialog,
+    keyPinConfirm: keyPinConfirmDialog,
+    changeBranch: changeBranchDialog,
+    deleteBranch: deleteBranchDialog,
+  }
   // Bind the closing-agent check now that tabOps is available.
   isAgentClosing = (agentId: string) =>
     tabOps.closingTabKeys().has(tabKey({ type: TabType.AGENT, id: agentId }))
@@ -865,12 +890,12 @@ export const AppShell: ParentComponent = (props) => {
   // Promise-based confirmation callbacks for workspace operations
   const handleConfirmDeleteWorkspace = (workspaceId: string): Promise<boolean> =>
     new Promise((resolve) => {
-      setConfirmDeleteWs({ workspaceId, resolve })
+      confirmDeleteWsDialog.open({ workspaceId, resolve })
     })
 
   const handleConfirmArchiveWorkspace = (workspaceId: string): Promise<boolean> =>
     new Promise((resolve) => {
-      setConfirmArchiveWs({ workspaceId, resolve })
+      confirmArchiveWsDialog.open({ workspaceId, resolve })
     })
 
   // Post-archive cleanup
@@ -892,7 +917,6 @@ export const AppShell: ParentComponent = (props) => {
       layoutStore,
       agentSessionStore,
       gitFileStatusStore,
-      workerInfoStore,
     },
     ops: { agentOps, termOps },
     workspace: {
@@ -912,8 +936,8 @@ export const AppShell: ParentComponent = (props) => {
       newAgentLoadingProvider,
       newTerminalLoading,
       newShellLoading,
-      setShowNewAgentDialog,
-      setShowNewTerminalDialog,
+      newAgentDialog,
+      newTerminalDialog,
     },
     chrome: {
       isMobileLayout,
@@ -937,9 +961,9 @@ export const AppShell: ParentComponent = (props) => {
     tabOps,
     agentOps,
     termOps,
-    setShowNewAgentDialog,
-    setShowNewTerminalDialog,
-    setShowNewWorkspace,
+    newAgentDialog,
+    newTerminalDialog,
+    newWorkspaceDialog,
     hasActiveWorkspace: () => activeWorkspace() !== null,
     toggleFloatingTab: handleToggleFloatingTab,
     toggleLeftSidebar: () => {
@@ -980,8 +1004,7 @@ export const AppShell: ParentComponent = (props) => {
     loadSections,
     onSelectWorkspace: handleSelectWorkspace,
     onNewWorkspace: (sectionId: string | null) => {
-      setNewWorkspaceTargetSectionId(sectionId)
-      setShowNewWorkspace(true)
+      newWorkspaceDialog.open({ targetSectionId: sectionId })
     },
     onRefreshWorkspaces: () => loadWorkspaces(),
     onDeleteWorkspace: handleDeleteWorkspace,
@@ -1064,6 +1087,19 @@ export const AppShell: ParentComponent = (props) => {
       inactiveTileOrderCache.set(root, fresh)
       return fresh
     },
+    onChangeBranch: ref => changeBranchDialog.open({
+      workerId: ref.workerId,
+      gitToplevel: ref.gitToplevel,
+      workspaceId: ref.workspaceId,
+      branchName: ref.branchName,
+      isWorktree: ref.isWorktree,
+    }),
+    onDeleteBranch: ref => deleteBranchDialog.open({
+      workerId: ref.workerId,
+      gitToplevel: ref.gitToplevel,
+      branchName: ref.branchName,
+      tabs: ref.tabs,
+    }),
   })
 
   // Refresh git status only when workerId or workingDir actually changes
@@ -1141,8 +1177,9 @@ export const AppShell: ParentComponent = (props) => {
           workspaceLoading={workspaceLoading()}
           getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
           onNewWorkspace={() => {
-            setNewWorkspaceTargetSectionId(sectionStore.getInProgressSection()?.id ?? null)
-            setShowNewWorkspace(true)
+            newWorkspaceDialog.open({
+              targetSectionId: sectionStore.getInProgressSection()?.id ?? null,
+            })
           }}
           setCenterPanelHeight={setCenterPanelHeight}
           onIntraTileReorder={tileDrag.handleIntraTileReorder}
@@ -1219,30 +1256,115 @@ export const AppShell: ParentComponent = (props) => {
       </Show>
 
       <AppShellDialogs
-        showNewAgentDialog={showNewAgentDialog()}
-        setShowNewAgentDialog={setShowNewAgentDialog}
-        showNewTerminalDialog={showNewTerminalDialog()}
-        setShowNewTerminalDialog={setShowNewTerminalDialog}
-        showNewWorkspace={showNewWorkspace()}
-        setShowNewWorkspace={setShowNewWorkspace}
-        preselectedWorkerId={preselectedWorkerId()}
-        setPreselectedWorkerId={setPreselectedWorkerId}
-        newWorkspaceTargetSectionId={newWorkspaceTargetSectionId()}
-        setNewWorkspaceTargetSectionId={setNewWorkspaceTargetSectionId}
-        confirmDeleteWs={confirmDeleteWs()}
-        setConfirmDeleteWs={setConfirmDeleteWs}
-        confirmArchiveWs={confirmArchiveWs()}
-        setConfirmArchiveWs={setConfirmArchiveWs}
-        lastTabConfirm={tabOps.lastTabConfirm()}
-        setLastTabConfirm={tabOps.setLastTabConfirm}
-        keyPinConfirm={keyPinConfirm()}
-        setKeyPinConfirm={setKeyPinConfirm}
+        dialogs={dialogs}
+        onBranchChanged={(workerId, workingDir, newBranch) => {
+          // Immediate branch-label stamp on every tab in
+          // (workerId, gitToplevel): the active workspace's tabStore
+          // directly, every inactive workspace's registry snapshot
+          // indirectly. Without the registry fan-out, a Change branch
+          // opened on an inactive workspace's sidebar row would update
+          // the active workspace's matching tabs (rare, but possible
+          // when the same worker hosts both repos) yet leave the
+          // INACTIVE workspace's branch label stale until next switch.
+          tabStore.stampBranchOnTabs(workerId, workingDir, newBranch)
+          const activeWsId = activeWorkspace()?.id
+          for (const snap of registry.all()) {
+            if (snap.workspaceId === activeWsId)
+              continue
+            // No-op when no tab in the snapshot matches — keeps the
+            // registry version counter from churning every reactive
+            // consumer for an empty pass.
+            if (!snap.tabs.some(t => isSameRepo(t, workerId, workingDir) && t.gitBranch !== newBranch))
+              continue
+            registry.update(snap.workspaceId, s => ({
+              ...s,
+              tabs: s.tabs.map(t =>
+                isSameRepo(t, workerId, workingDir) && t.gitBranch !== newBranch
+                  ? { ...t, gitBranch: newBranch }
+                  : t,
+              ),
+            }))
+          }
+          // Diff-stats refresh. Active repo: refresh the file-status
+          // singleton so the file tree updates and syncGitStatusToTabs
+          // cascades into the active tabStore. Inactive repo: fetch
+          // directly and stamp tabs across active tabStore + every
+          // inactive registry snapshot, but don't touch the singleton
+          // (it tracks the focused repo's file tree, and a non-focused
+          // refresh would flip the tree view to a repo the user isn't
+          // looking at).
+          //
+          // ALWAYS stamp inactive workspaces' diff stats too — that's
+          // the only way an inactive workspace's sidebar diff badges
+          // can pick up post-branch-change state without waiting for
+          // its switch-in refresh.
+          const stampInactiveFromStatus = (status: {
+            repoRoot: string
+            toplevel: string
+            originUrl: string
+            currentBranch: string
+            files: GetGitFileStatusResponse['files']
+          }) => {
+            for (const snap of registry.all()) {
+              if (snap.workspaceId === activeWsId)
+                continue
+              applyGitStatusToTabs(
+                {
+                  tabs: snap.tabs,
+                  update: (predicate, fields) => registry.update(snap.workspaceId, s => ({
+                    ...s,
+                    tabs: s.tabs.map(t => predicate(t) ? { ...t, ...fields } as Tab : t),
+                  })),
+                },
+                status,
+              )
+            }
+          }
+          if (isSameRepo(getCurrentTabContext(), workerId, workingDir)) {
+            void gitFileStatusStore.refresh(workerId, workingDir)
+              .then(() => {
+                // Reuse the singleton's freshly-refreshed state for the
+                // inactive fan-out rather than firing a second getGitFileStatus.
+                stampInactiveFromStatus({
+                  repoRoot: gitFileStatusStore.state.repoRoot,
+                  toplevel: gitFileStatusStore.state.toplevel,
+                  originUrl: gitFileStatusStore.state.originUrl,
+                  currentBranch: gitFileStatusStore.state.currentBranch,
+                  files: gitFileStatusStore.state.files,
+                })
+              })
+          }
+          else {
+            void getGitFileStatus(workerId, { workerId, path: workingDir })
+              .then((resp) => {
+                // Worker fallback: pre-toplevel builds (or response-shape
+                // regressions) leave toplevel empty; treat repoRoot as
+                // toplevel so the non-worktree case keeps working. Once
+                // the worker reliably ships toplevel, this fallback is
+                // dead code.
+                const status = {
+                  repoRoot: resp.repoRoot,
+                  toplevel: resp.toplevel || resp.repoRoot,
+                  originUrl: resp.originUrl,
+                  currentBranch: resp.currentBranch,
+                  files: resp.files,
+                }
+                applyGitStatusToTabs(tabStoreTarget(tabStore), status)
+                stampInactiveFromStatus(status)
+              })
+              .catch((err) => {
+                log.warn('failed to refresh git status for non-active repo', err)
+              })
+          }
+        }}
         activeWorkspace={activeWorkspace}
         getCurrentTabContext={getCurrentTabContext}
         agentOps={agentOps}
+        termOps={termOps}
+        tabOps={tabOps}
         tabStore={tabStore}
         layoutStore={layoutStore}
-        workspaceStore={workspaceStore}
+        sectionStore={sectionStore}
         registry={registry}
         focusEditor={() => focusEditorRef()?.()}
         orgSlug={params.orgSlug}

@@ -17,6 +17,7 @@ import { usePreferences } from '~/context/PreferencesContext'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { GitFileRef } from '~/generated/leapmux/v1/git_pb'
 import { PREFIX_FILE_SCROLL, sessionStorageGet, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
+import { formatErrorMessage } from '~/lib/errors'
 import { detectFileViewModeFromExt, isImageExt, isLikelyBinaryExt, isSvgExt } from '~/lib/fileType'
 import { formatBytes } from '~/lib/formatBytes'
 import { basename, detectFlavor, extname } from '~/lib/paths'
@@ -293,7 +294,7 @@ export const FileViewer: Component<{
         resolveBytes(bytes)
       }
       catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load file')
+        setError(formatErrorMessage(err, 'Failed to load file'))
         resolveBytes(null)
       }
       finally {

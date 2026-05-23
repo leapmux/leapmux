@@ -4,6 +4,7 @@
 package channel
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -20,13 +21,26 @@ type SendFunc func(msg *leapmuxv1.ConnectRequest) error
 
 // channelSession tracks an active encrypted channel.
 type channelSession struct {
-	ChannelID              string
-	UserID                 string
-	Session                *noiseutil.Session
-	sender                 *channelSender          // shared sender for this channel (protects Encrypt+Send)
-	verified               bool                    // true after a valid UserIdClaim has been received
-	reassembly             map[uint32]*chunkBuffer // correlationID -> in-progress chunk reassembly
-	accessibleWorkspaceIDs map[string]bool         // workspaces the user can access (set from ChannelOpenRequest)
+	ChannelID string
+	UserID    string
+	Session   *noiseutil.Session
+	sender    *channelSender // shared sender for this channel (protects Encrypt+Send)
+	verified  bool           // true after a valid UserIdClaim has been received
+	// ctx is the session-scoped context handed to every inner-RPC
+	// handler dispatched on this channel. cancel fires on HandleClose
+	// (and CloseAll) so handlers that pass ctx to subprocesses /
+	// `exec.CommandContext` see the cancellation as soon as the
+	// channel goes away — no waiting for a 30s read timeout to bite.
+	ctx        context.Context
+	cancel     context.CancelFunc
+	reassembly map[uint32]*chunkBuffer // correlationID -> in-progress chunk reassembly
+	// accessibleWorkspaceIDs is mutated AFTER channel open (CreateWorkspace
+	// adds entries on demand) while WatchEvents and other handlers
+	// concurrently read the same set on every event broadcast. Guard the
+	// map under awsMu — Manager.mu only protects the sessions registry,
+	// not the inner per-session map.
+	awsMu                  sync.RWMutex
+	accessibleWorkspaceIDs map[string]bool // workspaces the user can access (set from ChannelOpenRequest)
 }
 
 // CloseCallback is called when a channel is closed, allowing cleanup
@@ -86,6 +100,28 @@ func (m *Manager) Dispatcher() *Dispatcher {
 // HandleOpen processes a ChannelOpenRequest from the Hub.
 // It performs the Noise_NK responder handshake and returns the response.
 func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+	// Fast-reject duplicate channel ids BEFORE running the (potentially
+	// expensive post-quantum) responder handshake. Without this, a peer
+	// that repeats the same ChannelOpenRequest amplifies worker CPU
+	// consumption — each retry burns a full ML-KEM handshake only to
+	// fail on the cheap duplicate check inside m.mu below. A TOCTOU
+	// race against a sibling HandleOpen for the same channel id is
+	// possible but harmless: the second checked-and-failed insertion
+	// is rejected under m.mu.Lock below, just with one wasted
+	// handshake instead of N.
+	m.mu.RLock()
+	_, dup := m.sessions[req.GetChannelId()]
+	m.mu.RUnlock()
+	if dup {
+		slog.Warn("rejecting channel re-open: channel id already active",
+			"channel_id", req.GetChannelId(),
+		)
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId: req.GetChannelId(),
+			Error:     "channel id already active",
+		}
+	}
+
 	var handshakeResp []byte
 	var session *noiseutil.Session
 	var err error
@@ -123,7 +159,37 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		awsIDs[wsID] = true
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	m.mu.Lock()
+	// Reject re-open of an already-active channel id rather than
+	// trying to swap the session in place. A swap-then-cancel sequence
+	// has two unsafe windows:
+	//
+	//  1. OLD's noise session may still encrypt+send a final response
+	//     after NEW is installed but before OLD's cancel propagates.
+	//     The wire bytes ride the same channel id but the frontend has
+	//     rekeyed, so they decrypt to garbage and may force a tear-down.
+	//  2. closeCallback(channelID) unregisters subscriptions keyed by
+	//     channelID — those subscriptions may already belong to NEW
+	//     (e.g. a fresh tab-event watcher registered on the new session),
+	//     and dropping them leaves NEW silently event-less.
+	//
+	// Returning an error here keeps OLD intact and tells the hub its
+	// re-open attempt was rejected. The hub must close OLD first (which
+	// will fire closeCallback against the right session) before opening
+	// a new channel with the same id.
+	if _, exists := m.sessions[req.GetChannelId()]; exists {
+		m.mu.Unlock()
+		cancel()
+		slog.Warn("rejecting channel re-open: channel id already active",
+			"channel_id", req.GetChannelId(),
+		)
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId: req.GetChannelId(),
+			Error:     "channel id already active",
+		}
+	}
 	m.sessions[req.GetChannelId()] = &channelSession{
 		ChannelID: req.GetChannelId(),
 		UserID:    req.GetUserId(),
@@ -134,6 +200,8 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 			sendFn:         m.sendFn,
 			maxMessageSize: m.maxMessageSize,
 		},
+		ctx:                    ctx,
+		cancel:                 cancel,
 		reassembly:             make(map[uint32]*chunkBuffer),
 		accessibleWorkspaceIDs: awsIDs,
 	}
@@ -153,6 +221,11 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 
 // AccessibleWorkspaceIDs returns the set of workspace IDs accessible to the
 // user on the given channel. Returns nil if the channel is not found.
+//
+// Returns a defensive copy: AddAccessibleWorkspaceID mutates the underlying
+// map and we can't hand a live map reference to callers under nothing but
+// an RLock — once they release it, a concurrent Add would race their next
+// iteration. Callers iterate the result without further synchronisation.
 func (m *Manager) AccessibleWorkspaceIDs(channelID string) map[string]bool {
 	m.mu.RLock()
 	sess, ok := m.sessions[channelID]
@@ -160,7 +233,13 @@ func (m *Manager) AccessibleWorkspaceIDs(channelID string) map[string]bool {
 	if !ok {
 		return nil
 	}
-	return sess.accessibleWorkspaceIDs
+	sess.awsMu.RLock()
+	defer sess.awsMu.RUnlock()
+	out := make(map[string]bool, len(sess.accessibleWorkspaceIDs))
+	for id, v := range sess.accessibleWorkspaceIDs {
+		out[id] = v
+	}
+	return out
 }
 
 // AddAccessibleWorkspaceID adds a workspace ID to the channel's accessible
@@ -173,7 +252,9 @@ func (m *Manager) AddAccessibleWorkspaceID(channelID, workspaceID string) {
 	if !ok {
 		return
 	}
+	sess.awsMu.Lock()
 	sess.accessibleWorkspaceIDs[workspaceID] = true
+	sess.awsMu.Unlock()
 }
 
 // HandleMessage processes an encrypted ChannelMessage from the Hub.
@@ -349,9 +430,17 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			return
 		}
 		if m.dispatcher != nil {
-			// Dispatch in a goroutine so the receive loop is not
+			// Dispatch on a fresh goroutine so the receive loop isn't
 			// blocked by slow handlers (e.g. WatchEvents with git ops).
-			go m.dispatcher.DispatchWith(sess.UserID, kind.Request, bs)
+			// sess.ctx is cancelled on channel close, so handlers
+			// that pass it to subprocesses get free cleanup.
+			//
+			// DispatchAsync (not `go DispatchWith`) is what guarantees
+			// Shutdown.Wait can't slip past a tracked mutation's
+			// Add(1): the dispatcher increments its bound cleanup
+			// WaitGroup BEFORE launching the goroutine for tracked
+			// methods.
+			m.dispatcher.DispatchAsync(sess.ctx, sess.UserID, kind.Request, bs)
 		} else {
 			go func() { _ = bs.SendError(int32(codes.Unimplemented), "no dispatcher configured") }()
 		}
@@ -367,12 +456,25 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 // HandleClose removes a channel session and invokes the close callback.
 func (m *Manager) HandleClose(channelID string) {
 	m.mu.Lock()
-	if sess, ok := m.sessions[channelID]; ok {
-		// Clear reassembly buffers to free memory.
-		sess.reassembly = nil
-	}
+	sess, ok := m.sessions[channelID]
 	delete(m.sessions, channelID)
 	m.mu.Unlock()
+	// Do NOT nil sess.reassembly here: a concurrent receive-loop call
+	// to HandleMessage may have already snapshotted *sess (lines
+	// 241-243 take only an RLock for the lookup, then drop it) and is
+	// about to mutate sess.reassembly outside m.mu. Setting the map to
+	// nil from HandleClose under m.mu.Lock races that write and panics
+	// with `assignment to entry in nil map`. The map will be collected
+	// once the in-flight handler returns and sess is unreferenced; the
+	// delete above ensures no future receive iteration finds the
+	// session.
+
+	// Cancel the session ctx after dropping the lock so handlers
+	// blocked on subprocess wait can unwind without re-entering the
+	// manager's lock from their cleanup paths.
+	if ok && sess.cancel != nil {
+		sess.cancel()
+	}
 
 	if m.closeCallback != nil {
 		m.closeCallback(channelID)
@@ -387,11 +489,19 @@ func (m *Manager) HandleClose(channelID string) {
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
 	channels := make([]string, 0, len(m.sessions))
-	for id := range m.sessions {
+	cancels := make([]context.CancelFunc, 0, len(m.sessions))
+	for id, sess := range m.sessions {
 		channels = append(channels, id)
+		if sess.cancel != nil {
+			cancels = append(cancels, sess.cancel)
+		}
 	}
 	m.sessions = make(map[string]*channelSession)
 	m.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
 
 	if m.closeCallback != nil {
 		for _, id := range channels {

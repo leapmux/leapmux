@@ -17,6 +17,27 @@ import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
 
 /**
+ * Repository-identity equality for matching a (workerId, repoToplevel)
+ * pair against a Tab-shaped value. Used by:
+ *  - AppShell's branch-changed routing to decide whether to refresh the
+ *    gitFileStatusStore singleton (only when the changed repo is the
+ *    active tab's repo).
+ *  - `tabStore.stampBranchOnTabs` to find every tab in the same repo.
+ * Treats undefined workerId / gitToplevel as the empty string so a tab
+ * that's never been git-resolved doesn't accidentally match an empty
+ * comparison.
+ */
+export function isSameRepo(
+  tabLike: { workerId?: string, gitToplevel?: string } | null | undefined,
+  workerId: string,
+  repoToplevel: string,
+): boolean {
+  if (!tabLike)
+    return false
+  return (tabLike.workerId ?? '') === workerId && (tabLike.gitToplevel ?? '') === repoToplevel
+}
+
+/**
  * Worker-provided fields for a terminal tab, ready to spread into a `Tab`
  * or pass to `updateTab`. Excludes layout-specific fields (`type`, `id`,
  * `tileId`, `position`) which the caller controls.
@@ -36,6 +57,7 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
     gitBranch: term.gitBranch || undefined,
     gitOriginUrl: term.gitOriginUrl || undefined,
     gitToplevel: term.gitToplevel || undefined,
+    gitIsWorktree: term.gitIsWorktree || undefined,
     status,
     startupError: term.startupError || undefined,
     startupMessage: term.startupMessage || undefined,
@@ -87,6 +109,7 @@ export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Parti
     gitBranch: agent.gitStatus?.branch || undefined,
     gitOriginUrl: agent.gitStatus?.originUrl || undefined,
     gitToplevel: agent.gitStatus?.toplevel || undefined,
+    gitIsWorktree: agent.gitStatus?.isWorktree || undefined,
   }
 }
 
@@ -139,23 +162,32 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
 }
 
 /**
- * Normalize a git-info triple (from AgentGitStatus or a flat
+ * Normalize a git-info tuple (from AgentGitStatus or a flat
  * TerminalStatusChange) into the tab shape, mapping empty strings to
- * undefined so comparisons stay sane.
+ * undefined so comparisons stay sane. `isWorktree` collapses `false`
+ * to `undefined`: the field is read with `?? false` everywhere on the
+ * tab side (see `gitTabFieldsDiffer`, `BranchGroup.isWorktree`), so
+ * `false` and `undefined` are observationally identical, and storing
+ * the proto zero would just churn `===`-based equality checks without
+ * adding information. Callers that need to distinguish "probed but not
+ * a worktree" from "never probed" must source that distinction from a
+ * dedicated probe; the broadcast/refresh path doesn't carry it.
  */
-export function toGitTabFields(branch: string, originUrl: string, toplevel: string): GitTabFields {
+export function toGitTabFields(branch: string, originUrl: string, toplevel: string, isWorktree: boolean): GitTabFields {
   return {
     gitBranch: branch || undefined,
     gitOriginUrl: originUrl || undefined,
     gitToplevel: toplevel || undefined,
+    gitIsWorktree: isWorktree || undefined,
   }
 }
 
-/** True when `next` would change any of the three git fields on `tab`. */
+/** True when `next` would change any of the four git fields on `tab`. */
 export function gitTabFieldsDiffer(tab: GitTabFields, next: GitTabFields): boolean {
   return tab.gitBranch !== next.gitBranch
     || tab.gitOriginUrl !== next.gitOriginUrl
     || tab.gitToplevel !== next.gitToplevel
+    || (tab.gitIsWorktree ?? false) !== (next.gitIsWorktree ?? false)
 }
 
 /**
@@ -185,7 +217,7 @@ function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): 
  */
 export function preserveNonEmptyGitFields<T extends Partial<BaseTab>>(
   fresh: T,
-  previous: Pick<BaseTab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel'> | null | undefined,
+  previous: Pick<BaseTab, 'gitBranch' | 'gitOriginUrl' | 'gitToplevel' | 'gitIsWorktree'> | null | undefined,
 ): T {
   if (!previous)
     return fresh
@@ -194,8 +226,15 @@ export function preserveNonEmptyGitFields<T extends Partial<BaseTab>>(
     next.gitBranch = previous.gitBranch
   if (!next.gitOriginUrl && previous.gitOriginUrl)
     next.gitOriginUrl = previous.gitOriginUrl
-  if (!next.gitToplevel && previous.gitToplevel)
+  // Carry gitToplevel + gitIsWorktree together: they're co-derived
+  // from a single rev-parse, so a transient probe failure that wipes
+  // toplevel must also forget the disposition (the next probe will
+  // refill both). Only restore both when the fresh record has neither.
+  if (!next.gitToplevel && previous.gitToplevel) {
     next.gitToplevel = previous.gitToplevel
+    if (next.gitIsWorktree === undefined && previous.gitIsWorktree !== undefined)
+      next.gitIsWorktree = previous.gitIsWorktree
+  }
   return next
 }
 
@@ -238,7 +277,7 @@ export function preserveTerminalDisplayFields(
 export function resolveOptimisticGitInfo(
   activeTab: Tab | null | undefined,
   newTab: { shellStartDir?: string, workingDir?: string },
-): { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string } {
+): { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string, gitIsWorktree?: boolean } {
   if (!activeTab)
     return {}
   if (activeTab.type !== TabType.AGENT && activeTab.type !== TabType.TERMINAL)
@@ -256,6 +295,7 @@ export function resolveOptimisticGitInfo(
     gitBranch: activeTab.gitBranch || undefined,
     gitOriginUrl: activeTab.gitOriginUrl || undefined,
     gitToplevel: activeTab.gitToplevel || undefined,
+    gitIsWorktree: activeTab.gitIsWorktree || undefined,
   }
 }
 

@@ -7,17 +7,16 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
+import { Spinner } from '~/components/common/Spinner'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { renderMarkdown } from '~/lib/renderMarkdown'
-import { spinner } from '~/styles/animations.css'
 import { AgentStartupBanner } from './AgentStartupBanner'
 import * as styles from './ChatView.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
@@ -315,7 +314,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           >
             <Show when={props.fetchingOlder}>
               <div class={styles.loadingOlderIndicator}>
-                <Icon icon={LoaderCircle} size="sm" class={spinner} />
+                <Spinner />
                 Loading older messages...
               </div>
             </Show>

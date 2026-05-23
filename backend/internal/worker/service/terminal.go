@@ -49,7 +49,7 @@ func (svc *Context) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	// OpenTerminal starts a new PTY terminal session.
-	d.Register("OpenTerminal", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("OpenTerminal", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.OpenTerminalRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -91,9 +91,9 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		// Validate git-mode options on the sync path so bad input fails
 		// the RPC with InvalidArgument before we create any DB row. The
 		// actual mutation happens inside runTerminalStartup.
-		plan, gmErr := svc.validateGitMode(workingDir, &r)
+		plan, gmErr := svc.validateGitMode(ctx, workingDir, &r)
 		if gmErr != nil {
-			sendInvalidArgument(sender, gmErr.Error())
+			sendValidationError(sender, gmErr)
 			return
 		}
 
@@ -171,7 +171,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	// existing screen buffer (including the "[Terminal process exited
 	// (N) - Press Enter to restart]" notice) is preserved so the new
 	// shell's prompt lands directly below the notice.
-	d.Register("RestartTerminal", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("RestartTerminal", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.RestartTerminalRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -259,7 +259,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// CloseTerminal stops and removes a terminal session.
-	d.Register("CloseTerminal", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.RegisterTracked("CloseTerminal", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.CloseTerminalRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -271,11 +271,11 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
-		// The frontend fires this RPC as fire-and-forget after removing
-		// the tab from the UI. closeTabCommon tracks the handler on
-		// svc.Cleanup so a concurrent Shutdown can drain it, then runs
-		// the shared close-tab flow (stop → DB close → unregister →
-		// optional worktree remove). The TerminalStartup goroutine's
+		// Tracked via dispatcher RegisterTracked above so Shutdown
+		// drains the close flow (stop → DB close → unregister →
+		// optional worktree remove) before tearing down the DB pool.
+		// The frontend fires this RPC fire-and-forget after removing
+		// the tab from the UI. The TerminalStartup goroutine's
 		// trailing rollback work is tracked separately by
 		// TerminalStartup.WaitForInFlight and drained in Shutdown.
 		result := svc.closeTabCommon(
@@ -293,7 +293,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// SendInput sends input data to a terminal.
-	d.Register("SendInput", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("SendInput", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.SendInputRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -319,7 +319,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// ResizeTerminal changes a terminal's dimensions.
-	d.Register("ResizeTerminal", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ResizeTerminal", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ResizeTerminalRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -374,7 +374,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	// manager and the database. The frontend throttles calls at 500ms
 	// intervals (kept short so a title set right before shell exit reaches
 	// the worker before the close handler persists meta to DB).
-	d.Register("UpdateTerminalTitle", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("UpdateTerminalTitle", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.UpdateTerminalTitleRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -428,7 +428,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
 	// and been removed from the manager.
-	d.Register("ListTerminals", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ListTerminals", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListTerminalsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -480,7 +480,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			gitDirs = append(gitDirs, gitutil.ResolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
 		}
 
-		dbTerminals, err := svc.Queries.ListTerminalsByIDs(bgCtx(), tabIDs)
+		dbTerminals, err := svc.Queries.ListTerminalsByIDs(ctx, tabIDs)
 		if err != nil {
 			slog.Error("failed to list terminals from DB", "error", err)
 		} else {
@@ -517,12 +517,13 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 		}
 
-		gitStatuses := gitutil.BatchGetGitStatus(bgCtx(), gitDirs)
+		gitStatuses := gitutil.BatchGetGitStatus(ctx, gitDirs)
 		for i, gs := range gitStatuses {
 			if gs != nil {
 				terminals[i].GitBranch = gs.Branch
 				terminals[i].GitOriginUrl = gs.OriginUrl
 				terminals[i].GitToplevel = gs.Toplevel
+				terminals[i].GitIsWorktree = gs.IsWorktree
 			}
 		}
 
@@ -532,7 +533,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 	})
 
 	// ListAvailableShells returns the shells installed on this worker.
-	d.Register("ListAvailableShells", func(userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
+	d.Register("ListAvailableShells", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
 		var r leapmuxv1.ListAvailableShellsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -736,29 +737,16 @@ func (svc *Context) succeedTerminalStartup(terminalID string) {
 // runTerminalPhase0 broadcasts the per-mode label and executes the
 // git-mode mutation.
 func (svc *Context) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan) (gitModeResult, error) {
-	if label := plan.PhaseLabel(); label != "" {
-		svc.TerminalStartup.setMessage(terminalID, label)
-		svc.broadcastTerminalStarting(terminalID, label, nil)
-	}
-	return svc.executeGitMode(ctx, plan)
+	return svc.runStartupPhase0(ctx, plan, svc.terminalStartupCallbacks(terminalID))
 }
 
 // failTerminalStartup is the common tail for every failure after the sync
-// prologue: optionally show a rollback label, roll back any partial
-// git-mode mutation, persist the error, broadcast STARTUP_FAILED, and mark
-// the registry failed last so observers see a durable terminal state.
+// prologue: rolls back any partial git-mode mutation, persists the
+// error, broadcasts STARTUP_FAILED, and marks the registry failed. The
+// shared `failStartup` enforces the ordering (DB before broadcast
+// before registry) so observers see a durable terminal state.
 func (svc *Context) failTerminalStartup(terminalID string, gm gitModeResult, cause error) {
-	if gm.Rollback.HasPartialMutation() {
-		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
-			svc.TerminalStartup.setMessage(terminalID, label)
-			svc.broadcastTerminalStarting(terminalID, label, nil)
-		}
-		svc.rollbackGitMode(gm)
-	}
-	errMsg := cause.Error()
-	svc.persistTerminalStartupError(terminalID, errMsg)
-	svc.broadcastTerminalFailed(terminalID, errMsg)
-	svc.TerminalStartup.fail(terminalID, errMsg)
+	svc.failStartup(gm, cause, svc.terminalStartupCallbacks(terminalID))
 }
 
 // persistTerminalStartupError writes (or clears when errMsg is "") the
@@ -792,6 +780,7 @@ func buildTerminalStartingStatus(terminalID, message string, gs *leapmuxv1.Agent
 		sc.GitBranch = gs.GetBranch()
 		sc.GitOriginUrl = gs.GetOriginUrl()
 		sc.GitToplevel = gs.GetToplevel()
+		sc.GitIsWorktree = gs.GetIsWorktree()
 	}
 	return sc
 }

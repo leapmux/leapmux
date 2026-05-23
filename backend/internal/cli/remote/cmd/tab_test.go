@@ -463,13 +463,15 @@ func TestTabCloseWorktree_WorktreeAction(t *testing.T) {
 // discard without re-running inspect manually.
 func TestLastTabPromptMessage_WorktreeWithDirty(t *testing.T) {
 	msg := lastTabPromptMessage(&leapmuxv1.InspectLastTabCloseResponse{
-		Target:                leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
-		WorktreePath:          "/repo/wt-foo",
-		HasUncommittedChanges: true,
-		DiffAdded:             3,
-		DiffDeleted:           1,
-		DiffUntracked:         2,
-		UnpushedCommitCount:   2,
+		Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+		WorktreePath: "/repo/wt-foo",
+		GitState: &leapmuxv1.BranchGitState{
+			HasUncommittedChanges: true,
+			DiffAdded:             3,
+			DiffDeleted:           1,
+			DiffUntracked:         2,
+			UnpushedCommitCount:   2,
+		},
 	})
 	assert.Contains(t, msg, "/repo/wt-foo")
 	assert.Contains(t, msg, "3 added / 1 deleted / 2 untracked")
@@ -481,9 +483,9 @@ func TestLastTabPromptMessage_WorktreeWithDirty(t *testing.T) {
 // count correctly. Mirrors the frontend dialog's `pluralize` call.
 func TestLastTabPromptMessage_BranchUnpushedSingular(t *testing.T) {
 	msg := lastTabPromptMessage(&leapmuxv1.InspectLastTabCloseResponse{
-		Target:              leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH,
-		BranchName:          "feat-x",
-		UnpushedCommitCount: 1,
+		Target:     leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH,
+		BranchName: "feat-x",
+		GitState:   &leapmuxv1.BranchGitState{UnpushedCommitCount: 1},
 	})
 	assert.Contains(t, msg, "feat-x")
 	assert.Contains(t, msg, "1 unpushed commit")

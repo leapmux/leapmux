@@ -1,26 +1,26 @@
 import type { Component } from 'solid-js'
+import type { BranchRef } from './WorkspaceTabTree'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { TabType, Workspace } from '~/generated/leapmux/v1/workspace_pb'
-import type { Tab, TabItemOps } from '~/stores/tab.types'
+import type { WorkerInfo } from '~/lib/workerInfoCache'
 
+import type { Tab, TabItemOps } from '~/stores/tab.types'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
-import { Icon } from '~/components/common/Icon'
+import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
 import { activeTabKey as buildActiveTabStorageKey } from '~/components/shell/tabPersistenceKeys'
 import { ShareMode } from '~/generated/leapmux/v1/common_pb'
 import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
-import { spinner } from '~/styles/animations.css'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
 import { readExpandedWorkspaceIds } from './expandedWorkspaces'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
-import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
+import { sumDiffStatsFromTabs, WorkspaceTabTree } from './WorkspaceTabTree'
 
 /** solid-dnd directives are callable but typed as objects; this wraps the unsafe cast. */
 function applyDirective(directive: { ref: unknown }, el: HTMLElement) {
@@ -64,6 +64,14 @@ export interface WorkspaceSectionContentProps {
   tabItemOps?: TabItemOps
   readOnly?: boolean
   onExpandWorkspace?: (workspaceId: string) => void
+  /**
+   * Reactive lookup for worker display info. Forwarded to
+   * {@link WorkspaceTabTree} to disambiguate same-name branches that
+   * collide across distinct workers or working directories.
+   */
+  workerInfoFn?: (id: string) => WorkerInfo | null
+  onChangeBranch?: (ref: BranchRef) => void
+  onDeleteBranch?: (ref: BranchRef) => void
 }
 
 export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = (props) => {
@@ -150,12 +158,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
 
   /** Per-workspace diff stats. */
   function workspaceDiffStatsFor(workspaceId: string) {
-    const tree = buildTree(tabsFor(workspaceId))
-    return {
-      added: tree.groups.reduce((sum, g) => sum + g.diffAdded, 0),
-      deleted: tree.groups.reduce((sum, g) => sum + g.diffDeleted, 0),
-      untracked: tree.groups.reduce((sum, g) => sum + g.diffUntracked, 0),
-    }
+    return sumDiffStatsFromTabs(tabsFor(workspaceId))
   }
 
   const workspaceIds = () => props.workspaces.map(w => w.id)
@@ -196,8 +199,9 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               const isRenaming = () => props.renamingWorkspaceId === id
               const isLoading = () => props.isWorkspaceLoading(id)
               const title = () => workspace().title || 'Untitled'
-              // workspaceDiffStatsFor runs buildTree over the workspace's
-              // tabs; memoize so we don't rebuild on every access.
+              // workspaceDiffStatsFor sums diff stats across the
+              // workspace's tabs; memoize so we don't re-sum on every
+              // access.
               const stats = createMemo(() => workspaceDiffStatsFor(id))
 
               // Track whether the item was dragged so we can suppress the click
@@ -285,7 +289,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     <div class={sidebarActions}>
                       <Show
                         when={!isLoading()}
-                        fallback={<Icon icon={LoaderCircle} size="xs" class={spinner} style={{ 'flex-shrink': '0' }} />}
+                        fallback={<Spinner size="xs" />}
                       >
                         <Show when={!isRenaming() && !props.isVirtual}>
                           <WorkspaceContextMenu
@@ -323,6 +327,9 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         tabItemOps={props.tabItemOps}
                         readOnly={props.readOnly}
                         workspaceId={id}
+                        workerInfoFn={props.workerInfoFn}
+                        onChangeBranch={props.onChangeBranch}
+                        onDeleteBranch={props.onDeleteBranch}
                       />
                     </div>
                   </div>

@@ -18,44 +18,6 @@ export const standard = style({
   },
 })
 
-// The dialog enters the top layer the instant `[open]` is set, with
-// no prior state to transition from -- the modern fix is
-// `@starting-style` + `transition-behavior: allow-discrete`, but
-// vanilla-extract's at-rule registry only knows `@media`, `@supports`,
-// `@container`, and `@layer`, so there is no clean way to emit
-// `@starting-style { ... }` rules from `.css.ts` files. Open is
-// driven by `@keyframes` keyed off the `[open]` selector (the
-// animation property is added to a matching element, the animation
-// fires from frame 0). Close is orchestrated in `Dialog.tsx`: a
-// `closing` marker class triggers an exit keyframe and the actual
-// `dialogRef.close()` is deferred until the animation has finished
-// playing -- without that orchestration the UA would yank the dialog
-// out of the top layer synchronously and the exit keyframe would
-// never run.
-// Pure opacity fade -- no translate. A centered dialog has no natural
-// origin direction; a slide reads as positional imprecision rather
-// than intentional motion, especially against the fixed `wide`/`tall`
-// dimensions that lock the dialog's box.
-const dialogEnter = keyframes({
-  from: { opacity: 0 },
-  to: { opacity: 1 },
-})
-
-const dialogExit = keyframes({
-  from: { opacity: 1 },
-  to: { opacity: 0 },
-})
-
-const backdropEnter = keyframes({
-  from: { backgroundColor: 'rgba(0, 0, 0, 0)' },
-  to: { backgroundColor: 'rgba(0, 0, 0, 0.4)' },
-})
-
-const backdropExit = keyframes({
-  from: { backgroundColor: 'rgba(0, 0, 0, 0.4)' },
-  to: { backgroundColor: 'rgba(0, 0, 0, 0)' },
-})
-
 // Re-impose `display: none` when the dialog is not in the top layer.
 // `.standard`'s `display: flex` author rule beats the UA's
 // `dialog:not([open]) { display: none }`, so without this rule the
@@ -67,14 +29,60 @@ globalStyle(`.${standard}:not([open])`, {
   display: 'none',
 })
 
+// Dialog open: the entry animation (opacity 0 -> 1, transform
+// scale(0.95) -> scale(1)) is supplied by @knadh/oat's `dialog.css`
+// via `@starting-style` + Oat's `transition: opacity 150ms,
+// transform 150ms, ...`. We don't ship our own @keyframes for the
+// open path because running both simultaneously caused a visible
+// double-fade flash.
+//
+// Dialog close: Solid removes the dialog from the DOM as soon as the
+// parent's `<Show>` flips, so any exit transition tied to `[open]`
+// being removed never gets to play. We drive the exit by toggling a
+// `.closing` marker class on the dialog (while [open] is still set)
+// that overrides Oat's `:is([open])` values back to the @starting-
+// style values (opacity 0, transform scale(0.95)) -- Oat's existing
+// transition on `opacity`/`transform` animates the change. This
+// stays inside a single transition pipeline so the open-time flicker
+// doesn't return.
+//
+// Backdrop: Oat declares an opacity transition for `dialog::backdrop`
+// in its @layer animations rule, but the transition isn't consistently
+// honored across browsers (in particular WebKit, where the dialog
+// snapped to its dimmed state without a fade). We drive the backdrop
+// fade with our own keyframe targeting `background-color` instead of
+// `opacity`, which is independent of Oat's opacity transition and
+// runs reliably in every browser we ship to.
+
+const backdropEnter = keyframes({
+  from: { backgroundColor: 'rgba(0, 0, 0, 0)' },
+  to: { backgroundColor: 'rgba(0, 0, 0, 0.5)' },
+})
+
+const backdropExit = keyframes({
+  from: { backgroundColor: 'rgba(0, 0, 0, 0.5)' },
+  to: { backgroundColor: 'rgba(0, 0, 0, 0)' },
+})
+
 // Marker class applied by `Dialog.tsx` for the brief window between
 // the user initiating a close and the actual `dialogRef.close()`
-// call. The exit keyframes run during this window.
+// call. Drives both:
+//   - the dialog's fade-out (rule below: overrides Oat's open-state
+//     opacity/transform back to the @starting-style values, which
+//     Oat's existing transition animates),
+//   - the backdrop's fade-out keyframe (`backdropExit`).
 export const closing = style({})
 
-// `prefers-reduced-motion: reduce` override spread into each animated
-// rule below so the four sites don't each redeclare the same nested
-// media block.
+// Pin the dialog back to Oat's @starting-style values once .closing
+// flips. Oat's `transition: opacity 150ms, transform 150ms, ...`
+// (from `@layer components`) animates the change to those values
+// over `motion.fast` ms; `Dialog.tsx` delays the unmount by the same
+// duration so the transition has time to complete.
+globalStyle(`.${standard}.${closing}[open]`, {
+  opacity: 0,
+  transform: 'scale(0.95)',
+})
+
 const animationOff = {
   '@media': {
     '(prefers-reduced-motion: reduce)': {
@@ -84,21 +92,13 @@ const animationOff = {
 }
 
 // `animation-fill-mode: both` closes the one-frame window where the
-// element could paint at its non-animation state (opacity: 1) before
-// the keyframe animation's `from` (opacity: 0) takes effect. Without
-// it the dialog briefly flashes at full opacity before fading in.
-globalStyle(`.${standard}[open]`, {
-  animation: `${dialogEnter} ${motion.fast}ms ease-out both`,
-  ...animationOff,
-})
-
-globalStyle(`.${standard}.${closing}[open]`, {
-  animation: `${dialogExit} ${motion.fast}ms ease-in both`,
-  ...animationOff,
-})
-
-globalStyle(`.${standard}::backdrop`, {
-  backgroundColor: 'rgba(0, 0, 0, 0.4)',
+// element could paint at its non-animation state (e.g. the dim
+// `rgba(0,0,0,0.5)` background) before the keyframe's `from` (alpha
+// 0) takes effect. Without it the backdrop briefly flashes fully dim
+// before fading in from transparent. Matches Oat's
+// `dialog:is([open])::backdrop { background-color: rgb(0 0 0 / 0.5) }`.
+globalStyle(`.${standard}[open]::backdrop`, {
+  backgroundColor: 'rgba(0, 0, 0, 0.5)',
   animation: `${backdropEnter} ${motion.fast}ms ease-out both`,
   ...animationOff,
 })
@@ -260,7 +260,7 @@ globalStyle(`${standard} > .${body} > form > section > .vstack > .${twoColumn}`,
 export const labelRow = style({
   display: 'flex',
   alignItems: 'center',
-  gap: '6px',
+  gap: 'var(--space-2)',
 })
 
 export const treeContainer = style({

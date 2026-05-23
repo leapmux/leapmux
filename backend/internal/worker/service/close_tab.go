@@ -9,15 +9,54 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// closeTabCommon runs the shared tab-close flow for the CloseAgent and
-// CloseTerminal handlers. The handler is tracked on svc.Cleanup so a
-// concurrent Shutdown drains it. On WorktreeAction_REMOVE, the worktree
-// is resolved BEFORE the tab→worktree association is dropped — otherwise
-// we'd lose the link needed to decide whether the worktree can be
-// deleted. If a partial failure occurs (DB soft-delete, worktree remove)
-// the returned result populates failure_message / failure_detail /
-// worktree_path / worktree_id so the UI can toast a warning. The
-// returned *CloseTabResult is never nil.
+// closeFileTabCommon drives the shared closeTabCommon flow for FILE
+// tabs. It exists so the FILE close path uses the same worktree-tab
+// link drop and conditional `git worktree remove` machinery as
+// CloseAgent / CloseTerminal — the only file-tab specific work is
+// dropping the worker_file_tab row (which doubles as the
+// FileTabPathRevoked emit). stopProcess is a noop because file tabs
+// own no process on the worker.
+//
+// Used by the RevokeFileTabPath RPC and by the orphan reconciler. The
+// orphan reconciler passes WorktreeAction_KEEP because the hub's
+// "this tab is gone" signal says nothing about the worktree.
+func (svc *Context) closeFileTabCommon(orgID, tabID string, action leapmuxv1.WorktreeAction) *leapmuxv1.CloseTabResult {
+	return svc.closeTabCommon(
+		leapmuxv1.TabType_TAB_TYPE_FILE,
+		tabID,
+		action,
+		func() {},
+		func() error {
+			err := svc.FileTabPaths.RevokeRow(bgCtx(), orgID, tabID)
+			// Idempotent: the row may have been deleted by a concurrent
+			// close. closeTabCommon proceeds to drop the worktree link
+			// regardless.
+			if errors.Is(err, ErrFileTabPathNotFound) {
+				return nil
+			}
+			return err
+		},
+	)
+}
+
+// closeTabCommon runs the shared tab-close flow for the CloseAgent /
+// CloseTerminal / RevokeFileTabPath handlers AND the orphan
+// reconciler. The RPC handlers are registered as tracked dispatcher
+// methods (RegisterTracked) so the dispatcher's bound Cleanup
+// WaitGroup is Add(1)'d synchronously BEFORE the dispatched goroutine
+// launches — Shutdown.Wait can't slip past an in-flight close. The
+// orphan reconciler runs in its own background goroutine and tracks
+// its own work; closeTabCommon itself stays free of Cleanup.Add to
+// avoid the inside-goroutine-Add race the dispatcher-level tracking
+// was introduced to fix.
+//
+// On WorktreeAction_REMOVE, the worktree is resolved BEFORE the
+// tab→worktree association is dropped — otherwise we'd lose the link
+// needed to decide whether the worktree can be deleted. If a partial
+// failure occurs (DB soft-delete, worktree remove) the returned
+// result populates failure_message / failure_detail / worktree_path /
+// worktree_id so the UI can toast a warning. The returned
+// *CloseTabResult is never nil.
 func (svc *Context) closeTabCommon(
 	tabType leapmuxv1.TabType,
 	tabID string,
@@ -25,9 +64,6 @@ func (svc *Context) closeTabCommon(
 	stopProcess func(),
 	closeDB func() error,
 ) *leapmuxv1.CloseTabResult {
-	svc.Cleanup.Add(1)
-	defer svc.Cleanup.Done()
-
 	stopProcess()
 
 	// When REMOVE is requested, look up the worktree BEFORE the
@@ -93,6 +129,8 @@ func dbCloseFailureMessage(tabType leapmuxv1.TabType) string {
 		return "Failed to close agent"
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		return "Failed to close terminal"
+	case leapmuxv1.TabType_TAB_TYPE_FILE:
+		return "Failed to close file"
 	default:
 		return "Failed to close tab"
 	}

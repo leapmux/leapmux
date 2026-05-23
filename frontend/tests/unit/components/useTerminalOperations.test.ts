@@ -11,6 +11,7 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
+import { flush } from '../helpers/async'
 
 vi.mock('~/components/common/Toast', () => ({
   showWarnToast: vi.fn(),
@@ -42,13 +43,10 @@ vi.mock('~/api/workerRpc', () => ({
 
 const sendInputMock = workerRpc.sendInput as unknown as ReturnType<typeof vi.fn>
 const restartTerminalMock = workerRpc.restartTerminal as unknown as ReturnType<typeof vi.fn>
+const openTerminalMock = workerRpc.openTerminal as unknown as ReturnType<typeof vi.fn>
 const closeTerminalMock = workerRpc.closeTerminal as unknown as ReturnType<typeof vi.fn>
+const listAvailableShellsMock = workerRpc.listAvailableShells as unknown as ReturnType<typeof vi.fn>
 const showWarnToastMock = showWarnToast as unknown as ReturnType<typeof vi.fn>
-
-async function flushMicrotasks() {
-  await Promise.resolve()
-  await Promise.resolve()
-}
 
 interface TabOverrides {
   id?: string
@@ -61,12 +59,16 @@ const disposers: Array<() => void> = []
 beforeEach(() => {
   sendInputMock.mockClear()
   restartTerminalMock.mockClear()
+  openTerminalMock.mockClear()
   closeTerminalMock.mockClear()
+  listAvailableShellsMock.mockClear()
   showWarnToastMock.mockClear()
   // Reset to default success — individual tests override per scenario.
   restartTerminalMock.mockImplementation(async () => ({}))
   sendInputMock.mockImplementation(async () => ({}))
+  openTerminalMock.mockImplementation(async () => ({ terminalId: 'new-tid', title: '' }))
   closeTerminalMock.mockImplementation(async () => ({ result: { worktreeId: '', failureMessage: '' } }))
+  listAvailableShellsMock.mockImplementation(async () => ({ shells: [], defaultShell: '' }))
 })
 
 afterEach(() => {
@@ -112,7 +114,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       activeWorkspace,
       isActiveWorkspaceMutatable: () => true,
       getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/tmp' }),
-      setShowNewTerminalDialog: () => {},
+      newTerminalDialog: { open: () => {}, close: () => {}, isOpen: () => false },
       setNewTerminalLoading: () => {},
       setNewShellLoading: () => {},
     })
@@ -121,6 +123,147 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
   disposers.push(dispose)
   return { ops, tabStore }
 }
+
+interface OpenSetupOpts {
+  ctx?: { workerId: string, workingDir: string }
+  isMutatable?: boolean
+  workspace?: Workspace | null
+  setNewTerminalLoading?: (v: boolean) => void
+  setNewShellLoading?: (v: boolean) => void
+  dialogOpen?: () => void
+}
+
+// Open-terminal-specific setup: lets each test inject a ctx (to
+// exercise the "no worker / no workingDir" guard), a dialog open spy,
+// and loading-flag spies. Returns `ops` + `tabStore` so assertions
+// can verify the tab seed.
+function setupForOpen(opts: OpenSetupOpts = {}) {
+  const tabStore = createTabStore()
+  const layoutStore = createLayoutStore()
+  const [activeWorkspace] = createSignal<Workspace | null>(
+    opts.workspace === undefined ? ({ id: 'ws-1' } as Workspace) : opts.workspace,
+  )
+  let ops!: ReturnType<typeof useTerminalOperations>
+  const dispose = createRoot((d) => {
+    ops = useTerminalOperations({
+      org: { orgId: () => 'org-1' },
+      tabStore,
+      layoutStore,
+      activeWorkspace,
+      isActiveWorkspaceMutatable: () => opts.isMutatable ?? true,
+      getCurrentTabContext: () => opts.ctx ?? { workerId: 'worker-1', workingDir: '/tmp' },
+      newTerminalDialog: { open: opts.dialogOpen ?? (() => {}), close: () => {}, isOpen: () => false },
+      setNewTerminalLoading: opts.setNewTerminalLoading ?? (() => {}),
+      setNewShellLoading: opts.setNewShellLoading ?? (() => {}),
+    })
+    return d
+  })
+  disposers.push(dispose)
+  return { ops, tabStore }
+}
+
+describe('useterminaloperations.handleopenterminal', () => {
+  it('happy path: opens a terminal, adds the tab, and flips loading false in the finally', async () => {
+    const loadingFlips: boolean[] = []
+    const { ops, tabStore } = setupForOpen({
+      setNewTerminalLoading: v => loadingFlips.push(v),
+    })
+
+    await ops.handleOpenTerminal()
+
+    expect(openTerminalMock).toHaveBeenCalledTimes(1)
+    // Shell is empty (default-shell quick action). shellStartDir is
+    // forwarded as empty string when the caller didn't pass one.
+    expect(openTerminalMock.mock.calls[0][1]).toMatchObject({
+      workspaceId: 'ws-1',
+      workerId: 'worker-1',
+      workingDir: '/tmp',
+      shell: '',
+      shellStartDir: '',
+    })
+    // Tab was added with the response's terminalId and seeded
+    // shellStartDir falling back to workingDir.
+    const newTab = tabStore.getTerminalTab('new-tid')
+    expect(newTab).toBeDefined()
+    expect(newTab?.workerId).toBe('worker-1')
+    expect(newTab?.workingDir).toBe('/tmp')
+    expect(newTab?.shellStartDir).toBe('/tmp')
+    // Loading toggled true then false (finally).
+    expect(loadingFlips).toEqual([true, false])
+  })
+
+  it('forwards an explicit shellStartDir to both the RPC and the tab seed', async () => {
+    const { ops, tabStore } = setupForOpen()
+    await ops.handleOpenTerminal('/work/dir')
+    expect(openTerminalMock.mock.calls[0][1].shellStartDir).toBe('/work/dir')
+    const newTab = tabStore.getTerminalTab('new-tid')
+    expect(newTab?.shellStartDir).toBe('/work/dir')
+  })
+
+  it('opens the new-terminal dialog when ctx is missing (no workerId)', async () => {
+    const dialogOpen = vi.fn()
+    const { ops, tabStore } = setupForOpen({
+      ctx: { workerId: '', workingDir: '/tmp' },
+      dialogOpen,
+    })
+    await ops.handleOpenTerminal()
+    expect(dialogOpen).toHaveBeenCalledTimes(1)
+    expect(openTerminalMock).not.toHaveBeenCalled()
+    expect(tabStore.state.tabs).toHaveLength(0)
+  })
+
+  it('short-circuits silently when the workspace is not mutatable', async () => {
+    const dialogOpen = vi.fn()
+    const setLoading = vi.fn()
+    const { ops, tabStore } = setupForOpen({
+      isMutatable: false,
+      dialogOpen,
+      setNewTerminalLoading: setLoading,
+    })
+    await ops.handleOpenTerminal()
+    expect(openTerminalMock).not.toHaveBeenCalled()
+    expect(dialogOpen).not.toHaveBeenCalled()
+    expect(setLoading).not.toHaveBeenCalled()
+    expect(tabStore.state.tabs).toHaveLength(0)
+  })
+
+  it('toasts on RPC failure and still clears the loading flag', async () => {
+    openTerminalMock.mockRejectedValueOnce(new Error('boom'))
+    const loadingFlips: boolean[] = []
+    const { ops } = setupForOpen({
+      setNewTerminalLoading: v => loadingFlips.push(v),
+    })
+    await ops.handleOpenTerminal()
+    expect(showWarnToastMock).toHaveBeenCalledTimes(1)
+    expect(showWarnToastMock.mock.calls[0][0]).toMatch(/open terminal/i)
+    // Finally must run so the spinner doesn't get stuck.
+    expect(loadingFlips).toEqual([true, false])
+  })
+})
+
+describe('useterminaloperations.handleopenterminalwithshell', () => {
+  it('forwards the picked shell to the RPC and uses the shell-loading setter', async () => {
+    const shellLoadingFlips: boolean[] = []
+    const terminalLoadingFlips: boolean[] = []
+    const { ops, tabStore } = setupForOpen({
+      setNewShellLoading: v => shellLoadingFlips.push(v),
+      setNewTerminalLoading: v => terminalLoadingFlips.push(v),
+    })
+
+    await ops.handleOpenTerminalWithShell('/bin/zsh')
+
+    expect(openTerminalMock).toHaveBeenCalledTimes(1)
+    expect(openTerminalMock.mock.calls[0][1].shell).toBe('/bin/zsh')
+    // The shell-picker path does NOT seed shellStartDir onto the tab,
+    // so a later restart re-uses the working directory the worker had
+    // at launch rather than a stale per-shell override.
+    const newTab = tabStore.getTerminalTab('new-tid')
+    expect(newTab?.shellStartDir).toBeUndefined()
+    // Only the shell-loading setter fires for the dropdown path.
+    expect(shellLoadingFlips).toEqual([true, false])
+    expect(terminalLoadingFlips).toEqual([])
+  })
+})
 
 describe('useterminaloperations.handleterminalinput', () => {
   it('routes input to sendInput when status is READY', async () => {
@@ -223,6 +366,34 @@ describe('useterminaloperations.handleterminalinput', () => {
   })
 })
 
+describe('useterminaloperations.availableshells', () => {
+  it('loads shells from listAvailableShells on mount when workspace + worker are present', async () => {
+    listAvailableShellsMock.mockResolvedValueOnce({
+      shells: ['/bin/zsh', '/bin/bash'],
+      defaultShell: '/bin/zsh',
+    })
+    const { ops } = setup()
+    await flush()
+    await flush()
+    expect(listAvailableShellsMock).toHaveBeenCalledTimes(1)
+    expect(listAvailableShellsMock).toHaveBeenCalledWith(
+      'worker-1',
+      expect.objectContaining({ workspaceId: 'ws-1', workerId: 'worker-1' }),
+    )
+    expect(ops.availableShells()).toEqual(['/bin/zsh', '/bin/bash'])
+    expect(ops.defaultShell()).toBe('/bin/zsh')
+  })
+
+  it('clears shells on RPC failure', async () => {
+    listAvailableShellsMock.mockRejectedValueOnce(new Error('worker offline'))
+    const { ops } = setup()
+    await flush()
+    await flush()
+    expect(ops.availableShells()).toEqual([])
+    expect(ops.defaultShell()).toBe('')
+  })
+})
+
 describe('useterminaloperations.handleterminalbell', () => {
   it('does not notify the active terminal tab on bell', () => {
     const { tabStore, ops } = setup()
@@ -263,7 +434,7 @@ describe('useterminaloperations.handleterminalclose', () => {
     } as CloseTerminalResponse)
 
     ops.handleTerminalClose('term-remove', WorktreeAction.REMOVE)
-    await flushMicrotasks()
+    await flush()
 
     expect(closeTerminalMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
       terminalId: 'term-remove',
@@ -285,7 +456,7 @@ describe('useterminaloperations.handleterminalclose', () => {
     } as CloseTerminalResponse)
 
     ops.handleTerminalClose('term-fail', WorktreeAction.REMOVE)
-    await flushMicrotasks()
+    await flush()
 
     expect(showWarnToastMock).toHaveBeenCalledWith('Failed to remove worktree: git worktree remove exit 128')
   })
@@ -298,7 +469,7 @@ describe('useterminaloperations.handleterminalclose', () => {
     closeTerminalMock.mockRejectedValueOnce(err)
 
     ops.handleTerminalClose('term-reject')
-    await flushMicrotasks()
+    await flush()
 
     expect(showWarnToastMock).toHaveBeenCalledWith('Failed to close terminal', err)
   })

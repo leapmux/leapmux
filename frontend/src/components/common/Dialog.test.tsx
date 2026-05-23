@@ -2,7 +2,8 @@
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal, Show } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { Dialog } from './Dialog'
+import { Dialog, DialogColumns } from './Dialog'
+import * as styles from './Dialog.css'
 
 // jsdom does not implement the native <dialog> API.
 // Stub showModal so the component can mount without errors.
@@ -299,6 +300,55 @@ describe('dialog', () => {
     const dialog = container.querySelector('dialog')!
     dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  // ----- DialogColumns layout ---------------------------------------------
+
+  it('dialogColumns renders both panels in two-column mode', () => {
+    const { container } = render(() => (
+      <DialogColumns
+        left={<span data-testid="left">L</span>}
+        right={<span data-testid="right">R</span>}
+      />
+    ))
+    expect(container.querySelector(`.${styles.twoColumn}`)).not.toBeNull()
+    expect(container.querySelector(`.${styles.leftPanel}`)).not.toBeNull()
+    expect(container.querySelector(`.${styles.rightPanel}`)).not.toBeNull()
+    expect(container.querySelector('[data-testid="left"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="right"]')).not.toBeNull()
+  })
+
+  it('dialogColumns skips the right panel in single-column mode (no empty <div> in DOM)', () => {
+    const { container } = render(() => (
+      <DialogColumns
+        twoColumn={false}
+        left={<span data-testid="left">L</span>}
+        right={<span data-testid="right">R</span>}
+      />
+    ))
+    // Single-column mode wraps left only; the rightPanel wrapper must not
+    // be in the DOM at all (regression for the original
+    // `<div class={twoColumn ? rightPanel : undefined}>` that emitted an
+    // empty wrapper even when its content was hidden).
+    expect(container.querySelector(`.${styles.singleColumn}`)).not.toBeNull()
+    expect(container.querySelector(`.${styles.twoColumn}`)).toBeNull()
+    expect(container.querySelector(`.${styles.rightPanel}`)).toBeNull()
+    expect(container.querySelector('[data-testid="right"]')).toBeNull()
+    expect(container.querySelector('[data-testid="left"]')).not.toBeNull()
+  })
+
+  it('dialogColumns skips the right panel when right is undefined even in two-column mode', () => {
+    const { container } = render(() => (
+      <DialogColumns
+        left={<span data-testid="left">L</span>}
+      />
+    ))
+    // twoColumn defaults to true, but with no right child the rightPanel
+    // wrapper still must not render — keeps the DOM clean for callers
+    // that conditionally omit the right slot.
+    expect(container.querySelector(`.${styles.twoColumn}`)).not.toBeNull()
+    expect(container.querySelector(`.${styles.rightPanel}`)).toBeNull()
+    expect(container.querySelector('[data-testid="left"]')).not.toBeNull()
   })
 
   it('does not access stale keyed Show accessor on cleanup', () => {

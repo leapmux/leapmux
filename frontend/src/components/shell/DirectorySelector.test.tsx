@@ -22,29 +22,39 @@ afterEach(() => {
 })
 
 function makeState() {
+  const refreshTree = vi.fn()
   return {
-    refreshTree: vi.fn(),
-    workerId: () => 'worker-1',
-    workingDir: () => '/repo',
-    setWorkingDir: vi.fn(),
-    workerInfoStore: { getHomeDir: vi.fn(() => '/home/user') },
-    treeRef: vi.fn(),
+    state: {
+      workerId: () => 'worker-1',
+      setWorkerId: vi.fn(),
+      workers: () => [],
+      refreshWorkers: vi.fn(),
+      workersRefreshing: () => false,
+      workingDir: () => '/repo',
+      setWorkingDir: vi.fn(),
+    },
+    tree: {
+      treeKey: () => 0,
+      setTreeRef: vi.fn(),
+      refreshTree,
+    },
+    refreshTree,
   }
 }
 
 describe('directorySelector', () => {
-  it('refreshFileTree invokes the current dialog state refreshTree', () => {
-    const state = makeState()
-    render(() => <DirectorySelector state={state as any} />)
+  it('refreshFileTree invokes the current tree state refreshTree', () => {
+    const { state, tree, refreshTree } = makeState()
+    render(() => <DirectorySelector state={state as any} tree={tree as any} />)
 
     refreshFileTree()
 
-    expect(state.refreshTree).toHaveBeenCalledOnce()
+    expect(refreshTree).toHaveBeenCalledOnce()
   })
 
   it('toggleHiddenFiles updates the visible button title through the registry callback', () => {
-    const state = makeState()
-    render(() => <DirectorySelector state={state as any} />)
+    const { state, tree } = makeState()
+    render(() => <DirectorySelector state={state as any} tree={tree as any} />)
 
     expect(screen.getByRole('button', { name: 'Hide hidden files' })).toBeInTheDocument()
 
@@ -54,12 +64,12 @@ describe('directorySelector', () => {
   })
 
   it('unregisters dialog ops on unmount', () => {
-    const state = makeState()
-    const view = render(() => <DirectorySelector state={state as any} />)
+    const { state, tree, refreshTree } = makeState()
+    const view = render(() => <DirectorySelector state={state as any} tree={tree as any} />)
 
     view.unmount()
     refreshFileTree()
 
-    expect(state.refreshTree).not.toHaveBeenCalled()
+    expect(refreshTree).not.toHaveBeenCalled()
   })
 })
