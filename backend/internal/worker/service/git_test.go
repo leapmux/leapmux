@@ -37,9 +37,17 @@ func initRepo(t *testing.T) string {
 
 // gitInitRepo runs `git init` + user config + an empty initial commit in
 // the given directory. Returns the first failure, or nil.
+//
+// `--initial-branch=main` is explicit so the helper does not inherit
+// the host's `init.defaultBranch` setting. CI runners and contributor
+// machines without that config land on `master`, but every test in this
+// suite assumes the initial branch is `main` (rev-parse against
+// `refs/heads/main`, `origin/main..HEAD` ranges, switch-to-`main`
+// targets). Pinning it here keeps the helper portable across
+// environments without forcing every test to spell out the flag.
 func gitInitRepo(dir string) error {
 	for _, args := range [][]string{
-		{"init"},
+		{"init", "--initial-branch=main"},
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test"},
 		{"commit", "--allow-empty", "-m", "init"},
