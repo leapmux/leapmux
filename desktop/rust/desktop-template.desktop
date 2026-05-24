@@ -1,6 +1,6 @@
 [Desktop Entry]
 Categories=Development;Utility;
-Exec=/usr/lib/leapmux-desktop/leapmux-desktop
+Exec=leapmux-desktop
 StartupWMClass=leapmux-desktop
 Icon=leapmux-desktop
 Name=LeapMux Desktop

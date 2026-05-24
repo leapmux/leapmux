@@ -455,6 +455,43 @@ tasks:
       - task: build-desktop-sidecar
       - desktop/rust/scripts/patch-linuxdeploy.sh
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
+      # Relocate the AppImage's app binary to /usr/lib/leapmux-desktop/ for
+      # layout parity with the .deb: the binary and the sidecar then live
+      # together under /usr/lib/, and nothing named leapmux-desktop sits on the
+      # launcher PATH. Tauri's AppImage bundler reuses the deb data tree, so the
+      # binary starts at usr/bin/leapmux-desktop; move it beside the sidecar,
+      # which is already in usr/lib/leapmux-desktop/ via the resources glob.
+      #
+      # linuxdeploy's AppRun resolves the desktop Exec by searching a fixed PATH
+      # (usr/bin, usr/sbin, ...) that excludes usr/lib, and an absolute Exec is
+      # execvp'd as a literal host path (the bug that broke launch before). So
+      # instead of leaving a usr/bin symlink, prepend usr/lib/leapmux-desktop to
+      # PATH inside the AppRun script: AppRun.wrapped appends the inherited PATH,
+      # so the shared template's bare `Exec=leapmux-desktop` resolves to the
+      # relocated binary, and /proc/self/exe reports the real usr/lib path so the
+      # Go sidecar resolves "next to exe" exactly like the deb. Then repack the
+      # AppDir with the linuxdeploy appimage plugin Tauri already cached,
+      # overwriting Tauri's AppImage (which still had the binary in usr/bin).
+      #
+      # The greps are tripwires: they fail the build loudly if a future
+      # linuxdeploy changes the AppRun exec line (so the PATH injection would
+      # silently no-op) or if the shared template stops emitting the bare Exec.
+      - |
+        set -euo pipefail
+        appdir="desktop/rust/target/release/bundle/appimage/leapmux-desktop.AppDir"
+        img="$(ls desktop/rust/target/release/bundle/appimage/leapmux-desktop_*.AppImage)"
+        grep -q '^Exec=leapmux-desktop$' "$appdir"/*.desktop
+        grep -q '^exec "$this_dir"/AppRun.wrapped' "$appdir/AppRun"
+        mv "$appdir/usr/bin/leapmux-desktop" "$appdir/usr/lib/leapmux-desktop/leapmux-desktop"
+        sed -i 's|^exec "$this_dir"/AppRun\.wrapped|export PATH="$this_dir/usr/lib/leapmux-desktop:$PATH"  # leapmux: app binary relocated under usr/lib for .deb parity\nexec "$this_dir"/AppRun.wrapped|' "$appdir/AppRun"
+        test -x "$appdir/usr/lib/leapmux-desktop/leapmux-desktop"
+        test ! -e "$appdir/usr/bin/leapmux-desktop"
+        grep -q 'usr/lib/leapmux-desktop:\$PATH' "$appdir/AppRun"
+        plugin="${HOME}/.cache/tauri/linuxdeploy-plugin-appimage.AppImage"
+        test -x "$plugin"
+        rm -f "$img"
+        ( cd "$(dirname "$img")" && ARCH="$(uname -m)" NO_APPSTREAM=1 APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="$(basename "$img")" "$plugin" --appdir leapmux-desktop.AppDir )
+        test -f "$img"
       - cp -f desktop/rust/target/release/leapmux-desktop .
       - cp -f desktop/go/bin/leapmux-desktop-service-* .
       - cp -f desktop/rust/target/release/bundle/deb/leapmux-desktop*.deb .
@@ -463,10 +500,16 @@ tasks:
       # binary; there's no config knob to relocate it. Post-process the .deb
       # so `leapmux-desktop` lands under /usr/lib/ (off PATH) while
       # /usr/bin/leapmux (added via deb.files) stays as the only CLI on PATH.
-      # dpkg-deb -R/-b is round-tripped by Debian itself — md5sums regenerate
-      # automatically. The grep -q is a tripwire: if desktop-template.desktop
-      # ever stops pointing at /usr/lib/..., the relocation falls out of sync
-      # and we want a loud failure rather than a silent broken .desktop file.
+      # The .desktop Exec must follow the binary, so rewrite the template's
+      # bare `Exec=leapmux-desktop` to the absolute relocated path — under
+      # /usr/lib/ the bare name would no longer resolve for the system launcher.
+      # (The AppImage reaches the same /usr/lib layout differently — via a
+      # PATH-injected AppRun — because its Exec is resolved by linuxdeploy, not
+      # the system launcher; see the AppImage step above.) dpkg-deb -R/-b is
+      # round-tripped by Debian itself — md5sums regenerate automatically. The
+      # grep -q is a tripwire: if the sed ever stops matching (e.g. the
+      # template's Exec changes), the rewrite silently no-ops and we want a loud
+      # failure rather than a .desktop pointing off PATH.
       - |
         set -euo pipefail
         for deb in leapmux-desktop_*.deb; do
@@ -474,6 +517,8 @@ tasks:
           dpkg-deb -R "$deb" "$work"
           mkdir -p "$work/usr/lib/leapmux-desktop"
           mv "$work/usr/bin/leapmux-desktop" "$work/usr/lib/leapmux-desktop/leapmux-desktop"
+          sed -i 's#^Exec=leapmux-desktop$#Exec=/usr/lib/leapmux-desktop/leapmux-desktop#' \
+            "$work/usr/share/applications/"*.desktop
           grep -q '^Exec=/usr/lib/leapmux-desktop/leapmux-desktop$' \
             "$work/usr/share/applications/"*.desktop
           dpkg-deb -b "$work" "$deb"
