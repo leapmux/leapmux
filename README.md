@@ -285,8 +285,7 @@ For desktop app builds, install the [Tauri prerequisites for Arch Linux](https:/
 
 ```bash
 sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg patchelf dpkg \
-  gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad \
-  gst-plugins-ugly gst-libav
+  gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad-libs gst-libav
 ```
 
 ### Windows
