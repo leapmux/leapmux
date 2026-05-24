@@ -281,10 +281,10 @@ Install the remaining dependencies from the [AUR](https://wiki.archlinux.org/tit
 yay -S mprocs-bin
 ```
 
-For desktop app builds, install the [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux) plus GStreamer (bundled into the AppImage by `bundleMediaFramework`):
+For desktop app builds, install the [Tauri prerequisites for Arch Linux](https://v2.tauri.app/start/prerequisites/#linux) plus GStreamer (bundled into the AppImage by `bundleMediaFramework`) and `dpkg` (its `dpkg-deb` builds the `.deb` bundle; not installed by default on Arch):
 
 ```bash
-sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg patchelf \
+sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg patchelf dpkg \
   gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad \
   gst-plugins-ugly gst-libav
 ```
