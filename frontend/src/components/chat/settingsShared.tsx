@@ -73,6 +73,29 @@ export function effortItems(availableModels: AvailableModel[] | undefined, curre
   return []
 }
 
+/**
+ * Whether `effort` is one of the tiers the given model currently offers. Used
+ * to guard effort UI during an optimistic model switch, where the effort can
+ * briefly be a value the new model doesn't support (e.g. "ultracode"/"xhigh"
+ * left over from Opus after switching to Sonnet). Returns false when the model
+ * list is empty/loading or the model is unknown.
+ */
+export function effortValidForModel(availableModels: AvailableModel[] | undefined, currentModel: string, effort: string): boolean {
+  return effortItems(availableModels, currentModel).some(e => e.value === effort)
+}
+
+/**
+ * The current effort if the model still offers it, else `EFFORT_AUTO`. Use this
+ * for the effort RadioGroup's `current` value so it never renders with no
+ * selection during an optimistic model switch, where the effort can briefly be
+ * a tier the new model doesn't offer (e.g. "ultracode"/"xhigh" left over from
+ * Opus after switching to Sonnet). `EFFORT_AUTO` is offered by every
+ * effort-bearing model and is the value the backend resets to on a model change.
+ */
+export function effortValueForModel(availableModels: AvailableModel[] | undefined, currentModel: string, effort: string): string {
+  return effortValidForModel(availableModels, currentModel, effort) ? effort : EFFORT_AUTO
+}
+
 /** Find an option group by key. */
 export function optionGroup(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string) {
   return availableOptionGroups?.find(g => g.key === key)

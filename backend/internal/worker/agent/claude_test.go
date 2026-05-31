@@ -1188,7 +1188,7 @@ func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
 		return ids
 	}
 
-	opusEfforts := []string{"auto", "max", "xhigh", "high", "medium", "low"}
+	opusEfforts := []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}
 	sonnetEfforts := []string{"auto", "max", "high", "medium", "low"}
 
 	for _, id := range []string{"opus", "opus[1m]"} {
@@ -1208,4 +1208,343 @@ func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
 	haiku := byID["haiku"]
 	require.NotNil(t, haiku)
 	assert.Empty(t, haiku.SupportedEfforts, "haiku has no effort UI")
+}
+
+// TestClaudeEffortCatalog_UltracodeIsOpusOnly guards the design decision that
+// "ultracode" is offered only by xhigh-capable (Opus) models. Sonnet's catalog
+// must not list it, so switching to Sonnet downgrades ultracode cleanly.
+func TestClaudeEffortCatalog_UltracodeIsOpusOnly(t *testing.T) {
+	// Use the production effortListContains so this guard exercises the same
+	// lookup modelSupportsUltracode relies on, rather than a parallel copy.
+	assert.True(t, effortListContains(claudeEffortXHighMax, EffortUltracode), "Opus catalog must offer ultracode")
+	assert.False(t, effortListContains(claudeEffortMax, EffortUltracode), "Sonnet catalog must not offer ultracode")
+}
+
+func TestClaudeEffortFlagSettings(t *testing.T) {
+	tests := []struct {
+		name      string
+		newEffort string
+		curEffort string
+		expected  map[string]interface{}
+	}{
+		{
+			name:      "enable ultracode sets xhigh base + ultracode true",
+			newEffort: "ultracode",
+			curEffort: "high",
+			expected:  map[string]interface{}{"effortLevel": "xhigh", "ultracode": true},
+		},
+		{
+			name:      "leaving ultracode clears the ultracode flag",
+			newEffort: "max",
+			curEffort: "ultracode",
+			expected:  map[string]interface{}{"effortLevel": "max", "ultracode": false},
+		},
+		{
+			name:      "ordinary effort change carries no ultracode key",
+			newEffort: "high",
+			curEffort: "medium",
+			expected:  map[string]interface{}{"effortLevel": "high"},
+		},
+		{
+			name:      "ultracode unchanged is a no-op",
+			newEffort: "ultracode",
+			curEffort: "ultracode",
+			expected:  nil,
+		},
+		{
+			name:      "auto transition is handled elsewhere (no flag settings)",
+			newEffort: "auto",
+			curEffort: "ultracode",
+			expected:  nil,
+		},
+		{
+			name:      "empty effort is a no-op",
+			newEffort: "",
+			curEffort: "high",
+			expected:  nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, claudeEffortFlagSettings(tt.newEffort, tt.curEffort))
+		})
+	}
+}
+
+func TestClaudeEffortUpdateFlagSettings(t *testing.T) {
+	tests := []struct {
+		name        string
+		targetModel string
+		newEffort   string
+		curEffort   string
+		expected    map[string]interface{}
+	}{
+		{
+			// Model-only change off opus+ultracode onto sonnet: no effort delta,
+			// but the stale ultracode boolean must still be cleared.
+			name:        "model-only switch leaving ultracode for an unsupported model clears the flag",
+			targetModel: "sonnet",
+			newEffort:   "",
+			curEffort:   "ultracode",
+			expected:    map[string]interface{}{"ultracode": false},
+		},
+		{
+			// Model-only change to another ultracode-capable model keeps the
+			// combo: nothing to send (the model key is added by the caller).
+			name:        "model-only switch between ultracode-capable models is a no-op",
+			targetModel: "opus[1m]",
+			newEffort:   "",
+			curEffort:   "ultracode",
+			expected:    nil,
+		},
+		{
+			// Combined change already routes through claudeEffortFlagSettings,
+			// which clears ultracode when leaving it; the guard is idempotent.
+			name:        "combined model+effort leaving ultracode clears the flag once",
+			targetModel: "sonnet",
+			newEffort:   "high",
+			curEffort:   "ultracode",
+			expected:    map[string]interface{}{"effortLevel": "high", "ultracode": false},
+		},
+		{
+			// Requesting ultracode on a model that can't run it downgrades the
+			// level to high and never sets the ultracode boolean true (sent here
+			// because high differs from the current "medium").
+			name:        "ultracode requested on unsupported model downgrades without setting the flag",
+			targetModel: "sonnet",
+			newEffort:   "ultracode",
+			curEffort:   "medium",
+			expected:    map[string]interface{}{"effortLevel": "high"},
+		},
+		{
+			name:        "enabling ultracode on a supported model sets the combo",
+			targetModel: "opus",
+			newEffort:   "ultracode",
+			curEffort:   "high",
+			expected:    map[string]interface{}{"effortLevel": "xhigh", "ultracode": true},
+		},
+		{
+			name:        "ordinary effort change is unaffected",
+			targetModel: "sonnet",
+			newEffort:   "max",
+			curEffort:   "high",
+			expected:    map[string]interface{}{"effortLevel": "max"},
+		},
+		{
+			name:        "no requested effort and not leaving ultracode is a no-op",
+			targetModel: "sonnet",
+			newEffort:   "",
+			curEffort:   "high",
+			expected:    nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, claudeEffortUpdateFlagSettings(tt.targetModel, tt.newEffort, tt.curEffort))
+		})
+	}
+}
+
+func TestClaudeEffortFromApplied(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+	boolPtr := func(b bool) *bool { return &b }
+	tests := []struct {
+		name      string
+		applied   *string
+		ultracode *bool
+		curEffort string
+		model     string
+		want      string
+	}{
+		{
+			name:      "opus ultracode:true maps xhigh-base back to ultracode",
+			applied:   strPtr("xhigh"),
+			ultracode: boolPtr(true),
+			curEffort: "xhigh",
+			model:     "opus",
+			want:      "ultracode",
+		},
+		{
+			name:      "opus[1m] ultracode:true maps to ultracode",
+			applied:   strPtr("xhigh"),
+			ultracode: boolPtr(true),
+			curEffort: "ultracode",
+			model:     "opus[1m]",
+			want:      "ultracode",
+		},
+		{
+			name:      "sonnet ultracode:true is ignored - model cannot run it",
+			applied:   strPtr("xhigh"),
+			ultracode: boolPtr(true),
+			curEffort: "high",
+			model:     "sonnet",
+			want:      "xhigh", // keep the reported level; never mislabel Sonnet as ultracode
+		},
+		{
+			name:      "unknown model ultracode:true is ignored - catalog can't confirm support",
+			applied:   strPtr("xhigh"),
+			ultracode: boolPtr(true),
+			curEffort: "xhigh",
+			model:     "claude-future-preview",
+			want:      "xhigh",
+		},
+		{
+			name:      "unentitled opus reports ultracode:false + xhigh - graceful downgrade",
+			applied:   strPtr("xhigh"),
+			ultracode: boolPtr(false),
+			curEffort: "ultracode",
+			model:     "opus",
+			want:      "xhigh",
+		},
+		{
+			name:      "ultracode cleared with omitted effort falls back to xhigh base",
+			applied:   nil,
+			ultracode: boolPtr(false),
+			curEffort: "ultracode",
+			model:     "opus",
+			want:      "xhigh",
+		},
+		{
+			name:      "ultracode:false with non-ultracode current is unchanged",
+			applied:   nil,
+			ultracode: boolPtr(false),
+			curEffort: "high",
+			model:     "opus",
+			want:      "high",
+		},
+		{
+			name:      "nil ultracode passes the reported effort through",
+			applied:   strPtr("max"),
+			ultracode: nil,
+			curEffort: "high",
+			model:     "opus",
+			want:      "max",
+		},
+		{
+			name:      "nil applied effort retains current effort",
+			applied:   nil,
+			ultracode: nil,
+			curEffort: "medium",
+			model:     "sonnet",
+			want:      "medium",
+		},
+		{
+			// CLI omits both fields (e.g. a model switch that didn't touch
+			// effort) while curEffort is still "ultracode" on a model that
+			// can't run it: the guard must clear the stale value to xhigh
+			// rather than mislabel a Sonnet session as ultracode.
+			name:      "stale ultracode on a model that lost support is cleared",
+			applied:   nil,
+			ultracode: nil,
+			curEffort: "ultracode",
+			model:     "sonnet",
+			want:      "xhigh",
+		},
+		{
+			// Same shape, but Opus genuinely supports ultracode, so the guard
+			// must NOT clear it.
+			name:      "stale ultracode on opus with omitted fields is retained",
+			applied:   nil,
+			ultracode: nil,
+			curEffort: "ultracode",
+			model:     "opus",
+			want:      "ultracode",
+		},
+		{
+			// Defensive: the CLI reports applied.effort as a concrete enum or
+			// null, never "". An unexpected empty string must be treated like
+			// omitted (retain curEffort) rather than blanking the effort to "".
+			name:      "empty applied effort is treated as omitted (retains curEffort)",
+			applied:   strPtr(""),
+			ultracode: nil,
+			curEffort: "high",
+			model:     "opus",
+			want:      "high",
+		},
+		{
+			// Empty applied.effort with curEffort=="ultracode" on opus: the ""
+			// is ignored, so the ultracode value survives (opus supports it)
+			// instead of being blanked.
+			name:      "empty applied effort retains stale ultracode on opus",
+			applied:   strPtr(""),
+			ultracode: nil,
+			curEffort: "ultracode",
+			model:     "opus",
+			want:      "ultracode",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, claudeEffortFromApplied(tt.applied, tt.ultracode, tt.curEffort, tt.model))
+		})
+	}
+}
+
+func TestBuildStartupFlagSettings_Ultracode(t *testing.T) {
+	tests := []struct {
+		name          string
+		model         string
+		effort        string
+		wantUltracode bool
+	}{
+		{"opus ultracode enables the combo", "opus", EffortUltracode, true},
+		{"opus[1m] ultracode enables the combo", "opus[1m]", EffortUltracode, true},
+		{"sonnet ultracode is not enabled (unsupported)", "sonnet", EffortUltracode, false},
+		{"haiku ultracode is not enabled (unsupported)", "haiku", EffortUltracode, false},
+		{"unknown model ultracode is not enabled", "claude-future-preview", EffortUltracode, false},
+		{"opus non-ultracode adds no effort keys", "opus", "xhigh", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := &ClaudeCodeAgent{model: tt.model, effort: tt.effort}
+			fs := a.buildStartupFlagSettings(nil)
+			if tt.wantUltracode {
+				assert.Equal(t, "xhigh", fs["effortLevel"])
+				assert.Equal(t, true, fs["ultracode"])
+			} else {
+				_, hasUltra := fs["ultracode"]
+				assert.False(t, hasUltra, "ultracode key should be absent")
+				_, hasLevel := fs["effortLevel"]
+				assert.False(t, hasLevel, "effortLevel key should be absent for non-ultracode startup")
+			}
+		})
+	}
+}
+
+func TestModelSupportsUltracode(t *testing.T) {
+	// Only Opus models list ultracode in their catalog; unlike effortSupported,
+	// unknown models are NOT trusted.
+	assert.True(t, modelSupportsUltracode("opus"))
+	assert.True(t, modelSupportsUltracode("opus[1m]"))
+	assert.False(t, modelSupportsUltracode("sonnet"))
+	assert.False(t, modelSupportsUltracode("sonnet[1m]"))
+	assert.False(t, modelSupportsUltracode("haiku"))
+	assert.False(t, modelSupportsUltracode("claude-future-preview"), "unknown models are not trusted for ultracode")
+	assert.False(t, modelSupportsUltracode(""))
+}
+
+func TestResolveClaudeEffortForModel(t *testing.T) {
+	tests := []struct {
+		name   string
+		model  string
+		effort string
+		want   string
+	}{
+		{"opus keeps ultracode", "opus", "ultracode", "ultracode"},
+		{"opus[1m] keeps ultracode", "opus[1m]", "ultracode", "ultracode"},
+		{"sonnet downgrades ultracode to high", "sonnet", "ultracode", "high"},
+		{"haiku downgrades ultracode to high", "haiku", "ultracode", "high"},
+		{"unknown downgrades ultracode to high", "claude-future-preview", "ultracode", "high"},
+		{"sonnet downgrades xhigh to high", "sonnet", "xhigh", "high"},
+		{"opus keeps xhigh", "opus", "xhigh", "xhigh"},
+		{"unknown trusts xhigh", "claude-future-preview", "xhigh", "xhigh"},
+		{"supported effort passes through", "sonnet", "high", "high"},
+		{"auto passes through", "sonnet", "auto", "auto"},
+		{"empty passes through", "opus", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, resolveClaudeEffortForModel(tt.model, tt.effort))
+		})
+	}
 }

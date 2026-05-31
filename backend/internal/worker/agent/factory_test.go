@@ -4,9 +4,91 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestFinalizeAgentEnv_ScrubsAgentIdentity verifies the single chokepoint
+// every provider funnels through strips inherited agent-harness identity vars
+// (so a worker launched from inside another agent's session doesn't spawn a
+// nested one) while preserving the per-provider rc markers and auth/config the
+// providers re-add before the call.
+func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
+	// Assert against the production list itself rather than a hand-maintained
+	// subset, so EVERY scrub key is exercised and a newly-added key (or a typo
+	// in an oddly-shaped one like "_EXTENSION_OPENCODE_PORT") is automatically
+	// covered.
+	identity := agentIdentityEnvScrubKeys
+	// Must survive: per-provider rc markers / entrypoint re-added BEFORE
+	// FinalizeAgentEnv, plus auth tokens, provider-selection, and config dirs.
+	mustSurvive := []string{
+		"CLAUDECODE", "CODEX_CI", "OPENCODE_CLIENT", "KILO_CLIENT", "GEMINI_CLI", "CLAUDE_CODE_ENTRYPOINT",
+		"CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
+		"CLAUDE_CODE_USE_BEDROCK", "CODEX_HOME", "GOOSE_MODEL", "PI_CODING_AGENT_DIR", "PATH",
+	}
+
+	buildEnv := func() []string {
+		var env []string
+		for _, k := range identity {
+			env = append(env, k+"=leaked")
+		}
+		env = append(env,
+			"CLAUDECODE=1", "CODEX_CI=1", "OPENCODE_CLIENT=1", "KILO_CLIENT=1", "GEMINI_CLI=1",
+			"CLAUDE_CODE_ENTRYPOINT=cli",
+			"CLAUDE_CODE_OAUTH_TOKEN=tok", "OPENAI_API_KEY=sk-test", "CODEX_API_KEY=sk-codex",
+			"CLAUDE_CODE_USE_BEDROCK=1", "CODEX_HOME=/home/u/.codex", "GOOSE_MODEL=gpt-x",
+			"PI_CODING_AGENT_DIR=/home/u/.pi", "PATH=/usr/bin:/bin",
+		)
+		return env
+	}
+
+	t.Run("strips identity, keeps markers, adds worker flag", func(t *testing.T) {
+		out := FinalizeAgentEnv(buildEnv(), Options{})
+
+		for _, k := range identity {
+			assert.Falsef(t, envutil.HasKey(out, k), "identity var %q must be scrubbed", k)
+		}
+		for _, k := range mustSurvive {
+			assert.Truef(t, envutil.HasKey(out, k), "var %q must survive the scrub", k)
+		}
+		assert.True(t, envutil.HasKey(out, "LEAPMUX_WORKER"), "LEAPMUX_WORKER=1 must be added")
+		assert.Contains(t, out, "LEAPMUX_WORKER=1")
+	})
+
+	t.Run("scrub precedes LEAPMUX_REMOTE strip and ExtraEnv append", func(t *testing.T) {
+		env := append(buildEnv(), "LEAPMUX_REMOTE_OLD=stale")
+		out := FinalizeAgentEnv(env, Options{ExtraEnv: []string{"LEAPMUX_REMOTE_NEW=fresh"}})
+
+		// Identity scrub still applied even on the ExtraEnv path.
+		for _, k := range identity {
+			assert.Falsef(t, envutil.HasKey(out, k), "identity var %q must be scrubbed", k)
+		}
+		// Inherited LEAPMUX_REMOTE_* stripped; the injected one wins.
+		assert.NotContains(t, out, "LEAPMUX_REMOTE_OLD=stale")
+		assert.Contains(t, out, "LEAPMUX_REMOTE_NEW=fresh")
+		assert.Contains(t, out, "LEAPMUX_WORKER=1")
+		// Markers + auth still survive on this path too.
+		for _, k := range mustSurvive {
+			assert.Truef(t, envutil.HasKey(out, k), "var %q must survive the scrub", k)
+		}
+	})
+
+	t.Run("strips inherited LEAPMUX_REMOTE even with no ExtraEnv", func(t *testing.T) {
+		// A worker spawned inside another worker's session inherits the
+		// parent's LEAPMUX_REMOTE_* but injects no fresh ExtraEnv. The stale
+		// remote context must still be shed so the child doesn't act on it.
+		env := append(buildEnv(), "LEAPMUX_REMOTE_OLD=stale")
+		out := FinalizeAgentEnv(env, Options{})
+
+		assert.NotContains(t, out, "LEAPMUX_REMOTE_OLD=stale")
+		assert.False(t, envutil.HasKey(out, "LEAPMUX_REMOTE_OLD"), "inherited LEAPMUX_REMOTE_* must be stripped")
+		assert.Contains(t, out, "LEAPMUX_WORKER=1")
+		for _, k := range mustSurvive {
+			assert.Truef(t, envutil.HasKey(out, k), "var %q must survive the scrub", k)
+		}
+	})
+}
 
 func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 	for _, provider := range []leapmuxv1.AgentProvider{

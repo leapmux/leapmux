@@ -113,6 +113,19 @@ func FilterEnv(environ []string, keys ...string) []string {
 	return filtered
 }
 
+// HasKey reports whether environ contains an entry whose name (the part
+// before the first '=') matches key case-insensitively, mirroring FilterEnv's
+// matching semantics. Useful in tests asserting that a key survived or was
+// scrubbed.
+func HasKey(environ []string, key string) bool {
+	for _, e := range environ {
+		if name, _, _ := strings.Cut(e, "="); strings.EqualFold(name, key) {
+			return true
+		}
+	}
+	return false
+}
+
 // StripByPrefix returns a copy of environ with entries whose name
 // (the part before the first '=') starts with prefix removed. Useful
 // for namespaced env-var groups (e.g. `LEAPMUX_REMOTE_*`) where the

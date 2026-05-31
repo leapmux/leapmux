@@ -2,15 +2,18 @@ import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { ProviderSettingsPanelProps } from '../registry'
 import Flame from 'lucide-solid/icons/flame'
+import Rocket from 'lucide-solid/icons/rocket'
 import Zap from 'lucide-solid/icons/zap'
 import { createUniqueId, Show } from 'solid-js'
 import { EFFORT_AUTO } from '~/utils/controlResponse'
 import * as styles from '../../ChatView.css'
-import { effortIcon, effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupDefaultValue, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
+import { effortIcon, effortItems, effortValidForModel, effortValueForModel, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupDefaultValue, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
 
 // Claude swaps the default xhigh→Zap mapping for Flame to free up Zap for
-// its `max` tier (an effort level Pi/Codex don't expose).
+// its `max` tier (an effort level Pi/Codex don't expose). `ultracode` (Opus
+// only) gets a rocket to signal its xhigh+workflow-orchestration combo.
 const CLAUDE_EFFORT_ICONS: Record<string, LucideIcon> = {
+  ultracode: Rocket,
   xhigh: Flame,
   max: Zap,
 }
@@ -38,6 +41,12 @@ export function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.
   const models = () => modelItems(props.availableModels)
   const efforts = () => effortItems(props.availableModels, currentModel())
   const hasEffort = () => efforts().length > 0
+  // During an optimistic model switch the effort can briefly be a value the new
+  // model doesn't offer (e.g. "ultracode"/"xhigh" left over from Opus after
+  // switching to Sonnet); effortValueForModel falls back to Auto so the
+  // RadioGroup never renders with no selection, mirroring the trigger label
+  // hiding its icon in the same window.
+  const effortValue = () => effortValueForModel(props.availableModels, currentModel(), currentEffort())
   const modeGroup = () => permissionModeGroup(props.availableOptionGroups)
   const modeItems = () => permissionModeItems(props.availableOptionGroups)
   const outputStyleItems = () => optionGroupItems(props.availableOptionGroups, OUTPUT_STYLE_KEY)
@@ -72,7 +81,7 @@ export function ClaudeCodeSettingsPanel(props: ProviderSettingsPanelProps): JSX.
               items={efforts()}
               testIdPrefix="effort"
               name={`${menuId}-effort`}
-              current={currentEffort()}
+              current={effortValue()}
               onChange={v => props.onChange?.({ kind: 'effort', value: v })}
               fieldsetClass={firstLeftClass('effort')}
             />
@@ -131,14 +140,19 @@ export function ClaudeCodeTriggerLabel(props: ProviderSettingsPanelProps): JSX.E
 
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
-  const hasEffort = () => hasEfforts(props.availableModels, currentModel())
+  // Only render the effort icon when the current effort is actually one of the
+  // current model's tiers. During an optimistic model switch the effort can briefly
+  // be a value the new model doesn't offer (e.g. "ultracode"/"xhigh" left over from
+  // Opus after switching to Sonnet); showing its icon then would contradict the
+  // effort RadioGroup, which has no matching selection.
+  const currentEffortValid = () => effortValidForModel(props.availableModels, currentModel(), currentEffort())
   const mode = () => optionLabel(props.availableOptionGroups, PERMISSION_MODE_KEY, currentMode())
 
   return (
     <>
       <Show when={props.availableModels && props.availableModels.length > 0}>
         {displayName()}
-        <Show when={hasEffort()}>{effortIcon(currentEffort(), CLAUDE_EFFORT_ICONS)}</Show>
+        <Show when={currentEffortValid()}>{effortIcon(currentEffort(), CLAUDE_EFFORT_ICONS)}</Show>
       </Show>
       {mode()}
     </>

@@ -751,9 +751,12 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// If the agent is currently running, try a live update first.
-		// Providers that support it (e.g. Codex) apply settings to the
-		// next turn without a restart. Providers that don't (e.g. Claude
-		// Code) return false and we fall back to stop+restart.
+		// Providers apply what they can without a restart (Codex applies to
+		// the next turn; Claude Code applies model/effort/permission changes
+		// via apply_flag_settings) and return true. They return false only for
+		// changes they can't apply live -- e.g. Claude Code switching effort
+		// back to auto, which needs a relaunch without --effort -- and we then
+		// fall back to stop+restart.
 		if svc.Agents.HasAgent(agentID) {
 			updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{
 				Model:          newModel,
@@ -807,6 +810,19 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			}
 		}
 
+		// The effort the agent actually confirmed can differ from what was requested:
+		// selecting ultracode on an account without the workflows entitlement silently
+		// lands on xhigh, and a model switch resets effort to auto which the CLI then
+		// resolves to a concrete level. Report the confirmed effort so the chat
+		// notification isn't misleading. The live update (refreshSettingsFromAgent) and
+		// restart paths write the confirmed effort into the running agent's in-memory
+		// state synchronously, so reading it back here is race-free; fall back to the
+		// requested value when no agent is running (offline edit or failed restart).
+		notifyEffort := newEffort
+		if confirmed := svc.Agents.CurrentSettings(agentID); confirmed != nil && confirmed.GetEffort() != "" {
+			notifyEffort = confirmed.GetEffort()
+		}
+
 		// Broadcast settings_changed notification for the chat view.
 		// Include display labels so the frontend can show human-readable names
 		// without maintaining its own label maps.
@@ -819,11 +835,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				"oldLabel": modelLabel(oldID), "newLabel": modelLabel(newModel),
 			}
 		}
-		if dbAgent.Effort != newEffort {
+		if dbAgent.Effort != notifyEffort {
 			oldID := effortOrDefault(dbAgent.Effort, dbAgent.AgentProvider)
 			changes["effort"] = map[string]string{
-				"old": oldID, "new": newEffort,
-				"oldLabel": effortLabel(oldID), "newLabel": effortLabel(newEffort),
+				"old": oldID, "new": notifyEffort,
+				"oldLabel": effortLabel(oldID), "newLabel": effortLabel(notifyEffort),
 			}
 		}
 		if dbAgent.PermissionMode != newPermissionMode {

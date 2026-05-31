@@ -10,7 +10,6 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
@@ -49,6 +48,18 @@ const DefaultAPITimeout = time.Duration(config.DefaultAPITimeoutSeconds) * time.
 // that don't recognize newer effort names (e.g. "xhigh") still work.
 const EffortAuto = "auto"
 
+// EffortUltracode is LeapMux's internal name for the CLI's xhigh+ultracode combo.
+// At the provider wire boundary it maps to {effortLevel:"xhigh", ultracode:true};
+// the CLI's --effort launch flag does not accept it.
+const EffortUltracode = "ultracode"
+
+// EffortXHigh is the "xhigh" effort level. It is also the launch/wire base for
+// the ultracode combo (which layers the `ultracode` boolean on top of xhigh),
+// so it is a load-bearing value shared by the encode path (ultracodeFlagSettings,
+// buildModelEffortArgs) and the decode path (claudeEffortFromApplied). Naming it
+// once keeps those sites from drifting to inconsistent literals.
+const EffortXHigh = "xhigh"
+
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
 // and err is non-nil if the process exited with an error.
@@ -76,22 +87,7 @@ type Options struct {
 	ExtraEnv []string
 }
 
-// FinalizeAgentEnv applies the env-mutations every spawned agent
-// process needs in one place: appends the `LEAPMUX_WORKER=1` marker
-// (downstream CLI/agent code keys off it to detect "running inside a
-// LeapMux worker"), strips any inherited `LEAPMUX_REMOTE_*` values
-// (the new injection wins) and appends `opts.ExtraEnv`.
-//
-// Provider-specific env additions (CLAUDE_CODE_ENTRYPOINT, CODEX_CI,
-// etc.) go BEFORE this call so they survive the LEAPMUX_REMOTE_*
-// strip and stack with the marker.
-func FinalizeAgentEnv(env []string, opts Options) []string {
-	env = append(env, "LEAPMUX_WORKER=1")
-	if len(opts.ExtraEnv) == 0 {
-		return env
-	}
-	return append(envutil.StripByPrefix(env, "LEAPMUX_REMOTE_"), opts.ExtraEnv...)
-}
+// FinalizeAgentEnv and the agent-harness env scrub it applies live in env.go.
 
 func (o Options) startupTimeout() time.Duration {
 	if o.StartupTimeout > 0 {

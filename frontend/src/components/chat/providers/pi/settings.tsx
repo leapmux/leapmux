@@ -7,7 +7,8 @@ import {
   defaultModelId,
   effortIcon,
   effortItems,
-  hasEfforts,
+  effortValidForModel,
+  effortValueForModel,
   modelDisplayName,
   modelItems,
   ModelSelect,
@@ -26,6 +27,11 @@ export function PiSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element 
 
   const models = () => modelItems(props.availableModels)
   const efforts = () => effortItems(props.availableModels, currentModel())
+  // During an optimistic model switch the effort can briefly be a tier the new
+  // model doesn't offer; effortValueForModel falls back to Auto so the
+  // RadioGroup never renders with no selection (mirroring the trigger label
+  // hiding its icon in the same window).
+  const effortValue = () => effortValueForModel(props.availableModels, currentModel(), currentEffort())
 
   return (
     <div class={[styles.settingsPanelColumn, styles.settingsPanelColumnPrimary].join(' ')}>
@@ -34,7 +40,7 @@ export function PiSettingsPanel(props: ProviderSettingsPanelProps): JSX.Element 
         items={efforts()}
         testIdPrefix="effort"
         name={`${menuId}-effort`}
-        current={currentEffort()}
+        current={effortValue()}
         onChange={v => props.onChange?.({ kind: 'effort', value: v })}
         fieldsetClass={styles.settingsFieldsetFirst}
       />
@@ -54,12 +60,16 @@ export function PiTriggerLabel(props: ProviderSettingsPanelProps): JSX.Element {
   const currentModel = () => props.model || defaultModelId(props.availableModels) || DEFAULT_PI_MODEL
   const currentEffort = () => props.effort || DEFAULT_PI_EFFORT
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
-  const hasEffort = () => hasEfforts(props.availableModels, currentModel())
+  // Only show the effort icon when the current effort is one of the current
+  // model's tiers. Pi populates SupportedEfforts per-model at runtime, so an
+  // optimistic model switch can briefly leave an effort the new model doesn't
+  // offer; showing its icon then would contradict the effort RadioGroup.
+  const currentEffortValid = () => effortValidForModel(props.availableModels, currentModel(), currentEffort())
 
   return (
     <>
       {displayName()}
-      <Show when={hasEffort()}>{effortIcon(currentEffort())}</Show>
+      <Show when={currentEffortValid()}>{effortIcon(currentEffort())}</Show>
     </>
   )
 }
