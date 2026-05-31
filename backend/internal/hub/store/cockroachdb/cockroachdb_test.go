@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/docker/go-connections/nat"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
@@ -34,8 +33,8 @@ func TestCockroachDBStore(t *testing.T) {
 		Image:        "cockroachdb/cockroach:latest-v24.3",
 		ExposedPorts: []string{"26257/tcp"},
 		Cmd:          []string{"start-single-node", "--insecure"},
-		WaitingFor: wait.ForSQL("26257/tcp", "pgx", func(host string, port nat.Port) string {
-			return fmt.Sprintf("postgresql://root@%s:%s/defaultdb?sslmode=disable", host, port.Port())
+		WaitingFor: wait.ForSQL("26257/tcp", "pgx", func(host string, port string) string {
+			return fmt.Sprintf("postgresql://root@%s:%s/defaultdb?sslmode=disable", host, port)
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

@@ -1,5 +1,13 @@
 version: "2"
 
+run:
+  # Analyze files guarded by `//go:build integration` (e.g. the store
+  # integration tests) in addition to the default build. Without this,
+  # golangci-lint only sees the default build configuration and silently
+  # skips tag-gated files, letting findings in them slip past `task lint`.
+  build-tags:
+    - integration
+
 linters:
   default: none
   enable:

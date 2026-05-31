@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/docker/go-connections/nat"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -39,8 +38,8 @@ func TestMySQLStore(t *testing.T) {
 			"MYSQL_USER":          "test",
 			"MYSQL_PASSWORD":      "test",
 		},
-		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port nat.Port) string {
-			return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, port.Port())
+		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port string) string {
+			return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, port)
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

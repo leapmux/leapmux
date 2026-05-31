@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/docker/go-connections/nat"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -34,8 +33,8 @@ func TestTiDBStore(t *testing.T) {
 	req := testcontainers.ContainerRequest{
 		Image:        "pingcap/tidb:v8.1.0",
 		ExposedPorts: []string{"4000/tcp"},
-		WaitingFor: wait.ForSQL("4000/tcp", "mysql", func(host string, port nat.Port) string {
-			return fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, port.Port())
+		WaitingFor: wait.ForSQL("4000/tcp", "mysql", func(host string, port string) string {
+			return fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, port)
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -54,7 +53,7 @@ func TestTiDBStore(t *testing.T) {
 	rootDSN := fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, port.Port())
 	rootDB, err := sql.Open("mysql", rootDSN)
 	require.NoError(t, err)
-	defer rootDB.Close()
+	defer func() { _ = rootDB.Close() }()
 
 	_, err = rootDB.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS leapmux_test")
 	require.NoError(t, err)

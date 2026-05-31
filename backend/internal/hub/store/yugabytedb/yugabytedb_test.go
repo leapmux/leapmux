@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/docker/go-connections/nat"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
@@ -34,8 +33,8 @@ func TestYugabyteDBStore(t *testing.T) {
 		Image:        "yugabytedb/yugabyte:2025.2.2.1-b1",
 		ExposedPorts: []string{"5433/tcp"},
 		Cmd:          []string{"bin/yugabyted", "start", "--daemon=false"},
-		WaitingFor: wait.ForSQL("5433/tcp", "pgx", func(host string, port nat.Port) string {
-			return fmt.Sprintf("postgresql://yugabyte@%s:%s/yugabyte?sslmode=disable", host, port.Port())
+		WaitingFor: wait.ForSQL("5433/tcp", "pgx", func(host string, port string) string {
+			return fmt.Sprintf("postgresql://yugabyte@%s:%s/yugabyte?sslmode=disable", host, port)
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

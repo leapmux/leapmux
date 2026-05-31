@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/docker/go-connections/nat"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
@@ -38,8 +37,8 @@ func TestPostgresStore(t *testing.T) {
 			"POSTGRES_PASSWORD": "test",
 			"POSTGRES_DB":       "leapmux_test",
 		},
-		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port nat.Port) string {
-			return fmt.Sprintf("postgres://test:test@%s:%s/leapmux_test?sslmode=disable", host, port.Port())
+		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port string) string {
+			return fmt.Sprintf("postgres://test:test@%s:%s/leapmux_test?sslmode=disable", host, port)
 		}),
 	}
 	pgContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
