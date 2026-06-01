@@ -423,6 +423,24 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			expected: []string{"--model", "sonnet[1m]", "--effort", "high"},
 		},
 		{
+			name:     "opus with ultracode launches with xhigh base",
+			model:    "opus",
+			effort:   "ultracode",
+			expected: []string{"--model", "opus", "--effort", "xhigh"},
+		},
+		{
+			name:     "opus[1m] with ultracode launches with xhigh base",
+			model:    "opus[1m]",
+			effort:   "ultracode",
+			expected: []string{"--model", "opus[1m]", "--effort", "xhigh"},
+		},
+		{
+			name:     "sonnet with ultracode falls back to high",
+			model:    "sonnet",
+			effort:   "ultracode",
+			expected: []string{"--model", "sonnet", "--effort", "high"},
+		},
+		{
 			name:     "sonnet with high effort unchanged",
 			model:    "sonnet",
 			effort:   "high",
@@ -475,6 +493,15 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			model:    "claude-future-preview",
 			effort:   "xhigh",
 			expected: []string{"--model", "claude-future-preview", "--effort", "xhigh"},
+		},
+		{
+			// effortSupported trusts unknown models, but ultracode must not be
+			// assumed: an unknown model we can't confirm is xhigh-capable falls
+			// back to high rather than launching --effort xhigh it may reject.
+			name:     "unknown model with ultracode falls back to high",
+			model:    "claude-future-preview",
+			effort:   "ultracode",
+			expected: []string{"--model", "claude-future-preview", "--effort", "high"},
 		},
 	}
 	for _, tt := range tests {

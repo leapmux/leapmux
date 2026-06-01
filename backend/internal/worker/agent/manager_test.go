@@ -18,19 +18,25 @@ import (
 )
 
 type stubProvider struct {
-	groups []*leapmuxv1.AvailableOptionGroup
+	groups   []*leapmuxv1.AvailableOptionGroup
+	settings *leapmuxv1.AgentSettings
 }
 
-func (s *stubProvider) AgentID() string                                          { return "stub" }
-func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error          { return nil }
-func (s *stubProvider) SendRawInput([]byte) error                                { return nil }
-func (s *stubProvider) Stop()                                                    {}
-func (s *stubProvider) IsStopped() bool                                          { return false }
-func (s *stubProvider) DiscardOutput()                                           {}
-func (s *stubProvider) ClearContext() (string, bool)                             { return "", false }
-func (s *stubProvider) Wait() error                                              { return nil }
-func (s *stubProvider) Stderr() string                                           { return "" }
-func (s *stubProvider) CurrentSettings() *leapmuxv1.AgentSettings                { return &leapmuxv1.AgentSettings{} }
+func (s *stubProvider) AgentID() string                                 { return "stub" }
+func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
+func (s *stubProvider) SendRawInput([]byte) error                       { return nil }
+func (s *stubProvider) Stop()                                           {}
+func (s *stubProvider) IsStopped() bool                                 { return false }
+func (s *stubProvider) DiscardOutput()                                  {}
+func (s *stubProvider) ClearContext() (string, bool)                    { return "", false }
+func (s *stubProvider) Wait() error                                     { return nil }
+func (s *stubProvider) Stderr() string                                  { return "" }
+func (s *stubProvider) CurrentSettings() *leapmuxv1.AgentSettings {
+	if s.settings != nil {
+		return s.settings
+	}
+	return &leapmuxv1.AgentSettings{}
+}
 func (s *stubProvider) HandleOutput([]byte)                                      {}
 func (s *stubProvider) AvailableModels() []*leapmuxv1.AvailableModel             { return nil }
 func (s *stubProvider) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup { return s.groups }
@@ -306,6 +312,24 @@ func TestManager_AvailableOptionGroupsPrefersRuntimeGroups(t *testing.T) {
 	require.Len(t, staticGroups, 1)
 	assert.Equal(t, OptionGroupKeyPrimaryAgent, staticGroups[0].Key)
 	assert.Equal(t, OpenCodePrimaryAgentBuild, staticGroups[0].Options[0].Id)
+}
+
+func TestManager_CurrentSettings(t *testing.T) {
+	m := NewManager(nil)
+
+	// No agent registered → nil, so callers fall back to their own value.
+	assert.Nil(t, m.CurrentSettings("missing-agent"))
+
+	// Registered agent → the provider's in-memory confirmed settings, letting
+	// callers read back the effort the agent actually confirmed (e.g. an
+	// ultracode request downgraded to xhigh) without a DB round-trip.
+	m.mu.Lock()
+	m.agents["running-agent"] = &stubProvider{settings: &leapmuxv1.AgentSettings{Effort: "xhigh"}}
+	m.mu.Unlock()
+
+	got := m.CurrentSettings("running-agent")
+	require.NotNil(t, got)
+	assert.Equal(t, "xhigh", got.GetEffort())
 }
 
 func TestManager_PreloadCache(t *testing.T) {

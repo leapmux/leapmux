@@ -93,17 +93,6 @@ func TestStripByPrefix_EmptyInputs(t *testing.T) {
 	assert.Equal(t, []string{}, StripByPrefix([]string{}, "X_"))
 }
 
-// hasKey reports whether env contains an entry whose name (the part
-// before '=') case-insensitively matches key.
-func hasKey(env []string, key string) bool {
-	for _, e := range env {
-		if name, _, _ := strings.Cut(e, "="); strings.EqualFold(name, key) {
-			return true
-		}
-	}
-	return false
-}
-
 // getValue returns the value of the first env entry whose name matches
 // key (case-insensitive), or "", false if no such entry exists.
 func getValue(env []string, key string) (string, bool) {
@@ -127,9 +116,9 @@ func TestScrubAppImageEnv_InsideAppImage_DropsKeys(t *testing.T) {
 
 	require.NotNil(t, cmd.Env, "ScrubAppImageEnv must materialize cmd.Env when APPIMAGE is set")
 	for _, key := range AppImageEnvKeys {
-		assert.False(t, hasKey(cmd.Env, key), "env var %q should be scrubbed inside an AppImage", key)
+		assert.False(t, HasKey(cmd.Env, key), "env var %q should be scrubbed inside an AppImage", key)
 	}
-	assert.True(t, hasKey(cmd.Env, "PATH_SHOULD_SURVIVE"), "non-AppImage env vars must not be touched")
+	assert.True(t, HasKey(cmd.Env, "PATH_SHOULD_SURVIVE"), "non-AppImage env vars must not be touched")
 }
 
 func TestScrubAppImageEnv_OutsideAppImage_PreservesEnv(t *testing.T) {
@@ -227,7 +216,7 @@ func TestScrubAppImageEnv_DropsAppRunWholesaleVars(t *testing.T) {
 		"GTK_IM_MODULE_FILE", "GDK_PIXBUF_MODULE_FILE", "GIO_EXTRA_MODULES",
 		"GDK_BACKEND",
 	} {
-		assert.False(t, hasKey(cmd.Env, key), "env var %q must be wholesale-dropped inside an AppImage", key)
+		assert.False(t, HasKey(cmd.Env, key), "env var %q must be wholesale-dropped inside an AppImage", key)
 	}
 }
 
@@ -348,7 +337,7 @@ func TestScrubAppImageEnv_DropsPathListsWithNoUserOriginal(t *testing.T) {
 	ScrubAppImageEnv(cmd)
 
 	for _, key := range []string{"LD_LIBRARY_PATH", "PYTHONPATH", "PERLLIB"} {
-		assert.False(t, hasKey(cmd.Env, key),
+		assert.False(t, HasKey(cmd.Env, key),
 			"%s must be dropped when only AppDir entries remain (rather than set-to-empty)", key)
 	}
 }
@@ -403,7 +392,7 @@ func TestScrubAppImageEnvSlice_StripsAppDirFromPathLists(t *testing.T) {
 	ldVal, ok := getValue(got, "LD_LIBRARY_PATH")
 	require.True(t, ok)
 	assert.Equal(t, "/opt/cuda/lib64", ldVal)
-	assert.False(t, hasKey(got, "PYTHONPATH"),
+	assert.False(t, HasKey(got, "PYTHONPATH"),
 		"PYTHONPATH must be dropped when only AppDir entries remain")
 }
 
@@ -426,5 +415,5 @@ func TestScrubAppImageEnv_PreservesCallerSetEnv(t *testing.T) {
 		return false
 	}
 	assert.True(t, hasEntry(cmd.Env, "TERM=xterm-256color"), "caller's pre-seeded env must survive the scrub")
-	assert.False(t, hasKey(cmd.Env, "ARGV0"), "ARGV0 must be scrubbed")
+	assert.False(t, HasKey(cmd.Env, "ARGV0"), "ARGV0 must be scrubbed")
 }

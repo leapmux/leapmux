@@ -750,17 +750,51 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 
+		// The effort the agent actually confirmed can differ from what was
+		// requested, so we report the confirmed value -- captured below from
+		// whichever path runs -- rather than the request:
+		//   - Selecting ultracode on an account without the workflows
+		//     entitlement silently lands on xhigh.
+		//   - Selecting Auto (or a model switch, which resets effort to Auto)
+		//     relaunches without --effort and the CLI resolves Auto to a
+		//     concrete level (e.g. "high"). Reporting that resolved level rather
+		//     than "auto" is INTENTIONAL: the notification states the effort the
+		//     session is actually running at. Do not "fix" this back to "auto".
+		// Defaults to the requested value for an offline edit or a failed
+		// restart, where no running agent confirmed anything.
+		notifyEffort := newEffort
+
 		// If the agent is currently running, try a live update first.
-		// Providers that support it (e.g. Codex) apply settings to the
-		// next turn without a restart. Providers that don't (e.g. Claude
-		// Code) return false and we fall back to stop+restart.
+		// Providers apply what they can without a restart (Codex applies to
+		// the next turn; Claude Code applies model/effort/permission changes
+		// via apply_flag_settings) and return true. They return false only for
+		// changes they can't apply live -- e.g. Claude Code switching effort
+		// back to auto, which needs a relaunch without --effort -- and we then
+		// fall back to stop+restart.
 		if svc.Agents.HasAgent(agentID) {
+			// Hold the per-agent lifecycle lock across the live update and the
+			// confirmed-effort readback so a concurrent UpdateAgentSettings for
+			// the same agent can't land between them and make us report its
+			// effort instead of ours. The live update writes the confirmed
+			// effort into the agent's in-memory state synchronously
+			// (refreshSettingsFromAgent), so reading it back while still holding
+			// the lock yields exactly the value this update confirmed.
+			// RestartAgent takes this same (non-reentrant) lock itself, so the
+			// restart path runs outside this section and reports the confirmed
+			// settings it returns directly.
+			unlock := svc.Agents.LockAgent(agentID)
 			updated := svc.Agents.UpdateSettings(agentID, &leapmuxv1.AgentSettings{
 				Model:          newModel,
 				Effort:         newEffort,
 				PermissionMode: newPermissionMode,
 				ExtraSettings:  newExtraSettings,
 			})
+			if updated {
+				if confirmed := svc.Agents.CurrentSettings(agentID); confirmed != nil && confirmed.GetEffort() != "" {
+					notifyEffort = confirmed.GetEffort()
+				}
+			}
+			unlock()
 
 			if !updated {
 				resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
@@ -801,6 +835,9 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, newModel, newEffort, newPermissionMode, newExtraSettings, confirmedSettings); err != nil {
 						slog.Warn("failed to persist confirmed settings after restart", "agent_id", agentID, "error", err)
 					}
+					if confirmedSettings != nil && confirmedSettings.GetEffort() != "" {
+						notifyEffort = confirmedSettings.GetEffort()
+					}
 					slog.Info("agent restarted with new settings",
 						"agent_id", agentID, "model", newModel, "effort", newEffort)
 				}
@@ -819,11 +856,11 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				"oldLabel": modelLabel(oldID), "newLabel": modelLabel(newModel),
 			}
 		}
-		if dbAgent.Effort != newEffort {
+		if dbAgent.Effort != notifyEffort {
 			oldID := effortOrDefault(dbAgent.Effort, dbAgent.AgentProvider)
 			changes["effort"] = map[string]string{
-				"old": oldID, "new": newEffort,
-				"oldLabel": effortLabel(oldID), "newLabel": effortLabel(newEffort),
+				"old": oldID, "new": notifyEffort,
+				"oldLabel": effortLabel(oldID), "newLabel": effortLabel(notifyEffort),
 			}
 		}
 		if dbAgent.PermissionMode != newPermissionMode {

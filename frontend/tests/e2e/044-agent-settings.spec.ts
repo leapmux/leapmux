@@ -165,6 +165,52 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Escape')
   })
 
+  test('ultracode effort is opus-only and selectable', async ({ authenticatedWorkspace, page }) => {
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    await expect(trigger).toBeVisible()
+
+    // Default (Sonnet): ultracode must not be offered (not xhigh-capable).
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-ultracode"]')).not.toBeVisible()
+
+    // Switch to Opus — ultracode appears as the top concrete effort tier.
+    await page.locator('[data-testid="model-opus"]').click()
+    await expect(trigger).toContainText('Opus')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-ultracode"]')).toBeVisible()
+
+    // Select ultracode. CI accounts lack the dynamic-workflows entitlement, so
+    // the CLI gracefully downgrades to xhigh (apply_flag_settings no-ops and
+    // get_settings reports ultracode:false). We therefore assert the agent
+    // stays functional rather than that the selection persists as ultracode.
+    await page.locator('[data-testid="effort-ultracode"]').click()
+    await waitForSettingsIdle(page)
+
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    // Use a distinctive sentinel word as the answer, not a number. Don't use
+    // lastAssistantBubble(): the per-turn "Took Ns" meta bubble also carries
+    // data-role="agent" and can be the last one, so .last() races it — we
+    // filter by text instead. A numeric answer would be unsafe here because the
+    // "Took Ns" bubble's duration (e.g. "Took 11s") shares data-role="agent"
+    // and would substring-match a numeric sentinel like "11", letting the test
+    // pass on the duration bubble even if the agent never answered.
+    await page.keyboard.type('Reply with exactly the word PINEAPPLE and nothing else.')
+    await page.keyboard.press('Meta+Enter')
+    await expect(page.locator(ASSISTANT_BUBBLE_SELECTOR).filter({ hasText: 'PINEAPPLE' })).toBeVisible()
+
+    // Switch back to Sonnet — ultracode disappears again.
+    await openSettingsMenu(page)
+    await page.locator('[data-testid="model-sonnet"]').click()
+    await expect(trigger).toContainText('Sonnet')
+    await waitForSettingsIdle(page)
+    await openSettingsMenu(page)
+    await expect(page.locator('[data-testid="effort-ultracode"]')).not.toBeVisible()
+    await page.keyboard.press('Escape')
+  })
+
   test('Extended Thinking label reflects model', async ({ authenticatedWorkspace, page }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     const onOpt = page.locator('[data-testid="thinking-on"]')

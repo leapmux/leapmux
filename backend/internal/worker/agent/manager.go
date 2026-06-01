@@ -405,6 +405,21 @@ func (m *Manager) UpdateSettings(agentID string, s *leapmuxv1.AgentSettings) boo
 	return p.UpdateSettings(s)
 }
 
+// CurrentSettings returns a snapshot of the running agent's confirmed settings,
+// or nil if no agent is running with that ID. The snapshot reflects the
+// in-memory state that the live-update (refreshSettingsFromAgent) and restart
+// paths write synchronously, so callers can read back the model/effort the
+// agent actually confirmed without a DB round-trip.
+func (m *Manager) CurrentSettings(agentID string) *leapmuxv1.AgentSettings {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return p.CurrentSettings()
+}
+
 // HasAgent returns true if an agent is running with the given agent ID.
 func (m *Manager) HasAgent(agentID string) bool {
 	m.mu.RLock()
