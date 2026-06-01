@@ -28,7 +28,7 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-// `closeFailureToast` is intentionally unmocked so the close tests
+// `closeResultToast` is intentionally unmocked so the close tests
 // exercise its real implementation, which formats the worktree-failure
 // message and forwards to the mocked showWarnToast.
 vi.mock('~/api/workerRpc', () => ({

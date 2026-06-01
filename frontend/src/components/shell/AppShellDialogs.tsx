@@ -335,7 +335,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             gitToplevel={state().gitToplevel}
             branchName={state().branchName}
             tabs={state().tabs}
-            closeTab={props.tabOps.closeTabWithAction}
+            closeWorktreeTabs={props.tabOps.closeWorktreeTabs}
             onBranchChanged={newBranch => props.onBranchChanged?.(state().workerId, state().gitToplevel, newBranch)}
             onClose={() => props.dialogs.deleteBranch.close()}
           />

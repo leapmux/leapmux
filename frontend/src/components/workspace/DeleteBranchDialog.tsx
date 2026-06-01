@@ -1,18 +1,19 @@
 import type { Component } from 'solid-js'
+import type { WorktreeCloseSummary } from '~/components/shell/closeResultToast'
+import type { InspectBranchDeletionResponse } from '~/generated/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
 import { createMemo, createSignal, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
 import { Spinner } from '~/components/common/Spinner'
-import { showInfoToast } from '~/components/common/Toast'
+import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { BranchSelect, partitionBranches } from '~/components/workspace/BranchSelect'
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
 import { BranchStatusInfo, hasPushableWork } from '~/components/workspace/BranchStatusInfo'
 import { PushBranchButton } from '~/components/workspace/PushBranchButton'
 import { useOrg } from '~/context/OrgContext'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useDeleteBranchInspect } from '~/hooks/useDeleteBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
@@ -52,13 +53,17 @@ interface DeleteBranchDialogProps {
   /** Snapshot of tabs in the branch group at dialog-open time. */
   tabs: Tab[]
   /**
-   * Close one tab and its worktree, routing through the parent's
-   * shared tab-close helper so the close path runs the full cleanup
-   * (control-store, attachments, xterm instance disposal, close-failure
-   * toast, focus migration, empty-floating-window prune) the same way
-   * a normal tab-close does.
+   * Close every tab in the group with WorktreeAction.REMOVE and resolve
+   * with what actually happened to the worktree. Routes through the
+   * parent's shared close pipeline so each tab runs the full cleanup
+   * (control-store, attachments, xterm instance disposal, per-tab
+   * close-failure toast, focus migration, empty-floating-window prune),
+   * then folds the per-close outcomes into one summary so the dialog can
+   * toast the truth (removed / still referenced elsewhere / failed /
+   * couldn't confirm) instead of optimistically promising a removal.
    */
-  closeTab: (tab: Tab, worktreeAction: WorktreeAction) => void
+  closeWorktreeTabs: (tabs: readonly Tab[]) => Promise<WorktreeCloseSummary>
+
   /**
    * Notified after a non-worktree delete with the branch the working
    * directory was switched to. Parents route this into
@@ -70,12 +75,81 @@ interface DeleteBranchDialogProps {
   onClose: () => void
 }
 
+/**
+ * Maps a folded worktree-close outcome (from closeWorktreeTabs) plus
+ * whether the worktree was tracked at inspect time to the info toast the
+ * dialog should show, or null when it must stay silent (a FAILED close
+ * already warn-toasted its own git error + path for manual cleanup).
+ *
+ * Precedence is ground-truth-first: a real REMOVED / STILL_REFERENCED
+ * outcome reported by the worker wins over the inspect-time
+ * `trackedAtInspect` snapshot, which can be stale — the worktree may have
+ * been adopted (gained a DB row) between inspect and confirm. Exported so
+ * the precedence can be unit-tested in isolation, without rendering.
+ */
+export function worktreeRemovalToast(
+  outcome: WorktreeCloseSummary,
+  trackedAtInspect: boolean,
+): string | null {
+  if (outcome.removed) {
+    // A close brought the worktree's ref-count to zero and the worker
+    // removed it. Ground truth, so it wins over both the stale-snapshot
+    // `trackedAtInspect` check and a sibling close's partial failure
+    // (which already warn-toasted its own detail).
+    return 'Worktree removed'
+  }
+  if (outcome.failed) {
+    // The close pipeline already warn-toasted the git error and the
+    // worktree path for manual cleanup (toastCloseFailure); don't also
+    // claim success.
+    return null
+  }
+  if (outcome.stillReferenced) {
+    // A close dropped this tab's link but the worker still counted
+    // siblings — tabs in another branch group, or a now-stale snapshot —
+    // so it correctly kept the worktree. Only a tracked worktree can ever
+    // report STILL_REFERENCED (an untracked one degrades REMOVE to KEEP),
+    // so this wins over the stale empty-`worktreeId` snapshot below: a
+    // worktree adopted between inspect and confirm is tracked-and-in-use,
+    // not "untracked".
+    return 'Tabs closed; worktree still in use elsewhere'
+  }
+  if (outcome.unknown) {
+    // At least one close returned no definitive outcome — its RPC was
+    // rejected, there was no worker to reach, or the local close threw
+    // (each already warn-toasted its own detail). The worker may or may not
+    // have removed the worktree, so we can't honestly claim either "removed"
+    // or "not removed" — say it couldn't be confirmed. Ranks below the
+    // definitive removed/failed/still-referenced signals (which come from
+    // tabs that DID get a verdict) and above the stale inspect snapshot.
+    return 'Tabs closed; could not confirm worktree removal'
+  }
+  if (!trackedAtInspect) {
+    // No DB row backed this worktree (created outside LeapMux via `git
+    // worktree add`) and nothing removed it, so REMOVE degraded to KEEP
+    // server-side and the dir stays on disk — say so rather than claiming
+    // a removal.
+    return 'Tabs closed (worktree was not tracked)'
+  }
+  // Tracked, but no close removed it, failed, or reported it still
+  // referenced: every close degraded to KEEP because its worktree link was
+  // already gone (e.g. a startup-race strand the worker's worktree GC will
+  // reclaim). Nothing was removed — say so without implying another tab is
+  // holding it.
+  return 'Tabs closed; worktree not removed'
+}
+
 export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) => {
   const org = useOrg()
-  // Dialog is locked to (props.workerId, props.gitToplevel) — no worker
-  // selector, no directory picker, no git-mode state — so the
-  // useWorkerDialog scaffolding would be dead weight. The submit
-  // primitive on its own gives us the spinner + error sink.
+  // The dialog is locked to (props.workerId, props.gitToplevel) — no
+  // worker selector, no directory picker, no git-mode state. Both delete
+  // paths (see handleWorktreeDelete vs handleBranchDelete) drive `run` so
+  // the dialog holds open under the busy overlay until the work settles:
+  // the worktree path closes every tab with REMOVE and awaits the
+  // worker's verdict (so its toast reflects the real outcome rather than
+  // an optimistic guess); the branch path awaits DeleteBranch. `error`/
+  // `setError` also back the inspect RPC's error sink (see
+  // useDeleteBranchInspect's onError below), which runs while open.
   const { submitting, error, setError, run } = useDialogSubmit({ fallback: 'Delete failed' })
 
   // The inspect RPC fans out path-info + snapshot + branches concurrently
@@ -130,6 +204,8 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
     const i = info()
     if (!i)
       return false
+    // Gate re-clicks while either delete is in flight (both paths drive
+    // `run`, so the busy overlay is up and a second confirm must no-op).
     if (submitting.loading())
       return false
     if (i.isWorktree)
@@ -137,85 +213,83 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
     return !isOnlyBranch() && switchTo() !== ''
   }
 
-  const handleDelete = async () => {
+  // Worktree removal is coupled to the tab closes — the same path the
+  // last-tab-close dialog uses — rather than a dedicated worktree-removal
+  // RPC. It runs through `run` so the dialog holds open under the busy
+  // overlay while the closes settle, then toasts the REAL outcome instead
+  // of optimistically promising a removal that may not happen.
+  const handleWorktreeDelete = (i: InspectBranchDeletionResponse) => {
+    void run(async () => {
+      // closeWorktreeTabs hands every tab to closeTabWithAction with
+      // WorktreeAction.REMOVE (local cleanup is synchronous, so the tabs
+      // vanish immediately) and awaits the worker's verdict for each. The
+      // worker ref-counts worktree_tabs (type-agnostic — FILE tabs
+      // included) and runs `git worktree remove` + branch delete + DB
+      // soft-delete once the LAST referencing tab closes, serializing
+      // concurrent closes per worktree so there is no double-remove.
+      const outcome = await props.closeWorktreeTabs(props.tabs)
+      props.onClose()
+      // Toast the REAL outcome. worktreeRemovalToast owns the precedence
+      // (ground truth over the stale inspect-time worktreeId snapshot);
+      // null means stay silent because a FAILED close already warned.
+      const message = worktreeRemovalToast(outcome, Boolean(i.worktreeId))
+      if (message)
+        showInfoToast(message)
+    })
+  }
+
+  // Non-worktree branch delete keeps the tabs running on the switched-to
+  // branch, so there's nothing to close; the user is mid-decision (which
+  // branch to switch to). It runs through `run` so the dialog holds open
+  // under the busy overlay until DeleteBranch (checkout switch-to + branch
+  // -D) completes; a failure surfaces inline and the user can fix the
+  // switch-to target or retry without losing the dialog.
+  const handleBranchDelete = (i: InspectBranchDeletionResponse) => {
+    void run(async () => {
+      const target = switchTo()
+      await workerRpc.deleteBranch(props.workerId, {
+        orgId: org.orgId(),
+        workerId: props.workerId,
+        path: props.gitToplevel,
+        branchToDelete: i.branchName,
+        switchToBranch: target,
+      })
+      // The delete succeeded on the worker. Surface success and close
+      // BEFORE the stamp so a throw from onBranchChanged can't propagate
+      // into `run`'s catch and masquerade as a "Delete failed" — leaving
+      // the user staring at a failure banner for an op that worked.
+      showInfoToast('Branch deleted')
+      props.onClose()
+      // deleteBranchInDir routes through checkoutBranchInDir, which resolves
+      // a remote ref like 'origin/foo' to the local branch 'foo' before
+      // deleting. Stamp the local name so the sidebar label matches HEAD.
+      // ChangeBranchDialog stamps via the same helper. Isolated because
+      // the stamp is cosmetic (sidebar label) and must not undo success.
+      try {
+        props.onBranchChanged?.(resolveStampedBranch(target, i.branches))
+      }
+      catch (err) {
+        showWarnToast('Branch deleted, but failed to update the sidebar label', err)
+      }
+    })
+  }
+
+  const handleDelete = () => {
     const i = info()
     if (!i)
       return
-    await run(async () => {
-      if (i.isWorktree) {
-        // Worktree removal is driven by ForceRemoveWorktree against the
-        // worktree's DB row id, which the inspect RPC returns alongside
-        // is_worktree. This decouples the deletion from tab existence:
-        // a branch group with only FILE tabs (or no tabs at all once
-        // they've all been closed) used to be a silent no-op because
-        // the FILE close path doesn't ref-count the worktree on the
-        // worker side.
-        if (i.worktreeId) {
-          // Await ForceRemoveWorktree BEFORE closing the tabs. The
-          // close calls are fire-and-forget; closing them first and
-          // then catching a worktree-remove failure leaves the user
-          // staring at a "Delete failed" banner above an already-
-          // empty branch group with no path to retry. Order matters
-          // even though closing is for UI cleanup only (control-
-          // store clear for agents, xterm instance disposal for
-          // terminals, file-path revoke for FILE).
-          await workerRpc.forceRemoveWorktree(props.workerId, {
-            worktreeId: i.worktreeId,
-          })
-          // Tabs are closed with KEEP — the backend already removed
-          // the worktree, so the per-tab last-close pipeline must
-          // not race ForceRemoveWorktree by trying again.
-          for (const tab of props.tabs)
-            props.closeTab(tab, WorktreeAction.KEEP)
-          showInfoToast('Worktree removed')
-        }
-        else {
-          // Untracked worktree edge case: worktree dir exists on disk
-          // but no DB row is registered (commonly happens when the
-          // user created the worktree from a terminal via `git
-          // worktree add` before opening any LeapMux tab inside it).
-          // The worker's proto contract documents this exact case:
-          // when GetWorktreeByPath returns ErrNoRows, worktree_id is
-          // returned empty and the dialog "falls back to closing tabs
-          // through their own pipeline." Hard-failing here used to
-          // strand the user with no UI path to clean up the worktree
-          // the worker can clearly see.
-          //
-          // Fall back to closing tabs with REMOVE: each tab's close
-          // pipeline tries to ref-count the worktree down to zero
-          // through its normal pipeline. The on-disk worktree dir
-          // can't be removed without a DB row backing it, but at
-          // least the user's tabs go away and the branch group
-          // collapses in the sidebar.
-          for (const tab of props.tabs)
-            props.closeTab(tab, WorktreeAction.REMOVE)
-          showInfoToast('Tabs closed (worktree was not tracked)')
-        }
-      }
-      else {
-        const target = switchTo()
-        await workerRpc.deleteBranch(props.workerId, {
-          orgId: org.orgId(),
-          workerId: props.workerId,
-          path: props.gitToplevel,
-          branchToDelete: i.branchName,
-          switchToBranch: target,
-        })
-        // The worker's deleteBranchInDir routes through checkoutBranchInDir,
-        // which resolves a remote ref like 'origin/foo' to the local
-        // branch 'foo' before deleting. Stamp the local name so the
-        // sidebar label matches HEAD. ChangeBranchDialog uses the same
-        // helper for the symmetric reason.
-        props.onBranchChanged?.(resolveStampedBranch(target, i.branches))
-        showInfoToast('Branch deleted')
-      }
-      props.onClose()
-    })
+    if (i.isWorktree)
+      handleWorktreeDelete(i)
+    else
+      handleBranchDelete(i)
   }
 
   return (
     <WorkerDialogShell
       title="Delete branch"
+      // Drives the busy overlay for both delete paths while their `run`
+      // is in flight (worktree: closing tabs + awaiting removal; branch:
+      // DeleteBranch). The inspect RPC's error sink also surfaces here.
       submitting={submitting.loading()}
       error={error()}
       onClose={props.onClose}

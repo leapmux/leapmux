@@ -34,9 +34,14 @@ test.describe('Branch context menu', () => {
     await expect(branchRow).toBeVisible()
     await branchRow.hover()
 
-    // The three-dot button only appears on hover; sidebarActions makes
-    // it visible once the row has :hover. Click it.
-    const menuTrigger = branchRow.locator('button').last()
+    // Target the three-dot trigger by its aria-expanded attribute, not
+    // `.locator('button').last()`: DropdownMenu renders its items as
+    // <button role="menuitem"> inside the row's popover (display:none
+    // while closed), so `.last()` would resolve to the hidden "Delete
+    // branch..." item and never become clickable. Only the trigger
+    // carries aria-expanded (same approach as the worker context menu in
+    // 027-tunnel-ui).
+    const menuTrigger = branchRow.locator('[aria-expanded]').first()
     await menuTrigger.click()
 
     await expect(page.getByRole('menuitem', { name: 'Change branch...' })).toBeVisible()
@@ -69,7 +74,7 @@ test.describe('Branch context menu', () => {
 
     const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
     await branchRow.hover()
-    await branchRow.locator('button').last().click()
+    await branchRow.locator('[aria-expanded]').first().click()
     await page.getByRole('menuitem', { name: 'Delete branch...' }).click()
 
     await expect(page.getByRole('heading', { name: 'Delete branch' })).toBeVisible()
@@ -81,17 +86,20 @@ test.describe('Branch context menu', () => {
     await page.getByRole('button', { name: 'Delete branch' }).click()
     await page.getByRole('button', { name: 'Confirm?' }).click()
 
+    // The dialog holds open under its busy overlay until the coupled tab
+    // closes report back, then dismisses.
     await expect(page.getByRole('heading', { name: 'Delete branch' })).not.toBeVisible()
 
-    // Worktree directory and branch are deleted in the background by the
-    // worker after the close RPCs return.
+    // Removal is coupled to the tab closes (WorktreeAction.REMOVE), so the
+    // worker tears down the worktree dir + branch in the background once
+    // the last referencing tab closes; failures surface via toast.
     await expect(async () => {
       expect(existsSync(worktreeDir)).toBe(false)
       expect(branchExists(repoDir, 'delete-branch')).toBe(false)
     }).toPass()
   })
 
-  test('change branch dialog opens with the current branch shown', async ({
+  test('change branch dialog opens in switch-to mode with all git options', async ({
     page,
     leapmuxServer,
   }) => {
@@ -114,11 +122,15 @@ test.describe('Branch context menu', () => {
 
     const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
     await branchRow.hover()
-    await branchRow.locator('button').last().click()
+    await branchRow.locator('[aria-expanded]').first().click()
     await page.getByRole('menuitem', { name: 'Change branch...' }).click()
 
     await expect(page.getByRole('heading', { name: 'Change branch' })).toBeVisible()
-    await expect(page.getByRole('dialog').getByText(/change-branch/)).toBeVisible()
+    // The dialog (via GitOptions) does not render the current branch name
+    // as text -- the switch-to picker excludes the current branch and
+    // there's no standalone "current branch" label -- so assert the
+    // default mode state instead: SwitchBranch is preselected.
+    await expect(page.getByRole('dialog').getByRole('radio', { name: 'Switch to branch' })).toBeChecked()
 
     // Switch-to mode is the default; the three radios are visible.
     await expect(page.getByRole('dialog').getByText('Switch to branch')).toBeVisible()

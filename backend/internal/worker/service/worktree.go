@@ -699,7 +699,10 @@ func (svc *Context) attachWorktreeIfPresent(ctx context.Context, result *gitMode
 }
 
 // registerTabForWorktree associates a tab with a worktree.
-// No-op if worktreeID is empty.
+// No-op if worktreeID is empty. Used for AGENT/TERMINAL links only (FILE
+// links go through FileTabPathStore.linkFileTabToWorktree), so org_id is
+// left "" -- agent/terminal ids are globally unique, so worktree_tab_liveness
+// never needs the org to disambiguate them.
 func (svc *Context) registerTabForWorktree(worktreeID string, tabType leapmuxv1.TabType, tabID string) {
 	if worktreeID == "" {
 		return
@@ -712,6 +715,33 @@ func (svc *Context) registerTabForWorktree(worktreeID string, tabType leapmuxv1.
 		slog.Warn("failed to register tab for worktree",
 			"worktree_id", worktreeID, "tab_id", tabID, "error", err)
 	}
+}
+
+// registerTabForWorktreeUnlessClosed links a freshly-started tab to its
+// worktree, UNLESS the tab was already closed during startup. OpenAgent /
+// OpenTerminal return (and the frontend renders the tab) before the startup
+// goroutine reaches the link step, so a quick Delete-branch / close can fire a
+// REMOVE close that finds no association yet (degrades to KEEP) and THEN this
+// link would strand a worktree_tabs row pointing at an already-closed tab —
+// its ref-count never reaches zero, leaking the worktree dir.
+//
+// closedDuringStartup is computed by the caller from a post-phase-0 re-read of
+// the tab row (the read query differs per tab type: getAgentByID vs
+// GetTerminalForReady). A close can still slip into the window between that
+// re-read and AddWorktreeTab, and a transient re-read error leaves
+// closedDuringStartup false so we fall through and link; either way the orphan
+// reconciler's worktree GC reclaims the resulting strand (a worktree whose
+// links are all dead across two consecutive passes is removed), so this guard
+// is just the fast path for the common close-before-startup case. Shared by
+// runAgentStartup / runTerminalStartup so the skip-vs-link decision can't drift
+// between the two paths.
+func (svc *Context) registerTabForWorktreeUnlessClosed(worktreeID string, tabType leapmuxv1.TabType, tabID string, closedDuringStartup bool) {
+	if closedDuringStartup {
+		slog.Info("tab closed during startup; skipping worktree link",
+			"tab_type", tabType, "tab_id", tabID, "worktree_id", worktreeID)
+		return
+	}
+	svc.registerTabForWorktree(worktreeID, tabType, tabID)
 }
 
 func (svc *Context) ensureTrackedWorktree(ctx context.Context, worktreePath string) (string, error) {
@@ -757,6 +787,16 @@ func (svc *Context) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 		BranchName:   branchName,
 	}); err != nil {
 		return "", err
+	}
+	// Adopt any already-open FILE tabs under this newly-tracked worktree
+	// so they ref-count it. Without this, a file opened before the
+	// worktree row existed stays unlinked and a sibling close could
+	// `git worktree remove` while that editor is still mounted. Use
+	// bgCtx() (not the request ctx) so a dialog dismissed / RPC cancelled
+	// mid-adoption can't abort the loop partway and leave some FILE tabs
+	// unlinked — the same detached-write rationale as registerTabForWorktree.
+	if svc.FileTabPaths != nil {
+		svc.FileTabPaths.BackfillWorktreeLinks(bgCtx(), canonicalPath)
 	}
 	return wtID, nil
 }
@@ -873,6 +913,53 @@ func (svc *Context) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 	// "C:\\Users\\foo", which is both ugly in the UI (failure_detail
 	// is shown to end users) and breaks substring assertions in tests.
 	return fmt.Errorf(`git worktree remove "%s": %w`, wt.WorktreePath, removeErr)
+}
+
+// ReapOrphanWorktree removes a worktree the orphan reconciler determined
+// has no live tab references — every worktree_tabs link is a startup-race
+// strand pointing at a closed/deleted tab. It holds the per-worktree
+// removal lock and re-checks live refs under it, so it can never race a
+// concurrent REMOVE close or a tab that linked the worktree between the
+// reconciler's scan and this call. On success it also drops the dangling
+// strand links: worktrees soft-delete, so the worktree_tabs ON DELETE
+// CASCADE never fires for them, and the rows would otherwise over-count a
+// future worktree adopted at the same path.
+func (svc *Context) ReapOrphanWorktree(ctx context.Context, wt db.Worktree) {
+	mu := svc.worktreeRemovalLock(wt.ID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-check under the lock: a close or a late startup link could have
+	// changed the live-ref count since the reconciler scanned.
+	live, err := svc.Queries.CountLiveWorktreeRefs(ctx, wt.ID)
+	if err != nil {
+		slog.Warn("orphan worktree GC: count live refs", "worktree_id", wt.ID, "error", err)
+		return
+	}
+	if live != 0 {
+		// A tab linked it after the scan — no longer an orphan.
+		return
+	}
+	if err := svc.removeWorktreeFromDisk(wt, true); err != nil {
+		// Give up. `git worktree remove --force` failed (e.g. the worktree is
+		// locked or its .git admin dir is corrupt) and the directory is still
+		// on disk -- only the user can clear that by hand. We do NOT retry:
+		// removeWorktreeFromDisk has already soft-deleted the row, so this
+		// worktree drops out of ListOrphanCandidateWorktrees (it filters
+		// deleted_at IS NULL) and never resurfaces as a GC candidate. The
+		// leftover soft-deleted row and its strand links are harmless and
+		// self-clean -- the periodic cleanup hard-deletes the row past the
+		// retention window and the worktree_tabs ON DELETE CASCADE drops the
+		// strands with it.
+		slog.Warn("orphan worktree GC: `git worktree remove` failed; leaving the directory on disk for manual cleanup",
+			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "error", err)
+		return
+	}
+	if err := svc.Queries.DeleteWorktreeTabsByWorktreeID(bgCtx(), wt.ID); err != nil {
+		slog.Warn("orphan worktree GC: drop strand links", "worktree_id", wt.ID, "error", err)
+	}
+	slog.Info("orphan worktree GC: reclaimed unreferenced worktree",
+		"worktree_id", wt.ID, "worktree_path", wt.WorktreePath)
 }
 
 func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBranch, error) {
@@ -1002,8 +1089,11 @@ func (svc *Context) unregisterTab(tabType leapmuxv1.TabType, tabID string) {
 // removeTabFromWorktree drops the tab→worktree association row for a
 // caller that already holds the worktree row. Used by the REMOVE-close
 // path to avoid a second GetWorktreeForTab lookup AND to guard the
-// delete by worktree_id against a stale association.
-func (svc *Context) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, worktreeID string) {
+// delete by worktree_id against a stale association. Returns the DB
+// error (also logged) so the REMOVE-close path can surface a partial
+// failure rather than letting the surviving link masquerade as a
+// sibling still referencing the worktree.
+func (svc *Context) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, worktreeID string) error {
 	if err := svc.Queries.RemoveWorktreeTab(bgCtx(), db.RemoveWorktreeTabParams{
 		WorktreeID: worktreeID,
 		TabType:    tabType,
@@ -1011,7 +1101,9 @@ func (svc *Context) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, work
 	}); err != nil {
 		slog.Warn("failed to remove worktree tab",
 			"worktree_id", worktreeID, "tab_id", tabID, "error", err)
+		return err
 	}
+	return nil
 }
 
 var errNotGitRepo = errors.New("path is not inside a git repository")

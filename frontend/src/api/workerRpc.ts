@@ -32,13 +32,11 @@ import type {
   CheckoutBranchResponse,
   CreateBranchResponse,
   DeleteBranchResponse,
-  ForceRemoveWorktreeResponse,
   GetGitFileStatusResponse,
   GetGitInfoResponse,
   InspectBranchChangeResponse,
   InspectBranchDeletionResponse,
   InspectLastTabCloseResponse,
-  KeepWorktreeResponse,
   ListGitBranchesResponse,
   ListGitWorktreesResponse,
   PushBranchResponse,
@@ -116,8 +114,6 @@ import {
   CreateBranchResponseSchema,
   DeleteBranchRequestSchema,
   DeleteBranchResponseSchema,
-  ForceRemoveWorktreeRequestSchema,
-  ForceRemoveWorktreeResponseSchema,
   GetGitFileStatusRequestSchema,
   GetGitFileStatusResponseSchema,
   GetGitInfoRequestSchema,
@@ -128,8 +124,6 @@ import {
   InspectBranchDeletionResponseSchema,
   InspectLastTabCloseRequestSchema,
   InspectLastTabCloseResponseSchema,
-  KeepWorktreeRequestSchema,
-  KeepWorktreeResponseSchema,
   ListGitBranchesRequestSchema,
   ListGitBranchesResponseSchema,
   ListGitWorktreesRequestSchema,
@@ -573,14 +567,6 @@ export function inspectLastTabClose(workerId: string, req: MessageInitShape<type
 
 export function pushBranch(workerId: string, req: MessageInitShape<typeof PushBranchRequestSchema>): Promise<PushBranchResponse> {
   return callWorker(workerId, 'PushBranch', PushBranchRequestSchema, PushBranchResponseSchema, req)
-}
-
-export function forceRemoveWorktree(workerId: string, req: MessageInitShape<typeof ForceRemoveWorktreeRequestSchema>): Promise<ForceRemoveWorktreeResponse> {
-  return callWorker(workerId, 'ForceRemoveWorktree', ForceRemoveWorktreeRequestSchema, ForceRemoveWorktreeResponseSchema, req)
-}
-
-export function keepWorktree(workerId: string, req: MessageInitShape<typeof KeepWorktreeRequestSchema>): Promise<KeepWorktreeResponse> {
-  return callWorker(workerId, 'KeepWorktree', KeepWorktreeRequestSchema, KeepWorktreeResponseSchema, req)
 }
 
 export function listGitBranches(workerId: string, req: MessageInitShape<typeof ListGitBranchesRequestSchema>): Promise<ListGitBranchesResponse> {

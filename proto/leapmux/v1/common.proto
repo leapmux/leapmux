@@ -29,6 +29,19 @@ enum WorktreeAction {
   WORKTREE_ACTION_REMOVE = 2;       // User chose Remove
 }
 
+// WorktreeRemovalOutcome reports what a WORKTREE_ACTION_REMOVE close did
+// with the tab's worktree, so the caller can toast the actual outcome
+// instead of optimistically promising a removal that may not have
+// happened (e.g. sibling tabs in another branch group still reference
+// the worktree). UNSPECIFIED covers every non-removal close: KEEP, a tab
+// with no worktree association, or a REMOVE that degraded to KEEP.
+enum WorktreeRemovalOutcome {
+  WORKTREE_REMOVAL_OUTCOME_UNSPECIFIED = 0;       // No removal attempted (KEEP / no worktree / degraded)
+  WORKTREE_REMOVAL_OUTCOME_REMOVED = 1;           // This close was the last reference; worktree removed
+  WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED = 2;  // Dropped this tab's link; other tabs still reference it
+  WORKTREE_REMOVAL_OUTCOME_FAILED = 3;            // Last reference, but removal failed (failure_* populated)
+}
+
 // CloseTabResult carries the outcome shared by CloseAgentResponse and
 // CloseTerminalResponse.
 //
@@ -47,6 +60,10 @@ message CloseTabResult {
   string worktree_id = 2;     // Populated on worktree-remove failure alongside worktree_path
   string failure_message = 3; // Short human title of a partial failure (empty = success)
   string failure_detail = 4;  // Longer context (path, stderr, stack) for the failure
+  // What a REMOVE close did with the worktree. Lets the caller toast the
+  // real outcome (removed / still referenced elsewhere / failed) rather
+  // than optimistically assuming removal.
+  WorktreeRemovalOutcome worktree_removal = 5;
 }
 
 // --- Per-file git status ---

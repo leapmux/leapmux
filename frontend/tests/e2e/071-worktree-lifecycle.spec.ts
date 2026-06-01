@@ -448,8 +448,9 @@ test.describe('Worktree Lifecycle', () => {
     await expect(page.getByRole('heading', { name: 'Close Last Tab' })).not.toBeVisible()
     await expect(agentTab).not.toBeVisible()
 
-    // Worktree directory and branch are deleted in the background by
-    // the worker after ForceRemoveWorktree returns, so poll for completion.
+    // Worktree directory and branch are deleted in the background by the
+    // worker once the last tab's REMOVE close ref-counts the worktree to
+    // zero, so poll for completion.
     await expect(async () => {
       expect(existsSync(worktreeDir)).toBe(false)
       expect(branchExists(repoDir, 'dialog-branch')).toBe(false)

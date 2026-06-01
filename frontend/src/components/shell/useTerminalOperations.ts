@@ -1,14 +1,15 @@
 import type { Accessor } from 'solid-js'
 import type { TabContext } from './tabContext'
+import type { CloseTabResult } from '~/generated/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createTabStore } from '~/stores/tab.store'
-import type { TerminalTab } from '~/stores/tab.types'
 
+import type { TerminalTab } from '~/stores/tab.types'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
-import { toastCloseFailure } from '~/components/shell/closeFailureToast'
+import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
 import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -255,7 +256,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // Symmetric to handleAgentClose: store mutations run synchronously;
   // the worker close RPC and Hub unregister are fire-and-forget with
   // failure surfaced via toast.
-  const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP) => {
+  const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResult | undefined> => {
     const workerId = props.tabStore.getTerminalTab(terminalId)?.workerId ?? ''
     const ws = props.activeWorkspace()
 
@@ -267,24 +268,29 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     props.tabStore.removeTab(TabType.TERMINAL, terminalId)
     disposeTerminalInstance(terminalId)
 
-    // Background: PTY close, DB close, optional worktree removal.
-    if (workerId && ws) {
+    // `tabStore.removeTab` above emitted the TombstoneTab op via the
+    // CRDT bridge; the hub broadcasts it to peer clients via
+    // /ws/orgevents.
+    if (!workerId || !ws) {
+      // Local tab is gone, but with no worker/workspace the close RPC
+      // can't fire — a REMOVE therefore can't reach the worktree. Surface
+      // it instead of letting the caller assume removal happened.
+      warnWorktreeUnreachable(worktreeAction)
+      return Promise.resolve(undefined)
+    }
+
+    // Background: PTY close, DB close, optional worktree removal. The
+    // resolved result lets the delete-branch flow report the actual
+    // worktree outcome.
+    return awaitCloseResult(
       workerRpc.closeTerminal(workerId, {
         orgId: props.org.orgId(),
         workspaceId: ws.id,
         terminalId,
         worktreeAction,
-      })
-        .then(resp => toastCloseFailure(resp.result))
-        .catch((err) => {
-          showWarnToast('Failed to close terminal', err)
-        })
-    }
-
-    // `tabStore.removeTab` above emitted the TombstoneTab op via the
-    // CRDT bridge; the hub broadcasts it to peer clients via
-    // /ws/orgevents.
-    void terminalId
+      }),
+      'Failed to close terminal',
+    )
   }
 
   return {

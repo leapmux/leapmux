@@ -1,7 +1,7 @@
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
+import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -66,8 +66,9 @@ function setup() {
   tabStore.addTab({ type: TabType.AGENT, id: 'agent-b', tileId, workerId: 'w-1' }, { activate: false })
   tabStore.setActiveTabForTile(tileId, TabType.AGENT, 'agent-a')
 
-  // handleAgentClose / handleTerminalClose are now synchronous (void-returning)
-  // fire-and-forget handlers. Use plain vi.fn() with no resolved value.
+  // handleAgentClose / handleTerminalClose return Promise<CloseTabResult |
+  // undefined>, but these tests only assert how they're invoked (call args),
+  // not the resolved outcome, so a plain vi.fn() (resolving undefined) is enough.
   const handleAgentClose = vi.fn()
   const handleTerminalClose = vi.fn()
 
@@ -1057,6 +1058,56 @@ describe('useTabOperations.closeTabWithAction', () => {
       ops.closeTabWithAction(closed, WorktreeAction.REMOVE)
 
       expect(layoutStore.focusedTileId()).toBe('tile-other')
+      dispose()
+    })
+  })
+
+  it('closeWorktreeTabs folds a per-tab REMOVED outcome into removed=true', async () => {
+    await createRoot(async (dispose) => {
+      const { tabStore, ops, handleAgentClose } = setup()
+      handleAgentClose.mockResolvedValue({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
+      const agent = tabStore.state.tabs.find(t => t.id === 'agent-a')!
+
+      const summary = await ops.closeWorktreeTabs([agent])
+
+      expect(summary).toEqual({ removed: true, failed: false, stillReferenced: false, unknown: false })
+      dispose()
+    })
+  })
+
+  it('closeWorktreeTabs folds a tab with no definitive result (rejected RPC / unreachable / threw) into unknown=true', async () => {
+    // awaitCloseResult resolves undefined when the close RPC rejects; the
+    // fold must treat that as "outcome unknown" — NOT a clean no-op — so the
+    // dialog can say it couldn't confirm removal rather than "not removed".
+    await createRoot(async (dispose) => {
+      const { tabStore, ops, handleAgentClose } = setup()
+      handleAgentClose.mockResolvedValue(undefined)
+      const agent = tabStore.state.tabs.find(t => t.id === 'agent-a')!
+
+      const summary = await ops.closeWorktreeTabs([agent])
+
+      expect(summary).toEqual({ removed: false, failed: false, stillReferenced: false, unknown: true })
+      dispose()
+    })
+  })
+
+  it('closeWorktreeTabs accumulates flags across a mixed group (REMOVED + indeterminate)', async () => {
+    // The fold is an OR across the whole group, not a single per-group verdict:
+    // one tab's close removed the worktree while another's was indeterminate
+    // (rejected RPC). Both flags must be recorded — the dialog's own precedence
+    // (removed wins) then decides the toast.
+    await createRoot(async (dispose) => {
+      const { tabStore, ops, handleAgentClose } = setup()
+      handleAgentClose
+        .mockResolvedValueOnce({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
+        .mockResolvedValueOnce(undefined)
+      tabStore.addTab({ type: TabType.AGENT, id: 'agent-b', tileId: 'tile-1', workerId: 'w-1' }, { activate: false })
+      const a = tabStore.state.tabs.find(t => t.id === 'agent-a')!
+      const b = tabStore.state.tabs.find(t => t.id === 'agent-b')!
+
+      const summary = await ops.closeWorktreeTabs([a, b])
+
+      expect(summary).toEqual({ removed: true, failed: false, stillReferenced: false, unknown: true })
       dispose()
     })
   })

@@ -436,8 +436,9 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		// pushBranch runs `git add -A` → `git commit -m WIP` → `git push`
 		// as a single conceptual mutation; cancelling between the
 		// `commit` and the `push` would leave an unpushed WIP commit
-		// the user expected to be on the remote. DeleteBranch and
-		// ForceRemoveWorktree mitigate the same hazard the same way.
+		// the user expected to be on the remote. Hence bgCtx() + the
+		// RegisterTracked gate (the shared rationale for every tracked
+		// git mutation, documented on RegisterTracked).
 		// A stuck credential helper or SSH passphrase prompt is still
 		// killed at pushBranchTimeout.
 		ctx, cancel := context.WithTimeout(bgCtx(), pushBranchTimeout)
@@ -447,49 +448,6 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 			return
 		}
 		sendProtoResponse(sender, &leapmuxv1.PushBranchResponse{})
-	})
-
-	d.RegisterTracked("ForceRemoveWorktree", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.ForceRemoveWorktreeRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
-		// Destructive mutation tracked via dispatcher RegisterTracked
-		// above so Shutdown drains the worktree remove + branch delete
-		// + DB soft-delete sequence before tearing down the DB pool.
-		// Without the gate, Shutdown could return after the `git
-		// worktree remove` succeeded but before the DB DeleteWorktree
-		// write, leaving a stale row that blocks future reuse.
-
-		// Destructive mutation — explicitly use bgCtx() (not the inbound
-		// request ctx) so a dialog dismissed mid-removal can't leave the
-		// worktree half-deleted (DB row gone but files still on disk, or
-		// vice versa).
-		ctx := bgCtx()
-
-		// Look up worktree by ID.
-		wt, err := svc.Queries.GetWorktreeByID(ctx, r.GetWorktreeId())
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				sendNotFoundError(sender, "worktree not found")
-				return
-			}
-			slog.Error("failed to get worktree", "error", err)
-			sendInternalError(sender, "failed to query worktree")
-			return
-		}
-
-		// Remove worktree from disk + branch + DB row. Reports an error
-		// when the git worktree-remove failed AND the directory is still
-		// on disk, so the caller knows manual cleanup is needed.
-		if err := svc.removeWorktreeFromDisk(wt, true); err != nil {
-			sendInternalError(sender, err.Error())
-			return
-		}
-
-		sendProtoResponse(sender, &leapmuxv1.ForceRemoveWorktreeResponse{})
 	})
 
 	d.Register("InspectBranchDeletion", func(ctx context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
@@ -624,50 +582,13 @@ func registerGitHandlers(d *channel.Dispatcher, svc *Context) {
 		// -D`). Use bgCtx() rather than the inbound request ctx so a
 		// dialog dismissed between the steps can't leave the working
 		// directory parked on `switchTo` with `branchToDelete` still
-		// alive — the same hazard ForceRemoveWorktree mitigates above.
+		// alive — the shared rationale for the RegisterTracked gate above.
 		// Give both phases room to apply their own branchMutationTimeout
 		// internally rather than starving the second phase by sharing a
 		// single budget with the first.
 		runBranchMutationCustom(bgCtx(), 2*branchMutationTimeout, sender, &leapmuxv1.DeleteBranchResponse{}, func(ctx context.Context) error {
 			return deleteBranchInDir(ctx, dirPath, r.GetBranchToDelete(), r.GetSwitchToBranch())
 		})
-	})
-
-	d.RegisterTracked("KeepWorktree", func(_ context.Context, userID string, req *leapmuxv1.InnerRpcRequest, sender *channel.Sender) {
-		var r leapmuxv1.KeepWorktreeRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
-		// Tracked via dispatcher RegisterTracked above so Shutdown
-		// can't return between the GetWorktreeByID read and the
-		// DeleteWorktree write (a half-applied state would leave the
-		// DB row inconsistent).
-
-		// User-confirmed cleanup; complete even if the dialog goes away.
-		ctx := bgCtx()
-
-		// Look up worktree by ID.
-		wt, err := svc.Queries.GetWorktreeByID(ctx, r.GetWorktreeId())
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				sendNotFoundError(sender, "worktree not found")
-				return
-			}
-			slog.Error("failed to get worktree", "error", err)
-			sendInternalError(sender, "failed to query worktree")
-			return
-		}
-
-		// Delete the DB record but leave the worktree on disk.
-		if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
-			slog.Error("failed to delete worktree from DB", "id", wt.ID, "error", err)
-			sendInternalError(sender, "failed to delete worktree record")
-			return
-		}
-
-		sendProtoResponse(sender, &leapmuxv1.KeepWorktreeResponse{})
 	})
 }
 
@@ -1022,13 +943,12 @@ func (svc *Context) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 	}
 	if info.IsWorktree {
 		resp.WorktreePath = info.TopLevel
-		// Look up the worktree DB row so the dialog can call
-		// ForceRemoveWorktree directly without depending on an
-		// AGENT/TERMINAL tab being open (FILE-only branch groups would
-		// otherwise have nothing whose close ref-counts the worktree
-		// down to zero). Treat sql.ErrNoRows as "untracked worktree"
-		// and return worktree_id="" — the dialog falls back to
-		// closing tabs through their own pipeline in that case.
+		// Look up the worktree DB row so the dialog can tell a tracked
+		// worktree (has a row, so closing its tabs with REMOVE actually
+		// deletes the dir) from an untracked one. Treat sql.ErrNoRows as
+		// "untracked worktree" and return worktree_id="" so the dialog
+		// toasts honestly instead of promising a removal the coupled
+		// tab-close path can't make.
 		// Surface every other lookup error so a transient DB failure
 		// doesn't silently strip the id and force the fallback path.
 		wt, wtErr := svc.Queries.GetWorktreeByPath(ctx, pathutil.Canonicalize(info.TopLevel))

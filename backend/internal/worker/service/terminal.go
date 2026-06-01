@@ -584,7 +584,14 @@ func (svc *Context) runTerminalStartup(ctx context.Context, opts terminal.Option
 		svc.failTerminalStartup(terminalID, gm, gmErr)
 		return
 	}
-	svc.registerTabForWorktree(gm.WorktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
+	// Link the tab to its worktree unless a CloseTerminal already landed during
+	// startup (see registerTabForWorktreeUnlessClosed for the strand-leak
+	// rationale). Symmetric with the agent startup guard.
+	terminalClosedDuringStartup := false
+	if latest, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID); fetchErr == nil {
+		terminalClosedDuringStartup = latest.ClosedAt.Valid
+	}
+	svc.registerTabForWorktreeUnlessClosed(gm.WorktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, terminalClosedDuringStartup)
 	if gm.WorkingDir != "" {
 		opts.WorkingDir = gm.WorkingDir
 	}

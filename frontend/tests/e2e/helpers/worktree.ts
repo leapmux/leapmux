@@ -10,12 +10,8 @@ import {
 } from '../../../src/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '../../../src/generated/leapmux/v1/common_pb'
 import {
-  ForceRemoveWorktreeRequestSchema,
-  ForceRemoveWorktreeResponseSchema,
   InspectLastTabCloseRequestSchema,
   InspectLastTabCloseResponseSchema,
-  KeepWorktreeRequestSchema,
-  KeepWorktreeResponseSchema,
   PushBranchRequestSchema,
   PushBranchResponseSchema,
 } from '../../../src/generated/leapmux/v1/git_pb'
@@ -274,25 +270,6 @@ export async function listAgentsViaAPI(
 }
 
 /**
- * Force-remove a worktree via E2EE channel.
- */
-export async function forceRemoveWorktreeViaAPI(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  worktreeId: string,
-): Promise<void> {
-  const channel = await getTestChannel(hubUrl, token)
-  await channel.callWorker(
-    workerId,
-    'ForceRemoveWorktree',
-    ForceRemoveWorktreeRequestSchema,
-    ForceRemoveWorktreeResponseSchema,
-    { worktreeId },
-  )
-}
-
-/**
  * Inspect the last-tab close state via E2EE channel.
  */
 export async function inspectLastTabCloseViaAPI(
@@ -351,25 +328,6 @@ export async function pushBranchViaAPI(
     PushBranchRequestSchema,
     PushBranchResponseSchema,
     { tabType, tabId },
-  )
-}
-
-/**
- * Keep a worktree (stop tracking but leave on disk) via E2EE channel.
- */
-export async function keepWorktreeViaAPI(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  worktreeId: string,
-): Promise<void> {
-  const channel = await getTestChannel(hubUrl, token)
-  await channel.callWorker(
-    workerId,
-    'KeepWorktree',
-    KeepWorktreeRequestSchema,
-    KeepWorktreeResponseSchema,
-    { worktreeId },
   )
 }
 

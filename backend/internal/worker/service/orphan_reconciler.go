@@ -34,6 +34,16 @@ type OrphanReconciler struct {
 	logger    *slog.Logger
 	agents    AgentStopper
 	terminals TerminalStopper
+
+	// reapWorktree removes a worktree confirmed orphaned (all its tab
+	// links are strands). Nil disables worktree GC (tests that don't
+	// exercise it leave it unset).
+	reapWorktree func(ctx context.Context, wt db.Worktree)
+	// prevOrphanWorktrees holds worktree ids seen orphaned on the previous
+	// pass. A worktree must be orphaned across two consecutive passes
+	// before reconcileWorktrees removes it, so a transient zero-live window
+	// during startup or worktree reuse is never mistaken for a strand.
+	prevOrphanWorktrees map[string]struct{}
 }
 
 // AgentStopper is the in-memory hook OrphanReconciler uses to
@@ -70,6 +80,10 @@ type OrphanReconcilerOptions struct {
 	Logger    *slog.Logger
 	Agents    AgentStopper
 	Terminals TerminalStopper
+	// ReapWorktree, when set, enables the orphan-worktree GC pass: it is
+	// invoked for each worktree confirmed orphaned across two consecutive
+	// reconcile passes. Wire it to (*Context).ReapOrphanWorktree.
+	ReapWorktree func(ctx context.Context, wt db.Worktree)
 }
 
 // NewOrphanReconciler binds a reconciler to the worker's local DB
@@ -87,17 +101,19 @@ func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn fu
 		opts.Logger = slog.Default()
 	}
 	return &OrphanReconciler{
-		queries:   queries,
-		files:     files,
-		listFn:    listFn,
-		now:       opts.Now,
-		interval:  opts.Interval,
-		trigger:   make(chan struct{}, 1),
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		logger:    opts.Logger,
-		agents:    opts.Agents,
-		terminals: opts.Terminals,
+		queries:             queries,
+		files:               files,
+		listFn:              listFn,
+		now:                 opts.Now,
+		interval:            opts.Interval,
+		trigger:             make(chan struct{}, 1),
+		stop:                make(chan struct{}),
+		done:                make(chan struct{}),
+		logger:              opts.Logger,
+		agents:              opts.Agents,
+		terminals:           opts.Terminals,
+		reapWorktree:        opts.ReapWorktree,
+		prevOrphanWorktrees: make(map[string]struct{}),
 	}
 }
 
@@ -149,6 +165,13 @@ type ownedTabKey struct {
 }
 
 func (r *OrphanReconciler) reconcileOnce(ctx context.Context) {
+	// Worktree GC is local-only (no hub dependency) and must run even when
+	// the hub list is unavailable or there are no live tab rows: a strand
+	// can outlive its tab row once the cleanup loop hard-deletes the closed
+	// agent/terminal, so it would be invisible to the hasAnyLocalRows
+	// short-circuit below.
+	r.reconcileWorktrees(ctx)
+
 	if r.listFn == nil {
 		return
 	}
@@ -196,6 +219,46 @@ func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) bool {
 		return true
 	}
 	return false
+}
+
+// reconcileWorktrees reclaims worktrees whose tab links are all
+// startup-race strands — no live agent/terminal/file tab references them.
+// A worktree must be seen orphaned in TWO consecutive passes before it is
+// removed: the transient zero-live windows during agent/terminal startup
+// (the row exists before its worktree_tabs link is written) and during
+// worktree reuse are far shorter than the reconcile interval, so they
+// never survive into a second pass — only a genuine strand does.
+//
+// This is the backstop the startup link guards in runAgentStartup /
+// runTerminalStartup rely on: without it, a close that raced startup — or
+// a link written when getAgentByID/GetTerminalForReady returned a
+// transient error and the guard fell through to link — would strand a
+// worktree_tabs row whose tab is gone and leak the worktree dir forever
+// (reconcileAgents/reconcileTerminals close the tab row but never drop
+// worktree_tabs links).
+func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) {
+	if r.reapWorktree == nil {
+		return
+	}
+	candidates, err := r.queries.ListOrphanCandidateWorktrees(ctx)
+	if err != nil {
+		r.logger.Warn("orphan reconciler: list orphan-candidate worktrees", "err", err)
+		return
+	}
+	nextOrphans := make(map[string]struct{}, len(candidates))
+	for _, wt := range candidates {
+		if _, seenLastPass := r.prevOrphanWorktrees[wt.ID]; seenLastPass {
+			// Orphaned across two consecutive passes — not a transient
+			// startup/reuse window. reapWorktree re-checks live refs under
+			// the per-worktree lock before actually removing.
+			r.reapWorktree(ctx, wt)
+			continue
+		}
+		// First pass it looked orphaned: remember it; reap next pass if it
+		// is still orphaned then.
+		nextOrphans[wt.ID] = struct{}{}
+	}
+	r.prevOrphanWorktrees = nextOrphans
 }
 
 func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab) {
