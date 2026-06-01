@@ -24,8 +24,13 @@ import "github.com/leapmux/leapmux/internal/util/envutil"
 var agentIdentityEnvScrubKeys = []string{
 	// Cross-harness: W3C distributed-trace context + generic "running as an agent" marker.
 	"TRACEPARENT", "TRACESTATE", "AI_AGENT",
-	// Claude Code (CLI child-env injector $tH + MCP spawn + effort hard-override).
+	// Claude Code (CLI child-env injector $tH + IDE/MCP SSE bridge + effort hard-override).
+	// CLAUDE_CODE_SSE_PORT is the port an IDE/MCP-integrated session injects into its
+	// terminal env; an inheriting child auto-connects to the PARENT's IDE bridge
+	// (gated by `...||process.env.CLAUDE_CODE_SSE_PORT||...` in the CLI), so a worker
+	// launched from an IDE terminal would otherwise spawn an agent wired to the parent.
 	"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_EFFORT", "CLAUDE_PROJECT_DIR",
+	"CLAUDE_CODE_SSE_PORT",
 	// Codex (thread id, sandbox + network-proxy markers, rollout trace root).
 	"CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED",
 	"CODEX_NETWORK_PROXY_ACTIVE", "CODEX_NETWORK_ALLOW_LOCAL_BINDING", "CODEX_ROLLOUT_TRACE_ROOT",

@@ -1281,12 +1281,16 @@ func TestClaudeEffortUpdateFlagSettings(t *testing.T) {
 	}{
 		{
 			// Model-only change off opus+ultracode onto sonnet: no effort delta,
-			// but the stale ultracode boolean must still be cleared.
-			name:        "model-only switch leaving ultracode for an unsupported model clears the flag",
+			// but the stale ultracode boolean must be cleared AND the stale
+			// effortLevel pinned to a sonnet-supported level. Clearing only the
+			// boolean would leave the CLI at the ultracode base "xhigh" (which the
+			// CLI does not re-resolve on a model-only change), so we also pin
+			// effortLevel to xhigh resolved for sonnet -> "high" (its default).
+			name:        "model-only switch leaving ultracode for an unsupported model clears the flag and pins a safe effort",
 			targetModel: "sonnet",
 			newEffort:   "",
 			curEffort:   "ultracode",
-			expected:    map[string]interface{}{"ultracode": false},
+			expected:    map[string]interface{}{"effortLevel": "high", "ultracode": false},
 		},
 		{
 			// Model-only change to another ultracode-capable model keeps the

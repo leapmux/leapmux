@@ -135,15 +135,6 @@ export function modelDisplayName(availableModels: AvailableModel[] | undefined, 
   return currentModel
 }
 
-/** Check if the current model has efforts. */
-export function hasEfforts(availableModels: AvailableModel[] | undefined, currentModel: string): boolean {
-  if (availableModels && availableModels.length > 0) {
-    const model = availableModels.find(m => m.id === currentModel)
-    return model ? model.supportedEfforts.length > 0 : false
-  }
-  return false
-}
-
 /** Resolve any option-group label from available option groups. */
 export function optionLabel(availableOptionGroups: AvailableOptionGroup[] | undefined, key: string, currentValue: string): string {
   const group = optionGroup(availableOptionGroups, key)

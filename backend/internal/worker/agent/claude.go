@@ -538,15 +538,37 @@ func claudeEffortFlagSettings(newEffort, curEffort string) map[string]interface{
 // after switching onto a model that can't run it (e.g. opus+ultracode ->
 // sonnet). We force ultracode:false whenever the session is leaving ultracode for
 // a model whose catalog doesn't offer it, so the boolean never outlives the model
-// that supports it. (The UI resets effort to auto on a model change and restarts,
-// so this only matters for non-UI/raw callers.)
+// that supports it.
+//
+// Clearing the boolean alone is not enough: the CLI's apply_flag_settings treats
+// model/effortLevel/ultracode as independent keys and does NOT re-resolve
+// effortLevel on a model change (verified against the Claude Code 2.1.x binary --
+// the handler is three separate `if (key in settings)` blocks, and the effective
+// effort is `ultracode ? "xhigh" : effortLevel`). So a bare {model, ultracode:false}
+// would leave effortLevel pinned at the ultracode base "xhigh" -- a level the new
+// model may not support -- and the session would keep running at xhigh. When the
+// caller requested no explicit effort (so claudeEffortFlagSettings left no
+// effortLevel key), we therefore also pin the level to the target model's
+// xhigh-resolved fallback, which mirrors the decode side (claudeEffortFromApplied
+// falls back to the xhigh base when ultracode is cleared) and lands the live path
+// on the same effort a relaunch would pick. resolveClaudeEffortForModel downgrades
+// xhigh to "high" for models that don't offer it (e.g. sonnet -> "high", its
+// default), so the pinned level is always one the target model can run.
+//
+// The UI resets effort to auto on a model change and restarts (IsEffortAutoTransition
+// short-circuits UpdateSettings before this runs), so today this whole branch only
+// matters for non-UI/raw callers; it is defensive so such a caller can't strand an
+// unsupported effortLevel on the live session.
 func claudeEffortUpdateFlagSettings(targetModel, newEffort, curEffort string) map[string]interface{} {
 	fs := claudeEffortFlagSettings(resolveClaudeEffortForModel(targetModel, newEffort), curEffort)
-	if curEffort == EffortUltracode && !modelSupportsUltracode(targetModel) {
+	if unsupportedUltracode(curEffort, targetModel) {
 		if fs == nil {
 			fs = map[string]interface{}{}
 		}
 		fs["ultracode"] = false
+		if _, ok := fs["effortLevel"]; !ok {
+			fs["effortLevel"] = resolveClaudeEffortForModel(targetModel, EffortXHigh)
+		}
 	}
 	return fs
 }
@@ -586,7 +608,7 @@ func claudeEffortFromApplied(appliedEffort *string, ultracode *bool, curEffort, 
 			effort = EffortXHigh // ultracode cleared; fall back to its xhigh launch base
 		}
 	}
-	if effort == EffortUltracode && !modelSupportsUltracode(model) {
+	if unsupportedUltracode(effort, model) {
 		effort = EffortXHigh
 	}
 	return effort
@@ -834,7 +856,7 @@ var (
 	effortTierUltracode = &leapmuxv1.AvailableEffort{Id: "ultracode", Name: "Ultracode", Description: "xhigh effort plus standing dynamic-workflow orchestration"}
 	effortTierMax       = &leapmuxv1.AvailableEffort{Id: "max", Name: "Max", Description: "Maximum capability with deepest reasoning"}
 	effortTierXHigh     = &leapmuxv1.AvailableEffort{Id: EffortXHigh, Name: "X-High", Description: "Deeper reasoning than high, just below maximum"}
-	effortTierHigh      = &leapmuxv1.AvailableEffort{Id: "high", Name: "High", Description: "Comprehensive implementation with extensive testing and documentation"}
+	effortTierHigh      = &leapmuxv1.AvailableEffort{Id: EffortHigh, Name: "High", Description: "Comprehensive implementation with extensive testing and documentation"}
 	effortTierMedium    = &leapmuxv1.AvailableEffort{Id: "medium", Name: "Medium", Description: "Balanced approach with standard implementation and testing"}
 	effortTierLow       = &leapmuxv1.AvailableEffort{Id: "low", Name: "Low", Description: "Quick, straightforward implementation with minimal overhead"}
 )
@@ -854,9 +876,9 @@ var claudeEffortMax = []*leapmuxv1.AvailableEffort{
 var claudeCodeAvailableModels = []*leapmuxv1.AvailableModel{
 	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: 200_000},
 	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", IsDefault: true, DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: 1_000_000},
-	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeEffortMax, ContextWindow: 200_000},
-	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: "high", SupportedEfforts: claudeEffortMax, ContextWindow: 1_000_000},
-	{Id: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", DefaultEffort: "high", ContextWindow: 200_000},
+	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: EffortHigh, SupportedEfforts: claudeEffortMax, ContextWindow: 200_000},
+	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: EffortHigh, SupportedEfforts: claudeEffortMax, ContextWindow: 1_000_000},
+	{Id: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", DefaultEffort: EffortHigh, ContextWindow: 200_000},
 }
 
 // sendControlAndWait sends a control request to the agent and waits for the
@@ -1139,10 +1161,21 @@ func modelSupportsUltracode(modelID string) bool {
 	return known && effortListContains(efforts, EffortUltracode)
 }
 
+// unsupportedUltracode reports whether effort is the ultracode tier while model
+// can't run it. This is the recurring "ultracode requested/stored/being-left on a
+// model whose catalog doesn't offer it" condition that the resolve
+// (resolveClaudeEffortForModel), decode (claudeEffortFromApplied), and live-update
+// (claudeEffortUpdateFlagSettings) paths each must guard -- naming it once keeps a
+// future model-capability change (e.g. Sonnet gaining ultracode) to a single edit
+// instead of three that must be kept in agreement.
+func unsupportedUltracode(effort, model string) bool {
+	return effort == EffortUltracode && !modelSupportsUltracode(model)
+}
+
 // resolveClaudeEffortForModel resolves a requested effort against the model it will
 // run under: an effort the model's catalog doesn't support is downgraded to the
-// universal-safe "high", and "ultracode" stays "ultracode" only for a model that
-// actually supports it (otherwise it too becomes "high" -- this catches unknown
+// universal-safe EffortHigh, and "ultracode" stays "ultracode" only for a model that
+// actually supports it (otherwise it too becomes EffortHigh -- this catches unknown
 // models, which effortSupported trusts but which we can't confirm are xhigh-capable).
 // EffortAuto and "" pass through for the caller to handle. Shared by the --effort
 // launch flag (buildModelEffortArgs) and the live apply_flag_settings path
@@ -1152,10 +1185,10 @@ func resolveClaudeEffortForModel(model, effort string) string {
 		return effort
 	}
 	if !effortSupported(model, effort) {
-		return "high"
+		return EffortHigh
 	}
-	if effort == EffortUltracode && !modelSupportsUltracode(model) {
-		return "high"
+	if unsupportedUltracode(effort, model) {
+		return EffortHigh
 	}
 	return effort
 }

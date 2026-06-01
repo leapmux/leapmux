@@ -3,7 +3,7 @@ import type { ProviderSettingsPanelProps } from '../registry'
 import { createUniqueId, Show } from 'solid-js'
 import { EFFORT_AUTO } from '~/utils/controlResponse'
 import * as styles from '../../ChatView.css'
-import { defaultModelId, effortIcon, effortItems, hasEfforts, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
+import { defaultModelId, effortIcon, effortItems, effortValidForModel, effortValueForModel, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
 
 /** Default model for Codex agents. */
 const DEFAULT_CODEX_MODEL = import.meta.env.LEAPMUX_CODEX_DEFAULT_MODEL || 'gpt-5.4'
@@ -33,6 +33,11 @@ export function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Eleme
 
   const models = () => modelItems(props.availableModels)
   const efforts = () => effortItems(props.availableModels, currentModel())
+  // Codex builds SupportedEfforts per-model at runtime, so an optimistic model
+  // switch can briefly leave an effort the new model doesn't offer;
+  // effortValueForModel falls back to Auto so the RadioGroup never renders with
+  // no selection, mirroring the trigger label hiding its icon in the same window.
+  const effortValue = () => effortValueForModel(props.availableModels, currentModel(), currentEffort())
   const serviceTierGroup = () => optionGroup(props.availableOptionGroups, CODEX_EXTRA_SERVICE_TIER)
   const serviceTierItems = () => optionGroupItems(props.availableOptionGroups, CODEX_EXTRA_SERVICE_TIER)
   const collaborationModeGroup = () => optionGroup(props.availableOptionGroups, CODEX_EXTRA_COLLABORATION_MODE)
@@ -78,7 +83,7 @@ export function CodexSettingsPanel(props: ProviderSettingsPanelProps): JSX.Eleme
           items={efforts()}
           testIdPrefix="effort"
           name={`${menuId}-effort`}
-          current={currentEffort()}
+          current={effortValue()}
           onChange={v => props.onChange?.({ kind: 'effort', value: v })}
           fieldsetClass={firstLeftClass('effort')}
         />
@@ -162,14 +167,18 @@ export function CodexTriggerLabel(props: ProviderSettingsPanelProps): JSX.Elemen
   const currentCollaborationMode = () => extra()[CODEX_EXTRA_COLLABORATION_MODE] || DEFAULT_CODEX_COLLABORATION_MODE
   const displayName = () => modelDisplayName(props.availableModels, currentModel())
 
-  const hasEffort = () => hasEfforts(props.availableModels, currentModel())
+  // Only render the effort icon when the current effort is actually one of the
+  // current model's tiers. Codex populates SupportedEfforts per-model at runtime,
+  // so an optimistic model switch can briefly leave an effort the new model
+  // doesn't offer; showing its icon then would contradict the effort RadioGroup.
+  const currentEffortValid = () => effortValidForModel(props.availableModels, currentModel(), currentEffort())
   const mode = () => currentCollaborationMode() === 'plan'
     ? optionLabel(props.availableOptionGroups, CODEX_EXTRA_COLLABORATION_MODE, currentCollaborationMode())
     : optionLabel(props.availableOptionGroups, PERMISSION_MODE_KEY, currentMode())
   return (
     <>
       {displayName()}
-      <Show when={hasEffort()}>{effortIcon(currentEffort())}</Show>
+      <Show when={currentEffortValid()}>{effortIcon(currentEffort())}</Show>
       {' '}
       {mode()}
     </>

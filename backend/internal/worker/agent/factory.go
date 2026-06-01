@@ -60,6 +60,13 @@ const EffortUltracode = "ultracode"
 // once keeps those sites from drifting to inconsistent literals.
 const EffortXHigh = "xhigh"
 
+// EffortHigh is the "high" effort level. It is the universal-safe fallback every
+// model supports, so resolveClaudeEffortForModel downgrades any unsupported
+// effort to it. Like EffortXHigh it is load-bearing (the fallback target and the
+// Sonnet/Haiku catalog default), so naming it once keeps those sites from
+// drifting to inconsistent literals.
+const EffortHigh = "high"
+
 // ExitHandler is called when an agent process exits.
 // agentID identifies the agent, exitCode is the process exit code,
 // and err is non-nil if the process exited with an error.
