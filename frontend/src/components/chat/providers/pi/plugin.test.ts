@@ -204,6 +204,35 @@ describe('pi classify', () => {
     expect(plugin.classify(input({ role: 'user', content: 'hello' })).kind).toBe('user_content')
   })
 
+  it('classifies a consolidated multi-event Pi wrapper as a notification_thread', () => {
+    // The backend consolidates consecutive AGENT-source Pi notifications into one
+    // `notification_thread` envelope. Without Pi extraTypes the wrapper was not
+    // recognized as a thread, so it fell to the per-message branch and
+    // MessageBubble rendered only messages[0] -- dropping the rest.
+    const messages = [
+      { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000 },
+      { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } },
+    ]
+    expect(plugin.classify(input(messages[0], { old_seqs: [], messages })))
+      .toEqual({ kind: 'notification_thread', messages })
+  })
+
+  it('classifies a wrapper of two compaction_end boundaries as a notification_thread', () => {
+    const messages = [
+      { type: 'compaction_end', summary: 'first', result: { tokensBefore: 100000 } },
+      { type: 'compaction_end', summary: 'second', result: { tokensBefore: 50000 } },
+    ]
+    expect(plugin.classify(input(messages[0], { old_seqs: [], messages })).kind).toBe('notification_thread')
+  })
+
+  it('does not treat a wrapper of non-notification Pi events as a thread', () => {
+    // A wrapper whose entries are not Pi notification surface types (here an
+    // assistant message_end) must not be hijacked into the notification thread
+    // path -- only the per-message classification applies.
+    const messages = [{ type: 'message_end', message: { role: 'assistant' } }]
+    expect(plugin.classify(input(messages[0], { old_seqs: [], messages })).kind).not.toBe('notification_thread')
+  })
+
   it('falls back to unknown for unrecognized shapes', () => {
     expect(plugin.classify(input({ type: 'something_else' })).kind).toBe('unknown')
   })

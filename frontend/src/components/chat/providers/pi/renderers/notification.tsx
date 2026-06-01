@@ -1,13 +1,9 @@
 import type { JSX } from 'solid-js'
+import type { NotificationThreadEntry } from '../../registry'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { controlResponseMessage } from '../../../messageStyles.css'
+import { compactedLabel, COMPACTING_LABEL, CompactionDivider } from '../../../notificationRenderers'
 import { PI_EVENT, PI_EXTENSION_METHOD } from '../protocol'
-
-const COMPACTION_REASON_LABELS: Record<string, string> = {
-  manual: 'Manually compacted context',
-  threshold: 'Compacted context after threshold',
-  overflow: 'Compacted context after overflow',
-}
 
 /**
  * Compute a human-readable line for a Pi notification event. Returns null for
@@ -20,20 +16,23 @@ export function describePiNotification(parsed: unknown): string | null {
   const parent = parsed as Record<string, unknown>
   const type = pickString(parent, 'type')
 
-  if (type === PI_EVENT.CompactionStart) {
-    const reason = pickString(parent, 'reason')
-    if (reason && COMPACTION_REASON_LABELS[reason])
-      return `${COMPACTION_REASON_LABELS[reason]}…`
-    return 'Compacting context…'
-  }
+  // Compaction shares the provider-neutral label format ("Context compacted
+  // (reason, pre)") so Pi reads the same as Claude/Codex. Pi's `compaction_end`
+  // carries only a pre-compaction size (`result.tokensBefore`) and no post count,
+  // so the transition degrades to pre-only, exactly as the shared formatter does
+  // when post is unknown. The `reason` (manual/threshold/overflow) is the trigger.
+  if (type === PI_EVENT.CompactionStart)
+    return COMPACTING_LABEL
 
   if (type === PI_EVENT.CompactionEnd) {
     if (parent.aborted === true)
       return 'Context compaction aborted'
     const reason = pickString(parent, 'reason')
     const tokensBefore = pickNumber(pickObject(parent, 'result'), 'tokensBefore')
-    const reasonLabel = COMPACTION_REASON_LABELS[reason] ?? 'Compacted context'
-    return tokensBefore ? `${reasonLabel} (was ${tokensBefore.toLocaleString()} tokens)` : reasonLabel
+    return compactedLabel({
+      trigger: reason || undefined,
+      pre: tokensBefore ?? undefined,
+    })
   }
 
   if (type === PI_EVENT.AutoRetryStart) {
@@ -77,14 +76,59 @@ export function describePiNotification(parsed: unknown): string | null {
 }
 
 /**
+ * Which compaction divider a Pi message maps to, or null when it is not a
+ * (renderable) compaction boundary. `compaction_start` is the in-progress
+ * spinner ('loading'); a completed `compaction_end` is the boundary; an aborted
+ * `compaction_end` produced no boundary, so it stays a plain line (null). Shared
+ * by the standalone renderer and the thread entry so the two cannot disagree on
+ * which Pi message is a divider.
+ */
+function piCompactionKind(parent: Record<string, unknown>): 'loading' | 'boundary' | null {
+  const type = pickString(parent, 'type')
+  if (type === PI_EVENT.CompactionStart)
+    return 'loading'
+  if (type === PI_EVENT.CompactionEnd && parent.aborted !== true)
+    return 'boundary'
+  return null
+}
+
+/**
  * Pi notification renderer. Plain function (not a Solid component) so the
  * plugin can fall through to the shared notification rendering when this
  * returns null. The capitalize-aware solid/components-return-once rule does
  * not flag lowercase factory functions.
+ *
+ * Compaction boundaries render through the shared CompactionDivider (icon +
+ * label) so Pi matches Claude/Codex visually, not just in label text.
  */
 export function piNotificationRenderer(parsed: unknown): JSX.Element | null {
+  if (!isObject(parsed))
+    return null
   const text = describePiNotification(parsed)
   if (text === null)
     return null
+  const kind = piCompactionKind(parsed)
+  if (kind !== null)
+    return <CompactionDivider text={text} loading={kind === 'loading'} />
   return <div class={controlResponseMessage}>{text}</div>
+}
+
+/**
+ * Convert one Pi notification message into thread entries for the aggregate
+ * `renderNotificationThread` (consulted via the plugin's `notificationThreadEntry`).
+ * Mirrors {@link piNotificationRenderer} exactly -- same label via
+ * {@link describePiNotification}, same divider decision via {@link piCompactionKind}
+ * -- so the standalone and consolidated paths cannot drift. Without this, a
+ * multi-event Pi thread (e.g. two `compaction_end`s, or `auto_retry` +
+ * `compaction_end`) would render only its first message. Returns null for shapes
+ * Pi does not own so the shared switch can try them.
+ */
+export function piNotificationThreadEntry(msg: Record<string, unknown>): NotificationThreadEntry[] | null {
+  const text = describePiNotification(msg)
+  if (text === null)
+    return null
+  const kind = piCompactionKind(msg)
+  if (kind !== null)
+    return [{ kind: 'divider', text, loading: kind === 'loading' }]
+  return [{ kind: 'text', text }]
 }

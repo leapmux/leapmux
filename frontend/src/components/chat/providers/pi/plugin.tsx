@@ -33,6 +33,7 @@ import {
   PiAssistantMessage,
   PiAssistantThinking,
   piNotificationRenderer,
+  piNotificationThreadEntry,
   PiToolExecutionRenderer,
   PiToolResultRenderer,
   renderPiResultDivider,
@@ -55,6 +56,18 @@ const PI_NOTIFICATION_EVENT_TYPES = new Set<string>([
   PI_EVENT.AutoRetryStart,
   PI_EVENT.AutoRetryEnd,
   PI_EVENT.ExtensionError,
+])
+
+/**
+ * The full Pi notification surface: the notification-style events plus the
+ * extension UI passthrough. These thread into chat as notifications (so they're
+ * non-progress for the working-state heuristic) and, when the backend
+ * consolidates several into one `notification_thread` envelope, each must be
+ * recognized as a thread entry -- otherwise only the first would render.
+ */
+const PI_NOTIFICATION_SURFACE_TYPES = new Set<string>([
+  ...PI_NOTIFICATION_EVENT_TYPES,
+  PI_EVENT.ExtensionUIRequest,
 ])
 
 function piFallbackDiffSources(
@@ -187,18 +200,19 @@ const piPlugin: Provider = {
   // Pi's wire format dispatches via top-level `type`. Lifecycle / status /
   // extension events here are visible-but-non-progress: they thread into
   // the chat as notifications but must not register as agent activity for
-  // the working-state heuristic.
-  nonProgressTypes: new Set<string>([
-    ...PI_NOTIFICATION_EVENT_TYPES,
-    PI_EVENT.ExtensionUIRequest,
-  ]),
+  // the working-state heuristic. Same set the thread classifier recognizes.
+  nonProgressTypes: PI_NOTIFICATION_SURFACE_TYPES,
 
   classify(input: ClassificationInput): MessageCategory {
     const parent = input.parentObject
     const wrapper = input.wrapper
 
-    // Wrapper-style notification thread (settings_changed, context_cleared, etc.)
-    if (isNotificationThreadWrapper(wrapper))
+    // Wrapper-style notification thread. Beyond the base LeapMux types
+    // (settings_changed, context_cleared, etc.), recognize a consolidated
+    // wrapper of Pi notification events -- e.g. several compaction_end
+    // boundaries, or auto_retry + compaction_end -- so renderNotificationThread
+    // renders every entry instead of MessageBubble showing only the first.
+    if (isNotificationThreadWrapper(wrapper, PI_NOTIFICATION_SURFACE_TYPES))
       return { kind: 'notification_thread', messages: wrapper.messages }
     if (wrapper && (wrapper as { messages: unknown[] }).messages.length === 0)
       return { kind: 'hidden' }
@@ -276,6 +290,11 @@ const piPlugin: Provider = {
   renderMessage(category: MessageCategory, parsed: unknown, context?: RenderContext): JSX.Element | null {
     return PI_RENDERERS[category.kind]?.(category, parsed, context) ?? null
   },
+
+  // Consulted by renderNotificationThread for each message in a consolidated
+  // Pi wrapper, so multi-event threads render every entry (mirrors the
+  // standalone piNotificationRenderer and cannot drift from it).
+  notificationThreadEntry: piNotificationThreadEntry,
 
   toolResultMeta: piToolResultMeta,
 

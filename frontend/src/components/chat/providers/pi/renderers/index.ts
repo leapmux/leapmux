@@ -1,5 +1,5 @@
 export { PiAssistantMessage, PiAssistantThinking } from './assistantMessage'
-export { describePiNotification, piNotificationRenderer } from './notification'
+export { describePiNotification, piNotificationRenderer, piNotificationThreadEntry } from './notification'
 export { renderPiResultDivider } from './resultDivider'
 export { PiToolExecutionRenderer } from './toolExecution'
 export { PiToolResultRenderer } from './toolResult'
