@@ -83,7 +83,10 @@ describe('claude classify', () => {
     expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
-  it('hides the /context local-command result (already shown as an assistant bubble)', () => {
+  it('classifies the /context local-command result as a divider, not hidden', () => {
+    // The redundant-with-the-assistant-bubble and danger-styling concerns are
+    // both handled by resultRenderer, so the classifier keeps every result a
+    // turn-end divider (see notificationRenderers.test.tsx).
     const parent = {
       type: 'result',
       subtype: 'success',
@@ -92,15 +95,6 @@ describe('claude classify', () => {
       stop_reason: null,
       result: '## Context Usage\n\n**Model:** claude-opus-4-8[1m]\n',
       duration_ms: 2062,
-    }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
-  })
-
-  it('does not hide an error result even when its text starts with the context-usage header', () => {
-    const parent = {
-      type: 'result',
-      is_error: true,
-      result: '## Context Usage\nboom',
     }
     expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })

@@ -107,19 +107,7 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
   context_cleared: () => ({ kind: 'notification' }),
   settings_changed: () => ({ kind: 'notification' }),
   plan_updated: () => ({ kind: 'notification' }),
-  result: (parent) => {
-    // The `/context` local command emits its usage table twice: once as a
-    // normal assistant text bubble, then again as this type:"result"
-    // envelope (num_turns:0, is_error:false). resultRenderer's zero-turn
-    // heuristic paints that envelope red as if it were an error. Since the
-    // assistant bubble already shows the table, hide the redundant result
-    // envelope. Guarded on is_error so a genuinely failed turn is never
-    // suppressed, and matched on the exact header so every other result
-    // still renders as a turn-end divider.
-    if (parent.is_error !== true && pickString(parent, 'result').startsWith('## Context Usage\n'))
-      return { kind: 'hidden' }
-    return { kind: 'result_divider' }
-  },
+  result: () => ({ kind: 'result_divider' }),
 }
 
 /**
