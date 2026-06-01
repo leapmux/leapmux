@@ -194,7 +194,15 @@ export function activateBindings(bindings: readonly Keybinding[], slot: BindingS
     }
   }
 
-  const unsubscribe = tinykeys(window, keyMap, { capture: true })
+  // tinykeys 4 added a default `ignore` filter (defaultKeybindingsHandlerIgnore)
+  // that drops keydown events whose target is an input/select/textarea/
+  // contenteditable element. Because we bind at `window` and the user is almost
+  // always focused inside the chat input (ProseMirror contenteditable), a
+  // terminal (xterm textarea), or a form field, that filter would swallow nearly
+  // every shortcut before it reaches us. We already do focus-aware filtering in
+  // resolve() (and skip IME composition in the handler above), so disable the
+  // built-in ignore and let every event through.
+  const unsubscribe = tinykeys(window, keyMap, { capture: true, ignore: () => false })
   slotState.set(slot, { unsubscribe, bindings })
   recomputeActiveBindings()
   log.debug(`Bound ${groups.length} key groups (${bindings.length} bindings) for slot=${slot}`)
