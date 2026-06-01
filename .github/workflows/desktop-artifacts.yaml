@@ -36,6 +36,13 @@ env:
   # caller, so this has to be redeclared here.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+  # Match ci.yaml: trim dev-profile debuginfo so the cached desktop/rust
+  # `target/` stays small. This value is hashed into the rust-cache key, so
+  # it MUST equal ci.yaml's setting or the `shared-key: desktop` cache the
+  # two workflows share would split in two. Reusable workflows don't inherit
+  # caller env, so it's redeclared here. See ci.yaml for the full rationale.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
   linux:
     runs-on: ubuntu-24.04${{ matrix.runner_suffix }}
@@ -147,11 +154,13 @@ jobs:
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Cargo dependencies
-        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
+        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key +
+        # save-if.
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/rust
           shared-key: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Tauri downloads
         # See ci.yaml's matching step for why both patch-linuxdeploy.sh and
@@ -333,11 +342,13 @@ jobs:
           restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache Cargo dependencies
-        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
+        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key +
+        # save-if.
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/rust
           shared-key: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Tauri downloads
         uses: actions/cache@v5
@@ -643,11 +654,13 @@ jobs:
           components: clippy
 
       - name: Cache Cargo dependencies
-        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key.
+        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key +
+        # save-if.
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/rust
           shared-key: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Tauri downloads
         uses: actions/cache@v5
