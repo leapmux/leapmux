@@ -34,7 +34,7 @@ func TestTiDBStore(t *testing.T) {
 		Image:        "pingcap/tidb:v8.1.0",
 		ExposedPorts: []string{"4000/tcp"},
 		WaitingFor: wait.ForSQL("4000/tcp", "mysql", func(host string, port string) string {
-			return fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, port)
+			return fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, testutil.PortNumber(port))
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

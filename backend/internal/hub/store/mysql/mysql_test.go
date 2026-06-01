@@ -39,7 +39,7 @@ func TestMySQLStore(t *testing.T) {
 			"MYSQL_PASSWORD":      "test",
 		},
 		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port string) string {
-			return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, port)
+			return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, testutil.PortNumber(port))
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

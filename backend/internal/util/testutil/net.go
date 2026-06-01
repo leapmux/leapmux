@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -64,4 +65,17 @@ func ParseAddr(addr string) (string, uint32) {
 	var p uint32
 	_, _ = fmt.Sscanf(port, "%d", &p)
 	return host, p
+}
+
+// PortNumber extracts the bare numeric port from a testcontainers mapped-port
+// string. Since testcontainers-go v0.42, the wait.ForSQL callback receives the
+// mapped host port in moby's "<num>/<proto>" form (e.g. "32768/tcp") because it
+// invokes the callback with network.Port.String(). The protocol suffix must be
+// stripped before building a DSN; otherwise "/tcp" leaks into the connection
+// string, the DB driver can never connect, and the readiness wait spins until
+// it times out with a misleading "context deadline exceeded" against the Docker
+// socket. A bare port (no slash) is returned unchanged.
+func PortNumber(mappedPort string) string {
+	num, _, _ := strings.Cut(mappedPort, "/")
+	return num
 }

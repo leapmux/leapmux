@@ -38,7 +38,7 @@ func TestPostgresStore(t *testing.T) {
 			"POSTGRES_DB":       "leapmux_test",
 		},
 		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port string) string {
-			return fmt.Sprintf("postgres://test:test@%s:%s/leapmux_test?sslmode=disable", host, port)
+			return fmt.Sprintf("postgres://test:test@%s:%s/leapmux_test?sslmode=disable", host, testutil.PortNumber(port))
 		}),
 	}
 	pgContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

@@ -34,7 +34,7 @@ func TestYugabyteDBStore(t *testing.T) {
 		ExposedPorts: []string{"5433/tcp"},
 		Cmd:          []string{"bin/yugabyted", "start", "--daemon=false"},
 		WaitingFor: wait.ForSQL("5433/tcp", "pgx", func(host string, port string) string {
-			return fmt.Sprintf("postgresql://yugabyte@%s:%s/yugabyte?sslmode=disable", host, port)
+			return fmt.Sprintf("postgresql://yugabyte@%s:%s/yugabyte?sslmode=disable", host, testutil.PortNumber(port))
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

@@ -34,7 +34,7 @@ func TestCockroachDBStore(t *testing.T) {
 		ExposedPorts: []string{"26257/tcp"},
 		Cmd:          []string{"start-single-node", "--insecure"},
 		WaitingFor: wait.ForSQL("26257/tcp", "pgx", func(host string, port string) string {
-			return fmt.Sprintf("postgresql://root@%s:%s/defaultdb?sslmode=disable", host, port)
+			return fmt.Sprintf("postgresql://root@%s:%s/defaultdb?sslmode=disable", host, testutil.PortNumber(port))
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
