@@ -310,24 +310,95 @@ describe('resultRenderer', () => {
     expect(renderResultText(parsed)).toBe('Something went wrong')
   })
 
-  it('renders missing stop_reason with num_turns<=1 as error', () => {
-    const parsed = { type: 'result', stop_reason: null, subtype: 'success', num_turns: 1, result: 'Unknown skill: foo', duration_ms: 5 }
-    expect(isRenderedAsError(parsed)).toBe(true)
-    expect(renderResultText(parsed)).toBe('Unknown skill: foo')
-  })
-
-  it('renders missing stop_reason with num_turns>1 as normal (not error)', () => {
+  it('renders a zero-turn unknown-command result (is_error:false) as a plain divider, not a danger dump', () => {
+    // Claude Code reports unknown slash commands as is_error:false results that
+    // echo their already-shown message. Trust is_error: show "Took Xs" rather
+    // than a red dump of the result text. (The renderer ignores stop_reason /
+    // num_turns now, so the fixture omits them.)
     const parsed = {
       type: 'result',
       is_error: false,
-      stop_reason: null,
       subtype: 'success',
-      num_turns: 4,
+      result: 'Unknown command: /non-existent-skill',
+      duration_ms: 24,
+    }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    const text = renderResultText(parsed)
+    expect(text).toBe('Took 24ms')
+    expect(text).not.toContain('Unknown command')
+  })
+
+  it('renders the /usage subscription result as a plain divider, not a danger dump', () => {
+    const parsed = {
+      type: 'result',
+      is_error: false,
+      subtype: 'success',
+      result: 'You are currently using your subscription to power your Claude Code usage',
+      duration_ms: 3,
+    }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    const text = renderResultText(parsed)
+    expect(text).toBe('Took 3ms')
+    expect(text).not.toContain('subscription')
+  })
+
+  it('renders a success result as a plain "Took Xs" divider, discarding its raw result text', () => {
+    const parsed = {
+      type: 'result',
+      is_error: false,
+      subtype: 'success',
       result: '## Context Usage\n\nSome output...',
       duration_ms: 1095,
     }
     expect(isRenderedAsError(parsed)).toBe(false)
-    expect(renderResultText(parsed)).toContain('Took')
+    const text = renderResultText(parsed)
+    expect(text).toBe('Took 1.1s')
+    expect(text).not.toContain('Context Usage')
+  })
+
+  it('renders a non-error result with an absent subtype as a plain divider, not its raw text', () => {
+    // A non-error result that omits `subtype` must be treated as success-like
+    // (mirroring the error branch's `subtype && ...` guard), so it collapses to
+    // "Took Xs" rather than leaking the raw echo text into the label.
+    const parsed = {
+      type: 'result',
+      is_error: false,
+      result: 'You are currently using your subscription to power your Claude Code usage',
+      duration_ms: 7,
+    }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    const text = renderResultText(parsed)
+    expect(text).toBe('Took 7ms')
+    expect(text).not.toContain('subscription')
+  })
+
+  it('renders a non-error success result with a missing duration_ms as "Turn ended"', () => {
+    // A missing duration_ms has no meaningful "Took" value, so the duration-only
+    // divider falls back to "Turn ended" instead of a fake "Took 0ms".
+    const parsed = { type: 'result', is_error: false, subtype: 'success', result: 'done' }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toBe('Turn ended')
+  })
+
+  it('renders a non-error success result with a real zero duration_ms as "Took 0ms"', () => {
+    // A genuine zero is distinct from missing — an instant turn is "Took 0ms".
+    const parsed = { type: 'result', is_error: false, subtype: 'success', result: 'done', duration_ms: 0 }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toBe('Took 0ms')
+  })
+
+  it('renders a non-success non-error result with a missing duration_ms as just its text', () => {
+    // displayText present + no duration -> the suffix is dropped, not "(0ms)".
+    const parsed = { type: 'result', is_error: false, subtype: 'cancelled', result: 'Cancelled' }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toBe('Cancelled')
+  })
+
+  it('renders a non-success non-error result with a real zero duration_ms as "<text> (0ms)"', () => {
+    // displayText present + real zero -> the suffix is kept, mirroring "Took 0ms".
+    const parsed = { type: 'result', is_error: false, subtype: 'cancelled', result: 'Cancelled', duration_ms: 0 }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    expect(renderResultText(parsed)).toBe('Cancelled (0ms)')
   })
 
   it('renders success subtype with duration', () => {
@@ -373,5 +444,27 @@ describe('resultRenderer', () => {
     const text = renderResultText(parsed)
     expect(text).toBe('Something went wrong (100ms)')
     expect(text).not.toContain('\n')
+  })
+
+  it('renders the zero-turn /context result as a plain divider, not a danger dump', () => {
+    // The `/context` table is already shown as an assistant bubble above, so the
+    // redundant result envelope renders as a normal "Took Xs" turn-end divider
+    // rather than dumping its table in danger red.
+    const parsed = {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: '## Context Usage\n\n**Model:** claude-opus-4-8[1m]\n',
+      duration_ms: 2062,
+    }
+    expect(isRenderedAsError(parsed)).toBe(false)
+    const text = renderResultText(parsed)
+    expect(text).toBe('Took 2.1s')
+    expect(text).not.toContain('Context Usage')
+  })
+
+  it('still renders a genuinely failed result red even when its text starts with the context-usage header', () => {
+    const parsed = { type: 'result', is_error: true, result: '## Context Usage\nboom', duration_ms: 5 }
+    expect(isRenderedAsError(parsed)).toBe(true)
   })
 })

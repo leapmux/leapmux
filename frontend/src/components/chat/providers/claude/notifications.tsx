@@ -1,4 +1,5 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
+import type { JSX } from 'solid-js'
 import type { MessageContentRenderer } from '../../messageRenderers'
 import type { NotificationThreadEntry } from '../registry'
 import type { RateLimitInfo } from '~/stores/agentSession.store'
@@ -56,50 +57,85 @@ export const rateLimitRenderer: MessageContentRenderer = {
   },
 }
 
+/**
+ * Render a failed result (is_error===true) as a danger divider. Non-success
+ * subtypes get a humanized label plus an errors/result detail block; generic
+ * errors get the cleaned API-error message inline. `durationMs` is null when
+ * the envelope omitted `duration_ms`, in which case the duration suffix is
+ * dropped.
+ */
+function renderErrorResult(
+  parsed: Record<string, unknown>,
+  resultText: string,
+  durationMs: number | null,
+  subtype: string,
+): JSX.Element {
+  const errors = Array.isArray(parsed.errors) ? parsed.errors as string[] : []
+  const durationSuffix = durationMs !== null && durationMs > 0 ? ` (${formatDuration(durationMs)})` : ''
+
+  if (subtype && subtype !== 'success') {
+    const label = humanizeSubtype(subtype) + durationSuffix
+    const errorDetail = errors.length > 0 ? errors.join('\n') : resultText || ''
+    return (
+      <>
+        <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
+        {errorDetail && <pre class={resultErrorDetail}>{errorDetail}</pre>}
+      </>
+    )
+  }
+
+  const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
+  const label = cleanAPIErrorMessage(errorMsg) + durationSuffix
+  return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
+}
+
+/**
+ * Render a non-error result as a plain turn-end divider. Past the
+ * is_error===true branch, Claude Code itself says this turn did not error, so
+ * never surface the raw `result` text as a danger divider. Zero-turn local
+ * commands (`/context`, `/usage`, even "Unknown command: ...") echo their
+ * already-shown output through this envelope with is_error:false; rendering
+ * that echo in red was a false alarm. Trust is_error and collapse to a plain
+ * "Took Xs" divider, keeping the result text only for a genuine non-success
+ * subtype (e.g. "cancelled"). Mirror the error branch's `subtype && ...` guard
+ * so an absent subtype is treated as success-like instead of leaking the raw
+ * echo into the label.
+ */
+function renderPlainResult(
+  resultText: string,
+  durationMs: number | null,
+  subtype: string,
+): JSX.Element {
+  const displayText = subtype && subtype !== 'success' ? resultText : ''
+  let label: string
+  if (displayText) {
+    const suffix = durationMs !== null ? ` (${formatDuration(durationMs)})` : ''
+    label = displayText + suffix
+  }
+  else {
+    // Duration-only divider. A missing duration_ms (null) has no meaningful
+    // "Took" value, so fall back to a plain "Turn ended"; a real zero stays
+    // "Took 0ms".
+    label = durationMs !== null ? `Took ${formatDuration(durationMs)}` : 'Turn ended'
+  }
+  return <div class={resultDivider}>{label}</div>
+}
+
 /** Handles Claude result messages: {"type":"result","duration_ms":865,"num_turns":558,...} */
 export const resultRenderer: MessageContentRenderer = {
   render(parsed, _context) {
     if (!isObject(parsed) || parsed.type !== 'result')
       return null
 
-    if (parsed.is_error === true) {
-      const errors = Array.isArray(parsed.errors) ? parsed.errors as string[] : []
-      const resultText = pickString(parsed, 'result')
-      const durationMs = pickNumber(parsed, 'duration_ms', 0)
-      const durationSuffix = durationMs > 0 ? ` (${formatDuration(durationMs)})` : ''
-
-      const subtype = pickString(parsed, 'subtype')
-      if (subtype && subtype !== 'success') {
-        const humanSubtype = humanizeSubtype(subtype)
-        const label = humanSubtype + durationSuffix
-        const errorDetail = errors.length > 0 ? errors.join('\n') : resultText || ''
-        return (
-          <>
-            <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
-            {errorDetail && <pre class={resultErrorDetail}>{errorDetail}</pre>}
-          </>
-        )
-      }
-
-      const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
-      const label = cleanAPIErrorMessage(errorMsg) + durationSuffix
-      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{label}</div>
-    }
-
-    const durationMs = pickNumber(parsed, 'duration_ms', 0)
+    // Shared reads — both branches need these fields. `duration_ms` defaults to
+    // null (not 0) so the renderers can tell a missing duration from a real 0.
     const resultText = pickString(parsed, 'result')
-    const durationStr = formatDuration(durationMs)
+    const durationMs = pickNumber(parsed, 'duration_ms')
+    const subtype = pickString(parsed, 'subtype')
 
-    const numTurns = pickNumber(parsed, 'num_turns', 0)
-    if (!parsed.stop_reason && numTurns <= 1 && resultText) {
-      return <div class={resultDivider} style={{ color: 'var(--danger)' }}>{resultText}</div>
-    }
-
-    const displayText = parsed.subtype !== 'success' ? resultText : ''
-    const label = displayText
-      ? `${displayText} (${durationStr})`
-      : `Took ${durationStr}`
-    return <div class={resultDivider}>{label}</div>
+    return parsed.is_error === true
+      ? renderErrorResult(parsed, resultText, durationMs, subtype)
+      : renderPlainResult(resultText, durationMs, subtype)
   },
 }
 
