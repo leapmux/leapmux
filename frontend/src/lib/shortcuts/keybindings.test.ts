@@ -325,6 +325,58 @@ describe('activateBindings (slots)', () => {
   })
 })
 
+describe('activateBindings (events from form fields)', () => {
+  afterEach(() => {
+    unbindAll()
+    resetCommands()
+  })
+
+  // tinykeys 4 added a default `ignore` filter that drops keydown events whose
+  // target is an input/select/textarea/contenteditable element. Because we bind
+  // at `window`, that filter would swallow nearly every shortcut — the user is
+  // almost always focused in the chat input (contenteditable), a terminal
+  // (textarea), or a form field. We do our own focus-aware filtering in
+  // resolve(), so events from form fields must still reach the handler.
+  it('fires a modifier shortcut dispatched from a focused input', () => {
+    const handler = vi.fn()
+    registerCommand({ id: 'test.fromInput', title: 'Test', handler })
+    activateBindings([{ key: '$mod+k', command: 'test.fromInput' }], 'workspace')
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'k',
+      code: 'KeyK',
+      ctrlKey: true,
+      bubbles: true,
+    }))
+    document.body.removeChild(input)
+
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires a contenteditable-scoped shortcut from a contenteditable element', () => {
+    const handler = vi.fn()
+    registerCommand({ id: 'test.fromEditable', title: 'Test', handler })
+    activateBindings([{ key: '$mod+j', command: 'test.fromEditable' }], 'workspace')
+
+    const editable = document.createElement('div')
+    editable.setAttribute('contenteditable', 'true')
+    document.body.appendChild(editable)
+    editable.focus()
+    editable.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'j',
+      code: 'KeyJ',
+      ctrlKey: true,
+      bubbles: true,
+    }))
+    document.body.removeChild(editable)
+
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('activateBindings (IME composition)', () => {
   afterEach(() => {
     unbindAll()
