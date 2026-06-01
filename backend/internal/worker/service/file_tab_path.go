@@ -56,7 +56,7 @@ func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathPa
 	// level against the tracked worktrees. Best-effort: a path outside
 	// any tracked worktree leaves the file tab unbound, matching today's
 	// behavior for non-worktree files.
-	s.linkFileTabToWorktree(ctx, p.FilePath, p.TabID)
+	s.linkFileTabToWorktree(ctx, p.OrgID, p.FilePath, p.TabID)
 	if s.events != nil {
 		s.events.PublishFileTabPathRegistered(p.WorkspaceID, p.TabID, p.FilePath)
 	}
@@ -67,7 +67,12 @@ func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathPa
 // contains its on-disk path, if one is tracked. Failure here is
 // non-fatal — the file tab is still registered, it just won't count
 // toward sibling-tab checks in the last-tab close path.
-func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, filePath, tabID string) {
+//
+// orgID is stamped onto the worktree_tabs row so worktree_tab_liveness can
+// scope its FILE-tab join by org: file tab ids are only unique within an org
+// (worker_file_tabs is keyed by (org_id, tab_id)), so without it a multi-org
+// worker could match a different org's live file tab and mark a strand live.
+func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, orgID, filePath, tabID string) {
 	info, err := queryGitPathInfo(ctx, filepath.Dir(filePath))
 	if err != nil || info == nil || !info.IsWorktree {
 		return
@@ -84,9 +89,44 @@ func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, filePath, 
 		WorktreeID: wt.ID,
 		TabType:    leapmuxv1.TabType_TAB_TYPE_FILE,
 		TabID:      tabID,
+		OrgID:      orgID,
 	}); err != nil {
 		slog.Warn("link file tab to worktree: insert failed",
 			"tab_id", tabID, "worktree_id", wt.ID, "error", err)
+	}
+}
+
+// BackfillWorktreeLinks links any already-open FILE tabs that live under
+// worktreePath to a freshly-created worktree row. FILE tabs only acquire
+// their worktree_tabs link at registration time, and only when the
+// worktree row already exists (see linkFileTabToWorktree). A worktree
+// adopted AFTER a file under it was opened — e.g. created with `git
+// worktree add` outside LeapMux, opened as a FILE tab first, then an
+// agent/terminal opens inside it and creates the row — would otherwise
+// leave that FILE tab unlinked. It then wouldn't count toward the
+// worktree's ref-count, so a sibling AGENT/TERMINAL close could
+// `git worktree remove` the dir while the editor is still mounted.
+//
+// Lexically pre-filter to files under worktreePath so we don't probe
+// every file tab on the worker, then reuse linkFileTabToWorktree, which
+// re-probes git and links only files that genuinely resolve to a tracked
+// worktree (so a path in a nested submodule/worktree isn't mis-linked).
+// Best-effort: errors are logged, never surfaced — an un-backfilled link
+// degrades to today's behavior (the FILE tab just doesn't ref-count).
+func (s *FileTabPathStore) BackfillWorktreeLinks(ctx context.Context, worktreePath string) {
+	rows, err := s.q.ListAllWorkerFileTabs(ctx)
+	if err != nil {
+		slog.Warn("backfill worktree links: list file tabs", "worktree_path", worktreePath, "error", err)
+		return
+	}
+	canonicalWorktree := pathutil.Canonicalize(worktreePath)
+	for _, row := range rows {
+		// Canonicalize both sides: worker_file_tabs stores the raw client
+		// path, which may differ from the symlink-resolved worktree path.
+		if !pathutil.HasPathPrefix(pathutil.Canonicalize(filepath.Dir(row.FilePath)), canonicalWorktree) {
+			continue
+		}
+		s.linkFileTabToWorktree(ctx, row.OrgID, row.FilePath, row.TabID)
 	}
 }
 

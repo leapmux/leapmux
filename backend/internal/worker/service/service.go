@@ -98,6 +98,24 @@ type Context struct {
 	// dispatch so requireAccessibleWorkspace can answer access checks
 	// for callers that don't have an E2EE channel.
 	localAuthorizers sync.Map
+
+	// worktreeRemovalLocks serializes the read-modify-remove sequence
+	// (drop tab link -> count remaining -> `git worktree remove`) per
+	// worktree id. DeleteBranchDialog fires every tab's REMOVE close
+	// concurrently (each on its own dispatcher goroutine), so without
+	// this two closes could both observe CountWorktreeTabs == 0 and both
+	// shell out `git worktree remove` + `git branch -D` on the same repo.
+	// Keyed by worktree id -> *sync.Mutex; different worktrees never
+	// contend. Entries are never deleted (bounded by the worker's
+	// distinct-worktree count over its lifetime).
+	worktreeRemovalLocks sync.Map
+}
+
+// worktreeRemovalLock returns the per-worktree mutex that serializes the
+// count-then-remove critical section in closeTabCommon.
+func (svc *Context) worktreeRemovalLock(worktreeID string) *sync.Mutex {
+	v, _ := svc.worktreeRemovalLocks.LoadOrStore(worktreeID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // cleanupRegistry holds id → cleanup callbacks under a single mutex.

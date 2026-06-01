@@ -1331,18 +1331,17 @@ func TestInspectBranchDeletion_Worktree(t *testing.T) {
 	// branches field empty — saves bytes on every worktree-context open.
 	assert.Empty(t, resp.GetBranches(), "worktree response should omit the picker list")
 	// Untracked worktrees (no DB row yet) surface worktree_id="" so the
-	// dialog can fall back to a clear "untracked" banner instead of
-	// silently dispatching ForceRemoveWorktree against an empty id.
+	// dialog can toast a clear "untracked" message instead of promising
+	// a removal the coupled tab-close path can't make.
 	assert.Empty(t, resp.GetWorktreeId(), "worktree_id is empty when no DB row exists yet")
 }
 
 // TestInspectBranchDeletion_WorktreeReturnsTrackedID pins that a
 // worktree the worker has previously attached (DB row present) returns
-// its row id through the inspect RPC. DeleteBranchDialog drives
-// worktree removal via ForceRemoveWorktree(worktree_id) now, so the
-// presence of this field is what decouples worktree deletion from
-// AGENT/TERMINAL tab existence — a branch group with only FILE tabs
-// (or no tabs at all) used to be a silent no-op.
+// its row id through the inspect RPC. DeleteBranchDialog uses the
+// presence of this id to tell a tracked worktree (closing its tabs with
+// REMOVE deletes the dir) from an untracked one, so it can toast
+// honestly either way.
 func TestInspectBranchDeletion_WorktreeReturnsTrackedID(t *testing.T) {
 	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 	repoDir := initRepo(t)

@@ -97,11 +97,13 @@ func (d *Dispatcher) Register(method string, handler HandlerFunc) {
 }
 
 // RegisterTracked adds a handler whose in-flight invocations gate
-// Shutdown via the WaitGroup bound by BindCleanup. Use for destructive
-// mutations whose half-applied state would leak (CheckoutBranch,
-// CreateBranch, DeleteBranch, PushBranch, ForceRemoveWorktree,
-// KeepWorktree, closeTabCommon — anything where Shutdown cannot
-// safely abandon the in-flight work).
+// Shutdown via the WaitGroup bound by BindCleanup. Use it for any
+// destructive mutation whose half-applied state would leak if Shutdown
+// returned mid-flight — e.g. a multi-step git mutation that has run the
+// first command but not the second, or a worktree teardown that has
+// removed the directory but not yet written the DB soft-delete. (Grep
+// for RegisterTracked to see the current set rather than maintaining a
+// list here, which drifts as handlers are added or removed.)
 //
 // The Add(1) for tracked methods happens SYNCHRONOUSLY in DispatchAsync
 // (before the goroutine launches) and at the top of DispatchWith (the

@@ -31,12 +31,6 @@ message GetGitInfoResponse {
   string error_hint = 10;
 }
 
-message ForceRemoveWorktreeRequest {
-  string worktree_id = 1;
-}
-
-message ForceRemoveWorktreeResponse {}
-
 enum LastTabCloseTarget {
   LAST_TAB_CLOSE_TARGET_UNSPECIFIED = 0;
   LAST_TAB_CLOSE_TARGET_NONE = 1;
@@ -94,12 +88,6 @@ message PushBranchRequest {
 }
 
 message PushBranchResponse {}
-
-message KeepWorktreeRequest {
-  string worktree_id = 1;
-}
-
-message KeepWorktreeResponse {}
 
 message GetGitFileStatusRequest {
   string org_id = 1;
@@ -226,12 +214,11 @@ message InspectBranchDeletionResponse {
   // render path, so the absence is correct.
   repeated GitBranchEntry branches = 5;
   // Worktree DB row id when `is_worktree` is true; empty otherwise.
-  // Threaded so DeleteBranchDialog can drive worktree removal via
-  // ForceRemoveWorktree directly instead of routing through tab closes
-  // — a branch group with only FILE tabs (or no tabs at all) would
-  // otherwise have nothing whose close ref-counts the worktree down to
-  // zero, leaving the worktree dir on disk while the dialog reported
-  // success.
+  // Lets DeleteBranchDialog tell a tracked worktree (has a row, so
+  // closing its tabs with REMOVE actually deletes the dir) from an
+  // untracked one (created outside LeapMux) so it can toast honestly --
+  // an empty id means the worktree dir stays on disk after the tabs
+  // close.
   string worktree_id = 6;
 }
 

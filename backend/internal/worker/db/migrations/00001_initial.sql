@@ -108,14 +108,49 @@ CREATE TABLE terminals (
 CREATE INDEX idx_terminals_workspace_id ON terminals(workspace_id);
 CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS NOT NULL;
 
--- Junction: which tabs use which LeapMux-created worktree
+-- Junction: which tabs use which LeapMux-created worktree.
+--
+-- org_id scopes the FILE-tab liveness join (see worktree_tab_liveness): file
+-- tab ids are only unique within an org (worker_file_tabs is keyed by
+-- (org_id, tab_id)), so the liveness view needs the org to avoid matching a
+-- different org's file tab. It is left '' for AGENT/TERMINAL links, whose ids
+-- are globally unique, so their liveness legs never need it.
 CREATE TABLE worktree_tabs (
     worktree_id  TEXT NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
     tab_type     INTEGER NOT NULL,
     tab_id       TEXT NOT NULL,
+    org_id       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (worktree_id, tab_type, tab_id)
 );
 CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id);
+
+-- Each worktree_tabs link annotated with whether its backing tab is still
+-- live: an agent/terminal with closed_at IS NULL, or a still-present
+-- worker_file_tabs row (file tabs are hard-deleted on close). A link to a
+-- closed/deleted tab -- a startup-race strand -- has is_live = 0.
+--
+-- This view is the single definition of "is this link live?" so the two
+-- consumers (CountLiveWorktreeRefs and ListOrphanCandidateWorktrees) cannot
+-- drift apart: adding a new tab type means editing the predicate here once,
+-- not in two queries that must agree or the GC reaps a live worktree.
+--
+-- The agent/terminal legs match on the globally-unique row id; the file leg
+-- matches on (org_id, tab_id) because worker_file_tabs is keyed that way --
+-- file tab ids are unique only within an org, so matching tab_id alone would
+-- let a multi-org worker borrow a different org's live file tab and mark a
+-- strand live. worktree_tabs.org_id carries the link's org ('' for
+-- AGENT/TERMINAL links, whose ids are globally unique and so never need it;
+-- '' never matches a real worker_file_tabs row, which always has a non-empty
+-- org_id).
+CREATE VIEW worktree_tab_liveness AS
+SELECT
+    t.worktree_id AS worktree_id,
+    CASE WHEN
+        EXISTS (SELECT 1 FROM agents a WHERE a.id = t.tab_id AND a.closed_at IS NULL)
+        OR EXISTS (SELECT 1 FROM terminals te WHERE te.id = t.tab_id AND te.closed_at IS NULL)
+        OR EXISTS (SELECT 1 FROM worker_file_tabs f WHERE f.tab_id = t.tab_id AND f.org_id = t.org_id)
+    THEN 1 ELSE 0 END AS is_live
+FROM worktree_tabs t;
 
 -- File-tab paths kept E2EE on the worker. The hub never sees these
 -- rows; clients fetch paths over WatchWorkspacePrivateEvents and
@@ -160,6 +195,7 @@ CREATE TABLE agent_todos (
 DROP TABLE IF EXISTS agent_todos;
 DROP TABLE IF EXISTS worker_file_tabs;
 DROP TABLE IF EXISTS terminals;
+DROP VIEW IF EXISTS worktree_tab_liveness;
 DROP TABLE IF EXISTS worktree_tabs;
 DROP TABLE IF EXISTS worktrees;
 DROP TABLE IF EXISTS auto_continue_schedules;

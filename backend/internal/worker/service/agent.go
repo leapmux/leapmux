@@ -1561,8 +1561,17 @@ func (svc *Context) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 		svc.failAgentStartup(&dbAgent, gm, gmErr, nil)
 		return
 	}
-	// Register tab-for-worktree now that we know the worktree ID.
-	svc.registerTabForWorktree(gm.WorktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+	// Link the tab to its worktree now that we know the worktree id, unless a
+	// CloseAgent already landed during startup (see
+	// registerTabForWorktreeUnlessClosed for the strand-leak rationale). The
+	// close-during-startup detection after startAgent rolls back a worktree
+	// this startup created; skipping the link covers the pre-existing-worktree
+	// case too.
+	agentClosedDuringStartup := false
+	if latest, fetchErr := svc.getAgentByID(bgCtx(), agentID); fetchErr == nil {
+		agentClosedDuringStartup = latest.ClosedAt.Valid
+	}
+	svc.registerTabForWorktreeUnlessClosed(gm.WorktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, agentClosedDuringStartup)
 	if gm.WorkingDir != "" {
 		agentOpts.WorkingDir = gm.WorkingDir
 	}

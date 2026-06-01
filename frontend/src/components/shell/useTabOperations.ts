@@ -1,7 +1,9 @@
 import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { WorktreeCloseSummary } from '~/components/shell/closeResultToast'
 import type { LastTabCloseChoice, LastTabConfirmState } from '~/components/shell/LastTabCloseDialog'
+import type { CloseTabResult } from '~/generated/leapmux/v1/common_pb'
 import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -13,9 +15,9 @@ import { batch, createEffect, createSignal } from 'solid-js'
 import { isWorkerUnreachable } from '~/api/workerErrors'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
-import { toastCloseFailure } from '~/components/shell/closeFailureToast'
+import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
+import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
@@ -197,24 +199,19 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * so the three tab types follow the same pattern (sync local
    * cleanup + fire-and-forget worker RPC + toast on failure). The
    * worker drives the unified closeTabCommon flow on its side; the
-   * `workspaceId` argument identifies the workspace that owns the tab
-   * — needed for cross-workspace closes where the active workspace
-   * differs from the one the tab lives in.
+   * revoke is keyed by (orgId, tabId), so unlike closeTerminal it needs
+   * no workspaceId.
    */
-  const handleFileClose = (tabId: string, workerId: string, workspaceId: string, worktreeAction: WorktreeAction) => {
+  const handleFileClose = (tabId: string, workerId: string, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
     const orgId = getOrgId()
-    if (!orgId || !workerId)
-      return
-    workerRpc.revokeFileTabPath(workerId, { orgId, tabId, worktreeAction })
-      .then(resp => toastCloseFailure(resp.result))
-      .catch((err) => {
-        showWarnToast('Failed to close file', err)
-      })
-    // workspaceId is unused locally — passed only so the call site reads
-    // symmetrically with closeTerminal (which embeds workspaceId in the
-    // request). Touch it to silence the unused-arg lint without
-    // bypassing the symmetry.
-    void workspaceId
+    if (!orgId || !workerId) {
+      // No worker/org to send the revoke to. A REMOVE therefore can't
+      // reach the worktree — surface it rather than letting the caller
+      // assume removal happened.
+      warnWorktreeUnreachable(worktreeAction)
+      return Promise.resolve(undefined)
+    }
+    return awaitCloseResult(workerRpc.revokeFileTabPath(workerId, { orgId, tabId, worktreeAction }), 'Failed to close file')
   }
 
   /**
@@ -234,7 +231,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * revokeFileTabPath's own per-tab dedup on the worker side
    * (idempotent close).
    */
-  const closeTabWithAction = (tab: Tab, worktreeAction: WorktreeAction) => {
+  const closeTabWithAction = (tab: Tab, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
     // Cross-workspace branch: the tab lives in an inactive workspace's
     // registry snapshot (DeleteBranchDialog on a non-active branch
     // row), so the active-tabStore-bound helpers below can't find it.
@@ -245,30 +242,31 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     const crossWorkspaceWsId = ownerWorkspaceFor(tab)
     if (crossWorkspaceWsId) {
       const workerId = tab.workerId ?? ''
+      let closeResult: Promise<CloseTabResult | undefined> = Promise.resolve(undefined)
       if (workerId) {
         if (tab.type === TabType.AGENT) {
-          workerRpc.closeAgent(workerId, { agentId: tab.id, worktreeAction })
-            .then(resp => toastCloseFailure(resp.result))
-            .catch((err) => {
-              showWarnToast('Failed to close agent', err)
-            })
+          closeResult = awaitCloseResult(workerRpc.closeAgent(workerId, { agentId: tab.id, worktreeAction }), 'Failed to close agent')
         }
         else if (tab.type === TabType.TERMINAL) {
           const orgId = getOrgId() ?? ''
-          workerRpc.closeTerminal(workerId, {
-            orgId,
-            workspaceId: crossWorkspaceWsId,
-            terminalId: tab.id,
-            worktreeAction,
-          })
-            .then(resp => toastCloseFailure(resp.result))
-            .catch((err) => {
-              showWarnToast('Failed to close terminal', err)
-            })
+          closeResult = awaitCloseResult(
+            workerRpc.closeTerminal(workerId, {
+              orgId,
+              workspaceId: crossWorkspaceWsId,
+              terminalId: tab.id,
+              worktreeAction,
+            }),
+            'Failed to close terminal',
+          )
         }
         else if (tab.type === TabType.FILE) {
-          handleFileClose(tab.id, workerId, crossWorkspaceWsId, worktreeAction)
+          closeResult = handleFileClose(tab.id, workerId, worktreeAction)
         }
+      }
+      else {
+        // No worker id on the snapshot tab, so the close RPC can't fire
+        // and a REMOVE can't reach the worktree. Don't drop it silently.
+        warnWorktreeUnreachable(worktreeAction)
       }
       // tabStore.removeTab is a no-op for a cross-workspace tab (the
       // active store doesn't carry it) but still emits the CRDT
@@ -279,14 +277,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // Skip migrateFocusAfterTabClose / removeEmptyFloatingWindowForTile
       // — those operate on the ACTIVE layout, and the closed tab's
       // tileId belongs to the inactive workspace.
-      return
+      return closeResult
     }
 
+    let closeResult: Promise<CloseTabResult | undefined>
     if (tab.type === TabType.AGENT) {
-      agentOps.handleAgentClose(tab.id, worktreeAction)
+      closeResult = agentOps.handleAgentClose(tab.id, worktreeAction)
     }
     else if (tab.type === TabType.TERMINAL) {
-      termOps.handleTerminalClose(tab.id, worktreeAction)
+      closeResult = termOps.handleTerminalClose(tab.id, worktreeAction)
     }
     else if (tab.type === TabType.FILE) {
       // Mirrors handleAgentClose / handleTerminalClose: sync local
@@ -296,15 +295,83 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // worktree from disk once no other tabs reference it — matching
       // the AGENT / TERMINAL last-close behavior.
       tabStore.removeTab(tab.type, tab.id)
-      const wsId = getActiveWorkspaceId() ?? ''
-      if (tab.workerId)
-        handleFileClose(tab.id, tab.workerId, wsId, worktreeAction)
+      if (tab.workerId) {
+        closeResult = handleFileClose(tab.id, tab.workerId, worktreeAction)
+      }
+      else {
+        warnWorktreeUnreachable(worktreeAction)
+        closeResult = Promise.resolve(undefined)
+      }
     }
     else {
-      return
+      return Promise.resolve(undefined)
     }
     migrateFocusAfterTabClose(tab.tileId)
     removeEmptyFloatingWindowForTile(tab.tileId)
+    return closeResult
+  }
+
+  /**
+   * Close every tab in a worktree branch group with WorktreeAction.REMOVE
+   * and report what actually happened to the worktree. Drives the
+   * DeleteBranchDialog worktree path: it fires all the per-tab closes
+   * (sync local cleanup happens immediately), awaits their results, and
+   * folds the per-close WorktreeRemovalOutcome into one summary so the
+   * dialog can toast the truth instead of optimistically assuming
+   * removal.
+   *
+   * Per-tab close failures already surface their own warn toast via
+   * `toastCloseFailure` inside the close helpers (that's the worktree
+   * path + stderr the user needs for manual cleanup); this returns the
+   * aggregate so the caller only adds the POSITIVE outcome message.
+   */
+  const closeWorktreeTabs = async (tabs: readonly Tab[]): Promise<WorktreeCloseSummary> => {
+    const results = await Promise.all(
+      // Isolate each per-tab close. closeTabWithAction runs synchronous
+      // store mutations (removeTab, focus migration, floating-window prune)
+      // before returning its promise, so a throw there — not just an RPC
+      // rejection, which the close helpers already swallow — would reject
+      // the whole Promise.all and discard the other tabs' (and the
+      // worktree-removal) outcomes, surfacing a misleading "Delete failed".
+      // Guard each so one tab's failure can't abort the group.
+      tabs.map(tab =>
+        Promise.resolve()
+          .then(() => closeTabWithAction(tab, WorktreeAction.REMOVE))
+          .catch((err) => {
+            showWarnToast('Failed to close tab', err)
+            return undefined
+          }),
+      ),
+    )
+    let removed = false
+    let failed = false
+    let stillReferenced = false
+    let unknown = false
+    for (const result of results) {
+      if (!result) {
+        // No definitive outcome for this tab: the close RPC was rejected, the
+        // worker was unreachable, or the local close threw (each already
+        // warn-toasted its own detail). A worker-reported outcome is always a
+        // CloseTabResult — even a degraded-to-KEEP close returns one with
+        // UNSPECIFIED — so a missing result genuinely means "we don't know".
+        // Record it so the dialog reports "couldn't confirm" rather than a
+        // clean "not removed".
+        unknown = true
+        continue
+      }
+      switch (result.worktreeRemoval) {
+        case WorktreeRemovalOutcome.REMOVED:
+          removed = true
+          break
+        case WorktreeRemovalOutcome.FAILED:
+          failed = true
+          break
+        case WorktreeRemovalOutcome.STILL_REFERENCED:
+          stillReferenced = true
+          break
+      }
+    }
+    return { removed, failed, stillReferenced, unknown }
   }
 
   /**
@@ -462,6 +529,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     handleTabSelect,
     handleTabClose,
     closeTabWithAction,
+    closeWorktreeTabs,
     handleFileOpen,
     setIsTabEditing: (fn: () => boolean) => { isTabEditing = fn },
   }

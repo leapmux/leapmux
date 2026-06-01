@@ -1,12 +1,12 @@
 /// <reference types="vitest/globals" />
-import type { GitBranchEntry, InspectBranchDeletionResponse } from '~/generated/leapmux/v1/git_pb'
+import type { DeleteBranchResponse, GitBranchEntry, InspectBranchDeletionResponse } from '~/generated/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
+import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { DeleteBranchDialog } from './DeleteBranchDialog'
+import { DeleteBranchDialog, worktreeRemovalToast } from './DeleteBranchDialog'
 
 vi.mock('~/context/OrgContext', () => ({
   useOrg: () => ({ orgId: () => 'org-1', slug: () => 'admin' }),
@@ -16,7 +16,6 @@ vi.mock('~/api/workerRpc', () => ({
   inspectBranchDeletion: vi.fn(),
   deleteBranch: vi.fn(),
   pushBranch: vi.fn(),
-  forceRemoveWorktree: vi.fn(),
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -70,8 +69,8 @@ function makeInspectResp(overrides: Partial<InspectBranchDeletionResponse> & Par
     $typeName: 'leapmux.v1.InspectBranchDeletionResponse',
     isWorktree,
     worktreePath: '',
-    // Worktree responses thread the DB row id so the dialog can call
-    // ForceRemoveWorktree directly; non-worktree leaves it empty.
+    // Worktree responses thread the DB row id so the dialog can tell a
+    // tracked worktree from an untracked one; non-worktree leaves it empty.
     worktreeId: isWorktree ? 'wt-1' : '',
     branchName: 'doomed',
     branches: branches ?? (branchNames ? makeBranches(branchNames) : defaultBranches),
@@ -128,6 +127,13 @@ function makeFileTab(id: string): Tab {
   } as Tab
 }
 
+// Default worktree-close outcome: the happy path where the last tab's
+// REMOVE removed the worktree. Tests that exercise still-referenced /
+// failed / untracked paths override `closeWorktreeTabs`.
+function makeCloseWorktreeTabs(outcome: Partial<{ removed: boolean, failed: boolean, stillReferenced: boolean, unknown: boolean }> = {}) {
+  return vi.fn().mockResolvedValue({ removed: true, failed: false, stillReferenced: false, unknown: false, ...outcome })
+}
+
 function renderDialog(props: Partial<Parameters<typeof DeleteBranchDialog>[0]> = {}) {
   const tabs = props.tabs ?? [makeAgentTab('a1')]
   const defaults = {
@@ -135,7 +141,7 @@ function renderDialog(props: Partial<Parameters<typeof DeleteBranchDialog>[0]> =
     gitToplevel: '/repo',
     branchName: 'doomed',
     tabs,
-    closeTab: vi.fn(),
+    closeWorktreeTabs: makeCloseWorktreeTabs(),
     onClose: vi.fn(),
   }
   const merged = { ...defaults, ...props }
@@ -168,121 +174,160 @@ describe('deleteBranchDialog', () => {
     resolve(makeInspectResp({ isWorktree: true, worktreePath: '/wt' }))
   })
 
-  it('worktree variant closes every tab with KEEP and fires ForceRemoveWorktree', async () => {
-    // Pins the post-refactor flow: tab closes are UI-only (KEEP so the
-    // worker doesn't race ForceRemoveWorktree by also trying to remove
-    // the worktree from each AGENT/TERMINAL's last-close pipeline), and
-    // ForceRemoveWorktree against the worktree DB row is the
-    // authoritative removal. This decouples removal from tab existence
-    // — a branch group with zero AGENT/TERMINAL tabs (or only FILE
-    // tabs) used to be a silent no-op because the FILE close path
-    // doesn't ref-count the worktree.
+  it('worktree variant hands the whole tab group to closeWorktreeTabs and toasts the removed outcome', async () => {
+    // Worktree removal is coupled to the tab closes: the dialog passes the
+    // snapshot group to closeWorktreeTabs (which closes each tab with
+    // WorktreeAction.REMOVE on the worker and folds the per-close
+    // outcomes), awaits the verdict, and — on a REMOVED outcome — toasts
+    // past-tense success. It no longer optimistically promises removal.
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
-    vi.mocked(workerRpc.forceRemoveWorktree).mockResolvedValue({
-      $typeName: 'leapmux.v1.ForceRemoveWorktreeResponse',
-    })
-    const closeTab = vi.fn()
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: true })
     const tabs = [makeAgentTab('a1'), makeAgentTab('a2'), makeTerminalTab('t1')]
-    const props = renderDialog({ tabs, closeTab })
+    const props = renderDialog({ tabs, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
 
     await clickDelete()
 
-    await waitFor(() => expect(closeTab).toHaveBeenCalledTimes(3))
-    expect(closeTab).toHaveBeenNthCalledWith(1, tabs[0], WorktreeAction.KEEP)
-    expect(closeTab).toHaveBeenNthCalledWith(2, tabs[1], WorktreeAction.KEEP)
-    expect(closeTab).toHaveBeenNthCalledWith(3, tabs[2], WorktreeAction.KEEP)
-    await waitFor(() => expect(workerRpc.forceRemoveWorktree).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.forceRemoveWorktree).mock.calls[0]).toEqual([
-      'w1',
-      { worktreeId: 'wt-1' },
-    ])
-    await waitFor(() => expect(props.onClose).toHaveBeenCalled())
+    await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalledTimes(1))
+    expect(closeWorktreeTabs).toHaveBeenCalledWith(tabs)
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Worktree removed')
   })
 
-  it('worktree variant removes the worktree even when the group has only FILE tabs', async () => {
-    // The defect this guards: a FILE-only branch group used to slip
-    // past the closeTabWithAction REMOVE pipeline because the FILE
-    // branch explicitly ignores worktreeAction, so the worktree stayed
-    // on disk while the dialog toasted success. ForceRemoveWorktree is
-    // the source of truth now; the dialog must call it regardless of
-    // the tab-type mix.
+  it('worktree variant closes a FILE-only group through closeWorktreeTabs', async () => {
+    // A FILE-only branch group is removed identically: the worker
+    // ref-counts worktree_tabs type-agnostically (FILE rows count the same
+    // as AGENT/TERMINAL). The dialog does not special-case tab type — it
+    // hands the whole group to closeWorktreeTabs regardless.
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
-    vi.mocked(workerRpc.forceRemoveWorktree).mockResolvedValue({
-      $typeName: 'leapmux.v1.ForceRemoveWorktreeResponse',
-    })
-    const closeTab = vi.fn()
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: true })
     const tabs = [makeFileTab('f1'), makeFileTab('f2')]
-    const props = renderDialog({ tabs, closeTab })
+    const props = renderDialog({ tabs, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
 
     await clickDelete()
 
-    await waitFor(() => expect(workerRpc.forceRemoveWorktree).toHaveBeenCalledTimes(1))
-    expect(closeTab).toHaveBeenCalledTimes(2)
-    expect(closeTab).toHaveBeenNthCalledWith(1, tabs[0], WorktreeAction.KEEP)
-    expect(closeTab).toHaveBeenNthCalledWith(2, tabs[1], WorktreeAction.KEEP)
-    await waitFor(() => expect(props.onClose).toHaveBeenCalled())
+    await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalledWith(tabs))
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Worktree removed')
   })
 
-  it('worktree variant: forceRemoveWorktree failure must NOT close any tabs', async () => {
-    // Pins the order of operations: ForceRemoveWorktree is awaited
-    // BEFORE the tab closes fire. Closing tabs first and then handling
-    // a worktree-remove failure would leave the user staring at a
-    // "Delete failed" banner above an already-empty branch group with
-    // no UI path to retry — the tabs are gone, the worktree (and
-    // therefore the branch group) is still on disk.
+  it('worktree variant: still-referenced outcome toasts honestly instead of claiming removal', async () => {
+    // Closing this group's tabs did not bring the worktree ref-count to
+    // zero — sibling tabs in another branch group (or a stale snapshot)
+    // still reference it, so the worker kept the worktree. The dialog must
+    // say so rather than claim a removal that did not happen (S1/S10).
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
-    vi.mocked(workerRpc.forceRemoveWorktree).mockRejectedValue(new Error('worker said no'))
-    const closeTab = vi.fn()
-    const tabs = [makeAgentTab('a1'), makeAgentTab('a2')]
-    const props = renderDialog({ tabs, closeTab })
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: false, stillReferenced: true })
+    const props = renderDialog({ tabs: [makeAgentTab('a1')], closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
 
     await clickDelete()
 
-    await waitFor(() => expect(workerRpc.forceRemoveWorktree).toHaveBeenCalledTimes(1))
-    expect(closeTab).not.toHaveBeenCalled()
-    expect(props.onClose).not.toHaveBeenCalled()
-    // Error banner must surface so the user knows the action failed
-    // and the tabs are still there to retry against.
-    await waitFor(() => expect(screen.getByText(/worker said no/)).toBeInTheDocument())
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Tabs closed; worktree still in use elsewhere')
   })
 
-  it('worktree variant falls back to per-tab REMOVE when the worker reports the worktree is untracked', async () => {
-    // worktreeId === '' is the worker's documented signal that the
-    // worktree dir exists on disk but no DB row backs it (commonly: the
-    // user created the worktree from a terminal via `git worktree add`
-    // before opening any LeapMux tab inside it). The proto contract on
-    // InspectBranchDeletionResponse.worktree_id explicitly says the
-    // dialog "falls back to closing tabs through their own pipeline"
-    // in this case — hard-failing here used to strand the user with
-    // no UI path to clean up the worktree the worker can clearly see.
+  it('worktree variant: tracked worktree with no removal toasts "not removed", not "still in use"', async () => {
+    // Every close degraded to KEEP because its worktree link was already
+    // gone (a startup-race strand the worker GC will reclaim): nothing was
+    // removed and no close reported the worktree still referenced. The
+    // dialog must say it was not removed rather than implying another tab
+    // holds it (S5) — only a genuine STILL_REFERENCED earns that message.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+    )
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: false, failed: false, stillReferenced: false })
+    const props = renderDialog({ tabs: [makeAgentTab('a1')], closeWorktreeTabs })
+    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+
+    await clickDelete()
+
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Tabs closed; worktree not removed')
+    expect(showInfoToast).not.toHaveBeenCalledWith('Tabs closed; worktree still in use elsewhere')
+  })
+
+  it('worktree variant: removal failure shows no success toast (close pipeline already warned)', async () => {
+    // On a FAILED outcome the close pipeline already warn-toasted the git
+    // error + worktree path for manual cleanup, so the dialog must NOT add
+    // a success toast (S2/S8). It still closes — the tabs are gone.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+    )
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: false, failed: true })
+    const props = renderDialog({ tabs: [makeAgentTab('a1')], closeWorktreeTabs })
+    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+
+    await clickDelete()
+
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).not.toHaveBeenCalled()
+  })
+
+  it('worktree variant: untracked worktree (empty worktreeId) toasts honestly', async () => {
+    // worktreeId === '' is the worker's signal that the worktree dir
+    // exists on disk with no DB row backing it (created outside LeapMux
+    // via `git worktree add`). Closing with REMOVE is still correct — the
+    // worker's GetWorktreeForTab finds no association and degrades REMOVE
+    // to KEEP, leaving the dir in place — but the toast must say so rather
+    // than promise a removal that won't happen.
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt', worktreeId: '' }),
     )
-    const closeTab = vi.fn()
-    const props = renderDialog({
-      closeTab,
-      tabs: [makeAgentTab('a1'), makeAgentTab('a2')],
-    })
+    const tabs = [makeAgentTab('a1'), makeAgentTab('a2')]
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: false })
+    const props = renderDialog({ closeWorktreeTabs, tabs })
     await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
     await clickDelete()
     await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
-    // ForceRemoveWorktree must NOT fire — we have no worktree_id to
-    // pass and a hard call would 404 on the worker.
-    expect(workerRpc.forceRemoveWorktree).not.toHaveBeenCalled()
-    // Each tab gets a per-tab REMOVE so its own close pipeline drives
-    // whatever cleanup it can (FILE revoke, AGENT/TERMINAL close).
-    expect(closeTab).toHaveBeenCalledTimes(2)
-    expect(closeTab).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }), WorktreeAction.REMOVE)
-    expect(closeTab).toHaveBeenCalledWith(expect.objectContaining({ id: 'a2' }), WorktreeAction.REMOVE)
+    expect(closeWorktreeTabs).toHaveBeenCalledWith(tabs)
+    expect(showInfoToast).toHaveBeenCalledWith('Tabs closed (worktree was not tracked)')
+  })
+
+  it('worktree variant: a REMOVED outcome wins over a sibling close failure', async () => {
+    // A concurrent sibling close can hit a transient partial failure
+    // (e.g. its own DB lookup) and report FAILED while the last-reference
+    // close still removes the worktree (REMOVED). The dir IS gone, so the
+    // dialog must toast "Worktree removed" — `removed` outranks `failed`,
+    // whose own detail was already warn-toasted by the close pipeline.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+    )
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: true, failed: true })
+    const props = renderDialog({ tabs: [makeAgentTab('a1'), makeAgentTab('a2')], closeWorktreeTabs })
+    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+
+    await clickDelete()
+
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Worktree removed')
+  })
+
+  it('worktree variant: a real removal wins over a stale empty worktreeId snapshot', async () => {
+    // worktreeId is captured at inspect time. If the worktree is adopted
+    // (gains a DB row) between inspect and confirm, the worker actually
+    // removes it (REMOVED) even though the snapshot's worktreeId is still
+    // empty. The dialog must report the ground-truth removal, not the
+    // stale "not tracked" snapshot.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt', worktreeId: '' }),
+    )
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: true })
+    const props = renderDialog({ tabs: [makeAgentTab('a1')], closeWorktreeTabs })
+    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+
+    await clickDelete()
+
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Worktree removed')
+    expect(showInfoToast).not.toHaveBeenCalledWith('Tabs closed (worktree was not tracked)')
   })
 
   it('non-worktree variant: Delete disabled until switch-to is chosen', async () => {
@@ -301,7 +346,8 @@ describe('deleteBranchDialog', () => {
   it('non-worktree variant: fires onBranchChanged with the chosen switch-to branch', async () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     const onBranchChanged = vi.fn()
-    renderDialog({ onBranchChanged })
+    const closeWorktreeTabs = makeCloseWorktreeTabs()
+    renderDialog({ onBranchChanged, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'main' } })
@@ -309,6 +355,10 @@ describe('deleteBranchDialog', () => {
     await clickDelete()
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
     expect(onBranchChanged).toHaveBeenCalledWith('main')
+    // The branch path switches the working dir and leaves the tabs running
+    // on the new branch — unlike the worktree path, it must NOT close any
+    // tab. Pins the worktree-vs-branch behavioral split from the branch side.
+    expect(closeWorktreeTabs).not.toHaveBeenCalled()
   })
 
   it('non-worktree variant: stamps the local name when switching to a remote-tracking ref', async () => {
@@ -443,15 +493,12 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
-    vi.mocked(workerRpc.forceRemoveWorktree).mockResolvedValue({
-      $typeName: 'leapmux.v1.ForceRemoveWorktreeResponse',
-    })
     const onBranchChanged = vi.fn()
-    const closeTab = vi.fn()
-    renderDialog({ onBranchChanged, closeTab })
+    const closeWorktreeTabs = makeCloseWorktreeTabs()
+    renderDialog({ onBranchChanged, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
     await clickDelete()
-    await waitFor(() => expect(closeTab).toHaveBeenCalled())
+    await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalled())
     expect(onBranchChanged).not.toHaveBeenCalled()
   })
 
@@ -621,28 +668,24 @@ describe('deleteBranchDialog', () => {
     expect(screen.queryByRole('button', { name: /Commit and Push|^Push$/ })).toBeNull()
   })
 
-  it('worktree variant: closeTab is called for every tab including FILE', async () => {
-    // The worktree-variant delete loop must hand every tab in the
-    // branch group to closeTabWithAction so the helper can remove FILE
-    // tabs locally (worktree path is about to vanish; orphaning a
-    // FILE tab there would point it at a deleted dir). The dialog's
-    // contract is "hand each tab to props.closeTab"; the
-    // FILE-handling lives inside closeTabWithAction. Pin both: every
-    // tab gets a call, FILE included.
+  it('worktree variant: hands every tab including FILE to closeWorktreeTabs', async () => {
+    // The dialog must hand the WHOLE branch group to closeWorktreeTabs,
+    // FILE tabs included — the worker ref-counts FILE rows the same as
+    // AGENT/TERMINAL, and orphaning a FILE tab on a worktree that's about
+    // to vanish would point its editor at a deleted dir. The per-tab
+    // dispatch + FILE handling lives inside closeWorktreeTabs; the
+    // dialog's contract is just "pass the full group, don't filter".
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
-    vi.mocked(workerRpc.forceRemoveWorktree).mockResolvedValue({
-      $typeName: 'leapmux.v1.ForceRemoveWorktreeResponse',
-    })
-    const closeTab = vi.fn()
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: true })
     const tabs = [makeAgentTab('a1'), makeFileTab('f1'), makeTerminalTab('t1')]
-    renderDialog({ tabs, closeTab })
+    renderDialog({ tabs, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
     await clickDelete()
-    await waitFor(() => expect(closeTab).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalledTimes(1))
     // Specifically: the FILE tab is NOT skipped by the dialog.
-    expect(closeTab.mock.calls.map(c => c[0].id)).toEqual(['a1', 'f1', 't1'])
+    expect(closeWorktreeTabs.mock.calls[0][0].map((t: { id: string }) => t.id)).toEqual(['a1', 'f1', 't1'])
   })
 
   it('push button uses a tab from the group to call pushBranch', async () => {
@@ -663,13 +706,13 @@ describe('deleteBranchDialog', () => {
 
   it('cancel closes without firing any worker RPC', async () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
-    const closeTab = vi.fn()
-    renderDialog({ closeTab })
+    const closeWorktreeTabs = makeCloseWorktreeTabs()
+    renderDialog({ closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(workerRpc.deleteBranch).not.toHaveBeenCalled()
-    expect(closeTab).not.toHaveBeenCalled()
+    expect(closeWorktreeTabs).not.toHaveBeenCalled()
   })
 
   it('renders affected-tab counts based on the tabs prop', async () => {
@@ -761,11 +804,16 @@ describe('deleteBranchDialog', () => {
     expect(screen.queryByText(/Worktree:/)).toBeNull()
   })
 
-  it('surfaces a deleteBranch failure message in the dialog', async () => {
+  it('non-worktree variant: a deleteBranch failure surfaces inline and keeps the dialog open', async () => {
+    // Branch deletion is synchronous: the dialog holds open under the busy
+    // overlay until DeleteBranch settles, so a failure renders the worker's
+    // message in the dialog's inline error row (not a toast) and onClose is
+    // never called — the user can pick a different switch-to or retry.
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     vi.mocked(workerRpc.deleteBranch).mockRejectedValue(new Error('branch in use'))
+    const onBranchChanged = vi.fn()
 
-    renderDialog()
+    const props = renderDialog({ onBranchChanged })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'main' } })
@@ -773,6 +821,66 @@ describe('deleteBranchDialog', () => {
     await clickDelete()
 
     await waitFor(() => expect(screen.getByText('branch in use')).toBeInTheDocument())
+    expect(props.onClose).not.toHaveBeenCalled()
+    expect(onBranchChanged).not.toHaveBeenCalled()
+    expect(showInfoToast).not.toHaveBeenCalled()
+  })
+
+  it('non-worktree variant: holds the dialog open until deleteBranch resolves, then stamps and closes', async () => {
+    // Branch deletion blocks: while DeleteBranch is in flight the dialog
+    // stays open (onClose not called) and the stamp/toast hold; once it
+    // resolves, onBranchChanged stamps the local name, the success toast
+    // fires, and the dialog closes.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    let resolveDelete!: (r: DeleteBranchResponse) => void
+    vi.mocked(workerRpc.deleteBranch).mockReturnValue(
+      new Promise<DeleteBranchResponse>((r) => { resolveDelete = r }),
+    )
+    const onBranchChanged = vi.fn()
+    const props = renderDialog({ onBranchChanged })
+    await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
+    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'main' } })
+
+    await clickDelete()
+
+    // DeleteBranch is still pending: dialog stays open, nothing stamped.
+    await waitFor(() => expect(workerRpc.deleteBranch).toHaveBeenCalledTimes(1))
+    expect(props.onClose).not.toHaveBeenCalled()
+    expect(onBranchChanged).not.toHaveBeenCalled()
+    expect(showInfoToast).not.toHaveBeenCalled()
+
+    resolveDelete({ $typeName: 'leapmux.v1.DeleteBranchResponse' })
+    await waitFor(() => expect(onBranchChanged).toHaveBeenCalledWith('main'))
+    await waitFor(() => expect(showInfoToast).toHaveBeenCalledWith('Branch deleted'))
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('non-worktree variant: a throwing onBranchChanged does not masquerade as a delete failure', async () => {
+    // The delete succeeded on the worker; onBranchChanged only stamps the
+    // sidebar label. A throw from it must NOT propagate into the dialog's
+    // error sink and show "Delete failed" for an op that worked — success
+    // is committed (toast + onClose) before the isolated stamp, and the
+    // stamp failure surfaces as its own warn toast. (S11)
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    const onBranchChanged = vi.fn(() => {
+      throw new Error('stamp boom')
+    })
+
+    const props = renderDialog({ onBranchChanged })
+    await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
+    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'main' } })
+
+    await clickDelete()
+
+    await waitFor(() => expect(showInfoToast).toHaveBeenCalledWith('Branch deleted'))
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(onBranchChanged).toHaveBeenCalledWith('main')
+    // The stamp failure is surfaced as a warn toast, not the inline
+    // "Delete failed" fallback.
+    expect(showWarnToast).toHaveBeenCalledWith('Branch deleted, but failed to update the sidebar label', expect.any(Error))
+    expect(screen.queryByText('Delete failed')).toBeNull()
   })
 
   // Regression: a successful post-push refreshInspect replaces info()
@@ -876,5 +984,87 @@ describe('deleteBranchDialog', () => {
     // The body must still be visible — error never replaces it.
     expect(screen.getByText(/Branch:/)).toBeInTheDocument()
     expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument()
+  })
+
+  it('worktree variant: a still-referenced outcome wins over a stale empty worktreeId snapshot', async () => {
+    // worktreeId is captured at inspect time. If the worktree is adopted
+    // (gains a DB row) AND keeps a sibling between inspect and confirm, the
+    // worker reports STILL_REFERENCED even though the snapshot's worktreeId
+    // is still empty. Only a tracked worktree can report STILL_REFERENCED,
+    // so the dialog must say "still in use elsewhere", NOT "not tracked".
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt', worktreeId: '' }),
+    )
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: false, stillReferenced: true })
+    const props = renderDialog({ tabs: [makeAgentTab('a1')], closeWorktreeTabs })
+    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+
+    await clickDelete()
+
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Tabs closed; worktree still in use elsewhere')
+    expect(showInfoToast).not.toHaveBeenCalledWith('Tabs closed (worktree was not tracked)')
+  })
+
+  it('worktree variant: an unknown outcome toasts "could not confirm" instead of "not removed"', async () => {
+    // A close RPC rejected (worker dropped mid-call) so closeWorktreeTabs
+    // couldn't get a definitive verdict. The worker may have removed the
+    // worktree under bgCtx anyway, so the dialog must not claim a clean
+    // "not removed" — it says it couldn't confirm. (S3)
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+    )
+    const closeWorktreeTabs = makeCloseWorktreeTabs({ removed: false, unknown: true })
+    const props = renderDialog({ tabs: [makeAgentTab('a1')], closeWorktreeTabs })
+    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+
+    await clickDelete()
+
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Tabs closed; could not confirm worktree removal')
+    expect(showInfoToast).not.toHaveBeenCalledWith('Tabs closed; worktree not removed')
+  })
+})
+
+describe('worktreeRemovalToast', () => {
+  // Fill the summary defaults so each case sets only the flags it exercises.
+  const s = (o: Partial<{ removed: boolean, failed: boolean, stillReferenced: boolean, unknown: boolean }> = {}) =>
+    ({ removed: false, failed: false, stillReferenced: false, unknown: false, ...o })
+
+  it('removed wins over everything, including a stale untracked snapshot and a sibling failure', () => {
+    expect(worktreeRemovalToast(s({ removed: true, failed: true, stillReferenced: true, unknown: true }), false)).toBe('Worktree removed')
+    expect(worktreeRemovalToast(s({ removed: true }), true)).toBe('Worktree removed')
+  })
+
+  it('failed stays silent — the close pipeline already warn-toasted its detail', () => {
+    expect(worktreeRemovalToast(s({ failed: true }), true)).toBeNull()
+    // failed outranks still-referenced, unknown, and the untracked snapshot.
+    expect(worktreeRemovalToast(s({ failed: true, stillReferenced: true, unknown: true }), false)).toBeNull()
+  })
+
+  it('still-referenced wins over unknown and a stale untracked snapshot (only a tracked worktree can report it)', () => {
+    expect(worktreeRemovalToast(s({ stillReferenced: true, unknown: true }), false))
+      .toBe('Tabs closed; worktree still in use elsewhere')
+    expect(worktreeRemovalToast(s({ stillReferenced: true }), true))
+      .toBe('Tabs closed; worktree still in use elsewhere')
+  })
+
+  it('unknown (RPC rejected / unreachable / threw) reports "could not confirm", outranking the inspect snapshot', () => {
+    // No definitive verdict from any tab: don't claim removed OR not-removed.
+    // Wins over both the untracked snapshot and the tracked "not removed".
+    expect(worktreeRemovalToast(s({ unknown: true }), false))
+      .toBe('Tabs closed; could not confirm worktree removal')
+    expect(worktreeRemovalToast(s({ unknown: true }), true))
+      .toBe('Tabs closed; could not confirm worktree removal')
+  })
+
+  it('untracked snapshot with no other outcome reports "not tracked"', () => {
+    expect(worktreeRemovalToast(s(), false))
+      .toBe('Tabs closed (worktree was not tracked)')
+  })
+
+  it('tracked but nothing removed reports "not removed" (e.g. a startup-race strand the GC will reclaim)', () => {
+    expect(worktreeRemovalToast(s(), true))
+      .toBe('Tabs closed; worktree not removed')
   })
 })

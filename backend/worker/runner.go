@@ -196,6 +196,11 @@ func Run(ctx context.Context, cfg RunConfig) error {
 				// itself exits.
 				Agents:    svcCtx.Agents,
 				Terminals: svcCtx.Terminals,
+				// Reclaim worktrees whose tab links are all startup-race
+				// strands (no live tab references them). Backstops the
+				// startup link guards so a close that raced startup can't
+				// leak the worktree dir.
+				ReapWorktree: svcCtx.ReapOrphanWorktree,
 			},
 		)
 		go reconciler.Run(ctx)
