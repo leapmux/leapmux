@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
-import { createAgentSessionStore } from '~/stores/agentSession.store'
+import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
+import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createTabStore } from '~/stores/tab.store'
@@ -392,6 +392,109 @@ describe('codex result replay handling', () => {
         agentSessionStore.updateInfo('agent-1', { codexTurnId: '' })
 
       expect(agentSessionStore.getInfo('agent-1').codexTurnId).toBe('')
+      dispose()
+    })
+  })
+})
+
+describe('context usage refresh on compaction boundary', () => {
+  // Mirrors the compaction branch in useWorkspaceConnection's message handler:
+  // a completed boundary refreshes the grid from its post-compaction token
+  // count (resetting the now-stale input/cache components, since the boundary
+  // carries no breakdown) while preserving the known context window, instead of
+  // leaving the pre-compaction usage on screen until the next turn.
+  function applyCompaction(
+    sessionStore: ReturnType<typeof createAgentSessionStore>,
+    agentId: string,
+    content: unknown,
+  ) {
+    const msg = {
+      id: 'compact-1',
+      source: MessageSource.AGENT,
+      content: new TextEncoder().encode(JSON.stringify(content)),
+      contentCompression: ContentCompression.NONE,
+      seq: 1n,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+    } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+
+    const postTokens = extractCompactionContextTokens(parseMessageContent(msg))
+    if (postTokens === undefined)
+      return
+    const existing = sessionStore.getInfo(agentId).contextUsage
+    sessionStore.updateInfo(agentId, {
+      contextUsage: compactionContextUsage(postTokens, existing),
+    })
+  }
+
+  const compactBoundary = (meta: Record<string, unknown>) => ({ type: 'system', subtype: 'compact_boundary', compact_metadata: meta })
+
+  // Distinct agent ids per case: the store persists through localStorage, so a
+  // shared id would leak one case's contextWindow into the next.
+  it('drops the grid to the post-compaction size and preserves the context window', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      // Pre-compaction usage from the last assistant turn: ~150k of input/cache.
+      store.updateInfo('compact-drop', {
+        contextUsage: {
+          inputTokens: 50000,
+          cacheCreationInputTokens: 40000,
+          cacheReadInputTokens: 60000,
+          contextWindow: 200000,
+        },
+      })
+
+      applyCompaction(store, 'compact-drop', compactBoundary({ trigger: 'auto', pre_tokens: 150000, post_tokens: 12000 }))
+
+      expect(store.getInfo('compact-drop').contextUsage).toEqual({
+        inputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        contextTokens: 12000,
+        contextWindow: 200000,
+      })
+      dispose()
+    })
+  })
+
+  it('derives the post size from pre minus tokens_saved when post_tokens is absent', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('compact-derive', {
+        contextUsage: { inputTokens: 100000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200000 },
+      })
+
+      applyCompaction(store, 'compact-derive', compactBoundary({ pre_tokens: 100000, tokens_saved: 70000 }))
+
+      expect(store.getInfo('compact-derive').contextUsage?.contextTokens).toBe(30000)
+      dispose()
+    })
+  })
+
+  it('leaves the existing usage untouched when the boundary carries no resolvable post', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      const before = { inputTokens: 50000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200000 }
+      store.updateInfo('compact-noop', { contextUsage: { ...before } })
+
+      // Only pre_tokens -- nothing to resolve a post-compaction size from.
+      applyCompaction(store, 'compact-noop', compactBoundary({ trigger: 'auto', pre_tokens: 150000 }))
+
+      expect(store.getInfo('compact-noop').contextUsage).toEqual(before)
+      dispose()
+    })
+  })
+
+  it('sets contextTokens even when no prior context window is known', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      applyCompaction(store, 'compact-nowindow', compactBoundary({ pre_tokens: 100000, post_tokens: 8000 }))
+
+      expect(store.getInfo('compact-nowindow').contextUsage).toEqual({
+        inputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        contextTokens: 8000,
+      })
       dispose()
     })
   })

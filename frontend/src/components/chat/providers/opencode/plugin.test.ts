@@ -195,17 +195,17 @@ describe('opencode classify', () => {
 
   it('classifies system notification', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies settings_changed as notification', () => {
     const parent = { type: 'settings_changed' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies agent_error as notification', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies user content', () => {
@@ -234,7 +234,7 @@ describe('opencode classify', () => {
       messages: [{ type: 'interrupted' }],
     }
     expect(plugin.classify(input(undefined, wrapper))).toEqual({
-      kind: 'notification_thread',
+      kind: 'notification',
       messages: wrapper.messages,
     })
   })
@@ -242,6 +242,34 @@ describe('opencode classify', () => {
   it('hides empty wrapper', () => {
     const wrapper = { old_seqs: [], messages: [] }
     expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a terminal (non-compacting) system status standalone', () => {
+    // Parity with Claude/Codex: the trailing {subtype:status, status:null} that
+    // ends a compaction carries nothing to render, so it must not surface as a
+    // notification (which would fall back to a raw-JSON bubble).
+    const parent = { type: 'system', subtype: 'status', status: null }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('keeps an in-progress compacting system status visible', () => {
+    const parent = { type: 'system', subtype: 'status', status: 'compacting' }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+  })
+
+  it('hides a terminal system status when consolidated into a notification thread', () => {
+    const statusMsg = { type: 'system', subtype: 'status', status: null }
+    const wrapper = { old_seqs: [9], messages: [statusMsg] }
+    expect(plugin.classify(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('drops a hidden system message from a thread but keeps the visible notification', () => {
+    const interrupted = { type: 'interrupted' }
+    const initMsg = { type: 'system', subtype: 'init' }
+    const wrapper = { old_seqs: [1, 2], messages: [initMsg, interrupted] }
+    // init is hidden; interrupted (a base notification type) keeps the thread alive.
+    expect(plugin.classify(input(initMsg, wrapper)))
+      .toEqual({ kind: 'notification', messages: [interrupted] })
   })
 })
 

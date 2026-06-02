@@ -1,14 +1,14 @@
-import type { JSXElement } from 'solid-js'
 import { render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { agentErrorRenderer, compactBoundaryRenderer, compactingRenderer, contextClearedRenderer, interruptedRenderer, microcompactBoundaryRenderer, planUpdatedRenderer, renderNotificationThread, settingsChangedRenderer } from './notificationRenderers'
+import { renderNotificationThread } from './notificationRenderers'
+import { elementText, renderThreadHasIcon, renderThreadText } from './notificationTestUtils'
 import { resultRenderer } from './providers/claude/notifications'
 
 // Side-effect-register the Claude and Codex plugins so the provider pre-pass
-// (plugin.notificationThreadEntry) actually runs in the parity tests that pass
-// an agentProvider -- mirroring production, where renderNotificationThread is
+// (plugin.notificationThreadEntry) actually runs in the tests that pass an
+// agentProvider -- mirroring production, where renderNotificationThread is
 // always called with one.
 await import('./providers/claude/plugin')
 await import('./providers/codex/plugin')
@@ -20,47 +20,14 @@ afterEach(() => {
   clearSettingsLabelCache()
 })
 
-/** Render a JSX element and return its trimmed text content. */
-function elementText(el: JSXElement | null): string {
-  if (el === null)
-    return ''
-  const { container } = render(() => el)
-  return container.textContent?.trim() ?? ''
-}
-
-/** Extract all text content from a rendered notification thread, trimmed. */
-function renderText(messages: unknown[]): string {
-  return elementText(renderNotificationThread(messages))
-}
+// Provider-neutral aliases over the shared helpers (these cases drive the
+// shared switch directly, with no provider pre-pass).
+const renderText = (messages: unknown[]): string => renderThreadText(messages)
+const renderHasIcon = (messages: unknown[]): boolean => renderThreadHasIcon(messages)
 
 /** Check if the rendered output contains a specific substring. */
 function renderedContains(messages: unknown[], text: string): boolean {
   return renderText(messages).includes(text)
-}
-
-/**
- * Assert the standalone renderer and the aggregate notification thread produce
- * the same trimmed text, equal to `expected`. `renderStandalone` is a factory so
- * each render mounts a fresh element.
- */
-function expectTextParity(renderStandalone: () => JSXElement | null, messages: unknown[], expected: string): void {
-  const standalone = elementText(renderStandalone())
-  expect(standalone).toBe(expected)
-  expect(renderText(messages)).toBe(standalone)
-}
-
-/**
- * Assert the standalone renderer and the aggregate notification thread produce
- * byte-identical markup (icon included) for the same single message.
- */
-function expectMarkupParity(renderStandalone: () => JSXElement | null, messages: unknown[]): void {
-  const standalone = render(() => renderStandalone()).container
-  const aggregate = render(() => renderNotificationThread(messages)).container
-  // Assert the icon on BOTH sides so the parity check can't pass by both paths
-  // dropping it; then the full innerHTML equality covers the rest of the markup.
-  expect(standalone.querySelector('svg')).not.toBeNull()
-  expect(aggregate.querySelector('svg')).not.toBeNull()
-  expect(standalone.innerHTML).toBe(aggregate.innerHTML)
 }
 
 describe('renderNotificationThread: compaction and context_cleared rendering', () => {
@@ -164,8 +131,11 @@ describe('renderNotificationThread: compaction and context_cleared rendering', (
   })
 
   it('legacy synthesized {type:"compacting"} envelope no longer matches the spinner (accepted regression)', () => {
-    // Phase 4.1 stops emitting this shape; old DB rows fall through to the
-    // raw-JSON fallback bubble. This test pins the migration boundary.
+    // Phase 4.1 stops emitting this shape; the shared switch deliberately has no
+    // arm for the bare `{type:"compacting"}` type, so old DB rows produce no
+    // entry. (Before notifications routed through this one renderer, such a row
+    // fell through to the raw-JSON bubble; now it simply renders nothing.) This
+    // test pins the migration boundary.
     const messages = [{ type: 'compacting' }]
     expect(renderText(messages)).not.toContain('Compacting context')
   })
@@ -193,7 +163,7 @@ describe('compaction token formatting: pre → post', () => {
     return { type: 'system', subtype: 'microcompact_boundary', microcompactMetadata }
   }
 
-  // -- aggregate (notification_thread) path --------------------------------
+  // -- consolidated multi-message path -------------------------------------
 
   it('renders trigger, pre_tokens, and post_tokens as "(trigger, pre → post)"', () => {
     // Manual /compact carries post_tokens directly and no tokens_saved.
@@ -267,52 +237,21 @@ describe('compaction token formatting: pre → post', () => {
     expect(renderText(messages)).toBe('Context compacted (1.0k → 500)')
   })
 
-  // -- standalone (per-message) renderer path ------------------------------
+  // -- compact_boundary through a provider pre-pass ------------------------
 
-  it('standalone compactBoundaryRenderer renders "(trigger, pre → post)"', () => {
-    const el = compactBoundaryRenderer.render(
-      compactMsg({ trigger: 'manual', pre_tokens: 105424, post_tokens: 8476 }),
-      undefined,
-    )
-    expect(elementText(el)).toBe('Context compacted (manual, 105.4k → 8.5k)')
-  })
-
-  it('standalone microcompactBoundaryRenderer renders a plain "Context microcompacted"', () => {
-    const el = microcompactBoundaryRenderer.render(
-      microcompactMsg({ trigger: 'auto', preTokens: 200000, tokensSaved: 50000 }),
-      undefined,
-    )
-    expect(elementText(el)).toBe('Context microcompacted')
-  })
-
-  it('standalone compactBoundaryRenderer handles the Codex boundary with no metadata', () => {
-    const el = compactBoundaryRenderer.render({ method: 'thread/compacted' }, undefined)
-    expect(elementText(el)).toBe('Context compacted')
-  })
-
-  it('renders identical text from the standalone and aggregate paths for the same metadata', () => {
-    // Both paths share formatCompactionDetail, so the per-message renderer and
-    // the consolidated thread must agree byte-for-byte.
-    const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
-    expectTextParity(() => compactBoundaryRenderer.render(msg, undefined), [msg], 'Context compacted (auto, 100.0k → 8.0k)')
-  })
-
-  it('microcompaction renders identical text from the standalone and aggregate paths', () => {
-    // The other half of the parity guarantee: microcompact must agree too.
-    const msg = microcompactMsg({ trigger: 'auto', preTokens: 200000, tokensSaved: 50000 })
-    expectTextParity(() => microcompactBoundaryRenderer.render(msg, undefined), [msg], 'Context microcompacted')
-  })
-
-  it('compact-boundary parity holds through a provider pre-pass (Claude and Codex)', () => {
+  it('renders a single compact_boundary the same with the Claude or Codex provider pre-pass', () => {
     // Production always calls renderNotificationThread with an agentProvider, so
     // the plugin notificationThreadEntry pre-pass runs before the shared switch.
-    // Both Claude and Codex return null for compact_boundary, so the aggregate
-    // must still match the standalone renderer with a provider in play.
+    // Both Claude and Codex return null for compact_boundary, so the shared
+    // switch produces the label regardless of provider.
     const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
-    const standalone = elementText(compactBoundaryRenderer.render(msg, undefined))
-    expect(standalone).toBe('Context compacted (auto, 100.0k → 8.0k)')
-    expect(elementText(renderNotificationThread([msg], AgentProvider.CLAUDE_CODE))).toBe(standalone)
-    expect(elementText(renderNotificationThread([msg], AgentProvider.CODEX))).toBe(standalone)
+    const expected = 'Context compacted (auto, 100.0k → 8.0k)'
+    expect(elementText(renderNotificationThread([msg], AgentProvider.CLAUDE_CODE))).toBe(expected)
+    expect(elementText(renderNotificationThread([msg], AgentProvider.CODEX))).toBe(expected)
+  })
+
+  it('renders a single Codex thread/compacted boundary with no metadata', () => {
+    expect(renderText([{ method: 'thread/compacted' }])).toBe('Context compacted')
   })
 
   it('microcompaction ignores a metadata wrapper under any key (Claude emits none)', () => {
@@ -367,28 +306,23 @@ describe('compaction token formatting: pre → post', () => {
     expect(renderText(messages)).toBe('Context compacted (100.0k)')
   })
 
-  // -- divider markup parity (icon + layout, not just text) ----------------
+  // -- divider markup (icon + layout, not just text) -----------------------
 
-  it('standalone and aggregate compact boundaries render identical markup, icon included', () => {
-    // The standalone renderer used to emit a bare <div> with no icon while the
-    // thread divider had the down-arrow icon; both now route through
-    // CompactionDivider, so the full markup (not just the trimmed text) matches.
+  it('renders a single compact boundary as a divider with the icon', () => {
     const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
-    expectMarkupParity(() => compactBoundaryRenderer.render(msg, undefined), [msg])
+    expect(renderHasIcon([msg])).toBe(true)
+    expect(renderText([msg])).toBe('Context compacted (auto, 100.0k → 8.0k)')
   })
 
-  it('standalone and aggregate microcompact boundaries render identical markup, icon included', () => {
-    const msg = microcompactMsg({})
-    expectMarkupParity(() => microcompactBoundaryRenderer.render(msg, undefined), [msg])
+  it('renders a single microcompact boundary as a divider with the icon', () => {
+    expect(renderHasIcon([microcompactMsg({})])).toBe(true)
+    expect(renderText([microcompactMsg({})])).toBe('Context microcompacted')
   })
 
-  it('standalone and aggregate compacting spinners render identical markup, icon included', () => {
-    // compactingRenderer now routes through CompactionDivider (loading) instead
-    // of a hand-rolled <Spinner/>, so the standalone per-message spinner and the
-    // consolidated thread spinner emit identical markup -- the same drift
-    // guarantee the boundary rows already had.
+  it('renders a single compacting status as a spinner divider with the icon', () => {
     const msg = { type: 'system', subtype: 'status', status: 'compacting' }
-    expectMarkupParity(() => compactingRenderer.render(msg, undefined), [msg])
+    expect(renderHasIcon([msg])).toBe(true)
+    expect(renderText([msg])).toBe('Compacting context...')
   })
 })
 
@@ -491,29 +425,34 @@ describe('renderNotificationThread: message ordering', () => {
   })
 })
 
-describe('shared notification labels: standalone vs thread parity', () => {
-  // interrupted / context_cleared / agent_error now read from the same shared
-  // constants as the thread switch, so the standalone renderer and the aggregate
-  // thread must agree. These lock the anti-drift contract: re-inlining either
-  // side's literal would fail here.
-  it('interrupted renders identically standalone and aggregated', () => {
-    const msg = { type: 'interrupted' }
-    expectTextParity(() => interruptedRenderer.render(msg, undefined), [msg], 'Interrupted')
+describe('single-message notification labels', () => {
+  // interrupted / context_cleared / agent_error render through the shared switch
+  // as one-element threads -- the sole notification path.
+  it('renders interrupted', () => {
+    expect(renderText([{ type: 'interrupted' }])).toBe('Interrupted')
   })
 
-  it('context_cleared renders identically standalone and aggregated', () => {
-    const msg = { type: 'context_cleared' }
-    expectTextParity(() => contextClearedRenderer.render(msg, undefined), [msg], 'Context cleared')
+  it('renders context_cleared', () => {
+    expect(renderText([{ type: 'context_cleared' }])).toBe('Context cleared')
   })
 
-  it('agent_error renders its error identically standalone and aggregated', () => {
-    const msg = { type: 'agent_error', error: 'boom' }
-    expectTextParity(() => agentErrorRenderer.render(msg, undefined), [msg], 'boom')
+  it('renders agent_error with its error text', () => {
+    expect(renderText([{ type: 'agent_error', error: 'boom' }])).toBe('boom')
   })
 
-  it('agent_error falls back to the shared "Unknown error" label on both paths', () => {
-    const msg = { type: 'agent_error' }
-    expectTextParity(() => agentErrorRenderer.render(msg, undefined), [msg], 'Unknown error')
+  it('renders agent_error with the "Unknown error" fallback', () => {
+    expect(renderText([{ type: 'agent_error' }])).toBe('Unknown error')
+  })
+})
+
+describe('claude rate-limit notifications', () => {
+  // rate_limit_event renders through claudeNotificationThreadEntry; classify only
+  // routes a non-allowed status here, so it requires the Claude provider pre-pass.
+  it('renders a generic "Rate limit update" for a malformed (non-object) payload', () => {
+    // The deleted standalone renderer had this fallback; the entry path preserves
+    // it so a malformed payload still surfaces a line instead of vanishing.
+    const el = renderNotificationThread([{ type: 'rate_limit_event', rate_limit_info: 'oops' }], AgentProvider.CLAUDE_CODE)
+    expect(elementText(el)).toBe('Rate limit update')
   })
 })
 
@@ -566,18 +505,6 @@ describe('renderNotificationThread: plan_updated', () => {
     const text = renderText(messages)
     expect(text).toContain('Plan updated and renamed to Test Plan')
     expect(text).toContain('Interrupted')
-  })
-
-  it('standalone and aggregate paths render plan_updated identically', () => {
-    // Both paths share planUpdatedLabel, so the per-message renderer and the
-    // consolidated thread must agree on the wording.
-    const msg = { type: 'plan_updated', plan_title: 'My Plan', plan_file_path: '/p.md' }
-    expectTextParity(() => planUpdatedRenderer.render(msg, undefined), [msg], 'Plan updated: My Plan')
-  })
-
-  it('standalone and aggregate paths render the auto-rename variant identically', () => {
-    const msg = { type: 'plan_updated', plan_title: 'Auth Refactor', plan_file_path: '/p.md', update_agent_title: true }
-    expectTextParity(() => planUpdatedRenderer.render(msg, undefined), [msg], 'Plan updated and renamed to Auth Refactor')
   })
 })
 
@@ -635,11 +562,6 @@ describe('settings change formatting: inline label overrides', () => {
   it('skips malformed entries but still renders the well-formed ones', () => {
     const messages = [settingsMsg({ foo: null, bar: 'oops', model: { old: 'A', new: 'B' } })]
     expect(renderText(messages)).toBe('Model (A → B)')
-  })
-
-  it('thread and standalone paths render settings changes identically', () => {
-    const changes = { foo: { old: 'a', new: 'b', label: 'My Setting', oldLabel: 'Old!', newLabel: 'New!' } }
-    expectTextParity(() => settingsChangedRenderer.render(settingsMsg(changes), undefined), [settingsMsg(changes)], 'My Setting (Old! → New!)')
   })
 })
 

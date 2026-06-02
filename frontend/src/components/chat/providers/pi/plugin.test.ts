@@ -200,13 +200,46 @@ describe('pi classify', () => {
     expect(plugin.classify(input({ type: 'extension_ui_request', method: 'select' })).kind).toBe('notification')
   })
 
+  it('classifies a notify extension_ui_request with a message as a notification', () => {
+    const parent = { type: 'extension_ui_request', method: 'notify', message: 'Build finished' }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+  })
+
+  it('hides a notify extension_ui_request with an empty message (nothing to render)', () => {
+    // describePiNotification yields null for an empty notify, so surfacing it as a
+    // notification would render no line and fall back to a raw-JSON bubble.
+    expect(plugin.classify(input({ type: 'extension_ui_request', method: 'notify', message: '' })))
+      .toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a notify extension_ui_request with no message field', () => {
+    expect(plugin.classify(input({ type: 'extension_ui_request', method: 'notify' })))
+      .toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a consolidated wrapper of only empty-notify extension requests', () => {
+    const empties = [
+      { type: 'extension_ui_request', method: 'notify', message: '' },
+      { type: 'extension_ui_request', method: 'notify' },
+    ]
+    expect(plugin.classify(input(empties[0], { old_seqs: [], messages: empties })))
+      .toEqual({ kind: 'hidden' })
+  })
+
+  it('drops empty-notify requests from a thread but keeps a renderable notification', () => {
+    const empty = { type: 'extension_ui_request', method: 'notify', message: '' }
+    const compaction = { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } }
+    expect(plugin.classify(input(empty, { old_seqs: [], messages: [empty, compaction] })))
+      .toEqual({ kind: 'notification', messages: [compaction] })
+  })
+
   it('classifies user echo content as user_content', () => {
     expect(plugin.classify(input({ role: 'user', content: 'hello' })).kind).toBe('user_content')
   })
 
-  it('classifies a consolidated multi-event Pi wrapper as a notification_thread', () => {
+  it('classifies a consolidated multi-event Pi wrapper as a notification carrying every message', () => {
     // The backend consolidates consecutive AGENT-source Pi notifications into one
-    // `notification_thread` envelope. Without Pi extraTypes the wrapper was not
+    // `notification_thread` wrapper. Without Pi extraTypes the wrapper was not
     // recognized as a thread, so it fell to the per-message branch and
     // MessageBubble rendered only messages[0] -- dropping the rest.
     const messages = [
@@ -214,23 +247,23 @@ describe('pi classify', () => {
       { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } },
     ]
     expect(plugin.classify(input(messages[0], { old_seqs: [], messages })))
-      .toEqual({ kind: 'notification_thread', messages })
+      .toEqual({ kind: 'notification', messages })
   })
 
-  it('classifies a wrapper of two compaction_end boundaries as a notification_thread', () => {
+  it('classifies a wrapper of two compaction_end boundaries as a notification', () => {
     const messages = [
       { type: 'compaction_end', summary: 'first', result: { tokensBefore: 100000 } },
       { type: 'compaction_end', summary: 'second', result: { tokensBefore: 50000 } },
     ]
-    expect(plugin.classify(input(messages[0], { old_seqs: [], messages })).kind).toBe('notification_thread')
+    expect(plugin.classify(input(messages[0], { old_seqs: [], messages })).kind).toBe('notification')
   })
 
-  it('does not treat a wrapper of non-notification Pi events as a thread', () => {
+  it('does not treat a wrapper of non-notification Pi events as a notification', () => {
     // A wrapper whose entries are not Pi notification surface types (here an
-    // assistant message_end) must not be hijacked into the notification thread
-    // path -- only the per-message classification applies.
+    // assistant message_end) must not be hijacked into the notification path --
+    // only the per-message classification applies (assistant_text here).
     const messages = [{ type: 'message_end', message: { role: 'assistant' } }]
-    expect(plugin.classify(input(messages[0], { old_seqs: [], messages })).kind).not.toBe('notification_thread')
+    expect(plugin.classify(input(messages[0], { old_seqs: [], messages })).kind).not.toBe('notification')
   })
 
   it('falls back to unknown for unrecognized shapes', () => {

@@ -188,4 +188,59 @@ describe('claude classify', () => {
     expect(plugin.classify({ ...input(parent), spanType: 'TaskList' }))
       .toEqual({ kind: 'hidden' })
   })
+
+  it('hides a terminal compaction status (status=null, compact_result=success) standalone', () => {
+    // The user-facing "Context compacted (...)" line comes from the separate
+    // compact_boundary message; this terminal status carries nothing to show.
+    const parent = {
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'success',
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a terminal compaction status when Hub consolidates it into a notification thread', () => {
+    // Regression: the consolidated-thread branch must apply the same per-message
+    // hidden rules as the standalone classifier. Before the shared predicate, a
+    // status message that is hidden on its own leaked through the wrapper path as
+    // a `notification` and rendered as raw JSON.
+    const statusMsg = {
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'success',
+    }
+    const wrapper = { old_seqs: [305], messages: [statusMsg] }
+    expect(plugin.classify(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('drops a hidden status from a consolidated thread but keeps the visible notification', () => {
+    const settingsMsg = {
+      type: 'settings_changed',
+      changes: { model: { old: 'a', new: 'b' } },
+    }
+    const statusMsg = { type: 'system', subtype: 'status', status: null }
+    const wrapper = { old_seqs: [301, 302], messages: [settingsMsg, statusMsg] }
+    expect(plugin.classify(input(settingsMsg, wrapper)))
+      .toEqual({ kind: 'notification', messages: [settingsMsg] })
+  })
+
+  it('keeps the in-progress compacting status visible in a consolidated thread', () => {
+    // status === 'compacting' is the live "Compacting context..." row; only the
+    // terminal (non-compacting) status is hidden.
+    const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
+    const wrapper = { old_seqs: [305], messages: [compactingMsg] }
+    expect(plugin.classify(input(compactingMsg, wrapper)))
+      .toEqual({ kind: 'notification', messages: [compactingMsg] })
+  })
+
+  it('drops an allowed rate_limit_event from a consolidated thread (regression guard)', () => {
+    const allowed = { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }
+    const throttled = { type: 'rate_limit_event', rate_limit_info: { status: 'throttled', rateLimitType: 'primary' } }
+    const wrapper = { old_seqs: [310, 311], messages: [throttled, allowed] }
+    expect(plugin.classify(input(throttled, wrapper)))
+      .toEqual({ kind: 'notification', messages: [throttled] })
+  })
 })

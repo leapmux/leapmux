@@ -321,6 +321,7 @@ export const CODEX_METHOD = {
   TURN_STARTED: 'turn/started',
   THREAD_STATUS_CHANGED: 'thread/status/changed',
   THREAD_NAME_UPDATED: 'thread/name/updated',
+  THREAD_SETTINGS_UPDATED: 'thread/settings/updated',
   TURN_PLAN_UPDATED: 'turn/plan/updated',
   THREAD_TOKEN_USAGE_UPDATED: 'thread/tokenUsage/updated',
   MCP_SERVER_STARTUP_STATUS_UPDATED: 'mcpServer/startupStatus/updated',

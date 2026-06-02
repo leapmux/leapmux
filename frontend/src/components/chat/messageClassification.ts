@@ -13,8 +13,11 @@ import './providers'
 
 export type MessageCategory
   = | { kind: 'hidden' }
-    | { kind: 'notification_thread', messages: unknown[] }
-    | { kind: 'notification' }
+    // A notification carries its message list: a consolidated thread holds the
+    // wrapper's messages, and a standalone notification is just a one-element
+    // thread (`messages: [parentObject]`). renderNotificationThread is the sole
+    // renderer for both, so there is one notification category, not two.
+    | { kind: 'notification', messages: unknown[] }
     | { kind: 'task_notification' }
     | { kind: 'tool_use', toolName: string, toolUse: Record<string, unknown>, content: Array<Record<string, unknown>> }
     | { kind: 'tool_result' }
@@ -134,12 +137,11 @@ const META_KINDS = new Set<MessageCategory['kind']>([
 
 /**
  * Categories that must NOT clear the in-flight streaming text buffer
- * when a persisted AGENT message arrives. Notification-thread rows are
- * handled separately via `parsed.wrapper`.
+ * when a persisted AGENT message arrives. Notification rows are handled
+ * separately via `parsed.wrapper`.
  */
 const NON_STREAM_CLEAR_KINDS = new Set<MessageCategory['kind']>([
   'notification',
-  'notification_thread',
   'task_notification',
   'hidden',
   'control_response',
@@ -171,7 +173,7 @@ export function shouldClearStreamingText(
 
 /** Row class: determines horizontal alignment. */
 export function messageRowClass(kind: MessageCategory['kind'], source: MessageSource): string {
-  if (kind === 'notification' || kind === 'notification_thread')
+  if (kind === 'notification')
     return chatStyles.messageRowCenter
   if (!META_KINDS.has(kind) && source === MessageSource.USER)
     return chatStyles.messageRowEnd
@@ -180,7 +182,7 @@ export function messageRowClass(kind: MessageCategory['kind'], source: MessageSo
 
 /** Bubble class: determines visual style of the message container. */
 export function messageBubbleClass(kind: MessageCategory['kind'], source: MessageSource): string {
-  if (kind === 'notification' || kind === 'notification_thread')
+  if (kind === 'notification')
     return chatStyles.systemMessage
   if (kind === 'assistant_thinking')
     return chatStyles.thinkingMessage

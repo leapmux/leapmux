@@ -1,8 +1,6 @@
-/* eslint-disable solid/components-return-once -- render methods are not Solid components */
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer } from '../../messageRenderers'
 import type { NotificationThreadEntry } from '../registry'
-import type { RateLimitInfo } from '~/stores/agentSession.store'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
 import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { resultDivider, resultErrorDetail } from '../../messageStyles.css'
@@ -39,22 +37,6 @@ function cleanAPIErrorMessage(msg: string): string {
     return `API Error: ${statusCode}`
   }
   return msg
-}
-
-/** Handles Claude rate limit notifications: {"type":"rate_limit_event","rate_limit_info":{...}} */
-export const rateLimitRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== 'rate_limit_event')
-      return null
-    const info = parsed.rate_limit_info
-    if (!isObject(info))
-      return <div>Rate limit update</div>
-    // Hide "allowed" status from chat — the popover still shows it.
-    const rl = info as RateLimitInfo
-    if (rl.status === 'allowed')
-      return null
-    return <div>{formatRateLimitMessage(rl)}</div>
-  },
 }
 
 /**
@@ -146,11 +128,14 @@ export function claudeNotificationThreadEntry(
   const t = m.type as string | undefined
   if (t === 'rate_limit_event') {
     const info = m.rate_limit_info
-    if (isObject(info)) {
-      const rlInfo = info as Record<string, unknown>
-      if (rlInfo.status !== 'allowed')
-        return [{ kind: 'text', text: formatRateLimitMessage(rlInfo) }]
-    }
+    if (!isObject(info))
+      // A malformed payload (non-object rate_limit_info) still surfaces a
+      // generic line rather than vanishing -- classify only routes it here when
+      // it isn't an "allowed" status, so it is a real (if rare) notification.
+      return [{ kind: 'text', text: 'Rate limit update' }]
+    const rlInfo = info as Record<string, unknown>
+    if (rlInfo.status !== 'allowed')
+      return [{ kind: 'text', text: formatRateLimitMessage(rlInfo) }]
     return []
   }
   return null

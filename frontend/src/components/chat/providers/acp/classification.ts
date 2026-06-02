@@ -3,6 +3,7 @@ import type { ClassificationContext, ClassificationInput } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { PermissionMode } from '~/utils/controlResponse'
 import * as workerRpc from '~/api/workerRpc'
+import { isObject } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { isNotificationThreadWrapper } from '../../messageUtils'
@@ -46,6 +47,26 @@ const ACP_EXTRA_NOTIF_TYPES = new Set(['agent_error'])
 export function isACPNotifThread(wrapper: { messages: unknown[] } | null): boolean {
   return isNotificationThreadWrapper(wrapper, ACP_EXTRA_NOTIF_TYPES, (t, st) =>
     t === 'system' && st !== 'init' && st !== 'task_notification')
+}
+
+/**
+ * Per-message hidden rules for an ACP notification, applied by both the
+ * standalone `system` classifier and the consolidated-thread filter so a
+ * notification hidden on its own stays hidden once Hub threads it into a
+ * `notification_thread` wrapper -- the same standalone/thread parity Claude and
+ * Codex enforce. Hides the `init` and `task_notification` system lifecycle
+ * messages and a terminal (non-compacting) system status, none of which the
+ * shared notification renderer draws; without the filter a thread of only such
+ * messages surfaced as a `notification` that renders nothing and fell back to a
+ * raw-JSON bubble.
+ */
+function isHiddenACPNotification(m: unknown): boolean {
+  if (!isObject(m) || m.type !== 'system')
+    return false
+  const subtype = m.subtype as string | undefined
+  if (subtype === 'init' || subtype === 'task_notification')
+    return true
+  return subtype === 'status' && m.status !== 'compacting'
 }
 
 /**
@@ -97,8 +118,15 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     const wrapper = input.wrapper
 
     if (wrapper) {
-      if (isACPNotifThread(wrapper))
-        return { kind: 'notification_thread', messages: wrapper.messages }
+      if (isACPNotifThread(wrapper)) {
+        // Drop the per-message hidden shapes (the same ones the standalone
+        // classifier hides) so a thread of only-hidden entries collapses to
+        // `hidden` rather than surfacing an empty notification or raw JSON.
+        const msgs = wrapper.messages.filter(m => !isHiddenACPNotification(m))
+        if (msgs.length === 0)
+          return { kind: 'hidden' }
+        return { kind: 'notification', messages: msgs }
+      }
       if (wrapper.messages.length === 0)
         return { kind: 'hidden' }
     }
@@ -108,7 +136,6 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
 
     const sessionUpdate = parent.sessionUpdate as string | undefined
     const type = parent.type as string | undefined
-    const subtype = parent.subtype as string | undefined
 
     if (sessionUpdate === ACP_SESSION_UPDATE.AGENT_MESSAGE_CHUNK)
       return { kind: 'assistant_text' }
@@ -136,14 +163,14 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
       return { kind: 'result_divider' }
 
     if (type === 'system') {
-      if (subtype === 'init' || subtype === 'task_notification')
+      if (isHiddenACPNotification(parent))
         return { kind: 'hidden' }
-      return { kind: 'notification' }
+      return { kind: 'notification', messages: [parent] }
     }
 
     if (type === 'settings_changed' || type === 'context_cleared'
       || type === 'interrupted' || type === 'agent_error' || type === 'plan_updated' || type === 'compacting') {
-      return { kind: 'notification' }
+      return { kind: 'notification', messages: [parent] }
     }
 
     if (!sessionUpdate && typeof parent.content === 'string') {

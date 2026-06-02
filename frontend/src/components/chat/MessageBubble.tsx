@@ -332,6 +332,23 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     ? chatStyles.userMessagePending
     : messageBubbleClass(category().kind, props.message.source)
 
+  // A notification category carries the messages to render -- a consolidated
+  // thread holds the wrapper's messages; a standalone notification is a
+  // one-element thread (classify supplies `[parentObject]`). The narrowing here
+  // is just for the type; a non-notification category never reaches this.
+  const notificationMessages = (): unknown[] => {
+    const cat = category()
+    return cat.kind === 'notification' ? cat.messages : []
+  }
+
+  // Render the message body through the provider plugin, ending in the raw-JSON
+  // last-resort span when no renderer claims it. Used for every non-notification
+  // category, and as the fallback when a notification produces no entries (an
+  // unrecognized or legacy shape) -- so the message surfaces as raw JSON rather
+  // than an empty bubble.
+  const renderContent = () =>
+    renderMessageContent(parsed().parentObject ?? parsed().rawText, renderContext, category(), props.message.agentProvider)
+
   onMount(() => {
     if (!contentRef)
       return
@@ -360,9 +377,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
                     // eslint-disable-next-line solid/no-innerhtml -- HTML is produced via shiki, not arbitrary user input
                     <div class={chatStyles.hiddenMessageJson} data-code-copy="false" innerHTML={renderJsonHighlight(prettifyJson(rawJson()))} />
                   )
-                : category().kind === 'notification_thread'
-                  ? renderNotificationThread((category() as { kind: 'notification_thread', messages: unknown[] }).messages, props.message.agentProvider)
-                  : renderMessageContent(parsed().parentObject ?? parsed().rawText, renderContext, category(), props.message.agentProvider)}
+                : category().kind === 'notification'
+                  ? (renderNotificationThread(notificationMessages(), props.message.agentProvider) ?? renderContent())
+                  : renderContent()}
             </ErrorBoundary>
           </div>
         </div>

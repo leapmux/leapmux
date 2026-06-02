@@ -2,27 +2,17 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { renderNotificationThread } from '../../../notificationRenderers'
-import { describePiNotification, piNotificationRenderer, piNotificationThreadEntry } from './notification'
+import { renderThreadHasIcon, renderThreadText } from '../../../notificationTestUtils'
+import { describePiNotification, piNotificationThreadEntry } from './notification'
 
 // Side-effect import to register the Pi plugin so renderNotificationThread can
-// consult its notificationThreadEntry in the aggregate-path tests below.
+// consult its notificationThreadEntry -- the sole Pi notification render path.
 await import('../plugin')
 
-/** Render a Pi notification and return its trimmed text content. */
-function renderPiText(parsed: unknown): string {
-  const el = piNotificationRenderer(parsed)
-  if (el === null)
-    return ''
-  return render(() => el).container.textContent?.trim() ?? ''
-}
-
-/** True when the rendered Pi notification carries the compaction divider icon. */
-function rendersWithIcon(parsed: unknown): boolean {
-  const el = piNotificationRenderer(parsed)
-  if (el === null)
-    return false
-  return render(() => el).container.querySelector('svg') !== null
-}
+// A single Pi notification renders as a one-element thread under the Pi provider,
+// the path MessageBubble uses for a standalone notification.
+const renderPiText = (parsed: unknown): string => renderThreadText([parsed], AgentProvider.PI)
+const rendersWithIcon = (parsed: unknown): boolean => renderThreadHasIcon([parsed], AgentProvider.PI)
 
 describe('describePiNotification', () => {
   describe('compaction events', () => {
@@ -189,10 +179,12 @@ describe('describePiNotification', () => {
   })
 })
 
-describe('piNotificationRenderer markup', () => {
-  // Compaction boundaries render through the shared CompactionDivider so Pi
-  // matches Claude/Codex visually (icon + label), while every other Pi
-  // notification stays a plain text line.
+describe('pi single-notification rendering (markup)', () => {
+  // A standalone Pi notification renders through the same renderNotificationThread
+  // path as a consolidated one. Pi emits compaction boundaries as `divider` thread
+  // entries, which the shared renderer draws with its compaction-divider row, so Pi
+  // matches Claude/Codex visually (icon + label); every other Pi notification is a
+  // plain `text` entry rendered as a line.
   it('renders compaction_start as a divider with the spinner icon', () => {
     const msg = { type: 'compaction_start', reason: 'manual' }
     expect(rendersWithIcon(msg)).toBe(true)
@@ -218,15 +210,15 @@ describe('piNotificationRenderer markup', () => {
     expect(renderPiText(msg)).toBe('Auto-retry succeeded (attempt 2)')
   })
 
-  it('returns null for shapes the describer does not own', () => {
-    expect(piNotificationRenderer({ type: 'settings_changed' })).toBeNull()
+  it('renders nothing for a shape neither Pi nor the shared switch owns', () => {
+    expect(renderPiText({ type: 'totally_unknown_pi_event' })).toBe('')
   })
 })
 
 describe('piNotificationThreadEntry', () => {
-  // Mirrors piNotificationRenderer so the standalone and consolidated paths
-  // cannot drift: compaction boundaries become divider entries, everything else
-  // a text entry, and unowned shapes return null for the shared switch.
+  // The sole Pi notification render seam: compaction boundaries become divider
+  // entries, everything else a text entry, and unowned shapes return null so the
+  // shared switch can try them.
   it('maps compaction_start to a loading divider entry', () => {
     expect(piNotificationThreadEntry({ type: 'compaction_start', reason: 'manual' }))
       .toEqual([{ kind: 'divider', text: 'Compacting context...', loading: true }])
@@ -258,11 +250,10 @@ describe('pi notification thread: no multi-event truncation', () => {
   // wiring, renderNotificationThread had no Pi branch and MessageBubble showed
   // only messages[0], silently dropping the rest.
   it('renders both an auto_retry and a following compaction boundary', () => {
-    const el = renderNotificationThread([
+    const text = renderThreadText([
       { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000 },
       { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } },
     ], AgentProvider.PI)
-    const text = el === null ? '' : (render(() => el).container.textContent?.trim() ?? '')
     expect(text).toContain('Auto-retry 1/3')
     expect(text).toContain('Context compacted (threshold, 12.3k)')
   })

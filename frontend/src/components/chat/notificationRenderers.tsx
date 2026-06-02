@@ -3,10 +3,12 @@ import type { JSXElement } from 'solid-js'
 import type { MessageContentRenderer } from './messageRenderers'
 import type { NotificationThreadEntry } from './providers/registry'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { CompactionDetail } from '~/lib/messageParser'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
-import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { isCompactBoundary, parseBoundaryMeta, toTokenCount } from '~/lib/messageParser'
 import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
@@ -19,11 +21,10 @@ import { providerFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
 import { PERMISSION_MODE_KEY } from './settingsShared'
 
-// Provider-neutral notification labels referenced by BOTH the standalone
-// per-message renderers and the notification-thread switch. Hoisted to shared
-// constants so the wording cannot drift between the two paths -- the same
-// anti-drift guarantee COMPACTING_LABEL / MICROCOMPACT_LABEL give the compaction
-// rows below.
+// Provider-neutral notification labels used by the notification-thread switch
+// (`threadEntriesFor`). Hoisted to named constants so the wording lives in one
+// place and is referenced by name -- the same as COMPACTING_LABEL /
+// MICROCOMPACT_LABEL for the compaction rows below.
 const CONTEXT_CLEARED_LABEL = 'Context cleared'
 const INTERRUPTED_LABEL = 'Interrupted'
 const UNKNOWN_ERROR_LABEL = 'Unknown error'
@@ -93,8 +94,8 @@ function parseSettingsChanges(changes: unknown): SettingsChange[] {
 
 /**
  * Format settings changes as `Label (old → new)` parts, degrading to
- * `Label (new)` when there is no old value. Shared by the standalone renderer
- * and the notification-thread switch so both render settings changes identically.
+ * `Label (new)` when there is no old value. Used by the notification-thread
+ * switch (`threadEntriesFor`) to render settings_changed notifications.
  */
 function formatSettingsChanges(changes: unknown): string[] {
   return parseSettingsChanges(changes).map(c =>
@@ -102,50 +103,11 @@ function formatSettingsChanges(changes: unknown): string[] {
   )
 }
 
-/** Handles settings change notifications: {"type":"settings_changed","changes":{...}} */
-export const settingsChangedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.SettingsChanged)
-      return null
-    const parts = formatSettingsChanges(parsed.changes)
-    if (parts.length === 0)
-      return null
-    return <div class={controlResponseMessage}>{parts.join(', ')}</div>
-  },
-}
-
-/** Handles interrupt notifications: {"type":"interrupted"} */
-export const interruptedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.Interrupted)
-      return null
-    return <div class={controlResponseMessage}>{INTERRUPTED_LABEL}</div>
-  },
-}
-
-export const contextClearedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.ContextCleared)
-      return null
-    return <div class={controlResponseMessage}>{CONTEXT_CLEARED_LABEL}</div>
-  },
-}
-
-/** Handles agent error notifications: {"type":"agent_error","error":"..."} */
-export const agentErrorRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.AgentError)
-      return null
-    const error = pickString(parsed, 'error', UNKNOWN_ERROR_LABEL)
-    return <div class={controlResponseMessage}>{error}</div>
-  },
-}
-
 /**
  * Build the plan_updated label, or null when there is no title to show. Two
  * variants: "Plan updated and renamed to <title>" when `update_agent_title` is
- * set, else "Plan updated: <title>". Shared by the standalone renderer and the
- * notification-thread switch so the two cannot drift on the wording.
+ * set, else "Plan updated: <title>". Used by the notification-thread switch
+ * (`threadEntriesFor`).
  */
 function planUpdatedLabel(source: Record<string, unknown>): string | null {
   const title = pickString(source, 'plan_title')
@@ -154,21 +116,6 @@ function planUpdatedLabel(source: Record<string, unknown>): string | null {
   return source.update_agent_title === true
     ? `Plan updated and renamed to ${title}`
     : `Plan updated: ${title}`
-}
-
-/**
- * Handles plan_updated notifications:
- * `{"type":"plan_updated","plan_title":"...","plan_file_path":"...","update_agent_title"?:true}`.
- */
-export const planUpdatedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.PlanUpdated)
-      return null
-    const label = planUpdatedLabel(parsed)
-    if (label === null)
-      return null
-    return <div class={controlResponseMessage}>{label}</div>
-  },
 }
 
 function formatApiRetryLabel(data: Record<string, unknown>): string {
@@ -182,28 +129,19 @@ function formatApiRetryLabel(data: Record<string, unknown>): string {
     : `API Retry ${attempt}/${maxRetries}`
 }
 
-/** Handles api_retry notifications: {"type":"system","subtype":"api_retry","attempt":N,"max_retries":N,...} */
-export const apiRetryRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'api_retry')
-      return null
-    return <div class={controlResponseMessage}>{formatApiRetryLabel(parsed)}</div>
-  },
-}
-
 // ---------------------------------------------------------------------------
 // Context compaction boundary renderers
 // ---------------------------------------------------------------------------
 
 /**
  * A compaction divider row: a leading icon (the down-to-line arrow, or a
- * spinner while compaction is in progress) followed by the label. Shared by the
- * standalone boundary renderers and the aggregate notification thread so a
- * boundary renders identically whether shown on its own or consolidated.
- * Exported so a provider that surfaces its own compaction event (e.g. Pi) can
- * render the same icon + layout as Claude/Codex, not just the same label text.
+ * spinner while compaction is in progress) followed by the label. Rendered by
+ * `renderNotificationThread` for every `divider` entry, so a boundary looks the
+ * same on its own or consolidated, and across providers -- a provider that
+ * surfaces its own compaction event (e.g. Pi) supplies a `divider` entry that
+ * flows through here, getting the same icon + layout without re-implementing it.
  */
-export function CompactionDivider(props: { text: string, loading?: boolean }): JSXElement {
+function CompactionDivider(props: { text: string, loading?: boolean }): JSXElement {
   return (
     <div class={resultDivider}>
       <Icon icon={props.loading ? LoaderCircle : ArrowDownToLine} size="sm" class={props.loading ? spinner : undefined} />
@@ -212,87 +150,20 @@ export function CompactionDivider(props: { text: string, loading?: boolean }): J
   )
 }
 
-// Boundary labels with no per-message detail. Each is referenced by both the
-// standalone renderer and the notification-thread switch so the wording cannot
-// drift between the two paths (the same guarantee compactBoundaryLabel gives
-// the compacted boundary). The microcompact label has no detail because Claude
-// Code emits no microcompact metadata object.
+// Boundary labels with no per-message detail. COMPACTING_LABEL is exported
+// because the Pi renderer imports it so its compaction label matches; both are
+// referenced by name from the notification-thread switch (the same as
+// compactBoundaryLabel for the compacted boundary). The microcompact label has
+// no detail because Claude Code emits no microcompact metadata object.
 export const COMPACTING_LABEL = 'Compacting context...'
 const MICROCOMPACT_LABEL = 'Context microcompacted'
 
-// compact_boundary carries its metadata under a snake_case key in the SDK
-// stream-json output (compact_metadata) or a camelCase key in the .jsonl
-// transcript form (compactMetadata); resolve against both from one definition
-// so the standalone and aggregate render paths can never drift on the key list.
-// The order is immaterial -- a message carries one casing, and pickFirstObject
-// returns the first present.
-//
-// microcompact_boundary has no analogous list: Claude Code emits no microcompact
-// metadata object, so that boundary renders a plain label with no detail.
-const COMPACT_META_KEYS = ['compact_metadata', 'compactMetadata'] as const
-
-/**
- * Normalized, provider-agnostic compaction detail. Each render path parses its
- * own wire shape into this once (see {@link parseCompactionMeta}); a provider
- * that surfaces its own compaction event (e.g. Pi) constructs it directly. The
- * formatters below consume only this typed shape, so they never touch raw
- * snake/camelCase wire keys and a provider can't accidentally couple to them.
- */
-export interface CompactionDetail {
-  /** Trigger word shown first in the parenthetical, e.g. "manual"/"auto". */
-  trigger?: string
-  /** Pre-compaction context size, in tokens. */
-  pre?: number
-  /** Post-compaction context size, in tokens. */
-  post?: number
-}
-
-/**
- * Coerce a raw numeric token count to a displayable value: finite and
- * non-negative. Non-finite inputs (NaN/Infinity -- which JSON can't carry but a
- * synthesized payload could) degrade to undefined so the detail is omitted
- * rather than rendering "NaN"; negatives clamp to 0, so a provider reporting an
- * explicit negative count (or a derived `pre - saved` where saved > pre) shows 0
- * instead of a negative size.
- */
-function toTokenCount(n: number | undefined): number | undefined {
-  if (n === undefined || !Number.isFinite(n))
-    return undefined
-  return Math.max(0, n)
-}
-
-/**
- * Resolve the post-compaction token count from raw metadata. `post_tokens`
- * (Claude's `compact_boundary` carries it directly) wins; as a fallback, when
- * only a `tokens_saved` delta is present alongside `pre`, post is derived as
- * `pre - saved` (which {@link toTokenCount} later clamps to >= 0). Returns
- * undefined when post cannot be resolved. Field names appear in both snake_case
- * (SDK stream) and camelCase (transcript) forms.
- */
-function resolvePostTokens(meta: Record<string, unknown> | undefined, pre: number | undefined): number | undefined {
-  const post = pickFirstNumber(meta, ['post_tokens', 'postTokens'])
-  if (typeof post === 'number')
-    return post
-  const saved = pickFirstNumber(meta, ['tokens_saved', 'tokensSaved'])
-  if (typeof pre === 'number' && typeof saved === 'number')
-    return pre - saved
-  return undefined
-}
-
-/**
- * Parse a raw compaction-metadata object (snake_case SDK stream or camelCase
- * transcript keys) into the provider-neutral {@link CompactionDetail}. Token
- * sanitization is deferred to {@link formatCompactionDetail} so every caller --
- * wire-derived or provider-synthesized -- gets the same clamping.
- */
-function parseCompactionMeta(meta: Record<string, unknown> | undefined): CompactionDetail {
-  const pre = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
-  return {
-    trigger: pickString(meta, 'trigger', undefined),
-    pre,
-    post: resolvePostTokens(meta, pre),
-  }
-}
+// Compaction metadata parsing (parseBoundaryMeta, toTokenCount, the
+// CompactionDetail shape, the isCompactBoundary predicate) lives in messageParser
+// beside the other wire extractors, since the context-usage grid consumes the
+// same parse to refresh on compaction. This file keeps only the formatting that
+// turns a CompactionDetail into a display label. microcompact_boundary carries no
+// metadata (Claude Code emits none), so that boundary renders a plain label.
 
 /**
  * Format a pre/post token pair as the transition "105.4k → 8.5k", degrading to
@@ -341,88 +212,28 @@ export function compactedLabel(detail: CompactionDetail): string {
 /**
  * Build the compact_boundary label from a raw message: resolve the metadata
  * object (snake/camel), parse it into a {@link CompactionDetail}, then format via
- * {@link compactedLabel}. Shared by the standalone renderer and the
- * notification-thread switch so the label and the metadata-key list can never
- * drift between the two paths.
+ * {@link compactedLabel}. Used by the notification-thread switch; centralizes the
+ * label and metadata-key resolution.
  */
 function compactBoundaryLabel(source: Record<string, unknown>): string {
-  return compactedLabel(parseCompactionMeta(pickFirstObject(source, COMPACT_META_KEYS)))
+  return compactedLabel(parseBoundaryMeta(source))
 }
 
-// Recognition predicates for the compaction message shapes. Each is referenced
-// by BOTH the standalone renderer and the notification-thread switch so the two
-// paths agree on WHICH message is a boundary -- not merely on the label text.
-// Without them each path hand-repeats the type/subtype/method checks and could
-// drift (the same anti-drift guarantee compactBoundaryLabel gives the label).
+// Recognition predicates for the compaction message shapes, used by the
+// notification-thread switch (`threadEntriesFor`). Each names WHICH wire shapes
+// count as a given boundary so the switch reads declaratively instead of
+// hand-repeating the type/subtype/method checks inline. The completed-boundary
+// predicate (isCompactBoundary, matching Claude's and Codex's two shapes) lives
+// in messageParser since the grid extractor recognizes the same signal.
 
 /** Claude's in-progress compacting status: `{type:system,subtype:status,status:compacting}`. */
 function isCompactingStatus(m: Record<string, unknown>): boolean {
   return m.type === 'system' && m.subtype === 'status' && m.status === NOTIFICATION_TYPE.Compacting
 }
 
-/**
- * A completed compaction boundary: Claude's `compact_boundary` system message or
- * Codex's `thread/compacted` JSON-RPC notification -- both the same signal.
- */
-function isCompactBoundary(m: Record<string, unknown>): boolean {
-  return (m.type === 'system' && m.subtype === 'compact_boundary') || m.method === 'thread/compacted'
-}
-
 /** Claude's microcompaction boundary: `{type:system,subtype:microcompact_boundary}`. */
 function isMicrocompactBoundary(m: Record<string, unknown>): boolean {
   return m.type === 'system' && m.subtype === 'microcompact_boundary'
-}
-
-/**
- * Handles compacting status notifications. The canonical shape is the raw
- * Claude `system` message: `{type:"system",subtype:"status",status:"compacting"}`.
- * Routes through CompactionDivider (with the spinner) so the standalone and
- * notification-thread compacting rows render identical markup.
- */
-export const compactingRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || !isCompactingStatus(parsed))
-      return null
-    return <CompactionDivider text={COMPACTING_LABEL} loading />
-  },
-}
-
-/**
- * Handles compact_boundary messages. Recognizes two shapes:
- *  - Claude raw `system` message: `{type:"system",subtype:"compact_boundary",compact_metadata:{trigger,pre_tokens,post_tokens?,tokens_saved?}}`
- *    (the camelCase `compactMetadata`/`preTokens`/`postTokens`/`tokensSaved` forms are accepted too)
- *  - Codex raw JSON-RPC notification: `{method:"thread/compacted",params:{threadId,turnId}}` (no token metadata today)
- */
-export const compactBoundaryRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || !isCompactBoundary(parsed))
-      return null
-    // Claude carries metadata under compact_metadata/compactMetadata; Codex
-    // carries none today (the message itself is the boundary).
-    return <CompactionDivider text={compactBoundaryLabel(parsed)} />
-  },
-}
-
-/**
- * Handles microcompact_boundary messages: `{"type":"system","subtype":"microcompact_boundary"}`.
- * Claude Code emits no metadata object for microcompaction (no token counts or
- * trigger on the wire), so this renders a plain label with no detail.
- */
-export const microcompactBoundaryRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || !isMicrocompactBoundary(parsed))
-      return null
-    return <CompactionDivider text={MICROCOMPACT_LABEL} />
-  },
-}
-
-/** Handles system init messages: {"type":"system","subtype":"init","session_id":"..."} — hidden at MessageBubble level */
-export const systemInitRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'init')
-      return null
-    return <span />
-  },
 }
 
 /** Handles control response messages: {"isSynthetic":true,"controlResponse":{"action":"approved"|"rejected","comment":"..."}} */
@@ -479,9 +290,10 @@ function dividerEntry(text: string, loading?: boolean): ThreadEntry[] {
 }
 
 /**
- * Walk a single message in a notification_thread wrapper, producing one or
- * more flat thread entries via the provider plugin (if any) followed by the
- * provider-neutral switch. Returns an array — the caller appends.
+ * Walk a single notification message (whether on its own or one entry of a
+ * consolidated thread), producing one or more flat thread entries via the
+ * provider plugin (if any) followed by the provider-neutral switch. Returns an
+ * array — the caller appends.
  */
 function threadEntriesFor(
   m: Record<string, unknown>,
@@ -516,9 +328,8 @@ function threadEntriesFor(
   if (isCompactingStatus(m))
     return dividerEntry(COMPACTING_LABEL, true)
   // Claude `compact_boundary` and Codex `thread/compacted` are both the
-  // completed-boundary signal; route both through the shared label so they stay
-  // in lockstep with the standalone renderer. Codex carries no metadata today
-  // but would pick up detail automatically if it ever adds it.
+  // completed-boundary signal; route both through the shared label. Codex carries
+  // no metadata today but would pick up detail automatically if it ever adds it.
   if (isCompactBoundary(m))
     return dividerEntry(compactBoundaryLabel(m))
   // Codex `item/started` of a contextCompaction item is the in-progress
@@ -535,8 +346,11 @@ function threadEntriesFor(
 }
 
 /**
- * Renders a notification thread (multiple consolidated messages in a single wrapper)
- * as a combined notification. Used when Hub threads consecutive notifications together.
+ * Renders a list of notification messages as a single combined notification --
+ * the sole render path for the `notification` category, whether a standalone
+ * notification (a one-element list) or a consolidated thread (Hub threads
+ * consecutive notifications into one `notification_thread` wire wrapper).
+ * Returns null when nothing renders.
  *
  * `agentProvider` is consulted via `plugin.notificationThreadEntry` for any
  * provider-specific messages (e.g. Codex MCP startup statuses) before the

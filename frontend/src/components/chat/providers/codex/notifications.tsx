@@ -1,9 +1,7 @@
-import type { JSX, JSXElement } from 'solid-js'
 import type { NotificationThreadEntry } from '../registry'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CODEX_RATE_LIMITS_METHOD, formatRateLimitMessage, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_METHOD } from '~/types/toolMessages'
-import { controlResponseMessage } from '../../messageStyles.css'
 
 const STARTUP_METHOD = CODEX_METHOD.MCP_SERVER_STARTUP_STATUS_UPDATED
 
@@ -56,68 +54,22 @@ function appendsSuffix(kind: StartupKind): boolean {
   return kind !== 'starting' && kind !== 'ready'
 }
 
-function formatStartupStatus(parsed: Record<string, unknown>): string | null {
-  const p = parseMcpStartup(parsed)
-  if (!p)
-    return null
-  const suffix = appendsSuffix(p.kind) ? p.errorSuffix : ''
-  if (p.kind === 'unknown') {
-    const stateLabel = p.rawState || 'unknown'
-    return p.name
-      ? `MCP server status update: ${p.name} (${stateLabel})${suffix}`
-      : `MCP server status update (${stateLabel})${suffix}`
-  }
-  const prefix = STARTUP_KIND_PREFIX[p.kind]
-  return p.name ? `${prefix}: ${p.name}${suffix}` : `${prefix}${suffix}`
-}
-
 function startupGroupEntry(parsed: Record<string, unknown>): NotificationThreadEntry | null {
   const p = parseMcpStartup(parsed)
   if (!p)
     return null
   const suffix = appendsSuffix(p.kind) ? p.errorSuffix : ''
-  const entry = `${p.name || 'unknown'}${suffix}`
-  if (p.kind === 'unknown') {
-    const stateLabel = p.rawState || 'unknown'
-    return { kind: 'group', groupKey: `status:${stateLabel}`, prefix: `MCP server status update (${stateLabel})`, entry }
-  }
-  return { kind: 'group', groupKey: p.kind, prefix: STARTUP_KIND_PREFIX[p.kind], entry }
-}
-
-/** Render a Codex `account/rateLimits/updated` notification. */
-function renderRateLimits(parsed: Record<string, unknown>): JSXElement {
-  const parts: string[] = []
-  let sawAnyTier = false
-  for (const { info } of iterCodexRateLimitTiers(parsed)) {
-    sawAnyTier = true
-    if (info.status === 'allowed')
-      continue
-    parts.push(formatRateLimitMessage(info))
-  }
-  if (!sawAnyTier)
-    return <div class={controlResponseMessage}>Rate limit update</div>
-  if (parts.length === 0)
-    return null
-  return <div class={controlResponseMessage}>{parts.join(', ')}</div>
-}
-
-/**
- * Render a Codex notification message. Handles `mcpServer/startupStatus/updated`
- * (MCP server lifecycle) and `account/rateLimits/updated`. Returns null for
- * other shapes — the Codex plugin's `renderMessage` falls through to the
- * Claude-shaped renderers for `settings_changed` etc.
- */
-export function codexNotificationRenderer(
-  parsed: unknown,
-): JSX.Element | null {
-  if (!isObject(parsed))
-    return null
-  const startupLabel = formatStartupStatus(parsed)
-  if (startupLabel)
-    return <div class={controlResponseMessage}>{startupLabel}</div>
-  if (parsed.method === CODEX_RATE_LIMITS_METHOD)
-    return renderRateLimits(parsed)
-  return null
+  const stateLabel = p.rawState || 'unknown'
+  const prefix = p.kind === 'unknown'
+    ? `MCP server status update (${stateLabel})`
+    : STARTUP_KIND_PREFIX[p.kind]
+  // A name-less startup has no server to group under the prefix, so render the
+  // prefix alone as a plain line (e.g. "MCP server ready") rather than grouping
+  // a placeholder "unknown" beneath it.
+  if (!p.name)
+    return { kind: 'text', text: `${prefix}${suffix}` }
+  const groupKey = p.kind === 'unknown' ? `status:${stateLabel}` : p.kind
+  return { kind: 'group', groupKey, prefix, entry: `${p.name}${suffix}` }
 }
 
 /**

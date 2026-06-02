@@ -387,6 +387,63 @@ describe('messageBubble rawJson', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Notification rendering + raw-JSON fallback
+// ---------------------------------------------------------------------------
+
+describe('notification rendering', () => {
+  it('renders a recognized notification as its label, not raw JSON', () => {
+    const parent = { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } }
+    const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent(parent) })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble).toHaveTextContent('Model')
+    // The label rendered, not the raw payload.
+    expect(bubble).not.toHaveTextContent('settings_changed')
+  })
+
+  it('falls back to raw JSON when a notification produces no renderable entries', () => {
+    // settings_changed with no actual changes yields zero thread entries. Rather
+    // than render an empty bubble, MessageBubble surfaces the raw payload via the
+    // last-resort renderer so the message never silently vanishes.
+    const parent = { type: 'settings_changed', changes: {} }
+    const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent(parent) })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble).toHaveTextContent('settings_changed')
+  })
+
+  it('renders a consolidated notification thread, then falls back only when empty', () => {
+    // A multi-message wrapper renders every recognized entry...
+    const msg = makeMsg({
+      source: MessageSource.LEAPMUX,
+      content: wrapContent([{ type: 'interrupted' }, { type: 'context_cleared' }]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble).toHaveTextContent('Interrupted')
+    expect(bubble).toHaveTextContent('Context cleared')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Helper: build TodoWrite tool_use message
 // ---------------------------------------------------------------------------
 

@@ -167,17 +167,17 @@ describe('kilo classify', () => {
 
   it('classifies system notification', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies settings_changed as notification', () => {
     const parent = { type: 'settings_changed' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies agent_error as notification', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies user content', () => {
@@ -206,7 +206,7 @@ describe('kilo classify', () => {
       messages: [{ type: 'interrupted' }],
     }
     expect(plugin.classify(input(undefined, wrapper))).toEqual({
-      kind: 'notification_thread',
+      kind: 'notification',
       messages: wrapper.messages,
     })
   })
