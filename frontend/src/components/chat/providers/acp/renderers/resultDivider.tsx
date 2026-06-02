@@ -1,13 +1,12 @@
-import type { JSX } from 'solid-js'
-import { isObject } from '~/lib/jsonPick'
-import { resultDivider } from '../../../messageStyles.css'
+import type { ResultDividerModel } from '../../registry'
+import { isObject, pickString } from '~/lib/jsonPick'
 
-/** Render an ACP result divider (turn completion). */
-export function acpResultDividerRenderer(parsed: unknown): JSX.Element | null {
+/** ACP result_divider model (turn completion). Null for a non-object message. */
+export function acpResultDivider(parsed: unknown): ResultDividerModel | null {
   if (!isObject(parsed))
     return null
-  const obj = parsed as Record<string, unknown>
-  const reason = obj.stopReason as string | undefined
-  const label = reason && reason !== 'end_turn' ? `Turn ended (${reason})` : 'Turn ended'
-  return <div class={resultDivider}>{label}</div>
+  // pickString (not a raw cast) so a non-string stopReason degrades to '' rather
+  // than coercing a number/object into the label; matches the other hooks.
+  const reason = pickString(parsed, 'stopReason')
+  return { label: reason && reason !== 'end_turn' ? `Turn ended (${reason})` : 'Turn ended' }
 }

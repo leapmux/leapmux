@@ -85,8 +85,8 @@ describe('claude classify', () => {
 
   it('classifies the /context local-command result as a divider, not hidden', () => {
     // The redundant-with-the-assistant-bubble and danger-styling concerns are
-    // both handled by resultRenderer, so the classifier keeps every result a
-    // turn-end divider (see notificationRenderers.test.tsx).
+    // both handled by the result_divider renderer (claudeResultDivider), so the
+    // classifier keeps every result a turn-end divider (see ./notifications.test.tsx).
     const parent = {
       type: 'result',
       subtype: 'success',

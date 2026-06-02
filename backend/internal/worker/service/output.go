@@ -1129,6 +1129,20 @@ func (h *OutputHandler) clearNotifThread(agentID string) {
 	h.lastNotifThread.Delete(agentID)
 }
 
+// createMessageRow persists a chat-message row, refusing an UNSPECIFIED agent
+// provider. Every persisted message must carry a real provider so the client can
+// render it through that provider's renderers; an UNSPECIFIED provider is a
+// persistence bug (the frontend surfaces such a row as `unsupported_provider`).
+// Catch it here at the DB boundary so the malformed row is never written,
+// whichever write path produced it -- the agent open path already defaults an
+// unspecified request to a real provider, so this should never fire in practice.
+func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessageParams) (int64, error) {
+	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return 0, fmt.Errorf("refusing to persist message %q for agent %q with UNSPECIFIED agent provider", params.ID, params.AgentID)
+	}
+	return q.CreateMessage(ctx, params)
+}
+
 // persistAndBroadcast persists a message and broadcasts it to watchers.
 // tracker may be nil, in which case it is resolved from the agentID.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte, span agent.SpanInfo, tracker *SpanTracker) error {
@@ -1152,7 +1166,7 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 	compressed, compressionType := msgcodec.Compress(contentJSON)
 	now := time.Now()
 
-	seq, err := h.queries.CreateMessage(bgCtx(), db.CreateMessageParams{
+	seq, err := createMessageRow(bgCtx(), h.queries, db.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
 		Source:             source,
@@ -1744,7 +1758,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 	// passthrough vertical bars instead of breaking the column.
 	spanLines := h.snapshotPassthroughSpanLines(agentID)
 
-	seq, err := h.queries.CreateMessage(bgCtx(), db.CreateMessageParams{
+	seq, err := createMessageRow(bgCtx(), h.queries, db.CreateMessageParams{
 		ID:                 msgID,
 		AgentID:            agentID,
 		Source:             source,
@@ -1929,6 +1943,16 @@ func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compressio
 		// Path and title unchanged — content differed (we wouldn't be here
 		// otherwise), but the user-visible header is the same. The new
 		// file is already on disk; no notification needed.
+		return
+	}
+
+	// A plan with no title — no first line we could extract and no prior
+	// plan_title to fall back to — has nothing meaningful to announce. The
+	// client renders "Plan updated:" with an empty title as a raw-JSON bubble
+	// (plan_updated needs a title to form its label), so a titleless
+	// notification is pure noise. The plan file and the agents row are already
+	// written above; only the user-facing notification is skipped.
+	if title == "" {
 		return
 	}
 

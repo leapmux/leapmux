@@ -300,12 +300,13 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 		WorkingDir:  "/tmp",
 		HomeDir:     "/tmp",
 	}))
-	_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        "msg-1",
-		AgentID:   "agent-1",
-		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:   []byte("hello"),
-		CreatedAt: time.Now(),
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID:            "msg-1",
+		AgentID:       "agent-1",
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:       []byte("hello"),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:     time.Now(),
 	})
 	require.NoError(t, err)
 
@@ -411,12 +412,13 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 		WorkingDir:  "/tmp",
 		HomeDir:     "/tmp",
 	}))
-	_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        "msg-1",
-		AgentID:   "agent-closed",
-		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:   []byte("hello"),
-		CreatedAt: time.Now(),
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID:            "msg-1",
+		AgentID:       "agent-closed",
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:       []byte("hello"),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:     time.Now(),
 	})
 	require.NoError(t, err)
 	require.NoError(t, svc.Queries.CloseAgent(ctx, "agent-closed"))

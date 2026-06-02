@@ -11,6 +11,7 @@ import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
 import { createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show } from 'solid-js'
 import { render } from 'solid-js/web'
+import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
@@ -28,6 +29,7 @@ import * as chatStyles from './messageStyles.css'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { renderNotificationThread } from './notificationRenderers'
 import { providerFor } from './providers/registry'
+import { renderResultDivider } from './resultDividerRenderers'
 import { renderJsonHighlight, ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
@@ -58,12 +60,12 @@ function sourceLabel(source: MessageSource): string {
     case MessageSource.USER: return 'user'
     case MessageSource.AGENT: return 'agent'
     case MessageSource.LEAPMUX: return 'leapmux'
-    // Default fires only on MESSAGE_SOURCE_UNSPECIFIED (proto 0), which
-    // every persistence path sets to a real value. UNSPECIFIED on a
-    // persisted row represents a misconfigured agent-side persistence
-    // path, not a user-typed input or leapmux notification — fall back
-    // to 'agent'.
-    default: return 'agent'
+    // Only MESSAGE_SOURCE_UNSPECIFIED (proto 0) reaches here, and every
+    // persistence path sets a real source -- an UNSPECIFIED row is a
+    // misconfigured agent-side persistence bug. Surface it as 'unknown' (a
+    // visibly anomalous data-role) instead of silently masquerading as 'agent',
+    // matching the no-guessing stance for an unknown agentProvider.
+    default: return 'unknown'
   }
 }
 
@@ -203,8 +205,20 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       envelope.span_type = msg.spanType
     if (msg.spanColor > 0)
       envelope.span_color = msg.spanColor
-    if (msg.spanLines && msg.spanLines !== '[]')
-      envelope.span_lines = JSON.parse(msg.spanLines)
+    if (msg.spanLines && msg.spanLines !== '[]') {
+      // span_lines is backend-generated JSON, but this same envelope backs the
+      // raw-JSON debug surface for `hidden` / `unsupported_provider` rows, whose
+      // whole purpose is to show the bytes when something is wrong. Guard the
+      // parse like the `content` parse below so a corrupt span_lines degrades to
+      // its raw string instead of throwing into the ErrorBoundary and hiding the
+      // JSON we came here to inspect.
+      try {
+        envelope.span_lines = JSON.parse(msg.spanLines)
+      }
+      catch {
+        envelope.span_lines = msg.spanLines
+      }
+    }
     if (p.wrapper && p.wrapper.old_seqs.length > 0)
       envelope.old_seqs = p.wrapper.old_seqs
 
@@ -341,13 +355,39 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return cat.kind === 'notification' ? cat.messages : []
   }
 
+  // The payload to hand a renderer: the parsed parent object, or the raw text
+  // when the envelope didn't parse to an object. Named once so renderContent and
+  // the result_divider arm pass the renderers the same shape.
+  const renderPayload = () => parsed().parentObject ?? parsed().rawText
+
   // Render the message body through the provider plugin, ending in the raw-JSON
   // last-resort span when no renderer claims it. Used for every non-notification
   // category, and as the fallback when a notification produces no entries (an
   // unrecognized or legacy shape) -- so the message surfaces as raw JSON rather
   // than an empty bubble.
   const renderContent = () =>
-    renderMessageContent(parsed().parentObject ?? parsed().rawText, renderContext, category(), props.message.agentProvider)
+    renderMessageContent(renderPayload(), renderContext, category(), props.message.agentProvider)
+
+  // The raw-JSON last-resort block (shiki-highlighted), shared by the `hidden`
+  // category and the unsupported-provider error surface so the shiki/innerHTML
+  // incantation and its lint-disable live in one place and can't drift.
+  const rawJsonBlock = () => (
+    // eslint-disable-next-line solid/no-innerhtml -- HTML is produced via shiki, not arbitrary user input
+    <div class={chatStyles.hiddenMessageJson} data-code-copy="false" innerHTML={renderJsonHighlight(prettifyJson(rawJson()))} />
+  )
+
+  // Loud surface for a message whose `agentProvider` is UNSPECIFIED or has no
+  // registered plugin (classify returns `unsupported_provider`). We refuse to
+  // guess another provider's renderer, so show an explicit error plus the raw
+  // JSON for debugging -- a visible misconfiguration, not a silent mis-render.
+  const renderUnsupportedProvider = () => (
+    <>
+      <div style={{ color: 'var(--danger)' }}>
+        {`Unsupported agent provider: ${agentProviderLabel(props.message.agentProvider)} (${props.message.agentProvider}) -- cannot render this message.`}
+      </div>
+      {rawJsonBlock()}
+    </>
+  )
 
   onMount(() => {
     if (!contentRef)
@@ -373,13 +413,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           <div ref={contentRef} data-testid="message-content">
             <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
               {category().kind === 'hidden'
-                ? (
-                    // eslint-disable-next-line solid/no-innerhtml -- HTML is produced via shiki, not arbitrary user input
-                    <div class={chatStyles.hiddenMessageJson} data-code-copy="false" innerHTML={renderJsonHighlight(prettifyJson(rawJson()))} />
-                  )
+                ? rawJsonBlock()
                 : category().kind === 'notification'
                   ? (renderNotificationThread(notificationMessages(), props.message.agentProvider) ?? renderContent())
-                  : renderContent()}
+                  : category().kind === 'result_divider'
+                    ? (renderResultDivider(renderPayload(), props.message.agentProvider) ?? renderContent())
+                    : category().kind === 'unsupported_provider'
+                      ? renderUnsupportedProvider()
+                      : renderContent()}
             </ErrorBoundary>
           </div>
         </div>

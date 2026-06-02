@@ -2,7 +2,7 @@ import type { AgentChatMessage, AgentInfo } from '~/generated/leapmux/v1/agent_p
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import { classifyAgentMessage } from '~/components/chat/messageClassification'
-import { allRegisteredProviders, providerFor } from '~/components/chat/providers/registry'
+import { allRegisteredProviders, pluginFor } from '~/components/chat/providers/registry'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 import { getInnerMessage, getInnerMessageType, parseMessageContent } from '~/lib/messageParser'
@@ -137,7 +137,12 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
 
     const parsed = parseMessageContent(msg)
     const category = classifyAgentMessage(msg)
-    if (category.kind === 'result_divider')
+    // A turn-end divider means the agent finished. An `unsupported_provider`
+    // message is one we cannot interpret at all (no registered plugin) -- it
+    // carries no signal that the agent is working, and treating it as progress
+    // would pin the thinking indicator on a misconfigured / version-skewed agent
+    // forever, so it likewise stops the scan as "not working".
+    if (category.kind === 'result_divider' || category.kind === 'unsupported_provider')
       return false
     // context_cleared in a notification-thread row means the agent
     // restarted with a fresh context and is now idle — stop scanning.
@@ -176,7 +181,7 @@ export function shouldShowThinkingIndicator(
     return false
   if (streamingText)
     return true
-  const plugin = agent.agentProvider !== undefined ? providerFor(agent.agentProvider) : undefined
+  const plugin = pluginFor(agent.agentProvider)
   const override = plugin?.hasActiveTurn?.(agent, sessionInfo)
   if (override !== null && override !== undefined)
     return override

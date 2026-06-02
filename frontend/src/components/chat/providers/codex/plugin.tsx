@@ -16,7 +16,7 @@ import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ChatView.css'
 import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from '../../controls/CodexControlRequest'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
-import { isNotificationThreadWrapper } from '../../messageUtils'
+import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider } from '../registry'
 import { CODEX_RENDERERS } from './defineRenderer'
@@ -27,7 +27,7 @@ import {
   CodexAgentMessageRenderer,
   CodexMcpToolCallRenderer,
   CodexReasoningRenderer,
-  CodexTurnCompletedRenderer,
+  codexResultDivider,
   CodexTurnPlanRenderer,
 } from './renderers'
 import { extractItem } from './renderHelpers'
@@ -197,18 +197,6 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
 }
 
 /**
- * A terminal (non-compacting) Codex system status carries nothing to render --
- * the user-facing "Context compacted (...)" line comes from the separate
- * compact_boundary message, so the trailing `{subtype:status, status:null}` that
- * ends a compaction is noise. Only the live `status:"compacting"` row is visible.
- * Shared by the standalone `system` classifier and the consolidated-thread filter
- * so the two agree on what to hide.
- */
-function isCodexHiddenSystemStatus(m: Record<string, unknown>): boolean {
-  return m.type === 'system' && m.subtype === 'status' && m.status !== 'compacting'
-}
-
-/**
  * Per-message hidden rules for a Codex notification, applied by the
  * consolidated-thread filter so a notification that is hidden on its own stays
  * hidden once Hub threads it into a `notification_thread` wrapper -- mirroring
@@ -222,7 +210,7 @@ function isCodexHiddenSystemStatus(m: Record<string, unknown>): boolean {
  *    turn/started, thread/{status,name,settings,tokenUsage}/updated,
  *    skills/changed, remoteControl/status/changed, hook/{started,completed} --
  *    transient signals persisted upstream, never rendered in chat.
- *  - a terminal (non-compacting) system status (see isCodexHiddenSystemStatus).
+ *  - a terminal (non-compacting) system status (see isTerminalCompactingStatus).
  *  - the "Codex turn failed" agent_error (surfaced via the result divider).
  *  - an all-allowed rate-limit update (no throttle to show).
  *
@@ -236,7 +224,7 @@ function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
   const method = msg.method
   if (typeof method === 'string' && CODEX_HIDDEN_LIFECYCLE_METHODS.has(method))
     return true
-  if (isCodexHiddenSystemStatus(msg))
+  if (isTerminalCompactingStatus(msg))
     return true
   if (msg.type === 'agent_error' && msg.error === CODEX_TURN_FAILED_NOTIFICATION)
     return true
@@ -351,7 +339,7 @@ const codexPlugin: Provider = {
     if (type === 'system') {
       if (subtype === 'init' || subtype === 'task_notification')
         return { kind: 'hidden' }
-      if (isCodexHiddenSystemStatus(parent))
+      if (isTerminalCompactingStatus(parent))
         return { kind: 'hidden' }
       return { kind: 'notification', messages: [parent] }
     }
@@ -362,9 +350,12 @@ const codexPlugin: Provider = {
     if (method === CODEX_METHOD.TURN_PLAN_UPDATED && isObject(parent.params))
       return { kind: 'tool_use', toolName: CODEX_INTERNAL_TOOL.TURN_PLAN, toolUse: parent, content: [] }
 
-    // turn/completed → result divider
+    // turn/completed → result divider. Require a *string* status so the gate
+    // matches codexResultDivider's `pickString` read: a non-string status would
+    // classify as a divider the hook then can't render (returning null), leaking
+    // raw JSON instead of a clean turn-end row.
     const turn = pickObject(parent, 'turn')
-    if (turn && turn.status)
+    if (turn && typeof turn.status === 'string' && turn.status)
       return { kind: 'result_divider' }
 
     // item/completed dispatch — keyed on item.type via the classifier table.
@@ -404,8 +395,6 @@ const codexPlugin: Provider = {
       return <CodexAgentMessageRenderer parsed={parsed} context={context} />
     if (category.kind === 'assistant_thinking')
       return <CodexReasoningRenderer parsed={parsed} context={context} />
-    if (category.kind === 'result_divider')
-      return <CodexTurnCompletedRenderer parsed={parsed} context={context} />
     if (category.kind === 'user_content')
       return <UserContentMessage parsed={parsed} />
     if (category.kind === 'plan_execution') {
@@ -435,6 +424,8 @@ const codexPlugin: Provider = {
   },
 
   toolResultMeta: codexToolResultMeta,
+
+  resultDivider: codexResultDivider,
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject

@@ -2,7 +2,7 @@
 // renderer module so its `defineCodexRenderer({...})` call registers into
 // `CODEX_RENDERERS`. The plugin's `renderMessage` looks up renderers by
 // `item.type` from that registry; for renderers also dispatched by name
-// (turnPlan, turnCompleted, reasoning, agentMessage, mcp fallback), the
+// (turnPlan, reasoning, agentMessage, mcp fallback), the
 // plugin imports them directly from `./` — those imports also load the
 // modules, but the registry-only renderers (commandExecution, fileChange,
 // plan, webSearch, collabAgentToolCall) need this barrel to ensure they

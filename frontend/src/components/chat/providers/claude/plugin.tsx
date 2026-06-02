@@ -13,11 +13,12 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../../ChatView.css'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../../controls/ClaudeCodeControlRequest'
-import { isNotificationThreadWrapper } from '../../messageUtils'
+import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { registerProvider } from '../registry'
 import { getAssistantContent } from './extractors/assistantContent'
 import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
+import { claudeResultDivider } from './resultDivider'
 import {
   ClaudeCodeSettingsPanel,
   ClaudeCodeTriggerLabel,
@@ -107,7 +108,7 @@ function isHiddenClaudeNotification(m: Record<string, unknown>): boolean {
     const subtype = m.subtype as string | undefined
     if (HIDDEN_SYSTEM_SUBTYPES.has(subtype ?? ''))
       return true
-    if (subtype === 'status' && m.status !== 'compacting')
+    if (isTerminalCompactingStatus(m))
       return true
   }
   return false
@@ -318,6 +319,7 @@ const claudeCodePlugin: Provider = {
   toolResultMeta: claudeToolResultMeta,
   extractQuotableText: claudeExtractQuotableText,
   notificationThreadEntry: claudeNotificationThreadEntry,
+  resultDivider: claudeResultDivider,
 
   isAskUserQuestion(payload) {
     const tool = getToolName(payload)

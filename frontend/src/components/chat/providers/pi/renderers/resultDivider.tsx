@@ -1,6 +1,5 @@
-import type { JSX } from 'solid-js'
+import type { ResultDividerModel } from '../../registry'
 import { isObject, pickString } from '~/lib/jsonPick'
-import { resultDivider } from '../../../messageStyles.css'
 import { PI_EVENT } from '../protocol'
 
 function lastAssistantMessage(messages: unknown): Record<string, unknown> | null {
@@ -14,8 +13,11 @@ function lastAssistantMessage(messages: unknown): Record<string, unknown> | null
   return null
 }
 
-/** Render Pi agent_end as the end-of-run result divider. */
-export function renderPiResultDivider(parsed: unknown): JSX.Element | null {
+/**
+ * Pi `agent_end` → result_divider model, read from the last assistant message's
+ * `stopReason`/`errorMessage`. Null when the message isn't an `agent_end`.
+ */
+export function piResultDivider(parsed: unknown): ResultDividerModel | null {
   if (!isObject(parsed) || pickString(parsed, 'type') !== PI_EVENT.AgentEnd)
     return null
 
@@ -23,16 +25,11 @@ export function renderPiResultDivider(parsed: unknown): JSX.Element | null {
   const stopReason = assistant ? pickString(assistant, 'stopReason') : ''
   const errorMessage = assistant ? pickString(assistant, 'errorMessage') : ''
 
-  if (stopReason === 'error') {
-    return (
-      <div class={resultDivider} style={{ color: 'var(--danger)' }}>
-        {errorMessage ? `Turn failed — ${errorMessage}` : 'Turn failed'}
-      </div>
-    )
-  }
+  if (stopReason === 'error')
+    return { label: errorMessage ? `Turn failed — ${errorMessage}` : 'Turn failed', isError: true }
   if (stopReason === 'aborted')
-    return <div class={resultDivider} style={{ color: 'var(--danger)' }}>Turn aborted</div>
+    return { label: 'Turn aborted', isError: true }
   if (stopReason === 'length')
-    return <div class={resultDivider}>Turn ended (length limit)</div>
-  return <div class={resultDivider}>Turn ended</div>
+    return { label: 'Turn ended (length limit)' }
+  return { label: 'Turn ended' }
 }

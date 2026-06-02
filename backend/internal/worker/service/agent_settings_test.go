@@ -120,12 +120,13 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 	}))
 
 	// User sends a message in session-A.
-	_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        "msg-1",
-		AgentID:   "agent-clear",
-		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:   []byte(`{"content":"hello"}`),
-		CreatedAt: time.Now(),
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID:            "msg-1",
+		AgentID:       "agent-clear",
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:       []byte(`{"content":"hello"}`),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:     time.Now(),
 	})
 	require.NoError(t, err)
 
@@ -152,12 +153,13 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 		"session-B should NOT be resumable — no messages exchanged yet")
 
 	// After the user sends a message in session-B, it should become resumable.
-	_, err = svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        "msg-2",
-		AgentID:   "agent-clear",
-		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:   []byte(`{"content":"world"}`),
-		CreatedAt: time.Now(),
+	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID:            "msg-2",
+		AgentID:       "agent-clear",
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:       []byte(`{"content":"world"}`),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:     time.Now(),
 	})
 	require.NoError(t, err)
 
@@ -195,12 +197,13 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 		"should NOT resume — no user messages were exchanged before this send")
 
 	// Now persist the user message (simulating the SendAgentMessage flow).
-	_, err = svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        "msg-first",
-		AgentID:   "agent-idle",
-		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:   []byte(`{"content":"hello"}`),
-		CreatedAt: time.Now(),
+	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID:            "msg-first",
+		AgentID:       "agent-idle",
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:       []byte(`{"content":"hello"}`),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:     time.Now(),
 	})
 	require.NoError(t, err)
 

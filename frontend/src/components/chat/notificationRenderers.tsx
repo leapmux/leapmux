@@ -17,7 +17,7 @@ import {
   controlResponseMessage,
   resultDivider,
 } from './messageStyles.css'
-import { providerFor } from './providers/registry'
+import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
 import { PERMISSION_MODE_KEY } from './settingsShared'
 
@@ -299,7 +299,7 @@ function threadEntriesFor(
   m: Record<string, unknown>,
   agentProvider: AgentProvider | undefined,
 ): ThreadEntry[] {
-  const plugin = agentProvider != null ? providerFor(agentProvider) : undefined
+  const plugin = pluginFor(agentProvider)
   const fromPlugin = plugin?.notificationThreadEntry?.(m)
   if (fromPlugin !== null && fromPlugin !== undefined)
     return fromPlugin

@@ -254,6 +254,17 @@ func (svc *Context) startTerminal(ctx context.Context, opts terminal.Options, ou
 }
 
 func (svc *Context) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {
+	// Every agent row must carry a real provider: the client renders each of the
+	// agent's messages through that provider's renderers, and createMessageRow
+	// refuses to persist a message row for an UNSPECIFIED provider. Enforce the
+	// invariant where rows are born so a misconfigured caller fails at creation
+	// with a clear error, rather than later with a confusing "failed to persist
+	// message" on the agent's first output. The SendAgentMessage path already
+	// defaults an UNSPECIFIED request to a real provider before reaching here, so
+	// this is a backstop that should never fire in practice.
+	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return fmt.Errorf("refusing to create agent %q with UNSPECIFIED agent provider", params.ID)
+	}
 	if svc.createAgentRecordFn != nil {
 		return svc.createAgentRecordFn(ctx, params)
 	}

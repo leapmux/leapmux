@@ -4,6 +4,7 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../../controls/CodexControlRequest'
+import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
@@ -484,12 +485,37 @@ describe('codex result divider', () => {
     expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
   })
 
-  it('renders result_divider via renderMessage', () => {
-    const parsed = {
-      turn: { id: 'turn-1', status: 'completed' },
-    }
-    const { container } = render(() => plugin.renderMessage!({ kind: 'result_divider' }, parsed))
-    expect(container.textContent).toContain('Turn completed')
+  it('maps a completed turn to a "Turn completed" divider model', () => {
+    expect(plugin.resultDivider!({ turn: { id: 'turn-1', status: 'completed' } }))
+      .toEqual({ label: 'Turn completed' })
+  })
+
+  it('maps a failed turn to a danger divider with the error inline', () => {
+    expect(plugin.resultDivider!({ turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } }))
+      .toEqual({ label: 'Boom — timeout', isError: true })
+  })
+
+  it('falls back to "Unknown error" for a failed turn whose error.message is empty', () => {
+    // An explicit empty-string message is a present string, so pickString's
+    // missing-key fallback does not apply -- guard with `|| 'Unknown error'` so
+    // the divider never renders a label-less red row.
+    expect(plugin.resultDivider!({ turn: { status: 'failed', error: { message: '' } } }))
+      .toEqual({ label: 'Unknown error', isError: true })
+  })
+
+  it('returns null when the turn carries no status', () => {
+    expect(plugin.resultDivider!({ turn: {} })).toBeNull()
+  })
+
+  it('renders a failed turn as a danger divider through the shared renderer end-to-end', () => {
+    // MessageBubble routes result_divider through renderResultDivider, which draws
+    // the shared ResultDivider with the inline danger color for a failed turn.
+    const { text, isError } = renderDivider(
+      { turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } },
+      AgentProvider.CODEX,
+    )
+    expect(text).toBe('Boom — timeout')
+    expect(isError).toBe(true)
   })
 })
 

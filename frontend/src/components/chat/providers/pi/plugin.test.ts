@@ -1,6 +1,6 @@
-import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -50,32 +50,34 @@ describe('pi classify', () => {
     expect(plugin.classify(input({ type: 'agent_end', messages: [] }))).toEqual({ kind: 'result_divider' })
   })
 
-  it('renders agent_end result_divider via renderMessage', () => {
-    const { container } = render(() => plugin.renderMessage!(
-      { kind: 'result_divider' },
-      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] },
-    ))
-    expect(container.textContent).toBe('Turn ended')
+  it('maps agent_end (stop) to a "Turn ended" divider model', () => {
+    expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] }))
+      .toEqual({ label: 'Turn ended' })
   })
 
-  it('renders Turn aborted for aborted stopReason via renderMessage', () => {
-    const { container } = render(() => plugin.renderMessage!(
-      { kind: 'result_divider' },
+  it('maps an aborted stopReason to a danger "Turn aborted" model', () => {
+    expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] }))
+      .toEqual({ label: 'Turn aborted', isError: true })
+  })
+
+  it('maps an error stopReason to a danger "Turn failed — <msg>" model', () => {
+    expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] }))
+      .toEqual({ label: 'Turn failed — rate limit', isError: true })
+  })
+
+  it('returns null when the message is not agent_end', () => {
+    expect(plugin.resultDivider!({ type: 'message_end' })).toBeNull()
+  })
+
+  it('renders a danger divider through the shared renderer end-to-end', () => {
+    // MessageBubble routes result_divider through renderResultDivider, which draws
+    // the shared ResultDivider with the inline danger color for a failed turn.
+    const { text, isError } = renderDivider(
       { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] },
-    ))
-    expect(container.textContent).toBe('Turn aborted')
-  })
-
-  it('renders Turn failed with error message via renderMessage', () => {
-    const { container } = render(() => plugin.renderMessage!(
-      { kind: 'result_divider' },
-      {
-        type: 'agent_end',
-        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }],
-      },
-    ))
-    expect(container.textContent).toContain('Turn failed')
-    expect(container.textContent).toContain('rate limit')
+      AgentProvider.PI,
+    )
+    expect(text).toBe('Turn aborted')
+    expect(isError).toBe(true)
   })
 
   it('classifies message_end with text content as assistant_text', () => {

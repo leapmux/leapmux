@@ -34,9 +34,9 @@ import {
   PiAssistantMessage,
   PiAssistantThinking,
   piNotificationThreadEntry,
+  piResultDivider,
   PiToolExecutionRenderer,
   PiToolResultRenderer,
-  renderPiResultDivider,
 } from './renderers'
 import { DEFAULT_PI_EFFORT, DEFAULT_PI_MODEL, PiSettingsPanel, PiTriggerLabel } from './settings'
 
@@ -127,7 +127,6 @@ const PI_RENDERERS: Partial<Record<MessageCategory['kind'], PiRenderer>> = {
   },
   tool_result: (_cat, parsed, context) =>
     <PiToolResultRenderer parsed={parsed} context={context} />,
-  result_divider: (_cat, parsed) => renderPiResultDivider(parsed),
   user_content: (_cat, parsed) => <UserContentMessage parsed={parsed} />,
   plan_execution: (_cat, parsed, context) => {
     const obj = isObject(parsed) ? parsed : null
@@ -319,6 +318,8 @@ const piPlugin: Provider = {
   // for each message (a standalone notification or one entry of a consolidated
   // wrapper), so multi-event threads render every entry, not just the first.
   notificationThreadEntry: piNotificationThreadEntry,
+
+  resultDivider: piResultDivider,
 
   toolResultMeta: piToolResultMeta,
 

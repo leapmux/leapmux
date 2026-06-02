@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
-import { acpResultDividerRenderer } from '../acp/renderers'
+import { acpResultDivider } from '../acp/renderers'
 import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
@@ -217,36 +217,28 @@ describe('kilo classify', () => {
   })
 })
 
-describe('kilo result divider renderer', () => {
+describe('kilo result divider', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
-  it('renders "Turn ended" for end_turn', () => {
-    const parsed = { stopReason: 'end_turn', usage: { totalTokens: 100 } }
-    const { container } = render(() => acpResultDividerRenderer(parsed))
-    expect(container.textContent).toBe('Turn ended')
+  it('maps end_turn to "Turn ended"', () => {
+    expect(acpResultDivider({ stopReason: 'end_turn', usage: { totalTokens: 100 } })).toEqual({ label: 'Turn ended' })
   })
 
-  it('renders "Turn ended" when stopReason is missing', () => {
-    const parsed = { usage: { totalTokens: 100 } }
-    const { container } = render(() => acpResultDividerRenderer(parsed))
-    expect(container.textContent).toBe('Turn ended')
+  it('maps a missing stopReason to "Turn ended"', () => {
+    expect(acpResultDivider({ usage: { totalTokens: 100 } })).toEqual({ label: 'Turn ended' })
   })
 
-  it('renders "Turn ended (reason)" for non-end_turn stopReason', () => {
-    const parsed = { stopReason: 'max_tokens' }
-    const { container } = render(() => acpResultDividerRenderer(parsed))
-    expect(container.textContent).toBe('Turn ended (max_tokens)')
+  it('maps a non-end_turn stopReason to "Turn ended (reason)"', () => {
+    expect(acpResultDivider({ stopReason: 'max_tokens' })).toEqual({ label: 'Turn ended (max_tokens)' })
   })
 
   it('returns null for non-object input', () => {
-    expect(acpResultDividerRenderer(null)).toBeNull()
-    expect(acpResultDividerRenderer('string')).toBeNull()
+    expect(acpResultDivider(null)).toBeNull()
+    expect(acpResultDivider('string')).toBeNull()
   })
 
-  it('is returned by plugin.renderMessage for result_divider', () => {
-    const parsed = { stopReason: 'end_turn' }
-    const { container } = render(() => plugin.renderMessage!({ kind: 'result_divider' }, parsed))
-    expect(container.textContent).toBe('Turn ended')
+  it('is registered as the plugin resultDivider hook', () => {
+    expect(plugin.resultDivider!({ stopReason: 'end_turn' })).toEqual({ label: 'Turn ended' })
   })
 })
 

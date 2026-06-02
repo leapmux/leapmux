@@ -4,7 +4,7 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 // Importing the registry side-effect-registers the Codex plugin so the thread
 // renderer can dispatch into `notificationThreadEntry`.
 await import('./plugin')
-const { renderThreadText } = await import('../../notificationTestUtils')
+const { renderThreadText } = await import('../../messageRenderTestUtils')
 
 const renderText = (messages: unknown[]): string => renderThreadText(messages, AgentProvider.CODEX)
 

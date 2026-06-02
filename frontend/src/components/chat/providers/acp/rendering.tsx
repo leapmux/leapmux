@@ -14,7 +14,6 @@ import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers
 import {
   acpAgentMessageRenderer,
   acpPlanRenderer,
-  acpResultDividerRenderer,
   acpThoughtRenderer,
   acpToolCallRenderer,
   acpToolCallUpdateRenderer,
@@ -31,8 +30,6 @@ export function renderACPMessage(category: MessageCategory, parsed: unknown, con
     return acpAgentMessageRenderer(parsed)
   if (category.kind === 'assistant_thinking')
     return acpThoughtRenderer(parsed, context)
-  if (category.kind === 'result_divider')
-    return acpResultDividerRenderer(parsed)
   if (category.kind === 'tool_use') {
     const cat = category as { toolName: string, toolUse: Record<string, unknown> }
     if (cat.toolName === ACP_SESSION_UPDATE.PLAN)

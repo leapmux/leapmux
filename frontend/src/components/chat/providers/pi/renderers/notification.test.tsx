@@ -1,8 +1,8 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { renderThreadHasIcon, renderThreadText } from '../../../messageRenderTestUtils'
 import { renderNotificationThread } from '../../../notificationRenderers'
-import { renderThreadHasIcon, renderThreadText } from '../../../notificationTestUtils'
 import { describePiNotification, piNotificationThreadEntry } from './notification'
 
 // Side-effect import to register the Pi plugin so renderNotificationThread can

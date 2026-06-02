@@ -1,10 +1,10 @@
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import * as chatStyles from './messageStyles.css'
-import { providerFor } from './providers/registry'
+import { pluginFor } from './providers/registry'
 import './providers'
 
 // ---------------------------------------------------------------------------
@@ -31,6 +31,12 @@ export type MessageCategory
     | { kind: 'control_response' }
     | { kind: 'compact_summary' }
     | { kind: 'unknown' }
+    // The message's `agentProvider` is UNSPECIFIED or has no registered plugin,
+    // so we cannot interpret its wire format. Distinct from `unknown` (a known
+    // provider's unrecognized shape): this is a misconfiguration -- every live
+    // agent sets a real provider -- surfaced as a loud error by MessageBubble
+    // rather than silently guessing one provider's renderer for another's bytes.
+    | { kind: 'unsupported_provider' }
 
 /**
  * Build the input for `classifyMessage` from a parsed envelope and an
@@ -58,19 +64,20 @@ export function toClassificationInput(
 /**
  * Classify a parsed message into exactly one category.
  *
- * Always dispatches through the provider plugin registry. Each provider
- * (Claude Code, Codex, etc.) registers its own classify implementation.
+ * Dispatches strictly through the message's own provider plugin. An UNSPECIFIED
+ * or unregistered provider has no plugin: we refuse to guess one (e.g. default
+ * to Claude), because misreading another provider's envelope is worse than a
+ * visible failure -- the result is `unsupported_provider`, which MessageBubble
+ * surfaces as a loud error.
  */
 export function classifyMessage(
   input: ClassificationInput,
   context?: ClassificationContext,
 ): MessageCategory {
-  const provider = input.agentProvider ?? AgentProvider.CLAUDE_CODE
-  const plugin = providerFor(provider)
-    ?? providerFor(AgentProvider.CLAUDE_CODE)
+  const plugin = pluginFor(input.agentProvider)
   if (plugin)
     return plugin.classify(input, context)
-  return { kind: 'unknown' }
+  return { kind: 'unsupported_provider' }
 }
 
 // AgentChatMessage is immutable once persisted, so caching the
@@ -133,6 +140,7 @@ const META_KINDS = new Set<MessageCategory['kind']>([
   'compact_summary',
   'notification',
   'task_notification',
+  'unsupported_provider',
 ])
 
 /**
@@ -155,9 +163,11 @@ const NON_STREAM_CLEAR_KINDS = new Set<MessageCategory['kind']>([
  * streaming text buffer. Notification wrappers and meta categories
  * leave the buffer alone — only assistant-side outputs (text,
  * thinking, tool_use, tool_result) and turn-end dividers close it.
- * `kind === 'unknown'` deliberately falls through to true so any
- * unclassified AGENT shape conservatively closes the buffer rather
- * than leaving stale streaming text glued to the next message.
+ * `kind === 'unknown'` and `kind === 'unsupported_provider'` both
+ * deliberately fall through to true (neither is in NON_STREAM_CLEAR_KINDS)
+ * so any unclassified or unattributable AGENT shape conservatively closes
+ * the buffer rather than leaving stale streaming text glued to the next
+ * message.
  */
 export function shouldClearStreamingText(
   msg: { source: MessageSource },

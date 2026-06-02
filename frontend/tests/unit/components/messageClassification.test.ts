@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyMessage, messageBubbleClass, messageRowClass } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
-import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 
 // ---------------------------------------------------------------------------
 // Helper to build assistant message payloads
@@ -119,6 +119,22 @@ describe('classifyMessage', () => {
 
   it('returns unknown when parentObject is undefined and wrapper is null', () => {
     expect(classifyMessage(input()).kind).toBe('unknown')
+  })
+
+  // -- unsupported provider (no registered plugin) --------------------------
+
+  it('classifies an UNSPECIFIED provider as unsupported_provider (no Claude guess)', () => {
+    // The provider is the proto-0 default; there is no plugin, so refuse to guess
+    // Claude and surface the message as unsupported rather than mis-rendering it.
+    const result = classifyMessage(input({ type: 'result', duration_ms: 5 }, null, AgentProvider.UNSPECIFIED))
+    expect(result.kind).toBe('unsupported_provider')
+  })
+
+  it('classifies an unregistered provider value as unsupported_provider', () => {
+    // A provider enum the frontend has no plugin for (e.g. backend/frontend
+    // version skew) must surface loudly, not fall back to Claude's renderers.
+    const result = classifyMessage(input({ type: 'assistant' }, null, 999 as AgentProvider))
+    expect(result.kind).toBe('unsupported_provider')
   })
 
   // -- hidden ---------------------------------------------------------------

@@ -28,7 +28,6 @@ import {
   userContentRenderer,
   userTextContentRenderer,
 } from './messageRenderers'
-import { resultRenderer } from './notifications'
 import { renderClaudeToolResult } from './toolResults'
 import { renderClaudeToolUse } from './toolUse'
 
@@ -57,8 +56,6 @@ export function renderClaudeMessage(
       return planExecutionRenderer.render(parsed, context)
     case 'task_notification':
       return taskNotificationRenderer.render(parsed, context)
-    case 'result_divider':
-      return resultRenderer.render(parsed, context)
     case 'control_response':
       return controlResponseRenderer.render(parsed, context)
     case 'compact_summary':

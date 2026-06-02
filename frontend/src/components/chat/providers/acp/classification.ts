@@ -6,7 +6,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { isObject } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
-import { isNotificationThreadWrapper } from '../../messageUtils'
+import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { extractAgentText } from './renderers/helpers'
 
 export function buildACPInterruptContent(agentSessionId: string): string | null {
@@ -66,7 +66,7 @@ function isHiddenACPNotification(m: unknown): boolean {
   const subtype = m.subtype as string | undefined
   if (subtype === 'init' || subtype === 'task_notification')
     return true
-  return subtype === 'status' && m.status !== 'compacting'
+  return isTerminalCompactingStatus(m)
 }
 
 /**
@@ -159,7 +159,10 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     if (hiddenSessionUpdates.has(sessionUpdate!))
       return { kind: 'hidden' }
 
-    if (parent.stopReason !== undefined)
+    // Require a *string* stopReason so the gate matches acpResultDivider's
+    // pickString read (mirroring the Codex turn.status gate): a non-string
+    // stopReason is a malformed turn-end, not a divider this provider can label.
+    if (typeof parent.stopReason === 'string')
       return { kind: 'result_divider' }
 
     if (type === 'system') {

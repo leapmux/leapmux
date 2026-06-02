@@ -4,8 +4,17 @@ import type { AskQuestionState } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { useControlResponseHandling } from './controlResponseHandling'
+
+// The no-plugin bail surfaces a toast; mock the module so it doesn't reach the
+// runtime `window.ot` global (absent in jsdom) and we can assert it fired.
+vi.mock('~/components/common/Toast', () => ({
+  showWarnToast: vi.fn(),
+  showInfoToast: vi.fn(),
+  showErrorToast: vi.fn(),
+}))
 
 function createMinimalAskState(): AskQuestionState {
   const [selections, setSelections] = createSignal<Record<number, string[]>>({})
@@ -231,6 +240,7 @@ describe('handleControlSend', () => {
     const onSendMessage = vi.fn()
     const props: ControlResponseHandlingProps = {
       agentId: 'test-agent',
+      agent: { agentProvider: AgentProvider.CLAUDE_CODE },
       controlRequests: [makeControlRequest('req-1', 'test-agent')],
       onControlResponse,
       onSendMessage,
@@ -249,6 +259,25 @@ describe('handleControlSend', () => {
     expect(onSendMessage).not.toHaveBeenCalled()
     // onControlResponse should have been called (the allow response).
     expect(onControlResponse).toHaveBeenCalled()
+  })
+
+  it('refuses to send a control response when the agent provider has no plugin', () => {
+    // No agent provider -> no plugin. We removed the Claude fallback, so rather
+    // than encoding the response through the wrong provider's builder we bail
+    // (returning false to keep the editor content), surface a toast so the send
+    // is not a silent no-op, and send nothing.
+    vi.mocked(showWarnToast).mockClear()
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const props: ControlResponseHandlingProps = {
+      agentId: 'test-agent',
+      controlRequests: [makeControlRequest('req-1', 'test-agent')],
+      onControlResponse,
+      onSendMessage: vi.fn(),
+    }
+    const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+    expect(result.handleControlSend('')).toBe(false)
+    expect(onControlResponse).not.toHaveBeenCalled()
+    expect(showWarnToast).toHaveBeenCalledWith(expect.stringContaining('unsupported agent provider'))
   })
 
   it('uses Pi-native extension_ui_response values for select prompts', () => {

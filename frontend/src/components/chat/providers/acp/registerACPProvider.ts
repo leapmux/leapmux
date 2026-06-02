@@ -6,6 +6,7 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { registerProvider } from '../registry'
 import { acpBuildControlResponse, acpExtractQuotableText, buildACPInterruptContent, changeACPPermissionMode, classifyACPMessage } from './classification'
+import { acpResultDivider } from './renderers'
 import { renderACPMessage } from './rendering'
 import { createACPSettingsPanel, createACPTriggerLabel } from './settings'
 
@@ -90,6 +91,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
       : undefined,
     ),
     renderMessage: renderACPMessage,
+    resultDivider: acpResultDivider,
     extractQuotableText: acpExtractQuotableText,
     buildInterruptContent: buildACPInterruptContent,
     buildControlResponse: acpBuildControlResponse,
