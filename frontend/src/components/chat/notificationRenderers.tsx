@@ -1,12 +1,14 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
 import type { JSXElement } from 'solid-js'
 import type { MessageContentRenderer } from './messageRenderers'
+import type { NotificationThreadEntry } from './providers/registry'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import type { CompactionDetail } from '~/lib/messageParser'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import { Icon } from '~/components/common/Icon'
-import { Spinner } from '~/components/common/Spinner'
-import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { isCompactBoundary, parseBoundaryMeta, toTokenCount } from '~/lib/messageParser'
 import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { spinner } from '~/styles/animations.css'
@@ -15,9 +17,17 @@ import {
   controlResponseMessage,
   resultDivider,
 } from './messageStyles.css'
-import { providerFor } from './providers/registry'
+import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
 import { PERMISSION_MODE_KEY } from './settingsShared'
+
+// Provider-neutral notification labels used by the notification-thread switch
+// (`threadEntriesFor`). Hoisted to named constants so the wording lives in one
+// place and is referenced by name -- the same as COMPACTING_LABEL /
+// MICROCOMPACT_LABEL for the compaction rows below.
+const CONTEXT_CLEARED_LABEL = 'Context cleared'
+const INTERRUPTED_LABEL = 'Interrupted'
+const UNKNOWN_ERROR_LABEL = 'Unknown error'
 
 // ---------------------------------------------------------------------------
 // Display helpers for settings change notifications
@@ -36,108 +46,76 @@ function displayValue(key: string, value: string): string {
   return getCachedSettingsLabel(key, value) ?? value
 }
 
-/** Handles settings change notifications: {"type":"settings_changed","changes":{...}} */
-export const settingsChangedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.SettingsChanged)
-      return null
-    const changes = parsed.changes as Record<string, { old: string, new: string, label?: string, oldLabel?: string, newLabel?: string }>
-    if (!changes)
-      return null
-    const parts: string[] = []
-    for (const [key, val] of Object.entries(changes)) {
-      if (val.old !== val.new) {
-        const oldDisplay = val.oldLabel || displayValue(key, val.old)
-        const newDisplay = val.newLabel || displayValue(key, val.new)
-        const label = val.label || displayLabel(key)
-        if (oldDisplay)
-          parts.push(`${label} (${oldDisplay} → ${newDisplay})`)
-        else
-          parts.push(`${label} (${newDisplay})`)
-      }
-    }
-    if (parts.length === 0)
-      return null
-    return <div class={controlResponseMessage}>{parts.join(', ')}</div>
-  },
-}
-
-/** Handles interrupt notifications: {"type":"interrupted"} */
-export const interruptedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.Interrupted)
-      return null
-    return <div class={controlResponseMessage}>Interrupted</div>
-  },
+/**
+ * A single settings change after display resolution, ready to format. Parsing
+ * (which reads the raw, untyped wire fields) is separated from formatting (which
+ * assembles the label) so the defensive field reads live in one place.
+ */
+interface SettingsChange {
+  label: string
+  /** No prior value -- render the "(new)"-only form instead of an old -> new transition. */
+  firstSet: boolean
+  oldDisplay: string
+  newDisplay: string
 }
 
 /**
- * Handles compacting status notifications. The canonical shape is the raw
- * Claude `system` message: `{type:"system",subtype:"status",status:"compacting"}`.
+ * Parse the raw, untyped `changes` map into resolved {@link SettingsChange}s.
+ * Each entry is expected to be `{ old, new, label?, oldLabel?, newLabel? }`:
+ * inline `label`/`oldLabel`/`newLabel` overrides win over the cache-derived
+ * display, unchanged entries (old === new) are dropped, and non-object entries
+ * are skipped so a malformed payload degrades rather than throws.
  */
-export const compactingRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed))
-      return null
-    if (!(parsed.type === 'system' && parsed.subtype === 'status' && parsed.status === NOTIFICATION_TYPE.Compacting))
-      return null
-    return (
-      <div class={resultDivider}>
-        <Spinner />
-        {' Compacting context...'}
-      </div>
-    )
-  },
-}
-
-export const contextClearedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.ContextCleared)
-      return null
-    return <div class={controlResponseMessage}>Context cleared</div>
-  },
-}
-
-/** Handles agent error notifications: {"type":"agent_error","error":"..."} */
-export const agentErrorRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.AgentError)
-      return null
-    const error = pickString(parsed, 'error', 'Unknown error')
-    return <div class={controlResponseMessage}>{error}</div>
-  },
+function parseSettingsChanges(changes: unknown): SettingsChange[] {
+  if (!isObject(changes))
+    return []
+  const result: SettingsChange[] = []
+  for (const [key, val] of Object.entries(changes)) {
+    if (!isObject(val))
+      continue
+    const oldValue = pickString(val, 'old')
+    const newValue = pickString(val, 'new')
+    if (oldValue === newValue)
+      continue
+    result.push({
+      // `?? ` (not `||`) so an explicit empty-string override is honored rather
+      // than silently falling back to the cache-derived display.
+      label: pickString(val, 'label', undefined) ?? displayLabel(key),
+      // Gate the "(new)"-only form on the absence of an old VALUE, not on an
+      // empty old DISPLAY: a real value whose display resolves to "" is still a
+      // transition and must keep the arrow.
+      firstSet: oldValue === '',
+      oldDisplay: pickString(val, 'oldLabel', undefined) ?? displayValue(key, oldValue),
+      newDisplay: pickString(val, 'newLabel', undefined) ?? displayValue(key, newValue),
+    })
+  }
+  return result
 }
 
 /**
- * Handles plan_updated notifications:
- * `{"type":"plan_updated","plan_title":"...","plan_file_path":"...","update_agent_title"?:true}`.
- *
- * Two display variants:
- * - With `update_agent_title:true`: "Plan updated and renamed to <title>".
- * - Without:                       "Plan updated: <title>".
+ * Format settings changes as `Label (old → new)` parts, degrading to
+ * `Label (new)` when there is no old value. Used by the notification-thread
+ * switch (`threadEntriesFor`) to render settings_changed notifications.
  */
-export const planUpdatedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== NOTIFICATION_TYPE.PlanUpdated)
-      return null
-    const title = pickString(parsed, 'plan_title')
-    if (!title)
-      return null
-    if (parsed.update_agent_title === true) {
-      return (
-        <div class={controlResponseMessage}>
-          {'Plan updated and renamed to '}
-          {title}
-        </div>
-      )
-    }
-    return (
-      <div class={controlResponseMessage}>
-        {'Plan updated: '}
-        {title}
-      </div>
-    )
-  },
+function formatSettingsChanges(changes: unknown): string[] {
+  return parseSettingsChanges(changes).map(c =>
+    c.firstSet ? `${c.label} (${c.newDisplay})` : `${c.label} (${c.oldDisplay} → ${c.newDisplay})`,
+  )
+}
+
+/**
+ * Build the plan_updated label, or null when there is no title to show. Two
+ * variants: "Plan updated and renamed to <title>" when `update_agent_title` is
+ * set, else "Plan updated: <title>". Used by the notification-thread switch
+ * (`threadEntriesFor`).
+ */
+function planUpdatedLabel(source: Record<string, unknown>): string | null {
+  const title = pickString(source, 'plan_title')
+  if (!title)
+    return null
+  return source.update_agent_title === true
+    ? `Plan updated and renamed to ${title}`
+    : `Plan updated: ${title}`
 }
 
 function formatApiRetryLabel(data: Record<string, unknown>): string {
@@ -151,70 +129,111 @@ function formatApiRetryLabel(data: Record<string, unknown>): string {
     : `API Retry ${attempt}/${maxRetries}`
 }
 
-/** Handles api_retry notifications: {"type":"system","subtype":"api_retry","attempt":N,"max_retries":N,...} */
-export const apiRetryRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'api_retry')
-      return null
-    return <div class={controlResponseMessage}>{formatApiRetryLabel(parsed as Record<string, unknown>)}</div>
-  },
-}
-
 // ---------------------------------------------------------------------------
 // Context compaction boundary renderers
 // ---------------------------------------------------------------------------
 
 /**
- * Handles compact_boundary messages. Recognizes two shapes:
- *  - Claude raw `system` message: `{type:"system",subtype:"compact_boundary",compact_metadata:{trigger,pre_tokens}}`
- *  - Codex raw JSON-RPC notification: `{method:"thread/compacted",params:{threadId,turnId}}`
+ * A compaction divider row: a leading icon (the down-to-line arrow, or a
+ * spinner while compaction is in progress) followed by the label. Rendered by
+ * `renderNotificationThread` for every `divider` entry, so a boundary looks the
+ * same on its own or consolidated, and across providers -- a provider that
+ * surfaces its own compaction event (e.g. Pi) supplies a `divider` entry that
+ * flows through here, getting the same icon + layout without re-implementing it.
  */
-export const compactBoundaryRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed))
-      return null
-    const isClaude = parsed.type === 'system' && parsed.subtype === 'compact_boundary'
-    const isCodex = parsed.method === 'thread/compacted'
-    if (!isClaude && !isCodex)
-      return null
-    // Claude carries metadata under `compact_metadata` / `compactMetadata`.
-    // Codex carries no metadata today; the message itself is the boundary.
-    const meta = pickFirstObject(parsed, ['compact_metadata', 'compactMetadata'])
-    const trigger = meta?.trigger as string | undefined
-    const preTokens = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
-    const parts = ['Context compacted']
-    if (trigger)
-      parts.push(`(${trigger})`)
-    if (typeof preTokens === 'number')
-      parts.push(`- was ${formatTokenCount(preTokens)} tokens`)
-    return <div class={resultDivider}>{parts.join(' ')}</div>
-  },
+function CompactionDivider(props: { text: string, loading?: boolean }): JSXElement {
+  return (
+    <div class={resultDivider}>
+      <Icon icon={props.loading ? LoaderCircle : ArrowDownToLine} size="sm" class={props.loading ? spinner : undefined} />
+      {` ${props.text}`}
+    </div>
+  )
 }
 
-/** Handles microcompact_boundary messages: {"type":"system","subtype":"microcompact_boundary","microcompactMetadata":{"trigger":...,"preTokens":number,"tokensSaved":number,...}} */
-export const microcompactBoundaryRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'microcompact_boundary')
-      return null
-    const meta = pickFirstObject(parsed, ['microcompactMetadata', 'microcompact_metadata'])
-    const trigger = meta?.trigger as string | undefined
-    const tokensSaved = pickFirstNumber(meta, ['tokensSaved', 'tokens_saved'])
-    const parts = ['Context microcompacted']
-    if (trigger)
-      parts.push(`(${trigger})`)
-    if (typeof tokensSaved === 'number')
-      parts.push(`- saved ${formatTokenCount(tokensSaved)} tokens`)
-    return <div class={resultDivider}>{parts.join(' ')}</div>
-  },
+// Boundary labels with no per-message detail. COMPACTING_LABEL is exported
+// because the Pi renderer imports it so its compaction label matches; both are
+// referenced by name from the notification-thread switch (the same as
+// compactBoundaryLabel for the compacted boundary). The microcompact label has
+// no detail because Claude Code emits no microcompact metadata object.
+export const COMPACTING_LABEL = 'Compacting context...'
+const MICROCOMPACT_LABEL = 'Context microcompacted'
+
+// Compaction metadata parsing (parseBoundaryMeta, toTokenCount, the
+// CompactionDetail shape, the isCompactBoundary predicate) lives in messageParser
+// beside the other wire extractors, since the context-usage grid consumes the
+// same parse to refresh on compaction. This file keeps only the formatting that
+// turns a CompactionDetail into a display label. microcompact_boundary carries no
+// metadata (Claude Code emits none), so that boundary renders a plain label.
+
+/**
+ * Format a pre/post token pair as the transition "105.4k → 8.5k", degrading to
+ * "105.4k" (pre only), "→ 8.5k" (post only), or "" when neither is known.
+ */
+function formatTokenTransition(pre: number | undefined, post: number | undefined): string {
+  if (typeof pre === 'number' && typeof post === 'number')
+    return `${formatTokenCount(pre)} → ${formatTokenCount(post)}`
+  if (typeof pre === 'number')
+    return formatTokenCount(pre)
+  if (typeof post === 'number')
+    return `→ ${formatTokenCount(post)}`
+  return ''
 }
 
-/** Handles system init messages: {"type":"system","subtype":"init","session_id":"..."} — hidden at MessageBubble level */
-export const systemInitRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'init')
-      return null
-    return <span />
-  },
+/**
+ * Format a {@link CompactionDetail} as the parenthetical detail
+ * " (manual, 105.4k → 8.5k)". The parenthetical holds an optional `trigger`
+ * (e.g. "manual"/"auto") followed by the token transition (see
+ * {@link formatTokenTransition}); token counts are sanitized via
+ * {@link toTokenCount} first, for every provider. Each part is optional, so the
+ * result can be " (manual)", " (manual, 105.4k)", " (105.4k → 8.5k)",
+ * " (→ 8.5k)", or "" when nothing is known.
+ */
+function formatCompactionDetail(detail: CompactionDetail): string {
+  const tokens = formatTokenTransition(toTokenCount(detail.pre), toTokenCount(detail.post))
+  const parts: string[] = []
+  if (detail.trigger)
+    parts.push(detail.trigger)
+  if (tokens)
+    parts.push(tokens)
+  return parts.length > 0 ? ` (${parts.join(', ')})` : ''
+}
+
+/**
+ * "Context compacted" plus the formatted token detail. Exported so a provider
+ * that surfaces its own compaction event (e.g. Pi, whose `compaction_end`
+ * carries a reason + pre-compaction size) can render the identical label by
+ * passing a {@link CompactionDetail} directly -- without re-implementing the
+ * prefix or the token format, and without impersonating the Claude wire shape.
+ */
+export function compactedLabel(detail: CompactionDetail): string {
+  return `Context compacted${formatCompactionDetail(detail)}`
+}
+
+/**
+ * Build the compact_boundary label from a raw message: resolve the metadata
+ * object (snake/camel), parse it into a {@link CompactionDetail}, then format via
+ * {@link compactedLabel}. Used by the notification-thread switch; centralizes the
+ * label and metadata-key resolution.
+ */
+function compactBoundaryLabel(source: Record<string, unknown>): string {
+  return compactedLabel(parseBoundaryMeta(source))
+}
+
+// Recognition predicates for the compaction message shapes, used by the
+// notification-thread switch (`threadEntriesFor`). Each names WHICH wire shapes
+// count as a given boundary so the switch reads declaratively instead of
+// hand-repeating the type/subtype/method checks inline. The completed-boundary
+// predicate (isCompactBoundary, matching Claude's and Codex's two shapes) lives
+// in messageParser since the grid extractor recognizes the same signal.
+
+/** Claude's in-progress compacting status: `{type:system,subtype:status,status:compacting}`. */
+function isCompactingStatus(m: Record<string, unknown>): boolean {
+  return m.type === 'system' && m.subtype === 'status' && m.status === NOTIFICATION_TYPE.Compacting
+}
+
+/** Claude's microcompaction boundary: `{type:system,subtype:microcompact_boundary}`. */
+function isMicrocompactBoundary(m: Record<string, unknown>): boolean {
+  return m.type === 'system' && m.subtype === 'microcompact_boundary'
 }
 
 /** Handles control response messages: {"isSynthetic":true,"controlResponse":{"action":"approved"|"rejected","comment":"..."}} */
@@ -249,28 +268,38 @@ export const controlResponseRenderer: MessageContentRenderer = {
 // Aggregate notification thread renderer
 // ---------------------------------------------------------------------------
 
-/** Format compaction token info: "(167.3k ⤓ 50.2k)" or "(167.3k)" or "(⤓ 50.2k)" */
-function formatCompactionTokens(preTokens: number | undefined, tokensSaved: number | undefined): string {
-  const parts: string[] = []
-  if (typeof preTokens === 'number')
-    parts.push(formatTokenCount(preTokens))
-  if (typeof tokensSaved === 'number')
-    parts.push(`⤓ ${formatTokenCount(tokensSaved)}`)
-  if (parts.length === 0)
-    return ''
-  return ` (${parts.join(' ')})`
+/**
+ * A single entry produced by `threadEntriesFor` before grouping is resolved.
+ * Aliased to the registry's `NotificationThreadEntry` -- the exact type a
+ * provider plugin's `notificationThreadEntry` returns -- so the plugin pre-pass
+ * and the shared switch are provably the same shape and cannot desync.
+ */
+type ThreadEntry = NotificationThreadEntry
+
+/** What survives into the final render: `group` entries are flushed to `text`. */
+type RenderEntry = Exclude<ThreadEntry, { kind: 'group' }>
+
+/** Build a one-element text thread entry. */
+function textEntry(text: string): ThreadEntry[] {
+  return [{ kind: 'text', text }]
+}
+
+/** Build a one-element divider thread entry (with the spinner when `loading`). */
+function dividerEntry(text: string, loading?: boolean): ThreadEntry[] {
+  return [{ kind: 'divider', text, loading }]
 }
 
 /**
- * Walk a single message in a notification_thread wrapper, producing one or
- * more flat thread entries via the provider plugin (if any) followed by the
- * provider-neutral switch. Returns an array — the caller appends.
+ * Walk a single notification message (whether on its own or one entry of a
+ * consolidated thread), producing one or more flat thread entries via the
+ * provider plugin (if any) followed by the provider-neutral switch. Returns an
+ * array — the caller appends.
  */
 function threadEntriesFor(
   m: Record<string, unknown>,
   agentProvider: AgentProvider | undefined,
-): Array<{ kind: 'text', text: string } | { kind: 'group', groupKey: string, prefix: string, entry: string } | { kind: 'divider', text: string, loading?: boolean }> {
-  const plugin = agentProvider != null ? providerFor(agentProvider) : undefined
+): ThreadEntry[] {
+  const plugin = pluginFor(agentProvider)
   const fromPlugin = plugin?.notificationThreadEntry?.(m)
   if (fromPlugin !== null && fromPlugin !== undefined)
     return fromPlugin
@@ -279,72 +308,55 @@ function threadEntriesFor(
   const st = m.subtype as string | undefined
 
   if (t === NOTIFICATION_TYPE.SettingsChanged) {
-    const changes = m.changes as Record<string, { old: string, new: string }> | undefined
-    if (!changes)
-      return []
-    const parts: string[] = []
-    for (const [key, val] of Object.entries(changes)) {
-      if (val.old !== val.new)
-        parts.push(`${displayLabel(key)} (${displayValue(key, val.old)} → ${displayValue(key, val.new)})`)
-    }
-    return parts.length > 0 ? [{ kind: 'text', text: parts.join(', ') }] : []
+    const parts = formatSettingsChanges(m.changes)
+    return parts.length > 0 ? textEntry(parts.join(', ')) : []
   }
   if (t === NOTIFICATION_TYPE.ContextCleared)
-    return [{ kind: 'text', text: 'Context cleared' }]
+    return textEntry(CONTEXT_CLEARED_LABEL)
   if (t === NOTIFICATION_TYPE.PlanExecution)
-    return [{ kind: 'text', text: 'Executing plan' }]
+    return textEntry('Executing plan')
   if (t === NOTIFICATION_TYPE.AgentError)
-    return [{ kind: 'text', text: pickString(m, 'error', 'Unknown error') }]
+    return textEntry(pickString(m, 'error', UNKNOWN_ERROR_LABEL))
   if (t === NOTIFICATION_TYPE.Interrupted)
-    return [{ kind: 'text', text: 'Interrupted' }]
+    return textEntry(INTERRUPTED_LABEL)
   if (t === NOTIFICATION_TYPE.PlanUpdated) {
-    const title = pickString(m, 'plan_title')
-    if (!title)
-      return []
-    if (m.update_agent_title === true)
-      return [{ kind: 'text', text: `Plan updated and renamed to ${title}` }]
-    return [{ kind: 'text', text: `Plan updated: ${title}` }]
+    const label = planUpdatedLabel(m)
+    return label !== null ? textEntry(label) : []
   }
   if (t === 'system' && st === 'api_retry')
-    return [{ kind: 'text', text: formatApiRetryLabel(m) }]
-  if (t === 'system' && st === 'status' && m.status === NOTIFICATION_TYPE.Compacting)
-    return [{ kind: 'divider', text: 'Compacting context...', loading: true }]
-  if (t === 'system' && st === 'compact_boundary') {
-    const meta = pickFirstObject(m, ['compact_metadata', 'compactMetadata'])
-    const pre = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
-    const saved = pickFirstNumber(meta, ['tokens_saved', 'tokensSaved'])
-    return [{ kind: 'divider', text: `Context compacted${formatCompactionTokens(pre, saved)}` }]
-  }
-  // Codex `thread/compacted` is the boundary signal; no metadata fields.
-  if (m.method === 'thread/compacted')
-    return [{ kind: 'divider', text: 'Context compacted' }]
+    return textEntry(formatApiRetryLabel(m))
+  if (isCompactingStatus(m))
+    return dividerEntry(COMPACTING_LABEL, true)
+  // Claude `compact_boundary` and Codex `thread/compacted` are both the
+  // completed-boundary signal; route both through the shared label. Codex carries
+  // no metadata today but would pick up detail automatically if it ever adds it.
+  if (isCompactBoundary(m))
+    return dividerEntry(compactBoundaryLabel(m))
   // Codex `item/started` of a contextCompaction item is the in-progress
   // spinner. The completed boundary arrives later via `thread/compacted`.
   if (m.method === 'item/started') {
     const params = pickObject(m, 'params')
     const item = pickObject(params, 'item')
     if (item && item.type === 'contextCompaction')
-      return [{ kind: 'divider', text: 'Compacting context...', loading: true }]
+      return dividerEntry(COMPACTING_LABEL, true)
   }
-  if (t === 'system' && st === 'microcompact_boundary') {
-    const meta = pickFirstObject(m, ['microcompactMetadata', 'microcompact_metadata'])
-    const pre = pickFirstNumber(meta, ['preTokens', 'pre_tokens'])
-    const saved = pickFirstNumber(meta, ['tokensSaved', 'tokens_saved'])
-    return [{ kind: 'divider', text: `Context microcompacted${formatCompactionTokens(pre, saved)}` }]
-  }
+  if (isMicrocompactBoundary(m))
+    return dividerEntry(MICROCOMPACT_LABEL)
   return []
 }
 
 /**
- * Renders a notification thread (multiple consolidated messages in a single wrapper)
- * as a combined notification. Used when Hub threads consecutive notifications together.
+ * Renders a list of notification messages as a single combined notification --
+ * the sole render path for the `notification` category, whether a standalone
+ * notification (a one-element list) or a consolidated thread (Hub threads
+ * consecutive notifications into one `notification_thread` wire wrapper).
+ * Returns null when nothing renders.
  *
  * `agentProvider` is consulted via `plugin.notificationThreadEntry` for any
  * provider-specific messages (e.g. Codex MCP startup statuses) before the
  * shared switch handles provider-neutral types.
  */
 export function renderNotificationThread(messages: unknown[], agentProvider?: AgentProvider): JSXElement {
-  type RenderEntry = { kind: 'text', text: string } | { kind: 'divider', text: string, loading?: boolean }
   const entries: RenderEntry[] = []
   const groupOrder: string[] = []
   const groups = new Map<string, { prefix: string, entries: string[] }>()
@@ -404,12 +416,7 @@ export function renderNotificationThread(messages: unknown[], agentProvider?: Ag
     }
 
     flushPendingText()
-    elements.push(
-      <div class={resultDivider}>
-        <Icon icon={entry.loading ? LoaderCircle : ArrowDownToLine} size="sm" class={entry.loading ? spinner : undefined} />
-        {` ${entry.text}`}
-      </div>,
-    )
+    elements.push(<CompactionDivider text={entry.text} loading={entry.loading} />)
   }
   flushPendingText()
 

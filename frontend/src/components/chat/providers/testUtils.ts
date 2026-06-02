@@ -2,21 +2,30 @@ import type { ClassificationInput } from './registry'
 import type { AvailableOption } from '~/generated/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import {
+  AgentProvider,
   AvailableModelSchema,
   AvailableOptionGroupSchema,
   AvailableOptionSchema,
 } from '~/generated/leapmux/v1/agent_pb'
 
-/** Build a ClassificationInput from a parent object and optional wrapper, for tests. */
+/**
+ * Build a ClassificationInput from a parent object and optional wrapper, for
+ * tests. `agentProvider` defaults to CLAUDE_CODE so `classifyMessage(input(...))`
+ * dispatches to the Claude plugin (now that classifyMessage no longer falls back
+ * to Claude for an unset provider); pass an explicit provider to exercise another
+ * plugin's dispatch or the `unsupported_provider` path.
+ */
 export function input(
   parent?: Record<string, unknown>,
   wrapper?: { old_seqs: number[], messages: unknown[] } | null,
+  agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE,
 ): ClassificationInput {
   return {
     rawText: '',
     topLevel: parent ?? null,
     parentObject: parent,
     wrapper: wrapper ?? null,
+    agentProvider,
   }
 }
 

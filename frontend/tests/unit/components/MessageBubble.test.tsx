@@ -4,7 +4,7 @@ import { MessageBubble } from '~/components/chat/MessageBubble'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { makeMessage, rawContent, wrapContent } from '../helpers/messageFactory'
 
@@ -123,6 +123,79 @@ describe('askUserQuestion thread rendering', () => {
     expect(bubble).toHaveTextContent('2 questions')
     expect(bubble).toHaveTextContent('Auth')
     expect(bubble).toHaveTextContent('Database')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// result_divider dispatch
+// ---------------------------------------------------------------------------
+
+describe('result_divider dispatch', () => {
+  it('renders a turn-end divider for a registered provider result', () => {
+    // Happy path: a CLAUDE_CODE result classifies as result_divider and renders
+    // through the shared renderResultDivider as the "Took Xs" turn-end row.
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      content: rawContent({ type: 'result', is_error: false, subtype: 'success', result: 'done', duration_ms: 1095 }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble).toHaveTextContent('Took 1.1s')
+    expect(bubble).not.toHaveTextContent('duration_ms')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// unsupported provider (loud-bug surface)
+// ---------------------------------------------------------------------------
+
+describe('unsupported_provider rendering', () => {
+  it('surfaces a loud error (not a guessed Claude render) for an UNSPECIFIED-provider message', () => {
+    // classifyMessage no longer guesses Claude for an unspecified/unregistered
+    // provider: the message is classified unsupported_provider and shown as a
+    // visible error plus raw JSON, never silently rendered through Claude's
+    // renderers. So a `result` envelope here must NOT become a "Took Xs" divider.
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      agentProvider: AgentProvider.UNSPECIFIED,
+      content: rawContent({ type: 'result', is_error: false, subtype: 'success', result: 'done', duration_ms: 1095 }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    // The banner names the provider via agentProviderLabel ("Unknown" for the
+    // proto-0 default) alongside the numeric value, not just the bare number.
+    expect(bubble).toHaveTextContent('Unsupported agent provider: Unknown (0)')
+    expect(bubble).not.toHaveTextContent('Took 1.1s')
+  })
+
+  it('labels an UNSPECIFIED-source message as "unknown" rather than masquerading as agent', () => {
+    // sourceLabel no longer silently relabels a proto-0 source as 'agent'; an
+    // UNSPECIFIED row is a persistence bug and gets a visibly anomalous data-role.
+    const msg = makeMsg({
+      source: MessageSource.UNSPECIFIED,
+      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByTestId('message-bubble')).toHaveAttribute('data-role', 'unknown')
   })
 })
 
@@ -364,6 +437,34 @@ describe('messageBubble rawJson', () => {
     expect((envelope.messages as unknown[]).length).toBe(2)
   })
 
+  it('renders the raw JSON block without crashing when span_lines is malformed', async () => {
+    // span_lines is backend-generated and normally valid JSON, but this envelope
+    // also backs the raw-JSON debug surface (hidden / unsupported_provider rows),
+    // whose whole purpose is to show the bytes when something is wrong. A corrupt
+    // span_lines must degrade to its raw string, not throw into the ErrorBoundary
+    // and hide the JSON. A `hidden` system-init message renders that block.
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent({ type: 'system', subtype: 'init', cwd: '/repo' }),
+      spanLines: '[{"span_id": "broken"', // truncated -> JSON.parse throws
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const content = screen.getByTestId('message-content')
+    // The raw-JSON <pre> rendered, not the ErrorBoundary's failure fallback.
+    expect(content.querySelector('pre')).toBeInTheDocument()
+    expect(content).not.toHaveTextContent('Failed to render message')
+
+    // Copy Raw JSON keeps the unparseable span_lines as its raw string.
+    const envelope = await copyRawJson()
+    expect(envelope.span_lines).toBe('[{"span_id": "broken"')
+  })
+
   it('uses toolbar copy for hidden raw JSON instead of injecting an inline pre copy button', () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,
@@ -383,6 +484,63 @@ describe('messageBubble rawJson', () => {
     const toolbar = screen.getByTestId('message-toolbar')
     expect(toolbar.querySelector('[data-testid="message-copy-json"]')).toBeInTheDocument()
     expect(view.container.querySelector('[data-code-copy="false"]')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Notification rendering + raw-JSON fallback
+// ---------------------------------------------------------------------------
+
+describe('notification rendering', () => {
+  it('renders a recognized notification as its label, not raw JSON', () => {
+    const parent = { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } }
+    const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent(parent) })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble).toHaveTextContent('Model')
+    // The label rendered, not the raw payload.
+    expect(bubble).not.toHaveTextContent('settings_changed')
+  })
+
+  it('falls back to raw JSON when a notification produces no renderable entries', () => {
+    // settings_changed with no actual changes yields zero thread entries. Rather
+    // than render an empty bubble, MessageBubble surfaces the raw payload via the
+    // last-resort renderer so the message never silently vanishes.
+    const parent = { type: 'settings_changed', changes: {} }
+    const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent(parent) })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble).toHaveTextContent('settings_changed')
+  })
+
+  it('renders a consolidated notification thread, then falls back only when empty', () => {
+    // A multi-message wrapper renders every recognized entry...
+    const msg = makeMsg({
+      source: MessageSource.LEAPMUX,
+      content: wrapContent([{ type: 'interrupted' }, { type: 'context_cleared' }]),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    const bubble = screen.getByTestId('message-content')
+    expect(bubble).toHaveTextContent('Interrupted')
+    expect(bubble).toHaveTextContent('Context cleared')
   })
 })
 

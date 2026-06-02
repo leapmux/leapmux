@@ -9,19 +9,7 @@ import { isObject } from '~/lib/jsonPick'
 import { renderMarkdown } from '~/lib/renderMarkdown'
 import { useSharedExpandedState } from '../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../messageUiKeys'
-import {
-  agentErrorRenderer,
-  apiRetryRenderer,
-  compactBoundaryRenderer,
-  compactingRenderer,
-  contextClearedRenderer,
-  controlResponseRenderer,
-  interruptedRenderer,
-  microcompactBoundaryRenderer,
-  planUpdatedRenderer,
-  settingsChangedRenderer,
-  systemInitRenderer,
-} from '../../notificationRenderers'
+import { controlResponseRenderer } from '../../notificationRenderers'
 import { hasMoreLinesThan } from '../../results/useCollapsedLines'
 import { taskNotificationRenderer } from '../../taskRenderers'
 import {
@@ -40,7 +28,6 @@ import {
   userContentRenderer,
   userTextContentRenderer,
 } from './messageRenderers'
-import { rateLimitRenderer, resultRenderer } from './notifications'
 import { renderClaudeToolResult } from './toolResults'
 import { renderClaudeToolUse } from './toolUse'
 
@@ -69,10 +56,6 @@ export function renderClaudeMessage(
       return planExecutionRenderer.render(parsed, context)
     case 'task_notification':
       return taskNotificationRenderer.render(parsed, context)
-    case 'notification':
-      return claudeNotificationRenderer(parsed, context)
-    case 'result_divider':
-      return resultRenderer.render(parsed, context)
     case 'control_response':
       return controlResponseRenderer.render(parsed, context)
     case 'compact_summary':
@@ -83,28 +66,6 @@ export function renderClaudeMessage(
     default:
       return null
   }
-}
-
-/**
- * Walk the Claude-shaped notification renderers in order. Each handles its
- * own type detection on `parsed.type` / `parsed.subtype` and returns null
- * when the message isn't its format.
- */
-function claudeNotificationRenderer(
-  parsed: unknown,
-  context: RenderContext | undefined,
-): JSX.Element | null {
-  return settingsChangedRenderer.render(parsed, context)
-    ?? interruptedRenderer.render(parsed, context)
-    ?? contextClearedRenderer.render(parsed, context)
-    ?? compactingRenderer.render(parsed, context)
-    ?? agentErrorRenderer.render(parsed, context)
-    ?? planUpdatedRenderer.render(parsed, context)
-    ?? rateLimitRenderer.render(parsed, context)
-    ?? apiRetryRenderer.render(parsed, context)
-    ?? compactBoundaryRenderer.render(parsed, context)
-    ?? microcompactBoundaryRenderer.render(parsed, context)
-    ?? systemInitRenderer.render(parsed, context)
 }
 
 /** Collapsed agent prompt view: MessageSquare icon + "Prompt" title + collapsed markdown body. */

@@ -13,11 +13,12 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../../ChatView.css'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../../controls/ClaudeCodeControlRequest'
-import { isNotificationThreadWrapper } from '../../messageUtils'
+import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { registerProvider } from '../registry'
 import { getAssistantContent } from './extractors/assistantContent'
 import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
+import { claudeResultDivider } from './resultDivider'
 import {
   ClaudeCodeSettingsPanel,
   ClaudeCodeTriggerLabel,
@@ -76,6 +77,43 @@ function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper i
     t === 'system' && !HIDDEN_SYSTEM_SUBTYPES.has(st ?? ''))
 }
 
+/**
+ * Per-message hidden rules shared by the standalone `system`/`rate_limit_event`
+ * classifiers and the consolidated-thread filter, so a notification that is
+ * hidden on its own stays hidden when Hub threads it into a
+ * `notification_thread` wrapper. Without this single source of truth the two
+ * paths drift: the wrapper branch used to drop only allowed `rate_limit_event`s,
+ * so a terminal compaction status leaked through as a `notification` and
+ * rendered as raw JSON.
+ *
+ * Covers the type/subtype-driven rules only. The `task_started`/`task_progress`
+ * rule needs the envelope's `parentSpanId` (absent from a consolidated inner
+ * message), so it stays inline in the `system` classifier.
+ *
+ * - `rate_limit_event` whose `rate_limit_info.status` is "allowed" -- a no-op
+ *   refresh, not a throttle the user needs to see.
+ * - `system` whose subtype is in {@link HIDDEN_SYSTEM_SUBTYPES}.
+ * - `system` `status` updates other than the live "compacting" one -- e.g. the
+ *   terminal `{status:null, compact_result:"success"}` ending a compaction. The
+ *   user-facing "Context compacted (...)" line comes from compact_boundary, so
+ *   this terminal status carries nothing to show.
+ */
+function isHiddenClaudeNotification(m: Record<string, unknown>): boolean {
+  const type = m.type as string | undefined
+  if (type === 'rate_limit_event') {
+    const info = pickObject(m, 'rate_limit_info')
+    return info?.status === 'allowed'
+  }
+  if (type === 'system') {
+    const subtype = m.subtype as string | undefined
+    if (HIDDEN_SYSTEM_SUBTYPES.has(subtype ?? ''))
+      return true
+    if (isTerminalCompactingStatus(m))
+      return true
+  }
+  return false
+}
+
 type ClaudeTypeClassifier = (
   parent: Record<string, unknown>,
   input: ClassificationInput,
@@ -91,22 +129,19 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
     const subtype = parent.subtype as string | undefined
     if (input.parentSpanId && (subtype === 'task_started' || subtype === 'task_progress'))
       return { kind: 'hidden' }
-    if (HIDDEN_SYSTEM_SUBTYPES.has(subtype ?? ''))
+    if (isHiddenClaudeNotification(parent))
       return { kind: 'hidden' }
-    if (subtype === 'status' && parent.status !== 'compacting')
-      return { kind: 'hidden' }
-    return { kind: 'notification' }
+    return { kind: 'notification', messages: [parent] }
   },
   rate_limit_event(parent) {
-    const info = pickObject(parent, 'rate_limit_info')
-    if (info?.status === 'allowed')
+    if (isHiddenClaudeNotification(parent))
       return { kind: 'hidden' }
-    return { kind: 'notification' }
+    return { kind: 'notification', messages: [parent] }
   },
-  interrupted: () => ({ kind: 'notification' }),
-  context_cleared: () => ({ kind: 'notification' }),
-  settings_changed: () => ({ kind: 'notification' }),
-  plan_updated: () => ({ kind: 'notification' }),
+  interrupted: parent => ({ kind: 'notification', messages: [parent] }),
+  context_cleared: parent => ({ kind: 'notification', messages: [parent] }),
+  settings_changed: parent => ({ kind: 'notification', messages: [parent] }),
+  plan_updated: parent => ({ kind: 'notification', messages: [parent] }),
   result: () => ({ kind: 'result_divider' }),
 }
 
@@ -186,19 +221,15 @@ function classifyClaudeCodeMessage(
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
 
-  // Notification thread (wrapper with notification-type first message)
+  // Notification thread (wrapper with notification-type first message). Drop the
+  // per-message hidden shapes (the same ones the standalone classifiers hide) so
+  // a thread of only-hidden entries collapses to `hidden` rather than surfacing
+  // an empty notification or a raw-JSON fallback.
   if (isClaudeNotifThread(wrapper)) {
-    const msgs = wrapper.messages.filter((m) => {
-      if (!isObject(m))
-        return true
-      if (m.type !== 'rate_limit_event')
-        return true
-      const info = pickObject(m, 'rate_limit_info')
-      return info?.status !== 'allowed'
-    })
+    const msgs = wrapper.messages.filter(m => !isObject(m) || !isHiddenClaudeNotification(m))
     if (msgs.length === 0)
       return { kind: 'hidden' }
-    return { kind: 'notification_thread', messages: msgs }
+    return { kind: 'notification', messages: msgs }
   }
 
   if (!parentObject)
@@ -288,6 +319,7 @@ const claudeCodePlugin: Provider = {
   toolResultMeta: claudeToolResultMeta,
   extractQuotableText: claudeExtractQuotableText,
   notificationThreadEntry: claudeNotificationThreadEntry,
+  resultDivider: claudeResultDivider,
 
   isAskUserQuestion(payload) {
     const tool = getToolName(payload)

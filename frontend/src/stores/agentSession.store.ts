@@ -32,6 +32,28 @@ export interface AgentSessionInfo {
   streamingType?: string // "plan" when streaming plan text, "" otherwise
 }
 
+/**
+ * Build the context-usage reading to apply after a completed compaction boundary.
+ * The boundary reports only the post-compaction total (no input/cache breakdown),
+ * so `contextTokens` becomes the authoritative size the grid reads and the
+ * component fields reset to 0; a known context window is carried over from
+ * `existing` so the percentage denominator survives. The next assistant message's
+ * usage overwrites this transient reading. Exported so the connection handler and
+ * its tests build the identical shape from one definition.
+ */
+export function compactionContextUsage(
+  contextTokens: number,
+  existing: ContextUsageInfo | undefined,
+): ContextUsageInfo {
+  return {
+    inputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    contextTokens,
+    ...(existing?.contextWindow !== undefined ? { contextWindow: existing.contextWindow } : {}),
+  }
+}
+
 function loadFromStorage(agentId: string): AgentSessionInfo {
   return localStorageGet<AgentSessionInfo>(`${PREFIX_AGENT_SESSION}${agentId}`) ?? {}
 }

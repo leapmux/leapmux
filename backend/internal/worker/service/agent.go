@@ -330,7 +330,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
 
 		// Persist the user message.
-		seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
+		seq, err := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
 			ID:                 messageID,
 			AgentID:            agentID,
 			Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -2410,7 +2410,7 @@ func (svc *Context) sendSyntheticUserMessage(agentID, content string) {
 	// passthrough vertical bars instead of breaking the column.
 	spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
 
-	seq, err := svc.Queries.CreateMessage(bgCtx(), db.CreateMessageParams{
+	seq, err := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
 		ID:                 messageID,
 		AgentID:            agentID,
 		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,

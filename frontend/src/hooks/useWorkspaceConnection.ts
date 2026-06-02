@@ -17,12 +17,13 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { waitForStreamCompletion } from '~/hooks/streamCompletion'
 import { ChannelError } from '~/lib/channel'
 import { createLogger } from '~/lib/logger'
-import { extractAssistantUsage, extractCodexTokenUsage, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
+import { extractAssistantUsage, extractCodexTokenUsage, extractCompactionContextTokens, extractPlanFilePath, extractPlanUpdated, extractRateLimitInfo, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { CODEX_RATE_LIMITS_METHOD } from '~/lib/rateLimitUtils'
 import { createExponentialBackoff } from '~/lib/retry'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
+import { compactionContextUsage } from '~/stores/agentSession.store'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.helpers'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
@@ -238,6 +239,26 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             const codexUsage = extractCodexTokenUsage(parsed)
             if (codexUsage)
               agentSessionStore.updateInfo(agentId, codexUsage as Record<string, unknown>)
+          }
+
+          // A completed compaction boundary makes the prior context-usage
+          // reading stale: the grid would keep showing the pre-compaction size
+          // until the next assistant/result message overwrites it. Refresh it
+          // straight from the boundary's post-compaction token count
+          // (post_tokens, or pre - tokens_saved), and reset the component fields
+          // since the boundary carries no input/cache breakdown -- contextTokens
+          // is authoritative for the grid. Preserve the known context window so
+          // the percentage denominator survives. Boundaries arrive consolidated
+          // (wrapper) or, when live and standalone, as a bare system message;
+          // gate on those shapes so common assistant messages skip the scan.
+          if (parsed.wrapper !== null || innerType === 'system' || innerMethod === 'thread/compacted') {
+            const postTokens = extractCompactionContextTokens(parsed)
+            if (postTokens !== undefined) {
+              const existing = agentSessionStore.getInfo(agentId).contextUsage
+              agentSessionStore.updateInfo(agentId, {
+                contextUsage: compactionContextUsage(postTokens, existing),
+              })
+            }
           }
 
           if (innerType === 'settings_changed') {

@@ -16,18 +16,18 @@ import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ChatView.css'
 import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from '../../controls/CodexControlRequest'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
-import { isNotificationThreadWrapper } from '../../messageUtils'
+import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
 import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider } from '../registry'
 import { CODEX_RENDERERS } from './defineRenderer'
-import { codexNotificationRenderer, codexNotificationThreadEntry } from './notifications'
+import { codexNotificationThreadEntry } from './notifications'
 // The named imports below are the renderers dispatched explicitly (not via
 // the registry) by `renderMessage` for non-`item.type` shapes.
 import {
   CodexAgentMessageRenderer,
   CodexMcpToolCallRenderer,
   CodexReasoningRenderer,
-  CodexTurnCompletedRenderer,
+  codexResultDivider,
   CodexTurnPlanRenderer,
 } from './renderers'
 import { extractItem } from './renderHelpers'
@@ -128,6 +128,32 @@ const CODEX_NOTIF_METHODS = new Set<string>([
   'thread/name/updated',
   'mcpServer/startupStatus/updated',
 ])
+
+/**
+ * Codex-emitted methods that should not appear in the chat: turn/thread
+ * lifecycle, metadata invalidations (skills), connection status
+ * (remoteControl), and hook lifecycle. Persisted upstream; classified out
+ * here -- both standalone (the classify `method` gate) and inside a
+ * consolidated thread (isCodexHiddenNotificationThreadMessage), so the two
+ * paths agree.
+ *
+ * Exported because `agentState.ts`'s working-state heuristic must skip these
+ * too — anything we hide from the chat must also be ignored when deciding
+ * "is the agent thinking?". Adding a method here propagates automatically.
+ */
+export const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
+  CODEX_METHOD.THREAD_STARTED,
+  CODEX_METHOD.TURN_STARTED,
+  CODEX_METHOD.THREAD_STATUS_CHANGED,
+  CODEX_METHOD.THREAD_NAME_UPDATED,
+  CODEX_METHOD.THREAD_SETTINGS_UPDATED,
+  CODEX_METHOD.THREAD_TOKEN_USAGE_UPDATED,
+  CODEX_METHOD.SKILLS_CHANGED,
+  CODEX_METHOD.REMOTE_CONTROL_STATUS_CHANGED,
+  CODEX_METHOD.HOOK_STARTED,
+  CODEX_METHOD.HOOK_COMPLETED,
+])
+
 function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] } | null): wrapper is { old_seqs: number[], messages: unknown[] } {
   if (isNotificationThreadWrapper(wrapper, CODEX_EXTRA_NOTIF_TYPES, (t, st) =>
     t === 'system' && st !== 'init' && st !== 'task_notification')) {
@@ -170,11 +196,35 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
   return true
 }
 
+/**
+ * Per-message hidden rules for a Codex notification, applied by the
+ * consolidated-thread filter so a notification that is hidden on its own stays
+ * hidden once Hub threads it into a `notification_thread` wrapper -- mirroring
+ * Claude's isHiddenClaudeNotification. Without this the two paths drift: the
+ * standalone classifier hides lifecycle methods and terminal statuses while the
+ * thread filter kept them, so a thread of only-hidden entries surfaced as a
+ * `notification` that renders nothing and falls back to a raw-JSON bubble.
+ *
+ * Hides:
+ *  - lifecycle/metadata methods (CODEX_HIDDEN_LIFECYCLE_METHODS): thread/started,
+ *    turn/started, thread/{status,name,settings,tokenUsage}/updated,
+ *    skills/changed, remoteControl/status/changed, hook/{started,completed} --
+ *    transient signals persisted upstream, never rendered in chat.
+ *  - a terminal (non-compacting) system status (see isTerminalCompactingStatus).
+ *  - the "Codex turn failed" agent_error (surfaced via the result divider).
+ *  - an all-allowed rate-limit update (no throttle to show).
+ *
+ * The full wrapper is still preserved verbatim for "Copy Raw JSON" (that reads
+ * `parsed.rawText`, not the filtered category messages), so nothing is lost.
+ */
 function isCodexHiddenNotificationThreadMessage(m: unknown): boolean {
   if (!isObject(m))
     return false
   const msg = m as Record<string, unknown>
-  if (msg.method === CODEX_METHOD.THREAD_TOKEN_USAGE_UPDATED)
+  const method = msg.method
+  if (typeof method === 'string' && CODEX_HIDDEN_LIFECYCLE_METHODS.has(method))
+    return true
+  if (isTerminalCompactingStatus(msg))
     return true
   if (msg.type === 'agent_error' && msg.error === CODEX_TURN_FAILED_NOTIFICATION)
     return true
@@ -213,28 +263,6 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
   },
   [CODEX_ITEM.USER_MESSAGE]: () => ({ kind: 'hidden' }),
 }
-
-/**
- * Codex-emitted methods that should not appear in the chat: turn/thread
- * lifecycle, metadata invalidations (skills), connection status
- * (remoteControl), and hook lifecycle. Persisted upstream; classified out
- * here.
- *
- * Exported because `agentState.ts`'s working-state heuristic must skip these
- * too — anything we hide from the chat must also be ignored when deciding
- * "is the agent thinking?". Adding a method here propagates automatically.
- */
-export const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
-  CODEX_METHOD.THREAD_STARTED,
-  CODEX_METHOD.TURN_STARTED,
-  CODEX_METHOD.THREAD_STATUS_CHANGED,
-  CODEX_METHOD.THREAD_NAME_UPDATED,
-  CODEX_METHOD.THREAD_TOKEN_USAGE_UPDATED,
-  CODEX_METHOD.SKILLS_CHANGED,
-  CODEX_METHOD.REMOTE_CONTROL_STATUS_CHANGED,
-  CODEX_METHOD.HOOK_STARTED,
-  CODEX_METHOD.HOOK_COMPLETED,
-])
 
 /** LeapMux-side notification `type` values produced by the worker. */
 const CODEX_LEAPMUX_NOTIFICATION_TYPES = new Set<string>([
@@ -287,7 +315,7 @@ const codexPlugin: Provider = {
       const msgs = wrapper.messages.filter(m => !isCodexHiddenNotificationThreadMessage(m))
       return msgs.length === 0
         ? { kind: 'hidden' }
-        : { kind: 'notification_thread', messages: msgs }
+        : { kind: 'notification', messages: msgs }
     }
 
     // Empty wrapper — hide.
@@ -311,9 +339,9 @@ const codexPlugin: Provider = {
     if (type === 'system') {
       if (subtype === 'init' || subtype === 'task_notification')
         return { kind: 'hidden' }
-      if (subtype === 'status' && parent.status !== 'compacting')
+      if (isTerminalCompactingStatus(parent))
         return { kind: 'hidden' }
-      return { kind: 'notification' }
+      return { kind: 'notification', messages: [parent] }
     }
 
     if (type === 'agent_error' && parent.error === CODEX_TURN_FAILED_NOTIFICATION)
@@ -322,9 +350,12 @@ const codexPlugin: Provider = {
     if (method === CODEX_METHOD.TURN_PLAN_UPDATED && isObject(parent.params))
       return { kind: 'tool_use', toolName: CODEX_INTERNAL_TOOL.TURN_PLAN, toolUse: parent, content: [] }
 
-    // turn/completed → result divider
+    // turn/completed → result divider. Require a *string* status so the gate
+    // matches codexResultDivider's `pickString` read: a non-string status would
+    // classify as a divider the hook then can't render (returning null), leaking
+    // raw JSON instead of a clean turn-end row.
     const turn = pickObject(parent, 'turn')
-    if (turn && turn.status)
+    if (turn && typeof turn.status === 'string' && turn.status)
       return { kind: 'result_divider' }
 
     // item/completed dispatch — keyed on item.type via the classifier table.
@@ -347,14 +378,14 @@ const codexPlugin: Provider = {
 
     // Codex method-based notifications
     if (method === CODEX_RATE_LIMITS_METHOD) {
-      return isCodexRateLimitAllAllowed(parent) ? { kind: 'hidden' } : { kind: 'notification' }
+      return isCodexRateLimitAllAllowed(parent) ? { kind: 'hidden' } : { kind: 'notification', messages: [parent] }
     }
 
     if (method === CODEX_METHOD.MCP_SERVER_STARTUP_STATUS_UPDATED)
-      return { kind: 'notification' }
+      return { kind: 'notification', messages: [parent] }
 
     if (type && CODEX_LEAPMUX_NOTIFICATION_TYPES.has(type))
-      return { kind: 'notification' }
+      return { kind: 'notification', messages: [parent] }
 
     return { kind: 'unknown' }
   },
@@ -364,16 +395,6 @@ const codexPlugin: Provider = {
       return <CodexAgentMessageRenderer parsed={parsed} context={context} />
     if (category.kind === 'assistant_thinking')
       return <CodexReasoningRenderer parsed={parsed} context={context} />
-    if (category.kind === 'result_divider')
-      return <CodexTurnCompletedRenderer parsed={parsed} context={context} />
-    if (category.kind === 'notification') {
-      const codexResult = codexNotificationRenderer(parsed)
-      if (codexResult !== null)
-        return codexResult
-      // Fall through to Claude-shaped notification renderers (settings_changed,
-      // interrupted, plan_updated, etc.) — Codex emits these too.
-      return null
-    }
     if (category.kind === 'user_content')
       return <UserContentMessage parsed={parsed} />
     if (category.kind === 'plan_execution') {
@@ -403,6 +424,8 @@ const codexPlugin: Provider = {
   },
 
   toolResultMeta: codexToolResultMeta,
+
+  resultDivider: codexResultDivider,
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject

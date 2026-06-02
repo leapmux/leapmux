@@ -30,12 +30,13 @@ import { piExtractTool } from './extractors/toolCommon'
 import { piContentText, piIsThinkingOnly } from './messageContent'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from './protocol'
 import {
+  describePiNotification,
   PiAssistantMessage,
   PiAssistantThinking,
-  piNotificationRenderer,
+  piNotificationThreadEntry,
+  piResultDivider,
   PiToolExecutionRenderer,
   PiToolResultRenderer,
-  renderPiResultDivider,
 } from './renderers'
 import { DEFAULT_PI_EFFORT, DEFAULT_PI_MODEL, PiSettingsPanel, PiTriggerLabel } from './settings'
 
@@ -56,6 +57,33 @@ const PI_NOTIFICATION_EVENT_TYPES = new Set<string>([
   PI_EVENT.AutoRetryEnd,
   PI_EVENT.ExtensionError,
 ])
+
+/**
+ * The full Pi notification surface: the notification-style events plus the
+ * extension UI passthrough. These thread into chat as notifications (so they're
+ * non-progress for the working-state heuristic) and, when the backend
+ * consolidates several into one `notification_thread` envelope, each must be
+ * recognized as a thread entry -- otherwise only the first would render.
+ */
+const PI_NOTIFICATION_SURFACE_TYPES = new Set<string>([
+  ...PI_NOTIFICATION_EVENT_TYPES,
+  PI_EVENT.ExtensionUIRequest,
+])
+
+/**
+ * A Pi notification with nothing to render. The only Pi surface that can produce
+ * no label is an `extension_ui_request` whose describePiNotification yields null
+ * (e.g. a `notify` with an empty message) -- every other PI_NOTIFICATION_SURFACE
+ * type always renders a line, and Claude-shaped types (settings_changed, ...) the
+ * Pi describer doesn't own are drawn by the shared switch. Applied by both the
+ * standalone classifier and the consolidated-thread filter so such a message is
+ * hidden either way, instead of surfacing as a raw-JSON bubble.
+ */
+function isHiddenPiNotification(m: unknown): boolean {
+  if (!isObject(m) || pickString(m, 'type') !== PI_EVENT.ExtensionUIRequest)
+    return false
+  return describePiNotification(m) === null
+}
 
 function piFallbackDiffSources(
   toolName: string,
@@ -99,14 +127,12 @@ const PI_RENDERERS: Partial<Record<MessageCategory['kind'], PiRenderer>> = {
   },
   tool_result: (_cat, parsed, context) =>
     <PiToolResultRenderer parsed={parsed} context={context} />,
-  result_divider: (_cat, parsed) => renderPiResultDivider(parsed),
   user_content: (_cat, parsed) => <UserContentMessage parsed={parsed} />,
   plan_execution: (_cat, parsed, context) => {
     const obj = isObject(parsed) ? parsed : null
     const text = obj && typeof obj.content === 'string' ? obj.content : ''
     return text ? <PlanExecutionMessage text={text} context={context} /> : null
   },
-  notification: (_cat, parsed) => piNotificationRenderer(parsed),
 }
 
 function piToolResultMeta(
@@ -187,19 +213,27 @@ const piPlugin: Provider = {
   // Pi's wire format dispatches via top-level `type`. Lifecycle / status /
   // extension events here are visible-but-non-progress: they thread into
   // the chat as notifications but must not register as agent activity for
-  // the working-state heuristic.
-  nonProgressTypes: new Set<string>([
-    ...PI_NOTIFICATION_EVENT_TYPES,
-    PI_EVENT.ExtensionUIRequest,
-  ]),
+  // the working-state heuristic. Same set the thread classifier recognizes.
+  nonProgressTypes: PI_NOTIFICATION_SURFACE_TYPES,
 
   classify(input: ClassificationInput): MessageCategory {
     const parent = input.parentObject
     const wrapper = input.wrapper
 
-    // Wrapper-style notification thread (settings_changed, context_cleared, etc.)
-    if (isNotificationThreadWrapper(wrapper))
-      return { kind: 'notification_thread', messages: wrapper.messages }
+    // Wrapper-style notification thread. Beyond the base LeapMux types
+    // (settings_changed, context_cleared, etc.), recognize a consolidated
+    // wrapper of Pi notification events -- e.g. several compaction_end
+    // boundaries, or auto_retry + compaction_end -- so renderNotificationThread
+    // renders every entry instead of MessageBubble showing only the first.
+    if (isNotificationThreadWrapper(wrapper, PI_NOTIFICATION_SURFACE_TYPES)) {
+      // Drop notifications that render nothing (an empty-message extension notify)
+      // so a thread of only those collapses to `hidden` instead of falling back
+      // to a raw-JSON bubble.
+      const msgs = wrapper.messages.filter(m => !isHiddenPiNotification(m))
+      if (msgs.length === 0)
+        return { kind: 'hidden' }
+      return { kind: 'notification', messages: msgs }
+    }
     if (wrapper && (wrapper as { messages: unknown[] }).messages.length === 0)
       return { kind: 'hidden' }
 
@@ -260,14 +294,17 @@ const piPlugin: Provider = {
     }
 
     if (PI_NOTIFICATION_EVENT_TYPES.has(type))
-      return { kind: 'notification' }
+      return { kind: 'notification', messages: [parent] }
 
     if (type === PI_EVENT.ExtensionUIRequest) {
       // Dialog requests are surfaced as control requests (handled outside the
       // chat flow); fire-and-forget methods become session-info or transcript
-      // entries server-side. Anything that reaches the chat classifier here
-      // is informational — render as a notification.
-      return { kind: 'notification' }
+      // entries server-side. An informational request that yields a renderable
+      // line is a notification; one with nothing to show (e.g. a notify with an
+      // empty message) is hidden rather than surfaced as a raw-JSON bubble.
+      if (isHiddenPiNotification(parent))
+        return { kind: 'hidden' }
+      return { kind: 'notification', messages: [parent] }
     }
 
     return { kind: 'unknown' }
@@ -276,6 +313,13 @@ const piPlugin: Provider = {
   renderMessage(category: MessageCategory, parsed: unknown, context?: RenderContext): JSX.Element | null {
     return PI_RENDERERS[category.kind]?.(category, parsed, context) ?? null
   },
+
+  // The sole Pi notification render seam: consulted by renderNotificationThread
+  // for each message (a standalone notification or one entry of a consolidated
+  // wrapper), so multi-event threads render every entry, not just the first.
+  notificationThreadEntry: piNotificationThreadEntry,
+
+  resultDivider: piResultDivider,
 
   toolResultMeta: piToolResultMeta,
 

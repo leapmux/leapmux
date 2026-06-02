@@ -57,6 +57,25 @@ describe('isAgentWorking', () => {
     ])).toBe(false)
   })
 
+  it('returns false when the last message has no registered provider plugin (UNSPECIFIED)', () => {
+    // An UNSPECIFIED-provider message classifies as `unsupported_provider`: we
+    // can't interpret it, so it carries no "still working" signal. Without this
+    // it would fall through to `return true` and pin the thinking indicator on.
+    expect(isAgentWorking([
+      makeMessage({ source: MessageSource.USER }),
+      makeMessage({ source: MessageSource.AGENT, content: rawContent({ type: 'result' }), agentProvider: AgentProvider.UNSPECIFIED }),
+    ])).toBe(false)
+  })
+
+  it('returns false for an unsupported (version-skew) provider message, not a stuck spinner', () => {
+    // A provider enum the frontend has no plugin for (backend/frontend skew) makes
+    // every message `unsupported_provider`; the agent must not read as perpetually
+    // working just because we can't classify its turn-end envelope.
+    expect(isAgentWorking([
+      makeMessage({ source: MessageSource.AGENT, content: rawContent({ type: 'whatever' }), agentProvider: 999 as AgentProvider }),
+    ])).toBe(false)
+  })
+
   it('skips LEAPMUX message and finds result divider underneath', () => {
     expect(isAgentWorking([
       makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),

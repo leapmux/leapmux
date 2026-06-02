@@ -4,6 +4,7 @@ import { makeMessage, rawContent } from '../../tests/unit/helpers/messageFactory
 import {
   extractAssistantUsage,
   extractCodexTokenUsage,
+  extractCompactionContextTokens,
   extractPlanFilePath,
   extractPlanUpdated,
   extractRateLimitInfo,
@@ -317,6 +318,104 @@ describe('extractCodexTokenUsage', () => {
   it('returns null for unrelated messages', () => {
     const msg = makeMsg(MessageSource.LEAPMUX, wrap({ method: 'turn/completed', params: {} }))
     expect(extractCodexTokenUsage(parseMessageContent(msg))).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// extractCompactionContextTokens
+// ---------------------------------------------------------------------------
+
+describe('extractCompactionContextTokens', () => {
+  /** Wrap compaction metadata in the Claude `compact_boundary` system shape. */
+  function boundary(compactMetadata: Record<string, unknown>) {
+    return { type: 'system', subtype: 'compact_boundary', compact_metadata: compactMetadata }
+  }
+  const parse = (content: unknown) => parseMessageContent(makeMsg(MessageSource.AGENT, content))
+
+  it('returns post_tokens when the boundary carries it directly', () => {
+    expect(extractCompactionContextTokens(parse(boundary({ trigger: 'manual', pre_tokens: 105424, post_tokens: 8476 })))).toBe(8476)
+  })
+
+  it('derives post from pre_tokens minus tokens_saved when post_tokens is absent', () => {
+    expect(extractCompactionContextTokens(parse(boundary({ trigger: 'auto', pre_tokens: 100000, tokens_saved: 40000 })))).toBe(60000)
+  })
+
+  it('prefers explicit post_tokens over deriving from tokens_saved', () => {
+    expect(extractCompactionContextTokens(parse(boundary({ pre_tokens: 100000, post_tokens: 8000, tokens_saved: 1 })))).toBe(8000)
+  })
+
+  it('reads camelCase keys (compactMetadata / postTokens)', () => {
+    const content = { type: 'system', subtype: 'compact_boundary', compactMetadata: { preTokens: 100000, postTokens: 8000 } }
+    expect(extractCompactionContextTokens(parse(content))).toBe(8000)
+  })
+
+  it('derives from camelCase preTokens minus tokensSaved', () => {
+    const content = { type: 'system', subtype: 'compact_boundary', compactMetadata: { preTokens: 100000, tokensSaved: 25000 } }
+    expect(extractCompactionContextTokens(parse(content))).toBe(75000)
+  })
+
+  it('returns undefined when only pre_tokens is present (nothing to resolve post from)', () => {
+    expect(extractCompactionContextTokens(parse(boundary({ trigger: 'auto', pre_tokens: 100000 })))).toBeUndefined()
+  })
+
+  it('returns undefined when tokens_saved has no pre_tokens to anchor it', () => {
+    expect(extractCompactionContextTokens(parse(boundary({ tokens_saved: 5000 })))).toBeUndefined()
+  })
+
+  it('returns undefined when the boundary carries no metadata object', () => {
+    expect(extractCompactionContextTokens(parse({ type: 'system', subtype: 'compact_boundary' }))).toBeUndefined()
+  })
+
+  it('returns 0 for an explicit post_tokens of 0 (fully cleared context)', () => {
+    expect(extractCompactionContextTokens(parse(boundary({ pre_tokens: 100000, post_tokens: 0 })))).toBe(0)
+  })
+
+  it('clamps a derived negative post to 0 when tokens_saved exceeds pre_tokens', () => {
+    expect(extractCompactionContextTokens(parse(boundary({ pre_tokens: 30000, tokens_saved: 50000 })))).toBe(0)
+  })
+
+  it('clamps an explicit negative post_tokens to 0', () => {
+    expect(extractCompactionContextTokens(parse(boundary({ pre_tokens: 100000, post_tokens: -5 })))).toBe(0)
+  })
+
+  it('returns undefined for Codex thread/compacted, which carries no metadata', () => {
+    expect(extractCompactionContextTokens(parse({ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }))).toBeUndefined()
+  })
+
+  it('returns undefined for a microcompact boundary (Claude emits no metadata)', () => {
+    const content = { type: 'system', subtype: 'microcompact_boundary', microcompactMetadata: { preTokens: 200000, tokensSaved: 50000 } }
+    expect(extractCompactionContextTokens(parse(content))).toBeUndefined()
+  })
+
+  it('returns undefined for non-boundary messages', () => {
+    expect(extractCompactionContextTokens(parse({ type: 'assistant', message: { usage: { input_tokens: 10 } } }))).toBeUndefined()
+  })
+
+  it('finds a compact_boundary consolidated after another notification in a thread', () => {
+    const msg = makeMsg(MessageSource.AGENT, wrap(
+      { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
+      boundary({ pre_tokens: 100000, post_tokens: 8000 }),
+    ))
+    expect(extractCompactionContextTokens(parseMessageContent(msg))).toBe(8000)
+  })
+
+  it('uses the most recent boundary when a thread carries more than one', () => {
+    const msg = makeMsg(MessageSource.AGENT, wrap(
+      boundary({ pre_tokens: 100000, post_tokens: 8000 }),
+      boundary({ pre_tokens: 50000, post_tokens: 3000 }),
+    ))
+    expect(extractCompactionContextTokens(parseMessageContent(msg))).toBe(3000)
+  })
+
+  it('skips a most-recent boundary with no resolvable post and uses the earlier one that has it', () => {
+    // The reverse scan must not bail out on the first boundary it meets when that
+    // boundary carries no post (here only pre_tokens); it falls through to the
+    // earlier boundary whose post_tokens can still refresh the grid.
+    const msg = makeMsg(MessageSource.AGENT, wrap(
+      boundary({ pre_tokens: 50000, post_tokens: 3000 }),
+      boundary({ trigger: 'auto', pre_tokens: 100000 }),
+    ))
+    expect(extractCompactionContextTokens(parseMessageContent(msg))).toBe(3000)
   })
 })
 

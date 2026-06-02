@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
-import { acpResultDividerRenderer } from '../acp/renderers'
+import { acpResultDivider } from '../acp/renderers'
 import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
@@ -188,6 +188,13 @@ describe('opencode classify', () => {
     expect(plugin.classify(input(parent))).toEqual({ kind: 'result_divider' })
   })
 
+  it('does not classify a non-string stopReason as a result divider', () => {
+    // The gate requires a *string* stopReason (matching acpResultDivider's
+    // pickString read, mirroring the Codex turn.status gate): a non-string value
+    // is a malformed turn-end, not a divider this provider can label.
+    expect(plugin.classify(input({ stopReason: 5 }))).toEqual({ kind: 'unknown' })
+  })
+
   it('hides system init', () => {
     const parent = { type: 'system', subtype: 'init' }
     expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
@@ -195,17 +202,17 @@ describe('opencode classify', () => {
 
   it('classifies system notification', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies settings_changed as notification', () => {
     const parent = { type: 'settings_changed' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies agent_error as notification', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
-    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification' })
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
   })
 
   it('classifies user content', () => {
@@ -234,7 +241,7 @@ describe('opencode classify', () => {
       messages: [{ type: 'interrupted' }],
     }
     expect(plugin.classify(input(undefined, wrapper))).toEqual({
-      kind: 'notification_thread',
+      kind: 'notification',
       messages: wrapper.messages,
     })
   })
@@ -243,38 +250,58 @@ describe('opencode classify', () => {
     const wrapper = { old_seqs: [], messages: [] }
     expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
   })
+
+  it('hides a terminal (non-compacting) system status standalone', () => {
+    // Parity with Claude/Codex: the trailing {subtype:status, status:null} that
+    // ends a compaction carries nothing to render, so it must not surface as a
+    // notification (which would fall back to a raw-JSON bubble).
+    const parent = { type: 'system', subtype: 'status', status: null }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('keeps an in-progress compacting system status visible', () => {
+    const parent = { type: 'system', subtype: 'status', status: 'compacting' }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'notification', messages: [parent] })
+  })
+
+  it('hides a terminal system status when consolidated into a notification thread', () => {
+    const statusMsg = { type: 'system', subtype: 'status', status: null }
+    const wrapper = { old_seqs: [9], messages: [statusMsg] }
+    expect(plugin.classify(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('drops a hidden system message from a thread but keeps the visible notification', () => {
+    const interrupted = { type: 'interrupted' }
+    const initMsg = { type: 'system', subtype: 'init' }
+    const wrapper = { old_seqs: [1, 2], messages: [initMsg, interrupted] }
+    // init is hidden; interrupted (a base notification type) keeps the thread alive.
+    expect(plugin.classify(input(initMsg, wrapper)))
+      .toEqual({ kind: 'notification', messages: [interrupted] })
+  })
 })
 
-describe('opencode result divider renderer', () => {
+describe('opencode result divider', () => {
   const plugin = providerFor(AgentProvider.OPENCODE)!
 
-  it('renders "Turn ended" for end_turn', () => {
-    const parsed = { stopReason: 'end_turn', usage: { totalTokens: 100 } }
-    const { container } = render(() => acpResultDividerRenderer(parsed))
-    expect(container.textContent).toBe('Turn ended')
+  it('maps end_turn to "Turn ended"', () => {
+    expect(acpResultDivider({ stopReason: 'end_turn', usage: { totalTokens: 100 } })).toEqual({ label: 'Turn ended' })
   })
 
-  it('renders "Turn ended" when stopReason is missing', () => {
-    const parsed = { usage: { totalTokens: 100 } }
-    const { container } = render(() => acpResultDividerRenderer(parsed))
-    expect(container.textContent).toBe('Turn ended')
+  it('maps a missing stopReason to "Turn ended"', () => {
+    expect(acpResultDivider({ usage: { totalTokens: 100 } })).toEqual({ label: 'Turn ended' })
   })
 
-  it('renders "Turn ended (reason)" for non-end_turn stopReason', () => {
-    const parsed = { stopReason: 'max_tokens' }
-    const { container } = render(() => acpResultDividerRenderer(parsed))
-    expect(container.textContent).toBe('Turn ended (max_tokens)')
+  it('maps a non-end_turn stopReason to "Turn ended (reason)"', () => {
+    expect(acpResultDivider({ stopReason: 'max_tokens' })).toEqual({ label: 'Turn ended (max_tokens)' })
   })
 
   it('returns null for non-object input', () => {
-    expect(acpResultDividerRenderer(null)).toBeNull()
-    expect(acpResultDividerRenderer('string')).toBeNull()
+    expect(acpResultDivider(null)).toBeNull()
+    expect(acpResultDivider('string')).toBeNull()
   })
 
-  it('is returned by plugin.renderMessage for result_divider', () => {
-    const parsed = { stopReason: 'end_turn' }
-    const { container } = render(() => plugin.renderMessage!({ kind: 'result_divider' }, parsed))
-    expect(container.textContent).toBe('Turn ended')
+  it('is registered as the plugin resultDivider hook', () => {
+    expect(plugin.resultDivider!({ stopReason: 'end_turn' })).toEqual({ label: 'Turn ended' })
   })
 })
 

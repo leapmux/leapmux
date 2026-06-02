@@ -1,74 +1,88 @@
-import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 
 // Importing the registry side-effect-registers the Codex plugin so the thread
 // renderer can dispatch into `notificationThreadEntry`.
 await import('./plugin')
-const { codexNotificationRenderer } = await import('./notifications')
-const { renderNotificationThread } = await import('../../notificationRenderers')
+const { renderThreadText } = await import('../../messageRenderTestUtils')
 
-function renderText(messages: unknown[]): string {
-  const result = renderNotificationThread(messages, AgentProvider.CODEX)
-  if (result === null)
-    return ''
-  const { container } = render(() => result)
-  return container.textContent?.trim() ?? ''
-}
+const renderText = (messages: unknown[]): string => renderThreadText(messages, AgentProvider.CODEX)
 
-function renderCodexStatusText(parsed: Record<string, unknown>): string {
-  const result = codexNotificationRenderer(parsed)
-  if (result === null)
-    return ''
-  const { container } = render(() => result)
-  return container.textContent?.trim() ?? ''
-}
-
-describe('codexNotificationRenderer: MCP startup status', () => {
+describe('codex single MCP startup status', () => {
+  // A standalone Codex notification renders through the same
+  // renderNotificationThread path as a consolidated one (a one-element thread).
   it('renders starting status', () => {
-    expect(renderCodexStatusText({
+    expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'starting', error: null },
-    })).toBe('Starting MCP server: codex_apps')
+    }])).toBe('Starting MCP server: codex_apps')
   })
 
   it('renders ready status', () => {
-    expect(renderCodexStatusText({
+    expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'ready', error: null },
-    })).toBe('MCP server ready: codex_apps')
+    }])).toBe('MCP server ready: codex_apps')
   })
 
   it('renders failed status with error', () => {
-    expect(renderCodexStatusText({
+    expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'failed', error: 'boom' },
-    })).toBe('MCP server failed to start: codex_apps (boom)')
+    }])).toBe('MCP server failed to start: codex_apps (boom)')
   })
 
   it('renders cancelled status', () => {
-    expect(renderCodexStatusText({
+    expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'cancelled', error: null },
-    })).toBe('MCP server startup cancelled: codex_apps')
+    }])).toBe('MCP server startup cancelled: codex_apps')
   })
 
   it('supports nested upstream-style status payloads', () => {
-    expect(renderCodexStatusText({
+    expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: { state: 'failed', error: 'timeout' } },
-    })).toBe('MCP server failed to start: codex_apps (timeout)')
+    }])).toBe('MCP server failed to start: codex_apps (timeout)')
   })
 
-  it('falls back for unknown statuses', () => {
-    expect(renderCodexStatusText({
+  it('falls back for unknown statuses (state carried in the consolidated prefix)', () => {
+    // Single notifications now use the consolidated group form, so an unknown
+    // state sits in the prefix before the colon rather than after the name.
+    expect(renderText([{
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'warming', error: 'still booting' },
-    })).toBe('MCP server status update: codex_apps (warming) (still booting)')
+    }])).toBe('MCP server status update (warming): codex_apps (still booting)')
   })
 
-  it('returns null for non-Codex notification shapes', () => {
-    expect(codexNotificationRenderer({ type: 'context_cleared' })).toBeNull()
+  it('renders a name-less startup as the bare prefix, with no "unknown" placeholder', () => {
+    // A startup notification with no server name has nothing to group under the
+    // prefix, so it renders the prefix alone rather than "<prefix>: unknown".
+    expect(renderText([{
+      method: 'mcpServer/startupStatus/updated',
+      params: { status: 'ready', error: null },
+    }])).toBe('MCP server ready')
+  })
+
+  it('renders a name-less failed startup with its error suffix and no placeholder', () => {
+    expect(renderText([{
+      method: 'mcpServer/startupStatus/updated',
+      params: { status: 'failed', error: 'boom' },
+    }])).toBe('MCP server failed to start (boom)')
+  })
+
+  it('renders a name-less unknown-state startup as the prefix with the state', () => {
+    expect(renderText([{
+      method: 'mcpServer/startupStatus/updated',
+      params: { status: 'warming', error: 'still booting' },
+    }])).toBe('MCP server status update (warming) (still booting)')
+  })
+
+  it('renders a Claude-shaped notification Codex also emits (previously raw JSON)', () => {
+    // Codex classifies context_cleared as a notification but had no standalone
+    // renderer for it, so it used to fall through to the raw-JSON bubble. Routed
+    // through the shared switch, a standalone Codex notification now renders.
+    expect(renderText([{ type: 'context_cleared' }])).toBe('Context cleared')
   })
 })
 

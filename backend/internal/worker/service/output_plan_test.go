@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -86,11 +87,12 @@ func newPlanHandler(t *testing.T) (*OutputHandler, *db.Queries, string) {
 func createTestAgent(t *testing.T, queries *db.Queries, agentID, title string) {
 	t.Helper()
 	require.NoError(t, queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Title:       title,
+		ID:            agentID,
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		Title:         title,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 }
 
@@ -260,6 +262,53 @@ func TestUpdatePlan_EmptyTitleFallsBackToUntitled(t *testing.T) {
 	row, err := queries.GetAgentByID(context.Background(), "agent-1")
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(dataDir, "plans", "2026", "04", "untitled-plan.md"), row.PlanFilePath)
+}
+
+func TestUpdatePlan_EmptyTitleWritesFileButSkipsNotification(t *testing.T) {
+	h, queries, dataDir := newPlanHandler(t)
+	createTestAgent(t, queries, "agent-1", "Agent Olivia")
+
+	// First write with no extractable title and no prior plan_title to fall
+	// back to: the title stays empty. The plan file is still materialized and
+	// the row updated, but a titleless plan_updated carries nothing to render
+	// (the client would surface it as a raw-JSON bubble), so it must be skipped.
+	updatePlanHelper(t, h, "agent-1", "", []byte("- item without a heading\n"))
+
+	row, err := queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	wantPath := filepath.Join(dataDir, "plans", "2026", "04", "untitled-plan.md")
+	assert.Equal(t, wantPath, row.PlanFilePath, "the plan file must still be written")
+	got, err := os.ReadFile(wantPath)
+	require.NoError(t, err)
+	assert.Equal(t, "- item without a heading\n", string(got))
+
+	notifs := findNotificationsByType(readAllNotifications(t, queries, "agent-1"), "plan_updated")
+	assert.Empty(t, notifs, "a titleless plan_updated must not be emitted")
+}
+
+func TestUpdatePlan_EmptyTitleStillNotifiesWhenPriorTitleExists(t *testing.T) {
+	h, queries, dataDir := newPlanHandler(t)
+	createTestAgent(t, queries, "agent-1", "Agent Olivia")
+
+	// Seed plan_title AND point the row at a stale path, so the next write lands
+	// on a different canonical path (pathChanged=true) even though the resolved
+	// title is unchanged.
+	stale := filepath.Join(dataDir, "plans", "2026", "04", "stale.md")
+	require.NoError(t, queries.UpdateAgentPlan(context.Background(), db.UpdateAgentPlanParams{
+		PlanFilePath: stale,
+		PlanTitle:    "First Title",
+		ID:           "agent-1",
+	}))
+
+	// An empty caller title resolves to the existing "First Title", so the
+	// notification carries a real title and must still fire — only a genuinely
+	// titleless plan is suppressed. The path change (stale.md -> first-title.md)
+	// is what makes this a notifiable update.
+	updatePlanHelper(t, h, "agent-1", "", []byte("# anything\n"))
+
+	notifs := findNotificationsByType(readAllNotifications(t, queries, "agent-1"), "plan_updated")
+	require.Equal(t, 1, len(notifs), "an empty caller title that resolves to the prior plan_title still notifies")
+	assert.Equal(t, "First Title", notifs[0]["plan_title"])
 }
 
 func TestUpdatePlan_TwoAgentsSameTitleDoNotCollide(t *testing.T) {

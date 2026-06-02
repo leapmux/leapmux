@@ -62,11 +62,18 @@ export function formatNumber(n: number): string {
 
 /** Format a token count with a fixed decimal (e.g. 1.0k, 12.3M). */
 export function formatTokenCount(n: number): string {
-  if (n >= 1_000_000)
-    return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000)
-    return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
+  // Token counts are conceptually integers; round a stray fractional input
+  // (e.g. a server-estimated size) before bucketing so the sub-1k branch
+  // can't leak decimals as "999.5" -- and round BEFORE the threshold checks so
+  // a value like 999.6 promotes to the "1.0k" bucket instead of "1000".
+  const rounded = Math.round(n)
+  // 999_950+ would round up to "1000.0k" at one decimal, so promote it to the M
+  // unit ("1.0M") rather than rendering a four-digit thousands value.
+  if (rounded >= 999_950)
+    return `${(rounded / 1_000_000).toFixed(1)}M`
+  if (rounded >= 1_000)
+    return `${(rounded / 1_000).toFixed(1)}k`
+  return String(rounded)
 }
 
 /** Format a number in compact form (e.g. 1.2k, 3.5m, 1.1g). */

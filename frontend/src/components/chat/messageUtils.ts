@@ -40,3 +40,18 @@ export function isNotificationThreadWrapper(
   }
   return false
 }
+
+/**
+ * A terminal (non-compacting) `system` status notification -- e.g. the trailing
+ * `{type:"system",subtype:"status",status:null}` that ends a compaction. It
+ * carries nothing to render: the user-facing "Context compacted (...)" line comes
+ * from the separate compact_boundary message, so only the live
+ * `status:"compacting"` row is visible. Every provider that surfaces this shape
+ * (Claude, Codex, ACP) hides it on BOTH the standalone classifier and the
+ * consolidated-thread filter, so a status hidden on its own stays hidden once Hub
+ * threads it. Centralized here so "what counts as a terminal status" can't drift
+ * between providers or between the two paths.
+ */
+export function isTerminalCompactingStatus(m: Record<string, unknown>): boolean {
+  return m.type === 'system' && m.subtype === 'status' && m.status !== 'compacting'
+}

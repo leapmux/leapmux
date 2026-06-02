@@ -39,6 +39,18 @@ export function updateSettingsLabelCache(models?: AvailableModel[], optionGroups
   }
 }
 
+/**
+ * Clear every cached label. Lets tests that populate the cache via
+ * {@link updateSettingsLabelCache} isolate their state instead of leaking
+ * registrations into later cases.
+ */
+export function clearSettingsLabelCache(): void {
+  modelLabels.clear()
+  effortLabels.clear()
+  optionGroupDisplayLabels.clear()
+  optionGroupLabels.clear()
+}
+
 /** Look up a cached display name for a model, effort, or option group ID. */
 export function getCachedSettingsLabel(key: string, id: string): string | undefined {
   if (key === 'model')

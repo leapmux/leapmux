@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyMessage, messageBubbleClass, messageRowClass } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
-import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 
 // ---------------------------------------------------------------------------
 // Helper to build assistant message payloads
@@ -25,17 +25,17 @@ function wrapper(firstMessage: Record<string, unknown>) {
 // ---------------------------------------------------------------------------
 
 describe('classifyMessage', () => {
-  // -- notification_thread --------------------------------------------------
+  // -- notification (consolidated thread) -----------------------------------
 
-  describe('notification_thread', () => {
+  describe('notification (consolidated thread)', () => {
     it('classifies wrapper with settings_changed first message', () => {
       const result = classifyMessage(input(undefined, wrapper({ type: 'settings_changed' })))
-      expect(result.kind).toBe('notification_thread')
+      expect(result.kind).toBe('notification')
     })
 
     it('classifies wrapper with context_cleared first message', () => {
       const result = classifyMessage(input(undefined, wrapper({ type: 'context_cleared' })))
-      expect(result.kind).toBe('notification_thread')
+      expect(result.kind).toBe('notification')
     })
 
     it('classifies wrapper when a notification appears after a hidden lifecycle message', () => {
@@ -46,17 +46,17 @@ describe('classifyMessage', () => {
           { type: 'context_cleared' },
         ],
       }))
-      expect(result.kind).toBe('notification_thread')
+      expect(result.kind).toBe('notification')
     })
 
     it('classifies wrapper with interrupted first message', () => {
       const result = classifyMessage(input(undefined, wrapper({ type: 'interrupted' })))
-      expect(result.kind).toBe('notification_thread')
+      expect(result.kind).toBe('notification')
     })
 
-    it('classifies wrapper with non-allowed rate_limit as notification_thread', () => {
+    it('classifies wrapper with non-allowed rate_limit as a notification', () => {
       const result = classifyMessage(input(undefined, wrapper({ type: 'rate_limit_event', rate_limit_info: { status: 'rate_limited' } })))
-      expect(result.kind).toBe('notification_thread')
+      expect(result.kind).toBe('notification')
     })
 
     it('classifies wrapper with only allowed rate_limit as hidden', () => {
@@ -70,8 +70,8 @@ describe('classifyMessage', () => {
         { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
       ]
       const result = classifyMessage(input(undefined, { old_seqs: [], messages: msgs }))
-      expect(result.kind).toBe('notification_thread')
-      if (result.kind === 'notification_thread') {
+      expect(result.kind).toBe('notification')
+      if (result.kind === 'notification') {
         expect(result.messages).toHaveLength(1)
         expect((result.messages[0] as Record<string, unknown>).type).toBe('settings_changed')
       }
@@ -79,24 +79,24 @@ describe('classifyMessage', () => {
 
     it('classifies wrapper with system (non-init, non-task_notification) first message', () => {
       const result = classifyMessage(input(undefined, wrapper({ type: 'system', subtype: 'compact_boundary' })))
-      expect(result.kind).toBe('notification_thread')
+      expect(result.kind).toBe('notification')
     })
 
-    it('does not classify wrapper with system init as notification_thread', () => {
+    it('does not classify wrapper with system init as a notification', () => {
       const parent = { type: 'system', subtype: 'init' }
       const result = classifyMessage(input(parent, wrapper(parent)))
-      expect(result.kind).not.toBe('notification_thread')
+      expect(result.kind).not.toBe('notification')
     })
 
-    it('does not classify wrapper with system task_notification as notification_thread', () => {
+    it('does not classify wrapper with system task_notification as a notification', () => {
       const parent = { type: 'system', subtype: 'task_notification' }
       const result = classifyMessage(input(parent, wrapper(parent)))
-      expect(result.kind).not.toBe('notification_thread')
+      expect(result.kind).not.toBe('notification')
     })
 
-    it('does not classify null wrapper as notification_thread', () => {
+    it('does not classify null wrapper as a notification', () => {
       const result = classifyMessage(input({ type: 'assistant' }))
-      expect(result.kind).not.toBe('notification_thread')
+      expect(result.kind).not.toBe('notification')
     })
 
     it('classifies empty messages array as hidden (consolidated no-op)', () => {
@@ -105,11 +105,11 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('hidden')
     })
 
-    it('returns messages array in notification_thread category', () => {
+    it('returns messages array in the notification category', () => {
       const msgs = [{ type: 'settings_changed' }, { type: 'other' }]
       const result = classifyMessage(input(undefined, { old_seqs: [], messages: msgs }))
-      expect(result.kind).toBe('notification_thread')
-      if (result.kind === 'notification_thread') {
+      expect(result.kind).toBe('notification')
+      if (result.kind === 'notification') {
         expect(result.messages).toStrictEqual(msgs)
       }
     })
@@ -119,6 +119,22 @@ describe('classifyMessage', () => {
 
   it('returns unknown when parentObject is undefined and wrapper is null', () => {
     expect(classifyMessage(input()).kind).toBe('unknown')
+  })
+
+  // -- unsupported provider (no registered plugin) --------------------------
+
+  it('classifies an UNSPECIFIED provider as unsupported_provider (no Claude guess)', () => {
+    // The provider is the proto-0 default; there is no plugin, so refuse to guess
+    // Claude and surface the message as unsupported rather than mis-rendering it.
+    const result = classifyMessage(input({ type: 'result', duration_ms: 5 }, null, AgentProvider.UNSPECIFIED))
+    expect(result.kind).toBe('unsupported_provider')
+  })
+
+  it('classifies an unregistered provider value as unsupported_provider', () => {
+    // A provider enum the frontend has no plugin for (e.g. backend/frontend
+    // version skew) must surface loudly, not fall back to Claude's renderers.
+    const result = classifyMessage(input({ type: 'assistant' }, null, 999 as AgentProvider))
+    expect(result.kind).toBe('unsupported_provider')
   })
 
   // -- hidden ---------------------------------------------------------------
@@ -373,10 +389,6 @@ describe('messageRowClass', () => {
     expect(messageRowClass('notification', MessageSource.AGENT)).toBe(chatStyles.messageRowCenter)
   })
 
-  it('returns messageRowCenter for notification_thread', () => {
-    expect(messageRowClass('notification_thread', MessageSource.AGENT)).toBe(chatStyles.messageRowCenter)
-  })
-
   it('returns messageRowEnd for non-meta user messages', () => {
     expect(messageRowClass('user_text', MessageSource.USER)).toBe(chatStyles.messageRowEnd)
     expect(messageRowClass('user_content', MessageSource.USER)).toBe(chatStyles.messageRowEnd)
@@ -404,10 +416,6 @@ describe('messageRowClass', () => {
 describe('messageBubbleClass', () => {
   it('returns systemMessage for notification', () => {
     expect(messageBubbleClass('notification', MessageSource.AGENT)).toBe(chatStyles.systemMessage)
-  })
-
-  it('returns systemMessage for notification_thread', () => {
-    expect(messageBubbleClass('notification_thread', MessageSource.AGENT)).toBe(chatStyles.systemMessage)
   })
 
   it('returns thinkingMessage for assistant_thinking', () => {

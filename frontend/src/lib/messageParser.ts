@@ -2,7 +2,7 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { TodoItem } from '~/stores/chat.store'
 import { decompressContentToString } from '~/lib/decompress'
-import { isObject, pickFirstNumber, pickNumber } from '~/lib/jsonPick'
+import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickString } from '~/lib/jsonPick'
 import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { normalizeTodoStatus } from '~/stores/chat.store'
 
@@ -122,6 +122,18 @@ export function getInnerMessage(parsed: ParsedMessageContent): Record<string, un
 export function getInnerMessageType(parsed: ParsedMessageContent): string | undefined {
   const inner = getInnerMessage(parsed)
   return inner?.type as string | undefined
+}
+
+/**
+ * The inner messages to scan for a notification: a consolidated thread's wrapped
+ * messages, or the lone top-level message as a one-element array (empty when the
+ * content failed to parse). Several extractors walk this same shape -- in reverse
+ * when the most recent matching entry should win.
+ */
+export function messagesOf(parsed: ParsedMessageContent): unknown[] {
+  return parsed.wrapper
+    ? parsed.wrapper.messages
+    : parsed.topLevel ? [parsed.topLevel] : []
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +293,133 @@ export function extractCodexTokenUsage(parsed: ParsedMessageContent): {
   return { contextUsage }
 }
 
+// ---------------------------------------------------------------------------
+// Context compaction metadata
+// ---------------------------------------------------------------------------
+
+// compact_boundary carries its metadata under a snake_case key in the SDK
+// stream-json output (compact_metadata) or a camelCase key in the .jsonl
+// transcript form (compactMetadata); resolve against both from one definition
+// so the accepted key list lives in one place. The order is immaterial -- a
+// message carries one casing, and pickFirstObject returns the first present.
+// Internal: callers resolve metadata through parseBoundaryMeta, not this list.
+const COMPACT_META_KEYS = ['compact_metadata', 'compactMetadata'] as const
+
+/**
+ * Normalized, provider-agnostic compaction detail. The shared parser turns raw
+ * wire metadata into this (see {@link parseCompactionMeta}); a provider that
+ * surfaces its own compaction event (e.g. Pi) constructs it directly. The
+ * notification-thread formatter and the context-usage grid both consume this
+ * typed shape, so they never touch raw snake/camelCase wire keys and a provider
+ * can't accidentally couple to them.
+ */
+export interface CompactionDetail {
+  /** Trigger word shown first in the parenthetical, e.g. "manual"/"auto". */
+  trigger?: string
+  /** Pre-compaction context size, in tokens. */
+  pre?: number
+  /** Post-compaction context size, in tokens. */
+  post?: number
+}
+
+/**
+ * Coerce a raw numeric token count to a usable value: finite and non-negative.
+ * Non-finite inputs (NaN/Infinity -- which JSON can't carry but a synthesized
+ * payload could) degrade to undefined; negatives clamp to 0, so a provider
+ * reporting an explicit negative count (or a derived `pre - saved` where
+ * saved > pre) yields 0 instead of a negative size.
+ */
+export function toTokenCount(n: number | undefined): number | undefined {
+  if (n === undefined || !Number.isFinite(n))
+    return undefined
+  return Math.max(0, n)
+}
+
+/**
+ * Resolve the post-compaction token count from raw metadata. `post_tokens`
+ * (Claude's `compact_boundary` carries it directly) wins; as a fallback, when
+ * only a `tokens_saved` delta is present alongside `pre`, post is derived as
+ * `pre - saved` (which {@link toTokenCount} later clamps to >= 0). Returns
+ * undefined when post cannot be resolved. Field names appear in both snake_case
+ * (SDK stream) and camelCase (transcript) forms.
+ */
+function resolvePostTokens(meta: Record<string, unknown> | undefined, pre: number | undefined): number | undefined {
+  const post = pickFirstNumber(meta, ['post_tokens', 'postTokens'])
+  if (typeof post === 'number')
+    return post
+  const saved = pickFirstNumber(meta, ['tokens_saved', 'tokensSaved'])
+  if (typeof pre === 'number' && typeof saved === 'number')
+    return pre - saved
+  return undefined
+}
+
+/**
+ * Parse a raw compaction-metadata object (snake_case SDK stream or camelCase
+ * transcript keys) into the provider-neutral {@link CompactionDetail}. Token
+ * sanitization is deferred to the consumer (both the label formatter and the
+ * grid extractor clamp via {@link toTokenCount}), so every caller -- wire-derived
+ * or provider-synthesized -- gets the same treatment. Internal: external callers
+ * resolve a raw boundary via {@link parseBoundaryMeta}.
+ */
+function parseCompactionMeta(meta: Record<string, unknown> | undefined): CompactionDetail {
+  const pre = pickFirstNumber(meta, ['pre_tokens', 'preTokens'])
+  return {
+    trigger: pickString(meta, 'trigger', undefined),
+    pre,
+    post: resolvePostTokens(meta, pre),
+  }
+}
+
+/**
+ * A completed compaction boundary: Claude's `compact_boundary` system message or
+ * Codex's `thread/compacted` JSON-RPC notification -- both the same signal.
+ */
+export function isCompactBoundary(m: Record<string, unknown>): boolean {
+  return (m.type === 'system' && m.subtype === 'compact_boundary') || m.method === 'thread/compacted'
+}
+
+/**
+ * Resolve a raw boundary message's compaction metadata (under the snake_case
+ * `compact_metadata` or camelCase `compactMetadata` key) into a
+ * {@link CompactionDetail}. The single place that knows where a boundary carries
+ * its metadata, shared by the grid extractor here and the notification-thread
+ * label formatter, so the key resolution can't drift between them.
+ */
+export function parseBoundaryMeta(m: Record<string, unknown>): CompactionDetail {
+  return parseCompactionMeta(pickFirstObject(m, COMPACT_META_KEYS))
+}
+
+/**
+ * Resolve the post-compaction context size (in tokens) from a notification, for
+ * refreshing the context-usage grid the instant a boundary lands -- rather than
+ * leaving the now-stale pre-compaction usage on screen until the next
+ * assistant/result message overwrites it. Scans the wrapper's messages (or the
+ * lone top-level message) in reverse so the most recent boundary in a
+ * consolidated thread wins, and returns the sanitized post count of the most
+ * recent boundary that carries a resolvable one (skipping boundaries that don't).
+ *
+ * Returns undefined when there is no boundary, or no boundary carries a
+ * resolvable post (`post_tokens` absent and no `pre - tokens_saved` to derive it
+ * from) -- e.g. Codex's `thread/compacted`, which carries no metadata today.
+ * The caller leaves the grid untouched in that case.
+ */
+export function extractCompactionContextTokens(parsed: ParsedMessageContent): number | undefined {
+  const messages = messagesOf(parsed)
+  // Reverse so the most recent boundary wins. Skip a boundary whose post is
+  // unresolvable (e.g. Codex's metadata-less thread/compacted) and keep scanning
+  // so an earlier boundary that does carry a post can still refresh the grid,
+  // rather than bailing out on the first boundary encountered.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (!isObject(msg) || !isCompactBoundary(msg))
+      continue
+    const post = toTokenCount(parseBoundaryMeta(msg).post)
+    if (post !== undefined)
+      return post
+  }
+  return undefined
+}
+
 function modelContextWindow(modelData: unknown): number {
   if (!modelData || typeof modelData !== 'object')
     return 0
@@ -433,12 +572,10 @@ export interface PlanUpdatedInfo {
  * if none present.
  */
 export function extractPlanUpdated(parsed: ParsedMessageContent): PlanUpdatedInfo | undefined {
-  const messagesToCheck: unknown[] = parsed.wrapper
-    ? parsed.wrapper.messages
-    : parsed.topLevel ? [parsed.topLevel] : []
+  const messages = messagesOf(parsed)
   // Iterate in reverse so the most recent entry in a consolidated thread wins.
-  for (let i = messagesToCheck.length - 1; i >= 0; i--) {
-    const msg = messagesToCheck[i]
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
     if (typeof msg === 'object' && msg !== null) {
       const m = msg as Record<string, unknown>
       if (m.type === 'plan_updated') {
@@ -456,10 +593,7 @@ export function extractPlanUpdated(parsed: ParsedMessageContent): PlanUpdatedInf
 /** Extract plan file path from a plan_execution message (wrapped or unwrapped). */
 export function extractPlanFilePath(parsed: ParsedMessageContent): string | undefined {
   // Check all messages in the wrapper (or the top-level object).
-  const messagesToCheck: unknown[] = parsed.wrapper
-    ? parsed.wrapper.messages
-    : parsed.topLevel ? [parsed.topLevel] : []
-  for (const msg of messagesToCheck) {
+  for (const msg of messagesOf(parsed)) {
     if (typeof msg === 'object' && msg !== null) {
       const m = msg as Record<string, unknown>
       if (m.type === 'plan_execution' && typeof m.plan_file_path === 'string' && m.plan_file_path !== '') {

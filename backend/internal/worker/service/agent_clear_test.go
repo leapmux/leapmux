@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -232,13 +233,20 @@ func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		// Unspecified provider → StartAgent returns an error, exercising
-		// the failure branch of handleClearContext.
+		ID:            "agent-1",
+		WorkspaceID:   "ws-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
+
+	// Force the /clear restart to fail deterministically. A real provider is
+	// required (createMessageRow refuses to persist messages for an UNSPECIFIED
+	// provider), so the failure is injected via startAgentFn rather than by
+	// leaving the provider unset.
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+		return nil, errors.New("forced restart failure")
+	}
 
 	sender := channel.NewSender(w)
 	svc.Watchers.WatchAgent("agent-1", &EventWatcher{

@@ -1,6 +1,6 @@
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createAgentSessionStore } from '~/stores/agentSession.store'
+import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 
 describe('createAgentSessionStore', () => {
   beforeEach(() => {
@@ -188,5 +188,38 @@ describe('createAgentSessionStore', () => {
       expect(info.planFilePath).toBe('/path/plan.md')
       dispose()
     })
+  })
+})
+
+describe('compactionContextUsage', () => {
+  it('zeroes the input/cache components and makes contextTokens authoritative', () => {
+    expect(compactionContextUsage(12000, undefined)).toEqual({
+      inputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextTokens: 12000,
+    })
+  })
+
+  it('preserves an existing context window so the percentage denominator survives', () => {
+    const existing = { inputTokens: 50000, cacheCreationInputTokens: 40000, cacheReadInputTokens: 60000, contextWindow: 200000 }
+    expect(compactionContextUsage(12000, existing)).toEqual({
+      inputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextTokens: 12000,
+      contextWindow: 200000,
+    })
+  })
+
+  it('omits contextWindow when none is known, rather than writing undefined', () => {
+    const result = compactionContextUsage(8000, { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 })
+    expect('contextWindow' in result).toBe(false)
+    expect(result.contextTokens).toBe(8000)
+  })
+
+  it('preserves a context window of 0 (present-but-falsy, not dropped)', () => {
+    const result = compactionContextUsage(8000, { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 0 })
+    expect(result.contextWindow).toBe(0)
   })
 })

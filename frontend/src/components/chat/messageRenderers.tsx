@@ -3,6 +3,7 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from './messageClassification'
 import type { MessageUiKey } from './messageUiKeys'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
 import Brain from 'lucide-solid/icons/brain'
@@ -13,7 +14,6 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createSignal, For, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { renderMarkdown } from '~/lib/renderMarkdown'
@@ -21,7 +21,7 @@ import { inlineFlex } from '~/styles/shared.css'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { attachmentItem, attachmentList, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
-import { providerFor } from './providers/registry'
+import { pluginFor } from './providers/registry'
 import {
   toolInputText,
   toolUseIcon,
@@ -217,13 +217,14 @@ export function UserContentMessage(props: { parsed: unknown }): JSX.Element {
 /**
  * Render a message's content.
  *
- * All rendering goes through the provider plugin's `renderMessage`. The plugin
- * is responsible for handling every kind it can render, including `'unknown'`
- * (where it runs its own type-detection chain on the parsed object). When
- * `agentProvider` is missing, the dispatch defaults to the Claude plugin —
- * mirroring `classifyMessage`'s registry-fallback in `messageClassification.ts`.
+ * All rendering goes through the message's own provider plugin's `renderMessage`.
+ * The plugin is responsible for handling every kind it can render, including
+ * `'unknown'` (where it runs its own type-detection chain on the parsed object).
+ * Dispatch is strictly by `agentProvider` with no Claude fallback — an
+ * UNSPECIFIED/unregistered provider yields no plugin (matching
+ * `classifyMessage`, which routes such a message to `unsupported_provider`).
  *
- * Returns a raw-text `<span>` only when no plugin handles the message at all
+ * Returns a raw-text `<span>` when no plugin handles the message at all
  * (or when JSON parsing fails) — the absolute last-resort safety net.
  */
 export function renderMessageContent(
@@ -237,8 +238,12 @@ export function renderMessageContent(
       ? JSON.parse(parsedOrRawJson)
       : parsedOrRawJson
 
-    const provider = agentProvider ?? AgentProvider.CLAUDE_CODE
-    const plugin = providerFor(provider) ?? providerFor(AgentProvider.CLAUDE_CODE)
+    // Dispatch strictly by the message's own provider -- no Claude fallback. An
+    // unregistered/UNSPECIFIED provider yields no plugin, so we drop to the
+    // raw-JSON span below rather than rendering another provider's bytes through
+    // Claude's renderers (classifyMessage routes such messages to
+    // `unsupported_provider`, which MessageBubble surfaces explicitly).
+    const plugin = pluginFor(agentProvider)
     const result = plugin?.renderMessage?.(category ?? { kind: 'unknown' }, parsed, context) ?? null
     if (result !== null)
       return result

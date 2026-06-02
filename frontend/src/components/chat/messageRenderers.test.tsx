@@ -215,3 +215,17 @@ describe('read tool_result without structured data renders as ReadResultView', (
     expect(container.textContent).toContain('this is not cat-n output')
   })
 })
+
+describe('renderMessageContent provider resolution', () => {
+  it('renders raw JSON without guessing Claude for an unregistered provider', () => {
+    // No `?? CLAUDE_CODE` fallback: an unregistered provider has no plugin, so
+    // renderMessageContent must drop to the raw-JSON span rather than rendering
+    // another provider's bytes through Claude's renderers.
+    const parsed = { type: 'result', subtype: 'success', duration_ms: 1095 }
+    const result = renderMessageContent(parsed, undefined, { kind: 'result_divider' }, 999 as AgentProvider)
+    const { container } = render(() => result)
+    // The Claude renderer would have produced "Took 1.1s"; instead we get raw JSON.
+    expect(container.textContent).toContain('"duration_ms"')
+    expect(container.textContent).not.toContain('Took 1.1s')
+  })
+})

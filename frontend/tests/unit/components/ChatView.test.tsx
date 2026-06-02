@@ -40,6 +40,9 @@ function makeMessage(role: string, text: string, id: string = '1'): AgentChatMes
     contentCompression: ContentCompression.NONE,
     seq: 1n,
     createdAt: '',
+    // A real persisted message always carries a provider; classifyMessage no
+    // longer falls back to Claude for an unset one (it would be unsupported_provider).
+    agentProvider: AgentProvider.CLAUDE_CODE,
   }
 }
 

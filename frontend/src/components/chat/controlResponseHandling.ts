@@ -4,12 +4,13 @@ import type { AskQuestionState, EditorContentRef } from './controls/types'
 import type { ProviderSettingChange } from './providers/registry'
 import type { ControlRequest } from '~/stores/control.store'
 import { createEffect, createMemo, on } from 'solid-js'
+import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_ASK_STATE } from '~/lib/browserStorage'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
 import { decidePlanModeToggle } from './planModeToggle'
-import { providerFor } from './providers/registry'
+import { pluginFor } from './providers/registry'
 import './providers'
 
 export interface ControlResponseHandlingProps {
@@ -43,7 +44,7 @@ export function useControlResponseHandling(
   getAttachments?: () => FileAttachment[],
   onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => void,
 ): ControlResponseHandlingResult {
-  const planModeConfig = () => props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.planMode : undefined
+  const planModeConfig = () => pluginFor(props.agent?.agentProvider)?.planMode
 
   // Track previous non-plan mode for Shift+Tab toggling.
   let previousNonPlanMode = planModeConfig()?.defaultValue ?? 'default'
@@ -80,9 +81,7 @@ export function useControlResponseHandling(
     const req = activeControlRequest()
     if (!req)
       return false
-    const plugin = props.agent?.agentProvider != null
-      ? providerFor(props.agent.agentProvider)
-      : undefined
+    const plugin = pluginFor(props.agent?.agentProvider)
     return plugin?.isAskUserQuestion?.(req.payload) ?? false
   }
 
@@ -155,10 +154,19 @@ export function useControlResponseHandling(
     const req = activeControlRequest()
     if (!req)
       return
+    // Resolve the agent's own provider plugin -- no Claude fallback. A live agent
+    // always carries a real provider, so a missing plugin means an UNSPECIFIED or
+    // unregistered provider (a bug, e.g. backend/frontend version skew). Refuse to
+    // encode a control response through the wrong provider's builder; surface a
+    // toast so the send is not a silent no-op, and keep the editor content.
+    const provider = props.agent?.agentProvider
+    const plugin = pluginFor(provider)
+    if (!plugin) {
+      showWarnToast(`Cannot send response: unsupported agent provider (${provider})`)
+      return false
+    }
     if (isAskUserQuestion()) {
-      const provider = props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE
-      const plugin = providerFor(provider) ?? providerFor(AgentProvider.CLAUDE_CODE)
-      const normalizedQuestions = plugin?.extractAskUserQuestions?.(req.payload) ?? []
+      const normalizedQuestions = plugin.extractAskUserQuestions?.(req.payload) ?? []
       const normalizedRequest: ControlRequest = {
         ...req,
         payload: {
@@ -170,7 +178,7 @@ export function useControlResponseHandling(
         },
       }
       const sendAskResponse = () => {
-        void plugin?.sendAskUserQuestionResponse?.(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState, req.payload)
+        void plugin.sendAskUserQuestionResponse?.(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState, req.payload)
       }
       const submitted = trySubmitAskUserQuestion(
         askState,
@@ -186,9 +194,7 @@ export function useControlResponseHandling(
       resetEditorHeightFn()
       return
     }
-    const provider = props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE
-    const plugin = providerFor(provider) ?? providerFor(AgentProvider.CLAUDE_CODE)
-    const response = plugin?.buildControlResponse?.(req.payload, content, req.requestId)
+    const response = plugin.buildControlResponse?.(req.payload, content, req.requestId)
     if (response) {
       const bytes = new TextEncoder().encode(JSON.stringify(response))
       void sendControlResponse(req.agentId, bytes)
