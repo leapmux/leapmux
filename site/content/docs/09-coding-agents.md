@@ -24,39 +24,7 @@ LeapMux integrates nine coding-agent providers:
 | Goose | `goose` |
 | Pi | `pi` |
 
-### Integration depth
-
-All nine providers are fully functional. They differ only in how much bespoke, hand-tuned rendering and settings UI each one has:
-
-- **Rich, hand-written integrations:** Claude Code, Codex, and Pi. These have custom message classifiers, tool-call renderers, control-prompt dialogs, and per-provider settings panels.
-- **Shared protocol integrations:** Gemini CLI, Cursor, GitHub Copilot, and Goose share LeapMux's Agent Client Protocol (ACP) layer; OpenCode and Kilo share an OpenCode-protocol layer that itself rides on ACP. These providers chat, render tool calls, and prompt for permissions through the shared layer rather than bespoke code, so their chat surface is a little plainer — but they are real, working integrations, not placeholders.
-
-**The three integration tiers feeding the common chat UI:**
-
-```text
-   Bespoke tier             ACP shared layer
- (hand-written)        (shared render / permissions)
-┌────────────────┐     ┌───────────────────────────┐
-│  Claude Code   │     │  Gemini CLI     Cursor    │
-│  Codex         │     │  GitHub Copilot Goose     │
-│  Pi            │     └─────────────┬─────────────┘
-└───────┬────────┘                    ▲
-        │                             │ rides on
-        │              ┌─────────────┴─────────────┐
-        │              │  OpenCode-protocol layer  │
-        │              │  OpenCode       Kilo      │
-        │              └─────────────┬─────────────┘
-        │                            │
-        └─────────────┬──────────────┘
-                      ▼
-           ┌──────────────────────┐
-           │    Common chat UI    │
-           │  (transcript, tool   │
-           │   rows, prompts)     │
-           └──────────────────────┘
-```
-
-> **Note:** What you will notice in practice between a "rich" and a "shared" integration is the polish of the chat view (custom diff toggles, plan dialogs, richer settings panels) — not whether the agent works. Every provider can send messages, run tools, ask for permission, and resume.
+All nine are first-class. Every provider supports the same core workflow — chat, streamed tool calls, permission prompts, the plan/todo sidebar, and session resume. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
 
 ### Which agents you can actually open
 
@@ -152,7 +120,7 @@ Long tool results are collapsible (an **Expand** button), and most rows have a *
 
 ### The todo / plan sidebar
 
-When an agent produces a task plan or todo list, LeapMux shows it in a persistent sidebar with each item's status (pending, in progress, completed). Codex turn plans, Claude Code's todo and task tracking, and ACP plan updates all feed this sidebar. The list is server-authoritative, so it stays correct across reconnects.
+When an agent produces a task plan or todo list, LeapMux shows it in a persistent sidebar with each item's status (pending, in progress, completed). Codex turn plans, Claude Code's todo and task tracking, and other providers' plan updates all feed this sidebar. The list is server-authoritative, so it stays correct across reconnects.
 
 ### Turn boundaries and notifications
 
@@ -204,15 +172,15 @@ An **& Bypass Permissions** option is also available (it switches Codex to Full 
 
 Pi shows method-specific dialogs: **confirm** (Deny / Approve), **input** (an inline text field; Cancel / Send), **editor** (an inline textarea; Cancel / Send), and **select** (uses the shared question UI). Some Pi prompts show a timeout hint ("Auto-resolves in Ns if no response.").
 
-### Shared-protocol providers (Gemini, Cursor, Copilot, Goose, OpenCode, Kilo)
+### Other providers
 
-These render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
+Gemini CLI, Cursor, GitHub Copilot, Goose, OpenCode, and Kilo render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
 
 ## Changing settings mid-session
 
 The editor footer (when no prompt is active) has a settings dropdown showing the agent's current model, an effort icon, and mode. Open it to change the agent's model, reasoning effort, permission mode, and provider-specific options.
 
-> **Note:** Changing the **model** or **effort** restarts the agent process (the change is optimistic and rolls back if it fails). Changing Claude Code's **permission mode** is live — no restart. For Codex and the shared-protocol providers, a permission-mode change restarts the agent.
+> **Note:** Changing the **model** or **effort** restarts the agent process (the change is optimistic and rolls back if it fails). Changing Claude Code's **permission mode** is live — no restart. For Codex and the other providers, a permission-mode change restarts the agent.
 
 The model picker shows radio buttons for up to 7 models and switches to a searchable list above that.
 
@@ -245,13 +213,13 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 
 **Pi** — a single column with **Thinking Level** (effort) and **Model**. Default model **gpt-5.5**. Pi has no permission mode, no plan mode, and no bypass.
 
-**Shared-protocol providers** — a single option group plus a model selector. The trigger label reads `<model> · <option>`.
+**Other providers** — a single option group plus a model selector. The trigger label reads `<model> · <option>`.
 
 | Provider | Default model | Default mode | Notes |
 | --- | --- | --- | --- |
 | Cursor | `auto` | `agent` | Has plan mode. |
 | Gemini CLI | `auto` | `default` | Bypass mode is `yolo`; has plan mode. |
-| GitHub Copilot | (CLI default) | `agent` | Modes are ACP session-mode URIs; has plan and autopilot. |
+| GitHub Copilot | (CLI default) | `agent` | Has plan and autopilot. |
 | Goose | (CLI default) | `auto` | Bypass = `auto`; **no plan mode**. |
 | OpenCode | (CLI default) | Primary Agent `build` | Has plan mode. |
 | Kilo | (CLI default) | Primary Agent `code` | Has plan mode. |
@@ -265,17 +233,7 @@ To continue a previous conversation, paste its Session ID into the **Resume an e
 
 Leave the field empty to start a fresh session.
 
-Once you submit, the worker resumes the prior session using each provider's own resume mechanism — they all pick up where the earlier conversation left off, but they don't all use the same command-line flag:
-
-| Provider | How it resumes |
-| --- | --- |
-| Claude Code | Passes the Session ID as the CLI's `--resume` argument. |
-| Codex | Sends the `thread/resume` JSON-RPC method with the ID as `threadId`. |
-| Gemini CLI, Cursor, GitHub Copilot, Goose | Send the ACP `session/load` JSON-RPC method. |
-| OpenCode, Kilo | Send the OpenCode-protocol `session/resume` JSON-RPC method. |
-| Pi | Sends a `switch_session` command with the ID as the session path. |
-
-> **Note:** For the ACP and OpenCode-protocol providers, if resume fails the worker automatically falls back to starting a fresh session rather than erroring out.
+Once you submit, the worker resumes the prior session using that provider's own resume mechanism, picking up where the earlier conversation left off. If a session can't be resumed, the worker starts a fresh one rather than failing.
 
 > **Tip:** Session IDs for Claude Code, Codex, and the other CLIs come from those tools' own session bookkeeping. If you've run the same CLI directly in a terminal, you can resume that session inside LeapMux by pasting its ID here.
 
@@ -283,7 +241,7 @@ Once you submit, the worker resumes the prior session using each provider's own 
 
 - **Defaults vary by provider.** Claude Code starts in **Default** permission mode (it will ask before risky actions); Codex starts in **Suggest & Approve**. Both ask before doing dangerous things unless you bypass.
 - **Bypass is a deliberate, sticky choice.** The "& Bypass Permissions" / "Bypass permissions" actions stop the agent asking for approval for the rest of the session (Codex's button also opens the sandbox and network). Use them only when you trust the working directory and the task.
-- **Attachment support differs** (see the [attachments table](#attachments)) — only Claude Code accepts PDFs among the rich providers, while all shared-protocol providers accept PDFs and arbitrary binaries.
+- **Attachment support differs by provider** (see the [attachments table](#attachments)) — every provider takes text and images, but PDF and other-binary support varies.
 - **Pi is minimal** — model and thinking level only, no permission/plan/bypass controls.
 - **Strict provider dispatch.** LeapMux never tries to render or encode one provider's messages with another provider's code. If a provider plugin is missing it surfaces a clear warning rather than guessing.
 

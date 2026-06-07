@@ -41,19 +41,19 @@ It is **not** aimed at people who want to contribute to LeapMux's own source cod
 
 LeapMux supports nine coding-agent providers. A provider only appears in the agent picker if its command-line tool is detected on the Worker, so the list you actually see depends on which CLIs are installed.
 
-All nine providers are functional integrations — each has a working chat plugin and backend wiring. They differ in how much bespoke, hand-tuned rendering they get. Three providers have rich, purpose-built message rendering and settings; the other six are thinner integrations built on shared protocol layers (the Agent Client Protocol, or the OpenCode wire protocol). They are fully usable, not placeholders.
+Every provider is first-class: you get the same core experience — chat, streamed tool calls, permission prompts, the plan/todo sidebar, and session resume — with all of them. What you can do varies only by what each agent's own CLI offers.
 
-| Agent | Integration depth | Detected binary |
-|-------|-------------------|-----------------|
-| Claude Code | Bespoke (hand-written rendering and settings) | `claude` |
-| Codex | Bespoke | `codex` |
-| Pi | Bespoke | `pi` |
-| Gemini CLI | Shared Agent Client Protocol layer | `gemini` |
-| Cursor | Shared Agent Client Protocol layer | `cursor-agent` |
-| GitHub Copilot | Shared Agent Client Protocol layer | `copilot` |
-| Goose | Shared Agent Client Protocol layer | `goose` |
-| OpenCode | Shared OpenCode-protocol layer | `opencode` |
-| Kilo | Shared OpenCode-protocol layer | `kilo` |
+| Agent | Detected binary |
+|-------|-----------------|
+| Claude Code | `claude` |
+| Codex | `codex` |
+| Gemini CLI | `gemini` |
+| Cursor | `cursor-agent` |
+| GitHub Copilot | `copilot` |
+| Kilo | `kilo` |
+| OpenCode | `opencode` |
+| Goose | `goose` |
+| Pi | `pi` |
 
 Each provider exposes its own models, effort levels, permission modes, and other settings, which you change mid-session from an in-chat settings dropdown. For example, Claude Code defaults to the `opus[1m]` model and Codex to `gpt-5.4`. For how to open an agent, chat, answer permission prompts, switch models, and resume a session, see [Coding Agents](/docs/09-coding-agents/).
 

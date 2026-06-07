@@ -8,10 +8,6 @@ Short definitions of the terms you will meet throughout the LeapMux manual. Each
 
 ## A
 
-### ACP (Agent Client Protocol)
-
-The shared message protocol LeapMux uses to render and drive several coding agents through a common interface — `agentclientprotocol.com`. In LeapMux the ACP base backs the **OpenCode**, **Gemini CLI**, **Cursor**, **GitHub Copilot**, **Kilo**, and **Goose** providers, so their chat transcripts, tool calls, plans, and thoughts all render through one canonical set of renderers. See [Coding Agents](/docs/09-coding-agents/).
-
 ### Active client (presence)
 
 The single client connection that "owns" the turn-end notification sound for a workspace at any moment. When an agent finishes a turn, only the client whose id matches the workspace's active client plays the ding — so opening the same workspace on a laptop and a phone does not double-ding. The active client is broadcast over the per-org events stream and is not the same thing as the layout sync. See [Collaboration & Presence](/docs/13-collaboration-and-presence/).

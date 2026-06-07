@@ -48,11 +48,9 @@ The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and t
 
 See [Security & Threat Model](/docs/23-security-and-threat-model/).
 
-## Which coding agents are supported, and what is a "stub"?
+## Which coding agents are supported?
 
-LeapMux supports nine agent providers: **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **GitHub Copilot**, **Kilo**, **OpenCode**, **Goose**, and **Pi**. All nine are functional — each has a working chat plugin and backend process wiring.
-
-"Stub" is a historical folder name, not a status. Claude Code, Codex, and Pi have hand-written, bespoke message rendering and settings; the other six are thinner registrations that reuse the shared Agent Client Protocol (ACP) or OpenCode-protocol layer. They are fully usable, not placeholders.
+LeapMux supports nine agent providers: **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **GitHub Copilot**, **Kilo**, **OpenCode**, **Goose**, and **Pi**. All nine are first-class — every one gives you the same core experience: chat, tool calls, permission prompts, plan tracking, and session resume.
 
 A provider only appears in the picker when its CLI binary is detected on the worker (LeapMux probes the shell for the binary — `command -v` on POSIX shells, `Get-Command` on PowerShell, `which` on nushell and csh). So if `claude` or `codex` isn't installed on the machine running the worker, that provider won't show up.
 
