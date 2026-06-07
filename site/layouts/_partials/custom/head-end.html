@@ -2,6 +2,12 @@
   Site head-end customizations (injected at the end of <head> by Hextra).
   This <style> is unlayered, so it wins over Hextra's @layer'd Tailwind utilities.
 */ -}}
+
+{{- /* App code font: plain Hack (not the Nerd Font) from CDN; wired into
+       --hx-font-mono in assets/css/custom.css. */ -}}
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css">
+
 <style>
   /*
     Visually size the navbar theme-toggle icon to match the GitHub icon.
