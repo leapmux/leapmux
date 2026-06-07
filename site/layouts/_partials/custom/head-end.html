@@ -1,0 +1,60 @@
+{{- /*
+  Site head-end customizations (injected at the end of <head> by Hextra).
+  This <style> is unlayered, so it wins over Hextra's @layer'd Tailwind utilities.
+*/ -}}
+<style>
+  /*
+    Visually size the navbar theme-toggle icon to match the GitHub icon.
+
+    The GitHub icon uses viewBox="3 3 18 18" (the glyph fills its 18-unit box),
+    while the sun/moon/contrast theme icons use viewBox="0 0 24 24" with the
+    glyph spanning only ~18 of those 24 units. Rendered at the same height the
+    theme glyph therefore reads ~25% smaller. Scale it up by ~4/3, and pull the
+    horizontal footprint back to ~24px (the navbar icon width) with negative
+    margins so the larger glyph doesn't widen the surrounding gaps.
+  */
+  .hextra-theme-toggle.hx\:p-2 svg {
+    height: 30px;
+    width: 30px;
+    margin-left: -3px;
+    margin-right: -3px;
+  }
+
+  /*
+    Equalize the inter-icon gap with the Search<->GitHub gap.
+
+    The navbar lays items out with a uniform flex gap (gap-2 = 8px). The GitHub
+    icon and the theme toggle are both icon *buttons* with p-2 padding on each
+    side, so the GitHub<->Theme gap stacks two paddings (GitHub's right + the
+    toggle's left) while the Search<->GitHub gap stacks only one (the search box
+    has no trailing padding). Dropping the toggle's left padding removes the
+    extra one so the two gaps match.
+  */
+  .hextra-theme-toggle.hx\:p-2 {
+    padding-left: 0;
+    /*
+      De-emphasize the toggle: color it like the navbar text links
+      (gray-600, dark gray-400) instead of the full-strength currentColor the
+      GitHub icon uses. The icon glyph inherits this color via currentColor.
+    */
+    color: var(--hx-color-gray-600);
+  }
+  .dark .hextra-theme-toggle.hx\:p-2 {
+    color: var(--hx-color-gray-400);
+  }
+
+  /*
+    Hide the redundant theme switch in the page footer. Hextra shows a footer
+    switch row on sidebar-less pages (e.g. the home page); since the navbar now
+    has its own theme toggle, drop the footer's switch row and its divider.
+    Scoped via :has() to the footer div that contains the toggle, so the navbar
+    and mobile-sidebar toggles are untouched, and docs pages (which render no
+    footer switch) match nothing.
+  */
+  .hextra-footer > div:has(.hextra-theme-toggle) {
+    display: none;
+  }
+  .hextra-footer > div:has(.hextra-theme-toggle) + hr {
+    display: none;
+  }
+</style>

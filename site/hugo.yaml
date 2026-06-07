@@ -1,0 +1,77 @@
+# Hugo configuration for the LeapMux documentation site -- https://leapmux.dev
+#
+# Built with the Hextra theme, imported as a Hugo module (see go.mod). Hugo is
+# not installed system-wide; it runs via `go tool hugo`, exactly like sqlc and
+# golangci-lint elsewhere in this repo. Build the site with:
+#
+#   task site
+#
+# The user manual is served from /docs/ (content/docs/).
+
+baseURL: "https://leapmux.dev/"
+title: LeapMux
+
+enableRobotsTXT: true
+copyright: "© Event Loop, Inc. — Licensed under FSL-1.1-ALv2"
+
+# Import the Hextra theme as a Hugo module. All module dependencies are public
+# and mirrored by the Go module proxy, so we resolve through the proxy only --
+# this avoids flaky direct `git fetch` calls to some upstreams' own servers.
+module:
+  proxy: "https://proxy.golang.org"
+  imports:
+    - path: github.com/imfing/hextra
+
+markup:
+  goldmark:
+    renderer:
+      # Allow raw HTML in Markdown (used by Hextra shortcodes and callouts).
+      unsafe: true
+  highlight:
+    # Use CSS classes for syntax highlighting so Hextra's light/dark themes apply.
+    noClasses: false
+
+menu:
+  main:
+    - name: Documentation
+      pageRef: /docs
+      weight: 1
+    - name: Downloads
+      url: "https://github.com/leapmux/leapmux/releases"
+      weight: 2
+    - name: Search
+      weight: 3
+      params:
+        type: search
+    - name: GitHub
+      weight: 4
+      url: "https://github.com/leapmux/leapmux"
+      params:
+        icon: github
+    # Icon-only theme switcher (Light/Dark/System dropdown) in the navbar.
+    # No `label` param -> the partial hides the text and shows just the icon,
+    # sized to the navbar icon height (matching the GitHub icon).
+    - name: Theme
+      weight: 5
+      params:
+        type: theme-toggle
+
+params:
+  navbar:
+    displayTitle: true
+    displayLogo: true
+    logo:
+      path: images/logo.svg
+      width: 28
+      height: 28
+  footer:
+    displayCopyright: true
+    displayPoweredBy: false
+  page:
+    width: normal
+  theme:
+    default: system
+    displayToggle: true
+  editURL:
+    enable: true
+    base: "https://github.com/leapmux/leapmux/edit/main/site/content"

@@ -1,0 +1,5 @@
+# Site-level i18n overrides for the Hextra theme. Hugo merges these over the
+# theme module's i18n/en.yaml, with the project's strings taking precedence.
+
+# Footer copyright (rendered by Hextra's footer when params.footer.displayCopyright is true).
+copyright: "© [Event Loop, Inc.](https://eventloop.io/) — Licensed under [FSL-1.1-ALv2](/docs/28-legal/)"

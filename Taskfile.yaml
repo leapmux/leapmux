@@ -792,6 +792,14 @@ tasks:
       - task: build-desktop-sidecar
       - mprocs --config mprocs-desktop.yaml
 
+  dev-site:
+    desc: Start the documentation site dev server with live reload (http://localhost:1313)
+    cmds:
+      # Live-reloading Hugo server via the go tool dependency (see site/go.mod).
+      # GOWORK=off isolates the site module from the root go.work, and hugo
+      # server overrides baseURL with the local address so links work locally.
+      - cd site && GOWORK=off go tool hugo server --buildDrafts
+
   build-desktop-sidecar:
     desc: Build desktop sidecar binary
     sources:
@@ -894,6 +902,23 @@ tasks:
       - NOTICE.html
     cmds:
       - bun scripts/generate-notice.mjs
+
+  # --- Documentation site ---
+
+  site:
+    desc: Generate the static documentation web site (Hugo + Hextra)
+    sources:
+      - site/hugo.yaml
+      - site/go.mod
+      - site/content/**/*
+      - site/static/**/*
+    generates:
+      - site/public/**/*
+    cmds:
+      # Hugo ships as a Go tool dependency (see site/go.mod) and is invoked via
+      # `go tool hugo` -- the same pattern as `go tool sqlc`. GOWORK=off keeps
+      # the site module's large dependency graph out of the root go.work.
+      - cd site && GOWORK=off go tool hugo --gc --minify
 
   # --- Clean ---
 

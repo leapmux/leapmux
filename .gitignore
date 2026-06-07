@@ -49,6 +49,12 @@ frontend/src/spinners/
 /desktop/rust/scripts/linuxdeploy-wrapper
 /desktop/rust/target/
 
+# Site (Hugo/Hextra)
+/site/public/
+/site/resources/
+/site/.hugo_build.lock
+/site/.hugo_cache/
+
 # IDE
 .idea/
 .vscode/
