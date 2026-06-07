@@ -126,7 +126,7 @@ globalStyle('input, textarea, select', {
 globalStyle(':root', {
   vars: {
     // Core palette — warm sand base
-    '--background': 'rgb(253 252 250)',
+    '--background': 'rgb(255 254 252)',
     '--foreground': 'rgb(34 32 30)',
     '--card': 'rgb(247 245 242)',
     '--card-foreground': 'rgb(34 32 30)',
@@ -256,9 +256,11 @@ globalStyle('ot-dropdown hr', {
   margin: 'var(--space-2) 0',
 })
 
-// Remove italic from blockquotes (Oat default).
+// Blockquotes: keep Oat's italic, but lift the color from the faint
+// --muted-foreground to roughly halfway toward body text, so the quote reads
+// clearly without being as loud as normal text.
 globalStyle('blockquote', {
-  fontStyle: 'normal',
+  color: 'color-mix(in oklab, var(--foreground), var(--muted-foreground))',
 })
 
 // Enable native width/height: auto transitions (progressive enhancement).
