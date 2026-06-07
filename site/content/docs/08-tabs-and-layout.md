@@ -138,8 +138,8 @@ A **vertical** split inserts a vertical divider, leaving two side-by-side panes:
 │                        │                        │
 │                        │                        │
 └────────────────────────┴────────────────────────┘
-                          ▲
-                vertical divider (drag to resize)
+                         ▲
+               vertical divider (drag to resize)
 ```
 
 A **horizontal** split inserts a horizontal divider instead, stacking the two panes top-and-bottom.

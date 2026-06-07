@@ -7,7 +7,7 @@ toc: false
 
 Welcome to the LeapMux user manual. LeapMux is a workspace for running several
 coding agents and shell terminals at once — each in a git worktree and branch you
-pick, tiled or floating, on a local or remote machine. Sessions stay attached
+pick, tiled or floating, on a local or remote machine. Agent sessions stay attached
 across restarts, and Frontend↔Worker traffic is end-to-end encrypted.
 
 This manual covers both **using** LeapMux (the in-app experience) and **running**

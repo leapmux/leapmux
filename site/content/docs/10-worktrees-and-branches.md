@@ -29,8 +29,8 @@ Open tabs are grouped in the workspace sidebar into a two-level tree:
 **The Repo → Branch sidebar tree:**
 
 ```text
-Repo group   (FolderGit icon — repo label; tooltip is the origin URL)
-└─ Branch group   (GitBranch icon — branch name + diff-stats badge)
+Repo group   (Repo label)
+└─ Branch group   (Branch name + diff-stats badge)
    ├─ tab
    └─ tab
 ```

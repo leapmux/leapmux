@@ -100,7 +100,7 @@ See **Active client (presence)**.
 
 ### PTY
 
-A pseudo-terminal — the operating-system primitive behind a terminal tab. Each LeapMux terminal is a PTY running a real shell on the Worker, and its I/O and shell state live only on the Worker (the Hub never sees them). PTY sessions persist across restarts and reconnects. See [Terminals](/docs/11-terminals/).
+A pseudo-terminal — the operating-system primitive behind a terminal tab. Each LeapMux terminal is a PTY running a real shell on the Worker, and its I/O and shell state live only on the Worker (the Hub never sees them). A PTY session stays attached across reconnects; across a Worker restart the shell cannot survive, but its last screen is preserved so the terminal can be restarted where it left off. See [Terminals](/docs/11-terminals/).
 
 ## R
 

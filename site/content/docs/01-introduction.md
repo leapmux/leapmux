@@ -14,7 +14,7 @@ LeapMux exists to fix exactly that. It gives every agent its own git worktree an
 
 ## What LeapMux is
 
-LeapMux is a workspace for running several coding agents and shell terminals at once, each in a git worktree and branch you pick, tiled or floating, on a local or remote machine. Sessions stay attached across restarts, and all Frontend-to-Worker traffic is end-to-end encrypted. It runs in your browser or as a native desktop app.
+LeapMux is a workspace for running several coding agents and shell terminals at once, each in a git worktree and branch you pick, tiled or floating, on a local or remote machine. Agent sessions stay attached across restarts, and all Frontend-to-Worker traffic is end-to-end encrypted. It runs in your browser or as a native desktop app.
 
 Under the hood, LeapMux is a single Go binary (`leapmux`) that can play three roles:
 

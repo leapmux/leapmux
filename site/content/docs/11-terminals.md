@@ -4,7 +4,7 @@ type: docs
 weight: 11
 ---
 
-LeapMux gives you full shell terminals that run on a Worker and stream into your Frontend (browser or desktop app) over the same end-to-end-encrypted channel as your agents. A terminal is a tab, just like an agent or a file viewer — you can tile it, float it, move it between workspaces, and it survives page refreshes, reconnects, and even Worker restarts. This chapter covers how to open a terminal, how the shell list is built, how to use the terminal view, how persistence works, and how every terminal is automatically wired for remote control.
+LeapMux gives you full shell terminals that run on a Worker and stream into your Frontend (browser or desktop app) over the same end-to-end-encrypted channel as your agents. A terminal is a tab, just like an agent or a file viewer — you can tile it, float it, move it between workspaces, and it survives page refreshes and reconnects. A Worker restart is the one thing its live shell can't outlive, but LeapMux preserves the terminal's last screen, so the tab comes back exactly where it left off and is one keystroke from restarting. This chapter covers how to open a terminal, how the shell list is built, how to use the terminal view, how persistence works, and how every terminal is automatically wired for remote control.
 
 For the bigger picture of tabs, tiling, and layout, see [Tabs & Layout](/docs/08-tabs-and-layout/). For the git side of opening a terminal in a worktree or branch, see [Worktrees & Branches](/docs/10-worktrees-and-branches/).
 
@@ -181,13 +181,13 @@ If a program in a background (non-active) terminal rings the terminal bell, that
 
 ## Persistence and reattachment
 
-Terminals are durable. You can refresh the page, switch workspaces, lose and regain your connection, or restart the Worker, and your terminals come back.
+Terminals are durable. Refresh the page, switch workspaces, or lose and regain your connection, and the live shell keeps running on the Worker — the Frontend simply reattaches. A Worker restart is different: the shell process can't survive it, but the terminal's last screen is preserved, so the tab comes back showing where it left off and can be restarted.
 
 This works because the Worker keeps a rolling **100 KB screen buffer** for each terminal and also persists the terminal (its working directory, shell, title, dimensions, and last-seen screen) to its database:
 
 - **Page refresh / tab re-mount:** the Frontend re-fetches the saved screen and resumes streaming from where it left off, so a full-screen TUI redraws correctly rather than showing a blank pane.
 - **Workspace switch:** the on-screen contents (viewport plus scrollback) are captured when you switch away, so switching back restores exactly what was showing.
-- **Worker restart:** because the terminal is persisted to the database, an exited terminal is still listed after the Worker comes back and can be restarted.
+- **Worker restart:** the running shell cannot survive the Worker going down, but because the terminal and its last screen are persisted to the database, the terminal is still listed when the Worker returns — showing its final screen — and pressing **Enter** restarts the shell.
 
 > **Note:** Byte-for-byte replay restores text, full-screen mode, cursor visibility, autowrap, bracketed paste, mouse tracking, and the window title. A few transient attributes — current text colour/bold/italic, scrolling regions, and a saved cursor position — are not replayed; they self-correct as soon as the program next sets them, and content older than the 100 KB window scrolls off.
 

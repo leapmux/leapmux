@@ -28,7 +28,7 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
 
 ```text
                  LeapMux (127.0.0.1:4327)
-┌──────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────┐
 │                                                       │
 │  ┌─────────────┐  in-process   ┌──────────────────┐   │
 │  │     Hub     │◄─────────────►│     Worker       │   │
@@ -56,19 +56,19 @@ Solo mode is ideal for one person on one machine. Because it auto-authenticates 
 For multi-user and remote setups, run `leapmux hub` and `leapmux worker` as separate processes — often on different machines. The Hub requires real login (sign-up, passwords, sessions, OAuth, API tokens) and relays end-to-end encrypted traffic between Frontends and Workers. **Workers initiate outbound connections to the Hub**, so they can sit behind a NAT or firewall with no inbound ports open.
 
 ```text
-┌────────────────┐              ┌──────────────────┐              ┌──────────────────┐
-│                │  ConnectRPC  │                  │     gRPC     │  Worker 1        │
-│   Frontend     │◄────────────►│       Hub        │◄────────────►│  ┌────────────┐  │
-│  (Browser /    │  WebSocket   │     (Relay)      │              │  │   Agents   │  │
-│  Desktop App)  │              │                  │              │  │ (multiple) │  │
-│                │              │    Go Service    │              │  └────────────┘  │
-└────────────────┘              │  + Database      │              │  + SQLite        │
-                                │   (SQLite,       │              └──────────────────┘
-                                │    PostgreSQL,   │                        ⋮
-                                │    MySQL, ...)   │              ┌──────────────────┐
-                                │                  │              │  Worker N        │
-                                └──────────────────┘              │  + Agents/SQLite │
-                                                                  └──────────────────┘
+┌────────────────┐              ┌─────────────────┐            ┌──────────────────┐
+│                │  ConnectRPC  │                 │    gRPC    │  Worker 1        │
+│   Frontend     │◄────────────►│       Hub       │◄──────────►│  ┌────────────┐  │
+│  (Browser /    │  WebSocket   │     (Relay)     │            │  │   Agents   │  │
+│  Desktop App)  │              │                 │            │  │ (multiple) │  │
+│                │              │    Go Service   │            │  └────────────┘  │
+└────────────────┘              │  + Database     │            │  + SQLite        │
+                                │   (SQLite,      │            └──────────────────┘
+                                │    PostgreSQL,  │                      ⋮
+                                │    MySQL, ...)  │            ┌──────────────────┐
+                                │                 │            │  Worker N        │
+                                └─────────────────┘            │  + Agents/SQLite │
+                                                               └──────────────────┘
 ```
 
 One Hub coordinates one-or-more Workers. Each Worker is a separate machine (a dev box, a build server, your laptop) running `leapmux worker`. You pick which Worker hosts each tab, so you can keep an agent's filesystem and git operations local to the machine that holds the repo.
@@ -96,7 +96,7 @@ Organization
     ├── Layout tree of Tiles ── (leaf / split / grid)  ──┐
     │                                                    ├── Tabs (agent / terminal / file)
     └── Floating windows ── (their own tile trees) ──────┘   each hosted on a Worker,
-                                                              optionally bound to a worktree/branch
+                                                             optionally bound to a worktree/branch
 ```
 
 ### Organization
@@ -140,7 +140,7 @@ A **Worker** is a machine (or, in solo mode, an in-process component) that runs 
 
 Key properties:
 
-- Workers keep their own **local SQLite database**. Agent and terminal state lives there, not in the Hub. This is why **sessions persist** across restarts: when a Worker reconnects to the Hub, your agents and terminals are still attached, and the layout reappears.
+- Workers keep their own **local SQLite database**. Agent and terminal state lives there, not in the Hub. When a Worker reconnects after a dropped connection, your agents and terminals are still attached and the layout reappears. A full Worker restart is different: agent sessions resume, but a terminal's live shell cannot survive it — the terminal comes back showing its last screen and restarts on demand.
 - Workers **dial out** to the Hub and re-establish the connection automatically after a drop, so they work behind NATs and firewalls without inbound ports.
 - In distributed mode a Worker must be **registered** before it can connect: an authenticated user mints a registration key in the Hub UI and passes it to `leapmux worker --registration-key <key>` on first run. Once registered, the Worker saves its credentials and reconnects on its own.
 
@@ -174,7 +174,8 @@ For the full protocol, threat model, and trust boundaries, see [Security & Threa
 
 LeapMux is built to survive restarts:
 
-- **Agent and terminal sessions** live in the Worker's local database. A Worker reboot or a dropped connection does not destroy them — they re-attach when the Worker reconnects to the Hub.
+- **Agent sessions** live in the Worker's local database. A Worker reboot or a dropped connection does not destroy them — they re-attach and resume when the Worker reconnects to the Hub.
+- **Terminals** ride out a dropped connection the same way, re-attaching when the Worker reconnects. A Worker reboot, though, ends the live shell: LeapMux preserves the terminal's last screen, so the tab returns showing where it left off and restarts on demand.
 - **Workspaces, layouts, tabs, and floating windows** are stored centrally (their structure, not their content) so the arrangement you left is the arrangement you return to, across reloads and across devices.
 
 You don't have to re-launch agents with `--resume` or rebuild your tiling by hand after a crash; LeapMux reattaches and redraws.

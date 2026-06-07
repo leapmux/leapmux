@@ -153,7 +153,7 @@ To get a shell next to your agent, open the tab bar's add menu and choose **"New
 
 You can split the tile so the agent and terminal sit side by side, or float the terminal as a separate window. Tiling, splitting, and floating are covered in [Tabs & Layout](/docs/08-tabs-and-layout/); terminal behavior and persistence in [Terminals](/docs/11-terminals/).
 
-> **Tip:** Terminals and agents persist across restarts. Close the browser tab or quit the desktop app, relaunch, and your workspace, tabs, and sessions come back.
+> **Tip:** Your workspace, tabs, and agent sessions persist across restarts — close the browser tab or quit the desktop app, relaunch, and they come back. Terminals come back too, showing their last screen; if the Worker was restarted, press **Enter** in a terminal to start its shell again.
 
 ## Where to go next
 
