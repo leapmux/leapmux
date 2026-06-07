@@ -1,4 +1,4 @@
-// ACP = Agent Control Protocol — the shared message shape used by opencode,
+// ACP = Agent Client Protocol — the shared message shape used by opencode,
 // gemini, kilo, goose, cursor, and copilot. This module routes ACP messages
 // to the canonical ACP renderers in `./acpRenderers/` and exposes helpers
 // for collecting tool output text.
