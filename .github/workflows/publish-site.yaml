@@ -1,0 +1,62 @@
+name: Publish site
+
+# Builds the documentation site (Hugo + Hextra, under site/) and deploys it to
+# Cloudflare Pages on every push to main that touches the site.
+#
+# Configure a "cloudflare-publish" GitHub environment with:
+#   - secret   CLOUDFLARE_API_TOKEN    - API token with the "Cloudflare Pages: Edit" permission
+#   - secret   CLOUDFLARE_ACCOUNT_ID   - the Cloudflare account ID
+#   - variable CLOUDFLARE_PROJECT_NAME - the Cloudflare Pages project name (e.g. leapmux)
+
+on:
+  push:
+    branches: [main]
+    # Only redeploy when the site (content, config, theme, or this workflow)
+    # changes -- backend/frontend-only commits leave the published site current.
+    # Remove this `paths` filter to deploy on every commit to main.
+    paths:
+      - "site/**"
+      - ".github/workflows/publish-site.yaml"
+  workflow_dispatch:
+
+# One deploy at a time; let an in-flight deploy finish rather than cancelling it.
+concurrency:
+  group: publish-site
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: cloudflare-publish
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Load tool versions
+        run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache-dependency-path: site/go.sum
+
+      - name: Build site
+        # GOWORK=off isolates the site module from the root go.work (which lists
+        # only ./backend and ./desktop/go). Hugo is a `go tool` dependency in
+        # site/go.mod, so there is nothing extra to install.
+        working-directory: site
+        run: GOWORK=off go tool hugo --gc --minify
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # `--branch=main` marks this as a production deploy (it must match the
+          # Pages project's configured production branch).
+          command: >-
+            pages deploy site/public
+            --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME }}
+            --branch=main
