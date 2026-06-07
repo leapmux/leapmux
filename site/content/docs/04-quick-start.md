@@ -61,28 +61,30 @@ Once the app or browser tab is open, you'll see the LeapMux UI. The rest of this
 
 ### 1. Orient to the UI
 
-The interface has three regions:
+The window has a **titlebar** across the top, a **sidebar** down each side, and the **tiling area** in the middle:
 
-- **Left sidebar** — your workspaces, grouped into sections: **In progress**, any custom sections, **Shared**, and **Archived**, plus a **Workers** section. Each workspace expands into a tree of its open tabs, grouped by **Repo** then by **Branch**.
-- **Tiling area** — the center, where tabs (agents, terminals, file viewers) are laid out. Each tile has a tab bar across the top. Tiles can be split, gridded, and resized — see [Tabs & Layout](/docs/08-tabs-and-layout/).
-- **User menu** — your account and app controls. In the desktop app, app controls also live in the titlebar's hamburger **"Menu"** and (on macOS) the native menu bar.
+- **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in…"** (open the working directory in an external editor) and the **left/right sidebar toggles** are on the right.
+- **Left sidebar** — your **workspaces**, grouped into **In progress**, any custom sections, **Shared**, and **Archived**, plus a **Workers** section. Each workspace expands into a tree of its open tabs, grouped by **Repo** then **Branch**.
+- **Tiling area** — the center, where tabs (agents, terminals, file viewers) are laid out under a **tab bar**; tiles can be split, gridded, and resized (see [Tabs & Layout](/docs/08-tabs-and-layout/)). For an agent, the **input area** (message composer) sits at the bottom.
+- **Right sidebar** — the **Files** browser for the active tab (see [File Browser](/docs/12-file-browser/)).
 
-**The three regions of the workspace:**
+**The main areas of the window:**
 
 ```text
-┌──────────────────┬─────────────────────────────────────────────┐
-│ Sidebar          │ Tiling area                  [ user menu v ]│
-│                  │                                             │
-│ In progress      │  [ Agent x ][ Terminal x ][ + ]   tab bar   │
-│  > release-2.0   │  ───────────────────────────────            │
-│  > bugfix        │                                             │
-│ Shared           │       Agent        |      Terminal          │
-│ Archived         │    (chat+tools)    |     (shell PTY)        │
-│                  │                                             │
-│ Workers          │  split / grid / float  ->  Tabs & Layout    │
-│  - local         │                                             │
-└──────────────────┴─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│ App menu                   Titlebar         Open in… · sidebars │
+├──────────────┬───────────────────────────────┬──────────────────┤
+│              │            Tab bar            │                  │
+│              ├───────────────────────────────┤                  │
+│ Left sidebar │                               │ Right sidebar    │
+│ (workspaces) │          Tiling area          │ (Files)          │
+│              │                               │                  │
+│              ├───────────────────────────────┤                  │
+│              │           Input area          │                  │
+└──────────────┴───────────────────────────────┴──────────────────┘
 ```
+
+> **Note:** This shows the desktop app. The web app has the same sidebars and central tiling area; only the top differs (a browser top bar rather than the native window titlebar).
 
 ### 2. Create or open a workspace
 
