@@ -1,6 +1,7 @@
 package keystore
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"os"
 	"path/filepath"
@@ -227,7 +228,8 @@ func TestDuplicateVersionFails(t *testing.T) {
 	path := filepath.Join(dir, "encryption.key")
 
 	key, _ := GenerateKey()
-	_ = writeKeyRingFile(path, map[uint32][keySize]byte{1: key})
+	pepper, _ := GenerateKey()
+	_ = writeKeyRing(path, map[uint32][keySize]byte{1: key}, pepper)
 
 	// Manually append a duplicate version 1 line.
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
@@ -237,6 +239,38 @@ func TestDuplicateVersionFails(t *testing.T) {
 	_, err := LoadFromFile(path)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate version")
+}
+
+func TestDuplicatePepperFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "encryption.key")
+
+	key, _ := GenerateKey()
+	p1, _ := GenerateKey()
+	p2, _ := GenerateKey()
+	content := "1:" + base64.StdEncoding.EncodeToString(key[:]) + "\n" +
+		"pepper:" + base64.StdEncoding.EncodeToString(p1[:]) + "\n" +
+		"pepper:" + base64.StdEncoding.EncodeToString(p2[:]) + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	_, err := LoadFromFile(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate pepper")
+}
+
+func TestAllZeroPepperRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "encryption.key")
+
+	key, _ := GenerateKey()
+	var zero [keySize]byte
+	content := "1:" + base64.StdEncoding.EncodeToString(key[:]) + "\n" +
+		"pepper:" + base64.StdEncoding.EncodeToString(zero[:]) + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	_, err := LoadFromFile(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all-zero")
 }
 
 func TestInvalidBase64Fails(t *testing.T) {

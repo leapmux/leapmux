@@ -74,7 +74,7 @@ func runAPITokenIssue(cmd adminCmdCtx, args []string) error {
 		if err != nil {
 			return fmt.Errorf("load keystore: %w", err)
 		}
-		pepper := ks.DeriveSubkey("api_tokens.v1")
+		pepper := ks.Pepper()
 		validator, err := auth.NewTokenValidator(st, pepper[:])
 		if err != nil {
 			return err
