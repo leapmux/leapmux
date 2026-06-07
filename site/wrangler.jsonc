@@ -1,0 +1,18 @@
+{
+  // Deploys the built Hugo site (site/public) to the Cloudflare Worker named
+  // "leapmux-site" via Workers Static Assets.
+  //
+  // leapmux-site is a Worker, NOT a Pages project -- its dashboard URL is
+  // /workers/services/view/leapmux-site, so it must be deployed with
+  // `wrangler deploy`. `wrangler pages deploy` looks only in the Pages product
+  // and fails with "Project not found [code: 8000007]".
+  //
+  // There is no `main` entry script: an assets-only Worker serves the static
+  // files directly. `directory` is resolved relative to this file (site/), so
+  // it points at site/public -- the output of `go tool hugo`.
+  "name": "leapmux-site",
+  "compatibility_date": "2026-06-07",
+  "assets": {
+    "directory": "./public"
+  }
+}
