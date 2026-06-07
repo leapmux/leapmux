@@ -164,7 +164,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	cMgr := channelmgr.New(cMgrOpts...)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
-	apiTokenPepper := ks.DeriveSubkey("api_tokens.v1")
+	apiTokenPepper := ks.Pepper()
 	tokenValidator, tvErr := auth.NewTokenValidator(st, apiTokenPepper[:])
 	if tvErr != nil {
 		return nil, fmt.Errorf("create token validator: %w", tvErr)

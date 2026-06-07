@@ -1,0 +1,181 @@
+/*
+  LeapMux theme port for Hextra.
+
+  Goal: make the docs site match the app's look and feel. The app (frontend/)
+  uses @knadh/oat with project overrides in src/styles/global.css.ts:
+    - a warm "sand / charcoal" neutral palette (not Hextra's cool zinc), and
+    - a teal primary accent (#0d9488 light, #14b8a6 dark).
+
+  Hextra builds its Tailwind utilities from runtime CSS variables, so we recolor
+  by overriding those variables here (custom.css is concatenated after the
+  compiled stylesheet, so these win). The neutral scale is mode-independent --
+  Hextra picks light vs dark steps via `dark:` variants -- so it is defined once
+  in :root; only the primary hue/saturation/lightness differ per mode.
+*/
+
+:root {
+  /* ---- Primary: teal accent (light) -------------------------------------
+     Hextra derives --hx-color-primary-{50..900} as hsl() from these three.
+     Tuned so primary-600 (links, active items) lands near the app's #0d9488. */
+  --primary-hue: 174deg;
+  --primary-saturation: 76%;
+  --primary-lightness: 38%;
+
+  /* ---- Page background / pure surfaces -----------------------------------
+     `white` is the light page + card background; `dark` is the dark page
+     background. Warm both to the app's sand / charcoal. */
+  --hx-color-white: #fffefc; /* app --background (light) */
+  --hx-color-dark: #1a1917;  /* app --background (dark) */
+
+  /* ---- Warm neutral ramp (replaces Hextra's cool zinc) -------------------
+     Anchored to the app's tokens: card #f7f5f2, faint #f2f0ec, border #ddd9d3,
+     input #d5d1cb, faint-fg #a09d97, muted-fg #78756f, foreground #22201e,
+     dark surfaces #2a2826/#2e2b28. Used for text, borders, muted UI, the
+     sidebar, code surfaces, etc. */
+  --hx-color-gray-50: #f7f5f2;
+  --hx-color-gray-100: #f1efea;
+  --hx-color-gray-200: #e6e2db;
+  --hx-color-gray-300: #d7d2cb;
+  --hx-color-gray-400: #aaa69e;
+  --hx-color-gray-500: #7c7872;
+  --hx-color-gray-600: #5f5b55;
+  --hx-color-gray-700: #47433e;
+  --hx-color-gray-800: #312e2a;
+  --hx-color-gray-900: #221f1d;
+  --hx-color-gray-950: #1a1917;
+
+  /* Hextra also uses the `neutral` scale (mostly dark surfaces and borders).
+     Keep it identical to the warm gray ramp so surfaces stay consistent. */
+  --hx-color-neutral-50: #f7f5f2;
+  --hx-color-neutral-100: #f1efea;
+  --hx-color-neutral-200: #e6e2db;
+  --hx-color-neutral-300: #d7d2cb;
+  --hx-color-neutral-400: #aaa69e;
+  --hx-color-neutral-500: #7c7872;
+  --hx-color-neutral-600: #5f5b55;
+  --hx-color-neutral-700: #47433e;
+  --hx-color-neutral-800: #312e2a;
+  --hx-color-neutral-900: #221f1d;
+  --hx-color-neutral-950: #1a1917;
+
+  /* Mono stack: the app uses Hack for code. The plain Hack webfont (not the
+     4 MB Hack Nerd Font -- its icon glyphs aren't needed in docs) is loaded
+     from a CDN in the <head>; fall back to the system mono if it fails. */
+  --hx-font-mono: "Hack", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.dark {
+  /* ---- Primary: teal accent (dark) --------------------------------------
+     Brighter teal on the dark charcoal, matching the app's #14b8a6. */
+  --primary-hue: 172deg;
+  --primary-saturation: 68%;
+  --primary-lightness: 52%;
+}
+
+/* Hextra sets `body { background: var(--hx-color-white) }` and applies the dark
+   page background via wrappers; pin the body in dark mode too so no warm-white
+   shows at the page edges. */
+.dark body {
+  background-color: var(--hx-color-dark);
+}
+
+/*
+  Code-block backgrounds: match the app.
+
+  The app tints code with a faint *foreground* wash — rgb(--foreground / 0.075)
+  on both inline code and fenced blocks — so they blend warmly on any surface.
+  Hextra instead tints fenced blocks with the *primary* color (now teal), which
+  looks different. Re-tint inline code, fenced blocks, and the filename label
+  with the app's warm foreground wash. The fenced inner <code> stays transparent
+  so the wash isn't doubled (mirrors the app's `pre code { background: transparent }`).
+  Values are the app's --foreground (rgb(34 32 30) light / rgb(232 230 225) dark).
+*/
+.content code,
+.content .hextra-code-block pre,
+.content .hextra-code-block .hextra-code-filename {
+  background-color: rgb(34 32 30 / 0.075);
+}
+.content .hextra-code-block pre code {
+  background-color: transparent;
+}
+.dark .content code,
+.dark .content .hextra-code-block pre,
+.dark .content .hextra-code-block .hextra-code-filename {
+  background-color: rgb(232 230 225 / 0.075);
+}
+
+/*
+  Scrollbars: match the app's thin, warm scrollbars. Hextra only thins
+  .hextra-scrollbar containers (with a cool gray) and leaves the page scrollbar
+  at the browser default; the app makes every scrollbar thin and tints the thumb
+  with the muted-foreground color. Port that here (warm muted-foreground wash,
+  lighter in dark mode, like the app's --scrollbar-thumb).
+*/
+:root {
+  --lm-scrollbar: rgb(120 117 111 / 0.4);
+  --lm-scrollbar-hover: rgb(120 117 111 / 0.6);
+}
+.dark {
+  --lm-scrollbar: rgb(138 134 128 / 0.4);
+  --lm-scrollbar-hover: rgb(138 134 128 / 0.6);
+}
+*,
+.hextra-scrollbar,
+.hextra-scrollbar * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--lm-scrollbar) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--lm-scrollbar);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--lm-scrollbar-hover);
+}
+
+/*
+  Corner radius: align to the app's scale. The app is overwhelmingly 6px
+  (--radius-medium: buttons, cards, code blocks, dropdowns, inputs), with 2px
+  (--radius-small) for small bits and 12px (--radius-large) only for dialogs.
+  Hextra's scale is rounder (sm 4px, lg 8px, code blocks at xl 12px), so:
+    - sm 4px -> 2px (app small)
+    - lg 8px -> 6px (collapse onto app medium; cards, dropdowns, popovers)
+    - md (6px) and xl (12px, dialogs) already match and are left alone.
+*/
+:root {
+  --hx-radius-sm: 0.125rem;
+  --hx-radius-lg: 0.375rem;
+}
+
+/*
+  The search box uses the larger rounded-lg (8px) token rather than the small
+  one, so the radius change above doesn't reach it. Pin it to the small radius
+  so it matches the app's sharp inputs.
+*/
+.hextra-search-wrapper input {
+  border-radius: var(--hx-radius-sm);
+}
+
+/*
+  Code blocks: the app rounds code fences with the medium radius (6px); Hextra
+  uses xl (12px). Bring them down to the app's 6px.
+*/
+.content .hextra-code-block pre {
+  border-radius: var(--hx-radius-md);
+}
+
+/*
+  Link underline offset: match the app's 2px (Oat sets text-underline-offset: 2px).
+*/
+.content a {
+  text-underline-offset: 2px;
+}

@@ -13,8 +13,11 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	"github.com/leapmux/leapmux/internal/hub/storeopen"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
@@ -353,6 +356,92 @@ func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 	// Running reencrypt without rotation should report 0 re-encrypted.
 	err := runReencryptSecrets(testAdminCtx, []string{"--data-dir", dir})
 	require.NoError(t, err)
+}
+
+func TestCLI_RemoveEncryptionKey_RefusesWhenReferenced(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	// Add a provider — its client secret is encrypted under key version 1.
+	require.NoError(t, runAddOAuthProvider(testAdminCtx, []string{
+		"--type", "github", "--client-id", "c1", "--client-secret", "s1", "--data-dir", dir,
+	}))
+
+	// Rotate to version 2; the provider secret is still encrypted under v1.
+	require.NoError(t, runRotateEncryptionKey(testAdminCtx, []string{"--data-dir", dir}))
+
+	// Removing v1 must be refused — it still encrypts the provider secret.
+	err := runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still encrypts")
+
+	// After reencrypt migrates the secret to v2, v1 is unreferenced and
+	// removal succeeds.
+	require.NoError(t, runReencryptSecrets(testAdminCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir}))
+
+	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
+	require.NoError(t, err)
+	assert.Len(t, ks.Versions(), 1)
+}
+
+func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
+	dir := setupTestDataDir(t)
+	ctx := context.Background()
+
+	// Seed an OAuth token encrypted under key version 1.
+	st, err := storeopen.Open(ctx, adminConfig(dir))
+	require.NoError(t, err)
+	orgID := storetest.SeedOrg(t, st, "org", true)
+	user := storetest.SeedUser(t, st, orgID, "tokuser")
+	prov := storetest.SeedOAuthProvider(t, st, "tokprov")
+	require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
+		UserID:       user.ID,
+		ProviderID:   prov.ID,
+		AccessToken:  []byte("a"),
+		RefreshToken: []byte("r"),
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		KeyVersion:   1,
+	}))
+	require.NoError(t, st.Close())
+
+	// Rotate to version 2; the OAuth token is still on version 1.
+	require.NoError(t, runRotateEncryptionKey(testAdminCtx, []string{"--data-dir", dir}))
+
+	// Removing v1 must be refused — an OAuth token still references it. This
+	// exercises the guard's CountByKeyVersion (oauth_tokens) branch.
+	err = runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OAuth token")
+}
+
+func TestCLI_RotatePepper_RequiresYes(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	err := runRotatePepper(testAdminCtx, []string{"--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--yes")
+
+	// Without --yes the pepper is left untouched.
+	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
+	require.NoError(t, err)
+	assert.NotEqual(t, [32]byte{}, ks.Pepper())
+}
+
+func TestCLI_RotatePepper_ChangesPepperLeavesKeysIntact(t *testing.T) {
+	dir := setupTestDataDir(t)
+	keyPath := filepath.Join(dir, "encryption.key")
+
+	before, err := keystore.LoadFromFile(keyPath)
+	require.NoError(t, err)
+
+	require.NoError(t, runRotatePepper(testAdminCtx, []string{"--yes", "--data-dir", dir}))
+
+	after, err := keystore.LoadFromFile(keyPath)
+	require.NoError(t, err)
+	assert.NotEqual(t, before.Pepper(), after.Pepper(), "pepper must change")
+	assert.Equal(t, before.ActiveVersion(), after.ActiveVersion(), "encryption keys must be unchanged")
+	assert.Equal(t, before.Versions(), after.Versions())
 }
 
 // ---- User subcommand tests: happy paths ----

@@ -2,6 +2,9 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { AgentProvider as AgentProviderEnum } from '~/generated/leapmux/v1/agent_pb'
 
+// Providers shown in the agent picker before the worker's
+// ListAvailableProviders probe returns. Lists every supported provider; once
+// the probe completes, the picker switches to the actually-installed subset.
 export const DEFAULT_AGENT_PROVIDERS: AgentProvider[] = [
   AgentProviderEnum.CLAUDE_CODE,
   AgentProviderEnum.CODEX,
@@ -11,6 +14,7 @@ export const DEFAULT_AGENT_PROVIDERS: AgentProvider[] = [
   AgentProviderEnum.GOOSE,
   AgentProviderEnum.KILO,
   AgentProviderEnum.OPENCODE,
+  AgentProviderEnum.PI,
 ]
 
 export function getAvailableAgentProviders(availableProviders?: AgentProvider[]): AgentProvider[] {

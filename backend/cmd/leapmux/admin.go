@@ -119,6 +119,7 @@ var adminTree = adminGroup{
 				{Name: "rotate", Summary: "Generate and add a new encryption key version", Run: runRotateEncryptionKey},
 				{Name: "remove", Summary: "Remove an old encryption key version", Run: runRemoveEncryptionKey},
 				{Name: "reencrypt", Summary: "Re-encrypt all secrets with the active key", Run: runReencryptSecrets},
+				{Name: "rotate-pepper", Summary: "Regenerate the API-token pepper (invalidates all API/delegation tokens)", Run: runRotatePepper},
 			},
 		},
 		{

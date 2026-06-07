@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"strings"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
@@ -31,20 +32,102 @@ func runRotateEncryptionKey(cmd adminCmdCtx, args []string) error {
 
 func runRemoveEncryptionKey(cmd adminCmdCtx, args []string) error {
 	var version *uint
-	return withAdminConfig(cmd, args, func(fs *flag.FlagSet) {
+	return withAdminStore(cmd, args, func(fs *flag.FlagSet) {
 		version = fs.Uint("version", 0, "key version to remove")
-	}, func(cfg *config.Config) error {
+	}, func(ctx context.Context, cfg *config.Config, st store.Store) error {
 		if *version < 1 {
 			return fmt.Errorf("--version is required (must be >= 1)")
 		}
 
 		path := cfg.EncryptionKeyFilePath()
-		if err := keystore.RemoveKey(path, uint32(*version)); err != nil {
+		ks, err := keystore.LoadFromFile(path)
+		if err != nil {
+			return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", path)
+		}
+		v := uint32(*version)
+		if v == ks.ActiveVersion() {
+			return fmt.Errorf("cannot remove active key version %d", v)
+		}
+
+		// Guard: refuse to remove a version that still encrypts data.
+		// Removing it would permanently brick those secrets (decrypt fails
+		// with "unknown key version"). The operator must run reencrypt first
+		// to migrate them onto the active key.
+		refs, err := countEncryptedRefs(ctx, st, v)
+		if err != nil {
+			return err
+		}
+		if len(refs) > 0 {
+			return fmt.Errorf("encryption key version %d still encrypts %s; run 'leapmux admin encryption-key reencrypt' first (after restarting the hub on the rotated key)", v, strings.Join(refs, " and "))
+		}
+
+		if err := keystore.RemoveKey(path, v); err != nil {
 			return err
 		}
 
-		fmt.Printf("Removed encryption key version %d.\n", *version)
+		fmt.Printf("Removed encryption key version %d.\n", v)
 		fmt.Printf("Restart the hub to apply.\n")
+		return nil
+	})
+}
+
+// countEncryptedRefs returns human-readable descriptions of data still
+// encrypted under the given key version. An empty result means the version is
+// safe to remove. It scans the persistent OAuth secrets — provider client
+// secrets and user OAuth tokens. Transient pending_oauth_signups are not
+// scanned: they auto-expire, are never migrated by reencrypt, and a bricked
+// one only fails an in-flight signup the user can simply retry.
+func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]string, error) {
+	var refs []string
+
+	tokens, err := st.OAuthTokens().CountByKeyVersion(ctx, int64(version))
+	if err != nil {
+		return nil, fmt.Errorf("count oauth tokens for key version %d: %w", version, err)
+	}
+	if tokens > 0 {
+		refs = append(refs, fmt.Sprintf("%d OAuth token(s)", tokens))
+	}
+
+	providers, err := st.OAuthProviders().ListAllWithSecrets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list oauth providers: %w", err)
+	}
+	var providerCount int
+	for _, p := range providers {
+		if ver, e := keystore.CiphertextVersion(p.ClientSecret); e == nil && ver == version {
+			providerCount++
+		}
+	}
+	if providerCount > 0 {
+		refs = append(refs, fmt.Sprintf("%d OAuth provider secret(s)", providerCount))
+	}
+
+	return refs, nil
+}
+
+// runRotatePepper regenerates the dedicated api_token/delegation_token pepper.
+// This INVALIDATES every existing API token and delegation token (their HMAC
+// hashes can no longer be reproduced), so it is gated behind --yes. The
+// encryption key ring is untouched; encryption-key rotation never affects the
+// pepper, and vice versa.
+func runRotatePepper(cmd adminCmdCtx, args []string) error {
+	var yes bool
+	return withAdminConfig(cmd, args, func(fs *flag.FlagSet) {
+		fs.BoolVar(&yes, "yes", false, "confirm: this invalidates ALL API and delegation tokens")
+	}, func(cfg *config.Config) error {
+		path := cfg.EncryptionKeyFilePath()
+		if _, err := keystore.LoadFromFile(path); err != nil {
+			return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", path)
+		}
+		if !yes {
+			return fmt.Errorf("regenerating the pepper INVALIDATES ALL existing API tokens and delegation tokens; every client must be re-issued / re-authenticate.\nRe-run with --yes to proceed")
+		}
+		if err := keystore.RegeneratePepper(path); err != nil {
+			return err
+		}
+		fmt.Println("Regenerated the API-token pepper.")
+		fmt.Println("All existing API tokens and delegation tokens are now invalid.")
+		fmt.Println("Restart the hub to apply, then re-issue API tokens with: leapmux admin api-token issue")
 		return nil
 	})
 }
