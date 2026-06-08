@@ -11,7 +11,7 @@ layout: hextra-home
 
 <div class="hx:mb-12">
 {{< hextra/hero-subtitle >}}
-  Run Claude Code, Codex, and more side by side &mdash; each in its own git worktree&nbsp;<br class="hx:sm:block hx:hidden" />and branch, tiled or floating, on a local or remote machine, with traffic to your agents end-to-end encrypted.
+  Run Claude Code, Codex, and more side by side &mdash; each in its own git worktree and branch,&nbsp;<br class="hx:sm:block hx:hidden" />tiled or floating, on a local or remote machine, with traffic to your agents end-to-end encrypted.
 {{< /hextra/hero-subtitle >}}
 </div>
 
