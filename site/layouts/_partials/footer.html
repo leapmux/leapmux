@@ -37,7 +37,7 @@
         {{- if (.Site.Params.footer.displayPoweredBy | default true) }}<div class="hx:font-semibold">{{ template "theme-credit" $poweredBy }}</div>{{- end -}}
         {{- /* LeapMux: copyright (with build year) on the left, build freshness on the right; stacked on mobile, one line at >=sm. */ -}}
         <div class="hx:mt-6 hx:flex hx:w-full hx:flex-col hx:gap-2 hx:text-xs hx:items-center hx:sm:flex-row hx:sm:items-center hx:sm:justify-between">
-          {{- if .Site.Params.footer.displayCopyright }}<div>{{ now.Year }} {{ $copyright | markdownify }}</div>{{- end -}}
+          {{- if .Site.Params.footer.displayCopyright }}<div>{{ now.Year }} {{ $copyright | markdownify }} · <a href="/llms.txt" title="AI-readable site map">llms.txt</a></div>{{- end -}}
           <div
             class="lm-generated hx:whitespace-nowrap"
             data-generated="{{ now.Format "2006-01-02T15:04:05Z07:00" }}"
