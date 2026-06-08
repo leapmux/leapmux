@@ -1,5 +1,6 @@
 ---
 title: "Authentication Providers"
+description: "Configure OAuth/OIDC single sign-on for a LeapMux Hub so users can log in with GitHub, Google, Apple, or any standards-compliant OpenID Connect provider."
 type: docs
 weight: 5
 ---

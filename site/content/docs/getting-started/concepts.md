@@ -1,5 +1,6 @@
 ---
 title: "Concepts & Architecture"
+description: "How LeapMux is built: the Hub, Worker, and Frontend, the solo and distributed deployment shapes, and the org, workspace, tile, tab, and worktree model."
 type: docs
 weight: 2
 ---

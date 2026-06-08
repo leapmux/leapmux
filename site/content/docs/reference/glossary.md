@@ -1,5 +1,6 @@
 ---
 title: "Glossary"
+description: "Short, alphabetical definitions of the terms used throughout the LeapMux manual, each linking to the chapter that covers it in depth."
 type: docs
 weight: 4
 ---

@@ -1,5 +1,6 @@
 ---
 title: "Troubleshooting"
+description: "A symptom-to-fix reference for LeapMux: common problems with their likely cause and the exact fix, grouped by area, using real flags and messages."
 type: docs
 weight: 2
 ---

@@ -1,5 +1,6 @@
 ---
 title: "Collaboration & Presence"
+description: "How LeapMux keeps a workspace layout in sync across your devices in near-real-time, what a read-only share exposes, and how the turn-end sound is chosen."
 type: docs
 weight: 9
 ---

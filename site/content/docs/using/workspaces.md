@@ -1,5 +1,6 @@
 ---
 title: "Workspaces"
+description: "The top-level container in LeapMux for tiled agent, terminal, and file tabs: create, rename, delete, organize, share, and switch between workspaces."
 type: docs
 weight: 3
 ---

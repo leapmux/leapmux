@@ -1,5 +1,6 @@
 ---
 title: "Remote Control CLI"
+description: "Drive LeapMux from a script, CI job, or another agent with leapmux remote: open tabs, message agents, type into terminals, reshape layouts, and stream events."
 type: docs
 weight: 8
 ---

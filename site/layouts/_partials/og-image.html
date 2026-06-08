@@ -1,0 +1,77 @@
+{{- /*
+  Returns the absolute URL of this page's Open Graph card (1200x630 PNG).
+
+  Unless the page sets an explicit `images` front-matter entry, the card is
+  generated at build time by compositing onto the shared background
+  (assets/og/base.png): the LeapMux app icon on the right (assets/og/icon.png,
+  derived from icons/leapmux-icon-square.svg via `task prepare-frontend`), and on
+  the left a "LeapMux" wordmark, the (word-wrapped) page title, and a path-aware
+  docs URL that encodes the section (e.g. leapmux.dev/docs/using). Hugo caches the
+  processed image, so calling this from both opengraph.html and twitter_cards.html
+  is cheap.
+
+  Single top-level return -- Hugo returning partials reject nested returns.
+*/ -}}
+{{- $img := "" -}}
+
+{{- /* Explicit override: use the page's own images param if set. */ -}}
+{{- with .Params.images -}}
+  {{- $first := index . 0 -}}
+  {{- with $.Resources.GetMatch $first -}}
+    {{- $img = .Permalink -}}
+  {{- else -}}
+    {{- $img = $first | absURL -}}
+  {{- end -}}
+{{- end -}}
+
+{{- if not $img -}}
+  {{- $base := resources.Get "og/base.png" -}}
+  {{- $icon := (resources.Get "og/icon.png").Resize "240x240" -}}
+  {{- $fontBold := resources.Get "fonts/Inter-Bold.ttf" -}}
+  {{- $fontReg := resources.Get "fonts/Inter-Regular.ttf" -}}
+
+  {{- /* Title, footer URL (path-aware), and title type size. */ -}}
+  {{- $title := .Title -}}
+  {{- $url := "leapmux.dev" -}}
+  {{- $titleSize := 72 -}}
+  {{- $maxChars := 15 -}}
+  {{- if .IsHome -}}
+    {{- $title = "A workspace for a fleet of coding agents" -}}
+    {{- $titleSize = 56 -}}
+    {{- $maxChars = 18 -}}
+  {{- else -}}
+    {{- $seg := index (split (strings.TrimPrefix "/docs/" .RelPermalink) "/") 0 -}}
+    {{- $url = "leapmux.dev/docs" -}}
+    {{- if $seg -}}{{- $url = printf "leapmux.dev/docs/%s" $seg -}}{{- end -}}
+  {{- end -}}
+
+  {{- /* Greedy word-wrap the title to at most $maxChars per line. */ -}}
+  {{- $lines := slice -}}
+  {{- $cur := "" -}}
+  {{- range $w := split $title " " -}}
+    {{- $try := cond (eq $cur "") $w (printf "%s %s" $cur $w) -}}
+    {{- if le (len $try) $maxChars -}}
+      {{- $cur = $try -}}
+    {{- else -}}
+      {{- $lines = $lines | append $cur -}}
+      {{- $cur = $w -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if ne $cur "" -}}{{- $lines = $lines | append $cur -}}{{- end -}}
+  {{- $wrapped := delimit $lines "\n" -}}
+
+  {{- /* Compose the card. Left column at x=80; app icon centered on the right. */ -}}
+  {{- $filters := slice
+        (images.Overlay $icon 860 195)
+        (images.Text "LeapMux" (dict
+          "x" 80 "y" 72 "size" 32 "color" "#d7d2cb" "font" $fontBold "linespacing" 4))
+        (images.Text $wrapped (dict
+          "x" 80 "y" 250 "size" $titleSize "color" "#fffefc" "font" $fontBold "linespacing" 12))
+        (images.Text $url (dict
+          "x" 80 "y" 556 "size" 26 "color" "#2dd4bf" "font" $fontReg "linespacing" 4)) -}}
+
+  {{- $card := $base | images.Filter $filters -}}
+  {{- $img = $card.Permalink -}}
+{{- end -}}
+
+{{- return $img -}}

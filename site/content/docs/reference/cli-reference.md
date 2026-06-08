@@ -1,5 +1,6 @@
 ---
 title: "CLI Reference"
+description: "A quick-lookup cheat-sheet for the leapmux command line: every daemon mode and its flags, the version command, and the environment variables LeapMux reads."
 type: docs
 weight: 1
 ---

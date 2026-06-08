@@ -1,5 +1,6 @@
 ---
 title: "Running & Operating"
+description: "Host LeapMux for a team: run modes, configuration, worker and account administration, encryption, the security model, and scripting a running instance."
 type: docs
 weight: 3
 sidebar:

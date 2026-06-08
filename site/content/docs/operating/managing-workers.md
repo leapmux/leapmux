@@ -1,5 +1,6 @@
 ---
 title: "Managing Workers"
+description: "How a Worker connects out to a Hub, how to register and approve one, how Worker status shows in the UI, and how TOFU key pinning guards against a malicious Hub."
 type: docs
 weight: 3
 ---

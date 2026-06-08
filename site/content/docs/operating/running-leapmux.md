@@ -1,5 +1,6 @@
 ---
 title: "Running LeapMux"
+description: "Operator guide to the solo, hub, worker, and dev modes: what each does, how to launch it, where it stores data, and how to run under Docker or a proxy."
 type: docs
 weight: 1
 ---

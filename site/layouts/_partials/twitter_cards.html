@@ -1,0 +1,16 @@
+{{- /*
+  LeapMux Twitter Card metadata (overrides Hugo's internal default, which the
+  theme invokes as `partial "twitter_cards.html"`). Upgrades the card to
+  summary_large_image and points it at the build-time OG card so links unfurl
+  with a full-width preview. twitter:site/creator are emitted only if a handle
+  is configured (we don't invent one).
+*/ -}}
+{{- $desc := partial "utils/page-description.html" . -}}
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="{{ .Title | default .Site.Title }}" />
+<meta name="twitter:description" content="{{ $desc }}" />
+<meta name="twitter:image" content="{{ partial "og-image.html" . }}" />
+{{- with site.Params.social.twitter }}
+<meta name="twitter:site" content="{{ . }}" />
+<meta name="twitter:creator" content="{{ . }}" />
+{{- end }}

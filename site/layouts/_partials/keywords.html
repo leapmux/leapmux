@@ -1,0 +1,27 @@
+{{- /*
+  Returns a deduped slice of keywords for this page, used by schema.html
+  (JSON-LD `keywords`) and opengraph.html (the <meta name="keywords"> tag).
+
+  An explicit front-matter `keywords` list overrides derivation. Otherwise we
+  derive from brand terms + the page title + its section. (We deliberately do not
+  scrape H2 headings: .Fragments is unreliable in the <head> context before the
+  content is rendered, and the on-page anchored headings + the BreadcrumbList in
+  schema.html are what actually make a page's structure discoverable to search.)
+  Single top-level return (Hugo returning partials reject nested returns).
+*/ -}}
+{{- $kw := .Params.keywords -}}
+{{- if not $kw -}}
+  {{- $kw = slice "LeapMux" "coding agents" -}}
+  {{- if not .IsHome -}}
+    {{- $kw = $kw | append .Title -}}
+    {{- $seg := index (split (strings.TrimPrefix "/docs/" .RelPermalink) "/") 0 -}}
+    {{- $labels := dict
+          "getting-started" "Getting Started"
+          "using" "Using LeapMux"
+          "operating" "Operating"
+          "reference" "Reference" -}}
+    {{- with index $labels $seg -}}{{- $kw = $kw | append . -}}{{- end -}}
+  {{- end -}}
+  {{- $kw = $kw | uniq -}}
+{{- end -}}
+{{- return $kw -}}

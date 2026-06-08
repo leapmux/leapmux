@@ -1,5 +1,6 @@
 ---
 title: "Getting Started"
+description: "New to LeapMux? Learn what it is and how it is built, install it, and walk through your first coding-agent session."
 type: docs
 weight: 1
 sidebar:

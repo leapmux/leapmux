@@ -1,5 +1,6 @@
 ---
 title: "Keyboard Shortcuts"
+description: "How the VS Code-style shortcut system works in LeapMux, every default key binding by context, and the override format for customizing them."
 type: docs
 weight: 11
 ---

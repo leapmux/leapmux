@@ -1,0 +1,7 @@
+{
+  "name": "Inter",
+  "version": "4.1",
+  "license": "OFL-1.1",
+  "url": "https://github.com/rsms/inter",
+  "description": "The Inter typeface (`site/assets/fonts/Inter-Bold.ttf` and\n`Inter-Regular.ttf`) is used at build time to render the documentation site's\nOpen Graph card images. It is not embedded in, served by, or distributed with\nthe LeapMux application."
+}

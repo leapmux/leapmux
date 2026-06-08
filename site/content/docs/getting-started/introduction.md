@@ -1,5 +1,6 @@
 ---
 title: "Introduction"
+description: "What LeapMux is, the problem it solves, who it is for, the coding agents it supports, and how this manual is organized."
 type: docs
 weight: 1
 ---

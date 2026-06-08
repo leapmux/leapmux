@@ -1,5 +1,6 @@
 ---
 title: "File Browser"
+description: "The git-aware file browser and read-only viewer in LeapMux: browse the tree with live git status, open files as tabs, and view inline diffs, even remotely."
 type: docs
 weight: 8
 ---

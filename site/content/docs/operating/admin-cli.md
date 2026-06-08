@@ -1,5 +1,6 @@
 ---
 title: "Admin CLI"
+description: "Use leapmux admin to manage a Hub database and encryption keys directly: create users, reset passwords, mint and revoke tokens, add OAuth, and rotate keys."
 type: docs
 weight: 4
 ---

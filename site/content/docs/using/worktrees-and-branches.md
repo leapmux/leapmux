@@ -1,5 +1,6 @@
 ---
 title: "Worktrees & Branches"
+description: "Run many agents on one repo without conflicts using git worktrees: pick a branch or worktree when opening a tab, change it, push, and protect uncommitted work."
 type: docs
 weight: 6
 ---

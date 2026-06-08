@@ -1,5 +1,6 @@
 ---
 title: User Manual
+description: "The complete LeapMux user manual: get started, run coding agents and terminals day to day, operate a shared deployment, and look things up in the reference."
 type: docs
 weight: 1
 toc: false

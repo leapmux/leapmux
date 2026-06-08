@@ -1,5 +1,6 @@
 ---
 title: "Organizations & Members"
+description: "What an organization is in LeapMux, how it appears in the URL, the Owner, Admin, and Member roles and what each can do, and how to manage members and orgs."
 type: docs
 weight: 2
 ---

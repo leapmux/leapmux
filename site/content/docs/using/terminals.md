@@ -1,5 +1,6 @@
 ---
 title: "Terminals"
+description: "Full shell terminals in LeapMux that run on a Worker and stream over the end-to-end-encrypted channel: open one, use it, and keep it across reconnects."
 type: docs
 weight: 7
 ---

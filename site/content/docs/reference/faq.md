@@ -1,5 +1,6 @@
 ---
 title: "FAQ"
+description: "Short answers to the questions asked most often about LeapMux, each linking to the chapter that covers the topic in full."
 type: docs
 weight: 3
 ---

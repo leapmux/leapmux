@@ -1,5 +1,6 @@
 ---
 title: "Settings & Preferences"
+description: "Every setting in the Preferences and Profile dialogs: appearance, terminal theme, diff view, turn-end sound, fonts, profile, password, and OAuth links."
 type: docs
 weight: 10
 ---

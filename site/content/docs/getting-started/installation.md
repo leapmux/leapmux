@@ -1,5 +1,6 @@
 ---
 title: "Installation"
+description: "Ways to install LeapMux: the desktop app for macOS, Linux, and Windows, the leapmux binary, and Docker images for a self-hosted server and agent machines."
 type: docs
 weight: 3
 ---

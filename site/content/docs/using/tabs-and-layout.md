@@ -1,5 +1,6 @@
 ---
 title: "Tabs & Layout"
+description: "Build a workspace layout in LeapMux: divide the canvas into tiles, fill them with agent, terminal, and file tabs, arrange splits and grids, and float panes."
 type: docs
 weight: 4
 ---

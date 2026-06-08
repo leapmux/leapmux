@@ -1,5 +1,6 @@
 ---
 title: "Quick Start"
+description: "Go from zero to a working coding agent in minutes: launch LeapMux in solo mode, open an agent, send your first message, and open a terminal beside it."
 type: docs
 weight: 4
 ---

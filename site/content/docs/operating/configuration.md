@@ -1,5 +1,6 @@
 ---
 title: "Configuration"
+description: "The complete configuration reference for the LeapMux Hub and Worker: how settings resolve, every config key and default, storage backends, and encryption mode."
 type: docs
 weight: 2
 ---

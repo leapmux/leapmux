@@ -1,5 +1,6 @@
 ---
 title: "Encryption & Data"
+description: "What LeapMux stores and encrypts at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore a Hub safely."
 type: docs
 weight: 6
 ---

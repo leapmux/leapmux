@@ -39,6 +39,11 @@ jobs:
     environment: cloudflare-publish
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history so Hugo's enableGitInfo derives accurate per-file
+          # last-modified dates. A shallow clone dates every page with the
+          # latest commit.
+          fetch-depth: 0
 
       - name: Load tool versions
         run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"

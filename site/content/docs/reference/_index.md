@@ -1,5 +1,6 @@
 ---
 title: "Reference"
+description: "Look-it-up material for LeapMux: the command-line cheat-sheet, troubleshooting fixes, an FAQ, a glossary of terms, and legal notices."
 type: docs
 weight: 4
 sidebar:

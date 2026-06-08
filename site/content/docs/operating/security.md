@@ -1,5 +1,6 @@
 ---
 title: "Security & Threat Model"
+description: "LeapMux trust model and end-to-end encryption: how browser-to-agent traffic is protected, how Worker identity is pinned, and the steps to operate it safely."
 type: docs
 weight: 7
 ---

@@ -1,5 +1,6 @@
 ---
 title: Legal
+description: "License, trademark, third-party attribution, and privacy information for LeapMux, including a summary of the FSL-1.1-ALv2 license terms."
 type: docs
 weight: 5
 ---

@@ -1,5 +1,6 @@
 ---
 title: "Using LeapMux"
+description: "The day-to-day in-app experience: signing in, organizing your work, running coding agents and terminals, browsing files, and collaborating."
 type: docs
 weight: 2
 sidebar:

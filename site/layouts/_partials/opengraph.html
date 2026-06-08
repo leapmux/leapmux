@@ -1,0 +1,47 @@
+{{- /*
+  LeapMux override of Hextra's _partials/opengraph.html (theme version is itself
+  adapted from Hugo's internal opengraph). Focused on what this docs site uses,
+  with these additions over the theme/default:
+    - og:image (+ width/height/type/alt) from the build-time card (og-image.html).
+    - og:site_name (always), og:description via the shared page-description partial.
+    - article:section resolved to the real sub-section (theme emitted "docs").
+    - <meta name="keywords"> from keywords.html.
+  Re-sync if the theme module is bumped.
+*/ -}}
+
+{{- $iso8601 := "2006-01-02T15:04:05-07:00" -}}
+{{- $desc := partial "utils/page-description.html" . -}}
+{{- $ogImage := partial "og-image.html" . -}}
+
+<meta property="og:title" content="{{ .Title | default .Site.Title }}" />
+<meta property="og:description" content="{{ $desc }}" />
+<meta property="og:type" content="{{ if .IsPage }}article{{ else }}website{{ end }}" />
+<meta property="og:url" content="{{ .Permalink }}" />
+<meta property="og:site_name" content="{{ .Site.Title }}" />
+<meta property="og:locale" content="{{ .Params.locale | default site.Language.LanguageCode }}" />
+
+<meta property="og:image" content="{{ $ogImage }}" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="{{ .Title | default .Site.Title }} — {{ .Site.Title }}" />
+
+{{- if .IsPage }}
+  {{- $section := "Documentation" -}}
+  {{- $seg := index (split (strings.TrimPrefix "/docs/" .RelPermalink) "/") 0 -}}
+  {{- $labels := dict
+        "getting-started" "Getting Started"
+        "using" "Using LeapMux"
+        "operating" "Operating"
+        "reference" "Reference" -}}
+  {{- $section = index $labels $seg | default $section }}
+<meta property="article:section" content="{{ $section }}" />
+  {{- with .PublishDate }}{{ if not .IsZero }}
+<meta property="article:published_time" {{ .Format $iso8601 | printf "content=%q" | safeHTMLAttr }} />
+  {{ end }}{{ end -}}
+  {{- with .Lastmod }}{{ if not .IsZero }}
+<meta property="article:modified_time" {{ .Format $iso8601 | printf "content=%q" | safeHTMLAttr }} />
+  {{ end }}{{ end -}}
+{{- end }}
+
+<meta name="keywords" content="{{ delimit (partial "keywords.html" .) ", " }}" />

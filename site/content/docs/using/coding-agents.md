@@ -1,5 +1,6 @@
 ---
 title: "Coding Agents"
+description: "Run coding-assistant CLIs like Claude Code and Codex in LeapMux: open an agent, chat, read tool calls, answer permission prompts, and switch models mid-session."
 type: docs
 weight: 5
 ---

@@ -1,5 +1,6 @@
 ---
 title: "Accounts & Authentication"
+description: "Getting into LeapMux as a user: when you need an account, creating the first one, signing up and logging in, email verification, OAuth, and your profile."
 type: docs
 weight: 1
 ---
