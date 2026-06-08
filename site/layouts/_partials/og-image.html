@@ -37,8 +37,8 @@
   {{- $maxChars := 15 -}}
   {{- if .IsHome -}}
     {{- $title = "A workspace for a fleet of coding agents" -}}
-    {{- $titleSize = 56 -}}
-    {{- $maxChars = 18 -}}
+    {{- $titleSize = 60 -}}
+    {{- $maxChars = 23 -}}
   {{- else -}}
     {{- $seg := index (split (strings.TrimPrefix "/docs/" .RelPermalink) "/") 0 -}}
     {{- $url = "leapmux.dev/docs" -}}
