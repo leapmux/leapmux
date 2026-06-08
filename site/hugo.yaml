@@ -14,6 +14,11 @@ title: LeapMux
 enableRobotsTXT: true
 copyright: "© Event Loop, Inc. — Licensed under FSL-1.1-ALv2"
 
+# The site uses no tags or categories, so suppress Hugo's auto-generated
+# taxonomy/term list pages (/tags/, /categories/). They would otherwise be
+# empty pages with their own OG card, JSON-LD, and sitemap entry -- SEO noise.
+disableKinds: ["taxonomy", "term"]
+
 # Derive each page's last-modified date from its Git history. Powers the
 # "Last updated on" line (params.displayUpdatedDate) and JSON-LD/OG dateModified.
 # CI must check out full history (fetch-depth: 0) for accurate per-file dates.
