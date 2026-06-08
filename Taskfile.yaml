@@ -912,6 +912,9 @@ tasks:
       - site/go.mod
       - site/content/**/*
       - site/static/**/*
+      - site/layouts/**/*
+      - site/assets/**/*
+      - site/i18n/**/*
     generates:
       - site/public/**/*
     cmds:
