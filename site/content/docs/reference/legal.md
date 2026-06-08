@@ -32,4 +32,8 @@ LeapMux is **self-hosted software**, not a hosted service. You — or your organ
 
 What data is stored, where it lives, and what is end-to-end encrypted is described in [Security & Threat Model](/docs/operating/security/) and [Encryption & Data](/docs/operating/encryption-and-data/). Because LeapMux is self-hosted, the privacy and data-handling practices of any particular deployment are determined by whoever operates that Hub.
 
+### This documentation website
+
+The pages you are reading (hosted at leapmux.dev) use Cloudflare's Real User Monitoring (RUM) to collect anonymous, aggregate performance and usage metrics — for example page-load timing and which pages are visited. It does not set tracking cookies or identify you individually, and visitors in the EU are excluded from measurement. This applies only to the website; the LeapMux software you run yourself emits no analytics, as described above.
+
 > **Note:** If [Event Loop, Inc.](https://eventloop.io/) offers a hosted version of LeapMux, that service's privacy policy is provided separately and governs data you submit to it. This page describes the self-hosted open-source software.
