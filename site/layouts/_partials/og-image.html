@@ -60,13 +60,19 @@
   {{- if ne $cur "" -}}{{- $lines = $lines | append $cur -}}{{- end -}}
   {{- $wrapped := delimit $lines "\n" -}}
 
+  {{- /* Vertically center the title block on the icon's center line (y=315) so
+         1-, 2-, and 3-line titles all sit at a consistent height. */ -}}
+  {{- $lineSpacing := 12 -}}
+  {{- $blockH := add (mul (len $lines) $titleSize) (mul (sub (len $lines) 1) $lineSpacing) -}}
+  {{- $titleY := int (sub 315 (div $blockH 2)) -}}
+
   {{- /* Compose the card. Left column at x=80; app icon centered on the right. */ -}}
   {{- $filters := slice
         (images.Overlay $icon 860 195)
         (images.Text "LeapMux" (dict
           "x" 80 "y" 72 "size" 32 "color" "#d7d2cb" "font" $fontBold "linespacing" 4))
         (images.Text $wrapped (dict
-          "x" 80 "y" 250 "size" $titleSize "color" "#fffefc" "font" $fontBold "linespacing" 12))
+          "x" 80 "y" $titleY "size" $titleSize "color" "#fffefc" "font" $fontBold "linespacing" $lineSpacing))
         (images.Text $url (dict
           "x" 80 "y" 556 "size" 26 "color" "#2dd4bf" "font" $fontReg "linespacing" 4)) -}}
 
