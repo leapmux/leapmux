@@ -215,6 +215,37 @@ func TestBroadcastSessionInfo_ValueTypeChangeShips(t *testing.T) {
 	assert.Equal(t, "one", infos[1]["a"])
 }
 
+// TestBroadcastSessionInfo_ThinkingTokensNeverDeduped: the per-turn
+// thinking_tokens estimate is exempt from the per-key dedup. The frontend clears
+// its counter at several boundaries the worker can't all observe (turn end, each
+// interleaved thinking phase, a pause for input), so a re-broadcast of an
+// unchanged estimate must still ship -- otherwise the cleared counter would stay
+// hidden until a strictly different value arrived. Other keys stay deduped.
+func TestBroadcastSessionInfo_ThinkingTokensNeverDeduped(t *testing.T) {
+	sink, mock := newSessionInfoFixture(t)
+
+	// Two byte-identical thinking_tokens broadcasts both ship -- no dedup.
+	sink.BroadcastSessionInfo(map[string]interface{}{"thinking_tokens": int64(230)})
+	sink.BroadcastSessionInfo(map[string]interface{}{"thinking_tokens": int64(230)})
+	require.Len(t, mock.snapshot(), 2, "an equal thinking_tokens repeat re-ships (exempt from dedup)")
+
+	// A non-thinking key is still deduped: an unchanged repeat is dropped.
+	sink.BroadcastSessionInfo(map[string]interface{}{"total_cost_usd": float64(0.5)})
+	sink.BroadcastSessionInfo(map[string]interface{}{"total_cost_usd": float64(0.5)})
+	assert.Len(t, mock.snapshot(), 3, "a non-thinking key remains deduped")
+
+	// In a mixed payload, only the non-thinking key dedups: an unchanged
+	// thinking_tokens alongside an unchanged cost still ships (carrying just the
+	// estimate), and the cost is filtered out as a no-op delta.
+	sink.BroadcastSessionInfo(map[string]interface{}{"thinking_tokens": int64(230), "total_cost_usd": float64(0.5)})
+	infos := mock.snapshot()
+	require.Len(t, infos, 4, "a mixed payload re-ships because thinking_tokens is never deduped")
+	// The capturing writer round-trips through JSON, so the count returns as float64.
+	assert.Equal(t, float64(230), infos[3]["thinking_tokens"])
+	_, hasCost := infos[3]["total_cost_usd"]
+	assert.False(t, hasCost, "the unchanged cost is still deduped out of the mixed payload")
+}
+
 // TestBroadcastSessionInfo_ConcurrentCallsAreRaceFree drives many
 // goroutines through the same sink under -race. The cache may produce
 // either 1 or 2 broadcasts depending on interleaving (last-writer-wins

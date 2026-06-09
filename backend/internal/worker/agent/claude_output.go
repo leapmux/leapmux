@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,6 +31,23 @@ const (
 	claudeMsgTypeControlCancelRequest = "control_cancel_request"
 	claudeMsgTypeControlResponse      = "control_response"
 )
+
+// claudeSystemSubtypeThinkingTokens is the `subtype` of the `system` telemetry
+// line Claude Code emits during extended thinking. It carries a running
+// `estimated_tokens` count for the in-flight turn and streams frequently. Like
+// thinking-text deltas, it is live progress rather than timeline content, so we
+// broadcast the latest estimate over the ephemeral agent_session_info channel
+// and never persist it.
+const claudeSystemSubtypeThinkingTokens = "thinking_tokens"
+
+// SessionInfoKeyThinkingTokens is the agent_session_info wire key under which the
+// running thinking-token estimate is broadcast. It happens to share the literal
+// "thinking_tokens" with the Claude `subtype` above but is a distinct concept (a
+// platform session-info key, not a Claude wire `subtype`); they are kept as
+// separate consts so one can change without silently dragging the other.
+// Exported so the service layer's dedup exemption keys off the exact same string
+// the broadcast uses rather than a hand-copied literal that could drift.
+const SessionInfoKeyThinkingTokens = "thinking_tokens"
 
 // contextUsageSnapshot tracks token usage for debounced broadcasting.
 type contextUsageSnapshot struct {
@@ -253,6 +271,14 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	if msgType == claudeMsgTypeSystem {
+		// thinking_tokens is broadcast-only telemetry — intercept it before
+		// session-init handling so its per-delta session_id doesn't needlessly
+		// re-fire UpdateSessionID/BroadcastStatusActive, and before the persist
+		// fallthrough so it never lands in the timeline.
+		if a.handleThinkingTokens(content) {
+			return
+		}
+
 		a.claudeCodeHandleSystemInit(content)
 
 		if isNotificationThreadable(content, source) {
@@ -388,6 +414,66 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		// Reset all span tracking so the next turn starts clean.
 		a.sink.ResetSpans()
 	}
+}
+
+// handleThinkingTokens intercepts Claude Code's `system`/`thinking_tokens`
+// telemetry. When the line is a thinking-token update it broadcasts the latest
+// running estimate over the ephemeral agent_session_info channel (seq -1, never
+// written to the messages table) and returns true so the caller skips both
+// session-init handling and persistence. Returns false for any other system
+// message, which continues down the normal persist path.
+func (a *ClaudeCodeAgent) handleThinkingTokens(content []byte) bool {
+	estimate, ok := parseThinkingTokens(content)
+	if !ok {
+		return false
+	}
+	a.sink.BroadcastSessionInfo(map[string]interface{}{
+		SessionInfoKeyThinkingTokens: estimate,
+	})
+	return true
+}
+
+// parseThinkingTokens extracts the sanitized running thinking-token estimate
+// from a Claude `system` line and reports whether the line is a thinking_tokens
+// update at all. Kept pure (no sink, no I/O) so the sanitize rules below can be
+// unit-tested directly rather than only through a full HandleOutput round-trip.
+//
+// estimated_tokens is captured as RawMessage, not a typed number, so the subtype
+// match never depends on the count's wire form. A typed float64 (or int64) field
+// would make json.Unmarshal error on a malformed or out-of-range count -- a
+// quoted "230", an overflowing 1e400 -- returning ok=false and letting the
+// telemetry fall through to session-init + persistence, i.e. the exact timeline
+// bloat this interception exists to prevent. Matching the subtype first
+// decouples "is this a thinking_tokens line?" from "did the count parse?".
+//
+// The count is parsed leniently as float64 so a fractional or exponent form
+// (`230.0`, `1.5e4`) still reads, then sanitized to a non-negative int64 that is
+// always a faithful, in-range count:
+//   - a malformed, absent, or float64-overflowing count (1e400 -> +Inf ->
+//     parse error, leaving the zero value) broadcasts 0;
+//   - a negative count clamps to 0 (a running estimate is non-negative by
+//     definition; a truncated -0.5 or a genuinely negative wire value both
+//     become 0) so no consumer ever sees a negative count;
+//   - a finite count at or above 2^63 (e.g. 1e300, which parses cleanly yet
+//     saturates the int64 conversion to a garbage value) is out of range like
+//     the overflowing 1e400, so it also broadcasts 0 rather than a nonsense
+//     9.2-quintillion count.
+func parseThinkingTokens(content []byte) (estimate int64, ok bool) {
+	var msg struct {
+		Subtype         string          `json:"subtype"`
+		EstimatedTokens json.RawMessage `json:"estimated_tokens"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil || msg.Subtype != claudeSystemSubtypeThinkingTokens {
+		return 0, false
+	}
+	var f float64
+	if len(msg.EstimatedTokens) > 0 {
+		_ = json.Unmarshal(msg.EstimatedTokens, &f)
+	}
+	if f < 0 || f >= float64(math.MaxInt64) {
+		f = 0
+	}
+	return int64(f), true
 }
 
 // claudeCodeHandleSystemInit extracts session_id from system init messages.
@@ -652,12 +738,21 @@ func findPrimaryContextWindow(modelUsage map[string]json.RawMessage, shortModelI
 			}
 		}
 
-		var mu struct {
-			ContextWindow int64 `json:"contextWindow"`
+		if cw := contextWindowOf(raw); cw > 0 {
+			return cw
 		}
-		if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > 0 {
-			return mu.ContextWindow
-		}
+	}
+	return 0
+}
+
+// contextWindowOf unmarshals a single modelUsage entry and returns its
+// contextWindow, or 0 when the entry is malformed or carries no positive window.
+func contextWindowOf(raw json.RawMessage) int64 {
+	var mu struct {
+		ContextWindow int64 `json:"contextWindow"`
+	}
+	if json.Unmarshal(raw, &mu) == nil {
+		return mu.ContextWindow
 	}
 	return 0
 }
@@ -666,11 +761,8 @@ func findPrimaryContextWindow(modelUsage map[string]json.RawMessage, shortModelI
 func maxContextWindow(modelUsage map[string]json.RawMessage) int64 {
 	var maxCW int64
 	for _, raw := range modelUsage {
-		var mu struct {
-			ContextWindow int64 `json:"contextWindow"`
-		}
-		if json.Unmarshal(raw, &mu) == nil && mu.ContextWindow > maxCW {
-			maxCW = mu.ContextWindow
+		if cw := contextWindowOf(raw); cw > maxCW {
+			maxCW = cw
 		}
 	}
 	return maxCW

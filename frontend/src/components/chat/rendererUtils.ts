@@ -60,19 +60,31 @@ export function formatNumber(n: number): string {
   return n.toLocaleString('en-US')
 }
 
-/** Format a token count with a fixed decimal (e.g. 1.0k, 12.3M). */
-export function formatTokenCount(n: number): string {
+/**
+ * Format a token count with a fixed number of decimals (default 1: "1.0k",
+ * "12.3M"). `decimals` controls the k/M precision — the thinking-token counter
+ * passes 2 ("4.95k", "1.23M") so its fast increments read at finer resolution.
+ */
+export function formatTokenCount(n: number, decimals = 1): string {
+  // Guard non-finite input (NaN/Infinity) before bucketing: Math.round leaves
+  // them non-finite and toFixed would render "InfinityM"/"NaN". No caller in
+  // this pipeline passes a non-finite count, but this is a shared util -- fall
+  // back to "0" rather than emitting a broken string.
+  if (!Number.isFinite(n))
+    return '0'
   // Token counts are conceptually integers; round a stray fractional input
   // (e.g. a server-estimated size) before bucketing so the sub-1k branch
   // can't leak decimals as "999.5" -- and round BEFORE the threshold checks so
   // a value like 999.6 promotes to the "1.0k" bucket instead of "1000".
   const rounded = Math.round(n)
-  // 999_950+ would round up to "1000.0k" at one decimal, so promote it to the M
-  // unit ("1.0M") rather than rendering a four-digit thousands value.
-  if (rounded >= 999_950)
-    return `${(rounded / 1_000_000).toFixed(1)}M`
+  // Promote to M before the k value would round up to a four-digit thousands
+  // display ("1000.0k" at 1 decimal, "1000.00k" at 2). The cutoff tightens as
+  // precision grows: 1_000_000 - 5 * 10**(2 - decimals) (== 999_950 at 1dp).
+  const promoteToM = 1_000_000 - 5 * 10 ** (2 - decimals)
+  if (rounded >= promoteToM)
+    return `${(rounded / 1_000_000).toFixed(decimals)}M`
   if (rounded >= 1_000)
-    return `${(rounded / 1_000).toFixed(1)}k`
+    return `${(rounded / 1_000).toFixed(decimals)}k`
   return String(rounded)
 }
 

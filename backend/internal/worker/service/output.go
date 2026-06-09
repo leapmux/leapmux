@@ -1036,6 +1036,22 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 	})
 }
 
+// thinkingTokensSessionInfoKey is the agent_session_info key carrying Claude's
+// per-turn thinking-token estimate. Unlike cost/rate-limit/context-usage keys
+// (which carry meaningfully across turns and benefit from dedup), this is a
+// per-turn running count the frontend clears at several boundaries the worker
+// can't all observe (the turn-end divider, each interleaved thinking phase, a
+// pause for input). Deduping it here would suppress a re-broadcast of a value
+// the frontend already cleared -- leaving the counter hidden until a strictly
+// different estimate arrives. It streams unique monotonic values normally and
+// the frontend store dedups identical updates itself, so BroadcastSessionInfo
+// skips the dedup cache for this one key entirely (always ship, never cache).
+//
+// Sourced from the agent package's broadcast key so the exemption keys off the
+// exact same string the Claude handler ships, instead of a hand-copied literal
+// that could silently drift and re-enable the dedup.
+const thinkingTokensSessionInfoKey = agent.SessionInfoKeyThinkingTokens
+
 // BroadcastSessionInfo emits an ephemeral agent_session_info update,
 // but only for keys whose values changed since the previous broadcast.
 // Agent handlers commonly re-emit identical payloads (Pi especially,
@@ -1062,6 +1078,13 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 	}
 	changed := make(map[string]interface{}, len(info))
 	for k, v := range info {
+		// thinking_tokens is exempt from dedup -- always ship it and never cache
+		// it, so a re-broadcast after a frontend-side clear is never suppressed.
+		// See thinkingTokensSessionInfoKey.
+		if k == thinkingTokensSessionInfoKey {
+			changed[k] = v
+			continue
+		}
 		encoded, err := json.Marshal(v)
 		if err != nil {
 			// Can't dedup without canonical bytes — pass through.

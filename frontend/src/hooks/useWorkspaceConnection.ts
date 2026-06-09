@@ -67,6 +67,40 @@ function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | 
   return out
 }
 
+/**
+ * Translate an `agent_session_info` wire payload (provider-agnostic snake_case)
+ * into the store's camelCase `AgentSessionInfo` updates. Each field carries its
+ * own predicate + transform and is included only when present/valid, so a
+ * provider that omits keys (or sends a dropped-only payload) produces an empty
+ * object and the caller skips the store write. Pure and exported so the
+ * wire->camel boundary can be unit-tested directly without a live connection.
+ */
+export function wireSessionInfoToUpdates(
+  info: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const updates: Record<string, unknown> = {}
+  if (!info)
+    return updates
+  if (typeof info.total_cost_usd === 'number')
+    updates.totalCostUsd = info.total_cost_usd
+  const contextUsage = normalizeContextUsage(info.context_usage)
+  if (contextUsage)
+    updates.contextUsage = contextUsage
+  if (info.rate_limits !== undefined)
+    updates.rateLimits = wireRateLimitsToCamel(info.rate_limits)
+  if (info.codex_turn_id !== undefined)
+    updates.codexTurnId = info.codex_turn_id as string
+  if (info.streaming_type !== undefined)
+    updates.streamingType = info.streaming_type as string
+  // Only positive estimates: `> 0` rejects both the zero-estimate first delta
+  // (nothing to show yet) and a NaN a future provider might emit (NaN > 0 is
+  // false), so the indicator never has to defend against "0 tokens" or a NaN
+  // serialized to null in storage.
+  if (typeof info.thinking_tokens === 'number' && info.thinking_tokens > 0)
+    updates.thinkingTokens = info.thinking_tokens
+  return updates
+}
+
 export interface WorkspaceConnectionParams {
   chatStore: ReturnType<typeof createChatStore>
   tabStore: ReturnType<typeof createTabStore>
@@ -189,18 +223,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // forcing snake_case identifiers throughout the frontend.
         if (parsed.topLevel !== null && !parsed.wrapper && parsed.topLevel.type === 'agent_session_info') {
           const info = parsed.topLevel.info as Record<string, unknown> | undefined
-          const updates: Record<string, unknown> = {}
-          if (typeof info?.total_cost_usd === 'number')
-            updates.totalCostUsd = info.total_cost_usd
-          const contextUsage = normalizeContextUsage(info?.context_usage)
-          if (contextUsage)
-            updates.contextUsage = contextUsage
-          if (info?.rate_limits !== undefined)
-            updates.rateLimits = wireRateLimitsToCamel(info.rate_limits)
-          if (info?.codex_turn_id !== undefined)
-            updates.codexTurnId = info.codex_turn_id as string
-          if (info?.streaming_type !== undefined)
-            updates.streamingType = info.streaming_type as string
+          const updates = wireSessionInfoToUpdates(info)
+          // A zero (or, defensively, negative) thinking-token estimate is the
+          // backend's per-phase reset signal — the first delta of a thinking
+          // phase reports 0. Honor it as a clear so a stale count from a prior
+          // phase/turn can't linger; the positive path keeps streaming via
+          // `updates`. wireSessionInfoToUpdates only forwards positive estimates,
+          // so a 0 never arrives as an update and must be handled here.
+          if (typeof info?.thinking_tokens === 'number' && info.thinking_tokens <= 0)
+            agentSessionStore.clearThinkingTokens(agentId)
           // Pi (and any future provider) may broadcast session_info
           // payloads whose keys are all dropped here — skip the store
           // write so reactive consumers aren't woken for nothing.
@@ -288,6 +319,22 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         }
 
         chatStore.addMessage(agentId, msg)
+        // Agent output means the current thinking phase produced something, so
+        // drop the live thinking-token estimate — otherwise the counter lingers
+        // beside the indicator (frozen on its last value) until turn end, and
+        // the next thinking phase would briefly flash the stale total before its
+        // own deltas arrive. Gated to AGENT source: user echoes (queued input,
+        // tool_result) and LeapMux notifications can land mid-think and must not
+        // clear a still-climbing counter. No-op when no estimate is set.
+        //
+        // INTENTIONAL per-phase reset: this also fires on an intermediate
+        // persisted reasoning block (Claude `assistant_thinking`) during
+        // interleaved thinking (think -> tool -> think), so the counter restarts
+        // from each new phase's first delta rather than accumulating across a
+        // whole turn. That per-phase semantics is the desired behavior — do not
+        // "fix" it to only clear at true turn boundaries.
+        if (msg.source === MessageSource.AGENT)
+          agentSessionStore.clearThinkingTokens(agentId)
         if (
           !isAgentTabVisible(agentId)
           && chatStore.getMessages(agentId).length > MAX_BACKGROUND_CHAT_MESSAGES
@@ -352,6 +399,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // type:"result", Codex turn/completed, ACP stopReason, Pi agent_end)
         // as `result_divider`, so this gate is provider-agnostic.
         if (category.kind === 'result_divider') {
+          // Clear the per-turn thinking-token estimate on the turn-end divider
+          // itself, not just via the AGENT-message clear above. The divider is
+          // the structural turn boundary for every provider; gating the clear on
+          // message source/status would miss a terminal envelope whose source is
+          // not AGENT, or a catch-up replay where the INACTIVE-driven onTurnEnd
+          // is skipped — leaving the counter frozen on its last value.
+          agentSessionStore.clearThinkingTokens(agentId)
           const modelId = tabStore.getAgentTab(agentId)?.model
           const meta = extractResultMetadata(parsed, modelId)
           if (meta) {
@@ -542,6 +596,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           // so the user can send a regular message (which auto-starts the
           // agent) instead of being stuck on an unanswerable prompt.
           controlStore.clearAgent(agentId)
+          // Drop the per-turn thinking-token estimate; the agent stopped, so
+          // there is no live thinking to count.
+          agentSessionStore.clearThinkingTokens(agentId)
           if (
             catchUpPhase === 'live'
             && sc.agentSessionId
@@ -586,6 +643,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (tabStore.state.activeTabKey !== tabKey({ type: TabType.AGENT, id: cr.agentId })) {
             tabStore.setNotification(TabType.AGENT, cr.agentId, true)
           }
+          // The agent paused mid-turn to wait on the user (permission / plan
+          // prompt). It is no longer thinking, and this pause may produce no
+          // agent message and no INACTIVE, so drop the per-turn estimate here
+          // too — otherwise the counter lingers frozen until the next turn.
+          agentSessionStore.clearThinkingTokens(agentId)
           params.onTurnEnd?.(agentId)
         }
         break

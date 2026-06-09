@@ -47,6 +47,12 @@ interface ChatViewProps {
   /** Whether the agent is actively working (for showing the thinking indicator). */
   agentWorking?: boolean
   /**
+   * Running estimate of the in-flight turn's thinking (reasoning) tokens,
+   * forwarded to the thinking indicator. Broadcast-only telemetry, cleared at
+   * turn boundaries.
+   */
+  thinkingTokens?: number
+  /**
    * Whether this ChatView is the active tab in its tile. Forwarded to the
    * thinking indicator so it can suspend its compass simulation when the
    * user can't see it (every agent tab is mounted, including hidden ones).
@@ -400,6 +406,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                 <ThinkingIndicator
                   id={props.agentId}
                   visible={props.agentWorking ?? false}
+                  thinkingTokens={props.thinkingTokens}
                   paused={props.tabActive === false}
                   onExpandTick={() => {
                     if (scroll.isAtBottomFresh())

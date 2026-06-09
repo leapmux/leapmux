@@ -598,6 +598,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.state.streamingText[agentId] ?? ''}
                     streamingType={agentSessionStore.getInfo(agentId).streamingType}
+                    thinkingTokens={agentSessionStore.getInfo(agentId).thinkingTokens}
                     agentWorking={agentThinking(agentId)}
                     tabActive={agentTab()?.id === at.id}
                     messageErrors={chatStore.state.messageErrors}

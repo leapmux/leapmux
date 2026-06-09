@@ -1,8 +1,9 @@
 import type { Component, JSX } from 'solid-js'
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { createCompassSimulation } from '../compassPhysics'
 import { getRandomVerb } from '../spinnerVerbs'
 import * as styles from './ThinkingIndicator.css'
+import { ThinkingTokenCount } from './ThinkingTokenCount'
 
 export interface ThinkingIndicatorProps {
   visible: boolean
@@ -25,6 +26,13 @@ export interface ThinkingIndicatorProps {
    * on the 60s in-turn rotation, with a crossfade).
    */
   id?: string
+  /**
+   * Running estimate of the in-flight turn's thinking (reasoning) tokens,
+   * surfaced as a small count beside the verb. Broadcast-only telemetry that
+   * is cleared at turn boundaries; rendered only while positive so an idle
+   * indicator shows nothing.
+   */
+  thinkingTokens?: number
 }
 
 // How often the verb rotates while the indicator is visible (and not
@@ -37,6 +45,11 @@ const ROTATION_INTERVAL_MS = 60_000
 // content can be cleared without affecting the grid cell width during
 // the fade itself.
 const ROTATION_FADE_MS = 500
+// The wrapper's opacity-fade duration when the indicator collapses (the 0.3s
+// `opacity` transition in the render style below). The token count holds its
+// last value mounted for this long after the gate closes so it fades out WITH
+// the collapsing row instead of popping; see `countTokens`.
+const ROW_FADE_MS = 300
 
 // Module-level cache of the indicator's persistent state per id —
 // the verb currently displayed and the last compass angle (in
@@ -78,28 +91,29 @@ function trimCache(): void {
   }
 }
 
-function cacheVerb(id: string | undefined, verb: string): void {
+// Merge a patch into id's cached snapshot: mutate the existing entry in place
+// (so the FIFO insertion order isn't disturbed and only first-seen ids advance
+// the eviction queue), or insert + trim for a new id. cacheVerb/cacheAngle are
+// thin single-field wrappers so call sites read as intent ("cache the verb")
+// and an accidental multi-key patch can't clobber an unrelated cached field.
+function cacheSnapshot(id: string | undefined, patch: Partial<IndicatorSnapshot>): void {
   if (id === undefined)
     return
   const existing = indicatorCache.get(id)
   if (existing) {
-    existing.verb = verb
+    Object.assign(existing, patch)
     return
   }
-  indicatorCache.set(id, { verb })
+  indicatorCache.set(id, { ...patch })
   trimCache()
 }
 
+function cacheVerb(id: string | undefined, verb: string): void {
+  cacheSnapshot(id, { verb })
+}
+
 function cacheAngle(id: string | undefined, angleRad: number): void {
-  if (id === undefined)
-    return
-  const existing = indicatorCache.get(id)
-  if (existing) {
-    existing.angleRad = angleRad
-    return
-  }
-  indicatorCache.set(id, { angleRad })
-  trimCache()
+  cacheSnapshot(id, { angleRad })
 }
 
 function pickAndCacheVerb(id: string | undefined): string {
@@ -176,6 +190,35 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   let rotateIntervalId: ReturnType<typeof setInterval> | undefined
   const pendingClearTimers = new Set<ReturnType<typeof setTimeout>>()
   let wasVisible = initiallyVisible
+
+  // The token count's mounted value, decoupled from the live estimate so it can
+  // fade out WITH the collapsing row instead of popping. While the count should
+  // show (indicator visible + a positive estimate) it tracks the live value; when
+  // the gate closes it freezes the last value mounted for ROW_FADE_MS (the
+  // wrapper's opacity fade) and then unmounts. The frozen value means no roll
+  // effects fire during the fade.
+  const [countTokens, setCountTokens] = createSignal<number | undefined>(undefined)
+  let countFadeTimer: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    const tokens = props.thinkingTokens
+    if (props.visible && (tokens ?? 0) > 0) {
+      if (countFadeTimer !== undefined) {
+        clearTimeout(countFadeTimer)
+        countFadeTimer = undefined
+      }
+      setCountTokens(tokens)
+      return
+    }
+    // Gate closed: keep the last value mounted through the wrapper's opacity
+    // fade, then unmount. untrack the read so this effect doesn't depend on its
+    // own write (it tracks only props.visible / props.thinkingTokens).
+    if (untrack(countTokens) !== undefined && countFadeTimer === undefined) {
+      countFadeTimer = setTimeout(() => {
+        countFadeTimer = undefined
+        setCountTokens(undefined)
+      }, ROW_FADE_MS)
+    }
+  })
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
   // binding can re-pin to the bottom on every frame while the
@@ -306,6 +349,8 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     for (const t of pendingClearTimers)
       clearTimeout(t)
     pendingClearTimers.clear()
+    if (countFadeTimer !== undefined)
+      clearTimeout(countFadeTimer)
   })
 
   const verbSpan = (
@@ -398,9 +443,21 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
               </g>
             </g>
           </svg>
-          <span class={styles.verbStack}>
-            {verbSpan(true, charsA, highlightPosA)}
-            {verbSpan(false, charsB, highlightPosB)}
+          <span class={styles.verbRow}>
+            <span class={styles.verbStack}>
+              {/* Stable baseline anchor — see baselineStrut in the CSS. */}
+              <span class={styles.baselineStrut} aria-hidden="true">{' '}</span>
+              {verbSpan(true, charsA, highlightPosA)}
+              {verbSpan(false, charsB, highlightPosB)}
+            </span>
+            {/* `countTokens` (not the raw prop) gates the count: it tracks the
+                live estimate while the indicator is visible, then holds the last
+                value for ROW_FADE_MS so the count fades out WITH the collapsing
+                row instead of popping — and unmounts after, so a stale estimate
+                can't keep it (or its roll effects) alive in a collapsed row. */}
+            <Show when={countTokens() !== undefined}>
+              <ThinkingTokenCount tokens={countTokens()!} />
+            </Show>
           </span>
         </div>
       </div>
