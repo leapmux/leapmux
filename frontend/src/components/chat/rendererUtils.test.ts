@@ -83,6 +83,41 @@ describe('formatTokenCount', () => {
   })
 })
 
+describe('formatTokenCount with a custom decimal precision', () => {
+  it('defaults to one decimal when precision is omitted', () => {
+    expect(formatTokenCount(1234)).toBe('1.2k')
+    expect(formatTokenCount(1_234_567)).toBe('1.2M')
+  })
+
+  it('renders k/M to the requested number of decimals', () => {
+    // The thinking-token counter passes 2 so its fast increments read finely.
+    expect(formatTokenCount(4950, 2)).toBe('4.95k')
+    expect(formatTokenCount(1234, 2)).toBe('1.23k')
+    expect(formatTokenCount(1_234_567, 2)).toBe('1.23M')
+    expect(formatTokenCount(1_000_000, 2)).toBe('1.00M')
+  })
+
+  it('leaves sub-1k values undecorated regardless of precision', () => {
+    expect(formatTokenCount(999, 2)).toBe('999')
+    expect(formatTokenCount(0, 2)).toBe('0')
+  })
+
+  it('tightens the M-promotion boundary as precision grows', () => {
+    // At two decimals "1000.00k" appears only at 999_995+, so the cutoff moves
+    // up from the one-decimal 999_950: 999_994 stays k, 999_995 promotes to M.
+    expect(formatTokenCount(999_994, 2)).toBe('999.99k')
+    expect(formatTokenCount(999_995, 2)).toBe('1.00M')
+  })
+
+  it('falls back to "0" for non-finite input rather than emitting a broken string', () => {
+    // No caller in the thinking-token pipeline passes these, but formatTokenCount
+    // is shared: NaN/Infinity must not render as "NaN" / "InfinityM".
+    expect(formatTokenCount(Number.NaN)).toBe('0')
+    expect(formatTokenCount(Number.POSITIVE_INFINITY, 2)).toBe('0')
+    expect(formatTokenCount(Number.NEGATIVE_INFINITY)).toBe('0')
+  })
+})
+
 describe('joinMetaParts', () => {
   it('joins truthy strings with ` · `', () => {
     expect(joinMetaParts(['a', 'b', 'c'])).toBe('a · b · c')

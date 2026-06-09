@@ -16,6 +16,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { formatErrorMessage } from '~/lib/errors'
 import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, tildify, untildify } from '~/lib/paths'
+import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { emptyState } from '~/styles/shared.css'
 import * as styles from './DirectoryTree.css'
 import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
@@ -283,8 +284,7 @@ const TreeNode: Component<{
     // so that wrapperRef has its full height when we measure.
     // When prefers-reduced-motion is enabled, transitions are instant
     // so transitionend never fires — use requestAnimationFrame instead.
-    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (prefersReducedMotion) {
+    if (prefersReducedMotion()) {
       requestAnimationFrame(doScroll)
       return
     }

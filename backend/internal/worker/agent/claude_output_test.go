@@ -565,6 +565,207 @@ func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
 	assert.Equal(t, int64(30), usage["cache_read_input_tokens"])
 }
 
+func TestHandleOutput_ThinkingTokensBroadcastNotPersisted(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// A `system`/`thinking_tokens` line is live telemetry: it must be
+	// broadcast over the ephemeral agent_session_info channel and never
+	// persisted to the timeline. Its per-delta session_id must NOT re-fire
+	// session-init side effects.
+	agent.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "thinking_tokens",
+		"estimated_tokens": 230,
+		"estimated_tokens_delta": 163,
+		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
+	}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "thinking_tokens must not be persisted")
+	assert.Equal(t, 0, sink.NotificationCount(), "thinking_tokens must not be notification-threaded")
+	assert.Equal(t, 0, sink.SessionIDCount(), "thinking_tokens must not re-fire session init")
+	assert.Empty(t, sink.statusActives, "thinking_tokens must not re-broadcast status active")
+
+	require.Equal(t, 1, sink.SessionInfoCount(), "thinking_tokens must broadcast session info")
+	assert.Equal(t, int64(230), sink.LastSessionInfo()["thinking_tokens"])
+}
+
+func TestHandleOutput_ThinkingTokensZeroEstimateStillSwallowed(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// A thinking_tokens line with no estimated_tokens yet (the first delta of a
+	// turn can report 0) must still be intercepted: it is broadcast-only and
+	// must never reach the timeline, even though the count is zero. The
+	// frontend's own `> 0` gate decides whether to render it.
+	agent.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "thinking_tokens",
+		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
+	}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "zero-estimate thinking_tokens must not be persisted")
+	assert.Equal(t, 0, sink.SessionIDCount(), "zero-estimate thinking_tokens must not re-fire session init")
+	require.Equal(t, 1, sink.SessionInfoCount(), "zero-estimate thinking_tokens must still broadcast")
+	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"])
+}
+
+func TestHandleOutput_ThinkingTokensFractionalEstimateStillSwallowed(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// A thinking_tokens line whose estimated_tokens arrives in a fractional or
+	// exponent form must still be intercepted. estimated_tokens is decoded as
+	// float64, so `230.0`/`1.5e4` parse cleanly; an int64 field would make the
+	// unmarshal error and let the line fall through to persistence -- the exact
+	// timeline bloat the interception prevents. The count is truncated to int64
+	// for the broadcast.
+	agent.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "thinking_tokens",
+		"estimated_tokens": 15000.0,
+		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
+	}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "fractional thinking_tokens must not be persisted")
+	assert.Equal(t, 0, sink.SessionIDCount(), "fractional thinking_tokens must not re-fire session init")
+	require.Equal(t, 1, sink.SessionInfoCount(), "fractional thinking_tokens must still broadcast")
+	assert.Equal(t, int64(15000), sink.LastSessionInfo()["thinking_tokens"])
+}
+
+func TestHandleOutput_ThinkingTokensMalformedEstimateStillSwallowed(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// A thinking_tokens line whose estimated_tokens arrives in an unexpected
+	// wire form -- here a JSON string instead of a number -- must STILL be
+	// intercepted. estimated_tokens is captured as RawMessage, so the subtype
+	// match does not depend on the count parsing; the count is parsed leniently
+	// and a failure broadcasts 0. A typed-number field would error on the
+	// outer unmarshal, return false, and let the line fall through to
+	// session-init + persistence -- the exact timeline bloat this prevents.
+	agent.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "thinking_tokens",
+		"estimated_tokens": "230",
+		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
+	}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "malformed thinking_tokens must not be persisted")
+	assert.Equal(t, 0, sink.SessionIDCount(), "malformed thinking_tokens must not re-fire session init")
+	require.Equal(t, 1, sink.SessionInfoCount(), "malformed thinking_tokens must still broadcast")
+	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"], "an unparseable count broadcasts 0")
+}
+
+func TestHandleOutput_ThinkingTokensOverflowEstimateStillSwallowed(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// An estimated_tokens that overflows float64 (1e400) makes the lenient
+	// inner parse error; it must still be swallowed (broadcast 0, not
+	// persisted) and must not produce a NaN/Inf -> int64 conversion.
+	agent.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "thinking_tokens",
+		"estimated_tokens": 1e400,
+		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
+	}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "overflowing thinking_tokens must not be persisted")
+	assert.Equal(t, 0, sink.SessionIDCount(), "overflowing thinking_tokens must not re-fire session init")
+	require.Equal(t, 1, sink.SessionInfoCount(), "overflowing thinking_tokens must still broadcast")
+	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"], "an out-of-range count broadcasts 0")
+}
+
+func TestHandleOutput_ThinkingTokensNegativeEstimateClampedToZero(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// A running token estimate is non-negative by definition. A negative wire
+	// value must be clamped to 0 at the source (still swallowed, never
+	// persisted) so no consumer ever sees a negative count.
+	agent.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "thinking_tokens",
+		"estimated_tokens": -42.9,
+		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
+	}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "negative thinking_tokens must not be persisted")
+	assert.Equal(t, 0, sink.SessionIDCount(), "negative thinking_tokens must not re-fire session init")
+	require.Equal(t, 1, sink.SessionInfoCount(), "negative thinking_tokens must still broadcast")
+	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"], "a negative count clamps to 0")
+}
+
+func TestHandleOutput_ThinkingTokensFiniteHugeEstimateClampedToZero(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// A finite but absurd estimate (1e300) parses cleanly into float64 -- unlike
+	// 1e400, it does NOT overflow the inner unmarshal -- yet it is far above
+	// math.MaxInt64, so int64(1e300) would saturate to a garbage ~9.2-quintillion
+	// count. It must be treated as out of range like 1e400 and broadcast 0, not a
+	// nonsense count, so the two huge-input paths agree.
+	agent.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "thinking_tokens",
+		"estimated_tokens": 1e300,
+		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
+	}`))
+
+	assert.Equal(t, 0, sink.MessageCount(), "finite-huge thinking_tokens must not be persisted")
+	require.Equal(t, 1, sink.SessionInfoCount(), "finite-huge thinking_tokens must still broadcast")
+	assert.Equal(t, int64(0), sink.LastSessionInfo()["thinking_tokens"], "a finite-huge count broadcasts 0")
+}
+
+func TestParseThinkingTokens(t *testing.T) {
+	tests := []struct {
+		name         string
+		content      string
+		wantEstimate int64
+		wantOK       bool
+	}{
+		{"plain integer", `{"subtype":"thinking_tokens","estimated_tokens":230}`, 230, true},
+		{"fractional", `{"subtype":"thinking_tokens","estimated_tokens":15000.0}`, 15000, true},
+		{"exponent", `{"subtype":"thinking_tokens","estimated_tokens":1.5e4}`, 15000, true},
+		{"truncates toward zero", `{"subtype":"thinking_tokens","estimated_tokens":230.9}`, 230, true},
+		{"absent count broadcasts 0", `{"subtype":"thinking_tokens"}`, 0, true},
+		{"string count broadcasts 0", `{"subtype":"thinking_tokens","estimated_tokens":"230"}`, 0, true},
+		{"null count broadcasts 0", `{"subtype":"thinking_tokens","estimated_tokens":null}`, 0, true},
+		{"float64-overflow (1e400) broadcasts 0", `{"subtype":"thinking_tokens","estimated_tokens":1e400}`, 0, true},
+		{"finite-huge (1e300) broadcasts 0", `{"subtype":"thinking_tokens","estimated_tokens":1e300}`, 0, true},
+		{"negative clamps to 0", `{"subtype":"thinking_tokens","estimated_tokens":-42.9}`, 0, true},
+		{"non-thinking subtype is not a match", `{"subtype":"init","estimated_tokens":230}`, 0, false},
+		{"missing subtype is not a match", `{"estimated_tokens":230}`, 0, false},
+		{"invalid JSON is not a match", `{"subtype":`, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			estimate, ok := parseThinkingTokens([]byte(tt.content))
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantEstimate, estimate)
+		})
+	}
+}
+
+func TestHandleOutput_NonThinkingSystemMessageStillPersists(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// A plain `system` message that is neither a thinking_tokens line nor a
+	// notification-threaded subtype falls through to persistence unchanged —
+	// the thinking_tokens interception must not swallow other system lines.
+	agent.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "init",
+		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
+	}`))
+
+	assert.Equal(t, 1, sink.MessageCount(), "non-thinking system message must persist")
+	assert.Equal(t, 0, sink.SessionInfoCount(), "non-thinking system message must not broadcast thinking session info")
+	assert.Equal(t, 1, sink.SessionIDCount(), "init message should update session id")
+}
+
 func TestIsRetryableClaudeResultError(t *testing.T) {
 	tests := []struct {
 		name  string
