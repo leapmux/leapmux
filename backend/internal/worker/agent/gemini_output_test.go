@@ -19,6 +19,7 @@ func newGeminiAgentWithSink(sink OutputSink) *GeminiCLIAgent {
 		},
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 	return a
 }
 

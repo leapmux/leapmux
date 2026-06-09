@@ -767,7 +767,7 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 	return nil
 }
 
-func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) error {
+func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
 	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, s.plugin, source, content)
 }
 
@@ -1646,8 +1646,11 @@ func (c *agentTodoCache) itemsEqual(other []todoevents.Item) bool {
 }
 
 // persistNotificationThreaded persists a notification message, appending it
-// to the current notification thread if one exists.
-func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, contentJSON []byte) error {
+// to the current notification thread if one exists. It reports whether the
+// notification produced a frontend-visible broadcast (false when a flapping
+// notification collapses byte-identically into the existing thread tail and the
+// broadcast is skipped).
+func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
 	if h.wakeLock != nil {
 		h.wakeLock.RecordActivity()
 	}
@@ -1657,9 +1660,9 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 
 	if ref, ok := h.lastNotifThread.Load(agentID); ok {
 		threadRef := ref.(*notifThreadRef)
-		err := h.appendToNotificationThread(agentID, agentProvider, plugin, threadRef, source, contentJSON)
+		broadcast, err := h.appendToNotificationThread(agentID, agentProvider, plugin, threadRef, source, contentJSON)
 		if err == nil {
-			return nil
+			return broadcast, nil
 		}
 		// errSourceMismatch is the documented fall-through signal — start a
 		// fresh standalone thread silently. Any other error is a real failure
@@ -1680,18 +1683,19 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvide
 var errSourceMismatch = errors.New("notification thread source mismatch")
 
 // appendToNotificationThread appends a message to an existing notification thread.
-// Returns an error if the thread's source does not match the new
-// notification's source — adjacent cross-source notifications must
-// produce separate threads so that the persisted source remains a
-// truthful per-thread provenance signal. The caller treats the error
-// as a normal "fall through to a new standalone thread" signal, not as
-// a failure.
-func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, threadRef *notifThreadRef, source leapmuxv1.MessageSource, contentJSON []byte) error {
+// Returns whether a frontend-visible broadcast was emitted (false when the
+// notification collapses byte-identically into the existing tail), and an error
+// if the thread's source does not match the new notification's source — adjacent
+// cross-source notifications must produce separate threads so that the persisted
+// source remains a truthful per-thread provenance signal. The caller treats the
+// error as a normal "fall through to a new standalone thread" signal, not as a
+// failure.
+func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, threadRef *notifThreadRef, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
 	// Short-circuit cross-source flips before the DB hit — the in-memory
 	// threadRef carries the source that was persisted when the thread
 	// opened, so we don't need to fetch + decompress the row to learn it.
 	if threadRef.source != source {
-		return errSourceMismatch
+		return false, errSourceMismatch
 	}
 
 	parentRow, err := h.queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
@@ -1699,27 +1703,29 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		AgentID: agentID,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	parentData, err := msgcodec.Decompress(parentRow.Content, parentRow.ContentCompression)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	wrapper, err := unwrapNotifContent(parentData)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// If a flapping ProviderScoped notification (e.g.
 	// remoteControl/status/changed) collapses into the existing tail and
-	// produces a byte-identical slice, skip the DB write + broadcast.
+	// produces a byte-identical slice, skip the DB write + broadcast. The
+	// false return tells the reset decorator no frontend clear fired, so it must
+	// not reset the thinking-token estimate for this collapsed notification.
 	oldMessages := wrapper.Messages
 	nextMessages := append(slices.Clone(oldMessages), contentJSON)
 	nextMessages = consolidateNotificationThread(nextMessages, plugin)
 	if rawMessageSlicesEqual(oldMessages, nextMessages) {
-		return nil
+		return false, nil
 	}
 
 	wrapper.Messages = nextMessages
@@ -1730,7 +1736,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 
 	merged, err := json.Marshal(wrapper)
 	if err != nil {
-		return fmt.Errorf("marshal notification thread: %w", err)
+		return false, fmt.Errorf("marshal notification thread: %w", err)
 	}
 
 	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
@@ -1749,7 +1755,7 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		AgentID:            agentID,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	threadRef.seq = newSeq
@@ -1767,11 +1773,12 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		SpanLines:          spanLines,
 	})
 
-	return nil
+	return true, nil
 }
 
 // createNotificationStandalone creates a new standalone notification message.
-func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte) error {
+// It always broadcasts on success, so it reports broadcast=true.
+func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
 	msgID := id.Generate()
 	wrapped := wrapNotifContent(contentJSON)
 	compressed, compressionType := msgcodec.Compress(wrapped)
@@ -1796,7 +1803,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		CreatedAt:          now,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	h.lastNotifThread.Store(agentID, &notifThreadRef{
@@ -1816,7 +1823,7 @@ func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvid
 		Depth:              0,
 		SpanLines:          spanLines,
 	})
-	return nil
+	return true, nil
 }
 
 // broadcastMessage broadcasts a single agent message event to all watchers.
@@ -1857,7 +1864,7 @@ func (h *OutputHandler) PersistLeapMuxNotification(agentID string, agentProvider
 		slog.Warn("marshal notification content", "agent_id", agentID, "error", err)
 		return
 	}
-	if err := h.persistNotificationThreaded(agentID, agentProvider, agent.ProviderFor(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, contentJSON); err != nil {
+	if _, err := h.persistNotificationThreaded(agentID, agentProvider, agent.ProviderFor(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, contentJSON); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
 }

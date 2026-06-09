@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCard'
 
+// Side-effect imports: register the Claude and Pi plugins so the session-id
+// display/copy logic can resolve `sessionIdIsFilePath` through the registry.
+import './providers/claude/plugin'
+import './providers/pi/plugin'
+
 function InfoCardContent(props: { agent: AgentInfo }) {
   const { infoHoverCardContent } = useAgentInfoCard(props)
   return <div>{infoHoverCardContent()}</div>

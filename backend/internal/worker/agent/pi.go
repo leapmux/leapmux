@@ -42,6 +42,9 @@ type PiAgent struct {
 	sessionID         string // Pi's runtime sessionId (rotates on new_session)
 	sessionFile       string // Pi's persistent session file path (durable identifier)
 	currentTurnActive bool   // true between agent_start and agent_end
+	// thinkingTokens is the per-phase generated-token estimate driving the
+	// thinking-indicator counter; see thinkingTokenEstimator and thinkingResetSink.
+	thinkingTokens thinkingTokenEstimator
 
 	// Pi exposes token/cost information in assistant messages and via
 	// get_session_stats. Keep the latest normalized snapshot here so persisted
@@ -92,6 +95,8 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 		workingDir:    opts.WorkingDir,
 		sink:          sink,
 	}
+	// Reset the thinking-token estimate centrally at every frontend-clear boundary.
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 
 	if err := a.startCmd(cmd, cancel); err != nil {
 		return nil, err
@@ -345,6 +350,11 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	a.usageGeneration++
 	handle := a.sessionHandleLocked()
 	a.mu.Unlock()
+	// The session was replaced; drop any in-flight thinking-token estimate so it
+	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
+	// agent_start also resets, but resetting here keeps every provider's context
+	// clear consistent rather than relying on that follow-up.
+	a.thinkingTokens.reset()
 	if handle == "" {
 		return "", false
 	}

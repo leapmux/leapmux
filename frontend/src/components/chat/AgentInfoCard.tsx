@@ -1,4 +1,4 @@
-import type { AgentInfo } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
@@ -6,11 +6,11 @@ import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
 import * as styles from './ChatView.css'
+import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
 import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './widgets/ContextUsageGrid'
 
@@ -20,7 +20,7 @@ export interface AgentInfoCardProps {
 }
 
 export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
-  if (agentProvider !== AgentProvider.PI)
+  if (!pluginFor(agentProvider)?.sessionIdIsFilePath)
     return sessionId
 
   const tail = basename(sessionId) || sessionId
@@ -57,7 +57,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
     const sessionId = props.agent?.agentSessionId
     return sessionId ? formatAgentSessionIdForDisplay(props.agent?.agentProvider, sessionId) : undefined
   })
-  const sessionIdCopyTitle = () => props.agent?.agentProvider === AgentProvider.PI ? 'Copy session file path' : 'Copy session ID'
+  const sessionIdCopyTitle = () => pluginFor(props.agent?.agentProvider)?.sessionIdIsFilePath ? 'Copy session file path' : 'Copy session ID'
 
   // 1-minute timer for countdown refresh
   const [now, setNow] = createSignal(Date.now())

@@ -1,3 +1,4 @@
+import type { Provider } from '~/components/chat/providers/registry'
 import type { AgentEvent, TerminalEvent, WatchAgentEntry } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
@@ -9,6 +10,7 @@ import type { WorkspaceStoreRegistryType } from '~/stores/workspaceStoreRegistry
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
+import { providerFor } from '~/components/chat/providers/registry'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentProvider, AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
@@ -99,6 +101,26 @@ export function wireSessionInfoToUpdates(
   if (typeof info.thinking_tokens === 'number' && info.thinking_tokens > 0)
     updates.thinkingTokens = info.thinking_tokens
   return updates
+}
+
+// shouldClearThinkingTokensForMessage decides whether a persisted message should
+// drop the live thinking-token estimate. Non-AGENT entries (user echoes such as
+// queued input or tool_result, and LeapMux notifications) can land mid-think and
+// must never clear a climbing counter, so they are rejected here universally. For
+// AGENT messages the per-provider policy is delegated to the provider plugin's
+// clearsThinkingTokensForMessage hook; the default (no hook) is "main-scope only"
+// -- clear when parentSpanId === '' -- so a collab subagent's nested commit does
+// not reset the primary counter (Claude overrides to always clear). The resolved
+// plugin is passed in so this stays a pure, registry-free unit.
+export function shouldClearThinkingTokensForMessage(
+  msg: { source: MessageSource, parentSpanId: string },
+  plugin: Pick<Provider, 'clearsThinkingTokensForMessage'> | undefined,
+): boolean {
+  if (msg.source !== MessageSource.AGENT)
+    return false
+  if (plugin?.clearsThinkingTokensForMessage)
+    return plugin.clearsThinkingTokensForMessage(msg)
+  return msg.parentSpanId === ''
 }
 
 export interface WorkspaceConnectionParams {
@@ -254,6 +276,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (innerType === 'context_cleared') {
             agentSessionStore.clearContextUsage(agentId)
             chatStore.clearTodos(agentId)
+            // The conversation was wiped; drop any in-flight thinking-token
+            // estimate too. The backend resets its own estimator on a context
+            // clear, but that reset is in-memory only (no broadcast), so the
+            // counter would otherwise linger frozen on its last value until the
+            // next turn produces a delta or a clear of its own.
+            agentSessionStore.clearThinkingTokens(agentId)
           }
 
           if (innerType === 'rate_limit_event' || innerMethod === CODEX_RATE_LIMITS_METHOD) {
@@ -319,21 +347,20 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         }
 
         chatStore.addMessage(agentId, msg)
-        // Agent output means the current thinking phase produced something, so
-        // drop the live thinking-token estimate — otherwise the counter lingers
-        // beside the indicator (frozen on its last value) until turn end, and
-        // the next thinking phase would briefly flash the stale total before its
-        // own deltas arrive. Gated to AGENT source: user echoes (queued input,
-        // tool_result) and LeapMux notifications can land mid-think and must not
-        // clear a still-climbing counter. No-op when no estimate is set.
+        // Main-agent output means the current thinking phase produced something,
+        // so drop the live thinking-token estimate — otherwise the counter lingers
+        // beside the indicator (frozen on its last value) until turn end, and the
+        // next thinking phase would briefly flash the stale total before its own
+        // deltas arrive. No-op when no estimate is set.
         //
-        // INTENTIONAL per-phase reset: this also fires on an intermediate
-        // persisted reasoning block (Claude `assistant_thinking`) during
-        // interleaved thinking (think -> tool -> think), so the counter restarts
-        // from each new phase's first delta rather than accumulating across a
-        // whole turn. That per-phase semantics is the desired behavior — do not
-        // "fix" it to only clear at true turn boundaries.
-        if (msg.source === MessageSource.AGENT)
+        // INTENTIONAL per-phase reset: this also fires on an intermediate persisted
+        // reasoning block (Claude `assistant_thinking`) during interleaved thinking
+        // (think -> tool -> think), so the counter restarts from each new phase's
+        // first delta rather than accumulating across a whole turn. That per-phase
+        // semantics is the desired behavior — do not "fix" it to only clear at true
+        // turn boundaries. See shouldClearThinkingTokensForMessage for the
+        // source/subagent/Claude gating rationale.
+        if (shouldClearThinkingTokensForMessage(msg, providerFor(msg.agentProvider)))
           agentSessionStore.clearThinkingTokens(agentId)
         if (
           !isAgentTabVisible(agentId)

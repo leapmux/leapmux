@@ -116,7 +116,7 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 		PiEventExtensionError:
 		// Pi-emitted lifecycle / extension events — AGENT source per the
 		// proto rule (LEAPMUX is reserved for worker-synthesized envelopes).
-		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
 			slog.Error("pi persist notification", "agent_id", a.agentID, "type", line.Type, "error", err)
 		}
 	case PiEventExtensionUIRequest:
@@ -137,6 +137,8 @@ func (a *PiAgent) handlePiAgentStart() {
 	a.mu.Lock()
 	a.currentTurnActive = true
 	a.mu.Unlock()
+	// A fresh turn begins: start the thinking-token estimate from zero.
+	a.thinkingTokens.reset()
 }
 
 func (a *PiAgent) handlePiAgentEnd(raw []byte) {
@@ -199,16 +201,18 @@ func (a *PiAgent) handlePiMessageUpdate(raw []byte) {
 	}
 
 	switch env.AssistantMessageEvent.Type {
-	case PiAssistantEventTextDelta:
+	case PiAssistantEventTextDelta, PiAssistantEventThinkingDelta:
+		// Text and thinking deltas are handled identically: stream the chunk under
+		// its own event type, then feed it to the live token estimate. Pi persists
+		// both as one message_end with no per-phase split, so a thinking->text
+		// transition inside a single message shares one thinking-token phase by
+		// design. The broadcast method is taken from the event type so the frontend
+		// still distinguishes the two stream kinds.
 		if env.AssistantMessageEvent.Delta == "" {
 			return
 		}
-		a.sink.BroadcastStreamChunk([]byte(env.AssistantMessageEvent.Delta), "", PiAssistantEventTextDelta)
-	case PiAssistantEventThinkingDelta:
-		if env.AssistantMessageEvent.Delta == "" {
-			return
-		}
-		a.sink.BroadcastStreamChunk([]byte(env.AssistantMessageEvent.Delta), "", PiAssistantEventThinkingDelta)
+		a.sink.BroadcastStreamChunk([]byte(env.AssistantMessageEvent.Delta), "", env.AssistantMessageEvent.Type)
+		a.thinkingTokens.observe(a.sink, env.AssistantMessageEvent.Delta)
 	default:
 		// All other delta sub-types (text_start/end, thinking_start/end,
 		// toolcall_*, start, done, error) are handled via message_end and
@@ -349,7 +353,7 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 		// Persist the raw extension_ui_request envelope as AGENT. The
 		// frontend's Pi notification renderer derives level/message from
 		// `notifyType`/`message` on the raw payload — no synthesis needed.
-		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("pi persist notify", "agent_id", a.agentID, "error", err)
 		}
 	case PiExtensionMethodSetStatus:
@@ -383,7 +387,7 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 	default:
 		// Unknown extension UI method — record so the user can see it.
 		// Pi-emitted, so AGENT source.
-		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("pi persist unknown extension_ui_request",
 				"agent_id", a.agentID, "method", head.Method, "error", err)
 		}

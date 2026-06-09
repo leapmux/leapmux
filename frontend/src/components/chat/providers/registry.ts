@@ -122,9 +122,47 @@ export interface Provider {
   defaultEffort?: string
   /** Default permission mode identifier for this provider. */
   defaultPermissionMode?: PermissionMode
+  /**
+   * Extra per-provider settings to seed into a new agent's OpenAgent request.
+   * Omit when the provider needs none. Codex seeds its collaboration mode.
+   */
+  defaultExtraSettings?: Record<string, string>
+  /**
+   * Fraction of the context window (as a percentage, e.g. 16.5) this provider
+   * reserves as an autocompact buffer, subtracted from usable capacity when
+   * computing the context-usage percentage. Omit (treated as 0) for providers
+   * with no reserved headroom. Claude Code reserves a buffer.
+   */
+  contextBufferPct?: number
+  /**
+   * True when this provider's `agentSessionId` is a session FILE PATH rather
+   * than an opaque id, so the UI shortens it to a basename for display and
+   * labels the copy action "session file path". Pi uses session files.
+   */
+  sessionIdIsFilePath?: boolean
+  /**
+   * True when an AskUserQuestion option selection and the free-text note
+   * coexist (the agent accepts both), so picking an option does NOT clear the
+   * custom text and vice versa. Omit (mutually exclusive) for providers where
+   * an answer and a note are alternatives. Codex preserves both.
+   */
+  preservesSelectionNotes?: boolean
 
   /** Classify a parsed message into a rendering category. */
   classify: (input: ClassificationInput, context?: ClassificationContext) => MessageCategory
+
+  /**
+   * Decide whether a persisted AGENT message should clear the live thinking-token
+   * estimate (a per-phase reset). Called only for AGENT-source messages. Omit to
+   * use the default "main-scope only" policy (clear when `parentSpanId === ''`),
+   * which is correct for the streamed-text estimator that drives Codex/Pi/ACP: a
+   * subagent's commit nests under a span and must not reset the primary counter,
+   * and the backend applies the same gate. Claude overrides to always clear,
+   * because its counter is real per-phase telemetry (not the estimator) and its
+   * parentSpanId is not a clean main-vs-subagent signal (a system-injected
+   * tool_use_id yields a non-empty parentSpanId on a main-agent message).
+   */
+  clearsThinkingTokensForMessage?: (msg: { parentSpanId: string }) => boolean
 
   /**
    * Render a message given its category and parsed content.

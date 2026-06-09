@@ -56,7 +56,13 @@ func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload [
 // agent output. Implemented by the service layer and injected into providers.
 type OutputSink interface {
 	PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
-	PersistNotification(source leapmuxv1.MessageSource, content []byte) error
+	// PersistNotification persists an agent notification (appending it to the
+	// active notification thread when one is open). It returns whether the
+	// notification produced a frontend-visible broadcast: a flapping notification
+	// that collapses byte-identically into the existing thread tail is persisted
+	// without a broadcast, and callers (the thinking-token reset decorator) use
+	// this to stay in lockstep with the frontend, which only clears on a broadcast.
+	PersistNotification(source leapmuxv1.MessageSource, content []byte) (broadcast bool, err error)
 	// PersistTurnEnd persists the agent's turn-end divider envelope and
 	// fires the sink-level git-status auto-broadcast. Each provider's
 	// terminal envelope (Claude type:"result", Codex turn/completed,

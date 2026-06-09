@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { wireSessionInfoToUpdates } from './useWorkspaceConnection'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from './useWorkspaceConnection'
 
 describe('wireSessionInfoToUpdates', () => {
   it('returns an empty object for undefined or empty payloads', () => {
@@ -44,5 +45,33 @@ describe('wireSessionInfoToUpdates', () => {
   it('keeps an empty-string streaming_type (the "not streaming plan" signal)', () => {
     // streaming_type uses `!== undefined`, so "" is a meaningful value, not a skip.
     expect(wireSessionInfoToUpdates({ streaming_type: '' }).streamingType).toBe('')
+  })
+})
+
+describe('shouldClearThinkingTokensForMessage', () => {
+  const agentMsg = (parentSpanId = '') => ({ source: MessageSource.AGENT, parentSpanId })
+  // A plugin that always clears, mirroring Claude's telemetry-driven counter.
+  const alwaysClears = { clearsThinkingTokensForMessage: () => true }
+
+  it('clears on a main-agent AGENT message by default (empty parentSpanId)', () => {
+    expect(shouldClearThinkingTokensForMessage(agentMsg(''), undefined)).toBe(true)
+  })
+
+  it('does NOT clear on a subagent message by default (nested under a span)', () => {
+    expect(shouldClearThinkingTokensForMessage(agentMsg('collab-span'), undefined)).toBe(false)
+  })
+
+  it('does NOT clear on non-AGENT messages, even with an always-clear plugin', () => {
+    expect(shouldClearThinkingTokensForMessage({ source: MessageSource.USER, parentSpanId: '' }, undefined)).toBe(false)
+    expect(shouldClearThinkingTokensForMessage(
+      { source: MessageSource.LEAPMUX, parentSpanId: '' },
+      alwaysClears,
+    )).toBe(false)
+  })
+
+  it('delegates the AGENT-message policy to the provider plugin', () => {
+    // A plugin (e.g. Claude) that always clears overrides the default main-scope
+    // gate, so even a message with a non-empty parentSpanId clears.
+    expect(shouldClearThinkingTokensForMessage(agentMsg('sys-tu-999'), alwaysClears)).toBe(true)
   })
 })

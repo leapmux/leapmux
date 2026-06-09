@@ -103,7 +103,7 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 		if msgType == NotificationTypeInterrupted {
 			a.sink.ResetSpans()
 		}
-		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
 			slog.Error("persist agent notification", "agent_id", a.agentID, "type", msgType, "error", err)
 		}
 
@@ -295,7 +295,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 			// threaded subtypes — the renderer extracts `subtype`/`status`
 			// from the raw envelope so future fields like `tokensBefore`/
 			// `durationMs` don't get discarded.
-			if err := a.sink.PersistNotification(source, content); err != nil {
+			if _, err := a.sink.PersistNotification(source, content); err != nil {
 				slog.Error("persist notification-threaded system message", "agent_id", a.agentID, "error", err)
 			}
 			return
@@ -601,7 +601,7 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	// notification renderer reads `rate_limit_info` from this raw
 	// Claude-native shape (camelCase) — the persisted side stays in
 	// the SDK's format so notification rendering remains a passthrough.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}
 

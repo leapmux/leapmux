@@ -90,12 +90,33 @@ type acpBase struct {
 	// Flushed when interrupted by any non-thought event (preserves chronology
 	// with tool calls) and at end-of-turn.
 	turnThoughtText strings.Builder
+	// thinkingTokens is the per-phase generated-token estimate driving the
+	// thinking-indicator counter. Fed from both the reader and the prompt-response
+	// goroutines, so it self-locks; see thinkingTokenEstimator and thinkingResetSink.
+	thinkingTokens thinkingTokenEstimator
 }
 
 // handleACPPromptResponse extracts accumulated turn text, calls the optional
 // prePersist hook, persists the prompt response, and resets the tool-use count.
 func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(json.RawMessage)) {
 	if resp == nil {
+		// A nil result ends the turn via error/abort, NOT the normal path: the
+		// persistPromptResponse turn-end below -- which flushes the buffered thought,
+		// persists the reply, and emits the result divider the frontend clears on --
+		// is skipped. So nothing here commits the in-flight assistant/thought text,
+		// and (unlike the normal path) no frontend clear fires for this turn end.
+		// Drop the buffered turn state so an aborted turn's text can't leak into the
+		// next turn -- both as a stale handoff signal and as text prepended to the
+		// next reply -- since ACP has no turn-start reset. Then clear() the estimate:
+		// it broadcasts an explicit zero (no result divider does it for us) so the
+		// live counter drops now instead of freezing on its last value until the next
+		// turn streams.
+		b.mu.Lock()
+		b.turnAssistantText.Reset()
+		b.turnThoughtText.Reset()
+		b.turnToolUses = 0
+		b.mu.Unlock()
+		b.thinkingTokens.clear(b.sink)
 		return
 	}
 
@@ -234,6 +255,8 @@ func (b *acpBase) ClearContext() (string, bool) {
 	b.turnAssistantText.Reset()
 	b.turnThoughtText.Reset()
 	b.mu.Unlock()
+	// The session was replaced; drop any in-flight thinking-token estimate too.
+	b.thinkingTokens.reset()
 
 	b.sink.UpdateSessionID(session.SessionID)
 
@@ -728,6 +751,7 @@ func (b *acpBase) broadcastACPChunk(content json.RawMessage, builder *strings.Bu
 	builder.WriteString(text)
 	b.mu.Unlock()
 	b.sink.BroadcastStreamChunk([]byte(text), "", eventType)
+	b.thinkingTokens.observe(b.sink, text)
 }
 
 // handleAgentThoughtChunk buffers an agent_thought_chunk notification's text
@@ -745,13 +769,33 @@ func (b *acpBase) handleAgentThoughtChunk(content json.RawMessage) {
 		return
 	}
 	b.mu.Lock()
-	if b.turnThoughtText.Len() > 0 {
+	// freshSegment is true when this chunk opens a new reasoning segment: the
+	// thought buffer was empty before it (live thought deltas keep appending to a
+	// non-empty buffer; a flush between segments empties it).
+	freshSegment := b.turnThoughtText.Len() == 0
+	if !freshSegment {
 		if sep := thoughtChunkSeparator(b.turnThoughtText.String(), text); sep != "" {
 			b.turnThoughtText.WriteString(sep)
 		}
 	}
 	b.turnThoughtText.WriteString(text)
 	b.mu.Unlock()
+	// A reasoning segment that opens while the live counter still holds uncommitted
+	// assistant chars is a new phase: the assistant chunks were only buffered in
+	// turnAssistantText and not committed until turn end, so they triggered no
+	// frontend clear. clear() supplies one so the reasoning reads as its own phase
+	// rather than inheriting the assistant total (which would also spin the
+	// forward-only odometer backward from the larger assistant count to the smaller
+	// reasoning count). Gating on the estimator's own pending chars -- not on
+	// turnAssistantText, which stays non-empty all turn for end-of-turn persistence
+	// -- keeps a committed tool call between assistant text and a later reasoning
+	// segment from re-firing a redundant clear: that commit already reset the
+	// estimator and cleared the frontend, so hasPending then reports false.
+	if freshSegment && b.thinkingTokens.hasPending() {
+		b.thinkingTokens.clear(b.sink)
+	}
+	// Reasoning is model generation too: feed it into the live token estimate.
+	b.thinkingTokens.observe(b.sink, text)
 }
 
 // flushThoughtBuffer persists the buffered thought text (if any) as one
@@ -1196,6 +1240,13 @@ func (b *acpBase) startACPHandshake(
 	sessionCfg acpSessionConfig,
 ) (*acpSessionResult, error) {
 	b.drainStderr(stderr)
+
+	// Install the thinking-token reset decorator once, centrally, so every ACP
+	// provider (Gemini, Cursor, Copilot, Kilo, OpenCode, Goose) gets the per-phase
+	// reset without each Start* constructor remembering to wrap -- and before the
+	// reader goroutine below drives any persist/broadcast through b.sink. Codex and
+	// Pi wrap in their own constructors; they do not run this handshake.
+	b.sink = newThinkingResetSink(b.sink, &b.thinkingTokens)
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)

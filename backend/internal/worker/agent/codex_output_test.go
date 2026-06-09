@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,13 +23,15 @@ func (s *startupStatusGuardSink) PersistMessage(source leapmuxv1.MessageSource, 
 }
 
 func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
-	return &CodexAgent{
+	a := &CodexAgent{
 		jsonrpcBase: jsonrpcBase{processBase: processBase{
 			agentID: "test-agent",
 		}},
 		sink:     sink,
 		threadID: "main-thread",
 	}
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	return a
 }
 
 func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
@@ -146,17 +149,20 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 	require.Equal(t, "", got.SpanID)
 	require.Equal(t, "# Plan\n", string(got.Content))
 
-	// Verify the session info was broadcast with streaming_type "plan".
-	require.Equal(t, 1, sink.SessionInfoCount())
-	info := sink.LastSessionInfo()
-	assert.Equal(t, "plan", info["streaming_type"])
+	// Verify the streaming_type session info was broadcast with "plan". (The
+	// plan delta also broadcasts a thinking_tokens estimate, so assert on the
+	// streaming_type key rather than the total broadcast count.)
+	streamingType, ok := lastSessionInfoValue(sink, "streaming_type")
+	require.True(t, ok)
+	assert.Equal(t, "plan", streamingType)
+	require.Equal(t, 1, countSessionInfoWithKey(sink, "streaming_type"))
 
-	// Second delta should NOT broadcast session info again.
+	// Second delta should NOT broadcast streaming_type again.
 	input2 := `{"method":"item/plan/delta","params":{"delta":"Step 1\n"}}`
 	handleCodexOutput(agent, parseLine([]byte(input2)))
 
 	require.Equal(t, 2, sink.StreamChunkCount())
-	assert.Equal(t, 1, sink.SessionInfoCount())
+	assert.Equal(t, 1, countSessionInfoWithKey(sink, "streaming_type"))
 
 	// Should NOT be persisted as a regular message.
 	assert.Equal(t, 0, sink.MessageCount())
@@ -650,20 +656,24 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	// Send a plan delta first.
+	// Send a plan delta first. (It also broadcasts a thinking_tokens estimate on
+	// the same channel, so assert on the streaming_type key specifically rather
+	// than on raw broadcast counts / the last payload.)
 	delta := `{"method":"item/plan/delta","params":{"delta":"# Plan\n"}}`
 	handleCodexOutput(agent, parseLine([]byte(delta)))
 
-	require.Equal(t, 1, sink.SessionInfoCount())
+	streamingType, ok := lastSessionInfoValue(sink, "streaming_type")
+	require.True(t, ok)
+	assert.Equal(t, "plan", streamingType)
 
 	// Send item/completed with plan type.
 	completed := `{"method":"item/completed","params":{"item":{"type":"plan","id":"plan1","text":"# Plan\nStep 1"}}}`
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 
 	// Session info should now have streaming_type "" to clear the plan streaming.
-	require.Equal(t, 2, sink.SessionInfoCount())
-	info := sink.LastSessionInfo()
-	assert.Equal(t, "", info["streaming_type"])
+	streamingType, ok = lastSessionInfoValue(sink, "streaming_type")
+	require.True(t, ok)
+	assert.Equal(t, "", streamingType)
 
 	// Plan message should be persisted.
 	require.Equal(t, 1, sink.MessageCount())
@@ -672,9 +682,15 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 	delta2 := `{"method":"item/plan/delta","params":{"delta":"New plan\n"}}`
 	handleCodexOutput(agent, parseLine([]byte(delta2)))
 
-	require.Equal(t, 3, sink.SessionInfoCount())
-	info2 := sink.LastSessionInfo()
-	assert.Equal(t, "plan", info2["streaming_type"])
+	streamingType, ok = lastSessionInfoValue(sink, "streaming_type")
+	require.True(t, ok)
+	assert.Equal(t, "plan", streamingType)
+
+	// The exact streaming_type lifecycle: "plan" on the first delta, "" exactly
+	// once when the plan item completes, then "plan" again because item/completed
+	// cleared the streamingPlan flag. (Guards against a regression where
+	// item/completed double-broadcasts "" or the second delta fails to re-arm.)
+	assert.Equal(t, []interface{}{"plan", "", "plan"}, sessionInfoValues(sink, "streaming_type"))
 }
 
 func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testing.T) {
@@ -862,4 +878,333 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(
 	require.Equal(t, 0, sink.PlanUpdateCount())
 	require.Equal(t, 0, sink.PersistedControlCount())
 	require.Equal(t, 0, sink.BroadcastControlCount())
+}
+
+// lastSessionInfoValue returns the value of the most recent BroadcastSessionInfo
+// payload that carried key, and whether any did. Used to assert on one key while
+// ignoring unrelated broadcasts (e.g. streaming_type vs thinking_tokens) that may
+// interleave on the same channel.
+func lastSessionInfoValue(sink *testSink, key string) (interface{}, bool) {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for i := len(sink.sessionInfos) - 1; i >= 0; i-- {
+		if v, ok := sink.sessionInfos[i][key]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// countSessionInfoWithKey counts how many BroadcastSessionInfo payloads carried
+// key. Used to assert a key was broadcast exactly N times while other keys
+// (e.g. thinking_tokens) interleave on the same channel.
+func countSessionInfoWithKey(sink *testSink, key string) int {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	n := 0
+	for _, info := range sink.sessionInfos {
+		if _, ok := info[key]; ok {
+			n++
+		}
+	}
+	return n
+}
+
+// sessionInfoValues returns, in broadcast order, every value carried under key.
+// Lets a test assert the exact sequence (and therefore count) of a key's
+// broadcasts while other keys interleave on the same channel.
+func sessionInfoValues(sink *testSink, key string) []interface{} {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	var out []interface{}
+	for _, info := range sink.sessionInfos {
+		if v, ok := info[key]; ok {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// lastThinkingTokens returns the most recently broadcast thinking_tokens value,
+// or -1 when none has been broadcast yet. -1 (not 0) is the sentinel so a test
+// can tell "never broadcast" apart from a real 0.
+func lastThinkingTokens(sink *testSink) int64 {
+	if v, ok := lastSessionInfoValue(sink, SessionInfoKeyThinkingTokens); ok {
+		return v.(int64)
+	}
+	return -1
+}
+
+func TestHandleCodexOutput_AgentMessageDeltaAccumulatesThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	// 8-char delta -> 8/4 = 2 tokens; a second 8-char delta accumulates to
+	// 16/4 = 4. The estimate climbs cumulatively across deltas of the same phase.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh"}}`)))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"ijklmnop"}}`)))
+	assert.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// A live estimate is broadcast, never persisted to the timeline.
+	assert.Equal(t, 0, sink.MessageCount(), "thinking_tokens deltas must not persist")
+	assert.Equal(t, 0, sink.NotificationCount())
+}
+
+func TestHandleCodexOutput_ReasoningAndPlanDeltasAccumulateThinkingTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"reasoning text", `{"method":"item/reasoning/textDelta","params":{"itemId":"r1","delta":"%s"}}`},
+		{"reasoning summary", `{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"%s"}}`},
+		{"plan", `{"method":"item/plan/delta","params":{"delta":"%s"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+			agent.threadID = "main-thread"
+
+			handleCodexOutput(agent, parseLine([]byte(fmt.Sprintf(tc.input, "abcdefgh"))))
+			assert.Equal(t, int64(2), lastThinkingTokens(sink))
+			handleCodexOutput(agent, parseLine([]byte(fmt.Sprintf(tc.input, "ijklmnop"))))
+			assert.Equal(t, int64(4), lastThinkingTokens(sink))
+		})
+	}
+}
+
+func TestHandleCodexOutput_ReasoningSummaryAndRawCountOncePerItem(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	// Codex can stream BOTH a summary and the raw reasoning for one reasoning item
+	// (same itemId, same generation surfaced twice). The summary arrives first and
+	// locks item r1 onto "summary" (8 chars -> 2 tokens).
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"abcdefgh","threadId":"main-thread"}}`)))
+	require.Equal(t, int64(2), lastThinkingTokens(sink))
+
+	// Raw reasoning for the SAME item must NOT be counted -- it would double the
+	// estimate for the same underlying generation.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"r1","delta":"ZZZZZZZZZZZZZZZZ","threadId":"main-thread"}}`)))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "raw reasoning for the locked item is not double-counted")
+
+	// More summary deltas for the locked item still climb (16 chars -> 4 tokens).
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"ijklmnop","threadId":"main-thread"}}`)))
+	assert.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// A different reasoning item locks independently: raw arrives first for r2.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"r2","delta":"qrstuvwx","threadId":"main-thread"}}`)))
+	assert.Equal(t, int64(6), lastThinkingTokens(sink), "a separate item counts its own first-seen kind (24 chars -> 6)")
+}
+
+func TestHandleCodexOutput_ReasoningCountsWhicheverStreamArrivesFirst(t *testing.T) {
+	// A model that streams only one reasoning kind must still move the counter, so
+	// the estimator locks onto whichever arrives first rather than preferring one.
+	for _, tc := range []struct {
+		name   string
+		method string
+	}{
+		{"raw only", "item/reasoning/textDelta"},
+		{"summary only", "item/reasoning/summaryTextDelta"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+			agent.threadID = "main-thread"
+
+			handleCodexOutput(agent, parseLine([]byte(fmt.Sprintf(
+				`{"method":%q,"params":{"itemId":"r1","delta":"abcdefgh","threadId":"main-thread"}}`, tc.method))))
+			assert.Equal(t, int64(2), lastThinkingTokens(sink), "a single reasoning stream still counts")
+		})
+	}
+}
+
+func TestHandleCodexOutput_ReasoningItemCompletedReleasesStreamLock(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	// Item r1 locks onto "summary".
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"abcdefgh","threadId":"main-thread"}}`)))
+	require.Equal(t, int64(2), lastThinkingTokens(sink))
+
+	// Completing the reasoning item resets the estimate (a main-scope AGENT commit)
+	// AND releases r1's stream-kind lock so the map stays bounded.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"reasoning","id":"r1","summary":[{"text":"done"}]}}}`)))
+	agent.mu.Lock()
+	_, stillLocked := agent.reasoningStreamKind["r1"]
+	agent.mu.Unlock()
+	assert.False(t, stillLocked, "the completed item's stream-kind lock is released")
+}
+
+func TestHandleCodexOutput_ChildThreadDeltasDoNotCountThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink) // threadID = "main-thread"
+
+	// A main-thread delta counts (explicit main threadId).
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh","threadId":"main-thread"}}`)))
+	require.Equal(t, int64(2), lastThinkingTokens(sink))
+
+	// A collab subagent (child thread) delta is still broadcast as a stream chunk
+	// but must NOT inflate the primary agent's estimate.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"r1","delta":"ignoredchildtext","threadId":"child-1"}}`)))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "child-thread text must not count")
+
+	// A subsequent main-thread delta (empty threadId == main) resumes from the
+	// main total, unaffected by the child text in between.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"ijklmnop"}}`)))
+	assert.Equal(t, int64(4), lastThinkingTokens(sink))
+}
+
+func TestHandleCodexOutput_CommandAndFileOutputDeltasDoNotCountThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	// Tool output (shell stdout, file diffs) is not model generation, so it must
+	// NOT inflate the thinking-token estimate.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/commandExecution/outputDelta","params":{"itemId":"c1","delta":"lots of stdout here"}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/fileChange/outputDelta","params":{"itemId":"f1","delta":"@@ -1 +1 @@ big diff"}}`)))
+
+	assert.Equal(t, int64(-1), lastThinkingTokens(sink), "tool output must not broadcast thinking_tokens")
+}
+
+func TestHandleCodexOutput_ItemCompletedResetsThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefghijklmnop"}}`)))
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// Committing the message is a phase boundary the frontend clears on; the
+	// backend estimate must reset so the next phase restarts from zero.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"agentMessage","id":"m1","text":"hi"}}}`)))
+
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh"}}`)))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "next phase restarts at 8/4, not the cumulative total")
+}
+
+func TestHandleCodexOutput_ItemStartedAndApprovalResetThinkingTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reset string
+	}{
+		// A started tool item commits an AGENT message the frontend clears on.
+		{"item started", `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`},
+		// An approval request is a live control request the frontend clears on.
+		{"approval request", `{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"ls","reason":"x"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &recordingControlSink{}
+			agent := newCodexAgentWithSink(sink)
+			agent.threadID = "main-thread"
+
+			handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefghijklmnop"}}`)))
+			require.Equal(t, int64(4), lastThinkingTokens(&sink.testSink))
+
+			handleCodexOutput(agent, parseLine([]byte(tc.reset)))
+
+			handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh"}}`)))
+			assert.Equal(t, int64(2), lastThinkingTokens(&sink.testSink), "the boundary restarts the estimate")
+		})
+	}
+}
+
+func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotResetThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink) // threadID = "main-thread"
+
+	// Accumulate a main-thread estimate (16 chars -> 4 tokens).
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefghijklmnop","threadId":"main-thread"}}`)))
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// A collab subagent's turn/started carries its own child threadId. It must NOT
+	// reset the primary agent's estimate -- the frontend has no counter clear for
+	// turn/started, so an ungated reset would spin the odometer backward mid-phase.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
+
+	// The next main-thread delta keeps climbing from the cumulative total (24/4=6),
+	// proving the child-thread turn/started did not reset the estimate.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"qrstuvwx","threadId":"main-thread"}}`)))
+	assert.Equal(t, int64(6), lastThinkingTokens(sink), "a child-thread turn/started must not reset the primary estimate")
+}
+
+func TestHandleCodexOutput_TurnStartedClearsReasoningStreamLocksOnMainThreadOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		turnStarted string
+		wantCleared bool
+	}{
+		{"main thread clears", `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`, true},
+		{"child thread keeps", `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+			agent.threadID = "main-thread"
+
+			// Lock reasoning item r1 onto its first-seen sub-stream kind.
+			handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"abcdefgh","threadId":"main-thread"}}`)))
+			agent.mu.Lock()
+			_, locked := agent.reasoningStreamKind["r1"]
+			agent.mu.Unlock()
+			require.True(t, locked, "the reasoning item is locked before the turn boundary")
+
+			// A new turn on the main thread drops stale per-item locks so itemIds can't
+			// leak across turns (e.g. a reasoning item left open by an abort); a
+			// child-thread turn/started belongs to a collab subagent and must leave the
+			// primary agent's locks intact, mirroring the main-thread gate on the reset.
+			handleCodexOutput(agent, parseLine([]byte(tc.turnStarted)))
+
+			agent.mu.Lock()
+			_, stillLocked := agent.reasoningStreamKind["r1"]
+			agent.mu.Unlock()
+			assert.Equal(t, !tc.wantCleared, stillLocked)
+		})
+	}
+}
+
+func TestHandleCodexOutput_ReasoningItemCompletedResetsThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	// Reasoning streams and climbs (16 chars -> 4 tokens).
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"itemId":"r1","delta":"abcdefghijklmnop","threadId":"main-thread"}}`)))
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// Codex has no explicit reasoning->answer hand-off (unlike ACP); it relies on
+	// the reasoning item/completed persisting an AGENT message the frontend clears
+	// on, which the decorator mirrors with a reset. Without it, the reasoning chars
+	// would stack onto the following answer's count.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"reasoning","id":"r1","summary":[{"text":"done"}]}}}`)))
+
+	// The answer phase restarts from zero (8/4 = 2), not the reasoning total.
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh","threadId":"main-thread"}}`)))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "reasoning item/completed resets so the answer restarts from zero")
+}
+
+func TestHandleCodexOutput_TurnBoundariesResetThinkingTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reset string
+	}{
+		{"turn started", `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`},
+		{"turn completed", `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+			agent.threadID = "main-thread"
+
+			handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefghijklmnop"}}`)))
+			require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+			handleCodexOutput(agent, parseLine([]byte(tc.reset)))
+
+			handleCodexOutput(agent, parseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh"}}`)))
+			assert.Equal(t, int64(2), lastThinkingTokens(sink), "the new turn restarts the estimate")
+		})
+	}
 }

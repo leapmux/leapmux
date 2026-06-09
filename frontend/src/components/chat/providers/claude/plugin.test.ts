@@ -6,6 +6,18 @@ import { input } from '../testUtils'
 // Side-effect import to register the Claude plugin.
 import './plugin'
 
+describe('claude clearsThinkingTokensForMessage', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  it('always clears, even for a non-empty parentSpanId (telemetry-driven counter)', () => {
+    // Claude's parentSpanId is not a clean main-vs-subagent signal (a
+    // system-injected tool_use_id yields a non-empty parentSpanId on a main-agent
+    // message), so it must not gate on it like the estimator providers do.
+    expect(plugin.clearsThinkingTokensForMessage!({ parentSpanId: '' })).toBe(true)
+    expect(plugin.clearsThinkingTokensForMessage!({ parentSpanId: 'sys-tu-999' })).toBe(true)
+  })
+})
+
 describe('claude extractQuotableText', () => {
   const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
 
