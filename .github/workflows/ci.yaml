@@ -11,13 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Opt arduino/setup-protoc, arduino/setup-task, and bufbuild/buf-setup-action
-  # into Node.js 24 ahead of GitHub's June 2 2026 forced switch — those three
-  # still ship `using: node20` in their action.yml. Drop this once they cut
-  # Node-24 releases (or once the forced-switch date passes and the override
-  # becomes a no-op).
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
   # Shrink the desktop/rust debug artifacts that `cargo test` (dev profile)
   # bakes into the cached `target/` -- full DWARF debuginfo is the single
   # largest slice of the Swatinem/rust-cache blob. `line-tables-only` keeps
