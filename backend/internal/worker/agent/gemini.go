@@ -26,9 +26,14 @@ type GeminiCLIAgent struct {
 func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "gemini", []string{"GEMINI_CLI"}, []string{"--acp"}, nil, opts.WorkingDir,
-	)
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
+		Shell:        opts.Shell,
+		LoginShell:   opts.LoginShell,
+		BinaryName:   "gemini",
+		StripEnvKeys: []string{"GEMINI_CLI"},
+		BaseArgs:     []string{"--acp"},
+		WorkingDir:   opts.WorkingDir,
+	})
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "GEMINI_CLI", "GEMINI_CLI_NO_RELAUNCH")
 	if opts.LoginShell {

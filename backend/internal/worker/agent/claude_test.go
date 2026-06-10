@@ -1156,7 +1156,7 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	assert.False(t, foundClaudeCode, "CLAUDECODE=1 should NOT be in env without login shell")
 
 	// With login shell - verify the env is set on the command.
-	shellCmd, _, _ := buildShellWrappedCommand(ctx, testutil.TestShell(), true, "claude", []string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "test"}, t.TempDir())
+	shellCmd, _, _ := wrapShellCmd(ctx, testutil.TestShell(), true, "claude", []string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "test"}, false, t.TempDir())
 	shellCmd.Env = envutil.FilterEnv(shellCmd.Environ(), "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 	shellCmd.Env = append(shellCmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "LEAPMUX_WORKER=1", "CLAUDECODE=1")
 
@@ -1175,49 +1175,247 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 }
 
 func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
-	byID := map[string]*leapmuxv1.AvailableModel{}
-	for _, m := range claudeCodeAvailableModels {
-		byID[m.Id] = m
-	}
-
-	effortIDs := func(m *leapmuxv1.AvailableModel) []string {
-		ids := make([]string, 0, len(m.SupportedEfforts))
-		for _, e := range m.SupportedEfforts {
-			ids = append(ids, e.Id)
-		}
-		return ids
-	}
+	byID := claudeModelsByID(claudeCodeAvailableModels)
 
 	opusEfforts := []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}
 	sonnetEfforts := []string{"auto", "max", "high", "medium", "low"}
 
-	for _, id := range []string{"opus", "opus[1m]"} {
+	// Fable and Opus share the full xhigh+ultracode effort menu.
+	for _, id := range []string{"fable", "fable[1m]", "opus", "opus[1m]"} {
 		m := byID[id]
 		require.NotNil(t, m, "model %q missing", id)
-		assert.Equal(t, opusEfforts, effortIDs(m), "opus effort list for %q", id)
-		assert.Equal(t, "xhigh", m.DefaultEffort, "opus default effort for %q", id)
+		assert.Equal(t, opusEfforts, claudeEffortIDs(m), "xhigh effort list for %q", id)
+		assert.Equal(t, "xhigh", m.DefaultEffort, "xhigh default effort for %q", id)
 	}
 
 	for _, id := range []string{"sonnet", "sonnet[1m]"} {
 		m := byID[id]
 		require.NotNil(t, m, "model %q missing", id)
-		assert.Equal(t, sonnetEfforts, effortIDs(m), "sonnet effort list for %q", id)
+		assert.Equal(t, sonnetEfforts, claudeEffortIDs(m), "sonnet effort list for %q", id)
 		assert.Equal(t, "high", m.DefaultEffort, "sonnet default effort for %q", id)
 	}
 
 	haiku := byID["haiku"]
 	require.NotNil(t, haiku)
 	assert.Empty(t, haiku.SupportedEfforts, "haiku has no effort UI")
+	assert.Equal(t, "", haiku.DefaultEffort, "a no-effort model carries no default effort (matches the dynamic conversion)")
 }
 
-// TestClaudeEffortCatalog_UltracodeIsOpusOnly guards the design decision that
-// "ultracode" is offered only by xhigh-capable (Opus) models. Sonnet's catalog
-// must not list it, so switching to Sonnet downgrades ultracode cleanly.
-func TestClaudeEffortCatalog_UltracodeIsOpusOnly(t *testing.T) {
+// TestClaudeEffortCatalog_UltracodeFollowsXHigh guards the design decision that
+// "ultracode" is offered exactly by the xhigh-capable effort menu and not the
+// max-only one, so switching to a non-xhigh model (Sonnet) downgrades ultracode
+// cleanly. convertClaudeModels keys ultracode off the same xhigh signal, so this
+// keeps the static and dynamic catalogs in agreement.
+func TestClaudeEffortCatalog_UltracodeFollowsXHigh(t *testing.T) {
 	// Use the production effortListContains so this guard exercises the same
-	// lookup modelSupportsUltracode relies on, rather than a parallel copy.
-	assert.True(t, effortListContains(claudeEffortXHighMax, EffortUltracode), "Opus catalog must offer ultracode")
-	assert.False(t, effortListContains(claudeEffortMax, EffortUltracode), "Sonnet catalog must not offer ultracode")
+	// lookup supportsUltracode relies on, rather than a parallel copy.
+	assert.True(t, effortListContains(claudeEffortXHighMax, EffortUltracode), "xhigh catalog must offer ultracode")
+	assert.False(t, effortListContains(claudeEffortMax, EffortUltracode), "max-only catalog must not offer ultracode")
+}
+
+// TestClaudeDefaultEffort_FallsBackToStrongest verifies that a model which
+// supports effort but offers neither xhigh nor high (e.g. a max-only model) still
+// gets a concrete default effort -- the strongest recognized level -- rather than
+// an empty default while its selector is shown. The xhigh/high product preference
+// is preserved when those levels are present.
+func TestClaudeDefaultEffort_FallsBackToStrongest(t *testing.T) {
+	defaultEffort := func(supportsEffort bool, levels ...string) string {
+		return claudeDefaultEffort(normalizedEffortLevelSet(claudeCodeModelInfo{
+			SupportsEffort: supportsEffort, SupportedEffortLevels: levels,
+		}))
+	}
+	// Product preference: xhigh wins over max even though max ranks higher.
+	assert.Equal(t, "xhigh", defaultEffort(true, "low", "medium", "high", "xhigh", "max"))
+	assert.Equal(t, "high", defaultEffort(true, "low", "medium", "high", "max"))
+	// Mixed-case CLI levels still resolve (S3 case-normalization).
+	assert.Equal(t, "xhigh", defaultEffort(true, "Low", "Medium", "High", "XHigh", "Max"))
+	// Neither xhigh nor high: fall back to the strongest recognized level.
+	assert.Equal(t, "max", defaultEffort(true, "low", "medium", "max"))
+	assert.Equal(t, "medium", defaultEffort(true, "low", "medium"))
+	// Only unrecognized levels -> "" (selector hidden, matches claudeSupportedEfforts).
+	assert.Equal(t, "", defaultEffort(true, "ludicrous"))
+	// No effort support -> "".
+	assert.Equal(t, "", defaultEffort(false))
+
+	// End-to-end: a max-only model surfaces with a non-empty selector AND a
+	// non-empty default effort (no "selector shown but empty default" state).
+	m := claudeModelsByID(convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "maxer", DisplayName: "Maxer", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "max"}},
+	}, nil))["maxer"]
+	require.NotNil(t, m)
+	assert.Equal(t, []string{"auto", "max", "medium", "low"}, claudeEffortIDs(m))
+	assert.Equal(t, "max", m.DefaultEffort)
+}
+
+// TestLaunchOmitsEffort locks the shared predicate that decides when no --effort is
+// sent at launch (and so nothing needs reconciling at startup): the account-default
+// sentinel and EffortAuto/"" always omit, a model the catalog KNOWS has no effort
+// support (Haiku) omits, and unknown models pass their effort through.
+func TestLaunchOmitsEffort(t *testing.T) {
+	static := newEffortResolver(claudeCodeAvailableModels)
+	assert.True(t, static.launchOmitsEffort("default", "high"), "sentinel always omits --effort")
+	// S4: an empty model sends no --model so the CLI picks the account default; it
+	// must omit --effort too, just like the sentinel.
+	assert.True(t, static.launchOmitsEffort("", "high"), "empty model omits --effort")
+	assert.True(t, static.launchOmitsEffort("haiku", "high"), "haiku has no efforts in the catalog -> omit")
+	assert.True(t, static.launchOmitsEffort("opus", ""), "empty effort omits --effort")
+	assert.True(t, static.launchOmitsEffort("opus", EffortAuto), "auto omits --effort")
+	assert.False(t, static.launchOmitsEffort("opus", "xhigh"), "a concrete effort on a normal model is sent")
+	assert.False(t, static.launchOmitsEffort("sonnet", EffortUltracode))
+	// S4: an unknown (not-in-catalog) model is trusted, so its effort is sent.
+	assert.False(t, static.launchOmitsEffort("claude-future-preview", "xhigh"), "unknown model passes effort through")
+	// S4: an effort-less model discovered dynamically (no "haiku" literal) is handled
+	// by the catalog, so it omits --effort just like Haiku.
+	dynamic := newEffortResolver(convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "quickie", DisplayName: "Quickie", SupportsEffort: false},
+	}, nil))
+	assert.True(t, dynamic.launchOmitsEffort("quickie", "high"), "catalog-known effort-less model omits --effort")
+}
+
+// TestEffortResolver_NilGuard verifies the catalog-walking capability checks
+// tolerate nil entries (matching FindAvailableModel/withDefaultModelMarked), so a
+// nil-bearing catalog can't panic the effort/ultracode lookups.
+func TestEffortResolver_NilGuard(t *testing.T) {
+	r := newEffortResolver([]*leapmuxv1.AvailableModel{nil, {Id: "opus", SupportedEfforts: claudeEffortXHighMax}, nil})
+	assert.True(t, r.supportsUltracode("opus"))
+	assert.False(t, r.supportsUltracode("missing"), "absent model is not trusted for ultracode")
+	assert.True(t, r.supports("opus", "xhigh"))
+	assert.True(t, r.supports("mystery", "xhigh"), "unknown model is trusted, no panic on nil entries")
+}
+
+// TestEffortResolver_StaticFallbackTrustsFilteredModel covers S2: the per-agent
+// resolver falls back to the static catalog for a model the live CLI dropped from
+// the dynamic list, so the decode, live-update, and startup paths all keep agreeing
+// that a still-running filtered model (e.g. opus reported in unavailable_models) is
+// ultracode-capable instead of silently downgrading it. The genuine downgrade case
+// (model still listed, minus xhigh) still wins because dynamic takes precedence.
+func TestEffortResolver_StaticFallbackTrustsFilteredModel(t *testing.T) {
+	// Dynamic catalog lists only sonnet -> opus is "filtered".
+	filtered := &ClaudeCodeAgent{availableModels: convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
+	}, nil)}
+	r := filtered.effortResolver()
+	assert.True(t, r.supportsUltracode("opus"), "filtered opus resolves via the static fallback")
+	assert.Equal(t, EffortUltracode, r.resolveEffort("opus", EffortUltracode), "filtered opus keeps ultracode")
+	// A live edit echoing the current ultracode must NOT strip it for the filtered model.
+	assert.Empty(t, r.updateFlagSettings("opus", EffortUltracode, EffortUltracode),
+		"an unrelated live edit preserves a filtered model's ultracode")
+
+	// Dynamic precedence: a model the live CLI lists WITHOUT xhigh is genuinely not
+	// ultracode-capable even though the static catalog says it is.
+	dropped := &ClaudeCodeAgent{availableModels: convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
+	}, nil)}
+	assert.False(t, dropped.effortResolver().supportsUltracode("opus"),
+		"a live CLI that dropped xhigh wins over the static fallback")
+}
+
+// TestEffortResolver_ContextWindowFallsBackToStatic verifies contextWindow resolves
+// over the dynamic catalog first and the static catalog as a per-entry fallback --
+// mirroring definedEfforts -- so a model the live CLI dropped from its list but the
+// session is still running keeps its known window instead of reporting "unknown".
+func TestEffortResolver_ContextWindowFallsBackToStatic(t *testing.T) {
+	// Dynamic catalog lists only sonnet (200K); opus[1m] is "filtered".
+	r := (&ClaudeCodeAgent{availableModels: convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"high"}},
+	}, nil)}).effortResolver()
+
+	assert.Equal(t, int64(200_000), r.contextWindow("sonnet"), "dynamic entry wins")
+	assert.Equal(t, int64(1_000_000), r.contextWindow("opus[1m]"),
+		"filtered opus[1m] resolves its 1M window via the static fallback")
+	assert.Equal(t, int64(0), r.contextWindow(DefaultModelSentinel),
+		"the unresolved sentinel has no window in either catalog")
+	assert.Equal(t, int64(0), r.contextWindow("ghost"),
+		"a model absent from both catalogs is unknown")
+}
+
+// TestEffortResolver_SentinelIsUnresolved covers S1: the account-default sentinel is
+// treated as unresolved by definedEfforts, so a session stuck on "default" (the CLI
+// never echoed a concrete applied.model) passes its effort through rather than
+// clamping it against the sentinel's empty effort list.
+func TestEffortResolver_SentinelIsUnresolved(t *testing.T) {
+	r := (&ClaudeCodeAgent{}).effortResolver() // static fallback only
+	_, known := r.definedEfforts(DefaultModelSentinel)
+	assert.False(t, known, "the sentinel is reported as unresolved, not known-with-empty-efforts")
+	assert.Equal(t, "max", r.resolveEffort(DefaultModelSentinel, "max"), "effort passes through, not clamped to high")
+	assert.False(t, r.unsupportedUltracode("max", DefaultModelSentinel))
+	// An effort-only live edit on a stuck sentinel pushes NO effort delta: the sentinel
+	// has no concrete model to resolve an effort against, so the live path emits nothing
+	// (mirroring the launch path's omitted --effort), and the effort settles when the
+	// model resolves. Pushing an effortLevel against the placeholder risks a level the
+	// CLI's resolved model can't run.
+	assert.Nil(t, r.updateFlagSettings(DefaultModelSentinel, "max", "high"))
+}
+
+// TestEffortResolver_EmptyDynamicEntryDefersToFallback covers E4: a KNOWN model the
+// live CLI reports with no recognizable efforts -- supportsEffort:false, or only
+// unrecognized level names (schema drift) -- lands in the dynamic catalog with an
+// empty effort list. That empty entry must NOT shadow the populated static-fallback
+// entry for the same model, or the user's stored effort would be silently downgraded
+// post-init. definedEfforts prefers a populated entry, so the fallback's menu wins.
+func TestEffortResolver_EmptyDynamicEntryDefersToFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cli  claudeCodeModelInfo
+	}{
+		{"supportsEffort false", claudeCodeModelInfo{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: false}},
+		{"only unrecognized levels", claudeCodeModelInfo{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"ultra", "blazing"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dyn := convertClaudeModels([]claudeCodeModelInfo{tc.cli}, nil)
+			// Precondition: the dynamic sonnet entry really is present-but-empty.
+			dynSonnet := FindAvailableModel(dyn, "sonnet")
+			require.NotNil(t, dynSonnet)
+			require.Empty(t, dynSonnet.SupportedEfforts)
+
+			r := (&ClaudeCodeAgent{availableModels: dyn}).effortResolver()
+			efforts, known := r.definedEfforts("sonnet")
+			assert.True(t, known, "sonnet is known")
+			assert.NotEmpty(t, efforts, "empty dynamic entry defers to the populated static fallback")
+			assert.True(t, r.supports("sonnet", "max"), "the fallback menu rescues a recognized level")
+			assert.Equal(t, "max", r.resolveEffort("sonnet", "max"), "stored effort is not downgraded")
+			assert.False(t, r.launchOmitsEffort("sonnet", "max"), "sonnet is not treated as effort-less")
+		})
+	}
+}
+
+// TestEffortResolver_GenuinelyEffortlessModelStaysEmpty is E4's negative case: a model
+// effort-less in BOTH catalogs (Haiku) stays known-with-no-efforts -- the
+// populated-entry preference must not invent a menu for it -- so the launch path still
+// omits --effort (Haiku does not accept the flag).
+func TestEffortResolver_GenuinelyEffortlessModelStaysEmpty(t *testing.T) {
+	dyn := convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "haiku", DisplayName: "Haiku", SupportsEffort: false},
+	}, nil)
+	r := (&ClaudeCodeAgent{availableModels: dyn}).effortResolver()
+	efforts, known := r.definedEfforts("haiku")
+	assert.True(t, known, "haiku is known")
+	assert.Empty(t, efforts, "haiku has no efforts in either catalog")
+	assert.True(t, r.launchOmitsEffort("haiku", "high"), "an effort-less model still omits --effort")
+}
+
+// TestClaudeFallbackDisplayName covers S6: a "[1m]" model id with no CLI displayName
+// renders as "X (1M context)" instead of the raw "X[1m]".
+func TestClaudeFallbackDisplayName(t *testing.T) {
+	assert.Equal(t, "Opus (1M context)", claudeFallbackDisplayName("opus[1m]"))
+	assert.Equal(t, "Opus", claudeFallbackDisplayName("opus"))
+	assert.Equal(t, "Fable (1M context)", claudeFallbackDisplayName("fable[1m]"))
+	// A decorated 1M marker is sized at 1M by claudeContextWindowForValue, so the
+	// fallback name must agree (detect via is1MContextVariant, not a literal "[1m]"
+	// suffix) instead of falling through to a garbled "Fable[1m Beta]".
+	assert.Equal(t, "Fable (1M context)", claudeFallbackDisplayName("fable[1m-beta]"))
+	assert.Equal(t, "Opus (1M context)", claudeFallbackDisplayName("opus[1m-preview]"))
+	require.True(t, is1MContextVariant("fable[1m-beta]"),
+		"guards the predicate the display name now relies on")
+	// A bracket whose content is not a 1M marker is not treated as a 1M variant.
+	require.False(t, is1MContextVariant("opus[preview]"))
+	assert.NotContains(t, claudeFallbackDisplayName("opus[preview]"), "1M context")
+	// Via the full conversion, with the CLI omitting displayName.
+	got := claudeModelsByID(convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "opus[1m]", SupportsEffort: true, SupportedEffortLevels: []string{"high", "xhigh"}},
+	}, nil))["opus[1m]"]
+	require.NotNil(t, got)
+	assert.Equal(t, "Opus (1M context)", got.DisplayName, "missing displayName falls back to the [1m]-aware name")
 }
 
 func TestClaudeEffortFlagSettings(t *testing.T) {
@@ -1341,10 +1539,27 @@ func TestClaudeEffortUpdateFlagSettings(t *testing.T) {
 			curEffort:   "high",
 			expected:    nil,
 		},
+		{
+			// An unknown model (in NEITHER the dynamic nor the static catalog -- e.g.
+			// one the live CLI filtered into unavailable_models but the session is still
+			// running) at ultracode is TRUSTED, mirroring effortFromApplied/
+			// trustCLIUltracodeReport: the CLI is the authority on what it actually
+			// applied, so a model-only or unrelated live update must NOT strip the
+			// ultracode boolean just because the catalog can't confirm xhigh support.
+			// Without the `known &&` gate this would emit {ultracode:false,
+			// effortLevel:"xhigh"} and silently downgrade a session the CLI is happily
+			// running at ultracode, contradicting the decode side that trusts the same
+			// model. The two paths must agree.
+			name:        "model-only update on an unknown model running ultracode preserves the flag",
+			targetModel: "ghost",
+			newEffort:   "",
+			curEffort:   "ultracode",
+			expected:    nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, claudeEffortUpdateFlagSettings(tt.targetModel, tt.newEffort, tt.curEffort))
+			assert.Equal(t, tt.expected, newEffortResolver(claudeCodeAvailableModels).updateFlagSettings(tt.targetModel, tt.newEffort, tt.curEffort))
 		})
 	}
 }
@@ -1385,11 +1600,29 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 			want:      "xhigh", // keep the reported level; never mislabel Sonnet as ultracode
 		},
 		{
-			name:      "unknown model ultracode:true is ignored - catalog can't confirm support",
+			// S1: a model the catalog does NOT know (e.g. the CLI reported it in
+			// unavailable_models, so convertClaudeModels filtered it) is trusted when
+			// the CLI confirms ultracode:true -- we don't relabel a running ultracode
+			// session to xhigh just because its model dropped out of the catalog. This
+			// differs from Sonnet above, which the catalog KNOWS lacks ultracode.
+			name:      "unknown model ultracode:true is trusted - CLI is the authority",
 			applied:   strPtr("xhigh"),
 			ultracode: boolPtr(true),
 			curEffort: "xhigh",
 			model:     "claude-future-preview",
+			want:      "ultracode",
+		},
+		{
+			// S2: the account-default sentinel is the one unknown model NOT trusted
+			// for ultracode. A session stuck on the literal "default" (the CLI never
+			// echoed a concrete applied.model) has no real model behind it, so a CLI
+			// ultracode:true report passes the reported effort through instead of
+			// minting a phantom "ultracode" against the placeholder.
+			name:      "stuck sentinel ultracode:true is not promoted - no model behind it",
+			applied:   strPtr("xhigh"),
+			ultracode: boolPtr(true),
+			curEffort: "xhigh",
+			model:     DefaultModelSentinel,
 			want:      "xhigh",
 		},
 		{
@@ -1455,6 +1688,23 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 			want:      "ultracode",
 		},
 		{
+			// A model unknown to BOTH catalogs with a stale curEffort=="ultracode"
+			// and the CLI omitting the ultracode field is LEFT ALONE: the final
+			// clear-stale guard is gated on `known`, so an unknown model keeps its
+			// value for the same "trust the CLI / can't confirm it lacks ultracode"
+			// reason that promotes an unknown model's ultracode:true report. The
+			// launch flags and startup reconcile never actually drive an unknown
+			// model into ultracode (both downgrade it over the static catalog), so
+			// the CLI side stays safe; only the stored/broadcast label reads
+			// "ultracode" until a concrete CLI report overrides it.
+			name:      "unknown model with omitted fields retains stale ultracode",
+			applied:   nil,
+			ultracode: nil,
+			curEffort: "ultracode",
+			model:     "claude-future-preview",
+			want:      "ultracode",
+		},
+		{
 			// Defensive: the CLI reports applied.effort as a concrete enum or
 			// null, never "". An unexpected empty string must be treated like
 			// omitted (retain curEffort) rather than blanking the effort to "".
@@ -1479,7 +1729,7 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, claudeEffortFromApplied(tt.applied, tt.ultracode, tt.curEffort, tt.model))
+			assert.Equal(t, tt.want, newEffortResolver(claudeCodeAvailableModels).effortFromApplied(tt.applied, tt.ultracode, tt.curEffort, tt.model))
 		})
 	}
 }
@@ -1491,6 +1741,7 @@ func TestBuildStartupFlagSettings_Ultracode(t *testing.T) {
 		effort        string
 		wantUltracode bool
 	}{
+		{"fable ultracode enables the combo", "fable", EffortUltracode, true},
 		{"opus ultracode enables the combo", "opus", EffortUltracode, true},
 		{"opus[1m] ultracode enables the combo", "opus[1m]", EffortUltracode, true},
 		{"sonnet ultracode is not enabled (unsupported)", "sonnet", EffortUltracode, false},
@@ -1516,15 +1767,30 @@ func TestBuildStartupFlagSettings_Ultracode(t *testing.T) {
 }
 
 func TestModelSupportsUltracode(t *testing.T) {
-	// Only Opus models list ultracode in their catalog; unlike effortSupported,
-	// unknown models are NOT trusted.
-	assert.True(t, modelSupportsUltracode("opus"))
-	assert.True(t, modelSupportsUltracode("opus[1m]"))
-	assert.False(t, modelSupportsUltracode("sonnet"))
-	assert.False(t, modelSupportsUltracode("sonnet[1m]"))
-	assert.False(t, modelSupportsUltracode("haiku"))
-	assert.False(t, modelSupportsUltracode("claude-future-preview"), "unknown models are not trusted for ultracode")
-	assert.False(t, modelSupportsUltracode(""))
+	// Against the static catalog: the xhigh-capable models (Fable, Opus) list
+	// ultracode; Sonnet/Haiku do not. Unlike supports, unknown models are NOT trusted.
+	static := newEffortResolver(claudeCodeAvailableModels)
+	assert.True(t, static.supportsUltracode("fable"))
+	assert.True(t, static.supportsUltracode("fable[1m]"))
+	assert.True(t, static.supportsUltracode("opus"))
+	assert.True(t, static.supportsUltracode("opus[1m]"))
+	assert.False(t, static.supportsUltracode("sonnet"))
+	assert.False(t, static.supportsUltracode("sonnet[1m]"))
+	assert.False(t, static.supportsUltracode("haiku"))
+	assert.False(t, static.supportsUltracode("claude-future-preview"), "unknown models are not trusted for ultracode")
+	assert.False(t, static.supportsUltracode(""))
+
+	// Against a dynamic catalog: a model the static catalog never heard of is
+	// ultracode-capable when the live CLI advertises xhigh for it (this is what
+	// makes "auto from xhigh" work for future models without a code change), and
+	// not otherwise.
+	dynamic := newEffortResolver(convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "mythos", DisplayName: "Mythos 6", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
+		{Value: "sprite", DisplayName: "Sprite 1", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high"}},
+	}, nil))
+	assert.True(t, dynamic.supportsUltracode("mythos"), "xhigh-capable dynamic model is ultracode-capable")
+	assert.False(t, dynamic.supportsUltracode("sprite"), "non-xhigh dynamic model is not ultracode-capable")
+	assert.False(t, dynamic.supportsUltracode("opus"), "model absent from the dynamic catalog is not trusted")
 }
 
 func TestResolveClaudeEffortForModel(t *testing.T) {
@@ -1534,6 +1800,7 @@ func TestResolveClaudeEffortForModel(t *testing.T) {
 		effort string
 		want   string
 	}{
+		{"fable keeps ultracode", "fable", "ultracode", "ultracode"},
 		{"opus keeps ultracode", "opus", "ultracode", "ultracode"},
 		{"opus[1m] keeps ultracode", "opus[1m]", "ultracode", "ultracode"},
 		{"sonnet downgrades ultracode to high", "sonnet", "ultracode", "high"},
@@ -1548,7 +1815,497 @@ func TestResolveClaudeEffortForModel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, resolveClaudeEffortForModel(tt.model, tt.effort))
+			assert.Equal(t, tt.want, newEffortResolver(claudeCodeAvailableModels).resolveEffort(tt.model, tt.effort))
 		})
 	}
+}
+
+// claudeEffortIDs returns the ordered effort IDs of a model, for catalog assertions.
+func claudeEffortIDs(m *leapmuxv1.AvailableModel) []string {
+	ids := make([]string, 0, len(m.SupportedEfforts))
+	for _, e := range m.SupportedEfforts {
+		ids = append(ids, e.Id)
+	}
+	return ids
+}
+
+func claudeModelsByID(models []*leapmuxv1.AvailableModel) map[string]*leapmuxv1.AvailableModel {
+	byID := make(map[string]*leapmuxv1.AvailableModel, len(models))
+	for _, m := range models {
+		byID[m.Id] = m
+	}
+	return byID
+}
+
+func TestConvertClaudeModels(t *testing.T) {
+	xhighLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	models := []claudeCodeModelInfo{
+		{Value: "default", DisplayName: "Default (recommended)", Description: "the account default", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "fable", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "fable[1m]", DisplayName: "Fable 5 (1M context)", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
+		{Value: "haiku", DisplayName: "Haiku", SupportsEffort: false},
+		{Value: "zdr-blocked", DisplayName: "Blocked", SupportsEffort: true, SupportedEffortLevels: []string{"high"}},
+		{Value: "internal-preview", DisplayName: "Internal", Disabled: true, SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+	}
+	unavailable := []claudeCodeModelInfo{{Value: "zdr-blocked"}}
+
+	got := convertClaudeModels(models, unavailable)
+
+	// The disabled entry and the unavailable entry are dropped; the "default"
+	// sentinel IS surfaced (a selectable "let the CLI pick" option) and keeps
+	// its leading CLI order.
+	var ids []string
+	for _, m := range got {
+		ids = append(ids, m.Id)
+	}
+	assert.Equal(t, []string{"default", "fable", "fable[1m]", "opus", "sonnet", "haiku"}, ids)
+
+	byID := claudeModelsByID(got)
+	xhighEfforts := []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}
+
+	// The "default" sentinel is a selectable entry, but carries NO efforts or
+	// context window even when the CLI reports them (input sets supportsEffort +
+	// xhigh levels) -- those belong to the concrete model it resolves to. The
+	// manager (not convert) gives it the IsDefault badge.
+	def := byID["default"]
+	require.NotNil(t, def)
+	assert.Equal(t, "Default (recommended)", def.DisplayName)
+	assert.Equal(t, "the account default", def.Description, "sentinel keeps its CLI-provided description")
+	assert.Empty(t, def.SupportedEfforts, "default sentinel must not expose an effort menu")
+	assert.Equal(t, "", def.DefaultEffort)
+	assert.Equal(t, int64(0), def.ContextWindow, "default sentinel has no context window until resolved")
+	assert.False(t, def.IsDefault, "convert leaves IsDefault for the manager to set")
+
+	// Fable: full xhigh+ultracode menu, xhigh default, 200K window, not marked default.
+	fable := byID["fable"]
+	require.NotNil(t, fable)
+	assert.Equal(t, "Fable 5", fable.DisplayName)
+	assert.Equal(t, "Most powerful for the hardest problems", fable.Description)
+	assert.Equal(t, xhighEfforts, claudeEffortIDs(fable))
+	assert.Equal(t, "xhigh", fable.DefaultEffort)
+	assert.Equal(t, int64(200_000), fable.ContextWindow)
+	assert.False(t, fable.IsDefault, "convert leaves IsDefault for the manager to set")
+
+	// The [1m] suffix is the only context-window signal.
+	assert.Equal(t, int64(1_000_000), byID["fable[1m]"].ContextWindow)
+	assert.Equal(t, xhighEfforts, claudeEffortIDs(byID["fable[1m]"]))
+
+	// Sonnet: max but no xhigh ⇒ no ultracode, high default.
+	sonnet := byID["sonnet"]
+	require.NotNil(t, sonnet)
+	assert.Equal(t, []string{"auto", "max", "high", "medium", "low"}, claudeEffortIDs(sonnet))
+	assert.Equal(t, "high", sonnet.DefaultEffort)
+
+	// Haiku: no effort support ⇒ no selector, no default effort.
+	haiku := byID["haiku"]
+	require.NotNil(t, haiku)
+	assert.Empty(t, haiku.SupportedEfforts)
+	assert.Equal(t, "", haiku.DefaultEffort)
+	assert.Equal(t, int64(200_000), haiku.ContextWindow)
+
+	// Falls back to a missing display name from the id.
+	assert.Equal(t, "Sonnet", byID["sonnet"].DisplayName)
+
+	// Empty input ⇒ nil so AvailableModels() falls back to the static catalog.
+	assert.Nil(t, convertClaudeModels(nil, nil))
+}
+
+func TestClaudeContextWindowForValue(t *testing.T) {
+	assert.Equal(t, int64(1_000_000), claudeContextWindowForValue("opus[1m]"))
+	assert.Equal(t, int64(1_000_000), claudeContextWindowForValue("claude-fable-5[1m]"))
+	assert.Equal(t, int64(1_000_000), claudeContextWindowForValue("opus[1M]"), "case-insensitive")
+	// A decorated 1M marker (a future beta/preview label on the bracketed suffix) still
+	// resolves to the 1M window rather than silently dropping to 200K.
+	assert.Equal(t, int64(1_000_000), claudeContextWindowForValue("opus[1m-beta]"))
+	assert.Equal(t, int64(1_000_000), claudeContextWindowForValue("claude-opus-4-8[1M-preview]"))
+	assert.Equal(t, int64(200_000), claudeContextWindowForValue("opus"))
+	assert.Equal(t, int64(200_000), claudeContextWindowForValue("default"))
+	assert.Equal(t, int64(200_000), claudeContextWindowForValue("haiku"))
+	// A stray "1m" that is not a trailing bracket group must not false-positive.
+	assert.Equal(t, int64(200_000), claudeContextWindowForValue("1m-context"))
+	assert.Equal(t, int64(200_000), claudeContextWindowForValue("opus[1m]x"))
+}
+
+// TestConvertClaudeModels_NormalizesFullIdValues locks the fix for the
+// catalog-id/a.model mismatch: the CLI reports the account-resolved model's
+// `value` as a fully-qualified id (verified against the live CLI:
+// "claude-fable-5[1m]"), while refreshSettingsFromAgent stores
+// normalizeClaudeCodeModel(applied.model) = "fable[1m]". convertClaudeModels must
+// normalize the value so a running model matches its own catalog entry (efforts,
+// ultracode, display name, frontend effort selector all key off the id).
+func TestConvertClaudeModels_NormalizesFullIdValues(t *testing.T) {
+	got := claudeModelsByID(convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "claude-fable-5[1m]", DisplayName: "Fable", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
+		{Value: "claude-sonnet-4-6", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
+	}, nil))
+
+	// Fully-qualified values collapse to the alias space a.model uses.
+	require.Contains(t, got, "fable[1m]")
+	require.NotContains(t, got, "claude-fable-5[1m]")
+	require.Contains(t, got, "sonnet")
+	assert.Equal(t, int64(1_000_000), got["fable[1m]"].ContextWindow, "[1m] suffix survives normalization")
+	assert.True(t, effortListContains(got["fable[1m]"].SupportedEfforts, EffortUltracode), "normalized Fable keeps its xhigh⇒ultracode menu")
+	assert.Equal(t, int64(200_000), got["sonnet"].ContextWindow)
+}
+
+// TestConvertClaudeModels_DedupAndEffortOrdering covers two robustness fixes:
+// duplicate ids collapse to one entry, and a model's effort menu is ordered by
+// rank regardless of the order the CLI reports the levels in (unknown levels
+// dropped).
+func TestConvertClaudeModels_DedupAndEffortOrdering(t *testing.T) {
+	got := convertClaudeModels([]claudeCodeModelInfo{
+		// Two entries that normalize to the same id collapse to one; the first
+		// (effort-bearing) wins. Its levels are reported out of order.
+		{Value: "claude-fable-5[1m]", DisplayName: "Fable", SupportsEffort: true, SupportedEffortLevels: []string{"max", "low", "xhigh", "high", "medium"}},
+		{Value: "fable[1m]", DisplayName: "Fable dup"},
+		// Scrambled levels, no xhigh ⇒ no ultracode.
+		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"high", "low", "max", "medium"}},
+		// An unrecognized level is dropped rather than panicking or appearing.
+		{Value: "probemodel", DisplayName: "Probe", SupportsEffort: true, SupportedEffortLevels: []string{"medium", "ludicrous", "low"}},
+	}, nil)
+
+	byID := claudeModelsByID(got)
+	require.Len(t, got, 3, "duplicate fable[1m] collapses")
+	assert.Equal(t, []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}, claudeEffortIDs(byID["fable[1m]"]), "out-of-order xhigh levels sorted strongest→weakest")
+	assert.Equal(t, []string{"auto", "max", "high", "medium", "low"}, claudeEffortIDs(byID["sonnet"]))
+	assert.Equal(t, []string{"auto", "medium", "low"}, claudeEffortIDs(byID["probemodel"]), "unknown 'ludicrous' level dropped")
+}
+
+// TestConvertClaudeModels_UnavailableSkipNormalized verifies the unavailable_models
+// filter matches on normalized id, so an entry reported in unavailable_models under
+// a different spelling than its models-array counterpart (one fully-qualified, one
+// aliased) is still dropped rather than leaking through as selectable.
+func TestConvertClaudeModels_UnavailableSkipNormalized(t *testing.T) {
+	got := claudeModelsByID(convertClaudeModels(
+		[]claudeCodeModelInfo{
+			// models lists the alias; unavailable_models lists the fully-qualified
+			// value (and vice-versa). Both must be filtered.
+			{Value: "fable[1m]", DisplayName: "Fable", SupportsEffort: true, SupportedEffortLevels: []string{"xhigh"}},
+			{Value: "claude-opus-4-8", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"high"}},
+			{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"high"}},
+		},
+		[]claudeCodeModelInfo{
+			{Value: "claude-fable-5[1m]"}, // fully-qualified form of fable[1m]
+			{Value: "opus"},               // aliased form of claude-opus-4-8
+		},
+	))
+
+	require.NotContains(t, got, "fable[1m]", "unavailable reported as claude-fable-5[1m] still filters fable[1m]")
+	require.NotContains(t, got, "opus", "unavailable reported as opus still filters claude-opus-4-8")
+	require.Contains(t, got, "sonnet")
+	assert.Len(t, got, 1)
+}
+
+// TestClaudeSupportedEfforts_OnlyUnknownLevels verifies a model that claims effort
+// support but lists only levels we don't recognize gets no effort menu (nil), not a
+// lone "auto" stub -- so the UI hides the selector instead of showing a useless one.
+func TestClaudeSupportedEfforts_OnlyUnknownLevels(t *testing.T) {
+	got := claudeSupportedEfforts(normalizedEffortLevelSet(claudeCodeModelInfo{
+		Value: "probe", SupportsEffort: true, SupportedEffortLevels: []string{"ludicrous", "plaid"},
+	}))
+	assert.Nil(t, got, "all-unrecognized levels ⇒ no effort menu")
+
+	// And via the full conversion: the model surfaces with no effort selector.
+	m := claudeModelsByID(convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "probe", DisplayName: "Probe", SupportsEffort: true, SupportedEffortLevels: []string{"ludicrous"}},
+	}, nil))["probe"]
+	require.NotNil(t, m)
+	assert.Empty(t, m.SupportedEfforts)
+}
+
+// TestConvertClaudeModels_SentinelOwnsReservedDefaultID verifies the account-default
+// sentinel is identified by its RAW value ("default") and OWNS the reserved "default"
+// id. Launch (buildModelEffortArgs) and the badge logic (defaultModelForList) treat
+// id=="default" as the sentinel, so a concrete model whose value merely normalizes to
+// "default" can't share that id: it is dropped deterministically rather than
+// masquerading as the sentinel (S3).
+func TestConvertClaudeModels_SentinelOwnsReservedDefaultID(t *testing.T) {
+	xhigh := []string{"low", "medium", "high", "xhigh", "max"}
+
+	// "default5" normalizes to "default" (leading alphabetic token) but its raw value
+	// is not the sentinel. It cannot claim the reserved "default" id, so it is dropped
+	// entirely rather than surfaced under that id.
+	require.Equal(t, "default", normalizeClaudeCodeModel("default5"), "precondition")
+	require.NotContains(t,
+		claudeModelsByID(convertClaudeModels([]claudeCodeModelInfo{
+			{Value: "default5", DisplayName: "Default Five", SupportsEffort: true, SupportedEffortLevels: xhigh},
+		}, nil)),
+		"default", "a concrete model normalizing to 'default' is dropped, not surfaced")
+
+	// The real sentinel (raw value exactly "default") is surfaced and stripped of
+	// efforts/window.
+	sentinel := claudeModelsByID(convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "default", DisplayName: "Default", SupportsEffort: true, SupportedEffortLevels: xhigh},
+	}, nil))["default"]
+	require.NotNil(t, sentinel)
+	assert.Empty(t, sentinel.SupportedEfforts, "the raw 'default' sentinel carries no effort menu")
+	assert.Equal(t, int64(0), sentinel.ContextWindow)
+
+	// Detection is case-insensitive (isDefaultSentinel uses EqualFold), so a
+	// "Default" spelling is still treated as the sentinel and stripped.
+	cased := claudeModelsByID(convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "Default", DisplayName: "Default", SupportsEffort: true, SupportedEffortLevels: xhigh},
+	}, nil))["default"]
+	require.NotNil(t, cased)
+	assert.Empty(t, cased.SupportedEfforts, "a 'Default' spelling is still the sentinel")
+	assert.Equal(t, int64(0), cased.ContextWindow)
+
+	// S3 determinism: when the CLI reports BOTH the sentinel and a concrete model
+	// normalizing to "default", the sentinel always wins and the concrete is dropped,
+	// regardless of their order -- so the catalog is the same either way.
+	for _, order := range [][]claudeCodeModelInfo{
+		{{Value: "default", DisplayName: "Default"}, {Value: "default5", DisplayName: "Default Five", SupportsEffort: true, SupportedEffortLevels: xhigh}},
+		{{Value: "default5", DisplayName: "Default Five", SupportsEffort: true, SupportedEffortLevels: xhigh}, {Value: "default", DisplayName: "Default"}},
+	} {
+		got := convertClaudeModels(order, nil)
+		require.Len(t, got, 1, "the concrete model normalizing to 'default' is dropped")
+		require.Equal(t, "default", got[0].Id)
+		assert.Empty(t, got[0].SupportedEfforts, "the sentinel (not the concrete model) owns the 'default' id")
+	}
+}
+
+// TestConvertClaudeModels_ReproducesStaticCatalog locks the invariant that a CLI
+// payload describing the current models converts to the same catalog the static
+// fallback hardcodes (modulo IsDefault, which the manager applies). A no-effort
+// model carries DefaultEffort "" in both -- the static catalog matches the
+// conversion -- so this is compared unconditionally. If the static catalog and the
+// conversion ever drift, this fails.
+func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
+	xhighLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	maxLevels := []string{"low", "medium", "high", "max"}
+	payload := []claudeCodeModelInfo{
+		{Value: "fable", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "fable[1m]", DisplayName: "Fable 5 (1M context)", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "opus", DisplayName: "Opus", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: maxLevels},
+		{Value: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: maxLevels},
+		{Value: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", SupportsEffort: false},
+	}
+
+	got := claudeModelsByID(convertClaudeModels(payload, nil))
+	for _, want := range claudeCodeAvailableModels {
+		// The "default" sentinel is a hand-authored placeholder (no concrete
+		// model behind it), not a convert output, so it has no equivalent here.
+		if want.Id == DefaultModelSentinel {
+			continue
+		}
+		m := got[want.Id]
+		require.NotNil(t, m, "converted catalog missing %q", want.Id)
+		assert.Equal(t, want.DisplayName, m.DisplayName, "%q displayName", want.Id)
+		assert.Equal(t, want.Description, m.Description, "%q description", want.Id)
+		assert.Equal(t, want.ContextWindow, m.ContextWindow, "%q contextWindow", want.Id)
+		assert.Equal(t, claudeEffortIDs(want), claudeEffortIDs(m), "%q efforts", want.Id)
+		assert.False(t, m.IsDefault, "%q: convert never marks default", want.Id)
+		assert.Equal(t, want.DefaultEffort, m.DefaultEffort, "%q defaultEffort", want.Id)
+	}
+}
+
+func TestClaudeAvailableModels_DynamicFirstStaticFallback(t *testing.T) {
+	dynamic := []*leapmuxv1.AvailableModel{
+		{Id: "mythos", DisplayName: "Mythos 6"},
+		{Id: "opus", DisplayName: "Opus"},
+	}
+
+	// Dynamic catalog present ⇒ returned verbatim.
+	a := &ClaudeCodeAgent{availableModels: dynamic}
+	assert.Equal(t, dynamic, a.AvailableModels())
+	assert.Equal(t, dynamic, a.effortCatalog())
+
+	// No dynamic catalog ⇒ static fallback.
+	empty := &ClaudeCodeAgent{}
+	assert.Equal(t, claudeCodeAvailableModels, empty.AvailableModels())
+	assert.Equal(t, claudeCodeAvailableModels, empty.effortCatalog())
+
+	// Third-party provider ⇒ AvailableModels hides everything, but effortCatalog
+	// (the ungated picker backing) still returns the dynamic list -- AvailableModels
+	// owns the third-party gate, not effortCatalog.
+	thirdParty := &ClaudeCodeAgent{thirdPartyFromSettings: true, availableModels: dynamic}
+	assert.Nil(t, thirdParty.AvailableModels())
+	assert.Equal(t, dynamic, thirdParty.effortCatalog())
+}
+
+// TestBuildStartupFlagSettings_DynamicCatalogUltracode proves the end-to-end
+// "auto from xhigh" path: a model the static catalog never heard of, discovered
+// from the live CLI with xhigh support, gets ultracode enabled at startup.
+func TestBuildStartupFlagSettings_DynamicCatalogUltracode(t *testing.T) {
+	dynamic := convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "mythos", DisplayName: "Mythos 6", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
+	}, nil)
+
+	a := &ClaudeCodeAgent{model: "mythos", effort: EffortUltracode, availableModels: dynamic}
+	fs := a.buildStartupFlagSettings(nil)
+	assert.Equal(t, "xhigh", fs["effortLevel"])
+	assert.Equal(t, true, fs["ultracode"])
+}
+
+// TestBuildStartupFlagSettings_DowngradesWhenDynamicDropsXHigh covers the other
+// direction of the launch(static)-vs-startup(dynamic) catalog split: a model the
+// static catalog launched at --effort xhigh (because static lists it as
+// ultracode/xhigh-capable) but the LIVE CLI reports WITHOUT xhigh. Startup must
+// correct the session DOWN to a level the dynamic catalog allows, not leave it
+// stranded at an xhigh the CLI rejects.
+func TestBuildStartupFlagSettings_DowngradesWhenDynamicDropsXHigh(t *testing.T) {
+	// Live CLI reports opus without xhigh -- so dynamically it is not
+	// ultracode-capable, even though the static catalog says it is.
+	dynamic := convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
+	}, nil)
+
+	a := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic}
+	fs := a.buildStartupFlagSettings(nil)
+	// Launch sent --effort xhigh (static opus is ultracode-capable); the dynamic
+	// catalog resolves ultracode->high and clears the ultracode boolean.
+	assert.Equal(t, "high", fs["effortLevel"])
+	assert.Equal(t, false, fs["ultracode"])
+}
+
+// TestBuildStartupFlagSettings_SentinelEmitsNoEffort guards the S1+S3 interaction:
+// the account-default sentinel launches without --model/--effort, and startup must
+// not emit any effort flags (the resolved model's own default effort stands), even
+// if a concrete effort was somehow stored alongside the sentinel.
+func TestBuildStartupFlagSettings_SentinelEmitsNoEffort(t *testing.T) {
+	a := &ClaudeCodeAgent{model: DefaultModelSentinel, effort: EffortUltracode}
+	fs := a.buildStartupFlagSettings(nil)
+	_, hasLevel := fs["effortLevel"]
+	_, hasUltra := fs["ultracode"]
+	assert.False(t, hasLevel, "sentinel must not emit effortLevel at startup")
+	assert.False(t, hasUltra, "sentinel must not emit ultracode at startup")
+}
+
+// TestBuildStartupFlagSettings_FilteredModelHonorsLaunchVerdict covers the
+// startup reconcile for a running model the dynamic catalog doesn't list (e.g. the
+// CLI reported it in unavailable_models, so convertClaudeModels filtered it). We
+// cannot reconcile against capabilities we don't have, so we honor what LAUNCH
+// committed to instead -- resolved over the static catalog, the authority launch
+// actually used:
+//   - An ultracode launch of a static-ultracode model (opus/fable) DEFERRED the
+//     ultracode boolean to this step (launch sent only --effort xhigh; the boolean
+//     is applied nowhere else), so we complete the combo rather than silently
+//     running the model the user picked ultracode for at plain xhigh.
+//   - A non-ultracode launch (sonnet+max) and a model unknown to BOTH catalogs are
+//     left exactly as launched -- no downgrade, no spurious flags.
+func TestBuildStartupFlagSettings_FilteredModelHonorsLaunchVerdict(t *testing.T) {
+	// Dynamic catalog lists only sonnet, so opus/fable/unknown are all "filtered".
+	dynamic := convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
+	}, nil)
+
+	// opus+ultracode: static knows opus is ultracode-capable and launch deferred the
+	// boolean here, so completing the combo preserves the user's choice.
+	opus := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic}
+	fs := opus.buildStartupFlagSettings(nil)
+	assert.Equal(t, EffortXHigh, fs["effortLevel"], "filtered ultracode model completes the combo (xhigh base)")
+	assert.Equal(t, true, fs["ultracode"], "filtered static-ultracode model keeps its ultracode boolean")
+
+	// sonnet+max: launch sent --effort max (no deferred boolean); a filtered model is
+	// left as launched, never downgraded.
+	sonnet := &ClaudeCodeAgent{model: "sonnet", effort: "max", availableModels: dynamic}
+	fs = sonnet.buildStartupFlagSettings(nil)
+	_, hasLevel := fs["effortLevel"]
+	_, hasUltra := fs["ultracode"]
+	assert.False(t, hasLevel, "a filtered non-ultracode model is not downgraded")
+	assert.False(t, hasUltra, "a filtered non-ultracode model emits no ultracode flag")
+
+	// claude-future-preview+ultracode: unknown to BOTH catalogs. Launch (static)
+	// resolved ultracode->high for an untrusted model, so it never ran ultracode;
+	// startup must not invent it.
+	unknown := &ClaudeCodeAgent{model: "claude-future-preview", effort: EffortUltracode, availableModels: dynamic}
+	fs = unknown.buildStartupFlagSettings(nil)
+	_, hasLevel = fs["effortLevel"]
+	_, hasUltra = fs["ultracode"]
+	assert.False(t, hasLevel, "a model unknown to both catalogs gets no startup effort flags")
+	assert.False(t, hasUltra, "a model unknown to both catalogs gets no ultracode flag")
+}
+
+// TestBuildStartupFlagSettings_ThirdPartyEmitsNoEffort covers S2: a third-party-LLM
+// session presents no model/effort UI (AvailableModels returns nil) and must not be
+// pushed any effort/ultracode flags at startup -- even when its stored model+effort
+// would otherwise resolve to the ultracode combo -- since its user can neither see nor
+// control effort. Gated on the same hidesModelEffortUI predicate AvailableModels uses.
+func TestBuildStartupFlagSettings_ThirdPartyEmitsNoEffort(t *testing.T) {
+	dynamic := convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
+	}, nil)
+
+	a := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic, thirdPartyFromSettings: true}
+	fs := a.buildStartupFlagSettings(nil)
+	_, hasLevel := fs["effortLevel"]
+	_, hasUltra := fs["ultracode"]
+	assert.False(t, hasLevel, "third-party session emits no startup effortLevel")
+	assert.False(t, hasUltra, "third-party session emits no startup ultracode flag")
+
+	// Control: the identical agent WITHOUT the third-party flag DOES complete the combo,
+	// proving the suppression is the third-party gate, not an unrelated no-op.
+	a.thirdPartyFromSettings = false
+	fs = a.buildStartupFlagSettings(nil)
+	assert.Equal(t, true, fs["ultracode"], "a non-third-party session emits the ultracode combo")
+}
+
+// TestBuildStartupFlagSettings_AppliesEffortWhenDynamicAddsEfforts covers S9: a model
+// the STATIC catalog treats as effort-less (so launch omitted --effort) but the live
+// CLI reports WITH efforts. Startup must apply the stored effort against the dynamic
+// catalog so the live selector and the running session agree, instead of leaving the
+// session at the CLI's own default while the UI shows a concrete level.
+func TestBuildStartupFlagSettings_AppliesEffortWhenDynamicAddsEfforts(t *testing.T) {
+	// Haiku is effort-less in the static catalog, but here the live CLI reports it
+	// with an effort menu (the hypothetical static/dynamic disagreement S9 guards).
+	dynamic := convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "haiku", DisplayName: "Haiku", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high"}},
+	}, nil)
+	a := &ClaudeCodeAgent{model: "haiku", effort: EffortHigh, availableModels: dynamic}
+	fs := a.buildStartupFlagSettings(nil)
+	assert.Equal(t, EffortHigh, fs["effortLevel"], "launch omitted --effort (static effort-less); startup applies the dynamic level")
+	_, hasUltra := fs["ultracode"]
+	assert.False(t, hasUltra, "no ultracode for a non-xhigh model")
+
+	// EffortAuto on the same model still keeps the CLI default (nothing to apply).
+	autoAgent := &ClaudeCodeAgent{model: "haiku", effort: EffortAuto, availableModels: dynamic}
+	_, hasLevel := autoAgent.buildStartupFlagSettings(nil)["effortLevel"]
+	assert.False(t, hasLevel, "auto effort keeps the CLI default even when dynamic offers efforts")
+}
+
+// TestWithDefaultModelMarked_ClaudeDefaultSentinel verifies the default badge
+// tracks the account: the CLI's "default" sentinel entry is marked when present,
+// an operator env override wins over it, and a list without the sentinel falls
+// back to the configured default.
+func TestWithDefaultModelMarked_ClaudeDefaultSentinel(t *testing.T) {
+	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "") // hermetic: ignore any ambient override
+	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+
+	// Account-specific list (no opus[1m]) that includes the CLI "default"
+	// sentinel: the sentinel carries the IsDefault badge.
+	withSentinel := []*leapmuxv1.AvailableModel{
+		{Id: "default", DisplayName: "Default (recommended)"},
+		{Id: "claude-fable-5[1m]", DisplayName: "Fable"},
+		{Id: "sonnet", DisplayName: "Sonnet"},
+	}
+	assert.Equal(t, "default", markedModelID(withDefaultModelMarked(withSentinel, claude)))
+
+	// The static catalog carries the sentinel, so it is marked there too.
+	assert.Equal(t, "default", DefaultModel(claude))
+	assert.Equal(t, "default", markedModelID(withDefaultModelMarked(claudeCodeAvailableModels, claude)))
+
+	// A list missing the sentinel (a CLI that doesn't report it) falls back to
+	// the highest-preference entry present, so the picker still shows a default
+	// badge -- the configured default ("default") isn't in the list to mark.
+	noSentinel := []*leapmuxv1.AvailableModel{
+		{Id: "opus[1m]", DisplayName: "Opus (1M context)"},
+		{Id: "sonnet", DisplayName: "Sonnet"},
+	}
+	assert.Equal(t, "opus[1m]", markedModelID(withDefaultModelMarked(noSentinel, claude)))
+
+	// Operator override wins over the CLI sentinel.
+	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "sonnet")
+	assert.Equal(t, "sonnet", markedModelID(withDefaultModelMarked(withSentinel, claude)))
+}
+
+// TestUpdateSettings_SwitchToDefaultRestarts verifies that switching to the
+// account-default sentinel signals a restart (returns false) rather than
+// pushing an unresolvable "default" model through apply_flag_settings.
+func TestUpdateSettings_SwitchToDefaultRestarts(t *testing.T) {
+	a := &ClaudeCodeAgent{model: "claude-fable-5[1m]", effort: EffortHigh}
+	assert.False(t, a.UpdateSettings(&leapmuxv1.AgentSettings{Model: DefaultModelSentinel}))
 }

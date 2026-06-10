@@ -10,8 +10,9 @@ import * as styles from '../../ChatView.css'
 import { effortIcon, effortItems, effortValidForModel, effortValueForModel, modelDisplayName, modelItems, ModelSelect, optionGroup, optionGroupDefaultValue, optionGroupItems, optionLabel, PERMISSION_MODE_KEY, permissionModeGroup, permissionModeItems, RadioGroup } from '../../settingsShared'
 
 // Claude swaps the default xhigh→Zap mapping for Flame to free up Zap for
-// its `max` tier (an effort level Pi/Codex don't expose). `ultracode` (Opus
-// only) gets a rocket to signal its xhigh+workflow-orchestration combo.
+// its `max` tier (an effort level Pi/Codex don't expose). `ultracode` (offered
+// by any xhigh-capable model, e.g. Fable/Opus) gets a rocket to signal its
+// xhigh+workflow-orchestration combo.
 const CLAUDE_EFFORT_ICONS: Record<string, LucideIcon> = {
   ultracode: Rocket,
   xhigh: Flame,
@@ -23,7 +24,11 @@ export const OUTPUT_STYLE_KEY = 'outputStyle' as const
 export const FAST_MODE_KEY = 'fastMode' as const
 export const ALWAYS_THINKING_KEY = 'alwaysThinkingEnabled' as const
 
-export const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'opus[1m]'
+// 'default' is the CLI's account-default sentinel: a new tab starts on it and
+// the backend omits --model so Claude Code resolves it to the account's concrete
+// model (Sonnet, Fable, Opus, …), which the tab then settles on after startup.
+// Matches the IsDefault entry in the backend's claudeCodeAvailableModels.
+export const DEFAULT_CLAUDE_MODEL = import.meta.env.LEAPMUX_CLAUDE_DEFAULT_MODEL || 'default'
 // LEAPMUX_CLAUDE_DEFAULT_EFFORT still exists as a backend escape hatch;
 // it's no longer plumbed through the frontend build.
 export const DEFAULT_CLAUDE_EFFORT = EFFORT_AUTO

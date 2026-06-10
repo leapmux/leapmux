@@ -30,9 +30,14 @@ type OpenCodeAgent struct {
 func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "opencode", []string{"OPENCODE_CLIENT"}, []string{"acp"}, nil, opts.WorkingDir,
-	)
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
+		Shell:        opts.Shell,
+		LoginShell:   opts.LoginShell,
+		BinaryName:   "opencode",
+		StripEnvKeys: []string{"OPENCODE_CLIENT"},
+		BaseArgs:     []string{"acp"},
+		WorkingDir:   opts.WorkingDir,
+	})
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "OPENCODE_CLIENT")
 	if opts.LoginShell {

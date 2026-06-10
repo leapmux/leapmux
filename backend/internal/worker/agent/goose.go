@@ -23,9 +23,13 @@ type GooseCLIAgent struct {
 func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "goose", nil, []string{"acp"}, nil, opts.WorkingDir,
-	)
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
+		Shell:      opts.Shell,
+		LoginShell: opts.LoginShell,
+		BinaryName: "goose",
+		BaseArgs:   []string{"acp"},
+		WorkingDir: opts.WorkingDir,
+	})
 
 	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
 

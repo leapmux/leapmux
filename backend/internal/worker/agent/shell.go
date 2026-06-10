@@ -11,67 +11,84 @@ import (
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
-// buildShellWrappedCommand constructs an exec.Cmd that launches a binary
-// inside the user's shell. When interactive is true, the shell is invoked
-// with interactive+login flags (e.g. -i -l -c) so that profile scripts
-// are sourced. When false, only -c is used (no profile sourcing).
-//
-// binaryName is the executable to invoke (e.g. "claude", "codex").
-// stripEnvKeys are removed by the shell wrapper before the binary is started.
-// baseArgs are always passed to the binary. modelEffortArgs (--model/--effort)
-// are conditionally included only when no third-party LLM provider env vars
-// are detected at shell runtime. When modelEffortArgs is empty, no conditional
-// logic is emitted.
+// shellWrapSpec describes how to wrap an agent binary launch inside the user's
+// login shell. Grouping the knobs as one value keeps the nine provider call sites
+// readable (named fields instead of a long positional tail like `..., nil, false,
+// dir`) and makes the next per-launch knob a new field rather than another argument
+// threaded through buildShellWrappedCommand and the three dialect builders.
+type shellWrapSpec struct {
+	Shell      string // the user's shell path (terminal.ShellBaseName picks the dialect)
+	LoginShell bool   // invoke the shell with interactive+login flags so profile scripts are sourced
+	BinaryName string // the executable to invoke (e.g. "claude", "codex")
+	// StripEnvKeys are removed by the shell wrapper before the binary is started.
+	StripEnvKeys []string
+	BaseArgs     []string // always passed to the binary
+	// ModelEffortArgs (--model/--effort) are included only when no third-party LLM
+	// provider env vars are detected at shell runtime.
+	ModelEffortArgs []string
+	// ProbeThirdParty forces the runtime third-party-provider probe (and its
+	// can_change_model_and_effort metadata line) to be emitted even when
+	// ModelEffortArgs is empty. Claude passes this so a default-model launch that
+	// sends no --model/--effort still detects a provider configured in the user's
+	// shell profile (which detectThirdPartyProvider, reading only the worker's own
+	// env, cannot see). Other providers pass false and keep the simple no-probe path.
+	ProbeThirdParty bool
+	WorkingDir      string // cmd.Dir for the launched process
+}
+
+// buildShellWrappedCommand constructs an exec.Cmd that launches spec.BinaryName
+// inside the user's shell. When spec.LoginShell is true, the shell is invoked with
+// interactive+login flags (e.g. -i -l -c) so that profile scripts are sourced. When
+// false, only -c is used (no profile sourcing). When both spec.ModelEffortArgs is
+// empty and spec.ProbeThirdParty is false, no conditional logic is emitted.
 //
 // It returns the command, a unique delimiter string, and a metadata line prefix.
 // The caller should scan stdout for lines starting with metaPrefix to extract
 // key=value metadata, then for the delimiter to detect the end of preamble.
-func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive bool,
-	binaryName string, stripEnvKeys, baseArgs []string, modelEffortArgs []string, workingDir string) (*exec.Cmd, string, string) {
-
+func buildShellWrappedCommand(ctx context.Context, spec shellWrapSpec) (*exec.Cmd, string, string) {
 	id := generateRequestID()
 	delimiter := "__LEAPMUX_READY_" + id + "__"
 	metaPrefix := ""
-	if len(modelEffortArgs) > 0 {
+	if len(spec.ModelEffortArgs) > 0 || spec.ProbeThirdParty {
 		metaPrefix = "__LEAPMUX_META_" + id + "__ "
 	}
-	shellName := terminal.ShellBaseName(shellPath)
+	shellName := terminal.ShellBaseName(spec.Shell)
 
 	var cmdArgs []string
 	switch {
 	case terminal.IsPwsh(shellName):
-		inner := buildPwshCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs)
-		if interactive {
-			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-Command", inner)
+		inner := buildPwshCommand(spec, delimiter, metaPrefix)
+		if spec.LoginShell {
+			cmdArgs = append(terminal.LoginShellArgs(spec.Shell), "-Command", inner)
 		} else {
 			cmdArgs = []string{"-Command", inner}
 		}
 	case shellName == "tcsh" || shellName == "csh":
-		inner := buildPosixCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs)
-		if interactive {
+		inner := buildPosixCommand(spec, delimiter, metaPrefix)
+		if spec.LoginShell {
 			cmdArgs = []string{"-ic", inner} // tcsh: -l must be the only flag
 		} else {
 			cmdArgs = []string{"-c", inner}
 		}
 	case shellName == "nu":
-		inner := buildNuCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs)
-		if interactive {
-			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-c", inner)
+		inner := buildNuCommand(spec, delimiter, metaPrefix)
+		if spec.LoginShell {
+			cmdArgs = append(terminal.LoginShellArgs(spec.Shell), "-c", inner)
 		} else {
 			cmdArgs = []string{"-c", inner}
 		}
 	default:
 		// bash, zsh, fish, sh, ash, dash, ksh, xonsh, and unknown shells
-		inner := buildPosixCommand(binaryName, stripEnvKeys, delimiter, metaPrefix, baseArgs, modelEffortArgs)
-		if interactive {
-			cmdArgs = append(terminal.LoginShellArgs(shellPath), "-c", inner)
+		inner := buildPosixCommand(spec, delimiter, metaPrefix)
+		if spec.LoginShell {
+			cmdArgs = append(terminal.LoginShellArgs(spec.Shell), "-c", inner)
 		} else {
 			cmdArgs = []string{"-c", inner}
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, shellPath, cmdArgs...)
-	cmd.Dir = workingDir
+	cmd := exec.CommandContext(ctx, spec.Shell, cmdArgs...)
+	cmd.Dir = spec.WorkingDir
 	envutil.ScrubAppImageEnv(cmd)
 	procutil.HideConsoleWindow(cmd)
 	return cmd, delimiter, metaPrefix
@@ -79,26 +96,30 @@ func buildShellWrappedCommand(ctx context.Context, shellPath string, interactive
 
 // buildPosixCommand builds the inner command string for POSIX-like shells.
 // The command is always prefixed with `exec` so the shell process is
-// replaced. When modelEffortArgs is non-empty, a conditional is emitted to
-// check for third-party provider env vars at runtime.
-func buildPosixCommand(binaryName string, stripEnvKeys []string, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
-	quotedBase := make([]string, len(baseArgs))
-	for i, arg := range baseArgs {
+// replaced. When metaPrefix is set, a conditional is emitted to check for
+// third-party provider env vars at runtime.
+func buildPosixCommand(spec shellWrapSpec, delimiter, metaPrefix string) string {
+	quotedBase := make([]string, len(spec.BaseArgs))
+	for i, arg := range spec.BaseArgs {
 		quotedBase[i] = posixQuote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := posixClearEnv(stripEnvKeys)
+	clearEnvPrefix := posixClearEnv(spec.StripEnvKeys)
 
-	// Simple path: no model/effort args (third-party detected from settings).
-	if len(modelEffortArgs) == 0 {
+	// Simple path: no probe wanted (empty metaPrefix means neither model/effort
+	// args nor a forced third-party probe). When metaPrefix is set but
+	// ModelEffortArgs is empty (Claude's default-model launch), the conditional
+	// path below still runs: both branches exec the binary with no extra args,
+	// differing only in the can_change_model_and_effort line.
+	if metaPrefix == "" {
 		return fmt.Sprintf("%secho '%s' && exec %s %s",
-			clearEnvPrefix, delimiter, binaryName, baseArgsStr)
+			clearEnvPrefix, delimiter, spec.BinaryName, baseArgsStr)
 	}
 
 	// Conditional path: check env vars at runtime.
-	quotedME := make([]string, len(modelEffortArgs))
-	for i, arg := range modelEffortArgs {
+	quotedME := make([]string, len(spec.ModelEffortArgs))
+	for i, arg := range spec.ModelEffortArgs {
 		quotedME[i] = posixQuote(arg)
 	}
 	meArgsStr := strings.Join(quotedME, " ")
@@ -113,30 +134,30 @@ func buildPosixCommand(binaryName string, stripEnvKeys []string, delimiter, meta
 			"echo '%s' && exec %s %s %s; "+
 			"fi",
 		clearEnvPrefix,
-		metaPrefix, delimiter, binaryName, baseArgsStr,
-		metaPrefix, delimiter, binaryName, baseArgsStr, meArgsStr,
+		metaPrefix, delimiter, spec.BinaryName, baseArgsStr,
+		metaPrefix, delimiter, spec.BinaryName, baseArgsStr, meArgsStr,
 	)
 }
 
 // buildNuCommand builds the inner command string for Nushell.
-func buildNuCommand(binaryName string, stripEnvKeys []string, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
-	quotedBase := make([]string, len(baseArgs))
-	for i, arg := range baseArgs {
+func buildNuCommand(spec shellWrapSpec, delimiter, metaPrefix string) string {
+	quotedBase := make([]string, len(spec.BaseArgs))
+	for i, arg := range spec.BaseArgs {
 		quotedBase[i] = nuQuote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := nuClearEnv(stripEnvKeys)
+	clearEnvPrefix := nuClearEnv(spec.StripEnvKeys)
 
-	// Simple path: no model/effort args.
-	if len(modelEffortArgs) == 0 {
+	// Simple path: no probe wanted (empty metaPrefix). See buildPosixCommand.
+	if metaPrefix == "" {
 		return fmt.Sprintf("%secho '%s'; ^%s %s",
-			clearEnvPrefix, delimiter, binaryName, baseArgsStr)
+			clearEnvPrefix, delimiter, spec.BinaryName, baseArgsStr)
 	}
 
 	// Conditional path.
-	quotedME := make([]string, len(modelEffortArgs))
-	for i, arg := range modelEffortArgs {
+	quotedME := make([]string, len(spec.ModelEffortArgs))
+	for i, arg := range spec.ModelEffortArgs {
 		quotedME[i] = nuQuote(arg)
 	}
 	meArgsStr := strings.Join(quotedME, " ")
@@ -151,30 +172,30 @@ func buildNuCommand(binaryName string, stripEnvKeys []string, delimiter, metaPre
 			"echo '%s'; ^%s %s %s "+
 			"}",
 		clearEnvPrefix,
-		metaPrefix, delimiter, binaryName, baseArgsStr,
-		metaPrefix, delimiter, binaryName, baseArgsStr, meArgsStr,
+		metaPrefix, delimiter, spec.BinaryName, baseArgsStr,
+		metaPrefix, delimiter, spec.BinaryName, baseArgsStr, meArgsStr,
 	)
 }
 
 // buildPwshCommand builds the inner command string for PowerShell.
-func buildPwshCommand(binaryName string, stripEnvKeys []string, delimiter, metaPrefix string, baseArgs, modelEffortArgs []string) string {
-	quotedBase := make([]string, len(baseArgs))
-	for i, arg := range baseArgs {
+func buildPwshCommand(spec shellWrapSpec, delimiter, metaPrefix string) string {
+	quotedBase := make([]string, len(spec.BaseArgs))
+	for i, arg := range spec.BaseArgs {
 		quotedBase[i] = pwshQuote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
-	clearEnvPrefix := pwshClearEnv(stripEnvKeys)
+	clearEnvPrefix := pwshClearEnv(spec.StripEnvKeys)
 
-	// Simple path: no model/effort args.
-	if len(modelEffortArgs) == 0 {
+	// Simple path: no probe wanted (empty metaPrefix). See buildPosixCommand.
+	if metaPrefix == "" {
 		return fmt.Sprintf("%sWrite-Output '%s'; & %s %s",
-			clearEnvPrefix, delimiter, binaryName, baseArgsStr)
+			clearEnvPrefix, delimiter, spec.BinaryName, baseArgsStr)
 	}
 
 	// Conditional path.
-	quotedME := make([]string, len(modelEffortArgs))
-	for i, arg := range modelEffortArgs {
+	quotedME := make([]string, len(spec.ModelEffortArgs))
+	for i, arg := range spec.ModelEffortArgs {
 		quotedME[i] = pwshQuote(arg)
 	}
 	meArgsStr := strings.Join(quotedME, " ")
@@ -189,8 +210,8 @@ func buildPwshCommand(binaryName string, stripEnvKeys []string, delimiter, metaP
 			"Write-Output '%s'; & %s %s %s "+
 			"}",
 		clearEnvPrefix,
-		metaPrefix, delimiter, binaryName, baseArgsStr,
-		metaPrefix, delimiter, binaryName, baseArgsStr, meArgsStr,
+		metaPrefix, delimiter, spec.BinaryName, baseArgsStr,
+		metaPrefix, delimiter, spec.BinaryName, baseArgsStr, meArgsStr,
 	)
 }
 

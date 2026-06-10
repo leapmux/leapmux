@@ -764,6 +764,15 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// restart, where no running agent confirmed anything.
 		notifyEffort := newEffort
 
+		// Likewise report the model the session actually settled on, not the
+		// request. Selecting the account-default sentinel ("default") launches
+		// without --model; the CLI resolves a concrete model, which is what we
+		// persist (confirmedAgentSettings) and broadcast -- so the notification
+		// must name that concrete model, not "default" (and shows no change when
+		// the default resolves back to the model already in use). Defaults to the
+		// requested value for an offline edit or a failed restart.
+		notifyModel := newModel
+
 		// If the agent is currently running, try a live update first.
 		// Providers apply what they can without a restart (Codex applies to
 		// the next turn; Claude Code applies model/effort/permission changes
@@ -772,13 +781,13 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		// back to auto, which needs a relaunch without --effort -- and we then
 		// fall back to stop+restart.
 		if svc.Agents.HasAgent(agentID) {
-			// Hold the per-agent lifecycle lock across the live update and the
-			// confirmed-effort readback so a concurrent UpdateAgentSettings for
-			// the same agent can't land between them and make us report its
-			// effort instead of ours. The live update writes the confirmed
-			// effort into the agent's in-memory state synchronously
-			// (refreshSettingsFromAgent), so reading it back while still holding
-			// the lock yields exactly the value this update confirmed.
+			// Hold the per-agent lifecycle lock across the live update, the
+			// confirmed-settings readback, AND the corrective DB write below so a
+			// concurrent UpdateAgentSettings for the same agent can't land between
+			// them and make us report its effort instead of ours. The live update
+			// writes the confirmed effort into the agent's in-memory state
+			// synchronously (refreshSettingsFromAgent), so reading it back while
+			// still holding the lock yields exactly the value this update confirmed.
 			// RestartAgent takes this same (non-reentrant) lock itself, so the
 			// restart path runs outside this section and reports the confirmed
 			// settings it returns directly.
@@ -790,8 +799,35 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 				ExtraSettings:  newExtraSettings,
 			})
 			if updated {
-				if confirmed := svc.Agents.CurrentSettings(agentID); confirmed != nil && confirmed.GetEffort() != "" {
-					notifyEffort = confirmed.GetEffort()
+				notifyModel, notifyEffort = confirmedOrDefault(svc.Agents.CurrentSettings(agentID), notifyModel, notifyEffort)
+
+				// If the live update settled on a different model than requested (e.g. a
+				// provider that re-spells the model id on echo), persist the settled
+				// model AND effort so the DB row -- and the AgentInfo broadcast built from
+				// it -- agree with the settings_changed notification below. The optimistic
+				// write above stored newModel/newEffort; correct both to the confirmed
+				// values. Effort must be the confirmed level, not the requested one: the
+				// live update already wrote the confirmed effort to the DB via
+				// PersistSettingsRefresh, and the notification reports notifyEffort, so
+				// re-storing the requested newEffort here would clobber that with a value
+				// the session isn't running (e.g. an unentitled ultracode request that
+				// landed on xhigh), splitting the DB from the broadcast/notification.
+				//
+				// This write stays INSIDE the lifecycle lock (with the readback above),
+				// not after unlock: two concurrent UpdateAgentSettings for the same agent
+				// each confirm their own settled model/effort, so the corrective writes
+				// must serialize with the in-memory confirmation. Done after unlock they
+				// could reorder -- the earlier update's stale row landing last -- and leave
+				// the DB disagreeing with both the agent's running state and the
+				// broadcast/notification, the very split this lock exists to prevent.
+				if notifyModel != newModel {
+					if err := svc.Queries.UpdateAgentModelAndEffort(bgCtx(), db.UpdateAgentModelAndEffortParams{
+						Model:  notifyModel,
+						Effort: notifyEffort,
+						ID:     agentID,
+					}); err != nil {
+						slog.Warn("failed to persist settled model after live update", "agent_id", agentID, "error", err)
+					}
 				}
 			}
 			unlock()
@@ -835,9 +871,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 					if _, err := svc.persistConfirmedAgentSettings(agentID, dbAgent.AgentProvider, newModel, newEffort, newPermissionMode, newExtraSettings, confirmedSettings); err != nil {
 						slog.Warn("failed to persist confirmed settings after restart", "agent_id", agentID, "error", err)
 					}
-					if confirmedSettings != nil && confirmedSettings.GetEffort() != "" {
-						notifyEffort = confirmedSettings.GetEffort()
-					}
+					notifyModel, notifyEffort = confirmedOrDefault(confirmedSettings, notifyModel, notifyEffort)
 					slog.Info("agent restarted with new settings",
 						"agent_id", agentID, "model", newModel, "effort", newEffort)
 				}
@@ -845,41 +879,7 @@ func registerAgentHandlers(d *channel.Dispatcher, svc *Context) {
 		}
 
 		// Broadcast settings_changed notification for the chat view.
-		// Include display labels so the frontend can show human-readable names
-		// without maintaining its own label maps.
-		modelLabel, effortLabel := svc.settingsDisplayLabels(agentID, dbAgent.AgentProvider)
-		changes := map[string]interface{}{}
-		if dbAgent.Model != newModel {
-			oldID := modelOrDefault(dbAgent.Model, dbAgent.AgentProvider)
-			changes["model"] = map[string]string{
-				"old": oldID, "new": newModel,
-				"oldLabel": modelLabel(oldID), "newLabel": modelLabel(newModel),
-			}
-		}
-		if dbAgent.Effort != notifyEffort {
-			oldID := effortOrDefault(dbAgent.Effort, dbAgent.AgentProvider)
-			changes["effort"] = map[string]string{
-				"old": oldID, "new": notifyEffort,
-				"oldLabel": effortLabel(oldID), "newLabel": effortLabel(notifyEffort),
-			}
-		}
-		if dbAgent.PermissionMode != newPermissionMode {
-			changes[agent.OptionGroupKeyPermissionMode] = map[string]string{
-				"old": dbAgent.PermissionMode, "new": newPermissionMode,
-				"oldLabel": svc.permissionModeLabel(agentID, dbAgent.PermissionMode, dbAgent.AgentProvider), "newLabel": svc.permissionModeLabel(agentID, newPermissionMode, dbAgent.AgentProvider),
-			}
-		}
-		for _, key := range sortedExtraSettingKeys(oldExtraSettings, newExtraSettings) {
-			oldVal, newVal := oldExtraSettings[key], newExtraSettings[key]
-			if oldVal != newVal {
-				changes[key] = map[string]string{
-					"old": oldVal, "new": newVal,
-					"label":    svc.optionGroupLabel(agentID, key, dbAgent.AgentProvider),
-					"oldLabel": svc.optionLabel(agentID, key, oldVal, dbAgent.AgentProvider),
-					"newLabel": svc.optionLabel(agentID, key, newVal, dbAgent.AgentProvider),
-				}
-			}
-		}
+		changes := svc.buildSettingsChanges(&dbAgent, notifyModel, notifyEffort, newPermissionMode, oldExtraSettings, newExtraSettings)
 		if len(changes) > 0 {
 			svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 				"type":    agent.NotificationTypeSettingsChanged,
@@ -1914,6 +1914,106 @@ func confirmedAgentSettings(provider leapmuxv1.AgentProvider, model, effort, per
 		permissionMode: confirmedPermissionMode,
 		extraSettings:  confirmedExtraSettings,
 	}
+}
+
+// reportModelChange decides whether the settings_changed notification should carry
+// a model change: true when the prior stored model (oldModel) and the model the
+// session settled on (settledModel) differ after normalizing into the provider's
+// alias space, so a model that merely re-spelled (e.g. stored "claude-opus-4-8" vs
+// settled "opus" on an effort-only edit) is NOT reported as a change.
+//
+// The account-default sentinel resolving to its concrete model ("default" ->
+// "sonnet") IS reported: it is a real, user-visible transition that the settings
+// panel (built from the same settled model in AgentInfo) shows too, so chat and
+// panel agree. This deliberately also announces the resolution on a new tab's first
+// edit -- there is no signal distinguishing that from a session that was stuck on an
+// unresolved "default" and only now resolved (the stuck resolution is itself a first
+// resolution), and announcing the concrete model is informative rather than noise. A
+// sentinel that has NOT resolved stays "default" on both sides and so compares equal
+// -- no spurious change.
+func reportModelChange(provider leapmuxv1.AgentProvider, oldModel, settledModel string) bool {
+	return agent.NormalizeModelID(provider, oldModel) != agent.NormalizeModelID(provider, settledModel)
+}
+
+// settingsChangeEntry builds the {old,new,oldLabel,newLabel} map a settings_changed
+// notification carries for one changed field, resolving both labels through label.
+// Shared by the model/effort/permission-mode entries so their shape stays identical.
+func settingsChangeEntry(oldID, newID string, label func(string) string) map[string]string {
+	return map[string]string{
+		"old": oldID, "new": newID,
+		"oldLabel": label(oldID), "newLabel": label(newID),
+	}
+}
+
+// optionGroupChangeEntry builds the settings_changed entry for an extra-settings
+// option group: the standard {old,new,oldLabel,newLabel} shape from
+// settingsChangeEntry plus a "label" key naming the group. Encapsulating the extra
+// key here keeps callers from reaching into settingsChangeEntry's result to mutate
+// the shared shape post-construction. valueLabel resolves the option value labels;
+// groupLabel is the human-readable group name (e.g. "Output Style").
+func optionGroupChangeEntry(oldID, newID string, valueLabel func(string) string, groupLabel string) map[string]string {
+	entry := settingsChangeEntry(oldID, newID, valueLabel)
+	entry["label"] = groupLabel
+	return entry
+}
+
+// buildSettingsChanges assembles the settings_changed "changes" map for the chat view:
+// one {old,new,oldLabel,newLabel} entry per field that actually changed between the
+// stored row (dbAgent) and the settled values (notifyModel/notifyEffort/
+// newPermissionMode plus the extra-settings maps). Display labels are resolved here so
+// the frontend needs no label maps of its own. Returns an empty map when nothing
+// changed. Extracted from the UpdateAgentSettings handler so the field-diff lives in one
+// named, testable place instead of inline in the RPC body.
+func (svc *Context) buildSettingsChanges(
+	dbAgent *db.Agent,
+	notifyModel, notifyEffort, newPermissionMode string,
+	oldExtraSettings, newExtraSettings map[string]string,
+) map[string]interface{} {
+	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
+	modelLabel, effortLabel := svc.settingsDisplayLabels(agentID, provider)
+	changes := map[string]interface{}{}
+	if reportModelChange(provider, dbAgent.Model, notifyModel) {
+		changes["model"] = settingsChangeEntry(modelOrDefault(dbAgent.Model, provider), notifyModel, modelLabel)
+	}
+	if dbAgent.Effort != notifyEffort {
+		changes["effort"] = settingsChangeEntry(effortOrDefault(dbAgent.Effort, provider), notifyEffort, effortLabel)
+	}
+	if dbAgent.PermissionMode != newPermissionMode {
+		changes[agent.OptionGroupKeyPermissionMode] = settingsChangeEntry(
+			dbAgent.PermissionMode, newPermissionMode,
+			func(m string) string { return svc.permissionModeLabel(agentID, m, provider) },
+		)
+	}
+	for _, key := range sortedExtraSettingKeys(oldExtraSettings, newExtraSettings) {
+		oldVal, newVal := oldExtraSettings[key], newExtraSettings[key]
+		if oldVal != newVal {
+			changes[key] = optionGroupChangeEntry(
+				oldVal, newVal,
+				func(v string) string { return svc.optionLabel(agentID, key, v, provider) },
+				svc.optionGroupLabel(agentID, key, provider),
+			)
+		}
+	}
+	return changes
+}
+
+// confirmedOrDefault resolves the model/effort to report in the settings_changed
+// notification: the values the session actually confirmed (e.g. the concrete model
+// the account-default sentinel resolved to, or the level Claude Code clamped an
+// effort down to), falling back to the requested model/effort when the confirmed
+// settings are nil (offline edit / failed restart) or omit a field. The live-update
+// and restart paths share it so they report the settled values identically.
+func confirmedOrDefault(confirmed *leapmuxv1.AgentSettings, model, effort string) (string, string) {
+	if confirmed == nil {
+		return model, effort
+	}
+	if m := confirmed.GetModel(); m != "" {
+		model = m
+	}
+	if e := confirmed.GetEffort(); e != "" {
+		effort = e
+	}
+	return model, effort
 }
 
 // persistConfirmedAgentSettings writes the confirmed request settings

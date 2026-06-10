@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -10,10 +11,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// wrapShellCmd is a positional adapter over buildShellWrappedCommand(ctx,
+// shellWrapSpec) for the table-style tests below, which predate the struct and
+// vary mostly by shell path. It names the positional arguments in one place so the
+// tests stay compact; production call sites use the shellWrapSpec literal directly.
+func wrapShellCmd(ctx context.Context, shell string, loginShell bool, binaryName string,
+	stripEnvKeys, baseArgs, modelEffortArgs []string, probeThirdParty bool, workingDir string) (*exec.Cmd, string, string) {
+	return buildShellWrappedCommand(ctx, shellWrapSpec{
+		Shell:           shell,
+		LoginShell:      loginShell,
+		BinaryName:      binaryName,
+		StripEnvKeys:    stripEnvKeys,
+		BaseArgs:        baseArgs,
+		ModelEffortArgs: modelEffortArgs,
+		ProbeThirdParty: probeThirdParty,
+		WorkingDir:      workingDir,
+	})
+}
+
 func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
-	cmd, delimiter, metaPrefix := buildShellWrappedCommand(
+	cmd, delimiter, metaPrefix := wrapShellCmd(
 		context.Background(), "/bin/bash", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	require.NotEmpty(t, delimiter)
 	assert.True(t, strings.HasPrefix(delimiter, "__LEAPMUX_READY_"))
@@ -41,9 +60,9 @@ func TestBuildShellWrappedCommand_Bash_Interactive(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/bin/bash", false, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	assert.Equal(t, "/bin/bash", cmd.Path)
 	require.Len(t, cmd.Args, 3) // bash -c <cmd>
@@ -52,9 +71,9 @@ func TestBuildShellWrappedCommand_Bash_NonInteractive(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
-	cmd, delimiter, _ := buildShellWrappedCommand(
+	cmd, delimiter, _ := wrapShellCmd(
 		context.Background(), "/bin/zsh", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "sonnet"}, "/home/user",
+		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "sonnet"}, false, "/home/user",
 	)
 	assert.Equal(t, "/bin/zsh", cmd.Path)
 	require.Len(t, cmd.Args, 5) // zsh -i -l -c <cmd>
@@ -67,9 +86,9 @@ func TestBuildShellWrappedCommand_Zsh(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Fish(t *testing.T) {
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/usr/bin/fish", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--model", "sonnet"}, []string{}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--model", "sonnet"}, []string{}, false, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/fish", cmd.Path)
 	require.Len(t, cmd.Args, 5) // fish -i -l -c <cmd>
@@ -83,9 +102,9 @@ func TestBuildShellWrappedCommand_Fish(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
-	cmd, delimiter, _ := buildShellWrappedCommand(
+	cmd, delimiter, _ := wrapShellCmd(
 		context.Background(), "/bin/tcsh", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
@@ -96,9 +115,9 @@ func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/bin/tcsh", false, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // tcsh -c <cmd>
@@ -106,9 +125,9 @@ func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Csh(t *testing.T) {
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/bin/csh", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	assert.Equal(t, "/bin/csh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // csh -ic <cmd>
@@ -118,9 +137,9 @@ func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
-	cmd, delimiter, _ := buildShellWrappedCommand(
+	cmd, delimiter, _ := wrapShellCmd(
 		context.Background(), "/usr/bin/nu", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/nu", cmd.Path)
 	require.Len(t, cmd.Args, 5) // nu -i -l -c <cmd>
@@ -140,18 +159,21 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 }
 
 func TestBuildNuCommand_SingleQuoteInArgs(t *testing.T) {
-	inner := buildNuCommand("claude", []string{"CLAUDECODE"}, "__DELIM__", "__META__ ",
-		[]string{"--output-format", "stream-json"},
-		[]string{"--model", "it's-a-model"})
+	inner := buildNuCommand(shellWrapSpec{
+		BinaryName:      "claude",
+		StripEnvKeys:    []string{"CLAUDECODE"},
+		BaseArgs:        []string{"--output-format", "stream-json"},
+		ModelEffortArgs: []string{"--model", "it's-a-model"},
+	}, "__DELIM__", "__META__ ")
 	// Single quotes in args must be safely double-quoted, not POSIX-quoted.
 	assert.Contains(t, inner, `"it's-a-model"`)
 	assert.NotContains(t, inner, `'\''`)
 }
 
 func TestBuildShellWrappedCommand_Nu_NonInteractive(t *testing.T) {
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/usr/bin/nu", false, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/nu", cmd.Path)
 	require.Len(t, cmd.Args, 3) // nu -c <cmd>
@@ -161,9 +183,9 @@ func TestBuildShellWrappedCommand_Nu_NonInteractive(t *testing.T) {
 func TestBuildShellWrappedCommand_PwshCore_Interactive(t *testing.T) {
 	for _, shell := range []string{"/usr/bin/pwsh", "/usr/bin/pwsh-preview"} {
 		t.Run(shell, func(t *testing.T) {
-			cmd, delimiter, _ := buildShellWrappedCommand(
+			cmd, delimiter, _ := wrapShellCmd(
 				context.Background(), shell, true, "claude",
-				[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+				[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 			)
 			assert.Equal(t, shell, cmd.Path)
 			require.Len(t, cmd.Args, 4) // pwsh -Login -Command <cmd>
@@ -186,9 +208,9 @@ func TestBuildShellWrappedCommand_PwshCore_Interactive(t *testing.T) {
 func TestBuildShellWrappedCommand_WindowsPowerShell_Interactive(t *testing.T) {
 	for _, shell := range []string{"/usr/bin/powershell", "/usr/bin/powershell-preview"} {
 		t.Run(shell, func(t *testing.T) {
-			cmd, delimiter, _ := buildShellWrappedCommand(
+			cmd, delimiter, _ := wrapShellCmd(
 				context.Background(), shell, true, "claude",
-				[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+				[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 			)
 			assert.Equal(t, shell, cmd.Path)
 			require.Len(t, cmd.Args, 3) // powershell -Command <cmd>
@@ -203,9 +225,9 @@ func TestBuildShellWrappedCommand_WindowsPowerShell_Interactive(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_Pwsh_NonInteractive(t *testing.T) {
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/usr/bin/pwsh", false, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/pwsh", cmd.Path)
 	require.Len(t, cmd.Args, 3) // pwsh -Command <cmd>
@@ -213,9 +235,9 @@ func TestBuildShellWrappedCommand_Pwsh_NonInteractive(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_UnknownShell(t *testing.T) {
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/usr/bin/xonsh", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "opus"}, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--verbose"}, []string{"--model", "opus"}, false, "/tmp",
 	)
 	assert.Equal(t, "/usr/bin/xonsh", cmd.Path)
 	require.Len(t, cmd.Args, 5) // defaults to -i -l -c
@@ -242,9 +264,9 @@ func TestBuildShellWrappedCommand_AppImage_ScrubsEnv(t *testing.T) {
 	t.Setenv("OWD", "/home/user")
 	t.Setenv("PATH_SHOULD_SURVIVE", "/usr/bin:/bin")
 
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/bin/zsh", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, false, "/tmp",
 	)
 
 	// Shell invocation itself must not change — the bug is in the env,
@@ -279,9 +301,9 @@ func TestBuildShellWrappedCommand_NoAppImage_PreservesEnv(t *testing.T) {
 	t.Setenv("APPIMAGE", "")
 	t.Setenv("ARGV0", "should-survive-when-not-in-appimage")
 
-	cmd, _, _ := buildShellWrappedCommand(
+	cmd, _, _ := wrapShellCmd(
 		context.Background(), "/bin/zsh", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, false, "/tmp",
 	)
 
 	assert.Equal(t, "/bin/zsh", cmd.Path)
@@ -294,9 +316,9 @@ func TestBuildShellWrappedCommand_NoAppImage_PreservesEnv(t *testing.T) {
 func TestBuildShellWrappedCommand_NoModelEffort(t *testing.T) {
 	// When third-party provider was detected from settings, modelEffortArgs is nil.
 	// No conditional logic should be generated.
-	cmd, _, metaPrefix := buildShellWrappedCommand(
+	cmd, _, metaPrefix := wrapShellCmd(
 		context.Background(), "/bin/bash", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, false, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
 	assert.Contains(t, cmd.Args[4], "'--output-format'")
@@ -306,25 +328,79 @@ func TestBuildShellWrappedCommand_NoModelEffort(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_NoModelEffort_Nu(t *testing.T) {
-	cmd, _, metaPrefix := buildShellWrappedCommand(
+	cmd, _, metaPrefix := wrapShellCmd(
 		context.Background(), "/usr/bin/nu", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, false, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
 	assert.NotContains(t, cmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
 }
 
 func TestBuildShellWrappedCommand_NoModelEffort_Pwsh(t *testing.T) {
-	cmd, _, metaPrefix := buildShellWrappedCommand(
+	cmd, _, metaPrefix := wrapShellCmd(
 		context.Background(), "/usr/bin/pwsh", true, "claude",
-		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, "/tmp",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, false, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
 	assert.NotContains(t, cmd.Args[3], "CLAUDE_CODE_USE_BEDROCK")
 }
 
+// TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel covers the
+// account-default ("sentinel") launch path: Claude sends no --model/--effort
+// (nil modelEffortArgs) but passes probeThirdParty=true so the runtime
+// third-party probe still fires. Without it, a Bedrock/Vertex/Foundry provider
+// configured only in the user's shell profile would go undetected on the default
+// tab and AvailableModels would wrongly show the model/effort UI.
+func TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel(t *testing.T) {
+	cmd, _, metaPrefix := wrapShellCmd(
+		context.Background(), "/bin/bash", true, "claude",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, true, "/tmp",
+	)
+	require.NotEmpty(t, metaPrefix, "probe forces a metadata prefix even with no model/effort args")
+	inner := cmd.Args[4]
+	// The probe and both capability lines are emitted.
+	assert.Contains(t, inner, "CLAUDE_CODE_USE_BEDROCK")
+	assert.Contains(t, inner, metaPrefix+"can_change_model_and_effort=false")
+	assert.Contains(t, inner, metaPrefix+"can_change_model_and_effort=true")
+	// But neither branch forwards a --model/--effort, since there are none.
+	assert.NotContains(t, inner, "'--model'")
+	assert.NotContains(t, inner, "'--effort'")
+	// Both branches still exec claude with the base args.
+	parts := strings.SplitN(inner, "else", 2)
+	require.Len(t, parts, 2, "expected if/else probe structure")
+	assert.Contains(t, parts[0], "exec claude")
+	assert.Contains(t, parts[1], "exec claude")
+}
+
+// TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel_NuAndPwsh checks the
+// same forced-probe behavior in the other two shell dialects.
+func TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel_NuAndPwsh(t *testing.T) {
+	nuCmd, _, nuMeta := wrapShellCmd(
+		context.Background(), "/usr/bin/nu", true, "claude",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, true, "/tmp",
+	)
+	require.NotEmpty(t, nuMeta)
+	assert.Contains(t, nuCmd.Args[4], "CLAUDE_CODE_USE_BEDROCK")
+	assert.Contains(t, nuCmd.Args[4], nuMeta+"can_change_model_and_effort=true")
+	assert.NotContains(t, nuCmd.Args[4], `"--model"`)
+
+	pwshCmd, _, pwshMeta := wrapShellCmd(
+		context.Background(), "/usr/bin/pwsh", true, "claude",
+		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, nil, true, "/tmp",
+	)
+	require.NotEmpty(t, pwshMeta)
+	assert.Contains(t, pwshCmd.Args[3], "CLAUDE_CODE_USE_BEDROCK")
+	assert.Contains(t, pwshCmd.Args[3], pwshMeta+"can_change_model_and_effort=true")
+	assert.NotContains(t, pwshCmd.Args[3], "'--model'")
+}
+
 func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
-	inner := buildPosixCommand("claude", []string{"CLAUDECODE"}, "__DELIM__", "__META__ ", []string{"--output-format", "stream-json"}, []string{"--model", "opus", "--effort", "high"})
+	inner := buildPosixCommand(shellWrapSpec{
+		BinaryName:      "claude",
+		StripEnvKeys:    []string{"CLAUDECODE"},
+		BaseArgs:        []string{"--output-format", "stream-json"},
+		ModelEffortArgs: []string{"--model", "opus", "--effort", "high"},
+	}, "__DELIM__", "__META__ ")
 
 	// The else branch should contain model/effort args
 	parts := strings.SplitN(inner, "else", 2)
@@ -340,9 +416,9 @@ func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers(t *testing.T) {
-	cmd, delimiter, metaPrefix := buildShellWrappedCommand(
+	cmd, delimiter, metaPrefix := wrapShellCmd(
 		context.Background(), "/bin/zsh", true, "codex",
-		[]string{"CODEX_CI"}, []string{"app-server"}, nil, "/tmp",
+		[]string{"CODEX_CI"}, []string{"app-server"}, nil, false, "/tmp",
 	)
 	assert.Empty(t, metaPrefix)
 	assert.Contains(t, cmd.Args[4], "unset CODEX_CI")
@@ -352,16 +428,16 @@ func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers(t *testing.T) {
 }
 
 func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers_NuAndPwsh(t *testing.T) {
-	nuCmd, _, _ := buildShellWrappedCommand(
+	nuCmd, _, _ := wrapShellCmd(
 		context.Background(), "/usr/bin/nu", true, "codex",
-		[]string{"CODEX_CI"}, []string{"app-server"}, nil, "/tmp",
+		[]string{"CODEX_CI"}, []string{"app-server"}, nil, false, "/tmp",
 	)
 	assert.Contains(t, nuCmd.Args[4], "hide-env CODEX_CI")
 	assert.NotContains(t, nuCmd.Args[4], "CLAUDECODE")
 
-	pwshCmd, _, _ := buildShellWrappedCommand(
+	pwshCmd, _, _ := wrapShellCmd(
 		context.Background(), "/usr/bin/pwsh", true, "codex",
-		[]string{"CODEX_CI"}, []string{"app-server"}, nil, "/tmp",
+		[]string{"CODEX_CI"}, []string{"app-server"}, nil, false, "/tmp",
 	)
 	assert.Contains(t, pwshCmd.Args[3], "Remove-Item Env:CODEX_CI")
 	assert.NotContains(t, pwshCmd.Args[3], "CLAUDECODE")
@@ -503,10 +579,45 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			effort:   "ultracode",
 			expected: []string{"--model", "claude-future-preview", "--effort", "high"},
 		},
+		{
+			// The "default" sentinel omits --model so the CLI resolves the
+			// account's own default model; auto effort omits --effort too.
+			name:     "default sentinel omits --model entirely",
+			model:    "default",
+			effort:   "auto",
+			expected: nil,
+		},
+		{
+			// The sentinel omits --effort even for an explicit effort: the
+			// resolved default model's own default effort is used, so we never
+			// push a concrete --effort the resolved model may not support.
+			name:     "default sentinel omits --effort even when explicit",
+			model:    "default",
+			effort:   "high",
+			expected: nil,
+		},
+		{
+			// S4: an empty model sends no --model (CLI picks the account default)
+			// and, like the sentinel, omits --effort even for an explicit level.
+			name:     "empty model omits both --model and --effort",
+			model:    "",
+			effort:   "high",
+			expected: nil,
+		},
+		{
+			// An empty model with ultracode also omits both flags: launchOmitsEffort
+			// short-circuits on model=="" before launchRunsUltracode could call
+			// supportsUltracode(""), so the planLaunch omit-check ordering -- not a
+			// model lookup -- is what keeps a stray --effort off an empty-model launch.
+			name:     "empty model with ultracode omits both flags",
+			model:    "",
+			effort:   "ultracode",
+			expected: nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			args := buildModelEffortArgs(tt.model, tt.effort)
+			args := newEffortResolver(claudeCodeAvailableModels).buildModelEffortArgs(tt.model, tt.effort)
 			assert.Equal(t, tt.expected, args)
 		})
 	}

@@ -22,9 +22,13 @@ type CopilotCLIAgent struct {
 func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, "copilot", nil, []string{"--acp", "--stdio"}, nil, opts.WorkingDir,
-	)
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
+		Shell:      opts.Shell,
+		LoginShell: opts.LoginShell,
+		BinaryName: "copilot",
+		BaseArgs:   []string{"--acp", "--stdio"},
+		WorkingDir: opts.WorkingDir,
+	})
 
 	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
 

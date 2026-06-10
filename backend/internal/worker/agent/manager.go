@@ -309,12 +309,113 @@ func (m *Manager) AvailableModels(agentID string, provider leapmuxv1.AgentProvid
 	return nil
 }
 
+// defaultModelForList resolves which model id should carry the IsDefault badge
+// for this (possibly account-specific) list. Priority:
+//  1. The explicit LEAPMUX_*_DEFAULT_MODEL operator override.
+//  2. A provider-reported default the list itself designates -- for Claude Code
+//     this is the CLI's DefaultModelSentinel ("default") entry, which tracks the
+//     account's own default across plan tiers (e.g. Sonnet vs Fable).
+//  3. The provider's configured default. When the list contains it, return it;
+//     when the list omits it (an account-specific list whose configured default
+//     isn't offered, e.g. a Claude CLI reporting concrete models but no "default"
+//     sentinel), fall back to the highest-preference entry present so the picker
+//     still shows a badge.
+//
+// Returning "" means "don't touch the list's existing badges": that's the case
+// for a provider with no configured default at all (ACP providers registered with
+// nil defaultModels, which self-mark the currently-selected model in
+// buildACPModels). The step-3 fallback is gated on a non-empty configured default
+// precisely so it doesn't clobber that per-agent marking.
+func defaultModelForList(models []*leapmuxv1.AvailableModel, provider leapmuxv1.AgentProvider) string {
+	if env := DefaultModelEnvOverride(provider); env != "" {
+		// Honor the operator override only when it actually names a model in this
+		// (possibly account-specific) list, matching by exact id or provider-
+		// normalized alias. A stale or differently-spelled override -- a fully-
+		// qualified "claude-opus-4-8[1m]" against the catalog's "opus[1m]", or a
+		// model the account simply doesn't offer -- falls through to the rest of
+		// the ladder so the picker still shows a default badge. Returning an absent
+		// id unconditionally would make withDefaultModelMarked clear IsDefault from
+		// every entry (none match) and badge nothing.
+		if id := matchModelID(models, provider, env); id != "" {
+			return id
+		}
+	}
+	// DefaultModelSentinel is a Claude-Code-specific concept (the CLI's "default"
+	// entry); gate the check to that provider so a non-Claude provider that
+	// happens to report a model literally id'd "default" doesn't get its
+	// self-marked/CLI-marked badge hijacked onto that entry.
+	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE && FindAvailableModel(models, DefaultModelSentinel) != nil {
+		return DefaultModelSentinel
+	}
+	configured := DefaultModel(provider)
+	if configured == "" {
+		// No configured default: preserve whatever IsDefault the per-agent list
+		// already set (e.g. buildACPModels marking the current model) instead of
+		// moving the badge to the first entry.
+		return ""
+	}
+	if FindAvailableModel(models, configured) != nil {
+		return configured
+	}
+	// The configured default isn't in this (account-specific) list. Respect a
+	// default the provider already designated on the list itself -- e.g. Codex's
+	// queryAvailableModels copies the CLI's isDefault onto an entry -- before
+	// falling back, so a stale registry default (configured but absent from the
+	// live list) doesn't move the badge off the model the CLI actually marked.
+	if id := markedModelID(models); id != "" {
+		return id
+	}
+	// Nothing designated: mark the highest-preference entry the list does contain
+	// so the picker always shows a default badge (e.g. a Claude CLI reporting
+	// concrete models but no "default" sentinel falls back to its first model).
+	return firstModelID(models)
+}
+
+// matchModelID returns the id of the model in the list the given id refers to,
+// matched first by exact id then by provider-normalized alias (so a fully-
+// qualified spelling like "claude-opus-4-8[1m]" resolves to the catalog's
+// "opus[1m]"). Returns "" when the list contains no such model. Used to resolve
+// an operator default-model override against an account-specific catalog.
+func matchModelID(models []*leapmuxv1.AvailableModel, provider leapmuxv1.AgentProvider, id string) string {
+	if m := FindAvailableModel(models, id); m != nil {
+		return m.Id
+	}
+	want := NormalizeModelID(provider, id)
+	for _, m := range models {
+		if m != nil && NormalizeModelID(provider, m.Id) == want {
+			return m.Id
+		}
+	}
+	return ""
+}
+
+// markedModelID returns the id of the first model already flagged IsDefault, or ""
+// if none is. firstModelID returns the id of the first non-nil model, or "". Both
+// tolerate nil-bearing slices (the catalogs are treated as possibly nil-bearing).
+func markedModelID(models []*leapmuxv1.AvailableModel) string {
+	for _, m := range models {
+		if m != nil && m.IsDefault {
+			return m.Id
+		}
+	}
+	return ""
+}
+
+func firstModelID(models []*leapmuxv1.AvailableModel) string {
+	for _, m := range models {
+		if m != nil {
+			return m.Id
+		}
+	}
+	return ""
+}
+
 func withDefaultModelMarked(models []*leapmuxv1.AvailableModel, provider leapmuxv1.AgentProvider) []*leapmuxv1.AvailableModel {
 	if len(models) == 0 {
 		return nil
 	}
 
-	defaultModel := DefaultModel(provider)
+	defaultModel := defaultModelForList(models, provider)
 	if defaultModel == "" {
 		return models
 	}

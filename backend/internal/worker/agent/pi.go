@@ -75,11 +75,13 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 	// Pi has no --working-dir flag (it uses the process cwd). buildShellWrappedCommand
 	// already sets cmd.Dir to opts.WorkingDir, so the agent picks up the right
 	// directory implicitly.
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, binary, nil,
-		[]string{"--mode", "rpc"},
-		nil, opts.WorkingDir,
-	)
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
+		Shell:      opts.Shell,
+		LoginShell: opts.LoginShell,
+		BinaryName: binary,
+		BaseArgs:   []string{"--mode", "rpc"},
+		WorkingDir: opts.WorkingDir,
+	})
 	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
 
 	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)

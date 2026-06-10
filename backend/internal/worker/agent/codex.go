@@ -105,9 +105,14 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 	// Codex doesn't have third-party provider detection or model/effort
 	// conditional args, so we pass empty modelEffortArgs for a simple command.
 	binary := resolveBinaryName(ctx, opts.Shell, opts.LoginShell, codexBinaryCandidates)
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(
-		ctx, opts.Shell, opts.LoginShell, binary, []string{"CODEX_CI"}, []string{"app-server"}, nil, opts.WorkingDir,
-	)
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
+		Shell:        opts.Shell,
+		LoginShell:   opts.LoginShell,
+		BinaryName:   binary,
+		StripEnvKeys: []string{"CODEX_CI"},
+		BaseArgs:     []string{"app-server"},
+		WorkingDir:   opts.WorkingDir,
+	})
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
 	if opts.LoginShell {
