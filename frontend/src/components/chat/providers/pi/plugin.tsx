@@ -204,6 +204,9 @@ const piPlugin: Provider = {
   defaultEffort: DEFAULT_PI_EFFORT,
   defaultPermissionMode: undefined,
   bypassPermissionMode: undefined,
+  // Pi's agentSessionId is a .jsonl session-file path, so the UI shortens it for
+  // display and labels the copy action "session file path".
+  sessionIdIsFilePath: true,
   attachments: {
     text: true,
     image: true,

@@ -1,15 +1,16 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, AskQuestionState, EditorContentRef, Question } from './types'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { createUniqueId, For, Show } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { pluralize } from '~/lib/plural'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
+import { pluginFor } from '../providers/registry'
 import { CollapsibleList } from './CollapsibleList'
 import { sendResponse } from './types'
 
@@ -18,7 +19,7 @@ import { sendResponse } from './types'
 // ---------------------------------------------------------------------------
 
 function preservesSelectionNotes(agentProvider?: AgentProvider): boolean {
-  return agentProvider === AgentProvider.CODEX
+  return pluginFor(agentProvider)?.preservesSelectionNotes ?? false
 }
 
 function toggleSelection(state: AskQuestionState, qIdx: number, label: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {

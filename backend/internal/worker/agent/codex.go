@@ -83,9 +83,19 @@ type CodexAgent struct {
 	turnPlanText      string // final text of the current turn's plan item
 	turnAssistantText string // final assistant message text for the current turn
 	streamingPlan     bool   // whether we've sent streamingType session info for the current plan stream
-	availableModels   []*leapmuxv1.AvailableModel
-	collabThreadSpans map[string]string // child thread ID -> owning spawnAgent span ID
-	collabSpanThreads map[string]int    // spawnAgent span ID -> active child thread count
+	// thinkingTokens is the per-phase generated-token estimate driving the
+	// thinking-indicator counter; see thinkingTokenEstimator and thinkingResetSink.
+	thinkingTokens thinkingTokenEstimator
+	// reasoningStreamKind records, per reasoning itemId, which reasoning sub-stream
+	// ("summary" or "raw") was seen first, so the thinking-token estimate counts
+	// only one of them. Codex can emit both summaryTextDelta and textDelta for the
+	// SAME reasoning item (they are the same generation surfaced two ways), which
+	// would otherwise double-count. Locking onto whichever arrives first keeps the
+	// counter moving for models that stream only one of the two.
+	reasoningStreamKind map[string]string
+	availableModels     []*leapmuxv1.AvailableModel
+	collabThreadSpans   map[string]string // child thread ID -> owning spawnAgent span ID
+	collabSpanThreads   map[string]int    // spawnAgent span ID -> active child thread count
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
@@ -117,6 +127,8 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		workingDir:  opts.WorkingDir,
 		sink:        sink,
 	}
+	// Reset the thinking-token estimate centrally at every frontend-clear boundary.
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 
 	if err := a.startCmd(cmd, cancel); err != nil {
 		return nil, err
@@ -362,7 +374,13 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.turnPlanText = ""
 	a.turnAssistantText = ""
 	a.streamingPlan = false
+	clear(a.reasoningStreamKind)
 	a.mu.Unlock()
+	// The thread was replaced; drop any in-flight thinking-token estimate so it
+	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
+	// turn/started also resets, but resetting here keeps every provider's context
+	// clear consistent rather than relying on that follow-up.
+	a.thinkingTokens.reset()
 
 	a.sink.UpdateSessionID(threadID)
 	return threadID, true

@@ -279,6 +279,11 @@ const codexPlugin: Provider = {
   defaultEffort: DEFAULT_CODEX_EFFORT,
   defaultPermissionMode: 'on-request',
   bypassPermissionMode: 'never',
+  // Seed a new Codex agent with its default collaboration mode.
+  defaultExtraSettings: { [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE },
+  // Codex accepts an option selection AND a free-text note together, so the
+  // AskUserQuestion UI keeps both instead of treating them as mutually exclusive.
+  preservesSelectionNotes: true,
   attachments: {
     text: true,
     image: true,

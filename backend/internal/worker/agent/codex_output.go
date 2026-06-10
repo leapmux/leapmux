@@ -32,7 +32,7 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	slog.Debug("codex HandleOutput", "agent_id", a.agentID, "method", line.Method, "len", len(line.Raw))
 
 	if _, ok := codexSystemMetadataMethods[line.Method]; ok {
-		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
 			slog.Error("codex persist system metadata", "agent_id", a.agentID, "method", line.Method, "error", err)
 		}
 		return
@@ -117,13 +117,32 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		} `json:"turn"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.Turn.ID != "" {
+		// Gate the thinking-token restart on the main thread -- a collab subagent's
+		// turn/started carries its own child threadId, and the frontend has no counter
+		// clear for turn/started, so an ungated reset would zero the primary agent's
+		// counter mid-phase and spin the odometer backward. Mirrors
+		// handleTurnCompleted's main-thread gate and observeMainThreadText. Resolved
+		// before the lock below (isMainThreadID takes a.mu itself) so the main-only
+		// reasoning-map clear folds into the single turn-state critical section.
+		main := a.isMainThreadID(notif.ThreadID)
 		a.mu.Lock()
 		a.turnID = notif.Turn.ID
 		a.turnToolUses = 0
 		a.turnSawPlan = false
 		a.turnPlanText = ""
 		a.streamingPlan = false
+		if main {
+			// Drop any per-item reasoning-stream locks from a prior turn so itemIds
+			// can't leak across turns (e.g. a reasoning item left open by an abort).
+			clear(a.reasoningStreamKind)
+		}
 		a.mu.Unlock()
+		if main {
+			// A fresh turn begins: restart the thinking-token estimate from zero. The
+			// reset is lock-free (the estimator self-locks), so it stays outside the
+			// critical section above.
+			a.thinkingTokens.reset()
+		}
 
 		// Broadcast the turn ID so the frontend can use it for interrupts.
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
@@ -132,20 +151,77 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 	}
 }
 
+// observeMainThreadText feeds a streamed model-text delta into the thinking-token
+// estimate, but only for the main thread. A collab subagent's deltas arrive
+// through these same handlers carrying a child threadId; counting them would
+// inflate the primary agent's counter with text the user attributes to a
+// subagent. The visible stream chunk is still broadcast regardless of thread --
+// only the token estimate is gated.
+func (a *CodexAgent) observeMainThreadText(threadID, text string) {
+	if a.isMainThreadID(threadID) {
+		a.thinkingTokens.observe(a.sink, text)
+	}
+}
+
+// Codex reasoning sub-stream kinds. A single reasoning item can surface as a
+// condensed summary stream and/or the raw reasoning stream, both under one
+// itemId; observeReasoningText counts only the first-seen kind per item.
+const (
+	codexReasoningKindSummary = "summary"
+	codexReasoningKindRaw     = "raw"
+)
+
+// observeReasoningText feeds a reasoning delta into the thinking-token estimate,
+// counting only the FIRST reasoning sub-stream ("summary" or "raw") seen for a
+// given reasoning itemId. Codex can stream both summaryTextDelta and textDelta
+// for the SAME item -- the same generation surfaced two ways -- so counting both
+// would roughly double the estimate. Locking onto whichever kind arrives first
+// avoids the double count while still moving the counter for models that stream
+// only one kind. The main-thread gate still applies via observeMainThreadText, so
+// a subagent's reasoning (child threadId) is excluded regardless of kind.
+func (a *CodexAgent) observeReasoningText(itemID, kind, threadID, text string) {
+	if a.shouldCountReasoningKind(itemID, kind) {
+		a.observeMainThreadText(threadID, text)
+	}
+}
+
+// shouldCountReasoningKind records the first reasoning sub-stream kind seen for
+// itemID and reports whether kind is that first-seen kind. Separating the locked
+// map bookkeeping from observeReasoningText's delegation lets the lock use a plain
+// defer: observeMainThreadText re-acquires a.mu (via isMainThreadID), so the
+// inline form had to unlock manually before delegating. See observeReasoningText
+// for why only the first-seen kind is counted.
+func (a *CodexAgent) shouldCountReasoningKind(itemID, kind string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reasoningStreamKind == nil {
+		a.reasoningStreamKind = make(map[string]string)
+	}
+	locked, ok := a.reasoningStreamKind[itemID]
+	if !ok {
+		a.reasoningStreamKind[itemID] = kind
+		return true
+	}
+	return locked == kind
+}
+
 // handleAgentMessageDelta processes item/agentMessage/delta — streaming text.
 func (a *CodexAgent) handleAgentMessageDelta(params json.RawMessage) {
 	var delta struct {
-		Delta string `json:"delta"`
+		Delta    string `json:"delta"`
+		ThreadID string `json:"threadId"`
 	}
 	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
 		a.sink.BroadcastStreamChunk([]byte(delta.Delta), "", "item/agentMessage/delta")
+		a.observeMainThreadText(delta.ThreadID, delta.Delta)
 	}
 }
 
 // handlePlanDelta processes item/plan/delta — streaming plan text.
 func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 	var delta struct {
-		Delta string `json:"delta"`
+		Delta    string `json:"delta"`
+		ThreadID string `json:"threadId"`
 	}
 	if json.Unmarshal(params, &delta) == nil && delta.Delta != "" {
 		a.mu.Lock()
@@ -159,16 +235,19 @@ func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 			a.mu.Unlock()
 		}
 		a.sink.BroadcastStreamChunk([]byte(delta.Delta), "", "item/plan/delta")
+		a.observeMainThreadText(delta.ThreadID, delta.Delta)
 	}
 }
 
 func (a *CodexAgent) handleReasoningSummaryTextDelta(params json.RawMessage) {
 	var notif struct {
-		ItemID string `json:"itemId"`
-		Delta  string `json:"delta"`
+		ItemID   string `json:"itemId"`
+		Delta    string `json:"delta"`
+		ThreadID string `json:"threadId"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
 		a.sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/reasoning/summaryTextDelta")
+		a.observeReasoningText(notif.ItemID, codexReasoningKindSummary, notif.ThreadID, notif.Delta)
 	}
 }
 
@@ -183,11 +262,13 @@ func (a *CodexAgent) handleReasoningSummaryPartAdded(params json.RawMessage) {
 
 func (a *CodexAgent) handleReasoningTextDelta(params json.RawMessage) {
 	var notif struct {
-		ItemID string `json:"itemId"`
-		Delta  string `json:"delta"`
+		ItemID   string `json:"itemId"`
+		Delta    string `json:"delta"`
+		ThreadID string `json:"threadId"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
 		a.sink.BroadcastStreamChunk([]byte(notif.Delta), notif.ItemID, "item/reasoning/textDelta")
+		a.observeReasoningText(notif.ItemID, codexReasoningKindRaw, notif.ThreadID, notif.Delta)
 	}
 }
 
@@ -244,7 +325,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		// notification consolidator and frontend classifier route by
 		// method) and Codex-specific fields under `params.item.*` that a
 		// synthesized `{type:"compacting"}` would discard.
-		if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("codex persist compacting notification", "agent_id", a.agentID, "error", err)
 		}
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
@@ -347,6 +428,11 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}); err != nil {
 			slog.Error("codex persist reasoning", "agent_id", a.agentID, "error", err)
 		}
+		// The reasoning item is done; drop its stream-kind lock so the map stays
+		// bounded to in-flight items.
+		a.mu.Lock()
+		delete(a.reasoningStreamKind, itemID)
+		a.mu.Unlock()
 		a.sink.BroadcastStreamEnd(itemID)
 	case "contextCompaction":
 		// No-op: completion is represented by thread/compacted, which is emitted as
@@ -480,7 +566,7 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 
 	// Persist the raw Codex notification so reconnect/catch-up can rehydrate
 	// context usage from history. Codex-emitted metadata → AGENT source.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
 		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
 	}
 
@@ -554,7 +640,7 @@ func (a *CodexAgent) handleErrorNotification(params json.RawMessage) {
 // rate limit info is broadcast via BroadcastSessionInfo for the live popover.
 func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMessage) {
 	// Persist the raw Codex notification — agent-emitted metadata, AGENT source.
-	if err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
 		slog.Error("codex persist rateLimits", "agent_id", a.agentID, "error", err)
 	}
 

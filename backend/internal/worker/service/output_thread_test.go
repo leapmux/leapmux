@@ -62,8 +62,8 @@ func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
 	secondNotif, err := json.Marshal(map[string]any{"type": "interrupted"})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, firstNotif))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, secondNotif))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, firstNotif)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, secondNotif)
 
 	rows := listRows()
 	require.Len(t, rows, 1)
@@ -85,8 +85,8 @@ func TestNotificationThreading_CrossSourceProducesSeparateThreads(t *testing.T) 
 	leapmuxNotif, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agentNotif))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, leapmuxNotif))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agentNotif)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, leapmuxNotif)
 
 	rows := listRows()
 	require.Len(t, rows, 2, "cross-source adjacent notifications must not consolidate")
@@ -113,9 +113,9 @@ func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, firstNotif))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, firstNotif)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, assistantMsg, agent.SpanInfo{}))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, secondNotif))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, secondNotif)
 
 	rows := listRows()
 	require.Len(t, rows, 3)
@@ -140,9 +140,9 @@ func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testin
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, starting))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, ready))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, settingsChanged))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, starting)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, ready)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, settingsChanged)
 
 	rows := listRows()
 	require.Len(t, rows, 1)
@@ -165,8 +165,8 @@ func TestNotificationThreading_CodexMetadataNotificationsPersistAsAgentWrapper(t
 		"environmentId": nil,
 	}))
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, remoteControlChanged))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, remoteControlChanged)
 
 	rows := listRows()
 	require.Len(t, rows, 1)
@@ -187,10 +187,10 @@ func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *t
 	}))
 	ready := raw(t, codexStartupStatus("codex_apps", "ready", nil))
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, starting))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, remoteControlChanged))
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, ready))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, starting)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, skillsChanged)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, remoteControlChanged)
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, ready)
 
 	rows := listRows()
 	require.Len(t, rows, 1)
@@ -220,13 +220,22 @@ func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *test
 		"environmentId": nil,
 	}))
 
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload))
+	// The first notification opens a standalone thread and is broadcast.
+	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload)
+	require.NoError(t, err)
+	assert.True(t, broadcast, "the first notification is broadcast to the frontend")
 	rows := listRows()
 	require.Len(t, rows, 1)
 	seqAfterFirst := rows[0].Seq
 
+	// Each repeat collapses byte-identically into the tail: no DB write AND no
+	// broadcast. The broadcast=false return is what keeps the thinking-token
+	// reset decorator in lockstep with the frontend, which never clears here.
 	for i := 0; i < 5; i++ {
-		require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload))
+		broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload)
+		require.NoError(t, err)
+		assert.False(t, broadcast,
+			"an identical ProviderScoped notification collapses and must not report a broadcast")
 	}
 	rows = listRows()
 	require.Len(t, rows, 1)

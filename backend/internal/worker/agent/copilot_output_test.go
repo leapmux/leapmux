@@ -18,6 +18,7 @@ func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
 		},
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 	return a
 }
 

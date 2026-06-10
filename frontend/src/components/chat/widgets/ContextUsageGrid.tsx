@@ -3,8 +3,8 @@ import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import Info from 'lucide-solid/icons/info'
 import { createMemo, For, Show } from 'solid-js'
+import { pluginFor } from '~/components/chat/providers/registry'
 import { Tooltip } from '~/components/common/Tooltip'
-import { AgentProvider as AgentProviderEnum } from '~/generated/leapmux/v1/agent_pb'
 
 interface ContextUsageGridProps {
   contextUsage?: ContextUsageInfo
@@ -13,11 +13,12 @@ interface ContextUsageGridProps {
   size: number
 }
 
-export const DEFAULT_BUFFER_PCT = 16.5
 export const DEFAULT_CONTEXT_WINDOW = 200_000
 
+// The autocompact buffer (percentage of the context window a provider reserves)
+// is declared per-provider in its plugin; default 0 for providers with none.
 export function contextBufferPct(agentProvider?: AgentProvider): number {
-  return agentProvider === AgentProviderEnum.CLAUDE_CODE ? DEFAULT_BUFFER_PCT : 0
+  return pluginFor(agentProvider)?.contextBufferPct ?? 0
 }
 
 /** Resolve the effective context window from usage data, model metadata, or the default. */

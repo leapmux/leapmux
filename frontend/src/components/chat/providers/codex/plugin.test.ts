@@ -7,9 +7,22 @@ import { sendCodexDecision, sendCodexUserInputResponse, toRpcId } from '../../co
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
+import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './settings'
 
 // Side-effect import to register the Codex plugin.
 import './plugin'
+
+describe('codex provider capabilities', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('seeds the default collaboration mode as extra settings on a new agent', () => {
+    expect(plugin.defaultExtraSettings).toEqual({ [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE })
+  })
+
+  it('preserves an option selection alongside the free-text note', () => {
+    expect(plugin.preservesSelectionNotes).toBe(true)
+  })
+})
 
 describe('codex extractQuotableText', () => {
   const plugin = providerFor(AgentProvider.CODEX)!

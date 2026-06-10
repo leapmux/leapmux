@@ -27,6 +27,10 @@ describe('pi plugin metadata', () => {
     expect(plugin.defaultEffort).toBe('auto')
   })
 
+  it('treats the session id as a file path (Pi sessions are .jsonl files)', () => {
+    expect(plugin.sessionIdIsFilePath).toBe(true)
+  })
+
   it('does not advertise a permission mode for Pi', () => {
     expect(plugin.defaultPermissionMode).toBeUndefined()
     expect(plugin.bypassPermissionMode).toBeUndefined()

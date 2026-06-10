@@ -23,6 +23,7 @@ func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
 	}
 	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
 	a.extraMethod = a.handleExtraMethod
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 	return a
 }
 

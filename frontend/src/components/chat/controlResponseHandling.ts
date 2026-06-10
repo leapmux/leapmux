@@ -2,10 +2,10 @@ import type { Accessor } from 'solid-js'
 import type { FileAttachment } from './attachments'
 import type { AskQuestionState, EditorContentRef } from './controls/types'
 import type { ProviderSettingChange } from './providers/registry'
+import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { createEffect, createMemo, on } from 'solid-js'
 import { showWarnToast } from '~/components/common/Toast'
-import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_ASK_STATE } from '~/lib/browserStorage'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
@@ -186,7 +186,7 @@ export function useControlResponseHandling(
         content,
         sendAskResponse,
         editorContentRefAccessor(),
-        provider === AgentProvider.CODEX,
+        Boolean(plugin.preservesSelectionNotes),
       )
       if (!submitted)
         return false

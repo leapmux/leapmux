@@ -13,7 +13,6 @@ import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createSignal, on } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
-import { CODEX_EXTRA_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from '~/components/chat/providers/codex/settings'
 import { providerFor } from '~/components/chat/providers/registry'
 import { optionGroupDefaultValue, optionGroupLabel } from '~/components/chat/settingsShared'
 import { showWarnToast } from '~/components/common/Toast'
@@ -104,6 +103,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // Open a new agent in the given workspace
   const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE) => {
     try {
+      // Per-provider seed settings for a fresh agent (e.g. Codex's collaboration
+      // mode); the plugin owns what, if anything, to send.
+      const extraSettings = providerFor(agentProvider)?.defaultExtraSettings
       // Title left empty: the worker picks "Agent <Name>" server-side
       // so CLI and UI paths share one pool (see worker/service/
       // tab_names.go). The response carries the resolved title back.
@@ -114,7 +116,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         systemPrompt: '',
         workerId,
         workingDir,
-        ...(agentProvider === AgentProvider.CODEX ? { extraSettings: { [CODEX_EXTRA_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE } } : {}),
+        ...(extraSettings ? { extraSettings } : {}),
         ...(sessionId ? { agentSessionId: sessionId } : {}),
       })
       if (resp.agent) {

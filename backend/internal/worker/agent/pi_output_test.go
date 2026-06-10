@@ -10,11 +10,13 @@ import (
 )
 
 func newPiAgentWithSink(sink OutputSink) *PiAgent {
-	return &PiAgent{
+	a := &PiAgent{
 		processBase: processBase{agentID: "test-agent"},
 		sink:        sink,
 		sessionFile: "/tmp/pi-session.jsonl",
 	}
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	return a
 }
 
 func TestHandlePiOutput_AgentStart_SetsTurnFlag(t *testing.T) {
@@ -599,4 +601,123 @@ func TestHandlePiOutput_UnknownEventType_PersistedAsAgent(t *testing.T) {
 
 	require.Equal(t, 1, sink.MessageCount())
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, sink.Messages()[0].Source)
+}
+
+func TestHandlePiOutput_TextAndThinkingDeltasAccumulateThinkingTokens(t *testing.T) {
+	for _, deltaType := range []string{"text_delta", "thinking_delta"} {
+		t.Run(deltaType, func(t *testing.T) {
+			sink := &recordingControlSink{}
+			a := newPiAgentWithSink(sink)
+
+			// 8-char delta -> 2 tokens; a second 8-char delta accumulates to 4.
+			handlePiOutput(a, parseLine([]byte(
+				`{"type":"message_update","assistantMessageEvent":{"type":"`+deltaType+`","delta":"abcdefgh"}}`)))
+			assert.Equal(t, int64(2), lastThinkingTokens(&sink.testSink))
+			handlePiOutput(a, parseLine([]byte(
+				`{"type":"message_update","assistantMessageEvent":{"type":"`+deltaType+`","delta":"ijklmnop"}}`)))
+			assert.Equal(t, int64(4), lastThinkingTokens(&sink.testSink))
+
+			assert.Equal(t, 0, sink.MessageCount(), "thinking_tokens deltas must not persist")
+		})
+	}
+}
+
+func TestHandlePiOutput_ThinkingThenTextInOneMessageSharePhase(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	// Pi streams thinking then the visible answer within a single message and
+	// persists both as one message_end -- there is no per-phase split or AGENT
+	// commit between them (unlike ACP, which hands off and resets). So a
+	// thinking->text transition inside one message must keep accumulating into one
+	// thinking-token phase rather than restarting at the text delta.
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"abcdefghijklmnop"}}`)))
+	require.Equal(t, int64(4), lastThinkingTokens(&sink.testSink))
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"qrstuvwx"}}`)))
+	assert.Equal(t, int64(6), lastThinkingTokens(&sink.testSink), "text after thinking keeps climbing (24/4), it does not reset")
+}
+
+func TestHandlePiOutput_EmptyDeltaDoesNotBroadcastThinkingTokens(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":""}}`)))
+
+	assert.Equal(t, int64(-1), lastThinkingTokens(&sink.testSink), "empty delta is a no-op")
+}
+
+func TestHandlePiOutput_ToolExecutionUpdateDoesNotCountThinkingTokens(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	// Tool output is not model generation; it must not inflate the estimate.
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_update","toolCallId":"call-1","partialResult":{"content":[{"type":"text","text":"big tool output here"}]}}`)))
+
+	assert.Equal(t, int64(-1), lastThinkingTokens(&sink.testSink), "tool output must not broadcast thinking_tokens")
+}
+
+func TestHandlePiOutput_MessageEndResetsThinkingTokens(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abcdefghijklmnop"}}`)))
+	require.Equal(t, int64(4), lastThinkingTokens(&sink.testSink))
+
+	// Committing the assistant message is a phase boundary; the estimate resets.
+	handlePiOutput(a, parseLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"x"}]}}`)))
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abcdefgh"}}`)))
+	assert.Equal(t, int64(2), lastThinkingTokens(&sink.testSink), "next phase restarts at 8/4")
+}
+
+func TestHandlePiOutput_DialogRequestResetsThinkingTokens(t *testing.T) {
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abcdefghijklmnop"}}`)))
+	require.Equal(t, int64(4), lastThinkingTokens(&sink.testSink))
+
+	// A blocking dialog (confirm) is a live control request the frontend clears
+	// its counter on, so the backend resets to mirror it.
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"extension_ui_request","id":"d1","method":"confirm","title":"Clear?","message":"all gone"}`)))
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abcdefgh"}}`)))
+	assert.Equal(t, int64(2), lastThinkingTokens(&sink.testSink), "a dialog prompt restarts the estimate")
+}
+
+func TestHandlePiOutput_TurnAndToolBoundariesResetThinkingTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reset string
+	}{
+		{"agent_start", `{"type":"agent_start"}`},
+		{"agent_end", `{"type":"agent_end","messages":[]}`},
+		{"tool_execution_start", `{"type":"tool_execution_start","toolCallId":"call-1","toolName":"bash"}`},
+		{"tool_execution_end", `{"type":"tool_execution_end","toolCallId":"call-1","toolName":"bash"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &recordingControlSink{}
+			a := newPiAgentWithSink(sink)
+
+			handlePiOutput(a, parseLine([]byte(
+				`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abcdefghijklmnop"}}`)))
+			require.Equal(t, int64(4), lastThinkingTokens(&sink.testSink))
+
+			handlePiOutput(a, parseLine([]byte(tc.reset)))
+
+			handlePiOutput(a, parseLine([]byte(
+				`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"abcdefgh"}}`)))
+			assert.Equal(t, int64(2), lastThinkingTokens(&sink.testSink), "the boundary restarts the estimate")
+		})
+	}
 }

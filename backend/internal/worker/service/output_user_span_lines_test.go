@@ -76,6 +76,15 @@ func setupAgentWithWatcher(t *testing.T, svc *Context, w *testResponseWriter, ag
 	return sink
 }
 
+// persistNotif persists a notification through the sink and asserts no error,
+// discarding the broadcast flag PersistNotification returns. Keeps the many
+// notification-thread tests terse now that the signature returns (bool, error).
+func persistNotif(t *testing.T, sink agent.OutputSink, source leapmuxv1.MessageSource, content []byte) {
+	t.Helper()
+	_, err := sink.PersistNotification(source, content)
+	require.NoError(t, err)
+}
+
 func TestSnapshotPassthroughSpanLines_EmptyTracker(t *testing.T) {
 	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	assert.Equal(t, "[]", h.snapshotPassthroughSpanLines("agent-1"))

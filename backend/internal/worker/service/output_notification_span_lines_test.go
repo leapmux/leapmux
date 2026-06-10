@@ -25,7 +25,7 @@ func TestPersistNotification_StandaloneCapturesActiveSpans(t *testing.T) {
 
 	notif, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notif))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notif)
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
 		AgentID: "agent-1",
@@ -58,7 +58,7 @@ func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
 
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, first))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, first)
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
 		AgentID: "agent-1",
@@ -75,7 +75,7 @@ func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
 
 	second, err := json.Marshal(map[string]any{"type": "interrupted"})
 	require.NoError(t, err)
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, second))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, second)
 
 	rows, err = svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
 		AgentID: "agent-1",
@@ -108,13 +108,13 @@ func TestPersistNotification_AppendDropsClosedSpan(t *testing.T) {
 
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, first))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, first)
 
 	svc.Output.spanTracker("agent-1").CloseSpan("span-A")
 
 	second, err := json.Marshal(map[string]any{"type": "interrupted"})
 	require.NoError(t, err)
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, second))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, second)
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
 		AgentID: "agent-1",
@@ -136,7 +136,7 @@ func TestPersistNotification_StandaloneEmptyTracker(t *testing.T) {
 
 	notif, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
-	require.NoError(t, sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notif))
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notif)
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
 		AgentID: "agent-1",

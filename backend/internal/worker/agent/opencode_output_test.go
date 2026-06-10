@@ -10,7 +10,7 @@ import (
 )
 
 func newOpenCodeAgentWithSink(sink OutputSink) *OpenCodeAgent {
-	return &OpenCodeAgent{
+	a := &OpenCodeAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID:      "test-agent",
@@ -20,6 +20,8 @@ func newOpenCodeAgentWithSink(sink OutputSink) *OpenCodeAgent {
 			sessionID: "test-session",
 		},
 	}
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	return a
 }
 
 func TestHandleOpenCodeOutput_AgentMessageChunk(t *testing.T) {
@@ -528,4 +530,245 @@ func TestHandleOpenCodeOutput_ToolCallUpdateCompletedIncrementsToolUses(t *testi
 	agent.mu.Unlock()
 
 	require.Equal(t, 3, count)
+}
+
+// acpChunk builds a session/update envelope carrying one streamed chunk of the
+// given sessionUpdate kind and text. acpMessageChunk / acpThoughtChunk are the
+// two kinds the thinking-token tests drive.
+func acpChunk(sessionUpdate, text string) []byte {
+	return []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"` + sessionUpdate + `","content":{"type":"text","text":"` + text + `"}}}}`)
+}
+
+func acpMessageChunk(text string) []byte { return acpChunk("agent_message_chunk", text) }
+func acpThoughtChunk(text string) []byte { return acpChunk("agent_thought_chunk", text) }
+
+func TestHandleACPOutput_MessageChunkAccumulatesThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// 8-char chunk -> 2 tokens; a second 8-char chunk accumulates to 4. Assistant
+	// text streams here; thought chunks accumulate the same way but buffer.
+	agent.HandleOutput(acpMessageChunk("abcdefgh"))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink))
+	agent.HandleOutput(acpMessageChunk("ijklmnop"))
+	assert.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// A live estimate is broadcast, never persisted (assistant text persists only
+	// at end-of-turn).
+	assert.Equal(t, 0, sink.MessageCount(), "streamed chunks must not persist")
+}
+
+func TestHandleACPOutput_ThoughtChunkAccumulatesThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput(acpThoughtChunk("abcdefgh"))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink))
+	agent.HandleOutput(acpThoughtChunk("ijklmnop"))
+	assert.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	assert.Equal(t, 0, sink.MessageCount(), "thought chunks buffer, not persist")
+	// Reasoning that is NOT preceded by assistant text must NOT trigger the
+	// assistant->reasoning hand-off (no spurious 0 clear); it just climbs.
+	assert.Equal(t, []interface{}{int64(2), int64(4)}, sessionInfoValues(sink, "thinking_tokens"),
+		"a leading reasoning segment climbs without an explicit clear")
+}
+
+func TestHandleACPOutput_AssistantTextAfterReasoningResetsViaFlush(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// Reasoning streams first (buffered).
+	agent.HandleOutput(acpThoughtChunk("abcdefghijklmnop")) // 16 chars -> 4
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// An assistant message chunk flushes the buffered thought as a committed
+	// AGENT message (the decorator resets on that persist), so the assistant text
+	// is counted on its own from zero -- the thought->message direction of the
+	// per-phase reset.
+	agent.HandleOutput(acpMessageChunk("abcdefgh")) // 8 chars -> 2
+
+	require.Equal(t, 1, sink.MessageCount(), "the buffered thought is flushed as one message")
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "assistant text restarts from zero after the reasoning flush")
+}
+
+func TestHandleACPOutput_ToolCallResetsThinkingTokens(t *testing.T) {
+	// Covers both sources: a tool call after assistant text (message->tool, no
+	// buffered thought to flush) and after reasoning (thought->tool). Either way
+	// the next phase's estimate must restart from zero.
+	for _, src := range []struct {
+		name  string
+		chunk func(string) []byte
+	}{
+		{"after message", acpMessageChunk},
+		{"after thought", acpThoughtChunk},
+	} {
+		t.Run(src.name, func(t *testing.T) {
+			sink := &testSink{}
+			agent := newOpenCodeAgentWithSink(sink)
+
+			agent.HandleOutput(src.chunk("abcdefghijklmnop"))
+			require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+			// A tool call commits an AGENT message the frontend clears on.
+			agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`))
+
+			agent.HandleOutput(src.chunk("abcdefgh"))
+			assert.Equal(t, int64(2), lastThinkingTokens(sink), "the next phase restarts at 8/4")
+		})
+	}
+}
+
+func TestHandleACPOutput_TurnEndResetsThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput(acpMessageChunk("abcdefghijklmnop"))
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// End of turn: the assistant message + result divider commit, and the
+	// per-turn estimate resets.
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+
+	agent.HandleOutput(acpMessageChunk("abcdefgh"))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "the next turn restarts the estimate")
+}
+
+func TestHandleACPOutput_ReasoningAfterAssistantTextStartsFreshPhase(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// Assistant text streams first; it is buffered until turn end, so it never
+	// commits an AGENT message and never triggers a frontend clear.
+	agent.HandleOutput(acpMessageChunk("abcdefghijklmnop")) // 16 chars -> 4
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// A reasoning chunk then opens a new phase. Because the assistant chars were
+	// never committed, the backend must explicitly clear the frontend counter (0)
+	// and restart, so the reasoning is counted on its own rather than stacked on
+	// the assistant total (which would also spin the forward-only odometer back).
+	agent.HandleOutput(acpThoughtChunk("abcdefgh")) // 8 chars -> 2
+
+	assert.Equal(t, []interface{}{int64(4), int64(0), int64(2)}, sessionInfoValues(sink, "thinking_tokens"),
+		"assistant total, then an explicit clear, then the reasoning counted fresh")
+}
+
+func TestHandleACPOutput_NilResultResetsThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput(acpMessageChunk("abcdefghijklmnop"))
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// A nil result (errored/aborted turn) still ends the turn. No result divider is
+	// persisted, so the frontend gets no turn-end clear of its own -- the abort must
+	// broadcast an explicit 0 so the live counter drops now instead of freezing on 4
+	// until the next turn streams. The estimate must also not leak into the next
+	// turn (ACP has no turn-start reset).
+	agent.handleACPPromptResponse(nil, nil)
+	assert.Equal(t, int64(0), lastThinkingTokens(sink), "the abort broadcasts an explicit clear")
+
+	agent.HandleOutput(acpMessageChunk("abcdefgh"))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "a nil-result turn end restarts the estimate")
+	assert.Equal(t, []interface{}{int64(4), int64(0), int64(2)}, sessionInfoValues(sink, "thinking_tokens"),
+		"assistant total, then the abort's explicit clear, then the next turn counted fresh")
+}
+
+func TestHandleACPOutput_NilResultDropsBufferedAssistantText(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// Turn 1 streams assistant text, then aborts with a nil result. The buffered
+	// text was never committed; it must NOT survive into the next turn's reply.
+	agent.HandleOutput(acpMessageChunk("STALE-TURN-1"))
+	agent.handleACPPromptResponse(nil, nil)
+
+	// Turn 2 streams its own assistant text and ends normally.
+	agent.HandleOutput(acpMessageChunk("turn-2-text"))
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+
+	// The persisted assistant message for turn 2 must carry only turn 2's text --
+	// the aborted turn's buffer was dropped, not prepended.
+	assert.Equal(t, "turn-2-text", persistedACPAssistantText(t, sink),
+		"the aborted turn's buffered assistant text does not leak into the next reply")
+}
+
+func TestHandleACPOutput_ReasoningAfterCommittedToolDoesNotReclear(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	// Assistant text streams (buffered), then a reasoning segment opens -> a real
+	// hand-off clear (the assistant chars were never committed).
+	agent.HandleOutput(acpMessageChunk("abcdefghijklmnop")) // 16 -> 4
+	agent.HandleOutput(acpThoughtChunk("abcdefgh"))         // hand-off 0, then 2
+
+	// A tool call commits an AGENT message: the estimator resets and the frontend
+	// clears.
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read","kind":"read","status":"pending"}}}`))
+
+	// The next reasoning segment must NOT re-fire the hand-off clear: the tool call
+	// already cleared the frontend, so a second 0 would be redundant wire traffic.
+	// The hand-off gates on the estimator's pending chars (now 0), not the
+	// turn-scoped assistant builder (still non-empty), so it stays quiet and the
+	// reasoning just climbs from the post-tool reset.
+	agent.HandleOutput(acpThoughtChunk("abcdefgh")) // 8 -> 2
+
+	assert.Equal(t, []interface{}{int64(4), int64(0), int64(2), int64(2)}, sessionInfoValues(sink, "thinking_tokens"),
+		"no redundant clear after a committed tool call between assistant text and later reasoning")
+}
+
+// persistedACPAssistantText returns the text of the single persisted
+// agent_message_chunk (the turn-end assistant reply), failing the test if none or
+// more than one is present.
+func persistedACPAssistantText(t *testing.T, sink *testSink) string {
+	t.Helper()
+	var found []string
+	for _, m := range sink.Messages() {
+		if m.TurnEnd {
+			continue
+		}
+		var parsed struct {
+			SessionUpdate string `json:"sessionUpdate"`
+			Content       struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(m.Content, &parsed) != nil {
+			continue
+		}
+		if parsed.SessionUpdate == "agent_message_chunk" {
+			found = append(found, parsed.Content.Text)
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one persisted assistant message")
+	return found[0]
+}
+
+func TestHandleACPOutput_PermissionRequestResetsThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput(acpMessageChunk("abcdefghijklmnop"))
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// The agent paused for permission -- the frontend clears its counter on the
+	// control request, so the backend resets to mirror it.
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"tc-1","title":"Run","kind":"execute","status":"pending"},"options":[{"optionId":"once","kind":"allow_once","name":"Allow"}]}}`))
+
+	agent.HandleOutput(acpMessageChunk("abcdefgh"))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "a permission prompt restarts the estimate")
+}
+
+func TestHandleACPOutput_UnknownMethodResetsThinkingTokens(t *testing.T) {
+	sink := &testSink{}
+	agent := newOpenCodeAgentWithSink(sink)
+
+	agent.HandleOutput(acpMessageChunk("abcdefghijklmnop"))
+	require.Equal(t, int64(4), lastThinkingTokens(sink))
+
+	// An unknown method persists as an AGENT message the frontend clears on.
+	agent.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"some/unknown/method","params":{"foo":"bar"}}`))
+
+	agent.HandleOutput(acpMessageChunk("abcdefgh"))
+	assert.Equal(t, int64(2), lastThinkingTokens(sink), "an unknown AGENT-message method restarts the estimate")
 }

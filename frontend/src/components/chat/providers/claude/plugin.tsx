@@ -296,11 +296,16 @@ function claudeExtractQuotableText(category: MessageCategory, parsed: ParsedMess
   return null
 }
 
+// Claude reserves ~16.5% of the context window as an autocompact buffer, so the
+// context-usage percentage is measured against the remaining usable capacity.
+const CLAUDE_AUTOCOMPACT_BUFFER_PCT = 16.5
+
 const claudeCodePlugin: Provider = {
   defaultModel: DEFAULT_CLAUDE_MODEL,
   defaultEffort: DEFAULT_CLAUDE_EFFORT,
   defaultPermissionMode: 'default',
   bypassPermissionMode: 'bypassPermissions',
+  contextBufferPct: CLAUDE_AUTOCOMPACT_BUFFER_PCT,
   attachments: {
     text: true,
     image: true,
@@ -315,6 +320,13 @@ const claudeCodePlugin: Provider = {
   },
 
   classify: classifyClaudeCodeMessage,
+  // Claude's thinking-token counter is driven by real per-phase telemetry (the
+  // worker relays Claude's own estimated_tokens), not the streamed-text estimator
+  // the other providers use. Every committed AGENT message ends a phase, so always
+  // clear -- and unlike the estimator providers we cannot gate on parentSpanId,
+  // since a system-injected tool_use_id gives a main-agent message a non-empty
+  // parentSpanId that does not mark a subagent.
+  clearsThinkingTokensForMessage: () => true,
   renderMessage: renderClaudeMessage,
   toolResultMeta: claudeToolResultMeta,
   extractQuotableText: claudeExtractQuotableText,

@@ -10,7 +10,7 @@ import (
 )
 
 func newKiloAgentWithSink(sink OutputSink) *KiloAgent {
-	return &KiloAgent{
+	a := &KiloAgent{
 		acpBase: acpBase{
 			jsonrpcBase: jsonrpcBase{processBase: processBase{
 				agentID:      "test-agent",
@@ -20,6 +20,8 @@ func newKiloAgentWithSink(sink OutputSink) *KiloAgent {
 			sessionID: "test-session",
 		},
 	}
+	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
+	return a
 }
 
 func TestHandleKiloOutput_AgentMessageChunk(t *testing.T) {
