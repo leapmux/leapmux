@@ -11,12 +11,6 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  # Opt arduino/setup-protoc, arduino/setup-task, and bufbuild/buf-setup-action
-  # into Node.js 24 ahead of GitHub's June 2 2026 forced switch — those three
-  # still ship `using: node20` in their action.yml. Drop this once they cut
-  # Node-24 releases (or once the forced-switch date passes and the override
-  # becomes a no-op).
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   release:

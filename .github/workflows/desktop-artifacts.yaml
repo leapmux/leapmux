@@ -31,11 +31,6 @@ on:
         default: true
 
 env:
-  # Match ci.yaml: keep arduino + bufbuild actions on Node.js 24 until they
-  # ship Node-24 releases. Reusable workflows do not inherit env from the
-  # caller, so this has to be redeclared here.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
   # Match ci.yaml: trim dev-profile debuginfo so the cached desktop/rust
   # `target/` stays small. This value is hashed into the rust-cache key, so
   # it MUST equal ci.yaml's setting or the `shared-key: desktop` cache the
