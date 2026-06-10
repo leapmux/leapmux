@@ -105,3 +105,104 @@ func TestPersistSettingsRefresh_PreservesPermissionModeWhenUnreported(t *testing
 	assert.Equal(t, "high", dbAgent.Effort)
 	assert.Equal(t, "plan", dbAgent.PermissionMode)
 }
+
+// A nil extraSettings means "unreported": it must leave the stored extras intact,
+// even when another field (the model) changes and forces a write. The ACP
+// permission-mode providers pass nil here; without this they would clear the row's
+// extra_settings to "{}".
+func TestPersistSettingsRefresh_PreservesExtrasWhenUnreported(t *testing.T) {
+	f := newRefreshTestFixture(t, db.UpdateAgentAllSettingsParams{
+		Model:          "opus",
+		PermissionMode: "default",
+		ExtraSettings:  `{"output_style":"verbose"}`,
+	})
+
+	f.sink.PersistSettingsRefresh("sonnet", "", "default", nil)
+
+	dbAgent, err := f.svc.Queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, "sonnet", dbAgent.Model, "the changed model is persisted")
+	assert.Equal(t, `{"output_style":"verbose"}`, dbAgent.ExtraSettings,
+		"nil extras preserves the stored value rather than clearing it")
+}
+
+// An empty effort means "unreported": it must leave the stored effort intact,
+// even when another field (the model) changes and forces a write. The ACP
+// providers never track effort and always pass ""; without this, a runtime
+// model switch would clobber a stored effort (e.g. "auto", set by a prior
+// UpdateAgentSettings model change) down to "".
+func TestPersistSettingsRefresh_PreservesEffortWhenUnreported(t *testing.T) {
+	f := newRefreshTestFixture(t, db.UpdateAgentAllSettingsParams{
+		Model:          "openai/gpt-4o",
+		Effort:         "auto",
+		PermissionMode: "default",
+	})
+
+	// An ACP runtime model switch: new model, no effort reported.
+	f.sink.PersistSettingsRefresh("openai/gpt-5", "", "default", nil)
+
+	dbAgent, err := f.svc.Queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, "openai/gpt-5", dbAgent.Model, "the changed model is persisted")
+	assert.Equal(t, "auto", dbAgent.Effort,
+		"empty effort preserves the stored value rather than clearing it")
+}
+
+// An empty model means "unreported": it must leave the stored model intact, even
+// when another field (the extras) changes and forces a write. The ACP primary-agent
+// providers (OpenCode/Kilo) can leave their in-memory model "" when the server
+// advertises no current model, so a primary-agent-only config_option_update passes
+// an empty model here; without the keep-stored rule that would clobber the stored
+// model to "".
+func TestPersistSettingsRefresh_PreservesModelWhenUnreported(t *testing.T) {
+	f := newRefreshTestFixture(t, db.UpdateAgentAllSettingsParams{
+		Model:          "openai/gpt-5",
+		PermissionMode: "default",
+		ExtraSettings:  `{"primaryAgent":"build"}`,
+	})
+
+	// An ACP primary-agent switch: new extras, no model reported.
+	f.sink.PersistSettingsRefresh("", "", "default", map[string]string{"primaryAgent": "plan"})
+
+	assert.Equal(t, int64(1), f.mock.streamCount.Load(),
+		"a refresh that changes extras should broadcast exactly once")
+
+	dbAgent, err := f.svc.Queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, "openai/gpt-5", dbAgent.Model,
+		"empty model preserves the stored value rather than clearing it")
+}
+
+// A concrete effort still overwrites the stored value: the keep-stored rule is
+// gated on "" only, so providers that do report effort (Codex/Pi/Claude) are
+// unaffected.
+func TestPersistSettingsRefresh_ConcreteEffortOverwrites(t *testing.T) {
+	f := newRefreshTestFixture(t, db.UpdateAgentAllSettingsParams{
+		Model:          "gpt-5-codex",
+		Effort:         "auto",
+		PermissionMode: "default",
+	})
+
+	f.sink.PersistSettingsRefresh("gpt-5-codex", "high", "default", map[string]string{})
+
+	dbAgent, err := f.svc.Queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, "high", dbAgent.Effort, "a reported effort overwrites the stored value")
+}
+
+// An explicit (non-nil) empty map is distinct from nil: it clears the stored
+// extras to "{}". This keeps the providers that do manage extras able to remove
+// them.
+func TestPersistSettingsRefresh_ClearsExtrasWithEmptyMap(t *testing.T) {
+	f := newRefreshTestFixture(t, db.UpdateAgentAllSettingsParams{
+		Model:          "opus",
+		PermissionMode: "default",
+		ExtraSettings:  `{"output_style":"verbose"}`,
+	})
+
+	f.sink.PersistSettingsRefresh("opus", "", "default", map[string]string{})
+
+	dbAgent, err := f.svc.Queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, "{}", dbAgent.ExtraSettings, "an empty map clears the stored extras")
+}

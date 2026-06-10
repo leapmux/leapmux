@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingsPanelProps } from '../registry'
 import type { PermissionMode } from '~/utils/controlResponse'
-import { createUniqueId, Show } from 'solid-js'
+import { createUniqueId, For, Show } from 'solid-js'
 import * as styles from '../../ChatView.css'
 import {
   defaultModelId,
@@ -9,6 +9,7 @@ import {
   modelItems,
   ModelSelect,
   optionGroup,
+  optionGroupDefaultValue,
   optionGroupItems,
   optionLabel,
   PERMISSION_MODE_KEY,
@@ -39,13 +40,27 @@ function optionGroupKeyOf(config: ACPSettingsPanelConfig): string {
   return config.kind === 'permissionMode' ? PERMISSION_MODE_KEY : config.optionGroupKey
 }
 
+/** Resolve the current model id, falling back through the available default then the config default. */
+function currentModelOf(props: ProviderSettingsPanelProps, config: ACPSettingsPanelConfig): string {
+  return props.model || defaultModelId(props.availableModels) || config.defaultModel
+}
+
+/**
+ * Resolve the current mapped-group value (permission mode or extraSettings option),
+ * falling back to the config default. Shared by the panel and the trigger label so the
+ * two can't drift in how they resolve the current selection.
+ */
+function currentOptionOf(props: ProviderSettingsPanelProps, config: ACPSettingsPanelConfig): string {
+  return config.kind === 'permissionMode'
+    ? props.permissionMode || config.defaultMode
+    : props.extraSettings?.[config.optionGroupKey] || config.defaultValue
+}
+
 export function createACPSettingsPanel(config: ACPSettingsPanelConfig): (props: ProviderSettingsPanelProps) => JSX.Element {
   return (props: ProviderSettingsPanelProps): JSX.Element => {
     const menuId = createUniqueId()
-    const currentModel = () => props.model || defaultModelId(props.availableModels) || config.defaultModel
-    const currentOption = () => config.kind === 'permissionMode'
-      ? props.permissionMode || config.defaultMode
-      : props.extraSettings?.[config.optionGroupKey] || config.defaultValue
+    const currentModel = () => currentModelOf(props, config)
+    const currentOption = () => currentOptionOf(props, config)
     const dispatchOption = (value: string) => {
       if (config.kind === 'permissionMode')
         props.onChange?.({ kind: 'permissionMode', value: value as PermissionMode })
@@ -59,9 +74,20 @@ export function createACPSettingsPanel(config: ACPSettingsPanelConfig): (props: 
     const optItems = () => config.kind === 'permissionMode'
       ? permissionModeItems(props.availableOptionGroups)
       : optionGroupItems(props.availableOptionGroups, config.optionGroupKey)
+    // The mapped (writable) group. Every other non-empty group is a generic
+    // config-option axis the backend surfaced read-only (e.g. a future
+    // thought_level), rendered disabled after the model selector. Single-group
+    // providers yield an empty list -> the <For> renders nothing -> identical DOM.
+    const primaryKey = optionGroupKeyOf(config)
+    const extraGroups = () => (props.availableOptionGroups ?? [])
+      .filter(g => g.key !== primaryKey && g.options.length > 0)
 
+    // A single flex column supplies the inter-group gap (var(--space-4)), the
+    // same mechanism the Codex/Claude panels use. Without this wrapper the
+    // fieldsets would stack flush as bare children of `.settingsMenu`, which has
+    // no flex/gap of its own.
     return (
-      <>
+      <div class={styles.settingsPanelColumn}>
         <Show when={optItems().length > 0}>
           <RadioGroup
             label={optGroup()?.label || config.fallbackLabel}
@@ -70,7 +96,6 @@ export function createACPSettingsPanel(config: ACPSettingsPanelConfig): (props: 
             name={`${menuId}-${config.testIdPrefix}`}
             current={currentOption()}
             onChange={dispatchOption}
-            fieldsetClass={styles.settingsFieldsetFirst}
           />
         </Show>
         <Show when={models().length > 0}>
@@ -80,10 +105,23 @@ export function createACPSettingsPanel(config: ACPSettingsPanelConfig): (props: 
             name={`${menuId}-model`}
             current={currentModel()}
             onChange={v => props.onChange?.({ kind: 'model', value: v })}
-            fieldsetClass={optItems().length === 0 ? styles.settingsFieldsetFirst : undefined}
           />
         </Show>
-      </>
+        <For each={extraGroups()}>
+          {group => (
+            <RadioGroup
+              label={group.label || group.key}
+              items={optionGroupItems(props.availableOptionGroups, group.key)}
+              testIdPrefix={`extra-${group.key}`}
+              name={`${menuId}-extra-${group.key}`}
+              current={props.extraSettings?.[group.key] || optionGroupDefaultValue(props.availableOptionGroups, group.key)}
+              onChange={() => {}}
+              disabled
+              disabledReason="This setting is controlled by the agent"
+            />
+          )}
+        </For>
+      </div>
     )
   }
 }
@@ -91,10 +129,8 @@ export function createACPSettingsPanel(config: ACPSettingsPanelConfig): (props: 
 export function createACPTriggerLabel(config: ACPSettingsPanelConfig): (props: ProviderSettingsPanelProps) => JSX.Element {
   const groupKey = optionGroupKeyOf(config)
   return (props: ProviderSettingsPanelProps): JSX.Element => {
-    const currentModel = () => props.model || defaultModelId(props.availableModels) || config.defaultModel
-    const currentOption = () => config.kind === 'permissionMode'
-      ? props.permissionMode || config.defaultMode
-      : props.extraSettings?.[config.optionGroupKey] || config.defaultValue
+    const currentModel = () => currentModelOf(props, config)
+    const currentOption = () => currentOptionOf(props, config)
     return (
       <>
         {modelDisplayName(props.availableModels, currentModel())}

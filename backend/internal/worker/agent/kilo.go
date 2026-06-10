@@ -3,11 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
-	"github.com/leapmux/leapmux/util/version"
 )
 
 const KiloPrimaryAgentCode = "code"
@@ -43,6 +41,8 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error
 			model:       opts.Model,
 		},
 	}
+	a.modeChannel = modeChannelPrimaryAgent
+	a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndPrimaryAgent
 	a.refreshFromSession = a.refreshModelAndPrimaryAgentFromSession
@@ -51,13 +51,9 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error
 		return nil, err
 	}
 
-	initParams, err := json.Marshal(map[string]interface{}{
-		"protocolVersion": 1,
-		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"capabilities":    map[string]interface{}{},
-	})
+	initParams, err := acpStandardInitParams()
 	if err != nil {
-		return nil, fmt.Errorf("marshal initialize params: %w", err)
+		return nil, err
 	}
 	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
 		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
@@ -65,28 +61,8 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error
 		return nil, err
 	}
 
-	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID, nil)
-	if a.model == "" && handshake.CurrentModelID != "" {
-		a.model = handshake.CurrentModelID
-	}
-
-	cleanup := func() {
-		a.Stop()
-		_ = a.Wait()
-	}
-	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
-		if err := a.setModel(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
-		}
-	}
-	var requestedPrimaryAgent string
-	if opts.ExtraSettings != nil {
-		requestedPrimaryAgent = opts.ExtraSettings[OptionGroupKeyPrimaryAgent]
-	}
-	if err := a.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, requestedPrimaryAgent); err != nil {
-		cleanup()
-		return nil, a.formatStartupError(acpMethodSessionSetMode, err)
+	if err := a.applyPrimaryAgentStartup(handshake, opts, fallbackKiloPrimaryAgents(), KiloPrimaryAgentCode, a.setModel); err != nil {
+		return nil, err
 	}
 
 	return a, nil
@@ -99,50 +75,14 @@ func fallbackKiloPrimaryAgents() []*leapmuxv1.AvailableOption {
 	}
 }
 
-func (a *KiloAgent) configurePrimaryAgents(modes []acpModeInfo, currentModeID, requestedPrimaryAgent string) error {
-	available := buildOpenCodePrimaryAgents(modes, currentModeID)
-	hasACPModeList := len(available) > 0
-	current := currentModeID
-	if !hasACPModeList {
-		available = fallbackKiloPrimaryAgents()
-		if current == "" {
-			current = KiloPrimaryAgentCode
-		}
-	}
-	if current == "" {
-		current = firstOpenCodePrimaryAgent(available)
-	}
-
-	a.mu.Lock()
-	a.availablePrimaryAgents = available
-	a.currentPrimaryAgent = current
-	a.mu.Unlock()
-
-	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasACPOption(available, requestedPrimaryAgent) {
-		if err := a.setPrimaryAgent(requestedPrimaryAgent); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func (a *KiloAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
 	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
 		a.handleACPPromptResponse(resp, nil)
 	})
 }
 
-func (a *KiloAgent) CurrentSettings() *leapmuxv1.AgentSettings {
-	return a.primaryAgentCurrentSettings()
-}
-
 func (a *KiloAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return a.primaryAgentOptionGroups(fallbackKiloPrimaryAgents())
-}
-
-func (a *KiloAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	return a.primaryAgentUpdateSettings(s)
 }
 
 func init() {
@@ -153,12 +93,9 @@ func init() {
 		},
 		nil, // models discovered dynamically from newSession
 		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:   OptionGroupKeyPrimaryAgent,
-			Label: "Primary Agent",
-			Options: []*leapmuxv1.AvailableOption{
-				{Id: KiloPrimaryAgentCode, Name: "Code", IsDefault: true},
-				{Id: OpenCodePrimaryAgentPlan, Name: "Plan"},
-			},
+			Key:     OptionGroupKeyPrimaryAgent,
+			Label:   "Primary Agent",
+			Options: fallbackKiloPrimaryAgents(),
 		}},
 		"LEAPMUX_KILO_DEFAULT_MODEL",
 		"LEAPMUX_KILO_DEFAULT_EFFORT",

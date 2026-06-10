@@ -930,14 +930,22 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 	}
 
 	// Broadcast settings_changed notification for the chat view.
-	if oldMode != "" && oldMode != mode {
-		s.PersistLeapMuxNotification(map[string]interface{}{
-			"type": agent.NotificationTypeSettingsChanged,
-			"changes": map[string]interface{}{
-				agent.OptionGroupKeyPermissionMode: map[string]string{"old": oldMode, "new": mode},
-			},
-		})
+	s.NotifyPermissionModeChanged(oldMode, mode)
+}
+
+// NotifyPermissionModeChanged emits the chat-view settings_changed notification for
+// a permission-mode transition, without persisting the mode or broadcasting a
+// StatusChange. A no-op when oldMode is empty (unknown prior value) or unchanged.
+func (s *agentOutputSink) NotifyPermissionModeChanged(oldMode, newMode string) {
+	if oldMode == "" || oldMode == newMode {
+		return
 	}
+	s.PersistLeapMuxNotification(map[string]interface{}{
+		"type": agent.NotificationTypeSettingsChanged,
+		"changes": map[string]interface{}{
+			agent.OptionGroupKeyPermissionMode: map[string]string{"old": oldMode, "new": newMode},
+		},
+	})
 }
 
 func (s *agentOutputSink) PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string) {
@@ -952,13 +960,47 @@ func (s *agentOutputSink) PersistSettingsRefresh(model, effort, permissionMode s
 		permissionMode = dbAgent.PermissionMode
 	}
 
+	// An empty model means "the refresh did not carry a model; leave the stored value
+	// untouched", mirroring the permissionMode rule above. The ACP primary-agent
+	// providers (OpenCode/Kilo) can leave their in-memory model "" when the server
+	// advertises no current model, so a primary-agent-only config_option_update would
+	// otherwise clobber a stored model to "". Every provider passes a concrete model or
+	// "" because it is unknown -- never "" to deliberately clear -- so keep-stored is
+	// always the right resolution (a stored "" is itself a degraded "use default" state).
+	if model == "" {
+		model = dbAgent.Model
+	}
+
+	// An empty effort means "the refresh did not carry an effort; leave the stored
+	// value untouched", mirroring the permissionMode rule above. The ACP providers
+	// don't track effort and always pass "", so a model-only refresh would otherwise
+	// clobber a stored effort (e.g. a model switch resets it to "auto" via
+	// UpdateAgentSettings; a later runtime config_option_update would then wipe it
+	// to ""). Codex/Claude always pass a concrete level or "auto". Pi passes its
+	// thinkingLevel, which IS "" when no effort was ever set -- but in that case the
+	// stored effort is "" too (both come from opts.Effort), so keep-stored is a no-op;
+	// and where they diverge (a model switch left the row at "auto" while Pi's level
+	// is still ""), keeping the concrete "auto" beats blanking it. So keep-stored is
+	// always the right resolution -- a refresh never passes "" to deliberately clear.
+	if effort == "" {
+		effort = dbAgent.Effort
+	}
+
+	// A nil extraSettings means "the refresh did not carry extras; leave the stored
+	// value untouched" -- distinct from an empty map, which clears them. Mirrors the
+	// permissionMode=="" keep-stored rule above. Without this, the ACP permission-mode
+	// providers (which pass nil) would overwrite stored extra_settings with "{}".
+	newExtras := dbAgent.ExtraSettings
+	if extraSettings != nil {
+		newExtras = marshalExtraSettings(extraSettings)
+	}
+
 	// Skip the DB write and the watcher broadcast when the refresh is a
 	// no-op. Refresh fires after UpdateSettings (which has already
 	// persisted the same values) and after startup-time readbacks that
 	// often just confirm the stored row, so avoiding redundant
 	// UpdateAgentAllSettings calls and StatusChange events spares
 	// pointless DB churn and frontend reactivity ticks.
-	newExtras := marshalExtraSettings(extraSettings)
 	if dbAgent.Model == model &&
 		dbAgent.Effort == effort &&
 		dbAgent.PermissionMode == permissionMode &&

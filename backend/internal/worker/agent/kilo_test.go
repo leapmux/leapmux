@@ -12,14 +12,24 @@ import (
 
 func newKiloAgentForRPC(t *testing.T) (*KiloAgent, func() []recordedRequest) {
 	return newACPAgentForRPC(t,
-		func() *KiloAgent { return &KiloAgent{} },
+		func() *KiloAgent {
+			a := &KiloAgent{}
+			a.modeChannel = modeChannelPrimaryAgent
+			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			return a
+		},
 		func(a *KiloAgent) *acpBase { return &a.acpBase },
 	)
 }
 
 func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*KiloAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
-		func() *KiloAgent { return &KiloAgent{} },
+		func() *KiloAgent {
+			a := &KiloAgent{}
+			a.modeChannel = modeChannelPrimaryAgent
+			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			return a
+		},
 		func(a *KiloAgent) *acpBase { return &a.acpBase },
 		respond,
 	)
@@ -47,14 +57,34 @@ func TestKiloBuildSessionRequest_ResumeSession(t *testing.T) {
 
 func TestKiloConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 	agent := &KiloAgent{}
+	agent.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 		{ID: openCodeHiddenCompaction, Name: openCodeHiddenCompaction},
-	}, OpenCodePrimaryAgentPlan, "")
+	}, OpenCodePrimaryAgentPlan, "", fallbackKiloPrimaryAgents(), KiloPrimaryAgentCode)
 	require.NoError(t, err)
 
 	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
+	require.Len(t, agent.availablePrimaryAgents, 2)
+}
+
+// A server reporting a hidden pseudo-agent (e.g. "compaction") as the current mode
+// must not seed the picker with a selection that has no matching visible option;
+// configurePrimaryAgents drops the hidden current and falls back to the first visible
+// agent, mirroring the runtime syncConfigOptionSelectLocked guard.
+func TestKiloConfigurePrimaryAgentsDropsHiddenCurrentMode(t *testing.T) {
+	agent := &KiloAgent{}
+	agent.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+	err := agent.configurePrimaryAgents([]acpModeInfo{
+		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
+		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
+		{ID: openCodeHiddenCompaction, Name: openCodeHiddenCompaction},
+	}, openCodeHiddenCompaction, "", fallbackKiloPrimaryAgents(), KiloPrimaryAgentCode)
+	require.NoError(t, err)
+
+	require.Equal(t, KiloPrimaryAgentCode, agent.currentPrimaryAgent,
+		"the hidden current is dropped; the first visible agent is selected")
 	require.Len(t, agent.availablePrimaryAgents, 2)
 }
 
@@ -63,7 +93,7 @@ func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
-	}, KiloPrimaryAgentCode, OpenCodePrimaryAgentPlan)
+	}, KiloPrimaryAgentCode, OpenCodePrimaryAgentPlan, fallbackKiloPrimaryAgents(), KiloPrimaryAgentCode)
 	require.NoError(t, err)
 
 	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
@@ -78,11 +108,25 @@ func TestKiloConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T)
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
-	}, KiloPrimaryAgentCode, "unknown")
+	}, KiloPrimaryAgentCode, "unknown", fallbackKiloPrimaryAgents(), KiloPrimaryAgentCode)
 	require.NoError(t, err)
 
 	require.Equal(t, KiloPrimaryAgentCode, agent.currentPrimaryAgent)
 	require.Empty(t, requests())
+}
+
+// When the server reports no modes, configurePrimaryAgents must fall back to the
+// provider-specific fallback list and default -- proving the shared base method
+// honors the fallback/defaultAgent arguments (Kilo's, not OpenCode's).
+func TestKiloConfigurePrimaryAgentsFallsBackWhenServerReportsNoModes(t *testing.T) {
+	agent := &KiloAgent{}
+	err := agent.configurePrimaryAgents(nil, "", "", fallbackKiloPrimaryAgents(), KiloPrimaryAgentCode)
+	require.NoError(t, err)
+
+	require.Equal(t, KiloPrimaryAgentCode, agent.currentPrimaryAgent)
+	require.Len(t, agent.availablePrimaryAgents, 2)
+	assert.Equal(t, KiloPrimaryAgentCode, agent.availablePrimaryAgents[0].GetId())
+	assert.True(t, agent.availablePrimaryAgents[0].GetIsDefault())
 }
 
 func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
@@ -104,7 +148,7 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 }
 
 func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
-	agent := &KiloAgent{acpBase: acpBase{model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
+	agent := &KiloAgent{acpBase: acpBase{modeChannel: modeChannelPrimaryAgent, model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
 	settings := agent.CurrentSettings()
 	require.Equal(t, "openai/gpt-5", settings.GetModel())
 	require.Equal(t, OpenCodePrimaryAgentPlan, settings.GetExtraSettings()[OptionGroupKeyPrimaryAgent])

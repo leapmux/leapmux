@@ -20,14 +20,22 @@ import (
 
 func newGooseAgentForRPC(t *testing.T) (*GooseCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPC(t,
-		func() *GooseCLIAgent { return &GooseCLIAgent{} },
+		func() *GooseCLIAgent {
+			a := &GooseCLIAgent{}
+			a.modeChannel = modeChannelPermissionMode
+			return a
+		},
 		func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
 	)
 }
 
 func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*GooseCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
-		func() *GooseCLIAgent { return &GooseCLIAgent{} },
+		func() *GooseCLIAgent {
+			a := &GooseCLIAgent{}
+			a.modeChannel = modeChannelPermissionMode
+			return a
+		},
 		func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
 		respond,
 	)

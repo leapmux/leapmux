@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import * as styles from '../../ChatView.css'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
 import { acpResultDivider } from '../acp/renderers'
 import { providerFor } from '../registry'
@@ -140,6 +141,17 @@ describe('kilo classify', () => {
     const parent = {
       sessionUpdate: 'available_commands_update',
       availableCommands: [],
+    }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  // The backend consumes config_option_update centrally for every ACP provider, so it
+  // is hidden in the shared base classifier -- including for OpenCode/Kilo, which never
+  // opted into the per-provider hidden set. Historical rows must not render as unknown.
+  it('hides config_option_update', () => {
+    const parent = {
+      sessionUpdate: 'config_option_update',
+      configOptions: [{ id: 'model', currentValue: 'm1', options: [{ value: 'm1' }] }],
     }
     expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
@@ -326,6 +338,122 @@ describe('kilo settings panel', () => {
     }))
 
     expect(screen.getByText('GPT-5 \u00B7 Plan')).toBeInTheDocument()
+  })
+
+  it('renders an extra (generic) group read-only while the primary group stays writable', async () => {
+    const onChange = vi.fn()
+    render(() => plugin.SettingsPanel!({
+      model: 'openai/gpt-5',
+      extraSettings: { primaryAgent: 'code', thoughtLevel: 'high' },
+      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
+      availableOptionGroups: [
+        optionGroup('primaryAgent', 'Primary Agent', [
+          option('code', 'Code', { isDefault: true }),
+          option('plan', 'Plan'),
+        ]),
+        optionGroup('thoughtLevel', 'Thought Level', [
+          option('low', 'Low'),
+          option('high', 'High', { isDefault: true }),
+        ]),
+      ],
+      onChange,
+    }))
+
+    // The extra group renders disabled, keyed by extra-<key>, with the current value
+    // (extraSettings.thoughtLevel) checked.
+    expect(screen.getByText('Thought Level')).toBeInTheDocument()
+    const highInput = screen.getByTestId('extra-thoughtLevel-high').querySelector('input')!
+    const lowInput = screen.getByTestId('extra-thoughtLevel-low').querySelector('input')!
+    expect(highInput).toBeDisabled()
+    expect(highInput).toBeChecked()
+    expect(lowInput).toBeDisabled()
+
+    // Clicking a read-only option dispatches nothing.
+    await fireEvent.click(lowInput)
+    expect(onChange).not.toHaveBeenCalled()
+
+    // The primary group is not re-rendered as an extra group.
+    expect(screen.queryByTestId('extra-primaryAgent-code')).toBeNull()
+
+    // The mapped primary group is still writable and dispatches.
+    await fireEvent.click(screen.getByTestId('primary-agent-plan').querySelector('input')!)
+    expect(onChange).toHaveBeenCalledWith({ kind: 'optionGroup', key: 'primaryAgent', value: 'plan' })
+  })
+
+  it('uses optionGroupDefaultValue for an extra group when extraSettings omits the key', () => {
+    render(() => plugin.SettingsPanel!({
+      model: 'openai/gpt-5',
+      extraSettings: { primaryAgent: 'code' }, // no thoughtLevel
+      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
+      availableOptionGroups: [
+        optionGroup('primaryAgent', 'Primary Agent', [option('code', 'Code', { isDefault: true })]),
+        optionGroup('thoughtLevel', 'Thought Level', [
+          option('low', 'Low'),
+          option('high', 'High', { isDefault: true }),
+        ]),
+      ],
+    }))
+
+    // Default (isDefault) wins when extraSettings carries no value for the key.
+    expect(screen.getByTestId('extra-thoughtLevel-high').querySelector('input')!).toBeChecked()
+  })
+
+  it('renders no extra-* groups for a single-group provider (parity guard)', () => {
+    const { container } = render(() => plugin.SettingsPanel!({
+      model: 'openai/gpt-5',
+      extraSettings: { primaryAgent: 'code' },
+      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
+      availableOptionGroups: [optionGroup('primaryAgent', 'Primary Agent', [
+        option('code', 'Code', { isDefault: true }),
+        option('plan', 'Plan'),
+      ])],
+    }))
+
+    expect(container.querySelector('[data-testid^="extra-"]')).toBeNull()
+  })
+
+  it('wraps every group in a flex column so they get the inter-group gap', () => {
+    const { container } = render(() => plugin.SettingsPanel!({
+      model: 'openai/gpt-5',
+      extraSettings: { primaryAgent: 'code', thoughtLevel: 'high' },
+      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
+      availableOptionGroups: [
+        optionGroup('primaryAgent', 'Primary Agent', [
+          option('code', 'Code', { isDefault: true }),
+          option('plan', 'Plan'),
+        ]),
+        optionGroup('thoughtLevel', 'Thought Level', [
+          option('low', 'Low'),
+          option('high', 'High', { isDefault: true }),
+        ]),
+      ],
+    }))
+
+    // Regression guard: the panel's groups must live inside the settingsPanelColumn
+    // flex container (gap: var(--space-4)) -- the same gap mechanism Codex/Claude
+    // use. Without the wrapper the fieldsets stack flush as bare children of
+    // `.settingsMenu`, which has no flex/gap of its own (the original "no gap
+    // between Primary Agent and Model" bug).
+    const column = container.querySelector(`.${styles.settingsPanelColumn}`)
+    expect(column).not.toBeNull()
+    // Mapped group, model selector, and the extra group are all inside that column.
+    expect(column!.querySelectorAll('[role="group"]').length).toBe(3)
+    expect(column!.contains(screen.getByTestId('primary-agent-code'))).toBe(true)
+    expect(column!.contains(screen.getByTestId('extra-thoughtLevel-high'))).toBe(true)
+  })
+
+  it('does not render an extra group that has no options', () => {
+    const { container } = render(() => plugin.SettingsPanel!({
+      model: 'openai/gpt-5',
+      extraSettings: { primaryAgent: 'code' },
+      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
+      availableOptionGroups: [
+        optionGroup('primaryAgent', 'Primary Agent', [option('code', 'Code', { isDefault: true })]),
+        optionGroup('thoughtLevel', 'Thought Level', []), // empty -> filtered out
+      ],
+    }))
+
+    expect(container.querySelector('[data-testid^="extra-"]')).toBeNull()
   })
 })
 

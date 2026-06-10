@@ -3,10 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/util/version"
 )
 
 const (
@@ -45,7 +43,8 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 			model:       normalizeCursorModelID(opts.Model),
 		},
 	}
-	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
+	a.modelIDNormalizer = normalizeCursorModelID
+	a.modeChannel = modeChannelPermissionMode
 	a.extraMethod = a.handleExtraMethod
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndMode
@@ -55,45 +54,17 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 		return nil, err
 	}
 
-	initParams, err := json.Marshal(map[string]interface{}{
-		"protocolVersion": 1,
-		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"capabilities":    map[string]interface{}{},
-	})
+	initParams, err := acpStandardInitParams()
 	if err != nil {
-		return nil, fmt.Errorf("marshal initialize params: %w", err)
+		return nil, err
 	}
 	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	a.availableModels = buildACPModels(handshake.Models, handshake.CurrentModelID, normalizeCursorModelID)
-	if a.model == "" && handshake.CurrentModelID != "" {
-		a.model = normalizeCursorModelID(handshake.CurrentModelID)
-	}
-
-	a.availableModes = buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
-	a.permissionMode = handshake.CurrentModeID
-	if a.permissionMode == "" {
-		a.permissionMode = CursorCLIModeAgent
-	}
-
-	cleanup := func() {
-		a.Stop()
-		_ = a.Wait()
-	}
-	if requested := normalizeCursorModelID(StringOrDefault(opts.Model, "")); requested != "" && requested != a.model {
-		if err := a.setCursorModel(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
-		}
-	}
-	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
-		if err := a.setPermissionMode(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
-		}
+	if err := a.applyPermissionModeStartup(handshake, opts, CursorCLIModeAgent, normalizeCursorModelID(opts.Model), a.setCursorModel); err != nil {
+		return nil, err
 	}
 
 	return a, nil
@@ -138,8 +109,9 @@ func (a *CursorCLIAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 }
 
 func (a *CursorCLIAgent) setCursorModel(model string) error {
-	wireModel := cursorModelIDForWire(model)
-	if err := a.setModel(wireModel); err != nil {
+	// Send the wire id but store the normalized (display) id, so b.model never
+	// transiently holds the wire form "default[]" (see setModelRPC).
+	if err := a.setModelRPC(cursorModelIDForWire(model)); err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -151,19 +123,13 @@ func (a *CursorCLIAgent) setCursorModel(model string) error {
 // reapplyModelAndMode re-applies the current model and permission mode
 // after a session/new. Uses setCursorModel for the model-ID wire format.
 func (a *CursorCLIAgent) reapplyModelAndMode() {
-	a.mu.Lock()
-	model, mode := a.model, a.permissionMode
-	a.mu.Unlock()
-	acpApplySetting(a.providerName, a.agentID, "model", model, a.setCursorModel)
-	acpApplySetting(a.providerName, a.agentID, "mode", mode, a.setPermissionMode)
+	a.reapplyModelAndSecondary(&a.permissionMode, "mode", a.setCursorModel, a.setPermissionMode)
 }
 
 // refreshCursorFromSession refreshes model (with Cursor-specific
 // normalization) and permission mode.
 func (a *CursorCLIAgent) refreshCursorFromSession(resp json.RawMessage) {
-	a.applySessionRefresh(resp, normalizeCursorModelID, &a.permissionMode, "mode", func(model, mode string) {
-		a.sink.PersistSettingsRefresh(model, "", mode, nil)
-	})
+	a.applySessionRefresh(resp, normalizeCursorModelID, &a.permissionMode, "mode")
 }
 
 var cursorCLIAvailableModels = []*leapmuxv1.AvailableModel{

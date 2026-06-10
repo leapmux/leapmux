@@ -14,26 +14,6 @@ const (
 	cursorMethodGenerateImage = "cursor/generate_image"
 )
 
-func (a *CursorCLIAgent) handleConfigOptionUpdate(update json.RawMessage) {
-	options := parseACPConfigOptions(update)
-	if len(options) == 0 {
-		return
-	}
-
-	a.mu.Lock()
-	mode := syncACPConfigOptions(&a.model, &a.permissionMode, &a.availableModels, &a.availableModes, options, func(configID, value string) string {
-		if configID == "model" {
-			return normalizeCursorModelID(value)
-		}
-		return value
-	})
-	a.mu.Unlock()
-
-	if mode != "" {
-		a.sink.UpdatePermissionMode(mode)
-	}
-}
-
 func (a *CursorCLIAgent) handleExtraMethod(line *parsedLine) bool {
 	if !strings.HasPrefix(line.Method, "cursor/") {
 		return false

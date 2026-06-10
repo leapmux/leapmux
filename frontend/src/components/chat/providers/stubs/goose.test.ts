@@ -106,4 +106,18 @@ describe('goose settings panel', () => {
 
     expect(screen.getByText('Fast Model \u00B7 Approve')).toBeInTheDocument()
   })
+
+  it('renders no extra-* groups for a single-group provider (parity guard)', () => {
+    const { container } = render(() => plugin.SettingsPanel!({
+      model: 'fast-model',
+      permissionMode: MODE_AUTO,
+      availableModels: [model('fast-model', 'Fast Model', { isDefault: true })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option(MODE_AUTO, 'Auto', { isDefault: true }),
+        option(MODE_APPROVE, 'Approve'),
+      ])],
+    }))
+
+    expect(container.querySelector('[data-testid^="extra-"]')).toBeNull()
+  })
 })

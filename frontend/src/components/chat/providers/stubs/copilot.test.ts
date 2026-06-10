@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import * as styles from '../../ChatView.css'
 import { providerFor } from '../registry'
 import { input, model, option, optionGroup } from '../testUtils'
 
@@ -108,5 +109,84 @@ describe('copilot settings panel', () => {
     }))
 
     expect(screen.getByText('GPT-5.4 mini \u00B7 Plan')).toBeInTheDocument()
+  })
+
+  it('renders an extra (generic) group read-only while the permission-mode group stays writable', async () => {
+    const onChange = vi.fn()
+    render(() => plugin.SettingsPanel!({
+      model: 'gpt-5.4',
+      permissionMode: MODE_AGENT,
+      extraSettings: { thoughtLevel: 'high' },
+      availableModels: [model('gpt-5.4', 'GPT-5.4', { isDefault: true })],
+      availableOptionGroups: [
+        optionGroup('permissionMode', 'Mode', [
+          option(MODE_AGENT, 'Agent', { isDefault: true }),
+          option(MODE_PLAN, 'Plan'),
+        ]),
+        optionGroup('thoughtLevel', 'Thought Level', [
+          option('low', 'Low'),
+          option('high', 'High', { isDefault: true }),
+        ]),
+      ],
+      onChange,
+    }))
+
+    // The extra group renders disabled with the current value checked.
+    const highInput = screen.getByTestId('extra-thoughtLevel-high').querySelector('input')!
+    expect(highInput).toBeDisabled()
+    expect(highInput).toBeChecked()
+    await fireEvent.click(screen.getByTestId('extra-thoughtLevel-low').querySelector('input')!)
+    expect(onChange).not.toHaveBeenCalled()
+
+    // The permission-mode group is not re-rendered as an extra group.
+    expect(screen.queryByTestId(`extra-permissionMode-${MODE_PLAN}`)).toBeNull()
+
+    // The mapped permission-mode group is still writable and dispatches.
+    await fireEvent.click(screen.getByDisplayValue(MODE_PLAN))
+    expect(onChange).toHaveBeenCalledWith({ kind: 'permissionMode', value: MODE_PLAN })
+  })
+
+  it('renders no extra-* groups for a single-group provider (parity guard)', () => {
+    const { container } = render(() => plugin.SettingsPanel!({
+      model: 'gpt-5.4',
+      permissionMode: MODE_AGENT,
+      availableModels: [model('gpt-5.4', 'GPT-5.4', { isDefault: true })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option(MODE_AGENT, 'Agent', { isDefault: true }),
+        option(MODE_PLAN, 'Plan'),
+      ])],
+    }))
+
+    expect(container.querySelector('[data-testid^="extra-"]')).toBeNull()
+  })
+
+  it('wraps every group in a flex column so they get the inter-group gap', () => {
+    const { container } = render(() => plugin.SettingsPanel!({
+      model: 'gpt-5.4',
+      permissionMode: MODE_AGENT,
+      extraSettings: { thoughtLevel: 'high' },
+      availableModels: [model('gpt-5.4', 'GPT-5.4', { isDefault: true })],
+      availableOptionGroups: [
+        optionGroup('permissionMode', 'Mode', [
+          option(MODE_AGENT, 'Agent', { isDefault: true }),
+          option(MODE_PLAN, 'Plan'),
+        ]),
+        optionGroup('thoughtLevel', 'Thought Level', [
+          option('low', 'Low'),
+          option('high', 'High', { isDefault: true }),
+        ]),
+      ],
+    }))
+
+    // Regression guard (permissionMode-kind branch): the panel's groups must live
+    // inside the settingsPanelColumn flex container (gap: var(--space-4)). Without
+    // the wrapper the fieldsets stack flush as bare children of `.settingsMenu`,
+    // which has no flex/gap of its own (the original "no gap between groups" bug).
+    const column = container.querySelector(`.${styles.settingsPanelColumn}`)
+    expect(column).not.toBeNull()
+    // Mapped mode group, model selector, and the extra group are all in the column.
+    expect(column!.querySelectorAll('[role="group"]').length).toBe(3)
+    expect(column!.contains(screen.getByTestId(`permission-mode-${MODE_AGENT}`))).toBe(true)
+    expect(column!.contains(screen.getByTestId('extra-thoughtLevel-high'))).toBe(true)
   })
 })

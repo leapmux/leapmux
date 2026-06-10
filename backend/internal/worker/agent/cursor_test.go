@@ -20,14 +20,24 @@ import (
 
 func newCursorAgentForRPC(t *testing.T) (*CursorCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPC(t,
-		func() *CursorCLIAgent { return &CursorCLIAgent{} },
+		func() *CursorCLIAgent {
+			a := &CursorCLIAgent{}
+			a.modeChannel = modeChannelPermissionMode
+			a.modelIDNormalizer = normalizeCursorModelID
+			return a
+		},
 		func(a *CursorCLIAgent) *acpBase { return &a.acpBase },
 	)
 }
 
 func newCursorAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CursorCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
-		func() *CursorCLIAgent { return &CursorCLIAgent{} },
+		func() *CursorCLIAgent {
+			a := &CursorCLIAgent{}
+			a.modeChannel = modeChannelPermissionMode
+			a.modelIDNormalizer = normalizeCursorModelID
+			return a
+		},
 		func(a *CursorCLIAgent) *acpBase { return &a.acpBase },
 		respond,
 	)

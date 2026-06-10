@@ -23,5 +23,4 @@ registerACPProvider({
   ControlActions: ACPControlActions,
   planValue: COPILOT_MODE_PLAN,
   bypassPermissionMode: COPILOT_MODE_AUTOPILOT,
-  extraHiddenSessionUpdates: new Set(['config_option_update']),
 })

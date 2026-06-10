@@ -96,4 +96,45 @@ describe('cursor settings panel', () => {
 
     expect(screen.getByText('Auto \u00B7 Plan')).toBeInTheDocument()
   })
+
+  it('renders an extra (generic) group read-only after the mapped mode group', async () => {
+    const onChange = vi.fn()
+    render(() => plugin.SettingsPanel!({
+      model: 'auto',
+      permissionMode: 'agent',
+      extraSettings: { thoughtLevel: 'low' },
+      availableModels: [model('auto', 'Auto', { isDefault: true })],
+      availableOptionGroups: [
+        optionGroup('permissionMode', 'Mode', [
+          option('agent', 'Agent', { isDefault: true }),
+          option('plan', 'Plan'),
+        ]),
+        optionGroup('thoughtLevel', 'Thought Level', [
+          option('low', 'Low', { isDefault: true }),
+          option('high', 'High'),
+        ]),
+      ],
+      onChange,
+    }))
+
+    const lowInput = screen.getByTestId('extra-thoughtLevel-low').querySelector('input')!
+    expect(lowInput).toBeDisabled()
+    expect(lowInput).toBeChecked()
+    await fireEvent.click(screen.getByTestId('extra-thoughtLevel-high').querySelector('input')!)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('renders no extra-* groups for a single-group provider (parity guard)', () => {
+    const { container } = render(() => plugin.SettingsPanel!({
+      model: 'auto',
+      permissionMode: 'agent',
+      availableModels: [model('auto', 'Auto', { isDefault: true })],
+      availableOptionGroups: [optionGroup('permissionMode', 'Mode', [
+        option('agent', 'Agent', { isDefault: true }),
+        option('plan', 'Plan'),
+      ])],
+    }))
+
+    expect(container.querySelector('[data-testid^="extra-"]')).toBeNull()
+  })
 })

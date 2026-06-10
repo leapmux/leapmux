@@ -21,7 +21,8 @@ func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
 			sessionID: "test-session",
 		},
 	}
-	a.extraSessionUpdate = configOptionSessionUpdateHandler(a.handleConfigOptionUpdate)
+	a.modelIDNormalizer = normalizeCursorModelID
+	a.modeChannel = modeChannelPermissionMode
 	a.extraMethod = a.handleExtraMethod
 	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 	return a
@@ -30,15 +31,24 @@ func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
 func TestHandleCursorOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testing.T) {
 	sink := &testSink{}
 	agent := newCursorAgentWithSink(sink)
+	agent.permissionMode = CursorCLIModeAgent
 
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","currentValue":"plan","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"}]},{"id":"model","currentValue":"default[]","options":[{"value":"default[]","name":"Auto"},{"value":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
 	require.Equal(t, CursorCLIModePlan, agent.permissionMode)
 	require.Equal(t, "auto", agent.model)
-	require.Equal(t, CursorCLIModePlan, sink.PermissionMode())
 	require.Len(t, agent.availableModels, 2)
 	require.Equal(t, "auto", agent.availableModels[0].GetId())
+	// The combined model+mode update broadcasts the full settings once (StatusChange
+	// carrying the new mode) plus the chat notification -- not a second
+	// UpdatePermissionMode StatusChange.
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	refresh := sink.LastSettingsRefresh()
+	require.Equal(t, "auto", refresh.Model)
+	require.Equal(t, CursorCLIModePlan, refresh.PermissionMode)
+	require.Equal(t, []testSinkModeChange{{Old: CursorCLIModeAgent, New: CursorCLIModePlan}}, sink.ModeChanges())
+	require.Empty(t, sink.PermissionMode(), "combined change must not also fire UpdatePermissionMode")
 }
 
 func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {

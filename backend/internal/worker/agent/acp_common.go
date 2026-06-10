@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync/atomic"
 	"time"
 	"unicode"
 
+	"google.golang.org/protobuf/proto"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 // ACP JSON-RPC method name constants shared across all ACP providers.
@@ -66,24 +70,80 @@ type jsonrpcBase struct {
 	promptFunc func(content string, attachments []*leapmuxv1.Attachment)
 }
 
+// acpModeChannel identifies how an ACP provider maps the configOptions `mode` select
+// to its secondary setting, and thereby which provider family it belongs to. The three
+// values are mutually exclusive, so the old syncsPermissionMode/syncsPrimaryAgent bool
+// pair (which could illegally be set together) collapses to one field. The zero value
+// (modeChannelUnmapped) matches the old "neither bool set" default: permission-mode
+// family, configOptions `mode` surfaced read-only.
+type acpModeChannel int
+
+const (
+	// modeChannelUnmapped: the provider tracks a permission mode but does NOT consume
+	// the configOptions `mode` select for it -- it drives the mode through the native
+	// modes/current_mode_update channel instead (Gemini). A configOptions `mode` is
+	// surfaced read-only as a generic group rather than applied.
+	modeChannelUnmapped acpModeChannel = iota
+	// modeChannelPermissionMode: the configOptions `mode` select drives the permission
+	// mode (Copilot, Goose, Cursor).
+	modeChannelPermissionMode
+	// modeChannelPrimaryAgent: the configOptions `mode` select drives the primary agent
+	// (OpenCode, Kilo). This is also the sole value identifying the primary-agent family.
+	modeChannelPrimaryAgent
+)
+
 // acpBase extends jsonrpcBase with fields and methods shared by all ACP
 // agents (GeminiCLIAgent, OpenCodeAgent, CopilotCLIAgent) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
-	sink                   OutputSink
-	extraSessionUpdate     acpSessionUpdateHandler // optional provider-specific session update handler
-	extraMethod            acpMethodHandler        // optional provider-specific request/notification handler
-	reapplySettings        func()                  // called by ClearContext after session/new to re-apply model, mode, etc.
-	refreshFromSession     func(json.RawMessage)   // called by ClearContext after reapplySettings to sync state from the session response
-	sessionID              string
-	workingDir             string
-	model                  string
-	permissionMode         string
-	currentPrimaryAgent    string
-	availableModels        []*leapmuxv1.AvailableModel
+	sink               OutputSink
+	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
+	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
+	// modelIDNormalizer, when set, rewrites model ids parsed from configOptions
+	// (e.g. Cursor's auto<->default[] aliasing) before they reach availableModels.
+	modelIDNormalizer func(string) string
+	// modelsDecorator, when set, post-processes the freshly built model list
+	// (e.g. Gemini prepends a synthetic "auto" entry). It is applied on every
+	// path that rebuilds availableModels -- handshake and runtime -- so the two
+	// never diverge. Receives the normalized current model id for default marking.
+	modelsDecorator func(models []*leapmuxv1.AvailableModel, currentModelID string) []*leapmuxv1.AvailableModel
+	// modeChannel selects how the configOptions `mode` select maps to this provider's
+	// secondary setting, and thereby which family the provider belongs to. It replaces
+	// the old syncsPermissionMode/syncsPrimaryAgent bool pair so the illegal "both set"
+	// state is unrepresentable and every family-conditional site reads one field.
+	modeChannel acpModeChannel
+	// primaryAgentHiddenFilter, when set, marks primary-agent ids the provider treats
+	// as internal pseudo-agents to hide from the picker (OpenCode's
+	// compaction/title/summary). Applied wherever the primary-agent list is built.
+	primaryAgentHiddenFilter func(string) bool
+	reapplySettings          func()                // called by ClearContext after session/new to re-apply model, mode, etc.
+	refreshFromSession       func(json.RawMessage) // called by ClearContext after reapplySettings to sync state from the session response
+	sessionID                string
+	workingDir               string
+	model                    string
+	permissionMode           string
+	currentPrimaryAgent      string
+	availableModels          []*leapmuxv1.AvailableModel
+	// modelsFieldInfos holds the models reported through the SessionModelState
+	// `models` field at the last full session response (handshake or ClearContext).
+	// A runtime config_option_update carries only the configOptions `model` select,
+	// so applyConfigOptionModelsLocked re-unions these to keep models-field-only
+	// entries from vanishing mid-session for providers that split their catalog.
+	modelsFieldInfos       []acpModelInfo
 	availableModes         []*leapmuxv1.AvailableOption
 	availablePrimaryAgents []*leapmuxv1.AvailableOption
-	turnAssistantText      strings.Builder
+	// genericOptionGroups holds the config-option selectors the model and mode
+	// channels did not claim -- a future ACP axis (e.g. thought_level) or a custom
+	// "_"-prefixed category. They are surfaced read-only: displayed via
+	// AvailableOptionGroups() and kept in sync at handshake / runtime / ClearContext,
+	// but not writable. nil when the provider emits no unmapped option, which is every
+	// provider today, so the surfacing is byte-for-byte invisible until one does.
+	genericOptionGroups []*leapmuxv1.AvailableOptionGroup
+	// genericOptionValues maps each generic option's id to its current value, so the
+	// live selection rides along in ExtraSettings. nil when none; never an empty map
+	// (the keep-stored guard in applyGenericConfigOptionsLocked preserves nil).
+	genericOptionValues map[string]string
+	turnAssistantText   strings.Builder
 	// turnThoughtText buffers consecutive agent_thought_chunk notifications
 	// so live token-by-token reasoning streams (each delta is its own
 	// notification) coalesce into one message instead of one-message-per-token.
@@ -143,16 +203,6 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 // acpSessionUpdateHandler is called for session update types not handled by
 // the shared dispatcher. Return true if the update was consumed.
 type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) bool
-
-func configOptionSessionUpdateHandler(handler func(json.RawMessage)) acpSessionUpdateHandler {
-	return func(sessionUpdate string, update json.RawMessage) bool {
-		if sessionUpdate == acpUpdateConfigOptionUpdate {
-			handler(update)
-			return true
-		}
-		return false
-	}
-}
 
 // acpMethodHandler is called for JSON-RPC methods not handled by the shared
 // ACP dispatcher. Return true if the method was consumed.
@@ -214,6 +264,9 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 		b.handlePlan(update)
 	case acpUpdateUsageUpdate:
 		b.handleUsageUpdate(update)
+	case acpUpdateConfigOptionUpdate:
+		// Generic model channel for every ACP provider; mode handled per-provider.
+		b.handleACPConfigOptionUpdate(update)
 	case acpUpdateUserMessageChunk, acpUpdateAvailableCommandsUpdate:
 		// No-op: user_message_chunk is history replay; available_commands_update is informational.
 	default:
@@ -269,14 +322,23 @@ func (b *acpBase) ClearContext() (string, bool) {
 	return session.SessionID, true
 }
 
+// reapplyModelAndSecondary re-applies the current model and one secondary setting
+// (permission mode or primary agent) after a session/new. `setModel` lets Cursor
+// pass setCursorModel for its wire-format mapping; every other provider passes the
+// base setModel. Shared by reapplyModelAndPermissionMode, reapplyModelAndPrimaryAgent,
+// and Cursor's reapplyModelAndMode, whose bodies were otherwise identical.
+func (b *acpBase) reapplyModelAndSecondary(secondary *string, secondaryLabel string, setModel, setSecondary func(string) error) {
+	b.mu.Lock()
+	model, sec := b.model, *secondary
+	b.mu.Unlock()
+	acpApplySetting(b.providerName, b.agentID, "model", model, setModel)
+	acpApplySetting(b.providerName, b.agentID, secondaryLabel, sec, setSecondary)
+}
+
 // reapplyModelAndPermissionMode re-applies the current model and permission
 // mode after a session/new.
 func (b *acpBase) reapplyModelAndPermissionMode() {
-	b.mu.Lock()
-	model, mode := b.model, b.permissionMode
-	b.mu.Unlock()
-	acpApplySetting(b.providerName, b.agentID, "model", model, b.setModel)
-	acpApplySetting(b.providerName, b.agentID, "mode", mode, b.setPermissionMode)
+	b.reapplyModelAndSecondary(&b.permissionMode, "mode", b.setModel, b.setPermissionMode)
 }
 
 // setPermissionMode sends a session/set_mode RPC and updates the local field.
@@ -294,20 +356,32 @@ func (b *acpBase) setPermissionMode(mode string) error {
 	return nil
 }
 
-// Concrete types that track additional settings (e.g. primaryAgent)
-// should override this method.
+// CurrentSettings dispatches on the provider family: primary-agent providers (OpenCode,
+// Kilo) carry the selection in extras, every other ACP provider in the permissionMode
+// field. Cursor stores its model normalized, so it needs no override here.
 func (b *acpBase) CurrentSettings() *leapmuxv1.AgentSettings {
+	if b.modeChannel == modeChannelPrimaryAgent {
+		return b.primaryAgentCurrentSettings()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return &leapmuxv1.AgentSettings{
 		Model:          b.model,
 		PermissionMode: b.permissionMode,
+		// nil base: the permission mode lives in its own field, not extras. With no
+		// generics this stays nil, leaving ExtraSettings byte-for-byte as before.
+		ExtraSettings: b.mergeGenericExtrasLocked(nil),
 	}
 }
 
-// Concrete types that use different settings (e.g. primaryAgent instead
-// of permissionMode) should override this method.
+// UpdateSettings dispatches on the provider family: primary-agent providers (OpenCode,
+// Kilo) write the model and primary agent, every other ACP provider the model and
+// permission mode. Cursor overrides this because its model writes go through
+// setCursorModel for the wire-format mapping.
 func (b *acpBase) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
+	if b.modeChannel == modeChannelPrimaryAgent {
+		return b.primaryAgentUpdateSettings(s)
+	}
 	ok := acpApplySetting(b.providerName, b.agentID, "model", s.GetModel(), b.setModel)
 	ok = acpApplySetting(b.providerName, b.agentID, "mode", s.GetPermissionMode(), b.setPermissionMode) && ok
 	return ok
@@ -332,37 +406,145 @@ func (b *acpBase) setPrimaryAgent(agent string) error {
 // reapplyModelAndPrimaryAgent re-applies the current model and primary
 // agent after a session/new.
 func (b *acpBase) reapplyModelAndPrimaryAgent() {
-	b.mu.Lock()
-	model, primaryAgent := b.model, b.currentPrimaryAgent
-	b.mu.Unlock()
-	acpApplySetting(b.providerName, b.agentID, "model", model, b.setModel)
-	acpApplySetting(b.providerName, b.agentID, "primary agent", primaryAgent, b.setPrimaryAgent)
+	b.reapplyModelAndSecondary(&b.currentPrimaryAgent, "primary agent", b.setModel, b.setPrimaryAgent)
 }
 
-// applySessionRefresh parses the session response, updates b.model (optionally
-// normalized via `normalizeModel`) and the field pointed to by `secondary`,
-// then logs and broadcasts. `secondaryLogKey` is the slog attribute name for
-// the secondary field (e.g. "mode", "primaryAgent").
+// applySessionRefresh parses the session response once, refreshes availableModels
+// from both model channels, updates b.model (optionally normalized via
+// `normalizeModel`) and the field pointed to by `secondary`, then logs and persists.
+// `secondaryLogKey` is the slog attribute name for the secondary field (e.g. "mode",
+// "primaryAgent"). Both the model list AND the secondary-option list (available modes /
+// primary agents) are refreshed -- not just the current ids -- so a ClearContext'd
+// session whose available options differ from the original handshake reflects the new
+// lists instead of going stale; the current selection is then resolved against the
+// refreshed list via reconcileCurrentOptionID. How the secondary value is persisted
+// (its own permissionMode arg vs. an extras key) is derived from b.modeChannel, so
+// callers no longer pass per-family extras/broadcast callbacks.
 func (b *acpBase) applySessionRefresh(
 	resp json.RawMessage,
 	normalizeModel func(string) string,
 	secondary *string,
 	secondaryLogKey string,
-	broadcast func(model, secondary string),
 ) {
-	model, secondaryVal := parseSessionModelAndMode(resp)
+	// Derive the available-model list (the union of both channels) and the current
+	// model/secondary id from a single parse of resp.
+	var model, secondaryVal string
+	var models []*leapmuxv1.AvailableModel
+	var modelsFieldInfos []acpModelInfo
+	var modes []acpModeInfo
+	var configOptions []acpConfigOption
+	if session, err := parseACPSessionResult(resp); err == nil {
+		modelsFieldInfos = session.Models
+		modes = session.Modes
+		configOptions = session.ConfigOptions
+		// The current model id is read from the models-field currentModelId, not the
+		// union: for config-only providers (OpenCode/Kilo) it is "", which leaves
+		// b.model untouched so the model re-pushed by reapplySettings just before this
+		// refresh is kept. The list, by contrast, is always rebuilt from both channels.
+		model = session.CurrentModelID
+		secondaryVal = session.CurrentModeID
+		if infos, current := acpHandshakeModelInfos(session); len(infos) > 0 {
+			models, _ = b.buildModels(infos, current)
+		}
+	} else {
+		// A malformed session response would otherwise look like a successful no-op
+		// refresh (every guard below is skipped, stored settings are kept). Surface it
+		// so a genuinely broken ClearContext reply isn't silently swallowed.
+		slog.Warn("acp agent session refresh: failed to parse session response, keeping stored settings",
+			"provider", b.providerName, "agent_id", b.agentID, "error", err)
+	}
 	b.mu.Lock()
+	// Refresh availableModels and the remembered models-field catalog together so the
+	// two never desync. An empty parse (no models in either channel) leaves both at the
+	// prior session's values rather than blanking modelsFieldInfos while the stale list
+	// lingers -- which would drop models-field-only entries on the next
+	// config_option_update re-union.
+	if len(models) > 0 {
+		b.availableModels = models
+		b.modelsFieldInfos = modelsFieldInfos
+	}
 	if model != "" {
 		if normalizeModel != nil {
 			model = normalizeModel(model)
 		}
 		b.model = model
 	}
-	if secondaryVal != "" {
-		*secondary = secondaryVal
+	// Refresh the available secondary-option list from the native modes channel, mirroring
+	// the handshake (buildACPModes for the permission-mode/unmapped families,
+	// buildPrimaryAgentOptions for the primary-agent family), so a ClearContext refreshes
+	// the picker's options instead of freezing them at the handshake value while the model
+	// list updates. An empty rebuild keeps the prior list (the new session did not
+	// re-report the modes channel). The configOptions override below further refreshes it
+	// when a `mode` select is present. [S4]
+	if b.modeChannel == modeChannelPrimaryAgent {
+		if rebuilt := b.buildPrimaryAgentOptions(modes, secondaryVal); len(rebuilt) > 0 {
+			b.availablePrimaryAgents = rebuilt
+		}
+	} else if rebuilt := buildACPModes(modes, secondaryVal, nil); len(rebuilt) > 0 {
+		b.availableModes = rebuilt
 	}
+	// A primary-agent provider's modes-channel currentModeId can be a hidden pseudo-agent
+	// (OpenCode's compaction/title/summary). Drop it before resolving so the empty-list
+	// "trust the reported value" path in reconcileCurrentOptionID can't adopt one,
+	// mirroring the handshake and runtime guards.
+	if b.modeChannel == modeChannelPrimaryAgent && b.primaryAgentHiddenFilter != nil && b.primaryAgentHiddenFilter(secondaryVal) {
+		secondaryVal = ""
+	}
+	// Resolve the current against the refreshed list: adopt a valid reported value, keep the
+	// stored selection (re-pushed by reapplySettings just before this) if still selectable,
+	// else re-seed to the default-or-first option, so a ClearContext never seeds the picker
+	// with a selection absent from the list -- the same resolution the handshake and runtime
+	// paths apply. The configOptions override below still wins when a `mode` select resolves
+	// to a visible value. [S2]
+	available := b.availableModes
+	if b.modeChannel == modeChannelPrimaryAgent {
+		available = b.availablePrimaryAgents
+	}
+	if resolved := reconcileCurrentOptionID(available, secondaryVal, *secondary); resolved != "" {
+		*secondary = resolved
+	}
+	// For providers whose configOptions `mode` maps to the permission mode
+	// (Copilot/Goose/Cursor), apply that override here too -- matching
+	// applyHandshakeMode, so a ClearContext resolves the mode the same way the
+	// handshake does instead of taking only the modes-channel value. secondary
+	// aliases b.permissionMode for these providers, so snapshotSecondary below
+	// reflects the override.
+	if b.modeChannel == modeChannelPermissionMode {
+		b.syncConfigOptionModeLocked(configOptions)
+	}
+	// Mirror of the permission-mode block above for the primary-agent providers (OpenCode,
+	// Kilo): apply the configOptions primary-agent override on ClearContext, so a `mode`
+	// select carried in the session response resolves the primary agent the same way the
+	// handshake's configOptions handling and a runtime config_option_update do. The
+	// native-modes rebuild and reconcile above already refreshed availablePrimaryAgents and
+	// the current, so this is a no-op for OpenCode/Kilo -- whose session responses report the
+	// primary agent through the native modes channel, not a configOptions `mode` -- and takes
+	// effect only for a session response that does carry one. secondary aliases
+	// b.currentPrimaryAgent for these providers, so snapshotSecondary below reflects any override.
+	if b.modeChannel == modeChannelPrimaryAgent {
+		b.syncConfigOptionPrimaryAgentLocked(configOptions)
+	}
+	// Refresh the read-only generic groups from the new session, next to the mapped
+	// channels above, so a ClearContext resolves them the same way the handshake and a
+	// runtime config_option_update do. The keep-stored guard makes this a no-op for the
+	// providers that emit no unmapped option (all of them today).
+	b.applyGenericConfigOptionsLocked(configOptions)
 	snapshotModel := b.model
 	snapshotSecondary := *secondary
+	// Derive how the secondary value is persisted from the family: the primary-agent
+	// providers carry it in extras (under primaryAgentExtras, which the generics overlay
+	// onto), the permission-mode providers in PersistSettingsRefresh's own mode arg.
+	// Snapshot the generic extras under the SAME lock as model/secondary so a racing
+	// runtime config_option_update can't pair a freshly-changed generic value with a
+	// stale model/secondary in the persisted row.
+	var extrasBase map[string]string
+	var persistMode string
+	if b.modeChannel == modeChannelPrimaryAgent {
+		extrasBase = primaryAgentExtras(snapshotSecondary)
+	} else {
+		persistMode = snapshotSecondary
+	}
+	extras := b.mergeGenericExtrasLocked(extrasBase)
 	b.mu.Unlock()
 	slog.Info("acp agent settings refreshed from session",
 		"provider", b.providerName,
@@ -370,45 +552,144 @@ func (b *acpBase) applySessionRefresh(
 		"model", snapshotModel,
 		secondaryLogKey, snapshotSecondary,
 	)
-	broadcast(snapshotModel, snapshotSecondary)
+	b.sink.PersistSettingsRefresh(snapshotModel, "", persistMode, extras)
 }
 
 // refreshModelAndPermissionModeFromSession is used by agents that track
-// permissionMode (Gemini, Copilot, Goose).
+// permissionMode (Gemini, Copilot, Goose). applySessionRefresh persists the mode in
+// PersistSettingsRefresh's own arg and overlays the live generic values, keyed off
+// b.modeChannel.
 func (b *acpBase) refreshModelAndPermissionModeFromSession(resp json.RawMessage) {
-	b.applySessionRefresh(resp, nil, &b.permissionMode, "mode", func(model, mode string) {
-		b.sink.PersistSettingsRefresh(model, "", mode, nil)
-	})
+	b.applySessionRefresh(resp, nil, &b.permissionMode, "mode")
 }
 
 // refreshModelAndPrimaryAgentFromSession is used by agents that track
-// currentPrimaryAgent (OpenCode, Kilo).
+// currentPrimaryAgent (OpenCode, Kilo). applySessionRefresh carries the primary agent in
+// the extras (under primaryAgentExtras) and overlays the live generic values, keyed off
+// b.modeChannel.
 func (b *acpBase) refreshModelAndPrimaryAgentFromSession(resp json.RawMessage) {
-	b.applySessionRefresh(resp, nil, &b.currentPrimaryAgent, "primaryAgent", func(model, agent string) {
-		b.sink.PersistSettingsRefresh(model, "", "", map[string]string{
-			OptionGroupKeyPrimaryAgent: agent,
-		})
-	})
+	b.applySessionRefresh(resp, nil, &b.currentPrimaryAgent, "primaryAgent")
 }
 
-// parseSessionModelAndMode extracts currentModelId and currentModeId from
-// an ACP session response.
-func parseSessionModelAndMode(resp json.RawMessage) (model, mode string) {
-	var session struct {
-		Models struct {
-			CurrentModelID string `json:"currentModelId"`
-		} `json:"models"`
-		Modes *struct {
-			CurrentModeID string `json:"currentModeId"`
-		} `json:"modes"`
+// primaryAgentExtras builds the extra-settings map carrying the primary-agent
+// selection for OpenCode/Kilo, returning nil (not an empty map) when the agent
+// is empty. nil tells PersistSettingsRefresh to keep the stored extras, whereas
+// a non-nil map{primaryAgent: ""} would marshal to "{}" (marshalExtraSettings
+// drops empty values) and wipe the stored primary agent. Used by every path
+// that persists or reports primary-agent extras so they can't diverge.
+func primaryAgentExtras(agent string) map[string]string {
+	if agent == "" {
+		return nil
 	}
-	if err := json.Unmarshal(resp, &session); err != nil {
-		return "", ""
+	return map[string]string{OptionGroupKeyPrimaryAgent: agent}
+}
+
+// configurePrimaryAgents sets the available primary agents and current selection
+// from the handshake modes channel, falling back to `fallback`/`defaultAgent` when
+// the server reports no modes, then applies `requestedPrimaryAgent` if it differs
+// from the current and is available. Shared by OpenCode and Kilo, whose
+// primary-agent handling is identical apart from the fallback list, default
+// constant, and hidden-agent filter (set via primaryAgentHiddenFilter). Returns an
+// error only when the requested-agent set_mode RPC fails.
+func (b *acpBase) configurePrimaryAgents(modes []acpModeInfo, currentModeID, requestedPrimaryAgent string, fallback []*leapmuxv1.AvailableOption, defaultAgent string) error {
+	available := b.buildPrimaryAgentOptions(modes, currentModeID)
+	hasACPModeList := len(available) > 0
+	current := currentModeID
+	if !hasACPModeList {
+		available = fallback
+		if current == "" {
+			current = defaultAgent
+		}
 	}
-	if session.Modes != nil {
-		mode = session.Modes.CurrentModeID
+	// Resolve the current against the (hidden-filtered) available list: drop a value the
+	// list lacks (e.g. a hidden pseudo-agent like OpenCode's "compaction") and re-seed to
+	// the default-or-first option, so the picker is never seeded with a selection that has
+	// no matching option. There is no prior selection at handshake, so stored is "". The
+	// runtime and ClearContext paths share this resolver, so all three seams agree.
+	current = reconcileCurrentOptionID(available, current, "")
+
+	b.mu.Lock()
+	b.availablePrimaryAgents = available
+	b.currentPrimaryAgent = current
+	b.mu.Unlock()
+
+	if hasACPModeList && requestedPrimaryAgent != "" && requestedPrimaryAgent != current && hasACPOption(available, requestedPrimaryAgent) {
+		if err := b.setPrimaryAgent(requestedPrimaryAgent); err != nil {
+			return err
+		}
 	}
-	return session.Models.CurrentModelID, mode
+
+	return nil
+}
+
+// buildPrimaryAgentOptions converts the handshake modes channel into primary-agent
+// options, normalizing names (OpenCode-family agents often report name == id or
+// whitespace-only names) and skipping ids the provider marks hidden via
+// primaryAgentHiddenFilter (OpenCode's compaction/title/summary pseudo-agents).
+func (b *acpBase) buildPrimaryAgentOptions(modes []acpModeInfo, currentModeID string) []*leapmuxv1.AvailableOption {
+	normalized := make([]acpModeInfo, len(modes))
+	copy(normalized, modes)
+	for i := range normalized {
+		normalized[i].Name = normalizeOptionName(normalized[i].Name, normalized[i].ID)
+	}
+	return buildACPModes(normalized, currentModeID, b.primaryAgentHiddenFilter)
+}
+
+// defaultOrFirstOption returns the default option's id, else the first non-empty id,
+// else "". Used by reconcileCurrentOptionID to seed a secondary channel's current
+// selection (permission mode or primary agent) when the server reports no valid current.
+func defaultOrFirstOption(options []*leapmuxv1.AvailableOption) string {
+	for _, option := range options {
+		if option != nil && option.IsDefault && option.Id != "" {
+			return option.Id
+		}
+	}
+	for _, option := range options {
+		if option != nil && option.Id != "" {
+			return option.Id
+		}
+	}
+	return ""
+}
+
+// reconcileCurrentOptionID resolves a secondary channel's current selection (permission
+// mode or primary agent) against a freshly built option list, so the in-memory current
+// never points at a value absent from the list. A non-empty `reported` value the list
+// contains is adopted; otherwise a `stored` value still in the list is kept; failing
+// both, it re-seeds to the list's default-or-first option. An empty list means "unknown"
+// -- the session did not re-report this channel -- not "nothing is valid", so the
+// reported value (else the stored one) is trusted unchanged, mirroring acpSetMode's
+// len(available)>0 guard. Shared by the handshake (configurePrimaryAgents), runtime
+// (syncConfigOptionSelectLocked), and ClearContext (applySessionRefresh) paths so all
+// three resolve the current the same way.
+func reconcileCurrentOptionID(available []*leapmuxv1.AvailableOption, reported, stored string) string {
+	if len(available) == 0 {
+		if reported != "" {
+			return reported
+		}
+		return stored
+	}
+	if reported != "" && hasACPOption(available, reported) {
+		return reported
+	}
+	if stored != "" && hasACPOption(available, stored) {
+		return stored
+	}
+	return defaultOrFirstOption(available)
+}
+
+// mappedOptionGroupsLocked returns the single mapped (writable) group followed by any
+// read-only generic groups in insertion order. With no generics this is byte-for-byte
+// the single-group list every provider returned before generic surfacing. Shared by
+// permissionModeOptionGroups and primaryAgentOptionGroups so the "mapped group first,
+// generics appended" invariant lives in one place. The caller must hold b.mu.
+func (b *acpBase) mappedOptionGroupsLocked(key, label string, options []*leapmuxv1.AvailableOption) []*leapmuxv1.AvailableOptionGroup {
+	groups := []*leapmuxv1.AvailableOptionGroup{{
+		Key:     key,
+		Label:   label,
+		Options: options,
+	}}
+	return append(groups, b.genericOptionGroups...)
 }
 
 // permissionModeOptionGroups returns AvailableOptionGroups for agents that
@@ -420,11 +701,7 @@ func (b *acpBase) permissionModeOptionGroups(label string, fallback []*leapmuxv1
 	if len(options) == 0 {
 		options = fallback
 	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPermissionMode,
-		Label:   label,
-		Options: options,
-	}}
+	return b.mappedOptionGroupsLocked(OptionGroupKeyPermissionMode, label, options)
 }
 
 // primaryAgentOptionGroups returns AvailableOptionGroups for agents that
@@ -436,11 +713,7 @@ func (b *acpBase) primaryAgentOptionGroups(fallback []*leapmuxv1.AvailableOption
 	if len(options) == 0 {
 		options = fallback
 	}
-	return []*leapmuxv1.AvailableOptionGroup{{
-		Key:     OptionGroupKeyPrimaryAgent,
-		Label:   "Primary Agent",
-		Options: options,
-	}}
+	return b.mappedOptionGroupsLocked(OptionGroupKeyPrimaryAgent, "Primary Agent", options)
 }
 
 // Used by agents that track primaryAgent instead of permissionMode
@@ -448,13 +721,9 @@ func (b *acpBase) primaryAgentOptionGroups(fallback []*leapmuxv1.AvailableOption
 func (b *acpBase) primaryAgentCurrentSettings() *leapmuxv1.AgentSettings {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	var extra map[string]string
-	if b.currentPrimaryAgent != "" {
-		extra = map[string]string{OptionGroupKeyPrimaryAgent: b.currentPrimaryAgent}
-	}
 	return &leapmuxv1.AgentSettings{
 		Model:         b.model,
-		ExtraSettings: extra,
+		ExtraSettings: b.mergeGenericExtrasLocked(primaryAgentExtras(b.currentPrimaryAgent)),
 	}
 }
 
@@ -477,6 +746,22 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 		return false
 	}
 	return true
+}
+
+// acpStandardInitParams marshals the standard ACP "initialize" params shared by
+// OpenCode, Kilo, Copilot, Goose, and Cursor: protocol version 1, the LeapMux
+// clientInfo, and empty capabilities. Gemini sends a different shape (fs
+// capabilities) and marshals its own.
+func acpStandardInitParams() (json.RawMessage, error) {
+	params, err := json.Marshal(map[string]interface{}{
+		"protocolVersion": 1,
+		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
+		"capabilities":    map[string]interface{}{},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal initialize params: %w", err)
+	}
+	return params, nil
 }
 
 // buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.
@@ -678,6 +963,14 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 func (b *acpBase) Stop() {
 	b.clearPromptQueue()
 	b.processBase.Stop()
+}
+
+// stopAndWait stops the agent process and blocks until it exits. Used by the
+// handshake and every Start* path to tear down a half-initialized agent on a
+// fatal startup error.
+func (b *acpBase) stopAndWait() {
+	b.Stop()
+	_ = b.Wait()
 }
 
 // clearPromptQueue discards any queued messages and resets the prompt-active flag.
@@ -1252,10 +1545,7 @@ func (b *acpBase) startACPHandshake(
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
 	go b.readOutputLoop(scanner, b.handleOutput)
 
-	cleanup := func() {
-		b.Stop()
-		_ = b.Wait()
-	}
+	cleanup := b.stopAndWait
 
 	timeout := opts.startupTimeout()
 
@@ -1291,6 +1581,39 @@ func (b *acpBase) startACPHandshake(
 	}
 
 	// 3. Parse the common session fields.
+	session, err := parseACPSessionResult(sessionResp)
+	if err != nil {
+		cleanup()
+		return nil, b.formatStartupError("session parse", err)
+	}
+	if session.SessionID == "" && opts.ResumeSessionID != "" && sessionMethod == sessionCfg.resumeMethod {
+		session.SessionID = opts.ResumeSessionID
+	}
+	if session.SessionID == "" {
+		cleanup()
+		return nil, b.formatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
+	}
+
+	// Write under the lock: the reader goroutine started above before Start*
+	// reaches here, and a server pushing a config_option_update right after
+	// session/new reads b.sessionID under b.mu (handleACPConfigOptionUpdate's
+	// list-change broadcast). This mirrors applyHandshakeModels/applyHandshakeMode,
+	// which already write their shared fields under the lock.
+	b.mu.Lock()
+	b.sessionID = session.SessionID
+	b.workingDir = opts.WorkingDir
+	sessionID := b.sessionID
+	b.mu.Unlock()
+	b.sink.UpdateSessionID(sessionID)
+	b.sink.BroadcastStatusActive(sessionID)
+
+	return session, nil
+}
+
+// parseACPSessionResult parses the model/mode/configOptions channels shared by
+// every ACP session response -- the handshake (session/new, resume) and the
+// ClearContext reply alike. Session-id validation is left to the caller.
+func parseACPSessionResult(resp json.RawMessage) (*acpSessionResult, error) {
 	var session struct {
 		SessionID string `json:"sessionId"`
 		Models    struct {
@@ -1303,35 +1626,21 @@ func (b *acpBase) startACPHandshake(
 		} `json:"modes"`
 		ConfigOptions []acpConfigOption `json:"configOptions"`
 	}
-	if err := json.Unmarshal(sessionResp, &session); err != nil {
-		cleanup()
-		return nil, b.formatStartupError("session parse", err)
+	if err := json.Unmarshal(resp, &session); err != nil {
+		return nil, err
 	}
-	if session.SessionID == "" && opts.ResumeSessionID != "" && sessionMethod == sessionCfg.resumeMethod {
-		session.SessionID = opts.ResumeSessionID
-	}
-	if session.SessionID == "" {
-		cleanup()
-		return nil, b.formatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
-	}
-
-	b.sessionID = session.SessionID
-	b.workingDir = opts.WorkingDir
-	b.sink.UpdateSessionID(b.sessionID)
-	b.sink.BroadcastStatusActive(b.sessionID)
 
 	result := &acpSessionResult{
 		SessionID:      session.SessionID,
 		CurrentModelID: session.Models.CurrentModelID,
 		Models:         session.Models.AvailableModels,
 		ConfigOptions:  session.ConfigOptions,
-		Raw:            sessionResp,
+		Raw:            resp,
 	}
 	if session.Modes != nil {
 		result.CurrentModeID = session.Modes.CurrentModeID
 		result.Modes = session.Modes.AvailableModes
 	}
-
 	return result, nil
 }
 
@@ -1350,7 +1659,18 @@ type acpModelInfo struct {
 }
 
 type acpConfigOption struct {
-	ID           string                 `json:"id"`
+	ID string `json:"id"`
+	// Category is the ACP spec's semantic signal for a config option (reserved
+	// values "model"/"mode"/"thought_level", plus custom "_"-prefixed). Unlike id
+	// -- an opaque identifier the spec says "MUST NOT be required for correctness"
+	// -- category is what we dispatch the model/mode channels on, falling back to
+	// the well-known id. Every provider we ship today omits it (""), so the
+	// id-fallback keeps parsing byte-for-byte back-compatible.
+	Category string `json:"category"`
+	// Type is the widget kind. The spec defines "select" only today; an empty
+	// value is treated as "select" (see isSelectableConfigOption). Any other
+	// (future) type is ignored defensively.
+	Type         string                 `json:"type"`
 	Name         string                 `json:"name"`
 	Description  string                 `json:"description"`
 	CurrentValue string                 `json:"currentValue"`
@@ -1365,19 +1685,27 @@ type acpConfigOptionValue struct {
 
 // buildACPModels converts a list of acpModelInfo into proto AvailableModel messages.
 // If normalize is non-nil, it is applied to each model ID (and the currentModelID) before use.
+//
+// Models are deduped by their final (post-normalize) id, keeping the first
+// occurrence. This matters because acpHandshakeModelInfos unions two channels and
+// dedups by *raw* id: a normalizer that collapses two distinct wire ids to one
+// (e.g. Cursor's "default[]" -> "auto") would otherwise emit the same model twice,
+// and it also guards against a server repeating an id within a single channel.
 func buildACPModels(models []acpModelInfo, currentModelID string, normalize func(string) string) []*leapmuxv1.AvailableModel {
 	if normalize != nil {
 		currentModelID = normalize(currentModelID)
 	}
 	result := make([]*leapmuxv1.AvailableModel, 0, len(models))
+	seen := make(map[string]bool, len(models))
 	for _, m := range models {
 		id := m.ModelID
 		if normalize != nil {
 			id = normalize(id)
 		}
-		if id == "" {
+		if id == "" || seen[id] {
 			continue
 		}
+		seen[id] = true
 		name := m.Name
 		if name == "" {
 			name = id
@@ -1390,6 +1718,633 @@ func buildACPModels(models []acpModelInfo, currentModelID string, normalize func
 		})
 	}
 	return result
+}
+
+// acpConfigOptionIDModel and acpConfigOptionIDMode are the well-known ids ACP
+// servers use for the model and mode entries inside a session's configOptions.
+const (
+	acpConfigOptionIDModel = "model"
+	acpConfigOptionIDMode  = "mode"
+)
+
+// acpConfigOptionCategoryModel and acpConfigOptionCategoryMode are the ACP spec's
+// reserved `category` values for the model and mode selectors. category is the
+// semantic signal we dispatch on; the well-known id is only a back-compat fallback.
+const (
+	acpConfigOptionCategoryModel = "model"
+	acpConfigOptionCategoryMode  = "mode"
+)
+
+// isSelectableConfigOption reports whether a config option is a value-list selector
+// we can render. The ACP spec defines `type` as "select"-only today; an empty type
+// is treated as "select" for back-compat (every provider we ship omits it). Any
+// other (future) type is ignored defensively so an unknown widget kind never reaches
+// a model/mode/generic picker that only understands a list of values.
+func isSelectableConfigOption(o acpConfigOption) bool {
+	return o.Type == "" || o.Type == "select"
+}
+
+// acpConfigOptionByID returns the config option with the given id and true, or a
+// zero option and false when none is present.
+func acpConfigOptionByID(options []acpConfigOption, id string) (acpConfigOption, bool) {
+	for _, option := range options {
+		if option.ID == id {
+			return option, true
+		}
+	}
+	return acpConfigOption{}, false
+}
+
+// acpConfigOptionByCategory returns the selectable config option for a semantic
+// category, in two passes: first the option whose `category` matches (the ACP
+// spec's intended signal), then -- for the providers we ship today, which omit
+// `category` and use the literal well-known id -- the option whose `id` matches
+// `fallbackID`. Both passes skip non-selectable options (see
+// isSelectableConfigOption), so an unknown widget type is ignored rather than
+// dispatched as a model/mode. Returns the matched option and true, or a zero option
+// and false when neither pass finds a selectable match.
+func acpConfigOptionByCategory(options []acpConfigOption, category, fallbackID string) (acpConfigOption, bool) {
+	for _, option := range options {
+		if option.Category == category && isSelectableConfigOption(option) {
+			return option, true
+		}
+	}
+	if option, ok := acpConfigOptionByID(options, fallbackID); ok && isSelectableConfigOption(option) {
+		return option, true
+	}
+	return acpConfigOption{}, false
+}
+
+// acpModelInfosFromConfigOption converts a `model` select config option into the
+// common acpModelInfo shape plus its current value, so callers can feed it
+// through buildACPModels exactly like the SessionModelState `models` field.
+func acpModelInfosFromConfigOption(option acpConfigOption) ([]acpModelInfo, string) {
+	infos := make([]acpModelInfo, 0, len(option.Options))
+	for _, candidate := range option.Options {
+		if candidate.Value == "" {
+			continue
+		}
+		infos = append(infos, acpModelInfo{
+			ModelID:     candidate.Value,
+			Name:        candidate.Name,
+			Description: candidate.Description,
+		})
+	}
+	return infos, option.CurrentValue
+}
+
+// acpHandshakeModelInfos returns the available models and current model id from a
+// session handshake. ACP servers report models through one or both of two
+// channels: the SessionModelState `models` field, or a `model` select inside
+// `configOptions` (OpenCode/Kilo use only the latter; others may use either).
+// We union both channels -- deduping by model id, `models`-field entries first --
+// so a provider that splits its catalog across the two, or reports a partial list
+// in one, still surfaces every model. The `models` field's current id wins when
+// present; otherwise the config option's current value is used.
+func acpHandshakeModelInfos(handshake *acpSessionResult) ([]acpModelInfo, string) {
+	infos := handshake.Models
+	current := handshake.CurrentModelID
+
+	if option, ok := acpConfigOptionByCategory(handshake.ConfigOptions, acpConfigOptionCategoryModel, acpConfigOptionIDModel); ok {
+		optionInfos, optionCurrent := acpModelInfosFromConfigOption(option)
+		infos = mergeModelInfos(infos, optionInfos)
+		if current == "" {
+			current = optionCurrent
+		}
+	}
+
+	return infos, current
+}
+
+// mergeModelInfos returns the union of two model-info lists, deduped by raw model
+// id with `primary` entries kept first (and their metadata preferred over a
+// `secondary` duplicate). Used to union the SessionModelState `models` field with
+// the configOptions `model` select -- at handshake, and again at runtime so a
+// config_option_update does not drop models reported only through the `models`
+// field. Returns `secondary` unchanged when `primary` is empty (the common
+// OpenCode/Kilo case, where the `models` field is unused).
+func mergeModelInfos(primary, secondary []acpModelInfo) []acpModelInfo {
+	if len(primary) == 0 {
+		return secondary
+	}
+	merged := append([]acpModelInfo(nil), primary...)
+	seen := make(map[string]bool, len(primary))
+	for _, info := range primary {
+		seen[info.ModelID] = true
+	}
+	for _, info := range secondary {
+		if seen[info.ModelID] {
+			continue
+		}
+		seen[info.ModelID] = true
+		merged = append(merged, info)
+	}
+	return merged
+}
+
+// buildModels turns raw model infos into proto models, applying the provider
+// model-id normalizer and models decorator, and returns them alongside the
+// normalized current model id. Centralizing this keeps the handshake and runtime
+// model channels byte-for-byte identical in how they normalize and decorate.
+func (b *acpBase) buildModels(infos []acpModelInfo, currentModelID string) ([]*leapmuxv1.AvailableModel, string) {
+	models := buildACPModels(infos, currentModelID, b.modelIDNormalizer)
+	if b.modelIDNormalizer != nil {
+		currentModelID = b.modelIDNormalizer(currentModelID)
+	}
+	if b.modelsDecorator != nil {
+		models = b.modelsDecorator(models, currentModelID)
+	}
+	return models, currentModelID
+}
+
+// applyHandshakeModels sets availableModels and the current model from a session
+// handshake, merging both model channels (see acpHandshakeModelInfos) and writing
+// under the lock. The lock matters: startACPHandshake starts the reader goroutine
+// before Start* finishes, so a server that pushes a config_option_update right
+// after session/new can call applyConfigOptionModelsLocked concurrently with this write.
+//
+// The current model is set to whatever the server reports -- even "" -- rather
+// than preserved from the requested opts.Model. That is deliberate: it lets
+// trySetStartupModel compare the requested model against the server's actual
+// current and push it via setModel when they differ (including when the server
+// reports no model at all, the case for agents that accept arbitrary ids without
+// advertising a list). Used by every ACP provider's handshake.
+func (b *acpBase) applyHandshakeModels(handshake *acpSessionResult) {
+	infos, current := acpHandshakeModelInfos(handshake)
+	models, current := b.buildModels(infos, current)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.availableModels = models
+	b.model = current
+	// Remember the models-field catalog so a later config_option_update can
+	// re-union it (see applyConfigOptionModelsLocked).
+	b.modelsFieldInfos = handshake.Models
+	// Surface any config option the model/mode channels did not claim. This is the
+	// one universal handshake step every ACP provider runs, so it is the single seam
+	// for generic surfacing -- and it is already under the lock.
+	b.applyGenericConfigOptionsLocked(handshake.ConfigOptions)
+}
+
+// trySetStartupModel applies a requested model during startup, best-effort. It is
+// a no-op when the request is empty or already matches the server's current
+// model. A failure is logged but NON-FATAL: the agent keeps the server's current
+// model and stays usable. This is intentional -- some ACP agents do not advertise
+// a model list and accept arbitrary ids, so a rejected model must not abort an
+// otherwise-healthy session whose other settings were already applied.
+func (b *acpBase) trySetStartupModel(requested string, set func(string) error) {
+	if requested == "" {
+		return
+	}
+	b.mu.Lock()
+	current := b.model
+	b.mu.Unlock()
+	if requested == current {
+		return
+	}
+	if err := set(requested); err != nil {
+		slog.Warn("requested model not applied; keeping current model",
+			"provider", b.providerName, "agent_id", b.agentID,
+			"requested", requested, "current", current, "error", err)
+	}
+}
+
+// applyStartupPermissionMode applies a requested permission mode during startup
+// for providers that track one (Copilot, Goose, Cursor, Gemini). It is a no-op
+// when the request is empty or already matches the server's current mode. Unlike
+// the model, the mode is mandatory: a rejected mode returns an error so the caller
+// aborts startup.
+//
+// The current mode is read under b.mu: startACPHandshake starts the reader
+// goroutine before Start* reaches this point, and that goroutine can write
+// permissionMode concurrently (syncConfigOptionModeLocked for Copilot/Goose/Cursor,
+// handleCurrentModeUpdate for Gemini). This mirrors trySetStartupModel's locked
+// read of b.model.
+func (b *acpBase) applyStartupPermissionMode(requested string) error {
+	if requested == "" {
+		return nil
+	}
+	b.mu.Lock()
+	current := b.permissionMode
+	b.mu.Unlock()
+	if requested == current {
+		return nil
+	}
+	return b.setPermissionMode(requested)
+}
+
+// applyHandshakeMode sets availableModes and the permission mode from a session
+// handshake (under the lock), falling back to defaultMode when the server reports none.
+// A `mode` config option overrides the permission mode read from the modes channel only
+// for a provider that consumes it (modeChannelPermissionMode -- Copilot/Goose/Cursor);
+// for an unmapped provider (Gemini) it is left to applyGenericConfigOptionsLocked to
+// surface read-only, matching the runtime and ClearContext paths so the option resolves
+// the same way at every seam instead of being applied writably here but read-only there.
+// Used by ACP providers that track a permission mode (Copilot, Goose, Cursor, Gemini).
+func (b *acpBase) applyHandshakeMode(handshake *acpSessionResult, defaultMode string) {
+	modes := buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
+	mode := handshake.CurrentModeID
+	if mode == "" {
+		mode = defaultMode
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.availableModes = modes
+	b.permissionMode = mode
+	if b.modeChannel == modeChannelPermissionMode {
+		b.syncConfigOptionModeLocked(handshake.ConfigOptions)
+	}
+}
+
+// applyPermissionModeStartup runs the post-handshake startup sequence shared by the
+// permission-mode providers (Copilot, Goose, Cursor): write the model and mode
+// channels from the handshake, push the requested permission mode (fatal on
+// rejection -- the agent is torn down and a startup error returned), then push the
+// requested model. The model is applied last and best-effort so a rejected model id
+// cannot undo the permission mode or abort an otherwise-healthy session. Cursor
+// passes its normalized model id and setCursorModel for the wire-format mapping.
+func (b *acpBase) applyPermissionModeStartup(handshake *acpSessionResult, opts Options, defaultMode, requestedModel string, setModel func(string) error) error {
+	b.applyHandshakeModels(handshake)
+	b.applyHandshakeMode(handshake, defaultMode)
+	if err := b.applyStartupPermissionMode(opts.PermissionMode); err != nil {
+		b.stopAndWait()
+		return b.formatStartupError(acpMethodSessionSetMode, err)
+	}
+	b.trySetStartupModel(requestedModel, setModel)
+	return nil
+}
+
+// applyPrimaryAgentStartup runs the post-handshake startup sequence shared by the
+// primary-agent providers (OpenCode, Kilo): write the model channel from the
+// handshake, configure the available primary agents and apply the requested one from
+// extra settings (fatal on rejection -- the agent is torn down and a startup error
+// returned), then push the requested model last and best-effort so a rejected model id
+// cannot undo the primary-agent selection or abort an otherwise-healthy session. The
+// primary-agent mirror of applyPermissionModeStartup; the two providers differ only in
+// the fallback list and default-agent constant.
+func (b *acpBase) applyPrimaryAgentStartup(handshake *acpSessionResult, opts Options, fallback []*leapmuxv1.AvailableOption, defaultAgent string, setModel func(string) error) error {
+	b.applyHandshakeModels(handshake)
+	var requestedPrimaryAgent string
+	if opts.ExtraSettings != nil {
+		requestedPrimaryAgent = opts.ExtraSettings[OptionGroupKeyPrimaryAgent]
+	}
+	if err := b.configurePrimaryAgents(handshake.Modes, handshake.CurrentModeID, requestedPrimaryAgent, fallback, defaultAgent); err != nil {
+		b.stopAndWait()
+		return b.formatStartupError(acpMethodSessionSetMode, err)
+	}
+	b.trySetStartupModel(opts.Model, setModel)
+	return nil
+}
+
+// handleACPConfigOptionUpdate processes a config_option_update notification. The
+// model channel is handled generically for every ACP provider; the configOptions
+// `mode` select is applied as the permission mode for modeChannelPermissionMode
+// providers (Copilot/Goose/Cursor) or the primary agent for modeChannelPrimaryAgent
+// providers (OpenCode/Kilo); any unmapped option is surfaced read-only as a generic
+// group. All
+// channels mutate under a single lock so a concurrent settings read can never observe
+// a half-applied update. Broadcasts happen after the lock is released.
+//
+// A setting change (model, primary agent, or a generic value) persists and broadcasts
+// the full settings exactly once via broadcastSettingsRefresh; when only the
+// permission mode changed, UpdatePermissionMode persists+broadcasts it together with
+// the chat notification. A mode change that rides alongside a model/primary-agent/
+// generic change emits only the chat notification, since broadcastSettingsRefresh
+// already carried the new mode in its StatusChange -- avoiding a second, transiently
+// stale-model broadcast.
+func (b *acpBase) handleACPConfigOptionUpdate(update json.RawMessage) {
+	options := parseACPConfigOptions(update)
+	if len(options) == 0 {
+		return
+	}
+
+	b.mu.Lock()
+	oldMode := b.permissionMode
+	modelChanged, listChanged := b.applyConfigOptionModelsLocked(options)
+	var mode string
+	var modeChanged, primaryAgentChanged bool
+	if b.modeChannel == modeChannelPermissionMode {
+		var modeListChanged bool
+		mode, modeChanged, modeListChanged = b.syncConfigOptionModeLocked(options)
+		listChanged = listChanged || modeListChanged
+	}
+	if b.modeChannel == modeChannelPrimaryAgent {
+		var agentListChanged bool
+		_, primaryAgentChanged, agentListChanged = b.syncConfigOptionPrimaryAgentLocked(options)
+		listChanged = listChanged || agentListChanged
+	}
+	// Surface/sync any unmapped config option (read-only generic groups). A
+	// generic value change persists via broadcastSettingsRefresh (below); a
+	// generic list-only change rides the status-refresh branch.
+	genericValueChanged, genericListChanged := b.applyGenericConfigOptionsLocked(options)
+	sessionID := b.sessionID
+	b.mu.Unlock()
+
+	switch {
+	case modelChanged || primaryAgentChanged || genericValueChanged:
+		// A model, primary-agent, or generic-value change persists+broadcasts the full
+		// settings in one StatusChange (which re-fetches the live model list and carries
+		// the live mode and extras), so the frontend reflects the runtime switch
+		// immediately. A generic value must persist via broadcastSettingsRefresh -- not
+		// BroadcastStatusActive -- so the new selection survives in extra_settings.
+		b.broadcastSettingsRefresh()
+		if modeChanged {
+			// The StatusChange above already carried the new mode; emit only the chat
+			// settings_changed notification rather than a second StatusChange.
+			b.sink.NotifyPermissionModeChanged(oldMode, mode)
+		}
+	case modeChanged:
+		// Mode-only change: persist the mode, broadcast the StatusChange (which carries
+		// the live model list), and emit the chat notification -- all in one call.
+		b.sink.UpdatePermissionMode(mode)
+	case listChanged || genericListChanged:
+		// An available list changed (models, modes, primary agents, or a generic option
+		// set) but no current selection did. broadcastSettingsRefresh would no-op
+		// (PersistSettingsRefresh skips when model/mode/extras are unchanged), so
+		// broadcast a status refresh directly -- its StatusChange re-fetches the live
+		// model list and option groups, surfacing the new options.
+		b.sink.BroadcastStatusActive(sessionID)
+	}
+}
+
+// applyConfigOptionModelsLocked refreshes availableModels and the current model
+// from the `model` select of a configOptions payload, applying modelIDNormalizer
+// and modelsDecorator. It returns whether the current model changed and whether
+// the available-model list changed. The caller must hold b.mu. This is the generic
+// runtime model channel: it works for any ACP provider without per-provider wiring,
+// so even an agent we have not special-cased keeps its model list and selection
+// current across a session.
+//
+// The configOptions `model` select carries only that channel's models, so the
+// remembered models-field catalog (modelsFieldInfos) is re-unioned -- otherwise a
+// provider that splits its catalog across both channels would lose its
+// models-field-only entries on every runtime update.
+func (b *acpBase) applyConfigOptionModelsLocked(options []acpConfigOption) (modelChanged, listChanged bool) {
+	option, ok := acpConfigOptionByCategory(options, acpConfigOptionCategoryModel, acpConfigOptionIDModel)
+	if !ok {
+		return false, false
+	}
+	infos, current := acpModelInfosFromConfigOption(option)
+	infos = mergeModelInfos(b.modelsFieldInfos, infos)
+	models, current := b.buildModels(infos, current)
+	// The `len(models) > 0` guard is intentional: an update that rebuilds to an empty
+	// list never replaces a populated catalog. We would rather keep showing the last
+	// known models than blank the picker -- an empty model list is a worse experience
+	// than a momentarily stale one, and a genuinely model-less update is not a shape
+	// our providers produce. Do not "fix" this to clear the list on empty.
+	if len(models) > 0 && !protoSliceEqual(b.availableModels, models) {
+		b.availableModels = models
+		listChanged = true
+	}
+	if current != "" && current != b.model {
+		b.model = current
+		modelChanged = true
+	}
+	return modelChanged, listChanged
+}
+
+// protoSliceEqual reports whether two proto-message slices are identical in order and
+// per-entry fields, so the model/mode/primary-agent channels can tell an actual list
+// change from an idempotent re-send and avoid a redundant broadcast. proto.Equal
+// compares every field, so a future field addition that a runtime update can change
+// cannot silently make a real change look idempotent.
+func protoSliceEqual[T proto.Message](a, b []T) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !proto.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// buildOptionValues converts the value list of a single config-option select into
+// proto AvailableOptions: deduping by value (first occurrence wins, mirroring
+// buildACPModels), skipping empty and hidden-filtered ids, and normalizing the
+// name the same way the handshake path (buildPrimaryAgentOptions) does so an option
+// renders identically wherever it is built -- before and after a runtime
+// config_option_update, and for the mode and generic channels alike. The option's
+// CurrentValue marks the default. Shared by buildConfigOptionSelect (mode) and
+// applyGenericConfigOptionsLocked (generic).
+func buildOptionValues(option acpConfigOption, hiddenFilter func(string) bool) []*leapmuxv1.AvailableOption {
+	built := make([]*leapmuxv1.AvailableOption, 0, len(option.Options))
+	seen := make(map[string]bool, len(option.Options))
+	for _, candidate := range option.Options {
+		if candidate.Value == "" || seen[candidate.Value] || (hiddenFilter != nil && hiddenFilter(candidate.Value)) {
+			continue
+		}
+		seen[candidate.Value] = true
+		built = append(built, &leapmuxv1.AvailableOption{
+			Id:          candidate.Value,
+			Name:        titleCaseID(candidate.Value, normalizeOptionName(candidate.Name, candidate.Value)),
+			Description: candidate.Description,
+			IsDefault:   candidate.Value == option.CurrentValue,
+		})
+	}
+	return built
+}
+
+// buildConfigOptionSelect converts the `mode` select of a configOptions payload
+// into proto options and reports its current value, applying an optional hidden
+// filter. ok is false when the payload carries no `mode` option. Shared by the
+// permission-mode and primary-agent sync paths, which differ only in which field
+// they store the result into.
+func buildConfigOptionSelect(options []acpConfigOption, hiddenFilter func(string) bool) (built []*leapmuxv1.AvailableOption, current string, ok bool) {
+	option, ok := acpConfigOptionByCategory(options, acpConfigOptionCategoryMode, acpConfigOptionIDMode)
+	if !ok {
+		return nil, "", false
+	}
+	return buildOptionValues(option, hiddenFilter), option.CurrentValue, true
+}
+
+// syncConfigOptionSelectLocked refreshes one secondary channel (the permission
+// mode or the primary agent) from the `mode` select of a configOptions payload. It
+// writes the available-option list and the current value into the caller-supplied
+// fields, and reports the new value, whether the current value changed, and whether
+// the available list changed. The caller must hold b.mu. Shared by
+// syncConfigOptionModeLocked and syncConfigOptionPrimaryAgentLocked, which differ
+// only in the hidden filter and the two target fields.
+func (b *acpBase) syncConfigOptionSelectLocked(
+	options []acpConfigOption,
+	hiddenFilter func(string) bool,
+	available *[]*leapmuxv1.AvailableOption,
+	currentField *string,
+) (value string, changed, listChanged bool) {
+	built, current, ok := buildConfigOptionSelect(options, hiddenFilter)
+	if !ok {
+		return "", false, false
+	}
+	// The len>0 guard mirrors the model channel (applyConfigOptionModelsLocked): an
+	// update that rebuilds to an empty list never blanks a populated picker.
+	if len(built) > 0 && !protoSliceEqual(*available, built) {
+		*available = built
+		listChanged = true
+	}
+	// Resolve the current against the (possibly rebuilt) list: adopt the server's reported
+	// value when selectable, keep the stored selection if it survived the rebuild, else
+	// re-seed to the default-or-first option -- so a runtime update that drops the active
+	// option (or reports a hidden/absent current) never leaves the picker showing a
+	// selection with no matching option. Re-seeding (vs. clearing to "") keeps the value
+	// non-empty so it persists cleanly for both families -- a cleared primary agent would
+	// hit primaryAgentExtras' keep-stored nil and desync memory from the DB. This is the
+	// same resolution the handshake (configurePrimaryAgents) and ClearContext
+	// (applySessionRefresh) paths apply.
+	resolved := reconcileCurrentOptionID(*available, current, *currentField)
+	changed = resolved != "" && resolved != *currentField
+	if resolved != "" {
+		*currentField = resolved
+	}
+	return resolved, changed, listChanged
+}
+
+// syncConfigOptionModeLocked refreshes permissionMode and availableModes from the
+// `mode` select of a configOptions payload, returning the new mode value, whether
+// it changed, and whether the available-mode list changed. The caller must hold
+// b.mu. Used by ACP providers whose configOptions `mode` maps to the permission
+// mode (Copilot, Goose, Cursor).
+func (b *acpBase) syncConfigOptionModeLocked(options []acpConfigOption) (string, bool, bool) {
+	return b.syncConfigOptionSelectLocked(options, nil, &b.availableModes, &b.permissionMode)
+}
+
+// syncConfigOptionPrimaryAgentLocked refreshes currentPrimaryAgent and
+// availablePrimaryAgents from the `mode` select of a configOptions payload,
+// returning the new value, whether it changed, and whether the available list
+// changed. The caller must hold b.mu. Used by ACP providers whose configOptions
+// `mode` maps to the primary agent (OpenCode, Kilo), so a server-initiated runtime
+// primary-agent switch is reflected -- the mirror of syncConfigOptionModeLocked for
+// the permission-mode providers.
+func (b *acpBase) syncConfigOptionPrimaryAgentLocked(options []acpConfigOption) (string, bool, bool) {
+	return b.syncConfigOptionSelectLocked(options, b.primaryAgentHiddenFilter, &b.availablePrimaryAgents, &b.currentPrimaryAgent)
+}
+
+// applyGenericConfigOptionsLocked surfaces the config-option selectors the model and
+// mode channels did not claim as additional, read-only option groups, recording
+// each one's current value. It mirrors applyConfigOptionModelsLocked: the caller
+// holds b.mu, and it reports whether a current value changed (valueChanged) versus
+// only the option set changed (listChanged) so handleACPConfigOptionUpdate can route
+// a value change through broadcastSettingsRefresh (which persists it) and a list-only
+// change through a status refresh.
+//
+// The claimed model and mode options are excluded by identity (the matched entry's
+// id), so the permission-mode/primary-agent group -- the claimed "mode" -- is never
+// double-rendered as a generic group.
+//
+// Keep-stored guard (critical): a payload carrying no unmapped option leaves the
+// stored generic state untouched and returns (false, false). A model-only runtime
+// config_option_update -- the common case -- must not wipe previously surfaced
+// generics, mirroring applyConfigOptionModelsLocked's early-out and the len>0
+// empty-list discipline.
+func (b *acpBase) applyGenericConfigOptionsLocked(options []acpConfigOption) (valueChanged, listChanged bool) {
+	// Capture the claimed model/mode options by identity so we exclude exactly those
+	// entries -- an unclaimed selector with a coincidental id is still surfaced.
+	claimedModelID, claimedModel := "", false
+	if option, ok := acpConfigOptionByCategory(options, acpConfigOptionCategoryModel, acpConfigOptionIDModel); ok {
+		claimedModelID, claimedModel = option.ID, true
+	}
+	// The mode option is "claimed" only by a provider that actually consumes it (a
+	// permission-mode or primary-agent provider). A provider whose mode channel is
+	// unmapped (Gemini) would otherwise exclude a configOptions `mode` here without
+	// applying it anywhere -- silently dropping it. Surfacing it read-only is the safe
+	// fallback.
+	claimedModeID, claimedMode := "", false
+	if b.modeChannel != modeChannelUnmapped {
+		if option, ok := acpConfigOptionByCategory(options, acpConfigOptionCategoryMode, acpConfigOptionIDMode); ok {
+			claimedModeID, claimedMode = option.ID, true
+		}
+	}
+
+	var groups []*leapmuxv1.AvailableOptionGroup
+	values := make(map[string]string)
+	for _, option := range options {
+		if option.ID == "" || !isSelectableConfigOption(option) {
+			continue
+		}
+		if (claimedModel && option.ID == claimedModelID) || (claimedMode && option.ID == claimedModeID) {
+			continue
+		}
+		// Never surface a generic group under a reserved proto key: the mapped
+		// permission-mode/primary-agent group already owns that key, and a second group
+		// with the same key would double-list it in AvailableOptionGroups.
+		if option.ID == OptionGroupKeyPermissionMode || option.ID == OptionGroupKeyPrimaryAgent {
+			continue
+		}
+		groups = append(groups, &leapmuxv1.AvailableOptionGroup{
+			Key:     option.ID,
+			Label:   nameOrID(option.Name, option.ID),
+			Options: buildOptionValues(option, nil),
+		})
+		values[option.ID] = option.CurrentValue
+	}
+
+	// Keep-stored guard: only rebuild when the payload actually carried an unmapped
+	// option, so a model-only update can't wipe the stored generics.
+	if len(groups) == 0 {
+		return false, false
+	}
+
+	// maps.Equal tells an idempotent re-send from a real value change; protoSliceEqual
+	// (proto.Equal per group) compares key, label, and nested options in one call, so a
+	// future field added to AvailableOptionGroup is included automatically rather than
+	// silently ignored by a hand-rolled key/label-only comparison.
+	valueChanged = !maps.Equal(b.genericOptionValues, values)
+	listChanged = !protoSliceEqual(b.genericOptionGroups, groups)
+	b.genericOptionGroups = groups
+	b.genericOptionValues = values
+	return valueChanged, listChanged
+}
+
+// nameOrID returns the trimmed display name, falling back to the id when the name is
+// blank. Used to label a generic config-option group from the option's own name.
+func nameOrID(name, id string) string {
+	if trimmed := strings.TrimSpace(name); trimmed != "" {
+		return trimmed
+	}
+	return id
+}
+
+// mergeGenericExtrasLocked overlays the current values of the generic config options
+// onto a base extras map. The base map (e.g. primaryAgentExtras) owns its keys: the
+// generics are written first and the base overlaid on top, so a generic option that
+// coincidentally shares a base key (primaryAgent) can never clobber it. The caller
+// must hold b.mu.
+//
+// Returns nil only when nothing is being reported -- no base AND no surfaced generic
+// options -- which preserves the PersistSettingsRefresh keep-stored contract and the
+// primaryAgentExtras nil-vs-empty discipline. When generic options ARE surfaced but
+// all their current values are empty (an agent cleared an optional axis), it returns
+// a non-nil map so PersistSettingsRefresh replaces the stored extras wholesale and the
+// cleared value doesn't linger -- returning nil there would keep the stale value.
+func (b *acpBase) mergeGenericExtrasLocked(base map[string]string) map[string]string {
+	if len(base) == 0 && len(b.genericOptionValues) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(base)+len(b.genericOptionValues))
+	for id, value := range b.genericOptionValues {
+		if value != "" {
+			merged[id] = value
+		}
+	}
+	for k, v := range base {
+		merged[k] = v
+	}
+	return merged
+}
+
+// broadcastSettingsRefresh persists and broadcasts the agent's current settings.
+// It reads the live model/mode/primary-agent state, so it serves both permission-
+// mode providers (currentPrimaryAgent == "" -> nil extras) and primary-agent
+// providers (permissionMode == "" -> the stored mode is preserved by the sink).
+func (b *acpBase) broadcastSettingsRefresh() {
+	b.mu.Lock()
+	model := b.model
+	mode := b.permissionMode
+	// Carry the live generic values too: PersistSettingsRefresh replaces the stored
+	// extras wholesale (non-nil), so a model/primary-agent change that did not also
+	// touch the generics must still re-include them or it would wipe them.
+	extras := b.mergeGenericExtrasLocked(primaryAgentExtras(b.currentPrimaryAgent))
+	b.mu.Unlock()
+	b.sink.PersistSettingsRefresh(model, "", mode, extras)
 }
 
 // buildACPModes converts a list of acpModeInfo into proto AvailableOption messages.
@@ -1425,81 +2380,6 @@ func parseACPConfigOptions(raw json.RawMessage) []acpConfigOption {
 	return payload.ConfigOptions
 }
 
-func syncACPConfigOptions(
-	model *string,
-	mode *string,
-	availableModels *[]*leapmuxv1.AvailableModel,
-	availableModes *[]*leapmuxv1.AvailableOption,
-	options []acpConfigOption,
-	normalize func(configID, value string) string,
-) string {
-	if len(options) == 0 {
-		return ""
-	}
-	if normalize == nil {
-		normalize = func(_ string, value string) string { return value }
-	}
-
-	var updatedMode string
-	for _, option := range options {
-		switch option.ID {
-		case "model":
-			currentValue := normalize(option.ID, option.CurrentValue)
-			if currentValue != "" {
-				*model = currentValue
-			}
-			if len(option.Options) > 0 {
-				models := make([]*leapmuxv1.AvailableModel, 0, len(option.Options))
-				for _, candidate := range option.Options {
-					value := normalize(option.ID, candidate.Value)
-					if value == "" {
-						continue
-					}
-					name := candidate.Name
-					if name == "" {
-						name = value
-					}
-					models = append(models, &leapmuxv1.AvailableModel{
-						Id:          value,
-						DisplayName: name,
-						Description: candidate.Description,
-						IsDefault:   value == currentValue,
-					})
-				}
-				if len(models) > 0 {
-					*availableModels = models
-				}
-			}
-		case "mode":
-			currentValue := normalize(option.ID, option.CurrentValue)
-			if currentValue != "" {
-				*mode = currentValue
-				updatedMode = currentValue
-			}
-			if len(option.Options) > 0 {
-				modes := make([]*leapmuxv1.AvailableOption, 0, len(option.Options))
-				for _, candidate := range option.Options {
-					value := normalize(option.ID, candidate.Value)
-					if value == "" {
-						continue
-					}
-					name := titleCaseID(value, candidate.Name)
-					modes = append(modes, &leapmuxv1.AvailableOption{
-						Id:          value,
-						Name:        name,
-						Description: candidate.Description,
-						IsDefault:   value == currentValue,
-					})
-				}
-				if len(modes) > 0 {
-					*availableModes = modes
-				}
-			}
-		}
-	}
-	return updatedMode
-}
-
 // AvailableModels returns the models reported by the ACP provider.
 func (b *acpBase) AvailableModels() []*leapmuxv1.AvailableModel {
 	b.mu.Lock()
@@ -1507,15 +2387,20 @@ func (b *acpBase) AvailableModels() []*leapmuxv1.AvailableModel {
 	return b.availableModels
 }
 
-// setModel sends a session/set_model request and updates the local model field.
-func (b *acpBase) setModel(model string) error {
+// setModelRPC sends a session/set_model request for the given wire model id
+// WITHOUT touching b.model. Callers store the local model themselves -- setModel
+// stores the same id, while Cursor's setCursorModel stores the normalized
+// (display) id rather than the wire id. Keeping the field write out of the RPC
+// avoids a window where b.model briefly holds the wire id (e.g. "default[]")
+// that a concurrent CurrentSettings() read could observe and persist.
+func (b *acpBase) setModelRPC(wireModel string) error {
 	b.mu.Lock()
 	sessionID := b.sessionID
 	b.mu.Unlock()
 
 	params, err := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
-		"modelId":   model,
+		"modelId":   wireModel,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal setModel params: %w", err)
@@ -1524,7 +2409,12 @@ func (b *acpBase) setModel(model string) error {
 	if err != nil {
 		return err
 	}
-	if err := jsonRPCResultError(resp); err != nil {
+	return jsonRPCResultError(resp)
+}
+
+// setModel sends a session/set_model request and updates the local model field.
+func (b *acpBase) setModel(model string) error {
+	if err := b.setModelRPC(model); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -1608,6 +2498,20 @@ func capitalizeFirst(s string) string {
 		return string(unicode.ToUpper(r)) + s[len(string(r)):]
 	}
 	return s
+}
+
+// normalizeOptionName trims an ACP option's server-reported display name and
+// treats a blank or id-equal name as absent (""), so titleCaseID falls back to
+// title-casing the id. Applied on both the handshake (buildPrimaryAgentOptions)
+// and runtime (buildConfigOptionSelect) option-building paths so an option renders
+// identically regardless of which path produced it -- OpenCode-family agents often
+// report name == id or whitespace-only names.
+func normalizeOptionName(name, id string) string {
+	name = strings.TrimSpace(name)
+	if name == id {
+		return ""
+	}
+	return name
 }
 
 // titleCaseID returns name if it is a distinct display name (non-empty and

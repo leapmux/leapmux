@@ -244,6 +244,7 @@ export const ACP_SESSION_UPDATE = {
   USAGE_UPDATE: 'usage_update',
   AVAILABLE_COMMANDS_UPDATE: 'available_commands_update',
   USER_MESSAGE_CHUNK: 'user_message_chunk',
+  CONFIG_OPTION_UPDATE: 'config_option_update',
 } as const
 
 export type AcpSessionUpdate = typeof ACP_SESSION_UPDATE[keyof typeof ACP_SESSION_UPDATE]
