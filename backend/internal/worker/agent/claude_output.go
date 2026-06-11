@@ -57,7 +57,81 @@ type contextUsageSnapshot struct {
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
 	ContextWindow            int64
-	LastBroadcast            time.Time
+	// windowModel is the model id ContextWindow was derived for. The snapshot
+	// outlives a model change (a live model switch, or the account-default sentinel
+	// resolving to a concrete model after startup), so the window is re-seeded from
+	// the catalog whenever the current model no longer matches this -- otherwise a
+	// session that began on the 200K sentinel placeholder (or a smaller-window model)
+	// would under-report a larger window until a result message happened to refresh it.
+	windowModel   string
+	LastBroadcast time.Time
+}
+
+// reseedWindow updates the snapshot's catalog window estimate when the model it was
+// derived for no longer matches the current model: the snapshot outlives a model change
+// (a live switch, or the account-default sentinel resolving to a concrete model after
+// startup). It runs even when estimate is 0 (an unknown/unresolved model), so switching
+// to such a model CLEARS a stale larger window carried over from the previous model --
+// reverting to "unknown" rather than over-reporting -- and switching to a known model
+// picks up its estimate immediately. A result message's window stays authoritative for
+// its model because adoptResultWindow stamps windowModel too, so this estimate doesn't
+// clobber it for the same model.
+func (s *contextUsageSnapshot) reseedWindow(model string, estimate int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.windowModel != model {
+		s.ContextWindow = estimate
+		s.windowModel = model
+	}
+}
+
+// adoptResultWindow records the authoritative context window a result message reported
+// for model, stamping windowModel so the catalog re-seed (reseedWindow) won't overwrite
+// it for the same model. A non-positive window is ignored: top-level result messages
+// always carry the primary model's window, but a subagent result that slipped past the
+// parent_tool_use_id guard would not, and must not clear the real window.
+func (s *contextUsageSnapshot) adoptResultWindow(model string, cw int64) {
+	if cw <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ContextWindow = cw
+	s.windowModel = model
+}
+
+// buildBroadcast assembles the context_usage broadcast payload from the current
+// snapshot and reports whether it should be sent. It returns (nil, false) when no
+// token usage has been recorded yet, or when the 10s debounce window has not elapsed
+// for a non-result message; a result message always broadcasts. When it decides to
+// broadcast it stamps LastBroadcast and includes context_window only when known
+// (> 0), matching the "omit when unknown" contract reseedWindow/adoptResultWindow
+// maintain. Takes s.mu, so the caller must not already hold it. now is passed in so
+// the debounce is testable without a real clock.
+func (s *contextUsageSnapshot) buildBroadcast(msgType string, now time.Time) (map[string]interface{}, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hasUsage := s.InputTokens > 0 || s.OutputTokens > 0 ||
+		s.CacheCreationInputTokens > 0 || s.CacheReadInputTokens > 0
+	if !hasUsage {
+		return nil, false
+	}
+	shouldBroadcast := msgType == claudeMsgTypeResult ||
+		now.Sub(s.LastBroadcast) >= 10*time.Second
+	if !shouldBroadcast {
+		return nil, false
+	}
+	s.LastBroadcast = now
+	usageMap := map[string]interface{}{
+		"input_tokens":                s.InputTokens,
+		"output_tokens":               s.OutputTokens,
+		"cache_creation_input_tokens": s.CacheCreationInputTokens,
+		"cache_read_input_tokens":     s.CacheReadInputTokens,
+	}
+	if s.ContextWindow > 0 {
+		usageMap["context_window"] = s.ContextWindow
+	}
+	return usageMap, true
 }
 
 // HandleOutput processes a single NDJSON line from Claude Code.
@@ -627,7 +701,39 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 		info["total_cost_usd"] = *env.CostUSD
 	}
 
+	// Snapshot a.model and the effort resolver under a.mu in one acquisition: this
+	// runs on the readOutputLoop goroutine while refreshSettingsFromAgent may
+	// concurrently rewrite a.model under the same lock. a.availableModels (which the
+	// resolver captures) is written once at startup -- before any assistant/result
+	// output arrives (those need a user turn) -- and never mutated. The startup write
+	// happens-before this read through the a.mu release/acquire pair: the startup
+	// goroutine LOCKS a.mu in refreshSettingsFromAgent (which runs after the field
+	// write) and the Lock below re-acquires it; the field need not be WRITTEN under the
+	// lock, only released-then-acquired across goroutines. So the resolver needs the
+	// lock only for the a.model read it pairs with here. The catalog entries are
+	// immutable shared data, so the window lookup is safe to compute after unlocking.
+	a.mu.Lock()
+	model := a.model
+	resolver := a.effortResolver()
+	a.mu.Unlock()
+	// The catalog window is an ESTIMATE inferred from the model id ("[1m]" => 1M, else
+	// 200K). resolver.contextWindow resolves it over the dynamic catalog with the static
+	// fallback -- the same dynamic-first-then-fallback the effort lookups use -- so a
+	// model the live CLI dropped from its list but a resumed session is still running
+	// keeps its known window instead of going dark. It is 0 only when the model has no
+	// known window in EITHER catalog: the unresolved account-default sentinel (its entry
+	// is a placeholder), or a model absent from both lists. We deliberately do NOT
+	// fabricate a window then -- 0 means "unknown" and the broadcast omits context_window
+	// below, matching the frontend, which likewise shows no window when it can't resolve
+	// one. For a concrete model absent from both catalogs, a result message's modelUsage
+	// supplies the real window once one arrives (findPrimaryContextWindow matches its
+	// concrete key). The unresolved sentinel ("default") can't: it matches no concrete
+	// usage key, so it stays unknown until the model resolves off the sentinel (a later
+	// refreshSettingsFromAgent), whose model change re-seeds the window here.
+	contextWindow := resolver.contextWindow(model)
+
 	snapshot := a.getOrCreateUsageSnapshot()
+	snapshot.reseedWindow(model, contextWindow)
 
 	if msgType == claudeMsgTypeAssistant && env.Message.Usage != nil {
 		u := env.Message.Usage
@@ -640,104 +746,67 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 	}
 
 	if msgType == claudeMsgTypeResult && env.ModelUsage != nil {
-		// Find the context window for the primary model in the usage map.
-		// Top-level result messages include cumulative session-level usage
-		// that always contains the primary model's entry. Subagent results
-		// (if they bypass the outer parent_tool_use_id guard) only contain
-		// the subagent's model and will not match the primary, so we skip
-		// the update to avoid overwriting with a smaller context window.
-		if cw := findPrimaryContextWindow(env.ModelUsage, a.model); cw > 0 {
-			snapshot.mu.Lock()
-			snapshot.ContextWindow = cw
-			snapshot.mu.Unlock()
-		}
+		// Find the context window for the primary model in the usage map. Top-level
+		// result messages include cumulative session-level usage that always contains
+		// the primary model's entry. Subagent results (if they bypass the outer
+		// parent_tool_use_id guard) only contain the subagent's model and will not
+		// match the primary; findPrimaryContextWindow returns 0 for that, and
+		// adoptResultWindow ignores it rather than overwriting with a smaller window.
+		snapshot.adoptResultWindow(model, findPrimaryContextWindow(env.ModelUsage, model))
 	}
 
-	snapshot.mu.Lock()
-	hasUsage := snapshot.InputTokens > 0 || snapshot.OutputTokens > 0 ||
-		snapshot.CacheCreationInputTokens > 0 || snapshot.CacheReadInputTokens > 0
-	if hasUsage {
-		now := time.Now()
-		shouldBroadcast := msgType == claudeMsgTypeResult ||
-			now.Sub(snapshot.LastBroadcast) >= 10*time.Second
-		if shouldBroadcast {
-			snapshot.LastBroadcast = now
-			usageMap := map[string]interface{}{
-				"input_tokens":                snapshot.InputTokens,
-				"output_tokens":               snapshot.OutputTokens,
-				"cache_creation_input_tokens": snapshot.CacheCreationInputTokens,
-				"cache_read_input_tokens":     snapshot.CacheReadInputTokens,
-			}
-			if snapshot.ContextWindow > 0 {
-				usageMap["context_window"] = snapshot.ContextWindow
-			}
-			info["context_usage"] = usageMap
-		}
+	if usageMap, ok := snapshot.buildBroadcast(msgType, time.Now()); ok {
+		info["context_usage"] = usageMap
 	}
-	snapshot.mu.Unlock()
 
 	if len(info) > 0 {
 		a.sink.BroadcastSessionInfo(info)
 	}
 }
 
+// getOrCreateUsageSnapshot returns the usage snapshot, creating an empty one on
+// first use. The window is NOT seeded here: every caller calls reseedWindow
+// immediately afterward, which is the single source of the estimated window (it
+// also stamps windowModel, which a constructor seed cannot). a.contextUsage is only
+// ever touched from the readOutputLoop goroutine, so it needs no lock of its own;
+// the snapshot's own fields are guarded by snapshot.mu.
 func (a *ClaudeCodeAgent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 	if a.contextUsage == nil {
-		a.contextUsage = &contextUsageSnapshot{
-			ContextWindow: modelContextWindow(claudeCodeAvailableModels, a.model),
-		}
+		a.contextUsage = &contextUsageSnapshot{}
 	}
 	return a.contextUsage
 }
 
 // modelContextWindow looks up the context window for a model ID from a list
-// of available models. Returns 0 if the model is not found.
+// of available models. Returns 0 if the model is not found. Delegates to
+// FindAvailableModel so the nil-entry guard and id match live in one place
+// rather than a fourth hand-copied catalog walk.
 func modelContextWindow(models []*leapmuxv1.AvailableModel, modelID string) int64 {
-	for _, m := range models {
-		if m.Id == modelID {
-			return m.ContextWindow
-		}
+	if m := FindAvailableModel(models, modelID); m != nil {
+		return m.ContextWindow
 	}
 	return 0
 }
 
-// findPrimaryContextWindow extracts the context window for the primary model
-// from a modelUsage map. The modelUsage keys are full API model IDs (e.g.
-// "claude-opus-4-6[1m]") while shortModelID uses the short form (e.g.
-// "opus[1m]"). Returns 0 if the primary model is not found.
+// findPrimaryContextWindow extracts the context window for the primary model from a
+// modelUsage map. The modelUsage keys are full API model IDs (e.g.
+// "claude-opus-4-6[1m]") while shortModelID is the short alias (e.g. "opus[1m]").
+// Each key is collapsed into the alias space with normalizeClaudeCodeModel -- the
+// same normalization a.model and the catalog ids use -- and compared for EQUALITY,
+// so the match is exact rather than a substring scan: "opus" no longer matches an
+// unrelated "claude-opusplus-1" key, the "[1m]" variant is disambiguated by the
+// normalized suffix, and a "[1M]" spelling is handled (normalize lowercases). Returns
+// 0 if the primary model is not found.
 func findPrimaryContextWindow(modelUsage map[string]json.RawMessage, shortModelID string) int64 {
 	if shortModelID == "" {
-		// No primary model configured — fall back to max across all models.
+		// No primary model configured -- fall back to max across all models.
 		return maxContextWindow(modelUsage)
 	}
-
-	// Extract the family prefix and optional variant suffix from the short
-	// model ID (e.g. "opus[1m]" → family "opus", suffix "[1m]").
-	family := shortModelID
-	suffix := ""
-	if idx := strings.Index(shortModelID, "["); idx >= 0 {
-		family = shortModelID[:idx]
-		suffix = shortModelID[idx:]
-	}
-
+	want := normalizeClaudeCodeModel(shortModelID)
 	for key, raw := range modelUsage {
-		if !strings.Contains(key, family) {
+		if normalizeClaudeCodeModel(key) != want {
 			continue
 		}
-		// When the short ID has a variant suffix (e.g. "[1m]"), the full
-		// API ID must also contain it. When there is no suffix, reject
-		// keys that contain a bracket-variant so "opus" does not match
-		// "claude-opus-4-6[1m]".
-		if suffix != "" {
-			if !strings.Contains(key, suffix) {
-				continue
-			}
-		} else {
-			if strings.Contains(key, "[") {
-				continue
-			}
-		}
-
 		if cw := contextWindowOf(raw); cw > 0 {
 			return cw
 		}

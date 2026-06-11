@@ -164,8 +164,35 @@ func unmarshalProtoSlice[T any, PT interface {
 	return result
 }
 
+// marshalAvailableModels serializes the model list for persistence, stripping the
+// IsDefault badge first. That flag is DERIVED from the LEAPMUX_*_DEFAULT_MODEL operator
+// override (re-applied by the manager's withDefaultModelMarked on every read), not
+// intrinsic model data, so persisting it would store a value that goes stale the moment
+// the override changes. Every read path re-derives the badge, so the DB stays badge-free
+// and a future reader that forgets to re-mark can't surface a stale default.
 func marshalAvailableModels(models []*leapmuxv1.AvailableModel) string {
-	return marshalProtoSlice(models, "AvailableModel")
+	return marshalProtoSlice(stripDefaultModelBadge(models), "AvailableModel")
+}
+
+// stripDefaultModelBadge returns models with IsDefault cleared. The catalog pointers are
+// shared, immutable data, so the one badged entry is cloned before clearing rather than
+// mutated in place; every other entry passes through by reference. A nil entry is dropped
+// rather than passed through -- protojson would persist it as a hollow "{}", and the rest
+// of the catalog plumbing (FindAvailableModel) already treats nil entries as absent.
+func stripDefaultModelBadge(models []*leapmuxv1.AvailableModel) []*leapmuxv1.AvailableModel {
+	out := make([]*leapmuxv1.AvailableModel, 0, len(models))
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		if m.GetIsDefault() {
+			clone := proto.Clone(m).(*leapmuxv1.AvailableModel)
+			clone.IsDefault = false
+			m = clone
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func unmarshalAvailableModels(raw string) []*leapmuxv1.AvailableModel {

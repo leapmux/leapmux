@@ -48,6 +48,14 @@ const DefaultAPITimeout = time.Duration(config.DefaultAPITimeoutSeconds) * time.
 // that don't recognize newer effort names (e.g. "xhigh") still work.
 const EffortAuto = "auto"
 
+// DefaultModelSentinel is the model id meaning "let the CLI pick the account's
+// own default model". Claude Code reports it as a distinct entry in the
+// initialize response (displayName "Default (recommended)"); selecting it makes
+// the provider omit --model at launch (and relaunch on a live switch) so the CLI
+// resolves it to the concrete model, which get_settings then reports back -- the
+// model-side analogue of EffortAuto.
+const DefaultModelSentinel = "default"
+
 // EffortUltracode is LeapMux's internal name for the CLI's xhigh+ultracode combo.
 // At the provider wire boundary it maps to {effortLevel:"xhigh", ultracode:true};
 // the CLI's --effort launch flag does not accept it.
@@ -56,12 +64,12 @@ const EffortUltracode = "ultracode"
 // EffortXHigh is the "xhigh" effort level. It is also the launch/wire base for
 // the ultracode combo (which layers the `ultracode` boolean on top of xhigh),
 // so it is a load-bearing value shared by the encode path (ultracodeFlagSettings,
-// buildModelEffortArgs) and the decode path (claudeEffortFromApplied). Naming it
+// buildModelEffortArgs) and the decode path (effortFromApplied). Naming it
 // once keeps those sites from drifting to inconsistent literals.
 const EffortXHigh = "xhigh"
 
 // EffortHigh is the "high" effort level. It is the universal-safe fallback every
-// model supports, so resolveClaudeEffortForModel downgrades any unsupported
+// model supports, so resolveEffort downgrades any unsupported
 // effort to it. Like EffortXHigh it is load-bearing (the fallback target and the
 // Sonnet/Haiku catalog default), so naming it once keeps those sites from
 // drifting to inconsistent literals.
@@ -146,6 +154,18 @@ func registerAgentFactory(
 	}
 }
 
+// DefaultModelEnvOverride returns the value of the provider's
+// LEAPMUX_*_DEFAULT_MODEL environment variable, or "" if unset. It is the
+// explicit operator override that takes precedence over both a CLI-reported
+// default and the static catalog's preferred model (see withDefaultModelMarked).
+func DefaultModelEnvOverride(provider leapmuxv1.AgentProvider) string {
+	reg, ok := agentFactoryRegistry[provider]
+	if !ok || reg.envModelKey == "" {
+		return ""
+	}
+	return os.Getenv(reg.envModelKey)
+}
+
 // DefaultModel returns the default model ID for a provider, checking the
 // provider's environment variable first, then falling back to the model
 // marked IsDefault in the registered model list.
@@ -154,10 +174,8 @@ func DefaultModel(provider leapmuxv1.AgentProvider) string {
 	if !ok {
 		return ""
 	}
-	if reg.envModelKey != "" {
-		if env := os.Getenv(reg.envModelKey); env != "" {
-			return env
-		}
+	if env := DefaultModelEnvOverride(provider); env != "" {
+		return env
 	}
 	for _, m := range reg.defaultModels {
 		if m.IsDefault {
@@ -168,6 +186,23 @@ func DefaultModel(provider leapmuxv1.AgentProvider) string {
 		return reg.defaultModels[0].Id
 	}
 	return ""
+}
+
+// NormalizeModelID canonicalizes a provider's model id into the alias space the
+// provider stores and compares against, so two spellings of the same model -- e.g.
+// the CLI's fully-qualified "claude-opus-4-8[1m]" and the alias "opus[1m]" -- compare
+// equal. Providers without an alias space return the id unchanged. Used by the
+// settings-change notification so a model that merely re-normalizes (not a user
+// switch) isn't reported as a change.
+func NormalizeModelID(provider leapmuxv1.AgentProvider, model string) string {
+	switch provider {
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:
+		return normalizeClaudeCodeModel(model)
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
+		return normalizeCursorModelID(model)
+	default:
+		return model
+	}
 }
 
 // EffortEnvOverride returns the value of the provider's
@@ -189,7 +224,9 @@ func EffortEnvOverride(provider leapmuxv1.AgentProvider) string {
 // (e.g. DefaultEffort) from a catalog returned by the CLI.
 func FindAvailableModel(models []*leapmuxv1.AvailableModel, id string) *leapmuxv1.AvailableModel {
 	for _, m := range models {
-		if m.Id == id {
+		// Guard nil entries: callers (defaultModelForList, withDefaultModelMarked)
+		// already treat the slice as possibly nil-bearing, so this must too.
+		if m != nil && m.Id == id {
 			return m
 		}
 	}

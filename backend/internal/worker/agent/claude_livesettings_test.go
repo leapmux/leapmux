@@ -210,6 +210,17 @@ func TestNormalizeClaudeCodeModel(t *testing.T) {
 		"claude-haiku-4-5-20251001":  "haiku",
 		"claude-haiku-4-5":           "haiku",
 		"claude-sonnet-4-5-20240101": "sonnet",
+		// Version-first ids (numeric tokens leading the family): the family alias is
+		// found by skipping the leading version tokens, where a from-position-0 alpha
+		// scan would return "" and leak the raw id.
+		"claude-3-5-sonnet":         "sonnet",
+		"claude-3-5-haiku-20241022": "haiku",
+		"3-7-sonnet":                "sonnet",
+		// Mixed-case CLI values collapse to the lowercase alias space (S3), so a
+		// running model still matches its own (lowercase) catalog entry.
+		"OPUS[1M]":          "opus[1m]",
+		"Claude-Sonnet-4-6": "sonnet",
+		"Opus":              "opus",
 		// Degenerate input.
 		"":              "",
 		"unknown-thing": "unknown",
@@ -529,6 +540,55 @@ func TestHandlePendingControlResponse_ParsesInitializeFields(t *testing.T) {
 	assert.Equal(t, "on", result.FastModeState)
 	assert.Equal(t, "default", result.Mode)
 	assert.NotEmpty(t, result.RawResponse)
+}
+
+func TestHandlePendingControlResponse_ParsesModels(t *testing.T) {
+	a := &ClaudeCodeAgent{
+		processBase:    processBase{agentID: "test"},
+		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+	}
+
+	ch := make(chan claudeCodeControlResult, 1)
+	a.registerPendingControl("req-models", ch)
+
+	// An initialize response carrying the model catalog: a "default" alias
+	// sentinel, a disabled entry, the [1m] variants, an effort-bearing Fable, a
+	// no-effort Haiku, plus a separate unavailable_models list.
+	raw := []byte(`{"type":"control_response","response":{` +
+		`"subtype":"success","request_id":"req-models","response":{` +
+		`"models":[` +
+		`{"value":"default","displayName":"Default","description":"d"},` +
+		`{"value":"fable","displayName":"Fable 5","description":"Most powerful for the hardest problems","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},` +
+		`{"value":"fable[1m]","displayName":"Fable 5 (1M context)","description":"Most powerful for the hardest problems","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},` +
+		`{"value":"haiku","displayName":"Haiku","description":"Fastest for quick answers","supportsEffort":false},` +
+		`{"value":"internal-preview","displayName":"Internal","disabled":true}` +
+		`],` +
+		`"unavailable_models":[{"value":"zdr-blocked","displayName":"Blocked"}]` +
+		`}}}`)
+
+	line := &parsedLine{Type: "control_response", Raw: raw}
+	assert.True(t, a.handlePendingControlResponse(line))
+
+	result := <-ch
+	assert.True(t, result.Success)
+	require.Len(t, result.Models, 5, "all raw entries decode, including default/disabled")
+	require.Len(t, result.UnavailableModels, 1)
+	assert.Equal(t, "fable", result.Models[1].Value)
+	assert.True(t, result.Models[1].SupportsEffort)
+	assert.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, result.Models[1].SupportedEffortLevels)
+	assert.True(t, result.Models[4].Disabled)
+	assert.Equal(t, "zdr-blocked", result.UnavailableModels[0].Value)
+
+	// Conversion drops the disabled entry, surfaces the "default" sentinel as a
+	// selectable option, and surfaces Fable with its full effort menu and
+	// inferred context windows.
+	converted := claudeModelsByID(convertClaudeModels(result.Models, result.UnavailableModels))
+	require.Contains(t, converted, "fable")
+	require.Contains(t, converted, "default")
+	require.NotContains(t, converted, "internal-preview")
+	assert.Equal(t, "xhigh", converted["fable"].DefaultEffort)
+	assert.Equal(t, int64(1_000_000), converted["fable[1m]"].ContextWindow)
+	assert.Empty(t, converted["haiku"].SupportedEfforts)
 }
 
 func TestHandlePendingControlResponse_ParsesGetSettingsResponse(t *testing.T) {

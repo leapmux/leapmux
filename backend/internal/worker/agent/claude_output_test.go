@@ -1040,6 +1040,244 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 		"subagent result without parent_tool_use_id must not overwrite context window")
 }
 
+// TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog verifies the context-usage
+// snapshot seeds its window from the per-agent dynamic catalog (effortCatalog),
+// not the static catalog alone. A model discovered only from the live CLI -- the
+// whole point of dynamic discovery -- is absent from claudeCodeAvailableModels, so
+// a static-only seed would report no window until the first result message; the
+// dynamic seed reports the [1m]-inferred window immediately.
+func TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog(t *testing.T) {
+	// Precondition: the model is unknown to the static catalog, so a static seed
+	// would be 0.
+	require.Equal(t, int64(0), modelContextWindow(claudeCodeAvailableModels, "mythos"),
+		"precondition: mythos is not in the static catalog")
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = "mythos"
+	agent.availableModels = convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "mythos[1m]", DisplayName: "Mythos (1M)", SupportsEffort: true, SupportedEffortLevels: []string{"high", "xhigh"}},
+		{Value: "mythos", DisplayName: "Mythos", SupportsEffort: true, SupportedEffortLevels: []string{"high", "xhigh"}},
+	}, nil)
+
+	// An assistant usage message seeds the snapshot (getOrCreateUsageSnapshot); the
+	// result message (no modelUsage) broadcasts the seeded window without overwriting it.
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "hi"}],
+			"usage": {"input_tokens": 100, "output_tokens": 50}
+		}
+	}`))
+	agent.HandleOutput([]byte(`{"type": "result", "subtype": "success"}`))
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(200_000), usage["context_window"],
+		"window seeded from the dynamic catalog entry (mythos, no [1m] suffix -> 200K)")
+}
+
+// TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog verifies that a model the
+// live CLI dropped from its dynamic list -- but that the session is still running and
+// the static catalog still knows -- reports its real context window via the
+// effortResolver's static fallback, the same per-entry fallback effort/ultracode
+// resolution uses. Before the fix the window resolved over the dynamic catalog alone (a
+// whole-list swap with no per-entry fallback), so such a model reported "unknown" until
+// a result message supplied a window -- diverging from how its effort still resolved.
+func TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog(t *testing.T) {
+	// Precondition: opus[1m] is a static-catalog model with a 1M window.
+	require.Equal(t, int64(1_000_000), modelContextWindow(claudeCodeAvailableModels, "opus[1m]"),
+		"precondition: opus[1m] carries a 1M window in the static catalog")
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = "opus[1m]"
+	// The live CLI reported a dynamic list that does NOT include opus[1m] (e.g. it
+	// dropped the model the resumed session is still running). effortCatalog returns
+	// this list verbatim, so a dynamic-only window lookup would miss.
+	agent.availableModels = convertClaudeModels([]claudeCodeModelInfo{
+		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"high"}},
+	}, nil)
+	require.Nil(t, FindAvailableModel(agent.availableModels, "opus[1m]"),
+		"precondition: opus[1m] is absent from the dynamic catalog")
+
+	agent.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50}}}`))
+	agent.HandleOutput([]byte(`{"type":"result","subtype":"success"}`)) // no modelUsage -> window from the catalog seed
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	assert.Equal(t, int64(1_000_000), usage["context_window"],
+		"window resolved from the static fallback (opus[1m] = 1M), not reported unknown")
+}
+
+// TestGetOrCreateUsageSnapshot_SentinelWindowIsUnknown verifies a session stuck on the
+// unresolved account-default sentinel ("default") reports NO context window. The
+// sentinel catalog entry is a placeholder with no concrete window, and we deliberately
+// do not fabricate one: the broadcast omits context_window so the indicator shows
+// "unknown" (matching the frontend) until the sentinel resolves to a concrete model or
+// a result message supplies the real window.
+func TestGetOrCreateUsageSnapshot_SentinelWindowIsUnknown(t *testing.T) {
+	// Precondition: the sentinel entry carries no context window.
+	require.Equal(t, int64(0), modelContextWindow(claudeCodeAvailableModels, DefaultModelSentinel),
+		"precondition: the sentinel has no concrete window")
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = DefaultModelSentinel // stuck: the CLI never echoed a concrete applied.model
+
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "hi"}],
+			"usage": {"input_tokens": 100, "output_tokens": 50}
+		}
+	}`))
+	agent.HandleOutput([]byte(`{"type": "result", "subtype": "success"}`))
+
+	require.GreaterOrEqual(t, sink.SessionInfoCount(), 1)
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok, "expected context_usage in session info")
+	_, hasWindow := usage["context_window"]
+	assert.False(t, hasWindow,
+		"unresolved sentinel reports no context window (unknown), not a fabricated value")
+}
+
+// TestExtractAndBroadcastUsage_ReseedsWindowOnModelChange covers the usage snapshot
+// outliving a model change: a session that starts on the unresolved account-default
+// sentinel reports no window (unknown), and once the sentinel resolves to a concrete
+// 1M-context model the window is re-seeded from the catalog -- not left unknown until a
+// result message with matching modelUsage happens to refresh it.
+func TestExtractAndBroadcastUsage_ReseedsWindowOnModelChange(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = DefaultModelSentinel // unresolved at the first turn -> window unknown
+
+	assistant := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50}}}`
+	result := `{"type":"result","subtype":"success"}` // no modelUsage -> window comes from the catalog re-seed
+
+	agent.HandleOutput([]byte(assistant))
+	agent.HandleOutput([]byte(result))
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	_, hasWindow := usage["context_window"]
+	require.False(t, hasWindow, "unresolved sentinel reports no window")
+
+	// The sentinel resolves to a 1M-context model (refreshSettingsFromAgent stored it).
+	agent.model = "opus[1m]"
+	agent.HandleOutput([]byte(assistant))
+	agent.HandleOutput([]byte(result))
+	usage, ok = sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, int64(1_000_000), usage["context_window"],
+		"window re-seeded from the catalog when the model resolves off the sentinel")
+}
+
+// TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade locks the re-seed's
+// DOWNGRADE direction. The re-seed comment claims it rescues a session that began on
+// "a smaller-window model", but the only other re-seed test goes the other way
+// (200K sentinel -> 1M). The more dangerous direction is a session on a 1M model that
+// live-switches to a 200K model: if the re-seed regressed, the indicator would keep
+// over-reporting 1M (showing far more headroom than real) until a result message with
+// matching modelUsage happened to correct it.
+func TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = "opus[1m]" // known 1M model via the static catalog fallback
+
+	assistant := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50}}}`
+	result := `{"type":"result","subtype":"success"}` // no modelUsage -> window comes from the catalog re-seed
+
+	agent.HandleOutput([]byte(assistant))
+	agent.HandleOutput([]byte(result))
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, int64(1_000_000), usage["context_window"], "opus[1m] seeds the 1M window")
+
+	// Live-switch to Sonnet (200K): the window must re-seed DOWN, not stay at 1M.
+	agent.model = "sonnet"
+	agent.HandleOutput([]byte(assistant))
+	agent.HandleOutput([]byte(result))
+	usage, ok = sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, int64(200_000), usage["context_window"],
+		"window re-seeded down to 200K on a 1M->Sonnet downgrade")
+}
+
+// TestExtractAndBroadcastUsage_ClearsWindowOnSwitchToUnknownModel verifies that
+// switching to a model unknown to BOTH catalogs (e.g. a resumed session running a model
+// the live CLI dropped into unavailable_models, so it is in neither the dynamic list
+// nor the static fallback) CLEARS the window to "unknown" rather than continuing to
+// over-report the previous model's larger window. modelContextWindow returns 0 for such
+// a model, and the re-seed fires on the model change even though the new window is 0, so
+// the broadcast omits context_window. A result message's modelUsage supplies the real
+// window once one arrives.
+func TestExtractAndBroadcastUsage_ClearsWindowOnSwitchToUnknownModel(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = "opus[1m]" // known 1M model via the static catalog fallback
+
+	assistant := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50}}}`
+	result := `{"type":"result","subtype":"success"}` // no modelUsage -> window comes from the catalog re-seed
+
+	agent.HandleOutput([]byte(assistant))
+	agent.HandleOutput([]byte(result))
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, int64(1_000_000), usage["context_window"], "opus[1m] seeds the 1M window")
+
+	// Precondition: the switched-to model is in neither catalog.
+	require.Equal(t, int64(0), modelContextWindow(agent.effortCatalog(), "ghost-model"),
+		"precondition: ghost-model is unknown to both catalogs")
+
+	// Switch to a model neither catalog knows (filtered/unavailable but still running).
+	agent.model = "ghost-model"
+	agent.HandleOutput([]byte(assistant))
+	agent.HandleOutput([]byte(result))
+	usage, ok = sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	_, hasWindow := usage["context_window"]
+	assert.False(t, hasWindow,
+		"switching to a model unknown to both catalogs clears the stale 1M window to unknown")
+}
+
+// TestExtractAndBroadcastUsage_ResultWindowSurvivesReseed verifies the authoritative
+// window from a result message's modelUsage is NOT clobbered by the catalog re-seed on a
+// later turn for the SAME model. The re-seed runs every turn now (it must, to clear a
+// stale window when the model switches to an unknown one), so the windowModel guard is
+// the only thing protecting a CLI-reported window from being overwritten by the coarser
+// catalog estimate.
+func TestExtractAndBroadcastUsage_ResultWindowSurvivesReseed(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.model = "opus[1m]" // catalog estimate for this id is 1M
+
+	assistant := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50}}}`
+	// A result whose modelUsage reports a CLI-adjusted window (500K) that differs from
+	// the catalog's 1M estimate for the same model.
+	resultWithUsage := `{"type":"result","subtype":"success","modelUsage":{"claude-opus-4-6[1m]":{"contextWindow":500000}}}`
+	resultNoUsage := `{"type":"result","subtype":"success"}`
+
+	agent.HandleOutput([]byte(assistant))
+	agent.HandleOutput([]byte(resultWithUsage))
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, int64(500000), usage["context_window"],
+		"result modelUsage is authoritative (500K, not the 1M catalog estimate)")
+
+	// A later turn on the SAME model: the always-running catalog re-seed must not
+	// overwrite the authoritative 500K with the 1M estimate.
+	agent.HandleOutput([]byte(assistant))
+	agent.HandleOutput([]byte(resultNoUsage))
+	usage, ok = sink.LastSessionInfo()["context_usage"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, int64(500000), usage["context_window"],
+		"catalog re-seed must not clobber the authoritative window for the same model")
+}
+
 func TestFindPrimaryContextWindow(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1090,6 +1328,28 @@ func TestFindPrimaryContextWindow(t *testing.T) {
 			expected: 0,
 		},
 		{
+			// S6: the normalized-equality match rejects an unrelated family whose API id
+			// merely contains "opus" as a substring (e.g. a hypothetical "opusplus"),
+			// where the old substring scan would have false-matched it.
+			name:  "opus does not match an unrelated opusplus family",
+			model: "opus",
+			usage: map[string]json.RawMessage{
+				"claude-opusplus-1": json.RawMessage(`{"contextWindow": 500000}`),
+				"claude-opus-4-8":   json.RawMessage(`{"contextWindow": 200000}`),
+			},
+			expected: 200000,
+		},
+		{
+			// S6: normalization lowercases, so a "[1M]" spelling matches "opus[1m]" --
+			// the old case-sensitive suffix Contains would have missed it (returned 0).
+			name:  "uppercase [1M] suffix still matches opus[1m]",
+			model: "opus[1m]",
+			usage: map[string]json.RawMessage{
+				"claude-opus-4-8[1M]": json.RawMessage(`{"contextWindow": 1000000}`),
+			},
+			expected: 1000000,
+		},
+		{
 			name:  "empty model falls back to max",
 			model: "",
 			usage: map[string]json.RawMessage{
@@ -1112,4 +1372,62 @@ func TestFindPrimaryContextWindow(t *testing.T) {
 			assert.Equal(t, tt.expected, got)
 		})
 	}
+}
+
+// TestContextUsageSnapshot_BuildBroadcast exercises the debounce and window-omission
+// rules of buildBroadcast directly. The integration tests (HandleOutput) cover the
+// result-message path, but the 10s debounce for non-result messages and the
+// LastBroadcast stamping were previously only reachable through a real clock; passing
+// `now` in makes them deterministic.
+func TestContextUsageSnapshot_BuildBroadcast(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	t.Run("no usage yields no broadcast", func(t *testing.T) {
+		s := &contextUsageSnapshot{ContextWindow: 200_000}
+		m, ok := s.buildBroadcast(claudeMsgTypeAssistant, base)
+		assert.False(t, ok)
+		assert.Nil(t, m)
+		assert.True(t, s.LastBroadcast.IsZero(), "a suppressed broadcast must not stamp LastBroadcast")
+	})
+
+	t.Run("result with usage broadcasts and includes a known window", func(t *testing.T) {
+		s := &contextUsageSnapshot{InputTokens: 10, OutputTokens: 5, CacheReadInputTokens: 3, ContextWindow: 200_000}
+		m, ok := s.buildBroadcast(claudeMsgTypeResult, base)
+		require.True(t, ok)
+		assert.Equal(t, int64(10), m["input_tokens"])
+		assert.Equal(t, int64(5), m["output_tokens"])
+		assert.Equal(t, int64(3), m["cache_read_input_tokens"])
+		assert.Equal(t, int64(200_000), m["context_window"])
+		assert.Equal(t, base, s.LastBroadcast, "broadcasting stamps LastBroadcast")
+	})
+
+	t.Run("unknown window is omitted", func(t *testing.T) {
+		s := &contextUsageSnapshot{InputTokens: 1} // ContextWindow == 0
+		m, ok := s.buildBroadcast(claudeMsgTypeResult, base)
+		require.True(t, ok)
+		_, has := m["context_window"]
+		assert.False(t, has, "ContextWindow==0 must omit context_window so the indicator shows unknown")
+	})
+
+	t.Run("non-result is debounced within the 10s window", func(t *testing.T) {
+		s := &contextUsageSnapshot{InputTokens: 1, LastBroadcast: base}
+		m, ok := s.buildBroadcast(claudeMsgTypeAssistant, base.Add(9*time.Second))
+		assert.False(t, ok, "9s < 10s debounce: no broadcast")
+		assert.Nil(t, m)
+		assert.Equal(t, base, s.LastBroadcast, "a suppressed broadcast must not move LastBroadcast")
+	})
+
+	t.Run("non-result broadcasts once the 10s window elapses", func(t *testing.T) {
+		s := &contextUsageSnapshot{InputTokens: 1, LastBroadcast: base}
+		at := base.Add(10 * time.Second)
+		_, ok := s.buildBroadcast(claudeMsgTypeAssistant, at)
+		assert.True(t, ok, ">=10s elapsed: broadcast")
+		assert.Equal(t, at, s.LastBroadcast)
+	})
+
+	t.Run("result bypasses the debounce window", func(t *testing.T) {
+		s := &contextUsageSnapshot{InputTokens: 1, LastBroadcast: base}
+		_, ok := s.buildBroadcast(claudeMsgTypeResult, base.Add(time.Second))
+		assert.True(t, ok, "a result message always broadcasts, even mid-debounce")
+	})
 }

@@ -464,6 +464,53 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testi
 	assert.Len(t, parsedGroups[0].GetOptions(), 2)
 }
 
+// TestMarshalAvailableModels_StripsDerivedDefaultBadge covers S6: the IsDefault badge is
+// derived from the LEAPMUX_*_DEFAULT_MODEL override (re-applied on every read by the
+// manager), so persisting it would store a value that goes stale when the override
+// changes. marshalAvailableModels strips it, and must not mutate the shared catalog
+// pointer it strips from.
+func TestMarshalAvailableModels_StripsDerivedDefaultBadge(t *testing.T) {
+	badged := &leapmuxv1.AvailableModel{Id: "opus[1m]", DisplayName: "Opus (1M)", IsDefault: true}
+	models := []*leapmuxv1.AvailableModel{
+		{Id: "sonnet", DisplayName: "Sonnet"},
+		badged,
+	}
+
+	parsed := unmarshalAvailableModels(marshalAvailableModels(models))
+	require.Len(t, parsed, 2)
+	for _, m := range parsed {
+		assert.False(t, m.GetIsDefault(), "persisted %q must carry no default badge", m.GetId())
+	}
+	assert.Equal(t, "opus[1m]", parsed[1].GetId(), "intrinsic fields survive the strip")
+
+	// The shared, immutable catalog pointer must not be mutated in place by the strip.
+	assert.True(t, badged.IsDefault, "marshaling must not clear IsDefault on the shared input entry")
+}
+
+// TestStripDefaultModelBadge_DropsNilEntries guards that a nil catalog entry is
+// dropped rather than passed through to protojson (which would persist it as a
+// hollow "{}"), matching the nil-as-absent convention the rest of the catalog
+// plumbing uses.
+func TestStripDefaultModelBadge_DropsNilEntries(t *testing.T) {
+	models := []*leapmuxv1.AvailableModel{
+		{Id: "sonnet", DisplayName: "Sonnet"},
+		nil,
+		{Id: "opus[1m]", DisplayName: "Opus (1M)", IsDefault: true},
+	}
+
+	stripped := stripDefaultModelBadge(models)
+	require.Len(t, stripped, 2, "the nil entry is dropped")
+	for _, m := range stripped {
+		require.NotNil(t, m)
+		assert.False(t, m.GetIsDefault(), "the badge is cleared on the surviving entries")
+	}
+
+	// End to end: the persisted round-trip carries no hollow entry.
+	parsed := unmarshalAvailableModels(marshalAvailableModels(models))
+	require.Len(t, parsed, 2)
+	assert.Equal(t, []string{"sonnet", "opus[1m]"}, []string{parsed[0].GetId(), parsed[1].GetId()})
+}
+
 func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
@@ -570,4 +617,73 @@ func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testin
 	require.NoError(t, err)
 	assert.Equal(t, "bypassPermissions", dbAgent.PermissionMode,
 		"permission mode should be persisted to DB when set_permission_mode is sent while agent is running")
+}
+
+// TestConfirmedOrDefault verifies the settings_changed notification resolves the
+// model/effort the session actually settled on, falling back to the requested
+// values when the confirmed settings are nil or omit a field. Both the
+// live-update and restart branches share this helper.
+func TestConfirmedOrDefault(t *testing.T) {
+	// nil confirmed settings -> requested values unchanged (offline edit / failed restart).
+	model, effort := confirmedOrDefault(nil, "default", "auto")
+	assert.Equal(t, "default", model)
+	assert.Equal(t, "auto", effort)
+
+	// Both fields confirmed -> both override (sentinel resolved to a concrete model;
+	// effort clamped to a concrete level).
+	model, effort = confirmedOrDefault(&leapmuxv1.AgentSettings{Model: "sonnet", Effort: "high"}, "default", "auto")
+	assert.Equal(t, "sonnet", model)
+	assert.Equal(t, "high", effort)
+
+	// Empty fields in confirmed settings don't clobber the requested values.
+	model, effort = confirmedOrDefault(&leapmuxv1.AgentSettings{Model: "", Effort: "max"}, "opus[1m]", "auto")
+	assert.Equal(t, "opus[1m]", model, "empty confirmed model keeps the requested model")
+	assert.Equal(t, "max", effort)
+
+	// The common live case: the session confirms the requested model unchanged, so the
+	// returned model equals the request -- which keeps the notifyModel != newModel
+	// guard (gating the corrective UpdateAgentModelAndEffort write) from firing.
+	model, effort = confirmedOrDefault(&leapmuxv1.AgentSettings{Model: "opus", Effort: "xhigh"}, "opus", "ultracode")
+	assert.Equal(t, "opus", model, "confirmed model equal to the request is returned unchanged")
+	assert.Equal(t, "xhigh", effort, "confirmed effort (clamped from ultracode) overrides the request")
+}
+
+// TestReportModelChange verifies the settings_changed notification reports a model
+// change whenever the stored model and the settled model differ after normalization,
+// suppressing only a model that merely re-normalizes to the same alias. The
+// account-default sentinel resolving to a concrete model IS reported (S7): a stuck
+// "default" finally resolving is a real, user-visible transition, and there is no
+// signal distinguishing it from a new tab's first resolution.
+func TestReportModelChange(t *testing.T) {
+	sentinel := agent.DefaultModelSentinel
+	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	// S7: the sentinel resolving to a concrete model is reported -- the panel shows
+	// the resolved model too, so chat and panel agree.
+	assert.True(t, reportModelChange(claude, sentinel, "sonnet"),
+		"sentinel resolving to a concrete model is a real transition")
+	// Explicit switch away from the sentinel reports.
+	assert.True(t, reportModelChange(claude, sentinel, "opus"),
+		"explicit switch from default is reported")
+	// Normal concrete switch reports.
+	assert.True(t, reportModelChange(claude, "sonnet", "opus"))
+	// An unresolved sentinel stays "default" on both sides -> no spurious change.
+	assert.False(t, reportModelChange(claude, sentinel, sentinel),
+		"an unresolved sentinel is not a change")
+	// No change -> nothing to report.
+	assert.False(t, reportModelChange(claude, "sonnet", "sonnet"))
+	// A concrete model resolving to the same model (effort-only edit) -> no report.
+	assert.False(t, reportModelChange(claude, "opus", "opus"))
+	// A stored fully-qualified model that re-normalizes to the settled alias on an
+	// effort-only edit is NOT a model change (both normalize to "opus").
+	assert.False(t, reportModelChange(claude, "claude-opus-4-8", "opus"),
+		"a model that only re-normalizes is not a change")
+	assert.False(t, reportModelChange(claude, "claude-opus-4-8[1m]", "opus[1m]"),
+		"the [1m] variant re-normalizes too")
+	// A genuine switch whose spellings normalize differently still reports.
+	assert.True(t, reportModelChange(claude, "claude-opus-4-8", "sonnet"),
+		"a genuine switch (opus -> sonnet) still reports despite normalization")
+	// A provider without an alias space (Codex) compares raw, unchanged behavior.
+	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	assert.True(t, reportModelChange(codex, "gpt-5-codex", "gpt-5"))
+	assert.False(t, reportModelChange(codex, "gpt-5", "gpt-5"))
 }

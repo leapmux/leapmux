@@ -447,6 +447,14 @@ func modelOrDefault(model string, provider leapmuxv1.AgentProvider) string {
 // The sentinel tells the CLI layer to omit the --effort flag (Claude) or
 // the reasoning_effort field (Codex) so the agent binary picks its own
 // default.
+//
+// Caveat for Claude Code: LEAPMUX_CLAUDE_DEFAULT_EFFORT only takes effect when
+// LEAPMUX_CLAUDE_DEFAULT_MODEL also names a CONCRETE model. With the default model left
+// at the account-default sentinel ("default"), launch omits BOTH --model and --effort
+// (forwarding --effort against the sentinel risks an unsupported level on whatever the
+// account resolves to -- e.g. Haiku, which takes no --effort; see buildModelEffortArgs),
+// so the configured default effort is not applied to a sentinel-default agent. Pin a
+// concrete LEAPMUX_CLAUDE_DEFAULT_MODEL for the default effort to take effect.
 func effortOrDefault(effort string, provider leapmuxv1.AgentProvider) string {
 	if effort != "" {
 		return effort

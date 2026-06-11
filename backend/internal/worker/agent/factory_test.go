@@ -136,3 +136,21 @@ func TestPermissionModeOrDefault(t *testing.T) {
 		})
 	}
 }
+
+// TestFindAvailableModel verifies the lookup matches by id and, critically,
+// tolerates nil entries in the slice (its callers treat the catalog as possibly
+// nil-bearing, so the lookup must not panic on one).
+func TestFindAvailableModel(t *testing.T) {
+	models := []*leapmuxv1.AvailableModel{
+		nil,
+		{Id: "opus"},
+		nil,
+		{Id: "sonnet"},
+	}
+
+	assert.Equal(t, "sonnet", FindAvailableModel(models, "sonnet").GetId())
+	assert.Equal(t, "opus", FindAvailableModel(models, "opus").GetId())
+	assert.Nil(t, FindAvailableModel(models, "missing"), "no match returns nil")
+	assert.Nil(t, FindAvailableModel([]*leapmuxv1.AvailableModel{nil, nil}, "x"), "all-nil slice does not panic")
+	assert.Nil(t, FindAvailableModel(nil, "x"))
+}
