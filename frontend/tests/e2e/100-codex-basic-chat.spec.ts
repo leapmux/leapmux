@@ -4,12 +4,12 @@ import { assistantBubbles, lastAssistantBubble, sendMessage, waitForAgentIdle } 
 codexTest.describe('Codex Basic Chat', () => {
   codexTest('send message and receive response', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace // fixture trigger
-    await sendMessage(page, 'What is 2+2? Reply with just the number.')
+    await sendMessage(page, 'What is 1234 + 5678? Reply with just the number.')
     await waitForAgentIdle(page, 120_000)
 
     const bubble = await lastAssistantBubble(page)
     const text = await bubble.textContent()
-    expect(text).toContain('4')
+    expect(text).toMatch(/6,?912/)
   })
 
   codexTest('assistant response appears in chat bubble', async ({ authenticatedCodexWorkspace, page }) => {

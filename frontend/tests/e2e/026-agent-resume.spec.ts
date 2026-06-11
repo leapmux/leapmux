@@ -37,7 +37,7 @@ test.describe('Agent Session Resume', () => {
 
       // Send a message and wait for response
       await editor.click()
-      await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
@@ -85,7 +85,7 @@ test.describe('Agent Session Resume', () => {
 
       // Send a message and wait for response (establishes session)
       await editor.click()
-      await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
       await waitForAssistantMessage(page, '4')
@@ -129,7 +129,7 @@ test.describe('Agent Session Resume', () => {
 
       // Send a message and wait for response (establishes session)
       await editor.click()
-      await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
       await waitForAssistantMessage(page, '4')

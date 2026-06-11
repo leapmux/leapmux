@@ -60,14 +60,14 @@ test.describe('Worker Restart Thinking Indicator', () => {
 
       // Send a message and wait for a response
       await editor.click()
-      await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response
       await page.waitForFunction((sel: string) => {
         const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
-          if (b.textContent?.includes('4'))
+          if (/6,?912/.test(b.textContent ?? ''))
             return true
         }
         return false

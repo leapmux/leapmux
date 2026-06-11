@@ -19,7 +19,7 @@ test.describe('Full Hub+Worker Restart', () => {
 
       // Step 1: Send a message and wait for a response
       await editor.click()
-      await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
@@ -27,7 +27,7 @@ test.describe('Full Hub+Worker Restart', () => {
       await page.waitForFunction((sel: string) => {
         const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
-          if (b.textContent?.includes('4'))
+          if (/6,?912/.test(b.textContent ?? ''))
             return true
         }
         return false
@@ -35,7 +35,7 @@ test.describe('Full Hub+Worker Restart', () => {
 
       // Verify the user message is also visible
       const userBubbles = page.locator('[data-testid="message-bubble"][data-role="user"]')
-      await expect(userBubbles.first()).toContainText('2+2')
+      await expect(userBubbles.first()).toContainText('1234 + 5678')
 
       // Remember the workspace URL so we can navigate back after restart
       const workspaceUrl = page.url()
@@ -61,11 +61,11 @@ test.describe('Full Hub+Worker Restart', () => {
         let hasUserMsg = false
         let hasAssistantResp = false
         for (const b of userBubbles) {
-          if (b.textContent?.includes('2+2'))
+          if (b.textContent?.includes('1234 + 5678'))
             hasUserMsg = true
         }
         for (const b of asstBubbles) {
-          if (b.textContent?.includes('4'))
+          if (/6,?912/.test(b.textContent ?? ''))
             hasAssistantResp = true
         }
         return hasUserMsg && hasAssistantResp
@@ -93,7 +93,7 @@ test.describe('Full Hub+Worker Restart', () => {
         let has3plus3 = false
         for (const b of userBubbles) {
           const text = b.textContent || ''
-          if (text.includes('2+2'))
+          if (text.includes('1234 + 5678'))
             has2plus2 = true
           if (text.includes('3+3'))
             has3plus3 = true
@@ -108,7 +108,7 @@ test.describe('Full Hub+Worker Restart', () => {
         let has6 = false
         for (const b of asstBubbles) {
           const text = b.textContent || ''
-          if (text.includes('4'))
+          if (/6,?912/.test(text))
             has4 = true
           if (text.includes('6'))
             has6 = true

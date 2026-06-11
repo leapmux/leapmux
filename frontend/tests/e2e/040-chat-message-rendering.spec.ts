@@ -16,7 +16,7 @@ test.describe('Chat Message Rendering', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number.')
+    await page.keyboard.type('What is 1234 + 5678? Reply with just the number.')
     await page.keyboard.press('Meta+Enter')
 
     await expect(firstAssistantBubble(page)).toBeVisible()
@@ -25,7 +25,7 @@ test.describe('Chat Message Rendering', () => {
     // User bubble: shows the human text, NOT the raw JSON envelope.
     const userBubble = page.locator('[data-testid="message-bubble"][data-role="user"]').first()
     const userContent = userBubble.locator('[data-testid="message-content"]')
-    await expect(userContent).toContainText('What is 2+2?')
+    await expect(userContent).toContainText('What is 1234 + 5678?')
     await expect(userContent).not.toContainText('{"content":')
 
     // Assistant bubble: rendered as HTML markdown (at least one <p>),

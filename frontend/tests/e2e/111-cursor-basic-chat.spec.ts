@@ -8,7 +8,7 @@ cursorTest.skip(!!CURSOR_E2E_SKIP_REASON, CURSOR_E2E_SKIP_REASON || '')
 cursorTest.describe('Cursor Basic Chat', () => {
   cursorTest('send message and receive response', async ({ authenticatedCursorWorkspace, page }) => {
     void authenticatedCursorWorkspace
-    await sendMessage(page, 'What is 2+2? Reply with just the number.')
+    await sendMessage(page, 'What is 1234 + 5678? Reply with just the number.')
     await waitForAgentIdle(page, 120_000)
 
     const bubble = await lastAssistantBubble(page)
@@ -17,6 +17,6 @@ cursorTest.describe('Cursor Basic Chat', () => {
     // Accept either a quota/limit error (CI may be rate-limited) or the
     // expected answer. Reject empty/null — the bubble must have content.
     expect(text.length).toBeGreaterThan(0)
-    expect(QUOTA_OR_LIMIT_ERROR_RE.test(text) || text.includes('4')).toBe(true)
+    expect(QUOTA_OR_LIMIT_ERROR_RE.test(text) || /6,?912/.test(text)).toBe(true)
   })
 })

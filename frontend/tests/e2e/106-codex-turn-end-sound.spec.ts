@@ -49,7 +49,7 @@ codexTest.describe('Codex Turn End Sound', () => {
     await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
 
     // Send a simple question that completes without tool use (num_tool_uses = 0)
-    await sendMessage(page, 'What is 2+2? Reply with just the number, nothing else.')
+    await sendMessage(page, 'What is 1234 + 5678? Reply with just the number, nothing else.')
     await waitForAgentIdle(page, 120_000)
 
     await page.waitForTimeout(500)

@@ -388,7 +388,7 @@ test.describe('Agent Settings', () => {
 
     // Send a message to trigger agent re-launch via ensureAgentActive
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
     // Wait for a NEW assistant bubble to appear (not the old "2" response).
@@ -396,7 +396,7 @@ test.describe('Agent Settings', () => {
 
     // The new bubble (last one) should contain "4".
     const lastAssistant2 = lastAssistantBubble(page)
-    await expect(lastAssistant2).toContainText('4', { timeout: 30000 })
+    await expect(lastAssistant2).toContainText(/6,?912/, { timeout: 30000 })
 
     // Verify Plan Mode is still selected after worker restart
     await expect(trigger).toContainText('Plan Mode')
@@ -415,10 +415,10 @@ test.describe('Agent Settings', () => {
 
     // Verify the agent is still responsive after interrupt by sending another message
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
     const lastAssistant2 = lastAssistantBubble(page)
-    await expect(lastAssistant2).toContainText('4', { timeout: 30000 })
+    await expect(lastAssistant2).toContainText(/6,?912/, { timeout: 30000 })
   })
 
   test('model/effort items not disabled when idle', async ({ authenticatedWorkspace, page }) => {

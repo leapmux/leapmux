@@ -23,7 +23,7 @@ test.describe('Claude Code agent startup queue', () => {
     // Type and submit while still in STARTING. The frontend should
     // intercept the send and queue rather than dispatching the RPC.
     await editor.click()
-    await page.keyboard.type('What is 2+2? Reply with just the number.')
+    await page.keyboard.type('What is 1234 + 5678? Reply with just the number.')
     await page.keyboard.press('Meta+Enter')
 
     // Editor clears immediately on submit regardless of queueing.
@@ -43,6 +43,6 @@ test.describe('Claude Code agent startup queue', () => {
     }
 
     // The queued message must reach Claude and produce a response.
-    await expect(lastAssistantBubble(page)).toContainText('4', { timeout: 60_000 })
+    await expect(lastAssistantBubble(page)).toContainText(/6,?912/, { timeout: 60_000 })
   })
 })

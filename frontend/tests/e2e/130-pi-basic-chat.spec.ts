@@ -6,12 +6,12 @@ piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
 piTest.describe('Pi Basic Chat', () => {
   piTest('send message and receive response', async ({ authenticatedPiWorkspace, page }) => {
     void authenticatedPiWorkspace // fixture trigger
-    await sendMessage(page, 'What is 2+2? Reply with just the number.')
+    await sendMessage(page, 'What is 1234 + 5678? Reply with just the number.')
     await waitForAgentIdle(page, 180_000)
 
     const bubble = await lastAssistantBubble(page)
     const text = await bubble.textContent()
-    expect(text).toContain('4')
+    expect(text).toMatch(/6,?912/)
   })
 
   piTest('assistant response appears in chat bubble', async ({ authenticatedPiWorkspace, page }) => {
