@@ -78,7 +78,6 @@ describe('agentProviderSelector', () => {
   it.each([
     [AgentProvider.CLAUDE_CODE, 'Claude Code'],
     [AgentProvider.CODEX, 'Codex'],
-    [AgentProvider.GEMINI_CLI, 'Gemini CLI'],
     [AgentProvider.OPENCODE, 'OpenCode'],
     [AgentProvider.GITHUB_COPILOT, 'GitHub Copilot'],
     [AgentProvider.CURSOR, 'Cursor'],
@@ -108,7 +107,6 @@ describe('agentProviderSelector', () => {
       />
     ))
 
-    expect(screen.queryByTestId(`agent-provider-option-${AgentProvider.GEMINI_CLI}`)).toBeNull()
     expect(screen.queryByTestId(`agent-provider-option-${AgentProvider.OPENCODE}`)).toBeNull()
     expect(screen.queryByTestId(`agent-provider-option-${AgentProvider.GITHUB_COPILOT}`)).toBeNull()
   })

@@ -1,6 +1,6 @@
 /**
  * Shared factory for ACP-based e2e test fixtures.
- * Eliminates duplicated fixture boilerplate across Copilot, Gemini, and OpenCode.
+ * Eliminates duplicated fixture boilerplate across Copilot, Cursor, and OpenCode.
  */
 import { execFileSync } from 'node:child_process'
 import {
@@ -14,11 +14,11 @@ export { AgentProvider } from '../../src/generated/leapmux/v1/agent_pb'
 
 export interface ACPFixtureConfig {
   agentProvider: number
-  /** CLI binary name to check on PATH (e.g. 'copilot', 'gemini'). Null skips the check. */
+  /** CLI binary name to check on PATH (e.g. 'copilot', 'cursor-agent'). Null skips the check. */
   cliBinary?: string
   /** Skip message when the CLI binary is not found. */
   skipMessage?: string
-  /** Prefix for workspace names (e.g. 'copilot-e2e', 'gemini-e2e', 'opencode-e2e'). */
+  /** Prefix for workspace names (e.g. 'copilot-e2e', 'cursor-e2e', 'opencode-e2e'). */
   workspacePrefix: string
   /** Optional explicit model to use when opening the agent. */
   model?: string

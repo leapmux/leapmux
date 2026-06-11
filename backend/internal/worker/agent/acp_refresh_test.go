@@ -16,36 +16,6 @@ import (
 
 // --- Tests for refreshFromSession via ClearContext ---
 
-func TestGeminiClearContextRefreshesFromSession(t *testing.T) {
-	agent, _ := newGeminiAgentForRPCWithResponder(t, func(method string) json.RawMessage {
-		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
-				"sessionId": "session-2",
-				"models": {"currentModelId": "gemini-2.5-flash"},
-				"modes":  {"currentModeId": "plan"}
-			}`)
-		}
-		return json.RawMessage(`{}`)
-	})
-	agent.model = "gemini-2.5-pro"
-	agent.permissionMode = "default"
-	sink := &testSink{}
-	agent.sink = sink
-	agent.reapplySettings = agent.reapplyModelAndPermissionMode
-	agent.refreshFromSession = agent.refreshModelAndPermissionModeFromSession
-
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
-	assert.Equal(t, "session-2", sessionID)
-	assert.Equal(t, "gemini-2.5-flash", agent.model)
-	assert.Equal(t, "plan", agent.permissionMode)
-
-	require.Equal(t, 1, sink.SettingsRefreshCount())
-	refresh := sink.LastSettingsRefresh()
-	assert.Equal(t, "gemini-2.5-flash", refresh.Model)
-	assert.Equal(t, "plan", refresh.PermissionMode)
-}
-
 func TestCopilotClearContextRefreshesFromSession(t *testing.T) {
 	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {

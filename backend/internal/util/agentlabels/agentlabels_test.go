@@ -22,7 +22,6 @@ func TestDisplayName(t *testing.T) {
 	}{
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "Claude Code"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "Codex"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, "Gemini CLI"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "OpenCode"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, "GitHub Copilot"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "Cursor"},
@@ -52,7 +51,6 @@ func TestCLIAlias(t *testing.T) {
 	}{
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "claude-code"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "codex"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, "gemini"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "opencode"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, "copilot"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "cursor"},
@@ -96,8 +94,6 @@ func TestParseProvider_KnownAliasesAllMap(t *testing.T) {
 		"claude-code": leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		"Codex":       leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		"codex":       leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		"Gemini":      leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-		"gemini":      leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		"Cursor":      leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		"cursor":      leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		"Copilot":     leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
@@ -156,7 +152,6 @@ func TestAliasesFor_CanonicalFirstThenSorted(t *testing.T) {
 	cases := map[leapmuxv1.AgentProvider][]string{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    {"Claude Code", "claude", "claude-code"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          {"Codex", "codex"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:     {"Gemini CLI", "Gemini", "gemini"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: {"GitHub Copilot", "Copilot", "copilot"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:         {"Cursor", "cursor"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:       {"OpenCode", "opencode"},

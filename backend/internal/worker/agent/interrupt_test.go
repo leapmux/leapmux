@@ -334,11 +334,11 @@ func TestPiAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "stopped")
 }
 
-// --- ACP (covers Gemini, Cursor, Copilot, Kilo, OpenCode, Goose
+// --- ACP (covers Cursor, Copilot, Kilo, OpenCode, Goose
 // because they all embed acpBase and inherit Interrupt verbatim) ---
 
 func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
-	agent, requests := newGeminiAgentForRPCWithResponder(t,
+	agent, requests := newGooseAgentForRPCWithResponder(t,
 		func(string) json.RawMessage { return json.RawMessage(`{}`) })
 	// Helper sets sessionID="session-1" by default.
 
@@ -360,7 +360,7 @@ func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
 }
 
 func TestACPAgent_Interrupt_NoSessionIsNoop(t *testing.T) {
-	agent, requests := newGeminiAgentForRPCWithResponder(t,
+	agent, requests := newGooseAgentForRPCWithResponder(t,
 		func(string) json.RawMessage { return json.RawMessage(`{}`) })
 	// Wipe the session so cancelSession would emit a stale id; the
 	// interrupt path must short-circuit instead of emitting at all.
@@ -376,7 +376,7 @@ func TestACPAgent_Interrupt_NoSessionIsNoop(t *testing.T) {
 }
 
 func TestACPAgent_Interrupt_AfterStopErrors(t *testing.T) {
-	agent, _ := newGeminiAgentForRPCWithResponder(t,
+	agent, _ := newGooseAgentForRPCWithResponder(t,
 		func(string) json.RawMessage { return json.RawMessage(`{}`) })
 	agent.mu.Lock()
 	agent.stopped = true

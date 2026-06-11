@@ -197,8 +197,6 @@ func validateAttachmentForProvider(provider leapmuxv1.AgentProvider, attachment 
 		}
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
 		return nil
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
-		return nil
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
 		return nil
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:

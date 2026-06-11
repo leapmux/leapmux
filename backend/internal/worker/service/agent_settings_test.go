@@ -415,19 +415,19 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testi
 	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-gemini",
+		ID:            "agent-goose",
 		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		Model:         "auto",
 	}))
 
 	// Preload the manager cache with models and option groups
 	// (simulates what startAgentWith would do after agent starts).
 	models := []*leapmuxv1.AvailableModel{
-		{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
-		{Id: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
+		{Id: "claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
+		{Id: "gpt-5.4", DisplayName: "GPT-5.4"},
 	}
 	groups := []*leapmuxv1.AvailableOptionGroup{
 		{Key: "thinkingBudget", Label: "Thinking Budget", Options: []*leapmuxv1.AvailableOption{
@@ -435,19 +435,19 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testi
 			{Id: "high", Name: "High"},
 		}},
 	}
-	svc.Agents.PreloadCache("agent-gemini", models, groups)
+	svc.Agents.PreloadCache("agent-goose", models, groups)
 
 	// Persist confirmed settings — should also persist available models/groups.
 	_, err := svc.persistConfirmedAgentSettings(
-		"agent-gemini",
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		"agent-goose",
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		"auto", "", "", nil,
 		&leapmuxv1.AgentSettings{Model: "auto"},
 	)
 	require.NoError(t, err)
 
 	// Verify available models/groups were persisted to DB.
-	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-gemini")
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-goose")
 	require.NoError(t, err)
 	assert.NotEqual(t, "[]", dbAgent.AvailableModels, "available_models should be populated")
 	assert.NotEqual(t, "[]", dbAgent.AvailableOptionGroups, "available_option_groups should be populated")
@@ -455,8 +455,8 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableModelsAndGroups(t *testi
 	// Verify round-trip: unmarshal back and check values.
 	parsedModels := unmarshalAvailableModels(dbAgent.AvailableModels)
 	require.Len(t, parsedModels, 2)
-	assert.Equal(t, "gemini-2.5-pro", parsedModels[0].GetId())
-	assert.Equal(t, "gemini-2.5-flash", parsedModels[1].GetId())
+	assert.Equal(t, "claude-sonnet-4", parsedModels[0].GetId())
+	assert.Equal(t, "gpt-5.4", parsedModels[1].GetId())
 
 	parsedGroups := unmarshalAvailableOptionGroups(dbAgent.AvailableOptionGroups)
 	require.Len(t, parsedGroups, 1)
@@ -511,36 +511,36 @@ func TestStripDefaultModelBadge_DropsNilEntries(t *testing.T) {
 	assert.Equal(t, []string{"sonnet", "opus[1m]"}, []string{parsed[0].GetId(), parsed[1].GetId()})
 }
 
-func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) {
+func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-gemini",
+		ID:            "agent-goose",
 		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		Model:         "auto",
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentAllSettings(ctx, db.UpdateAgentAllSettingsParams{
 		Model:          "auto",
 		Effort:         "",
-		PermissionMode: "default",
+		PermissionMode: "auto",
 		ExtraSettings:  "{}",
-		ID:             "agent-gemini",
+		ID:             "agent-goose",
 	}))
 
 	sender := channel.NewSender(w)
-	svc.Watchers.WatchAgent("agent-gemini", &EventWatcher{
+	svc.Watchers.WatchAgent("agent-goose", &EventWatcher{
 		ChannelID: w.channelID,
 		Sender:    sender,
 	})
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
-		AgentId: "agent-gemini",
+		AgentId: "agent-goose",
 		Settings: &leapmuxv1.AgentSettings{
-			PermissionMode: "yolo",
+			PermissionMode: "approve",
 		},
 	}, w)
 
@@ -573,10 +573,10 @@ func TestUpdateAgentSettings_BroadcastsGeminiPermissionModeLabels(t *testing.T) 
 	require.True(t, ok)
 	change, ok := changes["permissionMode"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "default", change["old"])
-	assert.Equal(t, "yolo", change["new"])
-	assert.Equal(t, "Default", change["oldLabel"])
-	assert.Equal(t, "YOLO", change["newLabel"])
+	assert.Equal(t, "auto", change["old"])
+	assert.Equal(t, "approve", change["new"])
+	assert.Equal(t, "Auto", change["oldLabel"])
+	assert.Equal(t, "Approve", change["newLabel"])
 }
 
 func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testing.T) {

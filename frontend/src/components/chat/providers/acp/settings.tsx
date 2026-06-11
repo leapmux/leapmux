@@ -27,7 +27,7 @@ interface CommonSettingsConfig {
 /**
  * Configures the shared ACP settings panel. The discriminator picks the
  * read/write path: ACP providers that store the toggle in the agent's
- * top-level `permissionMode` field (Copilot, Cursor, Gemini, Goose) use
+ * top-level `permissionMode` field (Copilot, Cursor, Goose) use
  * `kind: 'permissionMode'`; providers that store it in `extraSettings`
  * under a custom key (OpenCode `primaryAgent`, Kilo) use `kind: 'optionGroup'`.
  */

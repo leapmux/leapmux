@@ -16,8 +16,8 @@ import "github.com/leapmux/leapmux/internal/util/envutil"
 // OPENCODE_CONFIG, PI_CODING_AGENT_DIR, GOOSE_MODEL/GOOSE_PROVIDER user overrides), and
 // provider-selection config (CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY) are preserved.
 //
-// Each harness's rc-detection marker (CLAUDECODE, CODEX_CI, OPENCODE_CLIENT, KILO_CLIENT,
-// GEMINI_CLI/GEMINI_CLI_NO_RELAUNCH) and Claude's CLAUDE_CODE_ENTRYPOINT are intentionally
+// Each harness's rc-detection marker (CLAUDECODE, CODEX_CI, OPENCODE_CLIENT, KILO_CLIENT)
+// and Claude's CLAUDE_CODE_ENTRYPOINT are intentionally
 // NOT listed: each provider strips them from the inherited env and re-adds its own value
 // before this runs. CODEX_THREAD_ID is also stripped in codex.go; listing it here too is a
 // harmless redundant strip that also protects non-codex launches.

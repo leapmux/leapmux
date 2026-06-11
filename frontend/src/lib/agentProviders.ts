@@ -9,7 +9,6 @@ export const DEFAULT_AGENT_PROVIDERS: AgentProvider[] = [
   AgentProviderEnum.CLAUDE_CODE,
   AgentProviderEnum.CODEX,
   AgentProviderEnum.CURSOR,
-  AgentProviderEnum.GEMINI_CLI,
   AgentProviderEnum.GITHUB_COPILOT,
   AgentProviderEnum.GOOSE,
   AgentProviderEnum.KILO,

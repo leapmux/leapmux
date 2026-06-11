@@ -115,7 +115,7 @@ func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGrou
 }
 
 // buildACPPromptBlocks converts text + classified attachments into ACP prompt
-// blocks compatible with both OpenCode and Gemini CLI.
+// blocks compatible with ACP agents.
 func buildACPPromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
 	var prompt []map[string]interface{}
 	if content != "" {

@@ -30,7 +30,7 @@ LeapMux is built for two overlapping audiences:
 
 ## Supported coding agents
 
-LeapMux supports nine coding-agent providers. A provider only appears in the agent picker if its command-line tool is detected on the machine that will run your agents, so the list you actually see depends on which CLIs are installed.
+LeapMux supports eight coding-agent providers. A provider only appears in the agent picker if its command-line tool is detected on the machine that will run your agents, so the list you actually see depends on which CLIs are installed.
 
 Every provider is first-class: you get a consistent core experience — chat, streamed tool calls, permission prompts, and session resume — with all of them. The plan/todo sidebar appears for agents whose CLI emits task/todo tools. What you can do varies only by what each agent's own CLI offers.
 
@@ -38,7 +38,6 @@ Every provider is first-class: you get a consistent core experience — chat, st
 |-------|-----------------|
 | Claude Code | `claude` |
 | Codex | `codex` |
-| Gemini CLI | `gemini` |
 | Cursor | `cursor-agent` |
 | GitHub Copilot | `copilot` |
 | Kilo | `kilo` |

@@ -11,13 +11,12 @@ For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/t
 
 ## Supported agents
 
-LeapMux integrates nine coding-agent providers:
+LeapMux integrates eight coding-agent providers:
 
 | Provider | CLI binary detected on the Worker |
 | --- | --- |
 | Claude Code | `claude` |
 | Codex | `codex` (or `codex-x86_64-pc-windows-msvc`) |
-| Gemini CLI | `gemini` |
 | Cursor | `cursor-agent` |
 | GitHub Copilot | `copilot` |
 | Kilo | `kilo` |
@@ -25,13 +24,13 @@ LeapMux integrates nine coding-agent providers:
 | Goose | `goose` |
 | Pi | `pi` |
 
-All nine are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. How much of that workflow you see still depends on what each provider's CLI exposes. The plan/todo sidebar, for example, only appears for agents whose CLI emits task or todo updates, and resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
+All eight are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. How much of that workflow you see still depends on what each provider's CLI exposes. The plan/todo sidebar, for example, only appears for agents whose CLI emits task or todo updates, and resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
 
 ### Which agents you can actually open
 
 A provider only appears in the picker if its CLI is installed on the selected Worker. When you choose a Worker, LeapMux probes its shell for each provider's binary (`command -v <binary>`) and shows only the providers it finds.
 
-While that probe is still loading, LeapMux shows a default list of all nine providers, sorted alphabetically by label; once the probe completes, the list narrows to the providers actually installed on the Worker.
+While that probe is still loading, LeapMux shows a default list of all eight providers, sorted alphabetically by label; once the probe completes, the list narrows to the providers actually installed on the Worker.
 
 If no provider is detected, the picker shows a disabled **No agents available** button. Install the relevant CLI on the Worker and use the **Refresh available providers** button to re-probe.
 
@@ -91,7 +90,7 @@ You can attach files by clicking the upload (paperclip) button, or by pasting or
 | Claude Code | yes | yes | yes | no |
 | Codex | yes | yes | no | no |
 | Pi | yes | yes | no | no |
-| Gemini CLI, Cursor, GitHub Copilot, Goose, OpenCode, Kilo | yes | yes | yes | yes |
+| Cursor, GitHub Copilot, Goose, OpenCode, Kilo | yes | yes | yes | yes |
 
 ### Message persistence and offline behavior
 
@@ -173,7 +172,7 @@ Pi shows method-specific dialogs: **confirm** (Deny / Approve), **input** (an in
 
 ### Other providers
 
-Gemini CLI, Cursor, GitHub Copilot, Goose, OpenCode, and Kilo render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
+Cursor, GitHub Copilot, Goose, OpenCode, and Kilo render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
 
 ## Changing settings mid-session
 
@@ -217,7 +216,6 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 | Provider | Default model | Default mode | Notes |
 | --- | --- | --- | --- |
 | Cursor | `auto` | `agent` | Has plan mode. |
-| Gemini CLI | `auto` | `default` | Bypass mode is `yolo`; has plan mode. |
 | GitHub Copilot | (CLI default) | `agent` | Has plan and autopilot. |
 | Goose | (CLI default) | `auto` | Bypass = `auto` — Goose's default mode already is its bypass mode (it has no separate ask-first mode); **no plan mode**. |
 | OpenCode | (CLI default) | Primary Agent `build` | Has plan mode. |

@@ -188,7 +188,7 @@ func TestNormalizeAttachmentsForProvider_InfersTextMime(t *testing.T) {
 	assert.Equal(t, "text/plain", normalized[0].GetMimeType())
 }
 
-func TestNormalizeAttachmentsForProvider_GeminiAcceptsACPAttachmentSet(t *testing.T) {
+func TestNormalizeAttachmentsForProvider_CopilotAcceptsACPAttachmentSet(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
 		{Filename: "diagram.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
@@ -196,7 +196,7 @@ func TestNormalizeAttachmentsForProvider_GeminiAcceptsACPAttachmentSet(t *testin
 		{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}},
 	}
 
-	normalized, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, attachments)
+	normalized, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, attachments)
 	require.NoError(t, err)
 	require.Len(t, normalized, 4)
 }

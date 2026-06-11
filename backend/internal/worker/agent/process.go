@@ -22,7 +22,7 @@ import (
 const maxStderrSize = 1 << 20 // 1MB
 
 // processBase contains the shared process lifecycle state and methods.
-// ClaudeCodeAgent embeds it directly; ACP agents (GeminiCLIAgent, OpenCodeAgent)
+// ClaudeCodeAgent embeds it directly; ACP agents (OpenCodeAgent, CursorCLIAgent)
 // and CodexAgent embed it via jsonrpcBase which adds JSON-RPC request plumbing.
 type processBase struct {
 	agentID      string
