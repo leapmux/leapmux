@@ -1983,14 +1983,6 @@ func claudeEffortIDsFromList(efforts []*leapmuxv1.AvailableEffort) []string {
 	return ids
 }
 
-func claudeModelsByID(models []*leapmuxv1.AvailableModel) map[string]*leapmuxv1.AvailableModel {
-	byID := make(map[string]*leapmuxv1.AvailableModel, len(models))
-	for _, m := range models {
-		byID[m.Id] = m
-	}
-	return byID
-}
-
 func TestConvertClaudeModels(t *testing.T) {
 	models := []claudeCodeModelInfo{
 		{Value: "default", DisplayName: "Default (recommended)", Description: "the account default", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
