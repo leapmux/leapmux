@@ -14,6 +14,12 @@ type testSinkSettingsRefreshed struct {
 	ExtraSettings  map[string]string
 }
 
+// testSinkModeChange records the args of a NotifyPermissionModeChanged call.
+type testSinkModeChange struct {
+	Old string
+	New string
+}
+
 // testSink is a test implementation of OutputSink that records calls.
 type testSink struct {
 	mu                sync.Mutex
@@ -23,6 +29,7 @@ type testSink struct {
 	streamEnds        []string
 	sessionIDs        []string
 	permissionModes   []string
+	modeChanges       []testSinkModeChange
 	settingsRefreshes []testSinkSettingsRefreshed
 	sessionInfos      []map[string]interface{}
 	spanTypes         map[string]string
@@ -156,6 +163,11 @@ func (s *testSink) UpdatePermissionMode(mode string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.permissionModes = append(s.permissionModes, mode)
+}
+func (s *testSink) NotifyPermissionModeChanged(oldMode, newMode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.modeChanges = append(s.modeChanges, testSinkModeChange{Old: oldMode, New: newMode})
 }
 func (s *testSink) PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string) {
 	s.mu.Lock()
@@ -301,6 +313,18 @@ func (s *testSink) SettingsRefreshCount() int {
 	return len(s.settingsRefreshes)
 }
 
+func (s *testSink) StatusActiveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.statusActives)
+}
+
+func (s *testSink) ModeChanges() []testSinkModeChange {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]testSinkModeChange(nil), s.modeChanges...)
+}
+
 func (s *testSink) LastSettingsRefresh() testSinkSettingsRefreshed {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -407,6 +431,7 @@ func (noopSink) BroadcastControlRequest(string, []byte)                         
 func (noopSink) BroadcastControlCancel(string)                                     {}
 func (noopSink) UpdateSessionID(string)                                            {}
 func (noopSink) UpdatePermissionMode(string)                                       {}
+func (noopSink) NotifyPermissionModeChanged(string, string)                        {}
 func (noopSink) PersistSettingsRefresh(string, string, string, map[string]string)  {}
 func (noopSink) BroadcastStatusActive(string)                                      {}
 func (noopSink) BroadcastSessionInfo(map[string]interface{})                       {}

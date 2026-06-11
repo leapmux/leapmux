@@ -38,7 +38,6 @@ registerACPProvider({
     )
   },
   planValue: 'plan',
-  extraHiddenSessionUpdates: new Set(['config_option_update']),
   questionHandling: {
     isAskUserQuestion: payload => !!payload && isCursorAskQuestionPayload(payload),
     extractAskUserQuestions: payload => getCursorQuestions(payload),

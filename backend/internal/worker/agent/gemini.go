@@ -49,6 +49,10 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 		},
 	}
 	a.extraSessionUpdate = a.handleExtraSessionUpdate
+	a.modelsDecorator = geminiEnsureAuto
+	// modeChannel stays modeChannelUnmapped (the zero value): Gemini tracks a permission
+	// mode but drives it through the native current_mode_update channel, not the
+	// configOptions `mode` select, which is surfaced read-only instead.
 	a.promptFunc = a.doSendPrompt
 	a.reapplySettings = a.reapplyModelAndPermissionMode
 	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
@@ -74,55 +78,29 @@ func StartGeminiCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 		return nil, err
 	}
 
-	a.availableModels = buildGeminiCLIModels(handshake.Models, handshake.CurrentModelID)
-	if a.model == "" && handshake.CurrentModelID != "" {
-		a.model = handshake.CurrentModelID
-	}
-
-	a.availableModes = buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
-	a.permissionMode = handshake.CurrentModeID
-	if a.permissionMode == "" {
-		a.permissionMode = GeminiCLIModeDefault
-	}
-
-	cleanup := func() {
-		a.Stop()
-		_ = a.Wait()
-	}
-	if requested := StringOrDefault(opts.Model, ""); requested != "" && requested != a.model {
-		if err := a.setModel(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetModel, err)
-		}
-	}
-	if requested := StringOrDefault(opts.PermissionMode, ""); requested != "" && requested != a.permissionMode {
-		if err := a.setPermissionMode(requested); err != nil {
-			cleanup()
-			return nil, a.formatStartupError(acpMethodSessionSetMode, err)
-		}
+	if err := a.applyPermissionModeStartup(handshake, opts, GeminiCLIModeDefault, opts.Model, a.setModel); err != nil {
+		return nil, err
 	}
 
 	return a, nil
 }
 
-func buildGeminiCLIModels(models []acpModelInfo, currentModelID string) []*leapmuxv1.AvailableModel {
-	hasAuto := false
+// geminiEnsureAuto prepends a synthetic "auto" model when the server's list
+// omits it. Wired as the acpBase modelsDecorator so it runs on both the
+// handshake and runtime model channels, keeping the two consistent.
+func geminiEnsureAuto(models []*leapmuxv1.AvailableModel, currentModelID string) []*leapmuxv1.AvailableModel {
 	for _, m := range models {
-		if m.ModelID == "auto" {
-			hasAuto = true
-			break
+		if m.GetId() == "auto" {
+			return models
 		}
 	}
-	result := buildACPModels(models, currentModelID, nil)
-	if !hasAuto {
-		result = append([]*leapmuxv1.AvailableModel{{
-			Id:          "auto",
-			DisplayName: "Auto",
-			Description: "Automatically selects the best Gemini model",
-			IsDefault:   currentModelID == "" || currentModelID == "auto",
-		}}, result...)
+	auto := &leapmuxv1.AvailableModel{
+		Id:          "auto",
+		DisplayName: "Auto",
+		Description: "Automatically selects the best Gemini model",
+		IsDefault:   currentModelID == "" || currentModelID == "auto",
 	}
-	return result
+	return append([]*leapmuxv1.AvailableModel{auto}, models...)
 }
 
 func fallbackGeminiCLIModes() []*leapmuxv1.AvailableOption {

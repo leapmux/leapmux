@@ -20,6 +20,8 @@ func newOpenCodeAgentWithSink(sink OutputSink) *OpenCodeAgent {
 			sessionID: "test-session",
 		},
 	}
+	a.modeChannel = modeChannelPrimaryAgent
+	a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 	return a
 }

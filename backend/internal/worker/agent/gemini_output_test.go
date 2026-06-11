@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 func newGeminiAgentWithSink(sink OutputSink) *GeminiCLIAgent {
@@ -106,23 +108,23 @@ func TestGeminiHandlePromptResponsePersistsTurn(t *testing.T) {
 	require.Equal(t, 1, sink.SessionInfoCount())
 }
 
-func TestBuildGeminiCLIModels_withAuto(t *testing.T) {
-	models := []acpModelInfo{
-		{ModelID: "auto", Name: "Auto", Description: "Automatic"},
-		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Detailed"},
+func TestGeminiEnsureAuto_withAuto(t *testing.T) {
+	models := []*leapmuxv1.AvailableModel{
+		{Id: "auto", DisplayName: "Auto", IsDefault: true},
+		{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
 	}
-	result := buildGeminiCLIModels(models, "auto")
+	result := geminiEnsureAuto(models, "auto")
 	require.Len(t, result, 2)
 	require.Equal(t, "auto", result[0].Id)
 	require.True(t, result[0].IsDefault)
 }
 
-func TestBuildGeminiCLIModels_withoutAuto(t *testing.T) {
-	models := []acpModelInfo{
-		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Detailed"},
-		{ModelID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", Description: "Fast"},
+func TestGeminiEnsureAuto_withoutAuto(t *testing.T) {
+	models := []*leapmuxv1.AvailableModel{
+		{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro", IsDefault: true},
+		{Id: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
 	}
-	result := buildGeminiCLIModels(models, "gemini-2.5-pro")
+	result := geminiEnsureAuto(models, "gemini-2.5-pro")
 	require.Len(t, result, 3)
 	require.Equal(t, "auto", result[0].Id)
 	require.False(t, result[0].IsDefault)
@@ -130,11 +132,11 @@ func TestBuildGeminiCLIModels_withoutAuto(t *testing.T) {
 	require.True(t, result[1].IsDefault)
 }
 
-func TestBuildGeminiCLIModels_withoutAutoEmptyCurrentModel(t *testing.T) {
-	models := []acpModelInfo{
-		{ModelID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro"},
+func TestGeminiEnsureAuto_withoutAutoEmptyCurrentModel(t *testing.T) {
+	models := []*leapmuxv1.AvailableModel{
+		{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
 	}
-	result := buildGeminiCLIModels(models, "")
+	result := geminiEnsureAuto(models, "")
 	require.Len(t, result, 2)
 	require.Equal(t, "auto", result[0].Id)
 	require.True(t, result[0].IsDefault)

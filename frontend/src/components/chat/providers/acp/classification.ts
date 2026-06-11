@@ -109,6 +109,10 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     ACP_SESSION_UPDATE.USAGE_UPDATE,
     ACP_SESSION_UPDATE.AVAILABLE_COMMANDS_UPDATE,
     ACP_SESSION_UPDATE.USER_MESSAGE_CHUNK,
+    // The backend consumes config_option_update centrally for every ACP provider (it
+    // never persists it), so hide it for all of them -- including historical rows that
+    // predate the central handling and would otherwise render as an unknown message.
+    ACP_SESSION_UPDATE.CONFIG_OPTION_UPDATE,
   ])
   const hiddenSessionUpdates = config.extraHiddenSessionUpdates
     ? new Set([...baseHidden, ...config.extraHiddenSessionUpdates])

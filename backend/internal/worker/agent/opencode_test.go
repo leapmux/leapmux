@@ -12,14 +12,24 @@ import (
 
 func newOpenCodeAgentForRPC(t *testing.T) (*OpenCodeAgent, func() []recordedRequest) {
 	return newACPAgentForRPC(t,
-		func() *OpenCodeAgent { return &OpenCodeAgent{} },
+		func() *OpenCodeAgent {
+			a := &OpenCodeAgent{}
+			a.modeChannel = modeChannelPrimaryAgent
+			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			return a
+		},
 		func(a *OpenCodeAgent) *acpBase { return &a.acpBase },
 	)
 }
 
 func newOpenCodeAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*OpenCodeAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
-		func() *OpenCodeAgent { return &OpenCodeAgent{} },
+		func() *OpenCodeAgent {
+			a := &OpenCodeAgent{}
+			a.modeChannel = modeChannelPrimaryAgent
+			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			return a
+		},
 		func(a *OpenCodeAgent) *acpBase { return &a.acpBase },
 		respond,
 	)
@@ -47,11 +57,12 @@ func TestBuildSessionRequest_ResumeSession(t *testing.T) {
 
 func TestOpenCodeConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 	agent := &OpenCodeAgent{}
+	agent.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 		{ID: openCodeHiddenCompaction, Name: openCodeHiddenCompaction},
-	}, OpenCodePrimaryAgentPlan, "")
+	}, OpenCodePrimaryAgentPlan, "", fallbackOpenCodePrimaryAgents(), OpenCodePrimaryAgentBuild)
 	require.NoError(t, err)
 
 	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
@@ -63,7 +74,7 @@ func TestOpenCodeConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
-	}, OpenCodePrimaryAgentBuild, OpenCodePrimaryAgentPlan)
+	}, OpenCodePrimaryAgentBuild, OpenCodePrimaryAgentPlan, fallbackOpenCodePrimaryAgents(), OpenCodePrimaryAgentBuild)
 	require.NoError(t, err)
 
 	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
@@ -78,7 +89,7 @@ func TestOpenCodeConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testin
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
 		{ID: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
-	}, OpenCodePrimaryAgentBuild, "unknown")
+	}, OpenCodePrimaryAgentBuild, "unknown", fallbackOpenCodePrimaryAgents(), OpenCodePrimaryAgentBuild)
 	require.NoError(t, err)
 
 	require.Equal(t, OpenCodePrimaryAgentBuild, agent.currentPrimaryAgent)
@@ -134,7 +145,7 @@ func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
 }
 
 func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {
-	agent := &OpenCodeAgent{acpBase: acpBase{model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
+	agent := &OpenCodeAgent{acpBase: acpBase{modeChannel: modeChannelPrimaryAgent, model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
 	settings := agent.CurrentSettings()
 	require.Equal(t, "openai/gpt-5", settings.GetModel())
 	require.Equal(t, OpenCodePrimaryAgentPlan, settings.GetExtraSettings()[OptionGroupKeyPrimaryAgent])

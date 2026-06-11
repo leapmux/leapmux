@@ -204,12 +204,20 @@ export function RadioGroup(props: {
   current: string
   onChange: (value: string) => void
   fieldsetClass?: string
+  /** When true, the group is read-only: inputs are disabled and clicks don't fire onChange. */
+  disabled?: boolean
+  /** Tooltip shown on the whole group explaining why it's read-only (implies disabled styling). */
+  disabledReason?: string
 }): JSX.Element {
   const labelId = createUniqueId()
-  return (
+  const group = (
     <div
       role="group"
       aria-labelledby={labelId}
+      // data-disabled / aria-disabled are added only when truthy, so a writable
+      // group's DOM (and snapshots) stay byte-for-byte unchanged.
+      data-disabled={props.disabled ? '' : undefined}
+      aria-disabled={props.disabled ? 'true' : undefined}
       class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}
     >
       <div id={labelId} class={styles.settingsGroupLabel}>{props.label}</div>
@@ -226,7 +234,12 @@ export function RadioGroup(props: {
                 name={props.name}
                 value={item.value}
                 checked={props.current === item.value}
-                onChange={() => props.onChange(item.value)}
+                disabled={props.disabled}
+                onChange={() => {
+                  // Guard against a programmatic change event firing while disabled.
+                  if (!props.disabled)
+                    props.onChange(item.value)
+                }}
               />
               {item.label}
             </label>
@@ -234,6 +247,11 @@ export function RadioGroup(props: {
         )}
       </For>
     </div>
+  )
+  return (
+    <Show when={props.disabledReason} fallback={group}>
+      <Tooltip text={props.disabledReason}>{group}</Tooltip>
+    </Show>
   )
 }
 

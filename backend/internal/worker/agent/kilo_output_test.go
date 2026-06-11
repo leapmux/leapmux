@@ -20,6 +20,8 @@ func newKiloAgentWithSink(sink OutputSink) *KiloAgent {
 			sessionID: "test-session",
 		},
 	}
+	a.modeChannel = modeChannelPrimaryAgent
+	a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 	return a
 }

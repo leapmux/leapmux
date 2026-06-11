@@ -83,6 +83,12 @@ type OutputSink interface {
 	BroadcastControlCancel(requestID string)
 	UpdateSessionID(sessionID string)
 	UpdatePermissionMode(mode string)
+	// NotifyPermissionModeChanged emits the chat-view settings_changed notification
+	// for a permission-mode transition WITHOUT persisting the mode or broadcasting a
+	// StatusChange. Used when a combined config_option_update already persisted and
+	// broadcast the new settings (model/primary-agent together with the new mode) and
+	// only the chat notification remains. A no-op when oldMode is empty or unchanged.
+	NotifyPermissionModeChanged(oldMode, newMode string)
 	PersistSettingsRefresh(model, effort, permissionMode string, extraSettings map[string]string)
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})

@@ -21,5 +21,4 @@ registerACPProvider({
   ControlContent: ACPControlContent,
   ControlActions: ACPControlActions,
   bypassPermissionMode: GOOSE_MODE_AUTO,
-  extraHiddenSessionUpdates: new Set(['config_option_update']),
 })

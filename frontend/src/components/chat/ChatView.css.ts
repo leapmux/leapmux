@@ -194,6 +194,11 @@ export const settingsFieldset = style({
   borderRadius: 'var(--radius-medium)',
   padding: 'var(--space-3) var(--space-2) var(--space-2)',
   minWidth: 0,
+  selectors: {
+    // Read-only group (RadioGroup disabled): mute it and drop the interactive
+    // cursor, following the settingsTrigger &[data-disabled] pattern.
+    '&[data-disabled]': { opacity: 0.5, cursor: 'default' },
+  },
 })
 
 export const settingsFieldsetFirst = style({
@@ -229,6 +234,12 @@ export const settingsRadioItem = style({
   'userSelect': 'none',
   ':hover': {
     backgroundColor: 'var(--card)',
+  },
+  'selectors': {
+    // Inside a read-only group, the items are inert: no interactive cursor, no
+    // hover affordance.
+    [`${settingsFieldset}[data-disabled] &`]: { cursor: 'default' },
+    [`${settingsFieldset}[data-disabled] &:hover`]: { backgroundColor: 'transparent' },
   },
 })
 
