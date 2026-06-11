@@ -336,6 +336,13 @@ func defaultModelForList(models []*leapmuxv1.AvailableModel, provider leapmuxv1.
 		// the ladder so the picker still shows a default badge. Returning an absent
 		// id unconditionally would make withDefaultModelMarked clear IsDefault from
 		// every entry (none match) and badge nothing.
+		//
+		// This step outranks the sentinel (step 2) deliberately: an explicit operator
+		// override naming the account's resolved concrete model (which
+		// ensureSettledModelListed surfaces into the list once startup settles it)
+		// badges that concrete model rather than the "default" placeholder -- the
+		// sentinel does not retain the badge once a concrete identity the operator
+		// pinned is present.
 		if id := matchModelID(models, provider, env); id != "" {
 			return id
 		}

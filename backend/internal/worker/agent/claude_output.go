@@ -703,15 +703,17 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 
 	// Snapshot a.model and the effort resolver under a.mu in one acquisition: this
 	// runs on the readOutputLoop goroutine while refreshSettingsFromAgent may
-	// concurrently rewrite a.model under the same lock. a.availableModels (which the
-	// resolver captures) is written once at startup -- before any assistant/result
-	// output arrives (those need a user turn) -- and never mutated. The startup write
-	// happens-before this read through the a.mu release/acquire pair: the startup
-	// goroutine LOCKS a.mu in refreshSettingsFromAgent (which runs after the field
-	// write) and the Lock below re-acquires it; the field need not be WRITTEN under the
-	// lock, only released-then-acquired across goroutines. So the resolver needs the
-	// lock only for the a.model read it pairs with here. The catalog entries are
-	// immutable shared data, so the window lookup is safe to compute after unlocking.
+	// concurrently rewrite a.model under the same lock, so the a.mu pairing is what the
+	// a.model read needs. a.availableModels (which the resolver captures) is written
+	// only during the pre-registration startup handshake (convertClaudeModels, then a
+	// possible ensureSettledModelListed insert) and never mutated afterward. This read
+	// happens-after that window: it fires only for assistant/result output, which needs
+	// a user turn, and a user turn can't reach this agent until it has been registered
+	// with the manager -- the registration's lock provides the happens-before edge that
+	// publishes every startup write. So the resolver needs a.mu only for the a.model
+	// read it pairs with here; the catalog field is already safely published. The
+	// catalog entries are immutable shared data, so the window lookup is safe to compute
+	// after unlocking.
 	a.mu.Lock()
 	model := a.model
 	resolver := a.effortResolver()

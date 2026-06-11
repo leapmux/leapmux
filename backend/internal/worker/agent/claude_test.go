@@ -16,6 +16,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1418,6 +1419,157 @@ func TestClaudeFallbackDisplayName(t *testing.T) {
 	assert.Equal(t, "Opus (1M context)", got.DisplayName, "missing displayName falls back to the [1m]-aware name")
 }
 
+// Canonical CLI effort-level vectors the model fixtures reuse: xhigh-capable models
+// (Opus/Fable) report low..max, while max-only models (Sonnet) omit xhigh. They are
+// read-only -- convertClaudeModels only reads SupportedEffortLevels -- so sharing the
+// slices across fixtures is safe.
+var (
+	claudeXHighLevels = []string{"low", "medium", "high", "xhigh", "max"}
+	claudeMaxLevels   = []string{"low", "medium", "high", "max"}
+)
+
+// realCLIModelsNoOpus mirrors the actual Claude Code 2.1.170 initialize `models`
+// array on an account whose default resolves to Opus: the CLI lists the account
+// default sentinel, Fable, Sonnet, Sonnet (1M), and Haiku -- but NO opus/opus[1m]
+// entry. Opus is reachable only behind "default". The settings-refresh path then
+// settles a.model onto "opus[1m]" (normalized from get_settings' concrete
+// "claude-opus-4-8[1m]"), a model absent from this list.
+func realCLIModelsNoOpus() []claudeCodeModelInfo {
+	return []claudeCodeModelInfo{
+		{Value: "default", DisplayName: "Default (recommended)", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		{Value: "claude-fable-5[1m]", DisplayName: "Fable", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: claudeMaxLevels},
+		{Value: "sonnet[1m]", DisplayName: "Sonnet (1M context)", SupportsEffort: true, SupportedEffortLevels: claudeMaxLevels},
+		{Value: "haiku", DisplayName: "Haiku", SupportsEffort: false},
+	}
+}
+
+// TestEnsureSettledModelListed_InjectsResolvedDefault is the regression for the
+// account-default-resolves-to-an-unlisted-model bug: the picker rendered
+// a.availableModels verbatim, so when the "default" sentinel resolved to opus[1m]
+// (a model the CLI exposes only behind "default") the settings panel showed no Opus
+// row, left it unselected, and hid its effort menu. ensureSettledModelListed adds
+// the resolved model so all three are fixed from the backend.
+func TestEnsureSettledModelListed_InjectsResolvedDefault(t *testing.T) {
+	a := &ClaudeCodeAgent{
+		model:           "opus[1m]",
+		availableModels: convertClaudeModels(realCLIModelsNoOpus(), nil),
+	}
+
+	// Reproduces the bug: the settled model is absent from the picker catalog.
+	require.Nil(t, FindAvailableModel(a.availableModels, "opus[1m]"),
+		"precondition: the CLI list omits opus[1m], so the picker can't show it")
+
+	a.ensureSettledModelListed()
+
+	got := FindAvailableModel(a.availableModels, "opus[1m]")
+	require.NotNil(t, got, "the resolved default is added to the picker catalog")
+	assert.Equal(t, "Opus (1M context)", got.DisplayName, "named from the static fallback, not the raw id")
+	assert.Equal(t, int64(claudeOneMillionContextWindow), got.ContextWindow)
+	// The injected entry carries Opus's real effort menu (xhigh + ultracode), so the
+	// settings panel renders an effort section instead of hiding it.
+	assert.Equal(t, []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}, claudeEffortIDs(got),
+		"the injected entry exposes Opus's full effort menu")
+	// The sentinel and the originally-listed models survive untouched.
+	assert.NotNil(t, FindAvailableModel(a.availableModels, DefaultModelSentinel))
+	assert.NotNil(t, FindAvailableModel(a.availableModels, "sonnet[1m]"))
+	// The resolved model is inserted right after the sentinel it resolves from, not
+	// stranded at the tail below Haiku.
+	require.GreaterOrEqual(t, len(a.availableModels), 2)
+	assert.Equal(t, DefaultModelSentinel, a.availableModels[0].GetId())
+	assert.Equal(t, "opus[1m]", a.availableModels[1].GetId(), "resolved model sits just after the sentinel")
+}
+
+// TestEnsureSettledModelListed_NoOps covers the cases that must leave the catalog
+// byte-for-byte unchanged: an already-listed model, the unresolved sentinel/empty
+// model, and the old-CLI empty list (where mutating would REPLACE the static
+// fallback with a singleton).
+func TestEnsureSettledModelListed_NoOps(t *testing.T) {
+	t.Run("already listed", func(t *testing.T) {
+		a := &ClaudeCodeAgent{model: "sonnet", availableModels: convertClaudeModels(realCLIModelsNoOpus(), nil)}
+		n := len(a.availableModels)
+		a.ensureSettledModelListed()
+		assert.Len(t, a.availableModels, n, "a listed model is not appended again")
+	})
+
+	for _, tc := range []struct{ name, model string }{
+		{"empty model", ""},
+		{"unresolved sentinel", DefaultModelSentinel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &ClaudeCodeAgent{model: tc.model, availableModels: convertClaudeModels(realCLIModelsNoOpus(), nil)}
+			n := len(a.availableModels)
+			a.ensureSettledModelListed()
+			assert.Len(t, a.availableModels, n, "an unresolved/sentinel model is not injected")
+		})
+	}
+
+	t.Run("empty dynamic list (old CLI)", func(t *testing.T) {
+		a := &ClaudeCodeAgent{model: "opus[1m]", availableModels: nil}
+		a.ensureSettledModelListed()
+		assert.Empty(t, a.availableModels,
+			"an empty list stays empty so effortCatalog keeps falling back to the full static catalog")
+	})
+}
+
+// TestEnsureSettledModelListed_UnknownModelNotInjected is the guard against the
+// regression a naive "synthesize an entry for any settled model" would cause: a model
+// in NEITHER catalog is deliberately left unlisted. Injecting an effort-less
+// placeholder for it would flip effortResolver.definedEfforts from "unknown" (trust
+// the CLI's report) to "known with no efforts" (clamp/downgrade), silently demoting a
+// session the CLI is running at ultracode -- exactly what effortFromApplied/
+// updateFlagSettings guard against. So injection must skip it AND leave the resolver's
+// trust intact.
+func TestEnsureSettledModelListed_UnknownModelNotInjected(t *testing.T) {
+	a := &ClaudeCodeAgent{
+		model:           "mystery[1m]",
+		availableModels: convertClaudeModels(realCLIModelsNoOpus(), nil),
+	}
+	n := len(a.availableModels)
+
+	a.ensureSettledModelListed()
+
+	assert.Nil(t, FindAvailableModel(a.availableModels, "mystery[1m]"),
+		"a model in neither catalog is left unlisted, not synthesized")
+	assert.Len(t, a.availableModels, n, "no entry was inserted")
+
+	// The resolver must still treat the unknown model as unknown -> trusts the CLI's
+	// ultracode report rather than downgrading it. This is the property the no-inject
+	// rule protects.
+	r := a.effortResolver()
+	_, known := r.definedEfforts("mystery[1m]")
+	assert.False(t, known, "the unknown model stays unknown to the resolver")
+	assert.Equal(t, EffortUltracode,
+		r.effortFromApplied(ptrconv.Ptr("xhigh"), ptrconv.Ptr(true), EffortUltracode, "mystery[1m]"),
+		"a running ultracode session on the unknown model is trusted, not downgraded")
+}
+
+// TestEnsureSettledModelListed_StaticModelKeepsResolverVerdict locks in that injecting
+// a static-catalog model (the safe set) changes NO resolver verdict: the model was
+// already known via the fallback, so before and after the insert the resolver returns
+// the same efforts and the same ultracode trust. This is why the static-catalog
+// restriction is correct -- it only surfaces in the picker what the resolver could
+// already speak to.
+func TestEnsureSettledModelListed_StaticModelKeepsResolverVerdict(t *testing.T) {
+	a := &ClaudeCodeAgent{
+		model:           "opus[1m]",
+		availableModels: convertClaudeModels(realCLIModelsNoOpus(), nil),
+	}
+
+	before := a.effortResolver()
+	beforeEfforts, beforeKnown := before.definedEfforts("opus[1m]")
+	require.True(t, beforeKnown, "opus[1m] is already known via the static fallback before injection")
+
+	a.ensureSettledModelListed()
+
+	after := a.effortResolver()
+	afterEfforts, afterKnown := after.definedEfforts("opus[1m]")
+	assert.True(t, afterKnown)
+	assert.Equal(t, claudeEffortIDsFromList(beforeEfforts), claudeEffortIDsFromList(afterEfforts),
+		"the effort menu the resolver reports is unchanged by the picker insert")
+	assert.True(t, after.supportsUltracode("opus[1m]"), "ultracode support is unchanged")
+}
+
 func TestClaudeEffortFlagSettings(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1565,8 +1717,6 @@ func TestClaudeEffortUpdateFlagSettings(t *testing.T) {
 }
 
 func TestClaudeEffortFromApplied(t *testing.T) {
-	strPtr := func(s string) *string { return &s }
-	boolPtr := func(b bool) *bool { return &b }
 	tests := []struct {
 		name      string
 		applied   *string
@@ -1577,24 +1727,24 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 	}{
 		{
 			name:      "opus ultracode:true maps xhigh-base back to ultracode",
-			applied:   strPtr("xhigh"),
-			ultracode: boolPtr(true),
+			applied:   ptrconv.Ptr("xhigh"),
+			ultracode: ptrconv.Ptr(true),
 			curEffort: "xhigh",
 			model:     "opus",
 			want:      "ultracode",
 		},
 		{
 			name:      "opus[1m] ultracode:true maps to ultracode",
-			applied:   strPtr("xhigh"),
-			ultracode: boolPtr(true),
+			applied:   ptrconv.Ptr("xhigh"),
+			ultracode: ptrconv.Ptr(true),
 			curEffort: "ultracode",
 			model:     "opus[1m]",
 			want:      "ultracode",
 		},
 		{
 			name:      "sonnet ultracode:true is ignored - model cannot run it",
-			applied:   strPtr("xhigh"),
-			ultracode: boolPtr(true),
+			applied:   ptrconv.Ptr("xhigh"),
+			ultracode: ptrconv.Ptr(true),
 			curEffort: "high",
 			model:     "sonnet",
 			want:      "xhigh", // keep the reported level; never mislabel Sonnet as ultracode
@@ -1606,8 +1756,8 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 			// session to xhigh just because its model dropped out of the catalog. This
 			// differs from Sonnet above, which the catalog KNOWS lacks ultracode.
 			name:      "unknown model ultracode:true is trusted - CLI is the authority",
-			applied:   strPtr("xhigh"),
-			ultracode: boolPtr(true),
+			applied:   ptrconv.Ptr("xhigh"),
+			ultracode: ptrconv.Ptr(true),
 			curEffort: "xhigh",
 			model:     "claude-future-preview",
 			want:      "ultracode",
@@ -1619,16 +1769,16 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 			// ultracode:true report passes the reported effort through instead of
 			// minting a phantom "ultracode" against the placeholder.
 			name:      "stuck sentinel ultracode:true is not promoted - no model behind it",
-			applied:   strPtr("xhigh"),
-			ultracode: boolPtr(true),
+			applied:   ptrconv.Ptr("xhigh"),
+			ultracode: ptrconv.Ptr(true),
 			curEffort: "xhigh",
 			model:     DefaultModelSentinel,
 			want:      "xhigh",
 		},
 		{
 			name:      "unentitled opus reports ultracode:false + xhigh - graceful downgrade",
-			applied:   strPtr("xhigh"),
-			ultracode: boolPtr(false),
+			applied:   ptrconv.Ptr("xhigh"),
+			ultracode: ptrconv.Ptr(false),
 			curEffort: "ultracode",
 			model:     "opus",
 			want:      "xhigh",
@@ -1636,7 +1786,7 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 		{
 			name:      "ultracode cleared with omitted effort falls back to xhigh base",
 			applied:   nil,
-			ultracode: boolPtr(false),
+			ultracode: ptrconv.Ptr(false),
 			curEffort: "ultracode",
 			model:     "opus",
 			want:      "xhigh",
@@ -1644,14 +1794,14 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 		{
 			name:      "ultracode:false with non-ultracode current is unchanged",
 			applied:   nil,
-			ultracode: boolPtr(false),
+			ultracode: ptrconv.Ptr(false),
 			curEffort: "high",
 			model:     "opus",
 			want:      "high",
 		},
 		{
 			name:      "nil ultracode passes the reported effort through",
-			applied:   strPtr("max"),
+			applied:   ptrconv.Ptr("max"),
 			ultracode: nil,
 			curEffort: "high",
 			model:     "opus",
@@ -1709,7 +1859,7 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 			// null, never "". An unexpected empty string must be treated like
 			// omitted (retain curEffort) rather than blanking the effort to "".
 			name:      "empty applied effort is treated as omitted (retains curEffort)",
-			applied:   strPtr(""),
+			applied:   ptrconv.Ptr(""),
 			ultracode: nil,
 			curEffort: "high",
 			model:     "opus",
@@ -1720,7 +1870,7 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 			// is ignored, so the ultracode value survives (opus supports it)
 			// instead of being blanked.
 			name:      "empty applied effort retains stale ultracode on opus",
-			applied:   strPtr(""),
+			applied:   ptrconv.Ptr(""),
 			ultracode: nil,
 			curEffort: "ultracode",
 			model:     "opus",
@@ -1822,8 +1972,12 @@ func TestResolveClaudeEffortForModel(t *testing.T) {
 
 // claudeEffortIDs returns the ordered effort IDs of a model, for catalog assertions.
 func claudeEffortIDs(m *leapmuxv1.AvailableModel) []string {
-	ids := make([]string, 0, len(m.SupportedEfforts))
-	for _, e := range m.SupportedEfforts {
+	return claudeEffortIDsFromList(m.SupportedEfforts)
+}
+
+func claudeEffortIDsFromList(efforts []*leapmuxv1.AvailableEffort) []string {
+	ids := make([]string, 0, len(efforts))
+	for _, e := range efforts {
 		ids = append(ids, e.Id)
 	}
 	return ids
@@ -1838,16 +1992,15 @@ func claudeModelsByID(models []*leapmuxv1.AvailableModel) map[string]*leapmuxv1.
 }
 
 func TestConvertClaudeModels(t *testing.T) {
-	xhighLevels := []string{"low", "medium", "high", "xhigh", "max"}
 	models := []claudeCodeModelInfo{
-		{Value: "default", DisplayName: "Default (recommended)", Description: "the account default", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "fable", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "fable[1m]", DisplayName: "Fable 5 (1M context)", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
+		{Value: "default", DisplayName: "Default (recommended)", Description: "the account default", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		{Value: "fable", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		{Value: "fable[1m]", DisplayName: "Fable 5 (1M context)", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: claudeMaxLevels},
 		{Value: "haiku", DisplayName: "Haiku", SupportsEffort: false},
 		{Value: "zdr-blocked", DisplayName: "Blocked", SupportsEffort: true, SupportedEffortLevels: []string{"high"}},
-		{Value: "internal-preview", DisplayName: "Internal", Disabled: true, SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "internal-preview", DisplayName: "Internal", Disabled: true, SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
 	}
 	unavailable := []claudeCodeModelInfo{{Value: "zdr-blocked"}}
 

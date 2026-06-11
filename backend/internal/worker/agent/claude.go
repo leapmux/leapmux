@@ -117,10 +117,11 @@ type ClaudeCodeAgent struct {
 	autoModeAvailable     bool
 
 	// availableModels is the model catalog discovered from the initialize
-	// response. It is written once in StartClaudeCode before the agent is
-	// registered with the manager and never mutated afterward, so reads are
-	// safe without a.mu (callers may already hold it). nil/empty ⇒ fall back
-	// to the static claudeCodeAvailableModels catalog.
+	// response. It is written only during StartClaudeCode's pre-registration
+	// startup handshake (convertClaudeModels, then a possible ensureSettledModelListed
+	// insert) and never mutated afterward, so reads are safe without a.mu (callers may
+	// already hold it). nil/empty ⇒ fall back to the static claudeCodeAvailableModels
+	// catalog.
 	availableModels []*leapmuxv1.AvailableModel
 }
 
@@ -305,7 +306,76 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 	// "auto"). Run even if apply_flag_settings failed so the DB mirrors
 	// the CLI's actual state rather than what we tried to set.
 	a.refreshSettingsFromAgent(timeout)
+	a.ensureSettledModelListed()
 	return nil
+}
+
+// ensureSettledModelListed adds the settled model to the dynamic picker catalog when
+// the CLI's selectable list omits it but the static fallback fully describes it. The
+// account-default sentinel can resolve to a concrete model the CLI does NOT surface
+// as a separately selectable row -- an account whose default is Opus, which Claude
+// Code exposes only behind "default", is the motivating case. After
+// refreshSettingsFromAgent settles a.model onto that concrete id, the picker
+// (effortCatalog renders a.availableModels verbatim) would show no matching row,
+// leaving the model unnamed in the trigger, unselected in the RadioGroup, and without
+// an effort menu. Inserting the static-catalog entry fixes all three from the backend
+// alone -- the frontend lookups (modelDisplayName, the model RadioGroup's current
+// value, effortItems) all key on a.model and now find it.
+//
+// We inject ONLY a model the static catalog lists, never a synthesized placeholder
+// for a model in neither catalog. A model in neither catalog is already "unknown" to
+// effortResolver.definedEfforts (which scans both catalogs), and the effort/ultracode
+// trust path deliberately TRUSTS an unknown model's CLI report rather than clamping it
+// (see effortFromApplied / updateFlagSettings). Injecting an effort-less placeholder
+// would flip definedEfforts to "known with no efforts", silently downgrading a session
+// the CLI is running at ultracode/xhigh -- the exact relabel those methods guard
+// against. A static-catalog model is the safe set: it is ALREADY known via the
+// fallback, so injecting the same entry changes no resolver verdict; it only makes the
+// picker show what the resolver could already speak to. A genuinely new model (one
+// that postdates the static catalog and the CLI hides behind "default") stays unlisted
+// -- the lesser evil -- until it is added to the static catalog, the way Fable was.
+//
+// Runs only from runStartupHandshake, on the StartClaudeCode goroutine in the
+// pre-registration window: a.availableModels is written only here during startup
+// (convertClaudeModels, then this), and the lock-free readers either run on this same
+// goroutine (refreshSettingsFromAgent) or only on a later user turn, which happens-
+// after the agent is registered. So no a.mu is needed and no concurrent reader exists.
+//
+// No-op when:
+//   - the model is unresolved (empty, or still the literal sentinel because
+//     get_settings degraded -- see refreshSettingsFromAgent);
+//   - the dynamic list is empty (old CLI / parse failure): effortCatalog already
+//     falls back to the static catalog, which lists every shipped model, and
+//     appending one entry here would REPLACE that full fallback with a singleton;
+//   - the settled model is already listed (the common case: the default resolved to
+//     a listed model, or the user pinned one);
+//   - the model is in neither catalog (see above -- left unlisted on purpose).
+func (a *ClaudeCodeAgent) ensureSettledModelListed() {
+	if a.model == "" || a.model == DefaultModelSentinel {
+		return
+	}
+	if len(a.availableModels) == 0 || FindAvailableModel(a.availableModels, a.model) != nil {
+		return
+	}
+	entry := FindAvailableModel(claudeCodeAvailableModels, a.model)
+	if entry == nil {
+		return
+	}
+	// Place the resolved model right after the account-default sentinel -- the entry
+	// "Default (recommended)" resolves it FROM -- rather than at the tail, so a
+	// powerful resolved model (e.g. Opus) sits near the top of the picker instead of
+	// below Haiku. Locating the sentinel by scan (not assuming index 0) keeps the
+	// placement correct whatever order convertClaudeModels emitted; no sentinel falls
+	// back to the front. The inserted pointer is the shared static-catalog entry, read
+	// only exactly as effortCatalog hands out claudeCodeAvailableModels directly --
+	// withDefaultModelMarked and stripDefaultModelBadge both clone before touching it.
+	insertAt := 0
+	if i := slices.IndexFunc(a.availableModels, func(m *leapmuxv1.AvailableModel) bool {
+		return m.GetId() == DefaultModelSentinel
+	}); i >= 0 {
+		insertAt = i + 1
+	}
+	a.availableModels = slices.Insert(a.availableModels, insertAt, entry)
 }
 
 // buildStartupFlagSettings builds an apply_flag_settings payload for extra
@@ -608,8 +678,8 @@ func (a *ClaudeCodeAgent) hidesModelEffortUI() bool {
 // fallback so a model the live CLI dropped from its list still resolves its
 // capabilities and window.
 //
-// availableModels is written once before the agent is published and never mutated,
-// so this read is safe without a.mu.
+// availableModels is written only during the pre-registration startup handshake and
+// never mutated afterward, so this read is safe without a.mu.
 func (a *ClaudeCodeAgent) effortCatalog() []*leapmuxv1.AvailableModel {
 	if len(a.availableModels) > 0 {
 		return a.availableModels
@@ -976,6 +1046,13 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 
 	a.mu.Lock()
 	if settings.Applied.Model != "" {
+		// Settle a.model onto the concrete model the CLI resolved. Once the concrete
+		// identity is known it -- not the "default" sentinel -- is what the tab selects,
+		// persists, broadcasts, and resolves effort/window against: the sentinel is only
+		// the pre-resolution placeholder and never reclaims precedence once a concrete
+		// model exists (so a relaunch pins the concrete model rather than re-resolving
+		// the account default -- intended). ensureSettledModelListed then surfaces this
+		// model in the picker when the CLI's selectable list omitted it.
 		a.model = normalizeClaudeCodeModel(settings.Applied.Model)
 	} else if a.model == DefaultModelSentinel {
 		// The account-default sentinel launches without --model and relies on
@@ -1742,8 +1819,9 @@ func newEffortResolver(catalog []*leapmuxv1.AvailableModel) effortResolver {
 // that the session is still running -- keeping the decode (effortFromApplied),
 // live-update (updateFlagSettings), and startup (reconcileStartupEffortFlags) paths
 // from downgrading a filtered session's effort/ultracode out of agreement with each
-// other. availableModels is written once before the agent is published and never
-// mutated, so this read is safe without a.mu (callers may already hold it).
+// other. availableModels is written only during the pre-registration startup
+// handshake and never mutated afterward, so this read is safe without a.mu (callers
+// may already hold it).
 func (a *ClaudeCodeAgent) effortResolver() effortResolver {
 	return effortResolver{catalog: a.availableModels, fallback: claudeCodeAvailableModels}
 }
