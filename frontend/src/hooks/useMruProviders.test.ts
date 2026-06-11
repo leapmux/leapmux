@@ -4,7 +4,7 @@ import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 const CC = AgentProvider.CLAUDE_CODE
 const CODEX = AgentProvider.CODEX
 const OPENCODE = AgentProvider.OPENCODE
-const GEMINI = AgentProvider.GEMINI_CLI
+const CURSOR = AgentProvider.CURSOR
 
 // Mutable state the mock reads from
 let mockStored: AgentProvider[] = []
@@ -67,10 +67,10 @@ describe('useMruProviders stabilization', () => {
     const h = setup([CC, CODEX])
     expect(h.get()).toEqual([CC, CODEX])
 
-    // CC becomes unavailable, Gemini enters
-    mockStored = [CODEX, GEMINI]
-    h.setAvailable([CODEX, GEMINI])
-    expect(h.get()).toEqual([GEMINI, CODEX])
+    // CC becomes unavailable, Cursor enters
+    mockStored = [CODEX, CURSOR]
+    h.setAvailable([CODEX, CURSOR])
+    expect(h.get()).toEqual([CURSOR, CODEX])
   })
 
   it('handles complete replacement of both providers', () => {
@@ -79,9 +79,9 @@ describe('useMruProviders stabilization', () => {
     expect(h.get()).toEqual([CC, CODEX])
 
     // Both replaced
-    mockStored = [OPENCODE, GEMINI]
-    h.setAvailable([OPENCODE, GEMINI])
-    expect(h.get()).toEqual([OPENCODE, GEMINI])
+    mockStored = [OPENCODE, CURSOR]
+    h.setAvailable([OPENCODE, CURSOR])
+    expect(h.get()).toEqual([OPENCODE, CURSOR])
   })
 
   it('respects maxCount', () => {

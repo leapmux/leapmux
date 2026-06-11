@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -52,7 +54,7 @@ type acpPendingInput struct {
 }
 
 // jsonrpcBase extends processBase with JSON-RPC request/response plumbing
-// shared by all ACP agents (GeminiCLIAgent, OpenCodeAgent) and CodexAgent.
+// shared by all ACP agents and CodexAgent.
 type jsonrpcBase struct {
 	processBase
 	responseCorrelator[int64]
@@ -81,8 +83,9 @@ type acpModeChannel int
 const (
 	// modeChannelUnmapped: the provider tracks a permission mode but does NOT consume
 	// the configOptions `mode` select for it -- it drives the mode through the native
-	// modes/current_mode_update channel instead (Gemini). A configOptions `mode` is
-	// surfaced read-only as a generic group rather than applied.
+	// modes/current_mode_update channel instead. A configOptions `mode` is
+	// surfaced read-only as a generic group rather than applied. This is the
+	// zero-value default; no provider currently selects it.
 	modeChannelUnmapped acpModeChannel = iota
 	// modeChannelPermissionMode: the configOptions `mode` select drives the permission
 	// mode (Copilot, Goose, Cursor).
@@ -93,7 +96,7 @@ const (
 )
 
 // acpBase extends jsonrpcBase with fields and methods shared by all ACP
-// agents (GeminiCLIAgent, OpenCodeAgent, CopilotCLIAgent) but not CodexAgent.
+// agents (OpenCodeAgent, CopilotCLIAgent, CursorCLIAgent) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
 	sink               OutputSink
@@ -102,16 +105,16 @@ type acpBase struct {
 	// modelIDNormalizer, when set, rewrites model ids parsed from configOptions
 	// (e.g. Cursor's auto<->default[] aliasing) before they reach availableModels.
 	modelIDNormalizer func(string) string
-	// modelsDecorator, when set, post-processes the freshly built model list
-	// (e.g. Gemini prepends a synthetic "auto" entry). It is applied on every
-	// path that rebuilds availableModels -- handshake and runtime -- so the two
-	// never diverge. Receives the normalized current model id for default marking.
-	modelsDecorator func(models []*leapmuxv1.AvailableModel, currentModelID string) []*leapmuxv1.AvailableModel
 	// modeChannel selects how the configOptions `mode` select maps to this provider's
 	// secondary setting, and thereby which family the provider belongs to. It replaces
 	// the old syncsPermissionMode/syncsPrimaryAgent bool pair so the illegal "both set"
 	// state is unrepresentable and every family-conditional site reads one field.
 	modeChannel acpModeChannel
+	// modelFixedAtLaunch marks a provider whose model is selected once at process
+	// launch (e.g. Reasonix's `--model` flag) and cannot change over ACP. For such
+	// providers a server config_option_update must not overwrite the model, or the
+	// stored/broadcast model would drift from what the process is actually running.
+	modelFixedAtLaunch bool
 	// primaryAgentHiddenFilter, when set, marks primary-agent ids the provider treats
 	// as internal pseudo-agents to hide from the picker (OpenCode's
 	// compaction/title/summary). Applied wherever the primary-agent list is built.
@@ -156,9 +159,9 @@ type acpBase struct {
 	thinkingTokens thinkingTokenEstimator
 }
 
-// handleACPPromptResponse extracts accumulated turn text, calls the optional
-// prePersist hook, persists the prompt response, and resets the tool-use count.
-func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(json.RawMessage)) {
+// handleACPPromptResponse extracts accumulated turn text, persists the prompt
+// response, and resets the tool-use count.
+func (b *acpBase) handleACPPromptResponse(resp json.RawMessage) {
 	if resp == nil {
 		// A nil result ends the turn via error/abort, NOT the normal path: the
 		// persistPromptResponse turn-end below -- which flushes the buffered thought,
@@ -190,10 +193,6 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 	b.turnAssistantText.Reset()
 	b.turnToolUses = 0
 	b.mu.Unlock()
-
-	if prePersist != nil {
-		prePersist(resp)
-	}
 
 	b.persistPromptResponse(assistantText, resp, func(resp json.RawMessage) json.RawMessage {
 		return b.enrichWithToolUses(resp)
@@ -556,7 +555,7 @@ func (b *acpBase) applySessionRefresh(
 }
 
 // refreshModelAndPermissionModeFromSession is used by agents that track
-// permissionMode (Gemini, Copilot, Goose). applySessionRefresh persists the mode in
+// permissionMode (Copilot, Goose, Cursor). applySessionRefresh persists the mode in
 // PersistSettingsRefresh's own arg and overlays the live generic values, keyed off
 // b.modeChannel.
 func (b *acpBase) refreshModelAndPermissionModeFromSession(resp json.RawMessage) {
@@ -693,7 +692,7 @@ func (b *acpBase) mappedOptionGroupsLocked(key, label string, options []*leapmux
 }
 
 // permissionModeOptionGroups returns AvailableOptionGroups for agents that
-// use permission-mode (e.g. Copilot, Cursor, Gemini, Goose).
+// use permission-mode (e.g. Copilot, Cursor, Goose).
 func (b *acpBase) permissionModeOptionGroups(label string, fallback []*leapmuxv1.AvailableOption) []*leapmuxv1.AvailableOptionGroup {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -750,8 +749,7 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 
 // acpStandardInitParams marshals the standard ACP "initialize" params shared by
 // OpenCode, Kilo, Copilot, Goose, and Cursor: protocol version 1, the LeapMux
-// clientInfo, and empty capabilities. Gemini sends a different shape (fs
-// capabilities) and marshals its own.
+// clientInfo, and empty capabilities.
 func acpStandardInitParams() (json.RawMessage, error) {
 	params, err := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
@@ -982,7 +980,7 @@ func (b *jsonrpcBase) clearPromptQueue() {
 }
 
 // sendPrompt builds and sends an ACP prompt, then calls the provided
-// response handler. Shared by all ACP agent doSendPrompt implementations.
+// response handler. The shared send/queue core behind doSendACPPrompt.
 func (b *acpBase) sendPrompt(
 	content string,
 	attachments []*leapmuxv1.Attachment,
@@ -1535,7 +1533,7 @@ func (b *acpBase) startACPHandshake(
 	b.drainStderr(stderr)
 
 	// Install the thinking-token reset decorator once, centrally, so every ACP
-	// provider (Gemini, Cursor, Copilot, Kilo, OpenCode, Goose) gets the per-phase
+	// provider (Cursor, Copilot, Kilo, OpenCode, Goose) gets the per-phase
 	// reset without each Start* constructor remembering to wrap -- and before the
 	// reader goroutine below drives any persist/broadcast through b.sink. Codex and
 	// Pi wrap in their own constructors; they do not run this handshake.
@@ -1608,6 +1606,135 @@ func (b *acpBase) startACPHandshake(
 	b.sink.BroadcastStatusActive(sessionID)
 
 	return session, nil
+}
+
+// acpStartSpec configures acpStart for one ACP provider. acpStart runs the
+// fixed launch + handshake pipeline shared by every ACP agent; the spec
+// supplies only what differs between providers.
+type acpStartSpec[T any] struct {
+	providerName   string                                     // process/log name, e.g. "cursor"
+	binaryName     string                                     // CLI binary to launch
+	baseArgs       []string                                   // args after the binary, e.g. {"acp"}
+	rcMarkerEnvKey string                                     // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
+	sessionConfig  acpSessionConfig                           // zero value -> acpDefaultSessionConfig
+	newAgent       func() *T                                  // construct a zero-value concrete agent
+	base           func(*T) *acpBase                          // accessor for the agent's embedded acpBase
+	configure      func(*T)                                   // set provider-specific hooks before the process starts
+	afterHandshake func(*T, *acpSessionResult, Options) error // post-handshake apply step; nil for none
+}
+
+// acpStart launches an ACP agent subprocess and performs the initialize +
+// session handshake, centralizing the boilerplate shared by every ACP provider
+// (Cursor, Copilot, Goose, Kilo, OpenCode, Reasonix). Providers differ only in
+// the acpStartSpec fields: the binary/args, an optional rc marker, the session
+// config, the hooks set in configure, and the post-handshake apply step.
+func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec acpStartSpec[T]) (_ Agent, retErr error) {
+	ctx, cancel := context.WithCancel(ctx)
+
+	wrap := shellWrapSpec{
+		Shell:      opts.Shell,
+		LoginShell: opts.LoginShell,
+		BinaryName: spec.binaryName,
+		BaseArgs:   spec.baseArgs,
+		WorkingDir: opts.WorkingDir,
+	}
+	if spec.rcMarkerEnvKey != "" {
+		wrap.StripEnvKeys = []string{spec.rcMarkerEnvKey}
+	}
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, wrap)
+
+	// A provider rc marker is stripped from the inherited env and re-added only for
+	// a login shell, so the child detects "launched by leapmux" without inheriting a
+	// stale parent value.
+	if spec.rcMarkerEnvKey != "" {
+		cmd.Env = envutil.FilterEnv(cmd.Environ(), spec.rcMarkerEnvKey)
+		if opts.LoginShell {
+			cmd.Env = append(cmd.Env, spec.rcMarkerEnvKey+"=1")
+		}
+		cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
+	} else {
+		cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
+	}
+
+	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
+	if err != nil {
+		return nil, err
+	}
+
+	a := spec.newAgent()
+	b := spec.base(a)
+	// newProcessBase returns a fresh value (copylocks-exempt: the RHS is a call),
+	// so assigning it to the embedded processBase doesn't copy a held lock.
+	b.processBase = newProcessBase(opts, spec.providerName, cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)
+	b.sink = sink
+	b.model = opts.Model
+	// Default prompt sender shared by every ACP provider; a provider may override
+	// it in configure.
+	b.promptFunc = b.doSendACPPrompt
+	if spec.configure != nil {
+		spec.configure(a)
+	}
+
+	if err := b.startCmd(cmd, cancel); err != nil {
+		return nil, err
+	}
+	// The subprocess is running now. Any failure past this point must tear it
+	// down -- cancel kills the ctx-bound child -- because acpStart returns no
+	// Agent on error, so the caller never gets a handle to Stop() it.
+	defer func() {
+		if retErr != nil {
+			cancel()
+		}
+	}()
+
+	initParams, err := acpStandardInitParams()
+	if err != nil {
+		return nil, err
+	}
+	sessionCfg := spec.sessionConfig
+	if sessionCfg.newMethod == "" {
+		sessionCfg = acpDefaultSessionConfig
+	}
+	handshake, err := b.startACPHandshake(stdout, stderrPipe, opts, initParams, sessionCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if spec.afterHandshake != nil {
+		if err := spec.afterHandshake(a, handshake, opts); err != nil {
+			return nil, err
+		}
+	}
+	// Every concrete ACP agent (*T) implements Agent via its embedded acpBase
+	// plus its own overrides; assert it here so acpStart can stay generic over T.
+	agent, ok := any(a).(Agent)
+	if !ok {
+		return nil, fmt.Errorf("acp agent %T does not implement Agent", a)
+	}
+	return agent, nil
+}
+
+// Compile-time proof that every concrete ACP agent implements Agent. acpStart is
+// generic over T and can only assert this at runtime (any(a).(Agent)); these
+// guards turn a dropped or renamed method into a build error rather than a
+// launch-time "does not implement Agent".
+var (
+	_ Agent = (*CursorCLIAgent)(nil)
+	_ Agent = (*CopilotCLIAgent)(nil)
+	_ Agent = (*GooseCLIAgent)(nil)
+	_ Agent = (*KiloAgent)(nil)
+	_ Agent = (*OpenCodeAgent)(nil)
+	_ Agent = (*ReasonixAgent)(nil)
+)
+
+// AvailableOptionGroups is the default for ACP providers that surface no mapped
+// option group of their own (e.g. Reasonix, which is model-only): it returns
+// just the read-only generic groups the server surfaced, if any. Providers with
+// a permission-mode or primary-agent group override this method.
+func (b *acpBase) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.genericOptionGroups
 }
 
 // parseACPSessionResult parses the model/mode/configOptions channels shared by
@@ -1843,16 +1970,13 @@ func mergeModelInfos(primary, secondary []acpModelInfo) []acpModelInfo {
 }
 
 // buildModels turns raw model infos into proto models, applying the provider
-// model-id normalizer and models decorator, and returns them alongside the
-// normalized current model id. Centralizing this keeps the handshake and runtime
-// model channels byte-for-byte identical in how they normalize and decorate.
+// model-id normalizer, and returns them alongside the normalized current model
+// id. Centralizing this keeps the handshake and runtime model channels
+// byte-for-byte identical in how they normalize.
 func (b *acpBase) buildModels(infos []acpModelInfo, currentModelID string) ([]*leapmuxv1.AvailableModel, string) {
 	models := buildACPModels(infos, currentModelID, b.modelIDNormalizer)
 	if b.modelIDNormalizer != nil {
 		currentModelID = b.modelIDNormalizer(currentModelID)
-	}
-	if b.modelsDecorator != nil {
-		models = b.modelsDecorator(models, currentModelID)
 	}
 	return models, currentModelID
 }
@@ -1909,16 +2033,15 @@ func (b *acpBase) trySetStartupModel(requested string, set func(string) error) {
 }
 
 // applyStartupPermissionMode applies a requested permission mode during startup
-// for providers that track one (Copilot, Goose, Cursor, Gemini). It is a no-op
+// for providers that track one (Copilot, Goose, Cursor). It is a no-op
 // when the request is empty or already matches the server's current mode. Unlike
 // the model, the mode is mandatory: a rejected mode returns an error so the caller
 // aborts startup.
 //
 // The current mode is read under b.mu: startACPHandshake starts the reader
 // goroutine before Start* reaches this point, and that goroutine can write
-// permissionMode concurrently (syncConfigOptionModeLocked for Copilot/Goose/Cursor,
-// handleCurrentModeUpdate for Gemini). This mirrors trySetStartupModel's locked
-// read of b.model.
+// permissionMode concurrently (syncConfigOptionModeLocked for Copilot/Goose/Cursor).
+// This mirrors trySetStartupModel's locked read of b.model.
 func (b *acpBase) applyStartupPermissionMode(requested string) error {
 	if requested == "" {
 		return nil
@@ -1936,10 +2059,10 @@ func (b *acpBase) applyStartupPermissionMode(requested string) error {
 // handshake (under the lock), falling back to defaultMode when the server reports none.
 // A `mode` config option overrides the permission mode read from the modes channel only
 // for a provider that consumes it (modeChannelPermissionMode -- Copilot/Goose/Cursor);
-// for an unmapped provider (Gemini) it is left to applyGenericConfigOptionsLocked to
+// for an unmapped provider it is left to applyGenericConfigOptionsLocked to
 // surface read-only, matching the runtime and ClearContext paths so the option resolves
 // the same way at every seam instead of being applied writably here but read-only there.
-// Used by ACP providers that track a permission mode (Copilot, Goose, Cursor, Gemini).
+// Used by ACP providers that track a permission mode (Copilot, Goose, Cursor).
 func (b *acpBase) applyHandshakeMode(handshake *acpSessionResult, defaultMode string) {
 	modes := buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
 	mode := handshake.CurrentModeID
@@ -2019,7 +2142,13 @@ func (b *acpBase) handleACPConfigOptionUpdate(update json.RawMessage) {
 
 	b.mu.Lock()
 	oldMode := b.permissionMode
-	modelChanged, listChanged := b.applyConfigOptionModelsLocked(options)
+	// A launch-fixed-model provider (e.g. Reasonix) cannot switch model over ACP;
+	// ignore any model select so the stored model stays in sync with the running
+	// process (a model change relaunches instead, via UpdateSettings).
+	var modelChanged, listChanged bool
+	if !b.modelFixedAtLaunch {
+		modelChanged, listChanged = b.applyConfigOptionModelsLocked(options)
+	}
 	var mode string
 	var modeChanged, primaryAgentChanged bool
 	if b.modeChannel == modeChannelPermissionMode {
@@ -2244,7 +2373,7 @@ func (b *acpBase) applyGenericConfigOptionsLocked(options []acpConfigOption) (va
 	}
 	// The mode option is "claimed" only by a provider that actually consumes it (a
 	// permission-mode or primary-agent provider). A provider whose mode channel is
-	// unmapped (Gemini) would otherwise exclude a configOptions `mode` here without
+	// unmapped would otherwise exclude a configOptions `mode` here without
 	// applying it anywhere -- silently dropping it. Surfacing it read-only is the safe
 	// fallback.
 	claimedModeID, claimedMode := "", false
@@ -2465,12 +2594,12 @@ func (b *acpBase) cancelSession() error {
 
 // Interrupt aborts the active ACP turn by sending the
 // `session/cancel` notification — the wire format every ACP server
-// in our roster (Gemini, Cursor, Copilot, Kilo, OpenCode, Goose)
+// in our roster (Cursor, Copilot, Kilo, OpenCode, Goose)
 // recognizes, and the one acpProvider.IsInterrupt classifier expects.
 //
-// Embedded into every ACP-derived agent (GeminiCLIAgent, CursorAgent,
+// Embedded into every ACP-derived agent (CursorAgent,
 // CopilotCLIAgent, KiloAgent, OpenCodeAgent, GooseAgent) via the
-// acpBase embedding chain, so a single implementation covers all six
+// acpBase embedding chain, so a single implementation covers all five
 // providers.
 //
 // No-op when no session has been opened (sessionID still empty) so
@@ -2595,17 +2724,17 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 	}
 }
 
-// doSendACPPrompt sends a single ACP prompt RPC and processes the response.
-// Used as the promptFunc for all ACP agents; handleResponse varies per provider.
+// doSendACPPrompt sends a single ACP session/prompt RPC and processes the
+// response. It is the default promptFunc for every ACP agent.
 //
 // No timeout on the RPC: the turn unblocks via response, process exit, or
 // ctx cancel (the user interrupting). A wall-clock cap would just kill
 // long-but-legitimate turns.
-func (b *acpBase) doSendACPPrompt(content string, attachments []*leapmuxv1.Attachment, handleResponse func(json.RawMessage)) {
+func (b *acpBase) doSendACPPrompt(content string, attachments []*leapmuxv1.Attachment) {
 	b.sendPrompt(content, attachments,
 		func(params json.RawMessage) (json.RawMessage, error) {
 			return b.sendRequest(acpMethodSessionPrompt, params, 0)
 		},
-		handleResponse,
+		b.handleACPPromptResponse,
 	)
 }

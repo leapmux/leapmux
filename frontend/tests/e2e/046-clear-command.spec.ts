@@ -8,10 +8,10 @@ test.describe('Clear Command', () => {
 
     // Send a message to establish a session
     await editor.click()
-    await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
     const lastAssistant1 = lastAssistantBubble(page)
-    await expect(lastAssistant1).toContainText('2', { timeout: 30000 })
+    await expect(lastAssistant1).toContainText(/6,?912/, { timeout: 30000 })
 
     // Send /reset (alias for /clear)
     await editor.click()
@@ -23,10 +23,10 @@ test.describe('Clear Command', () => {
 
     // Verify agent is still responsive (new session)
     await editor.click()
-    await page.keyboard.type('What is 4+4? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
     const lastAssistant2 = lastAssistantBubble(page)
-    await expect(lastAssistant2).toContainText('8', { timeout: 30000 })
+    await expect(lastAssistant2).toContainText(/3,?333/, { timeout: 30000 })
   })
 
   test('slash clear clears context and shows notification', async ({ page, authenticatedWorkspace }) => {
@@ -35,10 +35,10 @@ test.describe('Clear Command', () => {
 
     // Send a message to establish a session
     await editor.click()
-    await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
     const lastAssistant1 = lastAssistantBubble(page)
-    await expect(lastAssistant1).toContainText('2', { timeout: 30000 })
+    await expect(lastAssistant1).toContainText(/6,?912/, { timeout: 30000 })
 
     // Send /clear
     await editor.click()
@@ -50,10 +50,10 @@ test.describe('Clear Command', () => {
 
     // Verify agent is still responsive (new session)
     await editor.click()
-    await page.keyboard.type('What is 3+3? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
     const lastAssistant2 = lastAssistantBubble(page)
-    await expect(lastAssistant2).toContainText('6', { timeout: 30000 })
+    await expect(lastAssistant2).toContainText(/3,?333/, { timeout: 30000 })
 
     // After /clear and a new response, context usage is repopulated by the
     // new session's system prompt tokens.  Verify the grid is visible again

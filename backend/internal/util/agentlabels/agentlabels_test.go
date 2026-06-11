@@ -22,13 +22,13 @@ func TestDisplayName(t *testing.T) {
 	}{
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "Claude Code"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "Codex"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, "Gemini CLI"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "OpenCode"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, "GitHub Copilot"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "Cursor"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "Goose"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, "Kilo"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, "Pi"},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "Reasonix"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, "agent"},
 		{leapmuxv1.AgentProvider(9999), "agent"},
 	}
@@ -52,13 +52,13 @@ func TestCLIAlias(t *testing.T) {
 	}{
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "claude-code"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "codex"},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, "gemini"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "opencode"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, "copilot"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "cursor"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "goose"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, "kilo"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, "pi"},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "reasonix"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, ""},
 		{leapmuxv1.AgentProvider(9999), ""},
 	}
@@ -96,8 +96,6 @@ func TestParseProvider_KnownAliasesAllMap(t *testing.T) {
 		"claude-code": leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		"Codex":       leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		"codex":       leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		"Gemini":      leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-		"gemini":      leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		"Cursor":      leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		"cursor":      leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		"Copilot":     leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
@@ -110,6 +108,8 @@ func TestParseProvider_KnownAliasesAllMap(t *testing.T) {
 		"goose":       leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		"Pi":          leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 		"pi":          leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+		"Reasonix":    leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		"reasonix":    leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 	}
 	for in, want := range cases {
 		got, ok := ParseProvider(in)
@@ -156,13 +156,13 @@ func TestAliasesFor_CanonicalFirstThenSorted(t *testing.T) {
 	cases := map[leapmuxv1.AgentProvider][]string{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    {"Claude Code", "claude", "claude-code"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          {"Codex", "codex"},
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:     {"Gemini CLI", "Gemini", "gemini"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: {"GitHub Copilot", "Copilot", "copilot"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:         {"Cursor", "cursor"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:       {"OpenCode", "opencode"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:          {"Goose", "goose"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:           {"Kilo", "kilo"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             {"Pi", "pi"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:       {"Reasonix", "reasonix"},
 	}
 	for provider, want := range cases {
 		got := AliasesFor(provider)

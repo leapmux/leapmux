@@ -3,10 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/envutil"
 )
 
 const (
@@ -28,60 +26,24 @@ type OpenCodeAgent struct {
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
 func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
-		Shell:        opts.Shell,
-		LoginShell:   opts.LoginShell,
-		BinaryName:   "opencode",
-		StripEnvKeys: []string{"OPENCODE_CLIENT"},
-		BaseArgs:     []string{"acp"},
-		WorkingDir:   opts.WorkingDir,
-	})
-
-	cmd.Env = envutil.FilterEnv(cmd.Environ(), "OPENCODE_CLIENT")
-	if opts.LoginShell {
-		cmd.Env = append(cmd.Env, "OPENCODE_CLIENT=1")
-	}
-	cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
-
-	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
-	if err != nil {
-		return nil, err
-	}
-
-	a := &OpenCodeAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "opencode", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
-			sink:        sink,
-			model:       opts.Model,
+	return acpStart(ctx, opts, sink, acpStartSpec[OpenCodeAgent]{
+		providerName:   "opencode",
+		binaryName:     "opencode",
+		baseArgs:       []string{"acp"},
+		rcMarkerEnvKey: "OPENCODE_CLIENT",
+		sessionConfig:  acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume},
+		newAgent:       func() *OpenCodeAgent { return &OpenCodeAgent{} },
+		base:           func(a *OpenCodeAgent) *acpBase { return &a.acpBase },
+		configure: func(a *OpenCodeAgent) {
+			a.modeChannel = modeChannelPrimaryAgent
+			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			a.reapplySettings = a.reapplyModelAndPrimaryAgent
+			a.refreshFromSession = a.refreshModelAndPrimaryAgentFromSession
 		},
-	}
-	a.modeChannel = modeChannelPrimaryAgent
-	a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
-	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = a.reapplyModelAndPrimaryAgent
-	a.refreshFromSession = a.refreshModelAndPrimaryAgentFromSession
-
-	if err := a.startCmd(cmd, cancel); err != nil {
-		return nil, err
-	}
-
-	initParams, err := acpStandardInitParams()
-	if err != nil {
-		return nil, err
-	}
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams,
-		acpSessionConfig{newMethod: acpMethodSessionNew, resumeMethod: openCodeMethodSessionResume})
-	if err != nil {
-		return nil, err
-	}
-
-	if err := a.applyPrimaryAgentStartup(handshake, opts, fallbackOpenCodePrimaryAgents(), OpenCodePrimaryAgentBuild, a.setModel); err != nil {
-		return nil, err
-	}
-
-	return a, nil
+		afterHandshake: func(a *OpenCodeAgent, handshake *acpSessionResult, opts Options) error {
+			return a.applyPrimaryAgentStartup(handshake, opts, fallbackOpenCodePrimaryAgents(), OpenCodePrimaryAgentBuild, a.setModel)
+		},
+	})
 }
 
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
@@ -104,18 +66,12 @@ func isHiddenPrimaryAgent(id string) bool {
 	}
 }
 
-func (a *OpenCodeAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
-		a.handleACPPromptResponse(resp, nil)
-	})
-}
-
 func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return a.primaryAgentOptionGroups(fallbackOpenCodePrimaryAgents())
 }
 
 // buildACPPromptBlocks converts text + classified attachments into ACP prompt
-// blocks compatible with both OpenCode and Gemini CLI.
+// blocks compatible with ACP agents.
 func buildACPPromptBlocks(content string, classified []classifiedAttachment) []map[string]interface{} {
 	var prompt []map[string]interface{}
 	if content != "" {

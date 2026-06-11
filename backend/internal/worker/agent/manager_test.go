@@ -336,8 +336,8 @@ func TestManager_PreloadCache(t *testing.T) {
 	m := NewManager(nil)
 
 	models := []*leapmuxv1.AvailableModel{
-		{Id: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
-		{Id: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
+		{Id: "sonnet-4.5", DisplayName: "Sonnet 4.5"},
+		{Id: "gpt-5", DisplayName: "GPT-5"},
 	}
 	groups := []*leapmuxv1.AvailableOptionGroup{
 		{Key: "thinkingBudget", Label: "Thinking Budget", Options: []*leapmuxv1.AvailableOption{
@@ -350,13 +350,13 @@ func TestManager_PreloadCache(t *testing.T) {
 	m.PreloadCache("preloaded-agent", models, groups)
 
 	// AvailableModels should return preloaded models (not static defaults).
-	got := m.AvailableModels("preloaded-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	got := m.AvailableModels("preloaded-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
 	require.Len(t, got, 2)
-	assert.Equal(t, "gemini-2.5-pro", got[0].GetId())
-	assert.Equal(t, "gemini-2.5-flash", got[1].GetId())
+	assert.Equal(t, "sonnet-4.5", got[0].GetId())
+	assert.Equal(t, "gpt-5", got[1].GetId())
 
 	// AvailableOptionGroups should return preloaded groups (not static defaults).
-	gotGroups := m.AvailableOptionGroups("preloaded-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	gotGroups := m.AvailableOptionGroups("preloaded-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
 	require.Len(t, gotGroups, 1)
 	assert.Equal(t, "thinkingBudget", gotGroups[0].GetKey())
 	assert.Len(t, gotGroups[0].GetOptions(), 2)
@@ -369,9 +369,9 @@ func TestManager_PreloadCacheSkipsEmpty(t *testing.T) {
 	m.PreloadCache("empty-agent", nil, nil)
 
 	// Should fall back to static defaults.
-	models := m.AvailableModels("empty-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	models := m.AvailableModels("empty-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
 	require.NotEmpty(t, models)
-	assert.Equal(t, "auto", models[0].GetId(), "should fall back to static Gemini defaults")
+	assert.Equal(t, "auto", models[0].GetId(), "should fall back to static Cursor defaults")
 }
 
 func TestManager_AvailableOptionGroupsCachedFallback(t *testing.T) {
@@ -395,10 +395,10 @@ func TestManager_AvailableOptionGroupsCachedFallback(t *testing.T) {
 	assert.Equal(t, "thinkingBudget", got[0].GetKey())
 }
 
-func TestManager_AvailableModelsFallsBackToGeminiDefaults(t *testing.T) {
+func TestManager_AvailableModelsFallsBackToCursorDefaults(t *testing.T) {
 	m := NewManager(nil)
 
-	models := m.AvailableModels("missing-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	models := m.AvailableModels("missing-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
 	require.NotEmpty(t, models)
 	assert.Equal(t, "auto", models[0].GetId())
 	assert.True(t, models[0].GetIsDefault())
@@ -420,7 +420,7 @@ func TestWithDefaultModelMarked_PreservesACPCurrentModel(t *testing.T) {
 	models := []*leapmuxv1.AvailableModel{
 		{Id: "anthropic/claude-x", DisplayName: "Claude X"},
 		{Id: "openai/gpt-y", DisplayName: "GPT Y", IsDefault: true},
-		{Id: "google/gemini-z", DisplayName: "Gemini Z"},
+		{Id: "xai/grok-z", DisplayName: "Grok Z"},
 	}
 
 	got := withDefaultModelMarked(models, opencode)
@@ -430,7 +430,7 @@ func TestWithDefaultModelMarked_PreservesACPCurrentModel(t *testing.T) {
 	assert.False(t, got[2].GetIsDefault())
 
 	// An operator override still wins and moves the badge to the override target.
-	t.Setenv("LEAPMUX_OPENCODE_DEFAULT_MODEL", "google/gemini-z")
+	t.Setenv("LEAPMUX_OPENCODE_DEFAULT_MODEL", "xai/grok-z")
 	got = withDefaultModelMarked(models, opencode)
 	require.Len(t, got, 3)
 	assert.False(t, got[1].GetIsDefault(), "override clears the per-agent badge")

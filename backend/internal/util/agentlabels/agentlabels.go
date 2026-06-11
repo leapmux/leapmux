@@ -39,8 +39,6 @@ func CLIAlias(provider leapmuxv1.AgentProvider) string {
 		return "claude-code"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
 		return "codex"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
-		return "gemini"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
 		return "opencode"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
@@ -53,13 +51,15 @@ func CLIAlias(provider leapmuxv1.AgentProvider) string {
 		return "kilo"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:
 		return "pi"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:
+		return "reasonix"
 	default:
 		return ""
 	}
 }
 
 // DisplayName returns a human-readable label for an AgentProvider
-// (e.g. "Claude Code", "Gemini CLI"). Unknown providers render as
+// (e.g. "Claude Code", "GitHub Copilot"). Unknown providers render as
 // "agent" so log lines and tooltips never expose the bare enum int.
 func DisplayName(provider leapmuxv1.AgentProvider) string {
 	switch provider {
@@ -67,8 +67,6 @@ func DisplayName(provider leapmuxv1.AgentProvider) string {
 		return "Claude Code"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:
 		return "Codex"
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:
-		return "Gemini CLI"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:
 		return "OpenCode"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
@@ -81,6 +79,8 @@ func DisplayName(provider leapmuxv1.AgentProvider) string {
 		return "Kilo"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:
 		return "Pi"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:
+		return "Reasonix"
 	default:
 		return "agent"
 	}
@@ -105,13 +105,13 @@ func AllProviders() []leapmuxv1.AgentProvider {
 	return []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 	}
 }
 
@@ -154,9 +154,6 @@ var providerAliases = map[string]leapmuxv1.AgentProvider{
 	"claude-code":    leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	"Codex":          leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	"codex":          leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	"Gemini CLI":     leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-	"Gemini":         leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-	"gemini":         leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 	"Cursor":         leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	"cursor":         leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	"GitHub Copilot": leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
@@ -170,4 +167,6 @@ var providerAliases = map[string]leapmuxv1.AgentProvider{
 	"goose":          leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 	"Pi":             leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 	"pi":             leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+	"Reasonix":       leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+	"reasonix":       leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 }

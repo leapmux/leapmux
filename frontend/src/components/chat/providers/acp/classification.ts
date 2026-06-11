@@ -86,7 +86,7 @@ export interface ACPClassifyConfig {
 
 /**
  * Shared `extractQuotableText` for ACP-based providers (OpenCode, Cursor,
- * Kilo, Goose, Copilot, Gemini). Reads `parent.content.text` for
+ * Kilo, Goose, Copilot, Reasonix). Reads `parent.content.text` for
  * agent_message_chunk / agent_thought_chunk shapes (via `extractAgentText`)
  * and falls back to plain string `parent.content` for user_content /
  * plan_execution.

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -20,53 +19,21 @@ type CopilotCLIAgent struct {
 
 // StartCopilotCLI starts a Copilot CLI ACP agent process and performs the handshake.
 func StartCopilotCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
-		Shell:      opts.Shell,
-		LoginShell: opts.LoginShell,
-		BinaryName: "copilot",
-		BaseArgs:   []string{"--acp", "--stdio"},
-		WorkingDir: opts.WorkingDir,
-	})
-
-	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
-
-	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
-	if err != nil {
-		return nil, err
-	}
-
-	a := &CopilotCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "copilot", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
-			sink:        sink,
-			model:       opts.Model,
+	return acpStart(ctx, opts, sink, acpStartSpec[CopilotCLIAgent]{
+		providerName: "copilot",
+		binaryName:   "copilot",
+		baseArgs:     []string{"--acp", "--stdio"},
+		newAgent:     func() *CopilotCLIAgent { return &CopilotCLIAgent{} },
+		base:         func(a *CopilotCLIAgent) *acpBase { return &a.acpBase },
+		configure: func(a *CopilotCLIAgent) {
+			a.modeChannel = modeChannelPermissionMode
+			a.reapplySettings = a.reapplyModelAndPermissionMode
+			a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
 		},
-	}
-	a.modeChannel = modeChannelPermissionMode
-	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = a.reapplyModelAndPermissionMode
-	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
-
-	if err := a.startCmd(cmd, cancel); err != nil {
-		return nil, err
-	}
-
-	initParams, err := acpStandardInitParams()
-	if err != nil {
-		return nil, err
-	}
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := a.applyPermissionModeStartup(handshake, opts, CopilotCLIModeAgent, opts.Model, a.setModel); err != nil {
-		return nil, err
-	}
-
-	return a, nil
+		afterHandshake: func(a *CopilotCLIAgent, handshake *acpSessionResult, opts Options) error {
+			return a.applyPermissionModeStartup(handshake, opts, CopilotCLIModeAgent, opts.Model, a.setModel)
+		},
+	})
 }
 
 func fallbackCopilotCLIModes() []*leapmuxv1.AvailableOption {
@@ -75,12 +42,6 @@ func fallbackCopilotCLIModes() []*leapmuxv1.AvailableOption {
 		{Id: CopilotCLIModePlan, Name: "Plan"},
 		{Id: CopilotCLIModeAutopilot, Name: "Autopilot"},
 	}
-}
-
-func (a *CopilotCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
-		a.handleACPPromptResponse(resp, nil)
-	})
 }
 
 func (a *CopilotCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {

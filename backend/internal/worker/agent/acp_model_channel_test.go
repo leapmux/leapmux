@@ -182,7 +182,7 @@ func TestApplyHandshakeMode_ConfigOptionOverridesModesChannel(t *testing.T) {
 	require.Len(t, base.availableModes, 2)
 }
 
-// A provider with an unmapped mode channel (Gemini) does NOT apply the configOptions
+// A provider with an unmapped mode channel does NOT apply the configOptions
 // `mode` override at handshake -- it keeps the modes-channel value and leaves the
 // option to be surfaced read-only, so the handshake resolves the mode the same way the
 // runtime and ClearContext paths do (which also gate the override on the mode channel)
@@ -203,7 +203,7 @@ func TestApplyHandshakeMode_FallsBackToDefaultWhenServerReportsNone(t *testing.T
 	assert.Equal(t, "default-mode", base.permissionMode)
 }
 
-// S1 end-to-end: a provider with an unmapped mode channel (Gemini) whose handshake
+// S1 end-to-end: a provider with an unmapped mode channel whose handshake
 // carries BOTH a modes channel and a configOptions `mode` must (a) keep the
 // modes-channel permission mode -- the configOptions override is NOT applied writably --
 // and (b) surface the configOptions `mode` as a read-only generic group rather than
@@ -212,7 +212,7 @@ func TestApplyHandshakeMode_FallsBackToDefaultWhenServerReportsNone(t *testing.T
 // option is neither double-applied (writable + read-only) nor silently dropped, matching
 // how the runtime and ClearContext paths resolve it.
 func TestUnmappedProvider_HandshakeConfigMode_SurfacedReadOnlyNotDoubleApplied(t *testing.T) {
-	var base acpBase // modeChannelUnmapped (Gemini-like)
+	var base acpBase // modeChannelUnmapped
 	handshake := &acpSessionResult{
 		CurrentModeID: "default",
 		Modes:         []acpModeInfo{{ID: "default", Name: "Default"}, {ID: "plan", Name: "Plan"}},
@@ -337,30 +337,6 @@ func TestApplyConfigOptionModelsLocked_ReunionsModelsFieldCatalog(t *testing.T) 
 	assert.Equal(t, "cfg/b", base.availableModels[2].GetId())
 	assert.True(t, base.availableModels[1].GetIsDefault()) // current comes from the config option
 	assert.Equal(t, "cfg/a", base.model)
-}
-
-// A provider models decorator (Gemini's synthetic "auto") must run on the runtime
-// model channel too, so the handshake and runtime model lists stay consistent.
-func TestApplyConfigOptionModels_AppliesModelsDecorator(t *testing.T) {
-	var base acpBase
-	base.modelsDecorator = geminiEnsureAuto
-
-	options := []acpConfigOption{{
-		ID: acpConfigOptionIDModel, CurrentValue: "gemini-2.5-pro",
-		Options: []acpConfigOptionValue{
-			{Value: "gemini-2.5-pro", Name: "Gemini 2.5 Pro"},
-			{Value: "gemini-2.5-flash", Name: "Gemini 2.5 Flash"},
-		},
-	}}
-	base.mu.Lock()
-	modelChanged, listChanged := base.applyConfigOptionModelsLocked(options)
-	base.mu.Unlock()
-
-	assert.True(t, modelChanged)
-	assert.True(t, listChanged)
-	require.Len(t, base.availableModels, 3)
-	assert.Equal(t, "auto", base.availableModels[0].GetId())
-	assert.Equal(t, "gemini-2.5-pro", base.model)
 }
 
 func TestHandleKiloOutput_ConfigOptionUpdateRefreshesModelsGenerically(t *testing.T) {
@@ -786,10 +762,10 @@ func TestApplyGenericConfigOptionsLocked_ExcludesClaimedModeByCategory(t *testin
 	assert.Empty(t, base.genericOptionGroups, "the claimed mode is not double-rendered as a generic group")
 }
 
-// A provider that consumes neither channel (Gemini) does NOT claim a mode option, so
+// A provider that consumes neither channel does NOT claim a mode option, so
 // rather than silently dropping it, the mode surfaces as a read-only generic group.
 func TestApplyGenericConfigOptionsLocked_SurfacesUnconsumedModeForNonSyncingProvider(t *testing.T) {
-	var base acpBase // modeChannel stays modeChannelUnmapped (Gemini-like)
+	var base acpBase // modeChannel stays modeChannelUnmapped
 	options := []acpConfigOption{
 		{ID: acpConfigOptionIDMode, Category: acpConfigOptionCategoryMode, CurrentValue: "plan",
 			Options: []acpConfigOptionValue{{Value: "build"}, {Value: "plan"}}},

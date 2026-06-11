@@ -5,7 +5,7 @@ import { flush } from '../../tests/unit/helpers/async'
 
 const CC = AgentProvider.CLAUDE_CODE
 const CODEX = AgentProvider.CODEX
-const GEMINI = AgentProvider.GEMINI_CLI
+const CURSOR = AgentProvider.CURSOR
 
 // Mutable state the mocked mruAgentProviders backing store reads from.
 // `useMruProviders` itself is real -- we want to exercise the real
@@ -26,7 +26,7 @@ describe('useAgentProviderSelection', () => {
   it('seeds agentProvider from the most-recently-used available provider', () => {
     mockStored = [CODEX, CC]
     createRoot((dispose) => {
-      const sel = useAgentProviderSelection(() => [CC, CODEX, GEMINI])
+      const sel = useAgentProviderSelection(() => [CC, CODEX, CURSOR])
       // CODEX is first in MRU and is in the available list.
       expect(sel.agentProvider()).toBe(CODEX)
       expect(sel.noProviders()).toBe(false)
@@ -37,8 +37,8 @@ describe('useAgentProviderSelection', () => {
   it('seeds from the first available provider when MRU is empty', () => {
     mockStored = []
     createRoot((dispose) => {
-      const sel = useAgentProviderSelection(() => [GEMINI, CC])
-      expect(sel.agentProvider()).toBe(GEMINI)
+      const sel = useAgentProviderSelection(() => [CURSOR, CC])
+      expect(sel.agentProvider()).toBe(CURSOR)
       dispose()
     })
   })
@@ -54,7 +54,7 @@ describe('useAgentProviderSelection', () => {
         // Worker stops offering CLAUDE_CODE. Hook must re-seed to a
         // still-available choice instead of holding a stale value the
         // submit path would later send to the worker.
-        setAvailable([CODEX, GEMINI])
+        setAvailable([CODEX, CURSOR])
         await flush()
         expect(sel.agentProvider()).toBe(CODEX)
         dispose()
@@ -85,18 +85,18 @@ describe('useAgentProviderSelection', () => {
     mockStored = [CC, CODEX]
     await new Promise<void>((resolve) => {
       createRoot(async (dispose) => {
-        const [available, setAvailable] = createSignal<AgentProvider[]>([CC, CODEX, GEMINI])
+        const [available, setAvailable] = createSignal<AgentProvider[]>([CC, CODEX, CURSOR])
         const sel = useAgentProviderSelection(available)
         expect(sel.agentProvider()).toBe(CC)
 
-        sel.setAgentProvider(GEMINI)
-        expect(sel.agentProvider()).toBe(GEMINI)
+        sel.setAgentProvider(CURSOR)
+        expect(sel.agentProvider()).toBe(CURSOR)
 
-        // Availability changes but GEMINI is still in the list -- hook
+        // Availability changes but CURSOR is still in the list -- hook
         // must not stomp the user's explicit pick.
-        setAvailable([CC, GEMINI])
+        setAvailable([CC, CURSOR])
         await flush()
-        expect(sel.agentProvider()).toBe(GEMINI)
+        expect(sel.agentProvider()).toBe(CURSOR)
         dispose()
         resolve()
       })
@@ -135,7 +135,7 @@ describe('useAgentProviderSelection', () => {
     mockStored = []
     createRoot((dispose) => {
       const a = [CC, CODEX]
-      const b = [CC, GEMINI]
+      const b = [CC, CURSOR]
       const [source, setSource] = createSignal<AgentProvider[]>(a)
       const sel = useAgentProviderSelection(source)
       const first = sel.available()
@@ -146,7 +146,7 @@ describe('useAgentProviderSelection', () => {
       setSource(b)
       const third = sel.available()
       expect(third).not.toBe(first)
-      expect(third).toEqual([CC, GEMINI])
+      expect(third).toEqual([CC, CURSOR])
       dispose()
     })
   })

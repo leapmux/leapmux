@@ -356,8 +356,8 @@ func (svc *Context) controlResponseDisplayText(agentID string, provider leapmuxv
 			return opencodeQuestionAnswersText(cr.Payload, content)
 		}
 		return acpPermissionResponseDisplayText(cr.Payload, content)
-	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:
 		return acpPermissionResponseDisplayText(cr.Payload, content)
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:
 		switch payload.Method {

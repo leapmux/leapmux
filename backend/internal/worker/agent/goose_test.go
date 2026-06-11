@@ -3,12 +3,9 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -42,60 +39,33 @@ func newGooseAgentForRPCWithResponder(t *testing.T, respond func(method string) 
 }
 
 func installFakeGooseCLI(t *testing.T, scenario string) {
-	t.Helper()
-
-	dir := t.TempDir()
-	launcher := filepath.Join(dir, "goose")
-	script := fmt.Sprintf("#!/bin/sh\nLEAPMUX_GOOSE_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessGooseCLI --\n", scenario, os.Args[0])
-	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("GO_WANT_HELPER_PROCESS_GOOSE", "1")
+	installFakeACPCLI(t, fakeACPCLISpec{
+		binary:    "goose",
+		helperRun: "TestHelperProcessGooseCLI",
+		wantEnv:   "GO_WANT_HELPER_PROCESS_GOOSE",
+		env:       []string{"LEAPMUX_GOOSE_TEST_SCENARIO=" + scenario},
+	})
 }
 
-func TestHelperProcessGooseCLI(t *testing.T) {
-	if os.Getenv("GO_WANT_HELPER_PROCESS_GOOSE") != "1" {
-		return
-	}
-
-	scanner := bufio.NewScanner(os.Stdin)
-	writer := bufio.NewWriter(os.Stdout)
-	defer func() { _ = writer.Flush() }()
-
+func TestHelperProcessGooseCLI(*testing.T) {
 	scenario := os.Getenv("LEAPMUX_GOOSE_TEST_SCENARIO")
-
-	writeResponse := func(id json.RawMessage, body string, isError bool) {
-		field := "result"
-		if isError {
-			field = "error"
-		}
-		_, _ = fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"%s":%s}`+"\n", string(id), field, body)
-		_ = writer.Flush()
-	}
-
-	for scanner.Scan() {
-		var req struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-
-		switch req.Method {
+	runFakeACPServer("GO_WANT_HELPER_PROCESS_GOOSE", func(method string) (string, bool, bool) {
+		switch method {
 		case acpMethodInitialize:
-			writeResponse(req.ID, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false)
+			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false, true
 		case acpMethodSessionNew:
-			writeResponse(req.ID, `{"sessionId":"goose-new","models":{"currentModelId":"default-model","availableModels":[{"modelId":"default-model","name":"Default Model","description":"Default"},{"modelId":"fast-model","name":"Fast Model","description":"Fast"}]},"modes":{"currentModeId":"auto","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]},"configOptions":[{"id":"mode","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"approve","name":"Approve"},{"value":"smart_approve","name":"Smart Approve"},{"value":"chat","name":"Chat"}]},{"id":"model","currentValue":"default-model","options":[{"value":"default-model","name":"Default Model"},{"value":"fast-model","name":"Fast Model"}]}]}`, false)
+			return `{"sessionId":"goose-new","models":{"currentModelId":"default-model","availableModels":[{"modelId":"default-model","name":"Default Model","description":"Default"},{"modelId":"fast-model","name":"Fast Model","description":"Fast"}]},"modes":{"currentModeId":"auto","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]},"configOptions":[{"id":"mode","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"approve","name":"Approve"},{"value":"smart_approve","name":"Smart Approve"},{"value":"chat","name":"Chat"}]},{"id":"model","currentValue":"default-model","options":[{"value":"default-model","name":"Default Model"},{"value":"fast-model","name":"Fast Model"}]}]}`, false, true
 		case acpMethodSessionLoad:
 			if scenario == "load" {
-				writeResponse(req.ID, `{"models":{"currentModelId":"fast-model","availableModels":[{"modelId":"fast-model","name":"Fast Model"}]},"modes":{"currentModeId":"approve","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]}}`, false)
+				return `{"models":{"currentModelId":"fast-model","availableModels":[{"modelId":"fast-model","name":"Fast Model"}]},"modes":{"currentModeId":"approve","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]}}`, false, true
 			}
+			return "", false, false
 		case acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
-			writeResponse(req.ID, `{}`, false)
+			return `{}`, false, true
+		default:
+			return "", false, false
 		}
-	}
-	os.Exit(0)
+	})
 }
 
 func TestStartGooseCLI_NewSessionHandshake(t *testing.T) {

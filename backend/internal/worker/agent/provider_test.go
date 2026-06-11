@@ -167,9 +167,9 @@ func TestProviderFor_ACPSharesNoopClassification(t *testing.T) {
 	// classify/merge — they only provide IsInterrupt. Verify a few of
 	// them route to the same behavior.
 	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 	} {
 		plugin := ProviderFor(provider)
 		assert.False(t, plugin.Classify(json.RawMessage(`{"method":"session/cancel"}`)).Consolidatable(),

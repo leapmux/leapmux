@@ -323,12 +323,12 @@ func TestIsInterruptRequestRecognizesProviderFormats(t *testing.T) {
 	pi := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
-	gemini := leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI
+	cursor := leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR
 
 	assert.True(t, agent.IsInterruptRequest(pi, `{"type":"abort"}`), "Pi abort RPC should be treated as an interrupt")
 	assert.True(t, agent.IsInterruptRequest(codex, `{"jsonrpc":"2.0","method":"turn/interrupt"}`), "Codex turn interrupt should be treated as an interrupt")
 	assert.True(t, agent.IsInterruptRequest(claude, `{"type":"control_request","request":{"subtype":"interrupt"}}`), "Claude control interrupt should be treated as an interrupt")
-	assert.True(t, agent.IsInterruptRequest(gemini, `{"jsonrpc":"2.0","method":"session/cancel"}`), "ACP session/cancel should be treated as an interrupt")
+	assert.True(t, agent.IsInterruptRequest(cursor, `{"jsonrpc":"2.0","method":"session/cancel"}`), "ACP session/cancel should be treated as an interrupt")
 
 	// Each classifier only matches its own format — cross-provider payloads
 	// must not be misclassified.

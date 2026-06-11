@@ -53,7 +53,7 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
 	require.Equal(t, 0, sink.MessageCount(), "thought chunk should buffer, not persist immediately")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn"}`)
-	agent.handleACPPromptResponse(resp, nil)
+	agent.handleACPPromptResponse(resp)
 
 	// End-of-turn flushes thought buffer, then persists the (empty) assistant
 	// text — `persistTextMessage` skips empty — then the result divider.
@@ -118,7 +118,7 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_MultipleNotifications(t *testing
 	agent.HandleOutput([]byte(second))
 
 	resp := json.RawMessage(`{"stopReason":"end_turn"}`)
-	agent.handleACPPromptResponse(resp, nil)
+	agent.handleACPPromptResponse(resp)
 
 	require.Equal(t, 2, sink.MessageCount())
 	var parsed map[string]interface{}
@@ -142,7 +142,7 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_SentenceBoundary(t *testing.T) {
 	agent.HandleOutput([]byte(first))
 	agent.HandleOutput([]byte(second))
 
-	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
 	require.GreaterOrEqual(t, sink.MessageCount(), 1)
 	var parsed map[string]interface{}
@@ -187,7 +187,7 @@ func TestHandleOpenCodeOutput_TrailingThoughtFlushedBeforeReply(t *testing.T) {
 	agent.HandleOutput([]byte(thought))
 
 	agent.turnAssistantText.WriteString("Here is the answer.")
-	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
 	require.Equal(t, 3, sink.MessageCount())
 
@@ -211,7 +211,7 @@ func TestHandleOpenCodePromptResponse_PersistsAssistantText(t *testing.T) {
 	agent.turnAssistantText.WriteString("Here is the answer.")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn","usage":{"totalTokens":100}}`)
-	agent.handleACPPromptResponse(resp, nil)
+	agent.handleACPPromptResponse(resp)
 
 	// Expect 2 messages: assistant text, result divider.
 	require.Equal(t, 2, sink.MessageCount())
@@ -493,7 +493,7 @@ func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 
 	// Simulate a wrapped prompt response with {role: "result", content: {...}}.
 	resp := json.RawMessage(`{"id":"msg-1","role":"result","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}`)
-	agent.handleACPPromptResponse(resp, nil)
+	agent.handleACPPromptResponse(resp)
 
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
@@ -630,7 +630,7 @@ func TestHandleACPOutput_TurnEndResetsThinkingTokens(t *testing.T) {
 
 	// End of turn: the assistant message + result divider commit, and the
 	// per-turn estimate resets.
-	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
 	agent.HandleOutput(acpMessageChunk("abcdefgh"))
 	assert.Equal(t, int64(2), lastThinkingTokens(sink), "the next turn restarts the estimate")
@@ -667,7 +667,7 @@ func TestHandleACPOutput_NilResultResetsThinkingTokens(t *testing.T) {
 	// broadcast an explicit 0 so the live counter drops now instead of freezing on 4
 	// until the next turn streams. The estimate must also not leak into the next
 	// turn (ACP has no turn-start reset).
-	agent.handleACPPromptResponse(nil, nil)
+	agent.handleACPPromptResponse(nil)
 	assert.Equal(t, int64(0), lastThinkingTokens(sink), "the abort broadcasts an explicit clear")
 
 	agent.HandleOutput(acpMessageChunk("abcdefgh"))
@@ -683,11 +683,11 @@ func TestHandleACPOutput_NilResultDropsBufferedAssistantText(t *testing.T) {
 	// Turn 1 streams assistant text, then aborts with a nil result. The buffered
 	// text was never committed; it must NOT survive into the next turn's reply.
 	agent.HandleOutput(acpMessageChunk("STALE-TURN-1"))
-	agent.handleACPPromptResponse(nil, nil)
+	agent.handleACPPromptResponse(nil)
 
 	// Turn 2 streams its own assistant text and ends normally.
 	agent.HandleOutput(acpMessageChunk("turn-2-text"))
-	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
 	// The persisted assistant message for turn 2 must carry only turn 2's text --
 	// the aborted turn's buffer was dropped, not prepended.

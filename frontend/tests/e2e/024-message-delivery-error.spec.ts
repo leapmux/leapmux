@@ -20,7 +20,7 @@ test.describe('Message Delivery Error', () => {
 
       // Send a message and wait for an assistant response bubble
       await editor.click()
-      await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
@@ -80,7 +80,7 @@ test.describe('Message Delivery Error', () => {
 
       // Send a message and wait for assistant response
       await editor.click()
-      await page.keyboard.type('What is 1+1? Reply with just the number.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
@@ -137,7 +137,7 @@ test.describe('Message Delivery Error', () => {
 
       // Send a message and wait for assistant response
       await editor.click()
-      await page.keyboard.type('What is 5+5? Reply with just the number.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 

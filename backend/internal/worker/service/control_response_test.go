@@ -272,7 +272,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionAnswer(t *testing.T) {
 	assert.Equal(t, "Task: Build\nEnv: Dev", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
 }
 
-func TestSendControlResponse_PersistsGeminiPermissionSelectionLabel(t *testing.T) {
+func TestSendControlResponse_PersistsCopilotPermissionSelectionLabel(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 
@@ -281,7 +281,7 @@ func TestSendControlResponse_PersistsGeminiPermissionSelectionLabel(t *testing.T
 		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	}))
 
 	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
@@ -304,7 +304,7 @@ func TestSendControlResponse_PersistsGeminiPermissionSelectionLabel(t *testing.T
 		AgentID:    "agent-1",
 		Model:      "auto",
 		WorkingDir: t.TempDir(),
-	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI))
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT))
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 

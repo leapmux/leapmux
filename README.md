@@ -20,13 +20,13 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
 <p>
   <a href="https://claude.com/product/claude-code"><img src="icons/agents/claude-code.svg" width="64" height="64" title="Claude Code"></a>&nbsp;
   <a href="https://openai.com/codex/"><img src="icons/agents/codex.svg" width="64" height="64" title="Codex"></a>&nbsp;
-  <a href="https://geminicli.com/"><img src="icons/agents/gemini-cli.svg" width="64" height="64" title="Gemini CLI"></a>&nbsp;
   <a href="https://cursor.com/cli"><img src="icons/agents/cursor.svg" width="64" height="64" title="Cursor"></a>&nbsp;
   <a href="https://github.com/features/copilot/cli"><img src="icons/agents/github-copilot.svg" width="64" height="64" title="GitHub Copilot"></a>&nbsp;
   <a href="https://opencode.ai/"><img src="icons/agents/opencode.svg" width="64" height="64" title="OpenCode"></a>&nbsp;
   <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" title="Pi"></a>
   <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
   <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" title="Goose"></a>&nbsp;
+  <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="icons/agents/reasonix.svg" width="64" height="64" title="Reasonix"></a>&nbsp;
 </p>
 
 > **📖 Want to use LeapMux?**

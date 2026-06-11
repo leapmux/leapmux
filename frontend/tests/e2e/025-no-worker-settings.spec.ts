@@ -20,15 +20,15 @@ test.describe('Settings and /clear after Worker restart', () => {
 
       // Step 1: Send a message and wait for a response (agent starts)
       await editor.click()
-      await page.keyboard.type('What is 2+2? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
-      // Wait for the assistant's response containing "4"
+      // Wait for the assistant's response containing "6912"
       await page.waitForFunction((sel: string) => {
         const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
-          if (b.textContent?.includes('4'))
+          if (/6,?912/.test(b.textContent ?? ''))
             return true
         }
         return false
@@ -49,11 +49,11 @@ test.describe('Settings and /clear after Worker restart', () => {
         let hasUserMsg = false
         let hasAssistantResp = false
         for (const b of userBubbles) {
-          if (b.textContent?.includes('2+2'))
+          if (b.textContent?.includes('1234 + 5678'))
             hasUserMsg = true
         }
         for (const b of assistantBubbles) {
-          if (b.textContent?.includes('4'))
+          if (/6,?912/.test(b.textContent ?? ''))
             hasAssistantResp = true
         }
         return hasUserMsg && hasAssistantResp

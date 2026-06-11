@@ -1,7 +1,8 @@
-// The agent brand-mark SVG paths below (Claude Code, Codex, Gemini CLI,
-// OpenCode, GitHub Copilot, Goose, Kilo, Cursor) are derived from the
+// The agent brand-mark SVG paths below (Claude Code, Codex, OpenCode,
+// GitHub Copilot, Goose, Kilo, Cursor) are derived from the
 // @lobehub/icons collection (https://github.com/lobehub/lobe-icons), MIT-
-// licensed. See NOTICE.md for the full license text.
+// licensed. See NOTICE.md for the full license text. The Reasonix mark is from
+// the DeepSeek-Reasonix project (https://github.com/esengine/DeepSeek-Reasonix).
 import type { JSX } from 'solid-js'
 import Bot from 'lucide-solid/icons/bot'
 import { createUniqueId, Match, Switch } from 'solid-js'
@@ -13,13 +14,13 @@ export function agentProviderLabel(provider?: AgentProvider): string {
   switch (provider) {
     case AgentProvider.CLAUDE_CODE: return 'Claude Code'
     case AgentProvider.CODEX: return 'Codex'
-    case AgentProvider.GEMINI_CLI: return 'Gemini CLI'
     case AgentProvider.OPENCODE: return 'OpenCode'
     case AgentProvider.GITHUB_COPILOT: return 'GitHub Copilot'
     case AgentProvider.CURSOR: return 'Cursor'
     case AgentProvider.GOOSE: return 'Goose'
     case AgentProvider.KILO: return 'Kilo'
     case AgentProvider.PI: return 'Pi'
+    case AgentProvider.REASONIX: return 'Reasonix'
     default: return 'Unknown'
   }
 }
@@ -58,42 +59,6 @@ function CodexIcon(props: { size: number, class?: string }): JSX.Element {
           <stop stop-color="#B1A7FF" />
           <stop offset=".5" stop-color="#7A9DFF" />
           <stop offset="1" stop-color="#3941FF" />
-        </linearGradient>
-      </defs>
-    </svg>
-  )
-}
-
-function GeminiCliIcon(props: { size: number, class?: string }): JSX.Element {
-  const id = createUniqueId()
-  const g0 = `${id}-0`
-  const g1 = `${id}-1`
-  const g2 = `${id}-2`
-  return (
-    <svg
-      height={props.size}
-      width={props.size}
-      viewBox="0 0 24 24"
-      xmlns="http://www.w3.org/2000/svg"
-      class={props.class}
-      style={iconStyle(props.size)}
-    >
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="#3186FF" />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill={`url(#${g0})`} />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill={`url(#${g1})`} />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill={`url(#${g2})`} />
-      <defs>
-        <linearGradient gradientUnits="userSpaceOnUse" id={g0} x1="7" x2="11" y1="15.5" y2="12">
-          <stop stop-color="#08B962" />
-          <stop offset="1" stop-color="#08B962" stop-opacity="0" />
-        </linearGradient>
-        <linearGradient gradientUnits="userSpaceOnUse" id={g1} x1="8" x2="11.5" y1="5.5" y2="11">
-          <stop stop-color="#F94543" />
-          <stop offset="1" stop-color="#F94543" stop-opacity="0" />
-        </linearGradient>
-        <linearGradient gradientUnits="userSpaceOnUse" id={g2} x1="3.5" x2="17.5" y1="13.5" y2="12">
-          <stop stop-color="#FABC12" />
-          <stop offset=".46" stop-color="#FABC12" stop-opacity="0" />
         </linearGradient>
       </defs>
     </svg>
@@ -208,6 +173,26 @@ function CursorIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
+function ReasonixIcon(props: { size: number, class?: string }): JSX.Element {
+  // Single-color brand mark (#0153e5); fill inherits from the <svg> element.
+  return (
+    <svg
+      fill="#0153e5"
+      height={props.size}
+      width={props.size}
+      viewBox="245 70 235 245"
+      xmlns="http://www.w3.org/2000/svg"
+      class={props.class}
+      style={iconStyle(props.size)}
+    >
+      <path d="M369.75,185.3c2.09,1.76,4.98,2.41,7.95,1.06,1.18-.54,1.96-1.91,1.47-3.25-3.92-10.71-14.97-18.54-19.38-12.48-.54.74-.52,1.7-.11,2.29.32.47.97.57,1.82.4,2.68-.56,6.02,1.31,5.7,4.3-.33,3.12.3,5.79,2.56,7.69Z" />
+      <path d="M434.28,204.78c10.12-11.32,16.46-25.01,18.67-40.07,5.04-32.93-11.31-63.01-42.11-75.75-10.83-4.35-21.95-6.2-33.76-6.09l-114.5.03v219.42s56.29-.04,56.29-.04v-77.17c-1.86-.69-3.15-1.27-3.15-1.27-12.24-5.59-21.6-15.29-26.74-27.44-6.56-15.51-4.54-32.9,5.78-46.12,10.28-12.84,24.31-16.92,40.41-14.67,5.95.83,12.3-6.15,24.4-4.81.81.09,1.63.7,1.71,1.18.28,1.65-4.4,2.54-4.4,7.05,0,1.9.85,4.1,2.65,5.36,6.17,4.33,11.51,9.19,17.1,14.22,2.72,2.44,11.93,9.31,14.27,3.72,1.37-3.26,2.27-6.68,3.18-10.15.45-1.72-.5-2.74-1.89-3.56-9.5-5.63-13.08-17.35-9.37-27.74.36-1,1.29-1.49,2.08-1.52,3.19-.14,1.49,5.78,9.38,8.21,7.49,2.31,7.71,8.53,11.35,6.05,8.48-5.78,11.54-1.05,19.41-8.46.81-.76,2.2-.82,3.04-.23.52.36.97,1.29.93,2.38-.23,6.26-2.67,12.24-6.95,16.84-8.09,8.69-14.89,4.53-15.33,10.62-1.29,17.86-7.13,35.69-19.81,48.66-.41.42-.65,1.01-.58,1.41.07.42.57.83,1.12,1.01l10.68,3.63c1.51.51,2.6,1.87,2.41,3.31-.17,1.26-1.17,2.37-2.61,2.85-7.84,2.59-16.26,2.14-24.24-.27-10.56,8.89-23.54,13.48-37.68,12.93l20.53,28.34,33.49,45.73,66.85-.09-56.68-76.53c13.19-3.89,24.78-10.87,34.07-20.94Z" />
+      <circle cx="362.14" cy="177.19" r="1.58" />
+      <path d="M300.31,167.85c-3.53.43-5.65,2.96-5.31,6.74,2.39,26.35,26.7,47.92,53.94,42.72,5.8-1.11,11.08-3.41,15.36-7.74-9.27-7.98-13.79-16.12-21.41-24.13-10.91-11.47-26.43-19.54-42.58-17.59Z" />
+    </svg>
+  )
+}
+
 export interface AgentProviderIconProps {
   provider?: AgentProvider
   size: number
@@ -222,9 +207,6 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.CODEX}>
         <CodexIcon size={props.size} class={props.class} />
-      </Match>
-      <Match when={props.provider === AgentProvider.GEMINI_CLI}>
-        <GeminiCliIcon size={props.size} class={props.class} />
       </Match>
       <Match when={props.provider === AgentProvider.OPENCODE}>
         <OpenCodeIcon size={props.size} class={props.class} />
@@ -243,6 +225,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.PI}>
         <PiIcon size={props.size} class={props.class} />
+      </Match>
+      <Match when={props.provider === AgentProvider.REASONIX}>
+        <ReasonixIcon size={props.size} class={props.class} />
       </Match>
     </Switch>
   )

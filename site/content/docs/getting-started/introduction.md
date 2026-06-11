@@ -38,13 +38,13 @@ Every provider is first-class: you get a consistent core experience — chat, st
 |-------|-----------------|
 | Claude Code | `claude` |
 | Codex | `codex` |
-| Gemini CLI | `gemini` |
 | Cursor | `cursor-agent` |
 | GitHub Copilot | `copilot` |
 | Kilo | `kilo` |
 | OpenCode | `opencode` |
 | Goose | `goose` |
 | Pi | `pi` |
+| Reasonix | `reasonix` |
 
 Each provider exposes its own settings — models and permission modes, and where the CLI supports it, effort/reasoning levels — which you change mid-session from an in-chat settings dropdown. For example, Claude Code defaults to the `opus[1m]` model and Codex to `gpt-5.4`. For how to open an agent, chat, answer permission prompts, switch models, and resume a session, see [Coding Agents](/docs/using/coding-agents/).
 

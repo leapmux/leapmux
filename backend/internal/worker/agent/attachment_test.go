@@ -188,7 +188,7 @@ func TestNormalizeAttachmentsForProvider_InfersTextMime(t *testing.T) {
 	assert.Equal(t, "text/plain", normalized[0].GetMimeType())
 }
 
-func TestNormalizeAttachmentsForProvider_GeminiAcceptsACPAttachmentSet(t *testing.T) {
+func TestNormalizeAttachmentsForProvider_CopilotAcceptsACPAttachmentSet(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
 		{Filename: "diagram.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
@@ -196,9 +196,37 @@ func TestNormalizeAttachmentsForProvider_GeminiAcceptsACPAttachmentSet(t *testin
 		{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}},
 	}
 
-	normalized, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI, attachments)
+	normalized, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, attachments)
 	require.NoError(t, err)
 	require.Len(t, normalized, 4)
+}
+
+func TestNormalizeAttachmentsForProvider_ReasonixAcceptsTextOnly(t *testing.T) {
+	attachments := []*leapmuxv1.Attachment{
+		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
+		{Filename: "config.json", MimeType: "application/json", Data: []byte("{}")},
+	}
+
+	normalized, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, attachments)
+	require.NoError(t, err)
+	require.Len(t, normalized, 2)
+}
+
+func TestNormalizeAttachmentsForProvider_ReasonixRejectsNonText(t *testing.T) {
+	// Reasonix is text-only (it advertises image:false and drops non-text
+	// blocks), so image, PDF, and binary attachments are rejected up front.
+	cases := map[string]*leapmuxv1.Attachment{
+		"image":  {Filename: "diagram.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
+		"pdf":    {Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
+		"binary": {Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}},
+	}
+	for kind, att := range cases {
+		t.Run(kind, func(t *testing.T) {
+			_, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, []*leapmuxv1.Attachment{att})
+			require.Error(t, err, "reasonix must reject a %s attachment", kind)
+			assert.Contains(t, err.Error(), "reasonix only supports text attachments")
+		})
+	}
 }
 
 func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {

@@ -51,7 +51,7 @@ func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
 	require.Equal(t, 0, sink.StreamChunkCount())
 	require.Equal(t, 0, sink.MessageCount())
 
-	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	agent.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
 	require.Equal(t, 2, sink.MessageCount())
 	msg := sink.Messages()[0]
@@ -70,7 +70,7 @@ func TestHandleKiloPromptResponse_PersistsAssistantText(t *testing.T) {
 	agent.turnAssistantText.WriteString("Here is the answer.")
 
 	resp := json.RawMessage(`{"stopReason":"end_turn","usage":{"totalTokens":100}}`)
-	agent.handleACPPromptResponse(resp, nil)
+	agent.handleACPPromptResponse(resp)
 
 	require.Equal(t, 2, sink.MessageCount())
 

@@ -17,13 +17,13 @@ LeapMux integrates nine coding-agent providers:
 | --- | --- |
 | Claude Code | `claude` |
 | Codex | `codex` (or `codex-x86_64-pc-windows-msvc`) |
-| Gemini CLI | `gemini` |
 | Cursor | `cursor-agent` |
 | GitHub Copilot | `copilot` |
 | Kilo | `kilo` |
 | OpenCode | `opencode` |
 | Goose | `goose` |
 | Pi | `pi` |
+| Reasonix | `reasonix` |
 
 All nine are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. How much of that workflow you see still depends on what each provider's CLI exposes. The plan/todo sidebar, for example, only appears for agents whose CLI emits task or todo updates, and resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
 
@@ -91,7 +91,8 @@ You can attach files by clicking the upload (paperclip) button, or by pasting or
 | Claude Code | yes | yes | yes | no |
 | Codex | yes | yes | no | no |
 | Pi | yes | yes | no | no |
-| Gemini CLI, Cursor, GitHub Copilot, Goose, OpenCode, Kilo | yes | yes | yes | yes |
+| Reasonix | yes | no | no | no |
+| Cursor, GitHub Copilot, Goose, OpenCode, Kilo | yes | yes | yes | yes |
 
 ### Message persistence and offline behavior
 
@@ -173,7 +174,7 @@ Pi shows method-specific dialogs: **confirm** (Deny / Approve), **input** (an in
 
 ### Other providers
 
-Gemini CLI, Cursor, GitHub Copilot, Goose, OpenCode, and Kilo render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
+Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode (Reasonix declares none). Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
 
 ## Changing settings mid-session
 
@@ -217,13 +218,14 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 | Provider | Default model | Default mode | Notes |
 | --- | --- | --- | --- |
 | Cursor | `auto` | `agent` | Has plan mode. |
-| Gemini CLI | `auto` | `default` | Bypass mode is `yolo`; has plan mode. |
 | GitHub Copilot | (CLI default) | `agent` | Has plan and autopilot. |
 | Goose | (CLI default) | `auto` | Bypass = `auto` — Goose's default mode already is its bypass mode (it has no separate ask-first mode); **no plan mode**. |
 | OpenCode | (CLI default) | Primary Agent `build` | Has plan mode. |
 | Kilo | (CLI default) | Primary Agent `code` | Has plan mode. |
 
 In the UI you pick these as named radio options (**Auto**, **YOLO**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux remote agent set --permission-mode`.
+
+**Reasonix** — a **Model** selector only; it has no permission mode, no plan mode, and no bypass. Default model **DeepSeek Flash** (`deepseek-flash`); also offered: DeepSeek Pro, MiMo Pro, MiMo Flash (the MiMo models need `MIMO_API_KEY`). Reasonix fixes its model at launch, so switching the model restarts the agent. It is text-only — image, PDF, and binary attachments aren't supported — and still shows per-request approval banners.
 
 ## Resuming an existing session
 

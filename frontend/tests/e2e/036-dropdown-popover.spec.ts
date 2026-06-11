@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { ASSISTANT_BUBBLE_SELECTOR, openAgentViaUI } from './helpers/ui'
+import { ARITHMETIC_ANSWER, ASSISTANT_BUBBLE_SELECTOR, openAgentViaUI } from './helpers/ui'
 
 const HAS_TEXT_RE = /.+/
 
@@ -23,16 +23,16 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // Send a message so the agent session starts and context info appears
     await editor.click()
-    await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
     // Wait for the assistant response in the active chat view. The agent
     // may emit multiple message-content nodes (thought blocks, final
     // reply, status text); use `.first()` so the strict-mode check
-    // doesn't trip when more than one bubble matches "2".
+    // doesn't trip when more than one bubble matches the answer.
     await expect(
       page.locator(`${ASSISTANT_BUBBLE_SELECTOR} [data-testid="message-content"]`)
-        .filter({ hasText: '2' })
+        .filter({ hasText: ARITHMETIC_ANSWER })
         .first(),
     ).toBeVisible({ timeout: 60_000 })
 
@@ -107,16 +107,16 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // Send a message so the agent session starts and context info appears
     await editor.click()
-    await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
     // Wait for the assistant response in the active chat view. The agent
     // may emit multiple message-content nodes (thought blocks, final
     // reply, status text); use `.first()` so the strict-mode check
-    // doesn't trip when more than one bubble matches "2".
+    // doesn't trip when more than one bubble matches the answer.
     await expect(
       page.locator(`${ASSISTANT_BUBBLE_SELECTOR} [data-testid="message-content"]`)
-        .filter({ hasText: '2' })
+        .filter({ hasText: ARITHMETIC_ANSWER })
         .first(),
     ).toBeVisible({ timeout: 60_000 })
 

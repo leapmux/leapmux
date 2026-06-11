@@ -298,10 +298,10 @@ For how agents work, see [Coding Agents](/docs/using/coding-agents/).
 ### The agent provider isn't in the picker / "No agents available"
 
 **Symptom**
-The **Agent Provider** selector shows **"No agents available"**, or the provider you want (e.g. Codex, Gemini, Pi) is missing from the list.
+The **Agent Provider** selector shows **"No agents available"**, or the provider you want (e.g. Codex, Cursor, Pi) is missing from the list.
 
 **Cause**
-A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `gemini`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`) and lists only the ones it finds on `PATH`.
+A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`) and lists only the ones it finds on `PATH`.
 
 **Fix**
 Install the agent's own CLI on the **Worker** machine (not where the browser runs) and make sure it's on the Worker's `PATH`. Then click the refresh button (**"Refresh available providers"**) in the selector, or reopen the dialog. Note: Pi only ever shows when the `pi` binary is actually detected.
