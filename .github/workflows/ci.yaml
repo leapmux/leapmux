@@ -639,7 +639,7 @@ jobs:
             - Windows
               - [\`LeapMuxDesktop_${VERSION}_x64.msi\`](${RELEASE_URL}/LeapMuxDesktop_${VERSION}_x64.msi)
             - Linux
-              - [\`leapmux-desktop_${VERSION}_amd64.AppImage\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_amd64.AppImage)
+              - [\`leapmux-desktop_${VERSION}_x86_64.AppImage\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_x86_64.AppImage)
               - [\`leapmux-desktop_${VERSION}_aarch64.AppImage\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_aarch64.AppImage)
               - [\`leapmux-desktop_${VERSION}_amd64.deb\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_amd64.deb)
               - [\`leapmux-desktop_${VERSION}_arm64.deb\`](${RELEASE_URL}/leapmux-desktop_${VERSION}_arm64.deb)

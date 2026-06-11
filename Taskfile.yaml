@@ -37,6 +37,13 @@ vars:
     -X github.com/leapmux/leapmux/util/version.CommitTime={{.COMMIT_TIME}}
     -X github.com/leapmux/leapmux/util/version.BuildTime={{.BUILD_TIME}}
     -X github.com/leapmux/leapmux/util/version.Branch={{.BRANCH}}
+  # macOS .app/.dmg bundles use Apple's arch names (arm64 / x86_64), while
+  # Task's built-in {{ARCH}} is Go-style (arm64 / amd64); remap the x86 token
+  # for the bundle filename (arm64 is identical under both). Defined globally
+  # because both build-desktop-darwin and sign-and-notarize-darwin-app
+  # reference the DMG by name. The Go server tarball keeps {{ARCH}} -- a Go
+  # CLI archive follows Go's convention, not Apple's.
+  DMG_ARCH: '{{if eq ARCH "amd64"}}x86_64{{else}}{{ARCH}}{{end}}'
 
 # --- Code Generation ---
 
@@ -300,7 +307,7 @@ tasks:
       - leapmux
     generates:
       - "LeapMux Desktop.app/**/*"
-      - "LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
+      - "LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg"
     cmds:
       # build-backend isn't implied by build-desktop-darwin on its own (only
       # by the top-level `task build`), but the cp step below embeds the CLI
@@ -332,8 +339,8 @@ tasks:
         desktop/rust/scripts/create-dmg.sh
         "{{.VERSION}}"
         "desktop/rust/target/release/bundle/macos/LeapMux Desktop.app"
-        "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
-      - cp -f "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg" "LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg"
+        "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg"
+      - cp -f "desktop/rust/target/release/bundle/dmg/LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg" "LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg"
 
   sign-and-notarize-darwin-app:
     desc: Re-sign with Developer ID, notarize the .app and the .dmg, staple both.
@@ -344,7 +351,7 @@ tasks:
         msg: "APPLE_API_KEY_P8_PATH, APPLE_API_KEY_ID, and APPLE_API_KEY_ISSUER_ID must be set"
     vars:
       APP_PATH: '"LeapMux Desktop.app"'
-      DMG_PATH: 'LeapMuxDesktop_{{.VERSION}}_{{ARCH}}.dmg'
+      DMG_PATH: 'LeapMuxDesktop_{{.VERSION}}_{{.DMG_ARCH}}.dmg'
     cmds:
       # Re-sign every Mach-O inside the .app with Developer ID (replaces the
       # ad-hoc signature applied during build-desktop-darwin).
@@ -479,7 +486,17 @@ tasks:
       - |
         set -euo pipefail
         appdir="desktop/rust/target/release/bundle/appimage/leapmux-desktop.AppDir"
-        img="$(ls desktop/rust/target/release/bundle/appimage/leapmux-desktop_*.AppImage)"
+        src="$(ls desktop/rust/target/release/bundle/appimage/leapmux-desktop_*.AppImage)"
+        # Publish the AppImage under its conventional `uname -m` architecture
+        # (x86_64 / aarch64) -- the names appimagetool's ARCH env var and
+        # linuxdeploy's own release assets use. Tauri's AppImage bundler
+        # instead emits Debian's `amd64` for x86_64 while keeping GNU's
+        # `aarch64` for ARM, so the x86 build is the lone Debian-styled
+        # outlier; repack under the uname name so both arches are
+        # consistently GNU-named. (The .deb stays amd64/arm64 -- that is
+        # dpkg's own convention.) On arm64 this is a no-op: Tauri already
+        # named it aarch64, which equals `uname -m`.
+        img="${src%_*.AppImage}_$(uname -m).AppImage"
         grep -q '^Exec=leapmux-desktop$' "$appdir"/*.desktop
         grep -q '^exec "$this_dir"/AppRun.wrapped' "$appdir/AppRun"
         mv "$appdir/usr/bin/leapmux-desktop" "$appdir/usr/lib/leapmux-desktop/leapmux-desktop"
@@ -489,7 +506,8 @@ tasks:
         grep -q 'usr/lib/leapmux-desktop:\$PATH' "$appdir/AppRun"
         plugin="${HOME}/.cache/tauri/linuxdeploy-plugin-appimage.AppImage"
         test -x "$plugin"
-        rm -f "$img"
+        # Drop Tauri's original (Debian-named on x86); repack to the uname name.
+        rm -f "$src"
         ( cd "$(dirname "$img")" && ARCH="$(uname -m)" NO_APPSTREAM=1 APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="$(basename "$img")" "$plugin" --appdir leapmux-desktop.AppDir )
         test -f "$img"
       - cp -f desktop/rust/target/release/leapmux-desktop .
