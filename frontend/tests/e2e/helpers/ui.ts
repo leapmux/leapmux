@@ -67,8 +67,12 @@ export function lastAssistantBubble(page: Page) {
  */
 export const ARITHMETIC_PROMPT = 'What is 1234 + 5678? Reply with just the number.'
 
-/** Matches the {@link ARITHMETIC_PROMPT} answer, tolerating a thousands comma. */
-export const ARITHMETIC_ANSWER = /6,?912/
+/**
+ * Matches the {@link ARITHMETIC_PROMPT} answer, tolerating a thousands comma.
+ * Word-boundary anchored so it can't match 6912 as a substring of a larger
+ * number (a token count, duration, or id) that incidentally contains it.
+ */
+export const ARITHMETIC_ANSWER = /\b6,?912\b/
 
 /**
  * Assert the agent answered {@link ARITHMETIC_PROMPT}: the answer appears in

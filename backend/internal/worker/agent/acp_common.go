@@ -54,7 +54,7 @@ type acpPendingInput struct {
 }
 
 // jsonrpcBase extends processBase with JSON-RPC request/response plumbing
-// shared by all ACP agents (OpenCodeAgent, CursorCLIAgent) and CodexAgent.
+// shared by all ACP agents and CodexAgent.
 type jsonrpcBase struct {
 	processBase
 	responseCorrelator[int64]
@@ -159,9 +159,9 @@ type acpBase struct {
 	thinkingTokens thinkingTokenEstimator
 }
 
-// handleACPPromptResponse extracts accumulated turn text, calls the optional
-// prePersist hook, persists the prompt response, and resets the tool-use count.
-func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(json.RawMessage)) {
+// handleACPPromptResponse extracts accumulated turn text, persists the prompt
+// response, and resets the tool-use count.
+func (b *acpBase) handleACPPromptResponse(resp json.RawMessage) {
 	if resp == nil {
 		// A nil result ends the turn via error/abort, NOT the normal path: the
 		// persistPromptResponse turn-end below -- which flushes the buffered thought,
@@ -193,10 +193,6 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage, prePersist func(
 	b.turnAssistantText.Reset()
 	b.turnToolUses = 0
 	b.mu.Unlock()
-
-	if prePersist != nil {
-		prePersist(resp)
-	}
 
 	b.persistPromptResponse(assistantText, resp, func(resp json.RawMessage) json.RawMessage {
 		return b.enrichWithToolUses(resp)
@@ -984,7 +980,7 @@ func (b *jsonrpcBase) clearPromptQueue() {
 }
 
 // sendPrompt builds and sends an ACP prompt, then calls the provided
-// response handler. Shared by all ACP agent doSendPrompt implementations.
+// response handler. The shared send/queue core behind doSendACPPrompt.
 func (b *acpBase) sendPrompt(
 	content string,
 	attachments []*leapmuxv1.Attachment,
@@ -1632,7 +1628,7 @@ type acpStartSpec[T any] struct {
 // (Cursor, Copilot, Goose, Kilo, OpenCode, Reasonix). Providers differ only in
 // the acpStartSpec fields: the binary/args, an optional rc marker, the session
 // config, the hooks set in configure, and the post-handshake apply step.
-func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec acpStartSpec[T]) (Agent, error) {
+func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec acpStartSpec[T]) (_ Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	wrap := shellWrapSpec{
@@ -1674,11 +1670,7 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 	b.model = opts.Model
 	// Default prompt sender shared by every ACP provider; a provider may override
 	// it in configure.
-	b.promptFunc = func(content string, attachments []*leapmuxv1.Attachment) {
-		b.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
-			b.handleACPPromptResponse(resp, nil)
-		})
-	}
+	b.promptFunc = b.doSendACPPrompt
 	if spec.configure != nil {
 		spec.configure(a)
 	}
@@ -1686,6 +1678,14 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 	if err := b.startCmd(cmd, cancel); err != nil {
 		return nil, err
 	}
+	// The subprocess is running now. Any failure past this point must tear it
+	// down -- cancel kills the ctx-bound child -- because acpStart returns no
+	// Agent on error, so the caller never gets a handle to Stop() it.
+	defer func() {
+		if retErr != nil {
+			cancel()
+		}
+	}()
 
 	initParams, err := acpStandardInitParams()
 	if err != nil {
@@ -1713,6 +1713,19 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 	}
 	return agent, nil
 }
+
+// Compile-time proof that every concrete ACP agent implements Agent. acpStart is
+// generic over T and can only assert this at runtime (any(a).(Agent)); these
+// guards turn a dropped or renamed method into a build error rather than a
+// launch-time "does not implement Agent".
+var (
+	_ Agent = (*CursorCLIAgent)(nil)
+	_ Agent = (*CopilotCLIAgent)(nil)
+	_ Agent = (*GooseCLIAgent)(nil)
+	_ Agent = (*KiloAgent)(nil)
+	_ Agent = (*OpenCodeAgent)(nil)
+	_ Agent = (*ReasonixAgent)(nil)
+)
 
 // AvailableOptionGroups is the default for ACP providers that surface no mapped
 // option group of their own (e.g. Reasonix, which is model-only): it returns
@@ -2711,17 +2724,17 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 	}
 }
 
-// doSendACPPrompt sends a single ACP prompt RPC and processes the response.
-// Used as the promptFunc for all ACP agents; handleResponse varies per provider.
+// doSendACPPrompt sends a single ACP session/prompt RPC and processes the
+// response. It is the default promptFunc for every ACP agent.
 //
 // No timeout on the RPC: the turn unblocks via response, process exit, or
 // ctx cancel (the user interrupting). A wall-clock cap would just kill
 // long-but-legitimate turns.
-func (b *acpBase) doSendACPPrompt(content string, attachments []*leapmuxv1.Attachment, handleResponse func(json.RawMessage)) {
+func (b *acpBase) doSendACPPrompt(content string, attachments []*leapmuxv1.Attachment) {
 	b.sendPrompt(content, attachments,
 		func(params json.RawMessage) (json.RawMessage, error) {
 			return b.sendRequest(acpMethodSessionPrompt, params, 0)
 		},
-		handleResponse,
+		b.handleACPPromptResponse,
 	)
 }
