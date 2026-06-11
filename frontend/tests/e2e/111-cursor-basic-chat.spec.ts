@@ -13,9 +13,11 @@ cursorTest.describe('Cursor Basic Chat', () => {
 
     // Scan every assistant bubble (robust to a trailing "Turn ended" divider).
     // Accept either a quota/limit error (CI may be rate-limited) or the expected
-    // answer. Reject empty — the agent must have produced content.
-    const text = (await assistantBubbles(page).allInnerTexts()).join('\n')
-    expect(text.length).toBeGreaterThan(0)
-    expect(QUOTA_OR_LIMIT_ERROR_RE.test(text) || ARITHMETIC_ANSWER.test(text)).toBe(true)
+    // answer. expect.poll retries until the agent's (non-empty) text lands rather
+    // than reading the bubbles once.
+    await expect.poll(async () => {
+      const text = (await assistantBubbles(page).allInnerTexts()).join('\n')
+      return text.length > 0 && (QUOTA_OR_LIMIT_ERROR_RE.test(text) || ARITHMETIC_ANSWER.test(text))
+    }).toBe(true)
   })
 })

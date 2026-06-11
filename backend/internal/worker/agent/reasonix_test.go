@@ -3,10 +3,8 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,58 +25,33 @@ func newReasonixAgentForRPC(t *testing.T) (*ReasonixAgent, func() []recordedRequ
 }
 
 // installFakeReasonixCLI puts a fake `reasonix` on PATH. The launcher records the
-// argv it was invoked with to LEAPMUX_REASONIX_ARGS_FILE so a test can assert the
-// startup `--model` flag, then exec's the helper process that speaks ACP.
+// argv it was invoked with to argsFile so a test can assert the startup `--model`
+// flag, then exec's the helper process that speaks ACP.
 func installFakeReasonixCLI(t *testing.T, argsFile string) {
-	t.Helper()
-
-	dir := t.TempDir()
-	launcher := filepath.Join(dir, "reasonix")
-	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" > %q\nexec %q -test.run=TestHelperProcessReasonixCLI --\n", argsFile, os.Args[0])
-	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("GO_WANT_HELPER_PROCESS_REASONIX", "1")
+	installFakeACPCLI(t, fakeACPCLISpec{
+		binary:    "reasonix",
+		helperRun: "TestHelperProcessReasonixCLI",
+		wantEnv:   "GO_WANT_HELPER_PROCESS_REASONIX",
+		argsFile:  argsFile,
+	})
 }
 
 // TestHelperProcessReasonixCLI is the fake Reasonix ACP server. Reasonix's
 // session/new returns ONLY a sessionId -- no models/modes/configOptions channel.
-func TestHelperProcessReasonixCLI(t *testing.T) {
-	if os.Getenv("GO_WANT_HELPER_PROCESS_REASONIX") != "1" {
-		return
-	}
-
-	scanner := bufio.NewScanner(os.Stdin)
-	writer := bufio.NewWriter(os.Stdout)
-	defer func() { _ = writer.Flush() }()
-
-	writeResponse := func(id json.RawMessage, body string) {
-		_, _ = fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"result":%s}`+"\n", string(id), body)
-		_ = writer.Flush()
-	}
-
-	for scanner.Scan() {
-		var req struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-
-		switch req.Method {
+func TestHelperProcessReasonixCLI(*testing.T) {
+	runFakeACPServer("GO_WANT_HELPER_PROCESS_REASONIX", func(method string) (string, bool, bool) {
+		switch method {
 		case acpMethodInitialize:
-			writeResponse(req.ID, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":true}}}`)
+			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":true}}}`, false, true
 		case acpMethodSessionNew:
 			// Minimal: only a sessionId, no models/modes/configOptions.
-			writeResponse(req.ID, `{"sessionId":"reasonix-new"}`)
-		case acpMethodSessionLoad:
-			writeResponse(req.ID, `{}`)
-		case acpMethodSessionPrompt:
-			writeResponse(req.ID, `{}`)
+			return `{"sessionId":"reasonix-new"}`, false, true
+		case acpMethodSessionLoad, acpMethodSessionPrompt:
+			return `{}`, false, true
+		default:
+			return "", false, false
 		}
-	}
-	os.Exit(0)
+	})
 }
 
 func TestStartReasonix_NewSessionHandshakePassesModelFlag(t *testing.T) {

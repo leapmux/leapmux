@@ -3,12 +3,9 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -42,67 +39,39 @@ func newCopilotAgentForRPCWithResponder(t *testing.T, respond func(method string
 }
 
 func installFakeCopilotCLI(t *testing.T, scenario string) {
-	t.Helper()
-
-	dir := t.TempDir()
-	launcher := filepath.Join(dir, "copilot")
-	script := fmt.Sprintf("#!/bin/sh\nLEAPMUX_COPILOT_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessCopilotCLI --\n", scenario, os.Args[0])
-	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("GO_WANT_HELPER_PROCESS_COPILOT", "1")
+	installFakeACPCLI(t, fakeACPCLISpec{
+		binary:    "copilot",
+		helperRun: "TestHelperProcessCopilotCLI",
+		wantEnv:   "GO_WANT_HELPER_PROCESS_COPILOT",
+		env:       []string{"LEAPMUX_COPILOT_TEST_SCENARIO=" + scenario},
+	})
 }
 
-func TestHelperProcessCopilotCLI(t *testing.T) {
-	if os.Getenv("GO_WANT_HELPER_PROCESS_COPILOT") != "1" {
-		return
-	}
-
-	scanner := bufio.NewScanner(os.Stdin)
-	writer := bufio.NewWriter(os.Stdout)
-	defer func() { _ = writer.Flush() }()
-
+func TestHelperProcessCopilotCLI(*testing.T) {
 	scenario := os.Getenv("LEAPMUX_COPILOT_TEST_SCENARIO")
-
-	writeResponse := func(id json.RawMessage, body string, isError bool) {
-		field := "result"
-		if isError {
-			field = "error"
-		}
-		_, _ = fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"%s":%s}`+"\n", string(id), field, body)
-		_ = writer.Flush()
-	}
-
-	for scanner.Scan() {
-		var req struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-
-		switch req.Method {
+	runFakeACPServer("GO_WANT_HELPER_PROCESS_COPILOT", func(method string) (string, bool, bool) {
+		switch method {
 		case acpMethodInitialize:
-			writeResponse(req.ID, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false)
+			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false, true
 		case acpMethodSessionNew:
 			if scenario == "generic-option" {
 				// A spec-compliant agent reporting a third axis (thought_level) the
 				// model/mode channels do not claim. It must surface as a read-only
 				// generic group alongside the mapped permission-mode group.
-				writeResponse(req.ID, `{"sessionId":"copilot-new","models":{"currentModelId":"gpt-5.4","availableModels":[{"modelId":"gpt-5.4","name":"GPT-5.4"}]},"modes":{"currentModeId":"https://agentclientprotocol.com/protocol/session-modes#agent","availableModes":[{"id":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"id":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},"configOptions":[{"id":"mode","currentValue":"https://agentclientprotocol.com/protocol/session-modes#agent","options":[{"value":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"value":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}`, false)
-				continue
+				return `{"sessionId":"copilot-new","models":{"currentModelId":"gpt-5.4","availableModels":[{"modelId":"gpt-5.4","name":"GPT-5.4"}]},"modes":{"currentModeId":"https://agentclientprotocol.com/protocol/session-modes#agent","availableModes":[{"id":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"id":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},"configOptions":[{"id":"mode","currentValue":"https://agentclientprotocol.com/protocol/session-modes#agent","options":[{"value":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"value":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}`, false, true
 			}
-			writeResponse(req.ID, `{"sessionId":"copilot-new","models":{"currentModelId":"gpt-5.4","availableModels":[{"modelId":"gpt-5.4","name":"GPT-5.4","description":"Full"},{"modelId":"gpt-5.4-mini","name":"GPT-5.4 mini","description":"Mini"}]},"modes":{"currentModeId":"https://agentclientprotocol.com/protocol/session-modes#agent","availableModes":[{"id":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"id":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},"configOptions":[{"id":"mode","currentValue":"https://agentclientprotocol.com/protocol/session-modes#agent","options":[{"value":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"value":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},{"id":"model","currentValue":"gpt-5.4","options":[{"value":"gpt-5.4","name":"GPT-5.4"},{"value":"gpt-5.4-mini","name":"GPT-5.4 mini"}]}]}`, false)
+			return `{"sessionId":"copilot-new","models":{"currentModelId":"gpt-5.4","availableModels":[{"modelId":"gpt-5.4","name":"GPT-5.4","description":"Full"},{"modelId":"gpt-5.4-mini","name":"GPT-5.4 mini","description":"Mini"}]},"modes":{"currentModeId":"https://agentclientprotocol.com/protocol/session-modes#agent","availableModes":[{"id":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"id":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},"configOptions":[{"id":"mode","currentValue":"https://agentclientprotocol.com/protocol/session-modes#agent","options":[{"value":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"value":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]},{"id":"model","currentValue":"gpt-5.4","options":[{"value":"gpt-5.4","name":"GPT-5.4"},{"value":"gpt-5.4-mini","name":"GPT-5.4 mini"}]}]}`, false, true
 		case acpMethodSessionLoad:
 			if scenario == "load" {
-				writeResponse(req.ID, `{"models":{"currentModelId":"gpt-5.4-mini","availableModels":[{"modelId":"gpt-5.4-mini","name":"GPT-5.4 mini"}]},"modes":{"currentModeId":"https://agentclientprotocol.com/protocol/session-modes#plan","availableModes":[{"id":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"id":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]}}`, false)
+				return `{"models":{"currentModelId":"gpt-5.4-mini","availableModels":[{"modelId":"gpt-5.4-mini","name":"GPT-5.4 mini"}]},"modes":{"currentModeId":"https://agentclientprotocol.com/protocol/session-modes#plan","availableModes":[{"id":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},{"id":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"}]}}`, false, true
 			}
+			return "", false, false
 		case acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
-			writeResponse(req.ID, `{}`, false)
+			return `{}`, false, true
+		default:
+			return "", false, false
 		}
-	}
-	os.Exit(0)
+	})
 }
 
 func TestBuildCopilotSessionRequest_NewSession(t *testing.T) {

@@ -3,12 +3,9 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,60 +41,34 @@ func newCursorAgentForRPCWithResponder(t *testing.T, respond func(method string)
 }
 
 func installFakeCursorCLI(t *testing.T, scenario string) {
-	t.Helper()
-
-	dir := t.TempDir()
-	launcher := filepath.Join(dir, "cursor-agent")
-	script := fmt.Sprintf("#!/bin/sh\nLEAPMUX_CURSOR_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessCursorCLI -- \"$@\"\n", scenario, os.Args[0])
-	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("GO_WANT_HELPER_PROCESS_CURSOR", "1")
+	installFakeACPCLI(t, fakeACPCLISpec{
+		binary:      "cursor-agent",
+		helperRun:   "TestHelperProcessCursorCLI",
+		wantEnv:     "GO_WANT_HELPER_PROCESS_CURSOR",
+		env:         []string{"LEAPMUX_CURSOR_TEST_SCENARIO=" + scenario},
+		forwardArgs: true,
+	})
 }
 
-func TestHelperProcessCursorCLI(t *testing.T) {
-	if os.Getenv("GO_WANT_HELPER_PROCESS_CURSOR") != "1" {
-		return
-	}
-
-	scanner := bufio.NewScanner(os.Stdin)
-	writer := bufio.NewWriter(os.Stdout)
-	defer func() { _ = writer.Flush() }()
-
+func TestHelperProcessCursorCLI(*testing.T) {
 	scenario := os.Getenv("LEAPMUX_CURSOR_TEST_SCENARIO")
-
-	writeResponse := func(id json.RawMessage, body string, isError bool) {
-		field := "result"
-		if isError {
-			field = "error"
-		}
-		_, _ = fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"%s":%s}`+"\n", string(id), field, body)
-		_ = writer.Flush()
-	}
-
-	for scanner.Scan() {
-		var req struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-
-		switch req.Method {
+	runFakeACPServer("GO_WANT_HELPER_PROCESS_CURSOR", func(method string) (string, bool, bool) {
+		switch method {
 		case acpMethodInitialize:
-			writeResponse(req.ID, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false)
+			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false, true
 		case acpMethodSessionNew:
-			writeResponse(req.ID, `{"sessionId":"cursor-new","models":{"currentModelId":"default[]","availableModels":[{"modelId":"default[]","name":"Auto"},{"modelId":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]},"modes":{"currentModeId":"agent","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]},"configOptions":[{"id":"mode","currentValue":"agent","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"},{"value":"ask","name":"Ask"}]},{"id":"model","currentValue":"default[]","options":[{"value":"default[]","name":"Auto"},{"value":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]}]}`, false)
+			return `{"sessionId":"cursor-new","models":{"currentModelId":"default[]","availableModels":[{"modelId":"default[]","name":"Auto"},{"modelId":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]},"modes":{"currentModeId":"agent","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]},"configOptions":[{"id":"mode","currentValue":"agent","options":[{"value":"agent","name":"Agent"},{"value":"plan","name":"Plan"},{"value":"ask","name":"Ask"}]},{"id":"model","currentValue":"default[]","options":[{"value":"default[]","name":"Auto"},{"value":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]}]}`, false, true
 		case acpMethodSessionLoad:
 			if scenario == "load" {
-				writeResponse(req.ID, `{"models":{"currentModelId":"gpt-5.4[reasoning=medium]","availableModels":[{"modelId":"default[]","name":"Auto"},{"modelId":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]}}`, false)
+				return `{"models":{"currentModelId":"gpt-5.4[reasoning=medium]","availableModels":[{"modelId":"default[]","name":"Auto"},{"modelId":"gpt-5.4[reasoning=medium]","name":"GPT-5.4"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]}}`, false, true
 			}
+			return "", false, false
 		case acpMethodSessionSetModel, acpMethodSessionSetMode, acpMethodSessionPrompt:
-			writeResponse(req.ID, `{}`, false)
+			return `{}`, false, true
+		default:
+			return "", false, false
 		}
-	}
-	os.Exit(0)
+	})
 }
 
 func TestStartCursorCLI_NewSessionHandshake(t *testing.T) {
