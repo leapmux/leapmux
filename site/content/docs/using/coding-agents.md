@@ -11,7 +11,7 @@ For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/t
 
 ## Supported agents
 
-LeapMux integrates eight coding-agent providers:
+LeapMux integrates nine coding-agent providers:
 
 | Provider | CLI binary detected on the Worker |
 | --- | --- |
@@ -23,14 +23,15 @@ LeapMux integrates eight coding-agent providers:
 | OpenCode | `opencode` |
 | Goose | `goose` |
 | Pi | `pi` |
+| Reasonix | `reasonix` |
 
-All eight are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. How much of that workflow you see still depends on what each provider's CLI exposes. The plan/todo sidebar, for example, only appears for agents whose CLI emits task or todo updates, and resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
+All nine are first-class: each one supports the core workflow — chat, streamed tool calls, permission prompts, and session resume. How much of that workflow you see still depends on what each provider's CLI exposes. The plan/todo sidebar, for example, only appears for agents whose CLI emits task or todo updates, and resume falls back to a fresh session when the agent's own resume can't pick up the prior conversation. The available models, settings, and prompt styles vary from provider to provider (each CLI exposes its own); the rest of this chapter covers those per-provider details.
 
 ### Which agents you can actually open
 
 A provider only appears in the picker if its CLI is installed on the selected Worker. When you choose a Worker, LeapMux probes its shell for each provider's binary (`command -v <binary>`) and shows only the providers it finds.
 
-While that probe is still loading, LeapMux shows a default list of all eight providers, sorted alphabetically by label; once the probe completes, the list narrows to the providers actually installed on the Worker.
+While that probe is still loading, LeapMux shows a default list of all nine providers, sorted alphabetically by label; once the probe completes, the list narrows to the providers actually installed on the Worker.
 
 If no provider is detected, the picker shows a disabled **No agents available** button. Install the relevant CLI on the Worker and use the **Refresh available providers** button to re-probe.
 
@@ -90,6 +91,7 @@ You can attach files by clicking the upload (paperclip) button, or by pasting or
 | Claude Code | yes | yes | yes | no |
 | Codex | yes | yes | no | no |
 | Pi | yes | yes | no | no |
+| Reasonix | yes | no | no | no |
 | Cursor, GitHub Copilot, Goose, OpenCode, Kilo | yes | yes | yes | yes |
 
 ### Message persistence and offline behavior
@@ -172,7 +174,7 @@ Pi shows method-specific dialogs: **confirm** (Deny / Approve), **input** (an in
 
 ### Other providers
 
-Cursor, GitHub Copilot, Goose, OpenCode, and Kilo render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
+Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears when the provider declares a bypass mode (Reasonix declares none). Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
 
 ## Changing settings mid-session
 
@@ -222,6 +224,8 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 | Kilo | (CLI default) | Primary Agent `code` | Has plan mode. |
 
 In the UI you pick these as named radio options (**Auto**, **YOLO**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux remote agent set --permission-mode`.
+
+**Reasonix** — a **Model** selector only; it has no permission mode, no plan mode, and no bypass. Default model **DeepSeek Flash** (`deepseek-flash`); also offered: DeepSeek Pro, MiMo Pro, MiMo Flash (the MiMo models need `MIMO_API_KEY`). Reasonix fixes its model at launch, so switching the model restarts the agent. It is text-only — image, PDF, and binary attachments aren't supported — and still shows per-request approval banners.
 
 ## Resuming an existing session
 

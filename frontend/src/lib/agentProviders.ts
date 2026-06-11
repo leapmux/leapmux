@@ -14,6 +14,7 @@ export const DEFAULT_AGENT_PROVIDERS: AgentProvider[] = [
   AgentProviderEnum.KILO,
   AgentProviderEnum.OPENCODE,
   AgentProviderEnum.PI,
+  AgentProviderEnum.REASONIX,
 ]
 
 export function getAvailableAgentProviders(availableProviders?: AgentProvider[]): AgentProvider[] {

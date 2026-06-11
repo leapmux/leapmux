@@ -169,6 +169,7 @@ func TestProviderFor_ACPSharesNoopClassification(t *testing.T) {
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 	} {
 		plugin := ProviderFor(provider)
 		assert.False(t, plugin.Classify(json.RawMessage(`{"method":"session/cancel"}`)).Consolidatable(),

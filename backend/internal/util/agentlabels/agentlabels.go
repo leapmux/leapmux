@@ -51,6 +51,8 @@ func CLIAlias(provider leapmuxv1.AgentProvider) string {
 		return "kilo"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:
 		return "pi"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:
+		return "reasonix"
 	default:
 		return ""
 	}
@@ -77,6 +79,8 @@ func DisplayName(provider leapmuxv1.AgentProvider) string {
 		return "Kilo"
 	case leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:
 		return "Pi"
+	case leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:
+		return "Reasonix"
 	default:
 		return "agent"
 	}
@@ -107,6 +111,7 @@ func AllProviders() []leapmuxv1.AgentProvider {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 	}
 }
 
@@ -162,4 +167,6 @@ var providerAliases = map[string]leapmuxv1.AgentProvider{
 	"goose":          leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 	"Pi":             leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 	"pi":             leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+	"Reasonix":       leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+	"reasonix":       leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 }

@@ -1,5 +1,5 @@
 // ACP = Agent Client Protocol — the shared message shape used by opencode,
-// kilo, goose, cursor, and copilot. This module routes ACP messages
+// kilo, goose, cursor, copilot, and reasonix. This module routes ACP messages
 // to the canonical ACP renderers in `./acpRenderers/` and exposes helpers
 // for collecting tool output text.
 

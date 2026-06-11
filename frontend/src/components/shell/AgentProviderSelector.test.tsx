@@ -83,6 +83,7 @@ describe('agentProviderSelector', () => {
     [AgentProvider.CURSOR, 'Cursor'],
     [AgentProvider.GOOSE, 'Goose'],
     [AgentProvider.KILO, 'Kilo'],
+    [AgentProvider.REASONIX, 'Reasonix'],
   ])('renders option for provider %d with label "%s"', (provider, label) => {
     const [value] = createSignal(provider as AgentProvider)
     render(() => (

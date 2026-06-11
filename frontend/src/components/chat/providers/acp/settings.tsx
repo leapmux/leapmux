@@ -29,15 +29,26 @@ interface CommonSettingsConfig {
  * read/write path: ACP providers that store the toggle in the agent's
  * top-level `permissionMode` field (Copilot, Cursor, Goose) use
  * `kind: 'permissionMode'`; providers that store it in `extraSettings`
- * under a custom key (OpenCode `primaryAgent`, Kilo) use `kind: 'optionGroup'`.
+ * under a custom key (OpenCode `primaryAgent`, Kilo) use `kind: 'optionGroup'`;
+ * providers with no runtime mode at all (Reasonix) use `kind: 'modelOnly'` and
+ * render just the model selector.
  */
 export type ACPSettingsPanelConfig
   = | (CommonSettingsConfig & { kind: 'permissionMode', defaultMode: PermissionMode })
     | (CommonSettingsConfig & { kind: 'optionGroup', optionGroupKey: string, defaultValue: string })
+    | (CommonSettingsConfig & { kind: 'modelOnly' })
 
-/** The option-group key as understood by the available-option-groups RPC. */
+/**
+ * The option-group key as understood by the available-option-groups RPC.
+ * `modelOnly` providers map no group, so every reported group is "extra"
+ * (read-only).
+ */
 function optionGroupKeyOf(config: ACPSettingsPanelConfig): string {
-  return config.kind === 'permissionMode' ? PERMISSION_MODE_KEY : config.optionGroupKey
+  switch (config.kind) {
+    case 'permissionMode': return PERMISSION_MODE_KEY
+    case 'optionGroup': return config.optionGroupKey
+    case 'modelOnly': return ''
+  }
 }
 
 /** Resolve the current model id, falling back through the available default then the config default. */
@@ -51,9 +62,11 @@ function currentModelOf(props: ProviderSettingsPanelProps, config: ACPSettingsPa
  * two can't drift in how they resolve the current selection.
  */
 function currentOptionOf(props: ProviderSettingsPanelProps, config: ACPSettingsPanelConfig): string {
-  return config.kind === 'permissionMode'
-    ? props.permissionMode || config.defaultMode
-    : props.extraSettings?.[config.optionGroupKey] || config.defaultValue
+  switch (config.kind) {
+    case 'permissionMode': return props.permissionMode || config.defaultMode
+    case 'optionGroup': return props.extraSettings?.[config.optionGroupKey] || config.defaultValue
+    case 'modelOnly': return ''
+  }
 }
 
 export function createACPSettingsPanel(config: ACPSettingsPanelConfig): (props: ProviderSettingsPanelProps) => JSX.Element {
@@ -64,16 +77,22 @@ export function createACPSettingsPanel(config: ACPSettingsPanelConfig): (props: 
     const dispatchOption = (value: string) => {
       if (config.kind === 'permissionMode')
         props.onChange?.({ kind: 'permissionMode', value: value as PermissionMode })
-      else
+      else if (config.kind === 'optionGroup')
         props.onChange?.({ kind: 'optionGroup', key: config.optionGroupKey, value })
     }
     const models = () => modelItems(props.availableModels)
+    // modelOnly providers map no group: optItems is empty so the RadioGroup is
+    // hidden and only the model selector renders.
     const optGroup = () => config.kind === 'permissionMode'
       ? permissionModeGroup(props.availableOptionGroups)
-      : optionGroup(props.availableOptionGroups, config.optionGroupKey)
+      : config.kind === 'optionGroup'
+        ? optionGroup(props.availableOptionGroups, config.optionGroupKey)
+        : undefined
     const optItems = () => config.kind === 'permissionMode'
       ? permissionModeItems(props.availableOptionGroups)
-      : optionGroupItems(props.availableOptionGroups, config.optionGroupKey)
+      : config.kind === 'optionGroup'
+        ? optionGroupItems(props.availableOptionGroups, config.optionGroupKey)
+        : []
     // The mapped (writable) group. Every other non-empty group is a generic
     // config-option axis the backend surfaced read-only (e.g. a future
     // thought_level), rendered disabled after the model selector. Single-group
@@ -127,6 +146,14 @@ export function createACPSettingsPanel(config: ACPSettingsPanelConfig): (props: 
 }
 
 export function createACPTriggerLabel(config: ACPSettingsPanelConfig): (props: ProviderSettingsPanelProps) => JSX.Element {
+  // modelOnly providers have no mapped option, so the label is just the model
+  // (no trailing " · "). The kind is static, so branch here rather than inside
+  // the returned Solid component.
+  if (config.kind === 'modelOnly') {
+    return (props: ProviderSettingsPanelProps): JSX.Element => (
+      <>{modelDisplayName(props.availableModels, currentModelOf(props, config))}</>
+    )
+  }
   const groupKey = optionGroupKeyOf(config)
   return (props: ProviderSettingsPanelProps): JSX.Element => {
     const currentModel = () => currentModelOf(props, config)

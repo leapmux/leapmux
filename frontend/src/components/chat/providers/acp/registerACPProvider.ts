@@ -51,6 +51,11 @@ export interface ACPProviderOptions {
   questionHandling?: ACPQuestionHandling
   /** Extra `session/update` types that should be hidden from the chat. */
   extraHiddenSessionUpdates?: Set<string>
+  /**
+   * Attachment capabilities. Defaults to full support; pass a restricted set for
+   * providers that can't take every attachment kind (e.g. Reasonix is text-only).
+   */
+  attachments?: { text: boolean, image: boolean, pdf: boolean, binary: boolean }
 }
 
 /** Synthesize the default plan-mode read/write halves from a settingsConfig + planValue. */
@@ -67,13 +72,17 @@ function planModeFromConfig(
       setMode: (mode, onChange) => onChange({ kind: 'permissionMode', value: mode as PermissionMode }),
     }
   }
-  const { optionGroupKey, defaultValue } = config
-  return {
-    currentMode: agent => agent.extraSettings?.[optionGroupKey] || defaultValue,
-    planValue,
-    defaultValue,
-    setMode: (mode, onChange) => onChange({ kind: 'optionGroup', key: optionGroupKey, value: mode }),
+  if (config.kind === 'optionGroup') {
+    const { optionGroupKey, defaultValue } = config
+    return {
+      currentMode: agent => agent.extraSettings?.[optionGroupKey] || defaultValue,
+      planValue,
+      defaultValue,
+      setMode: (mode, onChange) => onChange({ kind: 'optionGroup', key: optionGroupKey, value: mode }),
+    }
   }
+  // modelOnly providers have no mode to toggle, so plan mode can't be wired.
+  throw new Error('planValue is not supported for modelOnly ACP providers')
 }
 
 /**
@@ -84,7 +93,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
   const sc = opts.settingsConfig
   const plugin: Provider = {
     defaultModel: sc.defaultModel || undefined,
-    attachments: { text: true, image: true, pdf: true, binary: true },
+    attachments: opts.attachments ?? { text: true, image: true, pdf: true, binary: true },
 
     classify: classifyACPMessage(opts.extraHiddenSessionUpdates
       ? { extraHiddenSessionUpdates: opts.extraHiddenSessionUpdates }

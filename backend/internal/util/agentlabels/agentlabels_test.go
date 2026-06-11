@@ -28,6 +28,7 @@ func TestDisplayName(t *testing.T) {
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "Goose"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, "Kilo"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, "Pi"},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "Reasonix"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, "agent"},
 		{leapmuxv1.AgentProvider(9999), "agent"},
 	}
@@ -57,6 +58,7 @@ func TestCLIAlias(t *testing.T) {
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "goose"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, "kilo"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, "pi"},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "reasonix"},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, ""},
 		{leapmuxv1.AgentProvider(9999), ""},
 	}
@@ -106,6 +108,8 @@ func TestParseProvider_KnownAliasesAllMap(t *testing.T) {
 		"goose":       leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		"Pi":          leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 		"pi":          leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+		"Reasonix":    leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		"reasonix":    leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 	}
 	for in, want := range cases {
 		got, ok := ParseProvider(in)
@@ -158,6 +162,7 @@ func TestAliasesFor_CanonicalFirstThenSorted(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:          {"Goose", "goose"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:           {"Kilo", "kilo"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             {"Pi", "pi"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:       {"Reasonix", "reasonix"},
 	}
 	for provider, want := range cases {
 		got := AliasesFor(provider)

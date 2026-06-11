@@ -30,7 +30,7 @@ LeapMux is built for two overlapping audiences:
 
 ## Supported coding agents
 
-LeapMux supports eight coding-agent providers. A provider only appears in the agent picker if its command-line tool is detected on the machine that will run your agents, so the list you actually see depends on which CLIs are installed.
+LeapMux supports nine coding-agent providers. A provider only appears in the agent picker if its command-line tool is detected on the machine that will run your agents, so the list you actually see depends on which CLIs are installed.
 
 Every provider is first-class: you get a consistent core experience — chat, streamed tool calls, permission prompts, and session resume — with all of them. The plan/todo sidebar appears for agents whose CLI emits task/todo tools. What you can do varies only by what each agent's own CLI offers.
 
@@ -44,6 +44,7 @@ Every provider is first-class: you get a consistent core experience — chat, st
 | OpenCode | `opencode` |
 | Goose | `goose` |
 | Pi | `pi` |
+| Reasonix | `reasonix` |
 
 Each provider exposes its own settings — models and permission modes, and where the CLI supports it, effort/reasoning levels — which you change mid-session from an in-chat settings dropdown. For example, Claude Code defaults to the `opus[1m]` model and Codex to `gpt-5.4`. For how to open an agent, chat, answer permission prompts, switch models, and resume a session, see [Coding Agents](/docs/using/coding-agents/).
 

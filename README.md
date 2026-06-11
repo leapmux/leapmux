@@ -26,6 +26,7 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
   <a href="https://pi.dev/"><img src="icons/agents/pi.svg" width="64" height="64" title="Pi"></a>
   <a href="https://kilo.ai/cli"><img src="icons/agents/kilo.svg" width="64" height="64" title="Kilo"></a>&nbsp;
   <a href="https://block.github.io/goose/"><img src="icons/agents/goose.svg" width="64" height="64" title="Goose"></a>&nbsp;
+  <a href="https://github.com/esengine/DeepSeek-Reasonix"><img src="icons/agents/reasonix.svg" width="64" height="64" title="Reasonix"></a>&nbsp;
 </p>
 
 > **📖 Want to use LeapMux?**

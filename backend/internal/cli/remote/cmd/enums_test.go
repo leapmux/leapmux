@@ -41,6 +41,7 @@ func TestAgentProviderName_UsesDisplayName(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:       "OpenCode",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:          "Goose",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             "Pi",
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX:       "Reasonix",
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED:    "",
 	}
 	for in, want := range cases {
