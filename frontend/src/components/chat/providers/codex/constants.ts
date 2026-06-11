@@ -1,0 +1,8 @@
+export const DEFAULT_CODEX_COLLABORATION_MODE = 'default'
+export const DEFAULT_CODEX_SANDBOX_POLICY = 'workspace-write'
+export const DEFAULT_CODEX_NETWORK_ACCESS = 'restricted'
+export const DEFAULT_CODEX_SERVICE_TIER = 'default'
+export const CODEX_OPTION_COLLABORATION_MODE = 'collaboration_mode'
+export const CODEX_OPTION_SANDBOX_POLICY = 'sandbox_policy'
+export const CODEX_OPTION_NETWORK_ACCESS = 'network_access'
+export const CODEX_OPTION_SERVICE_TIER = 'service_tier'

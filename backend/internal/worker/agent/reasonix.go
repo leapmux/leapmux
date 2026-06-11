@@ -4,6 +4,7 @@ import (
 	"context"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 )
 
 // ReasonixAgent manages a single Reasonix (DeepSeek) ACP process.
@@ -37,11 +38,12 @@ type ReasonixAgent struct {
 // It inherits the default prompt sender and the default nil-group
 // AvailableOptionGroups from acpBase.
 func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	model := opts.Model
+	model := opts.Model()
 	if model == "" {
 		model = DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX)
 	}
 	return acpStart(ctx, opts, sink, acpStartSpec[ReasonixAgent]{
+		provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 		providerName: "reasonix",
 		binaryName:   "reasonix",
 		baseArgs:     []string{"acp", "--model", model},
@@ -49,12 +51,15 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		base:         func(a *ReasonixAgent) *acpBase { return &a.acpBase },
 		configure: func(a *ReasonixAgent) {
 			// Pin the stored model to the launched one (acpStart set it from the
-			// possibly-empty opts.Model). modeChannel stays unmapped and
-			// reapply/refresh stay nil: Reasonix exposes no modes/configOptions
-			// channel. modelFixedAtLaunch makes a stray config_option_update model
-			// select a no-op so the stored model can't drift from the launch value.
+			// possibly-empty model option). modeChannel stays unmapped, and Reasonix
+			// exposes no modes/configOptions channel, so opt out of the shared
+			// reapply/refresh hooks acpStart now defaults on (the ClearContext path
+			// nil-guards both). modelFixedAtLaunch makes a stray config_option_update
+			// model select a no-op so the stored model can't drift from the launch value.
 			a.model = model
 			a.modelFixedAtLaunch = true
+			a.reapplySettings = nil
+			a.refreshFromSession = nil
 		},
 	})
 }
@@ -64,8 +69,8 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 // change returns false to make the service fall back to a stop+restart, which
 // relaunches the process with the new --model. Every other change (Reasonix has
 // none) is a no-op that needs no restart.
-func (a *ReasonixAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
-	requested := s.GetModel()
+func (a *ReasonixAgent) UpdateSettings(options optionmap.Map) bool {
+	requested := options[OptionIDModel]
 	if requested == "" {
 		return true
 	}
@@ -73,7 +78,7 @@ func (a *ReasonixAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 	current := a.model
 	a.mu.Unlock()
 	// Returning false signals "can't apply live" -> the service relaunches with
-	// the new model in opts.Model.
+	// the new model option.
 	return requested == current
 }
 
@@ -81,7 +86,7 @@ func (a *ReasonixAgent) UpdateSettings(s *leapmuxv1.AgentSettings) bool {
 // entries (reasonix/internal/config/config.go). The id is the provider-entry
 // name Reasonix's `--model` flag accepts (cfg.ResolveModel resolves it to the
 // concrete model). deepseek-flash is Reasonix's own default_model.
-var reasonixAvailableModels = []*leapmuxv1.AvailableModel{
+var reasonixAvailableModels = []*ModelInfo{
 	{Id: "deepseek-flash", DisplayName: "DeepSeek Flash", Description: "Fast, economical DeepSeek model", IsDefault: true, ContextWindow: 1_000_000},
 	{Id: "deepseek-pro", DisplayName: "DeepSeek Pro", Description: "Most capable DeepSeek model for complex work", ContextWindow: 1_000_000},
 	{Id: "mimo-pro", DisplayName: "MiMo Pro", Description: "Xiaomi MiMo, most capable (requires MIMO_API_KEY)", ContextWindow: 1_000_000},
@@ -91,9 +96,7 @@ var reasonixAvailableModels = []*leapmuxv1.AvailableModel{
 func init() {
 	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-			return StartReasonix(ctx, opts, sink)
-		},
+		StartReasonix,
 		reasonixAvailableModels,
 		nil, // no permission-mode / config-option groups
 		"LEAPMUX_REASONIX_DEFAULT_MODEL",

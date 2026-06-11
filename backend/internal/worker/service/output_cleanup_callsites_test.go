@@ -89,8 +89,8 @@ func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T)
 
 	// Mock a successful restart so the test exercises only the cleanup
 	// path, not a real Claude Code subprocess.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	requestID := seedPendingControlRequest(t, ctx, svc, w, "agent-plan", "ws-1")
@@ -110,8 +110,8 @@ func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	requestID := seedPendingControlRequest(t, ctx, svc, w, "agent-clear", "ws-1")
@@ -121,22 +121,25 @@ func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 	assertControlRequestsCleared(t, ctx, svc, w, "agent-clear", requestID)
 }
 
-// TestSubprocessCrash_FiresClearAgentRuntimeState wires the runner-style
+// TestSubprocessCrash_DropsPendingControlRequests wires the runner-style
 // onExit handler and proves a subprocess exit (graceful or otherwise)
-// drives the cleanup. This is the only place outside an explicit RPC
-// where stale rows could survive into the next session, so the chain
-// {Manager.startAgentWith Wait goroutine → onExit → ClearAgentRuntimeState}
-// is the sole guard.
-func TestSubprocessCrash_FiresClearAgentRuntimeState(t *testing.T) {
+// drops the dying process's pending control_requests. This is the only place
+// outside an explicit RPC where stale request rows could survive into the next
+// session, so the chain {Manager.startAgentWith Wait goroutine → onExit →
+// ClearPendingControlRequests} is the sole guard. The handler deliberately does
+// NOT run the full ClearAgentRuntimeState: a relaunch fires this same onExit, and
+// the in-memory notification thread must survive it (see
+// TestRelaunchOnExitPreservesNotificationThread).
+func TestSubprocessCrash_DropsPendingControlRequests(t *testing.T) {
 	ctx := context.Background()
 	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
 
-	// Mirror runner.go's wiring: every subprocess exit should run the
-	// service-aware cleanup against svc.Output.
+	// Mirror runner.go's wiring: every subprocess exit drops pending control
+	// requests against svc.Output (without the in-memory tracker cleanup).
 	cleared := make(chan string, 1)
 	svc.Agents.SetOnExit(func(agentID string, _ int, _ error) {
-		svc.Output.ClearAgentRuntimeState(agentID)
+		svc.Output.ClearPendingControlRequests(agentID)
 		cleared <- agentID
 	})
 
@@ -144,7 +147,7 @@ func TestSubprocessCrash_FiresClearAgentRuntimeState(t *testing.T) {
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-crash",
-		Model:      "test",
+		Options:    map[string]string{agent.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-crash", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	require.NoError(t, err)

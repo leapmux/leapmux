@@ -19,20 +19,11 @@ describe('pi plugin metadata', () => {
     })
   })
 
-  it('defaults to the gpt-5.5 model', () => {
-    expect(plugin.defaultModel).toBe('gpt-5.5')
-  })
-
-  it('defaults to the auto thinking sentinel so Pi keeps its configured level', () => {
-    expect(plugin.defaultEffort).toBe('auto')
-  })
-
   it('treats the session id as a file path (Pi sessions are .jsonl files)', () => {
     expect(plugin.sessionIdIsFilePath).toBe(true)
   })
 
   it('does not advertise a permission mode for Pi', () => {
-    expect(plugin.defaultPermissionMode).toBeUndefined()
     expect(plugin.bypassPermissionMode).toBeUndefined()
   })
 
@@ -43,6 +34,10 @@ describe('pi plugin metadata', () => {
 
 describe('pi classify', () => {
   const plugin = providerFor(AgentProvider.PI)!
+
+  it('declares no trigger mode segment (Pi has no mode axis)', () => {
+    expect(plugin.triggerModeGroupKey).toBeUndefined()
+  })
 
   it('hides lifecycle markers without chat UI', () => {
     for (const t of ['agent_start', 'turn_start', 'turn_end', 'message_start', 'tool_execution_update']) {

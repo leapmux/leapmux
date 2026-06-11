@@ -121,9 +121,6 @@ func RunTabOpen(rawCtx any, args []string) error {
 			return err
 		}
 		out := tabOpenEnvelope(result.Agent.GetId(), tabType, workspaceID, workerID, result.TileID, result.Position)
-		if result.PermissionWarn != "" {
-			out["permission_mode_warning"] = result.PermissionWarn
-		}
 		if result.InitialMsgWarn != "" {
 			out["initial_message_warning"] = result.InitialMsgWarn
 		}
@@ -210,8 +207,8 @@ func RunTabOpen(rawCtx any, args []string) error {
 // tabOpenEnvelope is the shared shape every `tab open` response emits:
 // (tab_id, tab_type, workspace_id, worker_id, tile_id, position).
 // Each per-type branch then layers on its own warnings / extras
-// (permission_mode_warning, initial_message_warning, path) instead of
-// repeating the struct-literal in three places.
+// (the agent branch's initial_message_warning, the file branch's path)
+// instead of repeating the struct-literal in three places.
 func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position string) map[string]any {
 	return map[string]any{
 		"tab_id":       tabID,

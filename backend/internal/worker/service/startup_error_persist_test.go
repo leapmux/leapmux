@@ -105,7 +105,7 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 func TestOpenAgent_PersistsStartupErrorOnFailure(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("boom: forced start failure")
 	}
 
@@ -150,7 +150,7 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		Title:         "reused",
-		Model:         "sonnet",
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet"}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.NoError(t, svc.Queries.SetAgentStartupError(ctx, db.SetAgentStartupErrorParams{
@@ -158,8 +158,8 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 		ID:           agentID,
 	}))
 
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	svc.AgentStartup.begin(agentID, func() {})
@@ -167,8 +167,7 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 	svc.runAgentStartup(ctx, dbAgent, gitModePlan{Mode: gitModeUseCurrent}, agent.Options{
 		AgentID:       agentID,
-		Model:         "sonnet",
-		Effort:        "high",
+		Options:       map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: "high"},
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	})
 
@@ -184,7 +183,7 @@ func TestOpenAgent_ClearsStartupErrorOnSuccess(t *testing.T) {
 func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("doom")
 	}
 
@@ -233,7 +232,7 @@ func TestSendAgentMessage_RejectedByPersistedStartupError(t *testing.T) {
 		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		Title:         "failed",
-		Model:         "sonnet",
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet"}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.NoError(t, svc.Queries.SetAgentStartupError(ctx, db.SetAgentStartupErrorParams{
@@ -257,7 +256,7 @@ func TestSendAgentMessage_RejectedByPersistedStartupError(t *testing.T) {
 // persisted DB column.
 func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("kaput")
 	}
 
@@ -399,7 +398,7 @@ func TestGetAgentByID_StartupErrorSurvivesClose(t *testing.T) {
 		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		Title:         "closed",
-		Model:         "sonnet",
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet"}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.NoError(t, svc.Queries.SetAgentStartupError(ctx, db.SetAgentStartupErrorParams{

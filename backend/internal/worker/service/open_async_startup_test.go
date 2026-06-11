@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -29,12 +30,12 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	released := make(chan struct{})
-	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		select {
 		case <-released:
 		case <-ctx.Done():
 		}
-		return &leapmuxv1.AgentSettings{}, nil
+		return map[string]string{}, nil
 	}
 	defer close(released)
 
@@ -67,9 +68,9 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	releaseAfter := 150 * time.Millisecond
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		time.Sleep(releaseAfter)
-		return &leapmuxv1.AgentSettings{}, nil
+		return map[string]string{}, nil
 	}
 
 	// Subscribe before opening so the broadcast is captured.
@@ -126,19 +127,14 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	}
 	defer release()
 
-	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		startCalled <- opts
 		select {
 		case <-releaseStart:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		return &leapmuxv1.AgentSettings{
-			Model:          opts.Model,
-			Effort:         opts.Effort,
-			PermissionMode: opts.PermissionMode,
-			ExtraSettings:  opts.ExtraSettings,
-		}, nil
+		return opts.Options, nil
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
@@ -160,14 +156,14 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	case <-time.After(5 * time.Second):
 		t.Fatal("startAgentFn not invoked within 5s")
 	}
-	require.Equal(t, agent.CodexDefaultCollaborationMode, startedOpts.ExtraSettings[agent.CodexExtraCollaborationMode])
+	require.Equal(t, agent.CodexDefaultCollaborationMode, startedOpts.Options[agent.CodexOptionCollaborationMode])
 
 	wUpdate := newTestWriter()
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: agentID,
 		Settings: &leapmuxv1.AgentSettings{
-			ExtraSettings: map[string]string{
-				agent.CodexExtraCollaborationMode: agent.CodexCollaborationPlan,
+			Options: map[string]string{
+				agent.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
 			},
 		},
 	}, wUpdate)
@@ -175,7 +171,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	require.Equal(t, agent.CodexCollaborationPlan, loadExtraSettings(row.ExtraSettings, row.AgentProvider)[agent.CodexExtraCollaborationMode])
+	require.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[agent.CodexOptionCollaborationMode])
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -202,11 +198,11 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after releasing startup")
 
 	require.NotNil(t, activeStatus)
-	assert.Equal(t, agent.CodexCollaborationPlan, activeStatus.GetExtraSettings()[agent.CodexExtraCollaborationMode])
+	assert.Equal(t, agent.CodexCollaborationPlan, optionids.CurrentValue(activeStatus.GetOptionGroups(), agent.CodexOptionCollaborationMode))
 
 	row, err = svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.CodexCollaborationPlan, loadExtraSettings(row.ExtraSettings, row.AgentProvider)[agent.CodexExtraCollaborationMode])
+	assert.Equal(t, agent.CodexCollaborationPlan, loadOptions(row.Options, row.AgentProvider)[agent.CodexOptionCollaborationMode])
 }
 
 func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(t *testing.T) {
@@ -225,19 +221,16 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	}
 	defer release()
 
-	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		startCalled <- opts
 		select {
 		case <-releaseStart:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		return &leapmuxv1.AgentSettings{
-			Model:          opts.Model,
-			Effort:         opts.Effort,
-			PermissionMode: agent.PermissionModeDefault,
-			ExtraSettings:  opts.ExtraSettings,
-		}, nil
+		confirmed := opts.Options
+		confirmed[agent.OptionIDPermissionMode] = agent.PermissionModeDefault
+		return confirmed, nil
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
@@ -268,7 +261,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	require.Equal(t, agent.PermissionModePlan, row.PermissionMode)
+	require.Equal(t, agent.PermissionModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -295,11 +288,11 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after releasing startup")
 
 	require.NotNil(t, activeStatus)
-	assert.Equal(t, agent.PermissionModePlan, activeStatus.GetPermissionMode())
+	assert.Equal(t, agent.PermissionModePlan, optionids.CurrentValue(activeStatus.GetOptionGroups(), agent.OptionIDPermissionMode))
 
 	row, err = svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, row.PermissionMode)
+	assert.Equal(t, agent.PermissionModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 }
 
 func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testing.T) {
@@ -309,47 +302,61 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 
 	agentID := "agent-late-mode"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:             agentID,
-		WorkspaceID:    "ws-1",
-		WorkingDir:     t.TempDir(),
-		HomeDir:        t.TempDir(),
-		Title:          "late mode",
-		Model:          "opus",
-		SystemPrompt:   "",
-		Effort:         "high",
-		PermissionMode: agent.PermissionModeDefault,
-		ExtraSettings:  "{}",
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		Resumed:        0,
+		ID:          agentID,
+		WorkspaceID: "ws-1",
+		WorkingDir:  t.TempDir(),
+		HomeDir:     t.TempDir(),
+		Title:       "late mode",
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:          "opus",
+			agent.OptionIDEffort:         "high",
+			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+		}),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Resumed:       0,
 	}))
 
 	startedOpts := agent.Options{
-		AgentID:        agentID,
-		Model:          "opus",
-		Effort:         "high",
-		PermissionMode: agent.PermissionModeDefault,
-		ExtraSettings:  map[string]string{},
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		AgentID: agentID,
+		Options: map[string]string{
+			agent.OptionIDModel:          "opus",
+			agent.OptionIDEffort:         "high",
+			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+		},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}
 	latestOpts := startedOpts
 
-	require.NoError(t, svc.Queries.SetAgentPermissionMode(ctx, db.SetAgentPermissionModeParams{
-		PermissionMode: agent.PermissionModePlan,
-		ID:             agentID,
+	// The snapshot the handoff captured (matching latestOpts), read BEFORE the late change. The real
+	// path passes dbAgent.Options from the same re-read that produced latestOpts, so the CAS guard is
+	// this pre-change column form -- not the post-change one.
+	snapRow, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+
+	// A late permission-mode change (plan) lands AFTER the handoff captured its snapshot -- the
+	// active-persist window the CAS guards. The live column moves past the snapshot.
+	require.NoError(t, svc.Queries.SetAgentOptions(ctx, db.SetAgentOptionsParams{
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:          "opus",
+			agent.OptionIDEffort:         "high",
+			agent.OptionIDPermissionMode: agent.PermissionModePlan,
+		}),
+		ID: agentID,
 	}))
 
 	activeRow, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(
 		agentID,
-		startedOpts,
+		snapRow.Options,
 		latestOpts,
-		&leapmuxv1.AgentSettings{PermissionMode: agent.PermissionModeDefault},
+		map[string]string{agent.OptionIDPermissionMode: agent.PermissionModeDefault},
+		snapRow.OptionGroups,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, activeRow.PermissionMode)
+	assert.Equal(t, agent.PermissionModePlan, loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, row.PermissionMode)
+	assert.Equal(t, agent.PermissionModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 }
 
 func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *testing.T) {
@@ -359,49 +366,249 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 
 	agentID := "agent-pre-start-mode"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:             agentID,
-		WorkspaceID:    "ws-1",
-		WorkingDir:     t.TempDir(),
-		HomeDir:        t.TempDir(),
-		Title:          "pre-start mode",
-		Model:          "opus",
-		SystemPrompt:   "",
-		Effort:         "high",
-		PermissionMode: agent.PermissionModePlan,
-		ExtraSettings:  "{}",
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		Resumed:        0,
+		ID:          agentID,
+		WorkspaceID: "ws-1",
+		WorkingDir:  t.TempDir(),
+		HomeDir:     t.TempDir(),
+		Title:       "pre-start mode",
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:          "opus",
+			agent.OptionIDEffort:         "high",
+			agent.OptionIDPermissionMode: agent.PermissionModePlan,
+		}),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Resumed:       0,
 	}))
 
 	initialOpts := agent.Options{
-		AgentID:        agentID,
-		Model:          "opus",
-		Effort:         "high",
-		PermissionMode: agent.PermissionModeDefault,
-		ExtraSettings:  map[string]string{},
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		AgentID: agentID,
+		Options: map[string]string{
+			agent.OptionIDModel:          "opus",
+			agent.OptionIDEffort:         "high",
+			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+		},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}
 	startedOpts := initialOpts
-	startedOpts.PermissionMode = agent.PermissionModePlan
+	// Give startedOpts its own option map so flipping permission mode here does
+	// not mutate initialOpts (the two share the same map after the struct copy).
+	startedOpts.Options = map[string]string{
+		agent.OptionIDModel:          "opus",
+		agent.OptionIDEffort:         "high",
+		agent.OptionIDPermissionMode: agent.PermissionModePlan,
+	}
 	latestOpts := startedOpts
 
 	confirmed := confirmedSettingsPreservingStartupChanges(
-		&leapmuxv1.AgentSettings{PermissionMode: agent.PermissionModeDefault},
+		map[string]string{agent.OptionIDPermissionMode: agent.PermissionModeDefault},
 		initialOpts,
 		latestOpts,
 	)
+	preRow, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
 	activeRow, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(
 		agentID,
-		startedOpts,
+		preRow.Options,
 		latestOpts,
 		confirmed,
+		preRow.OptionGroups,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, activeRow.PermissionMode)
+	assert.Equal(t, agent.PermissionModePlan, loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, row.PermissionMode)
+	assert.Equal(t, agent.PermissionModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+}
+
+// TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange
+// guards the compare-and-swap regression: when the user changes ONE axis (effort)
+// mid-startup, the provider's confirmed resolution of an UNCHANGED axis (the model
+// sentinel -> a concrete model) must still be persisted. A whole-blob compare
+// against the launch options would discard the entire confirmed blob here, leaving
+// the row stuck on the unresolved "default" sentinel.
+func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	defer drainAllInFlight(svc)
+
+	agentID := "agent-effort-change-mid-startup"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:          agentID,
+		WorkspaceID: "ws-1",
+		WorkingDir:  t.TempDir(),
+		HomeDir:     t.TempDir(),
+		Title:       "effort change",
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:          agent.DefaultModelSentinel,
+			agent.OptionIDEffort:         "high",
+			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+		}),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Resumed:       0,
+	}))
+
+	// The subprocess was launched with the sentinel model and effort=high.
+	initialOpts := agent.Options{
+		AgentID: agentID,
+		Options: map[string]string{
+			agent.OptionIDModel:          agent.DefaultModelSentinel,
+			agent.OptionIDEffort:         "high",
+			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+		},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}
+
+	// The user lowers effort while startup is finishing; the DB row diverges from
+	// the launch options on the effort axis only.
+	require.NoError(t, svc.Queries.SetAgentOptions(ctx, db.SetAgentOptionsParams{
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:          agent.DefaultModelSentinel,
+			agent.OptionIDEffort:         "low",
+			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+		}),
+		ID: agentID,
+	}))
+	latestRow, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	latestOpts := applyDBSettingsToAgentOptions(initialOpts, &latestRow)
+
+	// The provider confirms the launch settings: the sentinel resolved to a
+	// concrete model, and effort=high (what it launched with).
+	confirmed := confirmedSettingsPreservingStartupChanges(
+		map[string]string{
+			agent.OptionIDModel:  "claude-opus",
+			agent.OptionIDEffort: "high",
+		},
+		initialOpts,
+		latestOpts,
+	)
+	// The changed effort axis is dropped from the confirmed blob; the unchanged
+	// model axis is kept.
+	assert.Equal(t, "claude-opus", confirmed[agent.OptionIDModel])
+	assert.NotContains(t, confirmed, agent.OptionIDEffort)
+
+	activeRow, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(
+		agentID,
+		latestRow.Options,
+		latestOpts,
+		confirmed,
+		latestRow.OptionGroups,
+	)
+	require.NoError(t, err)
+	persisted := loadOptions(activeRow.Options, activeRow.AgentProvider)
+	assert.Equal(t, "claude-opus", persisted[agent.OptionIDModel], "confirmed model resolution must survive")
+	assert.Equal(t, "low", persisted[agent.OptionIDEffort], "user's mid-startup effort change must be preserved")
+
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	stored := loadOptions(row.Options, row.AgentProvider)
+	assert.Equal(t, "claude-opus", stored[agent.OptionIDModel])
+	assert.Equal(t, "low", stored[agent.OptionIDEffort])
+}
+
+// TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefaultAxis guards the
+// CAS-guard regression: the options CAS expectation must be the row's OWN serialized form, not a
+// recomputed resolveProviderDefaults(latest). When a mid-startup refresh CLEARS a default-valued
+// axis (here effort is absent from the column), resolveProviderDefaults re-fills it (effort=auto),
+// so a recomputed expectation would never match the column -- the options CASE would silently take
+// ELSE and the entire confirmed blob (including the sentinel->concrete model resolution) would be
+// discarded. Guarding on the column's canonical form makes the model resolution land.
+func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefaultAxis(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	defer drainAllInFlight(svc)
+
+	agentID := "agent-cleared-default-axis"
+	// The stored column is MISSING the effort axis (a refresh cleared it). It is NOT a fixed point
+	// of resolveProviderDefaults, which would re-fill effort=auto for a Claude agent.
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		Title: "cleared default axis",
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:          agent.DefaultModelSentinel,
+			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+		}),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.NotContains(t, parseOptions(row.Options), agent.OptionIDEffort,
+		"precondition: the stored column lacks the effort axis")
+	// latest is the column re-loaded with provider defaults (so effort=auto reappears here), exactly
+	// as the startup handoff builds it -- but the column itself still lacks effort.
+	latest := applyDBSettingsToAgentOptions(agent.Options{AgentID: agentID}, &row)
+	require.Equal(t, agent.EffortAuto, latest.Options[agent.OptionIDEffort],
+		"precondition: resolveProviderDefaults re-fills effort on load, so it diverges from the column")
+
+	// The provider confirms the sentinel resolved to a concrete model.
+	activeRow, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(
+		agentID,
+		row.Options,
+		latest,
+		map[string]string{agent.OptionIDModel: "claude-opus"},
+		row.OptionGroups,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "claude-opus", loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDModel],
+		"the confirmed model resolution must persist despite the column lacking a default-valued axis")
+
+	stored, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, "claude-opus", loadOptions(stored.Options, stored.AgentProvider)[agent.OptionIDModel])
+}
+
+// TestPersistConfirmedAgentSettings_DoesNotClobberConcurrentCatalog is the regression guard for
+// the option_groups CAS: a richer catalog a running provider discovers AFTER the startup handoff
+// read the row (persisted via SetAgentOptionGroups on a separate, unsynchronized path) must NOT
+// be overwritten by the handoff's narrower startup catalog. The handoff CAS-guards the
+// option_groups write against the snapshot it read, so when the column has since moved on the
+// catalog write is skipped and the discovered catalog survives.
+func TestPersistConfirmedAgentSettings_DoesNotClobberConcurrentCatalog(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	defer drainAllInFlight(svc)
+
+	agentID := "agent-catalog-cas"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		Title: "catalog cas",
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:  "opus",
+			agent.OptionIDEffort: "high",
+		}),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	// The snapshot the handoff captured when it read the row, BEFORE any concurrent discovery.
+	preRow, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	staleExpected := preRow.OptionGroups
+
+	// A running provider discovers a richer catalog AFTER that read and persists it on the
+	// separate SetAgentOptionGroups path (no shared lock with the handoff).
+	richCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
+		{Id: agent.OptionIDModel, Label: "Model", Options: []*leapmuxv1.AvailableOption{{Id: "opus"}, {Id: "discovered-model"}}},
+	})
+	require.NotEqual(t, staleExpected, richCatalog, "precondition: the discovered catalog differs from the handoff's snapshot")
+	require.NoError(t, svc.Queries.SetAgentOptionGroups(ctx, db.SetAgentOptionGroupsParams{
+		OptionGroups: richCatalog, ID: agentID,
+	}))
+
+	latest := agent.Options{
+		AgentID:       agentID,
+		Options:       map[string]string{agent.OptionIDModel: "opus", agent.OptionIDEffort: "high"},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}
+	// The handoff lands LATE, carrying its stale snapshot as the CAS expectation.
+	_, err = svc.persistConfirmedAgentSettingsPreservingStartedSettings(agentID, preRow.Options, latest, map[string]string{}, staleExpected)
+	require.NoError(t, err)
+
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, richCatalog, row.OptionGroups,
+		"the concurrently-discovered catalog must survive: the handoff CAS skips its write when the column moved on")
 }
 
 func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
@@ -410,14 +617,9 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	startCalled := make(chan agent.Options, 1)
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		startCalled <- opts
-		return &leapmuxv1.AgentSettings{
-			Model:          opts.Model,
-			Effort:         opts.Effort,
-			PermissionMode: opts.PermissionMode,
-			ExtraSettings:  opts.ExtraSettings,
-		}, nil
+		return opts.Options, nil
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
@@ -439,11 +641,11 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("startAgentFn not invoked within 5s")
 	}
-	assert.Equal(t, agent.CodexDefaultApprovalPolicy, startedOpts.PermissionMode)
+	assert.Equal(t, agent.CodexDefaultApprovalPolicy, startedOpts.PermissionMode())
 
 	require.Eventually(t, func() bool {
 		row, err := svc.Queries.GetAgentByID(ctx, agentID)
-		return err == nil && row.PermissionMode == agent.CodexDefaultApprovalPolicy
+		return err == nil && loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode] == agent.CodexDefaultApprovalPolicy
 	}, 5*time.Second, 20*time.Millisecond, "expected Codex permission mode to be stored as provider default")
 }
 
@@ -456,12 +658,12 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	blocked := make(chan struct{})
-	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		select {
 		case <-blocked:
 		case <-ctx.Done():
 		}
-		return &leapmuxv1.AgentSettings{}, nil
+		return map[string]string{}, nil
 	}
 	defer close(blocked)
 
@@ -480,7 +682,7 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 }
 
 // TestOpenTerminal_CatchUpReplaySurfacesStartupMessage regression-tests
-// the bug where a newly-opened terminal tab showed a generic "Starting
+// the bug where a newly-opened terminal tab showed an option "Starting
 // terminal…" label instead of the backend-provided "Starting <shell>…".
 //
 // The client subscribes to WatchEvents only AFTER receiving the
@@ -571,14 +773,14 @@ func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 	assert.True(t, strings.HasPrefix(msg, "Starting "),
 		"startup message should start with 'Starting ' — got %q", msg)
 	assert.NotEqual(t, "Starting terminal…", msg,
-		"startup message must name the resolved shell, not the generic fallback (got %q)", msg)
+		"startup message must name the resolved shell, not the option fallback (got %q)", msg)
 }
 
 // TestListTerminals_SurfacesRegistryStartupMessage verifies that the
 // ListTerminals handler includes startup_message on the TerminalInfo
 // for terminals that are currently STARTING in the registry. Without
 // this, a client refreshing mid-startup (e.g. hard reload during PTY
-// spawn) falls back to the generic "Starting terminal…" label.
+// spawn) falls back to the option "Starting terminal…" label.
 func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
@@ -694,12 +896,12 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	// ("Starting Claude Code…") and waits there — the registry entry
 	// then holds that phase label for replay.
 	blocked := make(chan struct{})
-	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		select {
 		case <-blocked:
 		case <-ctx.Done():
 		}
-		return &leapmuxv1.AgentSettings{}, nil
+		return map[string]string{}, nil
 	}
 	defer close(blocked)
 
@@ -758,9 +960,9 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	// Block startAgent briefly so the test can subscribe before ACTIVE lands.
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		time.Sleep(100 * time.Millisecond)
-		return &leapmuxv1.AgentSettings{}, nil
+		return map[string]string{}, nil
 	}
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
@@ -805,23 +1007,24 @@ func TestBuildAgentStatusChange(t *testing.T) {
 		ID:            "agent-bac",
 		WorkspaceID:   "ws-1",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		Model:         "opus[1m]",
-		Effort:        "xhigh",
-		WorkingDir:    t.TempDir(),
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:  "opus[1m]",
+			agent.OptionIDEffort: "xhigh",
+		}),
+		WorkingDir: t.TempDir(),
 	}
 
-	t.Run("STARTING carries startupMessage and gitStatus, no AvailableModels", func(t *testing.T) {
+	t.Run("STARTING carries startupMessage and gitStatus, no option groups", func(t *testing.T) {
 		gs := &leapmuxv1.AgentGitStatus{Branch: "main", OriginUrl: "https://example.com/repo.git"}
 		sc := buildAgentStartingStatus(dbAgent, "Checking Git status…", gs)
 		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, sc.GetStatus())
 		assert.Equal(t, "Checking Git status…", sc.GetStartupMessage())
 		assert.Empty(t, sc.GetStartupError())
 		assert.Same(t, gs, sc.GetGitStatus(), "gitStatus must flow through without a copy")
-		// AvailableModels / OptionGroups are deliberately skipped for non-ACTIVE
-		// so a STARTING broadcast doesn't overwrite the frontend's last-known
-		// catalog with an empty slice.
-		assert.Empty(t, sc.GetAvailableModels())
-		assert.Empty(t, sc.GetAvailableOptionGroups())
+		// OptionGroups are deliberately skipped for non-ACTIVE so a STARTING
+		// broadcast doesn't overwrite the frontend's last-known catalog with an
+		// empty slice.
+		assert.Empty(t, sc.GetOptionGroups())
 	})
 
 	t.Run("STARTUP_FAILED carries startupError and gitStatus", func(t *testing.T) {
@@ -883,7 +1086,7 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced startup failure")
 	}
 
@@ -933,7 +1136,7 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 
 	var startCalls sync.WaitGroup
 	startCalls.Add(1)
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		defer startCalls.Done()
 		return nil, errors.New("forced startup failure: boom")
 	}
@@ -1000,7 +1203,7 @@ func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
 func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
 	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced start failure")
 	}
 

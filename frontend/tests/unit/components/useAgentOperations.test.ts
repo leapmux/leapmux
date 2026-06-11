@@ -230,20 +230,23 @@ describe('useAgentOperations', () => {
     })
   })
 
-  describe('handleOptionGroupChange', () => {
-    it('uses option-group metadata for default rollback and error labeling', async () => {
+  describe('handleAgentSettingChange', () => {
+    it('rolls back to the prior current value and labels the toast from the option group', async () => {
       await createRoot(async (dispose) => {
         try {
           const { tabStore, ops } = setup()
+          // The current value of an axis lives on its option group's
+          // `currentValue`; the tab derives `optionValues.opencode_mode` from it.
           const agent = create(AgentInfoSchema, {
             id: 'a-1',
             workerId: 'w-1',
-            extraSettings: { opencode_mode: 'safe' },
-            availableOptionGroups: [{
-              key: 'opencode_mode',
+            optionGroups: [{
+              id: 'opencode_mode',
               label: 'Execution Mode',
+              currentValue: 'safe',
+              defaultValue: 'safe',
               options: [
-                { id: 'safe', name: 'Safe', isDefault: true },
+                { id: 'safe', name: 'Safe' },
                 { id: 'fast', name: 'Fast' },
               ],
             }],
@@ -251,13 +254,15 @@ describe('useAgentOperations', () => {
           tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
-          await ops.handleOptionGroupChange('a-1', 'opencode_mode', 'fast')
+          await ops.handleAgentSettingChange('a-1', { sets: { opencode_mode: 'fast' } })
 
+          // One RPC carrying the uniform `{ options: { [groupKey]: value } }` payload.
           expect(mockUpdateAgentSettings).toHaveBeenCalledWith('w-1', {
             agentId: 'a-1',
-            settings: { extraSettings: { opencode_mode: 'fast' } },
+            settings: { options: { opencode_mode: 'fast' } },
           })
-          expect(tabStore.getAgentTab('a-1')?.extraSettings?.opencode_mode).toBe('safe')
+          // The failed change rolls back to the prior current value ('safe').
+          expect(tabStore.getAgentTab('a-1')?.optionValues?.opencode_mode).toBe('safe')
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to change Execution Mode', expect.any(Error))
         }
         finally {
@@ -273,21 +278,24 @@ describe('useAgentOperations', () => {
           const agent = create(AgentInfoSchema, {
             id: 'a-concurrent',
             workerId: 'w-1',
-            extraSettings: { sandbox_policy: 'workspace-write', network_access: 'restricted' },
-            availableOptionGroups: [
+            optionGroups: [
               {
-                key: 'sandbox_policy',
+                id: 'sandbox_policy',
                 label: 'Sandbox Policy',
+                currentValue: 'workspace-write',
+                defaultValue: 'workspace-write',
                 options: [
-                  { id: 'workspace-write', name: 'Workspace Write', isDefault: true },
+                  { id: 'workspace-write', name: 'Workspace Write' },
                   { id: 'danger-full-access', name: 'Full Access' },
                 ],
               },
               {
-                key: 'network_access',
+                id: 'network_access',
                 label: 'Network Access',
+                currentValue: 'restricted',
+                defaultValue: 'restricted',
                 options: [
-                  { id: 'restricted', name: 'Restricted', isDefault: true },
+                  { id: 'restricted', name: 'Restricted' },
                   { id: 'enabled', name: 'Enabled' },
                 ],
               },
@@ -303,13 +311,13 @@ describe('useAgentOperations', () => {
           mockUpdateAgentSettings.mockResolvedValueOnce({})
 
           // Launch both changes concurrently.
-          const p1 = ops.handleOptionGroupChange('a-concurrent', 'sandbox_policy', 'danger-full-access')
-          const p2 = ops.handleOptionGroupChange('a-concurrent', 'network_access', 'enabled')
+          const p1 = ops.handleAgentSettingChange('a-concurrent', { sets: { sandbox_policy: 'danger-full-access' } })
+          const p2 = ops.handleAgentSettingChange('a-concurrent', { sets: { network_access: 'enabled' } })
 
           // Both optimistic updates should be applied.
           const mid = tabStore.getAgentTab('a-concurrent')
-          expect(mid?.extraSettings?.sandbox_policy).toBe('danger-full-access')
-          expect(mid?.extraSettings?.network_access).toBe('enabled')
+          expect(mid?.optionValues?.sandbox_policy).toBe('danger-full-access')
+          expect(mid?.optionValues?.network_access).toBe('enabled')
 
           // Fail the first RPC — its rollback should only revert sandbox_policy,
           // leaving network_access intact.
@@ -318,8 +326,8 @@ describe('useAgentOperations', () => {
           await p2
 
           const final = tabStore.getAgentTab('a-concurrent')
-          expect(final?.extraSettings?.sandbox_policy).toBe('workspace-write')
-          expect(final?.extraSettings?.network_access).toBe('enabled')
+          expect(final?.optionValues?.sandbox_policy).toBe('workspace-write')
+          expect(final?.optionValues?.network_access).toBe('enabled')
         }
         finally {
           dispose()
@@ -327,15 +335,19 @@ describe('useAgentOperations', () => {
       })
     })
 
-    it('falls back to the first option when no explicit default is marked', async () => {
+    it('rolls back to unset when the group had no prior current value', async () => {
       await createRoot(async (dispose) => {
         try {
           const { tabStore, ops } = setup()
+          // No `currentValue` on the group, so the tab carries no prior value for
+          // the axis; a failed change reverts by DELETING the key (not writing ''),
+          // so agentTabOptionGroups falls through to the catalog's confirmed value
+          // instead of blanking the group with a spurious empty override.
           const agent = create(AgentInfoSchema, {
             id: 'a-2',
             workerId: 'w-1',
-            availableOptionGroups: [{
-              key: 'opencode_mode',
+            optionGroups: [{
+              id: 'opencode_mode',
               label: 'Execution Mode',
               options: [
                 { id: 'safe', name: 'Safe' },
@@ -346,9 +358,10 @@ describe('useAgentOperations', () => {
           tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
-          await ops.handleOptionGroupChange('a-2', 'opencode_mode', 'fast')
+          await ops.handleAgentSettingChange('a-2', { sets: { opencode_mode: 'fast' } })
 
-          expect(tabStore.getAgentTab('a-2')?.extraSettings?.opencode_mode).toBe('safe')
+          const values = tabStore.getAgentTab('a-2')?.optionValues
+          expect(values && 'opencode_mode' in values).toBe(false)
         }
         finally {
           dispose()

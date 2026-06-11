@@ -70,8 +70,8 @@ describe('claude classify', () => {
     })
   })
 
-  it('defaults to the "auto" effort sentinel so Claude Code picks its own default', () => {
-    expect(plugin.defaultEffort).toBe('auto')
+  it('renders the permissionMode group as the trigger mode segment', () => {
+    expect(plugin.triggerModeGroupKey).toBe('permissionMode')
   })
 
   it('classifies result divider', () => {
@@ -254,5 +254,24 @@ describe('claude classify', () => {
     const wrapper = { old_seqs: [310, 311], messages: [throttled, allowed] }
     expect(plugin.classify(input(throttled, wrapper)))
       .toEqual({ kind: 'notification', messages: [throttled] })
+  })
+})
+
+describe('claude planMode', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  it('wires plan mode to the permissionMode group', () => {
+    // Claude's plan axis IS its permission mode (permissionMode=plan), so the
+    // trigger naturally reads "Plan Mode" while in plan.
+    expect(plugin.planMode).toMatchObject({
+      groupKey: 'permissionMode',
+      planValue: 'plan',
+      defaultValue: 'default',
+    })
+  })
+
+  it('reads the current permission mode from optionValues, defaulting when unset', () => {
+    expect(plugin.planMode!.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
+    expect(plugin.planMode!.currentMode({})).toBe('default')
   })
 })

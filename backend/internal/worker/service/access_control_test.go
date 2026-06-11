@@ -68,7 +68,7 @@ var agentHandlerCases = []agentHandlerCase{
 		return &leapmuxv1.DeleteAgentMessageRequest{AgentId: id, MessageId: "msg-1"}
 	}},
 	{"UpdateAgentSettings", func(id string) proto.Message {
-		return &leapmuxv1.UpdateAgentSettingsRequest{AgentId: id, Settings: &leapmuxv1.AgentSettings{Model: "opus"}}
+		return &leapmuxv1.UpdateAgentSettingsRequest{AgentId: id, Settings: &leapmuxv1.AgentSettings{Options: map[string]string{"model": "opus"}}}
 	}},
 	{"SendControlResponse", func(id string) proto.Message {
 		return &leapmuxv1.SendControlResponseRequest{AgentId: id, Content: []byte("{}")}

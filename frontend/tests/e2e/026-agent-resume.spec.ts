@@ -111,7 +111,7 @@ test.describe('Agent Session Resume', () => {
       const trigger = page.locator('[data-testid="agent-settings-trigger"]')
       await trigger.click()
       await expect(page.locator('[data-testid="agent-settings-menu"]')).toBeVisible()
-      await page.locator('[data-testid="permission-mode-plan"]').click()
+      await page.locator('[data-testid="permissionMode-plan"]').click()
 
       // Verify trigger shows Plan Mode — confirms the control request was delivered
       // after the agent was transparently restarted

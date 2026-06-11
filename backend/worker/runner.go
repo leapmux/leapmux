@@ -113,9 +113,15 @@ func Run(ctx context.Context, cfg RunConfig) error {
 
 		// Drop pending control_requests on every subprocess exit (graceful
 		// stop, crash, worker tear-down) so request_ids bound to the
-		// exited subprocess don't reappear stale on resume.
+		// exited subprocess don't reappear stale on resume. This fires on a
+		// RELAUNCH's old-process stop too, so it must NOT run the full
+		// ClearAgentRuntimeState: that clears the in-memory notification thread
+		// (and to-do/span trackers), which must survive a relaunch so two
+		// settings-change notifications bracketing a model/effort switch stay in
+		// one thread and consolidate. Permanent teardown does the full cleanup
+		// via its own ClearAgentRuntimeState call.
 		client.AgentManager().SetOnExit(func(agentID string, _ int, _ error) {
-			svcCtx.Output.ClearAgentRuntimeState(agentID)
+			svcCtx.Output.ClearPendingControlRequests(agentID)
 		})
 		// Shutdown must run before client.Stop() so terminal screen snapshots
 		// are persisted while in-memory state is still available.
@@ -212,6 +218,11 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		client.OnTabSyncResponse = func(*leapmuxv1.WorkspaceTabsSyncResponse) {
 			reconciler.Trigger()
 		}
+
+		// Periodically reclaim in-memory agent tracker state orphaned by a
+		// closed/deleted agent that never routed through a cleanup path (the
+		// per-exit handler keeps the state for a possible relaunch).
+		svcCtx.StartOrphanSweepLoop(ctx)
 	}
 
 	// Start the periodic cleanup loop to hard-delete agents and terminals

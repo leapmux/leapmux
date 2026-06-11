@@ -1,8 +1,6 @@
 import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { PermissionMode } from '~/utils/controlResponse'
-import * as workerRpc from '~/api/workerRpc'
 import { isObject } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
@@ -33,13 +31,6 @@ export function acpBuildControlResponse(
   return content
     ? buildDenyResponse(requestId, content)
     : buildAllowResponse(requestId, getToolInput(payload))
-}
-
-export async function changeACPPermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
-  await workerRpc.updateAgentSettings(workerId, {
-    agentId,
-    settings: { permissionMode: mode },
-  })
 }
 
 const ACP_EXTRA_NOTIF_TYPES = new Set(['agent_error'])

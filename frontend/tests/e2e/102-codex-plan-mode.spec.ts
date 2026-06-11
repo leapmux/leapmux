@@ -13,7 +13,7 @@ const REVISE_PLAN_PROMPT
 async function configureCodexPlanMode(page: Page) {
   const trigger = page.locator('[data-testid="agent-settings-trigger"]')
   await openSettingsMenu(page)
-  await page.locator('[data-testid="codex-collaboration-mode-plan"]').click()
+  await page.locator('[data-testid="collaboration_mode-plan"]').click()
   await expect(trigger).toContainText('GPT-5.4 Mini')
   await expect(trigger).toContainText('Plan Mode')
 }

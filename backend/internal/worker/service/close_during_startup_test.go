@@ -51,7 +51,7 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 		closeOnce    sync.Once
 		startEntered = make(chan string, 1)
 	)
-	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		closeOnce.Do(func() {
 			startEntered <- opts.AgentID
 			// Subscribe here — by this point the DB row exists, so
@@ -138,7 +138,7 @@ func TestCloseAgent_DuringStartup_RollsBackCreatedWorktree(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	var closeOnce sync.Once
-	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(sCtx context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
 		closeOnce.Do(func() {
 			// Worktree must exist by the time we get here — phase 0
 			// ran to completion before phase 2 was entered.

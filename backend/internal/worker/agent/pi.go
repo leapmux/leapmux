@@ -30,7 +30,7 @@ type PiAgent struct {
 	responseCorrelator[string]
 
 	// Pi's underlying LLM provider (e.g. "openai-codex"). Persisted via
-	// extra_settings[PiExtraProvider] so model-switch RPCs round-trip with the
+	// options[PiOptionProvider] so model-switch RPCs round-trip with the
 	// correct provider field across restarts.
 	provider string
 
@@ -54,7 +54,7 @@ type PiAgent struct {
 	latestContextUsage map[string]any
 	usageGeneration    uint64
 
-	availableModels []*leapmuxv1.AvailableModel
+	availableModels []*ModelInfo
 	// modelProviders maps modelID -> underlying provider (e.g.
 	// "openai-codex"). Populated alongside availableModels so set_model RPCs
 	// can ship the correct {provider, modelId} pair without round-tripping
@@ -91,9 +91,9 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 
 	a := &PiAgent{
 		processBase:   newProcessBase(opts, "pi", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
-		model:         opts.Model,
-		thinkingLevel: opts.Effort,
-		provider:      cmp.Or(opts.ExtraSettings[PiExtraProvider], PiDefaultProvider),
+		model:         opts.Model(),
+		thinkingLevel: opts.Effort(),
+		provider:      cmp.Or(opts.Options[PiOptionProvider], PiDefaultProvider),
 		workingDir:    opts.WorkingDir,
 		sink:          sink,
 	}
@@ -134,17 +134,17 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 		a.applyAvailableModels(modelsRaw)
 	}
 
-	// 3. set_model if opts.Model differs from current.
-	if opts.Model != "" && opts.Model != a.model {
-		if err := a.applyModel(opts.Model, a.providerForModel(opts.Model), timeout); err != nil {
-			slog.Warn("pi set_model on startup failed", "agent_id", a.agentID, "model", opts.Model, "error", err)
+	// 3. set_model if the requested model differs from current.
+	if model := opts.Model(); model != "" && model != a.model {
+		if err := a.applyModel(model, a.providerForModel(model), timeout); err != nil {
+			slog.Warn("pi set_model on startup failed", "agent_id", a.agentID, "model", model, "error", err)
 		}
 	}
 
-	// 4. set_thinking_level if opts.Effort is concrete.
-	if opts.Effort != "" && opts.Effort != EffortAuto && opts.Effort != a.thinkingLevel {
-		if err := a.applyThinkingLevel(opts.Effort, timeout); err != nil {
-			slog.Warn("pi set_thinking_level on startup failed", "agent_id", a.agentID, "level", opts.Effort, "error", err)
+	// 4. set_thinking_level if the requested effort is concrete.
+	if effort := opts.Effort(); effort != "" && effort != EffortAuto && effort != a.thinkingLevel {
+		if err := a.applyThinkingLevel(effort, timeout); err != nil {
+			slog.Warn("pi set_thinking_level on startup failed", "agent_id", a.agentID, "level", effort, "error", err)
 		}
 	}
 
@@ -367,13 +367,21 @@ func (a *PiAgent) ClearContext() (string, bool) {
 func init() {
 	registerAgentFactory(
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-			return StartPi(ctx, opts, sink)
-		},
+		StartPi,
 		piDefaultModels,
 		nil, // no static option groups; thinking levels live on each model
 		"LEAPMUX_PI_DEFAULT_MODEL",
 		"LEAPMUX_PI_DEFAULT_EFFORT",
 		piBinaryCandidates...,
 	)
+	// Pi's model-dependent group is its thinking level, labeled "Thinking Level"
+	// rather than the default "Effort" -- so the not-running static fallback and the
+	// model-switch sub_groups match the live OptionGroups (see PiAgent.OptionGroups).
+	setModelSubGroups(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, effortSubGroupsFunc(PiThinkingLevelLabel))
+	// model + effort (the "Thinking Level" axis). Pi has no permission-mode axis.
+	setAdditionalOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, OptionIDEffort)
+	// pi_provider (the underlying LLM provider Pi folds into its model selection) is
+	// persisted by LeapMux but never surfaced as a group, so its absence from a confirmed
+	// catalog is by design -- confirmedOptions preserves it rather than reconciling it away.
+	setPersistedOnlyOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, PiOptionProvider)
 }

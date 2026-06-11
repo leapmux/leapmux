@@ -48,7 +48,8 @@ type Provider interface {
 	// at opposite ends of the same wire.
 	IsInterrupt(content string) bool
 	// DefaultPermissionMode returns the provider-native default permission
-	// mode/approval policy stored in AgentSettings.permission_mode.
+	// mode/approval policy -- the value stamped under the "permissionMode"
+	// option id when the agent carries no explicit selection.
 	DefaultPermissionMode() string
 }
 

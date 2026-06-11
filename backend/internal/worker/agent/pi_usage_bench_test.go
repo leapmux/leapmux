@@ -2,8 +2,6 @@ package agent
 
 import (
 	"testing"
-
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // piMessageEndBenchPayload is a representative ~1.5 KB assistant
@@ -43,7 +41,7 @@ var piMessageEndBenchPayload = []byte(`{
 func BenchmarkAugmentPiMessageEnd(b *testing.B) {
 	a := newPiAgentWithSink(&recordingControlSink{})
 	a.model = "gpt-5"
-	a.availableModels = []*leapmuxv1.AvailableModel{{Id: "gpt-5", ContextWindow: 200000}}
+	a.availableModels = []*ModelInfo{{Id: "gpt-5", ContextWindow: 200000}}
 
 	b.ResetTimer()
 	b.ReportAllocs()

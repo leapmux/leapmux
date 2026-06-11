@@ -8,7 +8,24 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 )
+
+// TestSpawnOptions_SeedsPermissionModeWithModelAndEffort guards S6: the permission mode rides into
+// the OpenAgent options alongside model and effort (applied at launch), instead of a redundant
+// post-spawn UpdateAgentSettings round-trip. Empty flags are omitted so the worker fills defaults.
+func TestSpawnOptions_SeedsPermissionModeWithModelAndEffort(t *testing.T) {
+	assert.Equal(t, map[string]string{
+		optionids.Model:          "opus",
+		optionids.Effort:         "high",
+		optionids.PermissionMode: "plan",
+	}, spawnOptions("opus", "high", "plan"))
+
+	// Each flag is independent and an empty one is omitted (no "no change" sentinel leaks through).
+	assert.Empty(t, spawnOptions("", "", ""))
+	assert.Equal(t, map[string]string{optionids.PermissionMode: "plan"}, spawnOptions("", "", "plan"))
+	assert.Equal(t, map[string]string{optionids.Model: "sonnet"}, spawnOptions("sonnet", "", ""))
+}
 
 // TestFilterTabsByType_DropsNonMatchingRows pins the central guarantee
 // of `tab list --tab-type X`: only rows whose tab_type matches the

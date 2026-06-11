@@ -12,6 +12,7 @@ import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit
 import * as styles from './ChatView.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
+import { OPTION_ID_MODEL, optionGroup, selectedModelContextWindow } from './settingsGroups'
 import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './widgets/ContextUsageGrid'
 
 export interface AgentInfoCardProps {
@@ -175,10 +176,11 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       <Show when={props.agentSessionInfo?.contextUsage}>
         {(() => {
           const usage = props.agentSessionInfo!.contextUsage!
-          const modelCtxWindow = props.agent?.availableModels?.find(m => m.id === props.agent?.model)?.contextWindow
-          const ctxWindow = resolveContextWindow(usage, Number(modelCtxWindow) || undefined)
+          const currentModel = optionGroup(props.agent?.optionGroups, OPTION_ID_MODEL)?.currentValue || ''
+          const modelCtxWindow = selectedModelContextWindow(props.agent?.optionGroups, currentModel) || undefined
+          const ctxWindow = resolveContextWindow(usage, modelCtxWindow)
           const total = contextSize(usage)
-          const pct = computePercentage(usage, Number(modelCtxWindow) || undefined, props.agent?.agentProvider)
+          const pct = computePercentage(usage, modelCtxWindow, props.agent?.agentProvider)
           const bufferPct = contextBufferPct(props.agent?.agentProvider)
           return (
             <div class={styles.infoRow}>

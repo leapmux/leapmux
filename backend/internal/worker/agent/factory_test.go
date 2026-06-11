@@ -100,13 +100,20 @@ func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 		groups := AvailableOptionGroupsForProvider(provider)
 		require.NotEmpty(t, groups)
 		for _, group := range groups {
+			// The default now lives on the group (DefaultValue) instead of a
+			// per-option IsDefault flag. A group may omit it (the ACP
+			// primary-agent/permission-mode groups rely on the "first option"
+			// convention), but when set it must name exactly one of the options.
+			if group.GetDefaultValue() == "" {
+				continue
+			}
 			defaults := 0
 			for _, option := range group.Options {
-				if option.IsDefault {
+				if option.GetId() == group.GetDefaultValue() {
 					defaults++
 				}
 			}
-			assert.Equalf(t, 1, defaults, "provider=%s group=%s should expose exactly one default option", provider.String(), group.Key)
+			assert.Equalf(t, 1, defaults, "provider=%s group=%s default value %q must name exactly one option", provider.String(), group.GetId(), group.GetDefaultValue())
 		}
 	}
 }
@@ -140,7 +147,7 @@ func TestPermissionModeOrDefault(t *testing.T) {
 // tolerates nil entries in the slice (its callers treat the catalog as possibly
 // nil-bearing, so the lookup must not panic on one).
 func TestFindAvailableModel(t *testing.T) {
-	models := []*leapmuxv1.AvailableModel{
+	models := []*ModelInfo{
 		nil,
 		{Id: "opus"},
 		nil,
@@ -150,6 +157,172 @@ func TestFindAvailableModel(t *testing.T) {
 	assert.Equal(t, "sonnet", FindAvailableModel(models, "sonnet").GetId())
 	assert.Equal(t, "opus", FindAvailableModel(models, "opus").GetId())
 	assert.Nil(t, FindAvailableModel(models, "missing"), "no match returns nil")
-	assert.Nil(t, FindAvailableModel([]*leapmuxv1.AvailableModel{nil, nil}, "x"), "all-nil slice does not panic")
+	assert.Nil(t, FindAvailableModel([]*ModelInfo{nil, nil}, "x"), "all-nil slice does not panic")
 	assert.Nil(t, FindAvailableModel(nil, "x"))
+}
+
+// TestOptions_Accessors locks the launch Options' by-id readers: model/effort/
+// permission are NOT shadow scalar fields but accessors over the single option
+// map, so a provider reading opts.Model()/Effort()/PermissionMode()/Get(id) sees
+// exactly what the service resolved into Options -- and an empty map reads back as
+// "" for every axis without panicking.
+func TestOptions_Accessors(t *testing.T) {
+	o := Options{Options: map[string]string{
+		OptionIDModel:          "opus[1m]",
+		OptionIDEffort:         "xhigh",
+		OptionIDPermissionMode: "plan",
+		"sandbox_policy":       "workspace-write",
+	}}
+	assert.Equal(t, "opus[1m]", o.Model())
+	assert.Equal(t, "xhigh", o.Effort())
+	assert.Equal(t, "plan", o.PermissionMode())
+	assert.Equal(t, "workspace-write", o.Get("sandbox_policy"), "Get reads any axis by id, not just the well-known ones")
+	assert.Empty(t, o.Get("nonexistent"), "an absent id reads back empty")
+
+	var empty Options
+	assert.Empty(t, empty.Model())
+	assert.Empty(t, empty.Effort())
+	assert.Empty(t, empty.PermissionMode())
+	assert.Empty(t, empty.Get(OptionIDModel), "a nil option map does not panic")
+}
+
+// TestNormalizeModelID_FromRegistry verifies NormalizeModelID routes through each
+// provider's registered normalizer (the same one the live agent uses) rather than a
+// hand-maintained switch, and returns the id unchanged for a provider with none.
+func TestNormalizeModelID_FromRegistry(t *testing.T) {
+	// Claude collapses its fully-qualified CLI id into the alias space.
+	const claudeFull = "claude-opus-4-8[1m]"
+	assert.Equal(t, normalizeClaudeCodeModel(claudeFull),
+		NormalizeModelID(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeFull))
+	assert.NotEqual(t, claudeFull,
+		NormalizeModelID(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeFull),
+		"Claude's normalizer must actually collapse the id")
+
+	// Cursor maps the wire "default[]" sentinel to "auto".
+	assert.Equal(t, "auto", NormalizeModelID(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, "default[]"))
+
+	// A provider with no registered normalizer returns the id unchanged.
+	assert.Equal(t, "gpt-5.5", NormalizeModelID(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "gpt-5.5"))
+}
+
+// TestKnownOptionIDs locks the per-provider option-id allowlist that
+// UpdateAgentSettings validates an incoming options map against. Each provider
+// must expose exactly its real axes: the universal model, its secondary
+// permission-mode/primary-agent axis, the well-known effort axis ONLY where it
+// has one, and every provider-private extra (Codex's sandbox/network/...,
+// Pi's pi_provider, the ACP server config options). A drift here either strips a
+// legitimate setting (under-listing) or re-admits a phantom (over-listing).
+func TestKnownOptionIDs(t *testing.T) {
+	has := func(provider leapmuxv1.AgentProvider, id string) bool {
+		return KnownOptionIDs(provider)[id]
+	}
+
+	// model is universal.
+	for _, p := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+	} {
+		assert.Truef(t, has(p, OptionIDModel), "%s must allow model", p)
+	}
+
+	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	assert.True(t, has(claude, OptionIDEffort))
+	assert.True(t, has(claude, OptionIDPermissionMode))
+	assert.False(t, has(claude, OptionIDPrimaryAgent), "claude has no primary-agent axis")
+	assert.False(t, has(claude, "allow_all"), "claude has no copilot allow_all axis")
+
+	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	for _, id := range []string{OptionIDModel, OptionIDEffort, OptionIDPermissionMode,
+		CodexOptionSandboxPolicy, CodexOptionNetworkAccess, CodexOptionCollaborationMode, CodexOptionServiceTier} {
+		assert.Truef(t, has(codex, id), "codex must allow %q", id)
+	}
+	assert.False(t, has(codex, OptionIDPrimaryAgent), "codex has no primary-agent axis")
+
+	// Cursor bakes effort/thinking/context into the model id, so it has NO
+	// well-known effort axis -- `--effort` against Cursor must be foreign.
+	cursor := leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR
+	assert.True(t, has(cursor, OptionIDModel))
+	assert.True(t, has(cursor, OptionIDPermissionMode))
+	assert.False(t, has(cursor, OptionIDEffort), "cursor has no effort axis (baked into model id)")
+
+	// Copilot's reasoning axis is the option "reasoning_effort", NOT the well-known
+	// "effort"; it also exposes "allow_all". `--effort` against Copilot is foreign.
+	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
+	assert.True(t, has(copilot, OptionIDPermissionMode))
+	assert.True(t, has(copilot, CopilotConfigReasoningEffort))
+	assert.True(t, has(copilot, CopilotConfigAllowAll))
+	assert.False(t, has(copilot, OptionIDEffort), "copilot uses reasoning_effort, not the well-known effort")
+
+	// OpenCode / Kilo surface their per-model reasoning under the well-known "effort"
+	// id, and use the primary-agent secondary axis (no permission mode).
+	for _, p := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+	} {
+		assert.Truef(t, has(p, OptionIDEffort), "%s surfaces effort", p)
+		assert.Truef(t, has(p, OptionIDPrimaryAgent), "%s uses primaryAgent", p)
+		assert.Falsef(t, has(p, OptionIDPermissionMode), "%s has no permission-mode axis", p)
+	}
+
+	goose := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	assert.True(t, has(goose, OptionIDPermissionMode))
+	assert.True(t, has(goose, GooseConfigThinkingEffort))
+	assert.True(t, has(goose, GooseConfigProvider))
+	assert.False(t, has(goose, OptionIDEffort), "goose uses thinking_effort, not the well-known effort")
+
+	pi := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
+	assert.True(t, has(pi, OptionIDEffort))
+	assert.True(t, has(pi, PiOptionProvider))
+	assert.False(t, has(pi, OptionIDPermissionMode), "pi has no permission-mode axis")
+
+	// Reasonix's model is fixed at launch and it exposes no other axis.
+	reasonix := leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX
+	assert.True(t, has(reasonix, OptionIDModel))
+	assert.False(t, has(reasonix, OptionIDEffort))
+	assert.False(t, has(reasonix, OptionIDPermissionMode))
+	assert.False(t, has(reasonix, OptionIDPrimaryAgent))
+
+	// An unknown provider yields just {model}.
+	unknown := KnownOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
+	assert.Equal(t, map[string]bool{OptionIDModel: true}, unknown)
+}
+
+// TestRegisteredSecondaryFallback verifies acpStart's secondary-fallback seeding sources the SAME
+// option list each provider declared at registration, so dropping the duplicate
+// `a.secondaryFallback = fallbackXxx()` assignment from each configure can't change what a started
+// agent serves before its session reports a catalog. The unmapped channel (Reasonix exposes no
+// secondary axis) resolves to nil.
+func TestRegisteredSecondaryFallback(t *testing.T) {
+	cases := []struct {
+		name        string
+		provider    leapmuxv1.AgentProvider
+		modeChannel acpModeChannel
+		want        []*leapmuxv1.AvailableOption
+	}{
+		{"copilot permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, modeChannelPermissionMode, fallbackCopilotCLIModes()},
+		{"goose permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, modeChannelPermissionMode, fallbackGooseCLIModes()},
+		{"cursor permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, modeChannelPermissionMode, fallbackCursorCLIModes()},
+		{"opencode primary agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, modeChannelPrimaryAgent, fallbackOpenCodePrimaryAgents()},
+		{"kilo primary agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, modeChannelPrimaryAgent, fallbackKiloPrimaryAgents()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := registeredSecondaryFallback(tc.provider, tc.modeChannel)
+			require.Len(t, got, len(tc.want), "fallback option count")
+			for i := range tc.want {
+				assert.Equal(t, tc.want[i].GetId(), got[i].GetId(), "option %d id", i)
+				assert.Equal(t, tc.want[i].GetName(), got[i].GetName(), "option %d name", i)
+			}
+		})
+	}
+
+	assert.Nil(t, registeredSecondaryFallback(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, modeChannelUnmapped),
+		"the unmapped channel has no secondary fallback")
 }

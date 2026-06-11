@@ -27,6 +27,7 @@ type OpenCodeAgent struct {
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.
 func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	return acpStart(ctx, opts, sink, acpStartSpec[OpenCodeAgent]{
+		provider:       leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		providerName:   "opencode",
 		binaryName:     "opencode",
 		baseArgs:       []string{"acp"},
@@ -37,18 +38,16 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		configure: func(a *OpenCodeAgent) {
 			a.modeChannel = modeChannelPrimaryAgent
 			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
-			a.reapplySettings = a.reapplyModelAndPrimaryAgent
-			a.refreshFromSession = a.refreshModelAndPrimaryAgentFromSession
 		},
 		afterHandshake: func(a *OpenCodeAgent, handshake *acpSessionResult, opts Options) error {
-			return a.applyPrimaryAgentStartup(handshake, opts, fallbackOpenCodePrimaryAgents(), OpenCodePrimaryAgentBuild, a.setModel)
+			return a.applyPrimaryAgentStartup(handshake, opts, OpenCodePrimaryAgentBuild)
 		},
 	})
 }
 
 func fallbackOpenCodePrimaryAgents() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
-		{Id: OpenCodePrimaryAgentBuild, Name: titleCaseID(OpenCodePrimaryAgentBuild, ""), IsDefault: true},
+		{Id: OpenCodePrimaryAgentBuild, Name: titleCaseID(OpenCodePrimaryAgentBuild, "")},
 		{Id: OpenCodePrimaryAgentPlan, Name: titleCaseID(OpenCodePrimaryAgentPlan, "")},
 	}
 }
@@ -64,10 +63,6 @@ func isHiddenPrimaryAgent(id string) bool {
 	default:
 		return false
 	}
-}
-
-func (a *OpenCodeAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	return a.primaryAgentOptionGroups(fallbackOpenCodePrimaryAgents())
 }
 
 // buildACPPromptBlocks converts text + classified attachments into ACP prompt
@@ -105,20 +100,36 @@ func buildACPPromptBlocks(content string, classified []classifiedAttachment) []m
 	return prompt
 }
 
-func init() {
+// registerOpenCodeFamilyProvider registers an OpenCode-protocol provider (OpenCode, Kilo). The
+// two run different daemons but share the SAME registration shape: a primaryAgent secondary
+// channel with a per-daemon fallback agent list, dynamically-discovered models, and the
+// server-driven "effort" config option (the daemon's per-model reasoning variants, surfaced under
+// the well-known id). Only the provider enum, Start function, fallback agents, env keys, and
+// binary name vary -- so each init() reduces to one call here, mirroring the frontend's
+// registerOpenCodeProtocolProvider, instead of two near-identical registration blocks that can drift.
+func registerOpenCodeFamilyProvider(
+	provider leapmuxv1.AgentProvider,
+	start startFunc,
+	fallbackPrimaryAgents []*leapmuxv1.AvailableOption,
+	envModelKey, envEffortKey, binaryName string,
+) {
 	registerAgentFactory(
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-			return StartOpenCode(ctx, opts, sink)
-		},
+		provider,
+		start,
 		nil, // models discovered dynamically from newSession
-		[]*leapmuxv1.AvailableOptionGroup{{
-			Key:     OptionGroupKeyPrimaryAgent,
-			Label:   "Primary Agent",
-			Options: fallbackOpenCodePrimaryAgents(),
-		}},
-		"LEAPMUX_OPENCODE_DEFAULT_MODEL",
-		"LEAPMUX_OPENCODE_DEFAULT_EFFORT",
-		"opencode",
+		staticSecondaryGroup(modeChannelPrimaryAgent, fallbackPrimaryAgents),
+		envModelKey,
+		envEffortKey,
+		binaryName,
+	)
+	setAdditionalOptionIDs(provider, OptionIDEffort)
+}
+
+func init() {
+	registerOpenCodeFamilyProvider(
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		StartOpenCode,
+		fallbackOpenCodePrimaryAgents(),
+		"LEAPMUX_OPENCODE_DEFAULT_MODEL", "LEAPMUX_OPENCODE_DEFAULT_EFFORT", "opencode",
 	)
 }

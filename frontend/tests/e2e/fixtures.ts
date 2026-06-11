@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { test as base, expect } from '@playwright/test'
 import {
+  cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
   getAdminOrgId,
@@ -149,7 +150,18 @@ export const test = base.extend<
 
     await use({ workspaceId, workspaceUrl })
 
-    // Teardown: delete workspace via API (best effort)
+    // Teardown (best effort): stop the workspace's agents on the worker, THEN
+    // soft-delete on the hub -- the same two-step cascade the browser app runs.
+    // The cleanup must precede the delete so PrepareWorkspaceAccess still resolves
+    // the (not-yet-deleted) workspace. Without the cleanup step, the worker keeps
+    // each test's Claude CLI subprocess alive and they accumulate across the suite,
+    // starving resources and flaking later settings-menu interactions.
+    try {
+      await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    }
+    catch {
+      // Best effort
+    }
     try {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId)
     }

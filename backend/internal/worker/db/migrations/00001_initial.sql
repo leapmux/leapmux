@@ -9,15 +9,14 @@ CREATE TABLE agents (
     plan_file_path           TEXT    NOT NULL DEFAULT '',
     plan_title               TEXT    NOT NULL DEFAULT '',
     title            TEXT NOT NULL DEFAULT '',
-    model            TEXT NOT NULL DEFAULT 'opus',
-    system_prompt    TEXT NOT NULL DEFAULT '',
     agent_session_id TEXT NOT NULL DEFAULT '',
     resumed          INTEGER NOT NULL DEFAULT 0,
-    permission_mode  TEXT NOT NULL DEFAULT 'default',
-    effort           TEXT NOT NULL DEFAULT 'high',
-    extra_settings   TEXT NOT NULL DEFAULT '{}',
-    available_models         TEXT NOT NULL DEFAULT '[]',
-    available_option_groups  TEXT NOT NULL DEFAULT '[]',
+    -- options: chosen option values keyed by option-group id (model, effort,
+    -- permissionMode, and provider-specific axes), as a JSON object.
+    options          TEXT NOT NULL DEFAULT '{}',
+    -- option_groups: cached catalog of every configuration axis reported by the
+    -- agent process (model/effort/permission/etc.), as a JSON array.
+    option_groups    TEXT NOT NULL DEFAULT '[]',
     agent_provider   INTEGER NOT NULL DEFAULT 1,
     session_start_seq INTEGER NOT NULL DEFAULT 0,
     startup_error    TEXT NOT NULL DEFAULT '',

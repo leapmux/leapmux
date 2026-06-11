@@ -74,8 +74,10 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		Model:         "opus",
-		Effort:        "high",
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:  "opus",
+			agent.OptionIDEffort: "high",
+		}),
 	}))
 
 	mock := &agentEventCapturingWriter{channelID: "ch-1"}
@@ -107,14 +109,9 @@ func TestBroadcastGitStatus_EmitsPartialStatusChange(t *testing.T) {
 		"BroadcastGitStatus must NOT set Status — UNSPECIFIED tells the frontend to leave other fields as-is")
 	// Catalog/settings fields must remain unset so the frontend doesn't
 	// overwrite its last-known catalog with empties.
-	assert.Empty(t, sc.GetModel(), "Model must not be repopulated on a git-status refresh")
-	assert.Empty(t, sc.GetEffort(), "Effort must not be repopulated on a git-status refresh")
-	assert.Empty(t, sc.GetPermissionMode(), "PermissionMode must not be repopulated on a git-status refresh")
 	assert.Empty(t, sc.GetAgentSessionId(), "AgentSessionId must not be repopulated on a git-status refresh")
 	assert.True(t, sc.GetWorkerOnline(), "WorkerOnline must stay truthful; a git-status refresh is emitted by a live worker")
-	assert.Empty(t, sc.GetAvailableModels(), "AvailableModels must not be re-shipped")
-	assert.Empty(t, sc.GetAvailableOptionGroups(), "AvailableOptionGroups must not be re-shipped")
-	assert.Empty(t, sc.GetExtraSettings(), "ExtraSettings must not be re-shipped")
+	assert.Empty(t, sc.GetOptionGroups(), "OptionGroups must not be re-shipped on a git-status refresh")
 }
 
 // TestBroadcastGitStatus_RepeatedCallsBroadcastEachTime confirms the call

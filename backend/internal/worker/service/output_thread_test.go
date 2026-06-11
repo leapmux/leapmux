@@ -128,6 +128,55 @@ func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 	assert.Equal(t, "interrupted", msgType(t, secondWrapper.Messages[0]))
 }
 
+// TestRelaunchOnExitPreservesNotificationThread is the regression for the duplicate
+// settings-change notifications (Issue 1). A model/effort switch RELAUNCHES the agent;
+// the old process stopping fires the runner's onExit handler, which must drop the
+// dying process's pending control_requests WITHOUT clearing the in-memory notification
+// thread -- otherwise the notification persisted after the relaunch lands in a fresh
+// thread and can't consolidate with (cancel) the one before it. The bug was onExit
+// calling the full ClearAgentRuntimeState (which clears lastNotifThread via
+// CleanupAgent); the fix routes onExit through ClearPendingControlRequests instead.
+func TestRelaunchOnExitPreservesNotificationThread(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	listRows := func() []db.Message {
+		rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 20})
+		require.NoError(t, err)
+		return rows
+	}
+
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, raw(t, settingsChanged("sonnet", "haiku")))
+	// Exactly what the relaunch's onExit handler now does (runner.go): drop pending
+	// control requests, but leave the notification thread intact.
+	svc.Output.ClearPendingControlRequests("agent-1")
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, raw(t, settingsChanged("haiku", "opus[1m]")))
+
+	rows := listRows()
+	require.Len(t, rows, 1, "the relaunch's onExit must NOT split the notification thread into two rows")
+	wrapper := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
+	require.Len(t, wrapper.Messages, 1, "the two model changes consolidate into one settings_changed")
+	var merged struct {
+		Changes map[string]struct {
+			Old string `json:"old"`
+			New string `json:"new"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(wrapper.Messages[0], &merged))
+	assert.Equal(t, "sonnet", merged.Changes["model"].Old)
+	assert.Equal(t, "opus[1m]", merged.Changes["model"].New, "sonnet->haiku->opus[1m] merges to sonnet->opus[1m]")
+
+	// Contrast: the PERMANENT-teardown cleanup DOES clear the thread, so a later
+	// notification correctly starts a fresh standalone row.
+	svc.Output.ClearAgentRuntimeState("agent-1")
+	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, raw(t, settingsChanged("opus[1m]", "haiku")))
+	assert.Len(t, listRows(), 2, "ClearAgentRuntimeState clears the thread, so the next notification is a new row")
+}
+
 func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testing.T) {
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	starting := raw(t, codexStartupStatus("codex_apps", "starting", nil))

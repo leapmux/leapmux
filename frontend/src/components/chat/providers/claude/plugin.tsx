@@ -2,38 +2,22 @@ import type { Question } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput, Provider } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { PermissionMode } from '~/utils/controlResponse'
-import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { randomUUID } from '~/lib/idGenerator'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
-import * as styles from '../../ChatView.css'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from '../../controls/ClaudeCodeControlRequest'
 import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
+import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { getAssistantContent } from './extractors/assistantContent'
 import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
 import { claudeResultDivider } from './resultDivider'
-import {
-  ClaudeCodeSettingsPanel,
-  ClaudeCodeTriggerLabel,
-  DEFAULT_CLAUDE_EFFORT,
-  DEFAULT_CLAUDE_MODEL,
-} from './settings'
 import { claudeToolResultMeta } from './toolResult'
-
-function buildSetPermissionModeRequest(mode: PermissionMode): string {
-  return JSON.stringify({
-    type: 'control_request',
-    request_id: randomUUID(),
-    request: { subtype: 'set_permission_mode', mode },
-  })
-}
 
 function buildInterruptRequest(): string {
   return JSON.stringify({
@@ -301,9 +285,6 @@ function claudeExtractQuotableText(category: MessageCategory, parsed: ParsedMess
 const CLAUDE_AUTOCOMPACT_BUFFER_PCT = 16.5
 
 const claudeCodePlugin: Provider = {
-  defaultModel: DEFAULT_CLAUDE_MODEL,
-  defaultEffort: DEFAULT_CLAUDE_EFFORT,
-  defaultPermissionMode: 'default',
   bypassPermissionMode: 'bypassPermissions',
   contextBufferPct: CLAUDE_AUTOCOMPACT_BUFFER_PCT,
   attachments: {
@@ -312,12 +293,10 @@ const claudeCodePlugin: Provider = {
     pdf: true,
     binary: false,
   },
-  planMode: {
-    currentMode: agent => agent.permissionMode || 'default',
-    planValue: 'plan',
-    defaultValue: 'default',
-    setMode: (mode, onChange) => onChange({ kind: 'permissionMode', value: mode as PermissionMode }),
-  },
+  planMode: buildPlanMode('permissionMode', 'plan', 'default'),
+  // The trigger's mode segment shows the permission mode (which is also Claude's
+  // plan axis, so it naturally reads "Plan Mode" when in plan).
+  triggerModeGroupKey: 'permissionMode',
 
   classify: classifyClaudeCodeMessage,
   // Claude's thinking-token counter is driven by real per-phase telemetry (the
@@ -363,22 +342,8 @@ const claudeCodePlugin: Provider = {
     return buildInterruptRequest()
   },
 
-  // Claude Code supports runtime permission mode changes via control_request
-  // (lightweight, no agent restart needed).
-  async changePermissionMode(workerId: string, agentId: string, mode: PermissionMode): Promise<void> {
-    await workerRpc.sendAgentRawMessage(workerId, {
-      agentId,
-      content: buildSetPermissionModeRequest(mode),
-    })
-  },
-
   ControlContent: ClaudeCodeControlContent,
   ControlActions: ClaudeCodeControlActions,
-
-  SettingsPanel: ClaudeCodeSettingsPanel,
-  settingsMenuClass: styles.settingsMenuWide,
-
-  settingsTriggerLabel: ClaudeCodeTriggerLabel,
 }
 
 registerProvider(AgentProvider.CLAUDE_CODE, claudeCodePlugin)

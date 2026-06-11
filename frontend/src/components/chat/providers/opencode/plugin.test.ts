@@ -1,10 +1,10 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../../controls/OpenCodeControlRequest'
 import { acpResultDivider } from '../acp/renderers'
 import { providerFor } from '../registry'
-import { input, model, option, optionGroup } from '../testUtils'
+import { input } from '../testUtils'
 
 // Side-effect import to register the OpenCode plugin.
 import './plugin'
@@ -340,54 +340,24 @@ describe('opencode tool_call renderer', () => {
 describe('opencode plan mode', () => {
   const plugin = providerFor(AgentProvider.OPENCODE)!
 
-  it('reads the current mode from extraSettings.primaryAgent', () => {
-    expect(plugin.planMode?.currentMode({ extraSettings: { primaryAgent: 'plan' } })).toBe('plan')
-    expect(plugin.planMode?.currentMode({ extraSettings: {} })).toBe('build')
+  it('reads the current mode from optionValues.primaryAgent', () => {
+    expect(plugin.planMode?.currentMode({ optionValues: { primaryAgent: 'plan' } })).toBe('plan')
+    expect(plugin.planMode?.currentMode({ optionValues: {} })).toBe('build')
   })
 
-  it('setMode writes primaryAgent through the unified onChange dispatcher', () => {
-    const onChange = vi.fn()
-    plugin.planMode?.setMode('plan', onChange)
-    expect(onChange).toHaveBeenCalledWith({ kind: 'optionGroup', key: 'primaryAgent', value: 'plan' })
-  })
-})
-
-describe('opencode settings panel', () => {
-  const plugin = providerFor(AgentProvider.OPENCODE)!
-
-  it('renders primary-agent choices and updates through the unified onChange dispatcher', async () => {
-    const onChange = vi.fn()
-    render(() => plugin.SettingsPanel!({
-      model: 'openai/gpt-5',
-      extraSettings: { primaryAgent: 'build' },
-      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
-      availableOptionGroups: [optionGroup('primaryAgent', 'Primary Agent', [
-        option('build', 'build', { isDefault: true }),
-        option('plan', 'plan'),
-      ])],
-      onChange,
-    }))
-
-    expect(screen.getByText('Primary Agent')).toBeInTheDocument()
-    expect(screen.getByTestId('primary-agent-build')).toBeInTheDocument()
-    expect(screen.getByTestId('primary-agent-plan')).toBeInTheDocument()
-
-    await fireEvent.click(screen.getByDisplayValue('plan'))
-    expect(onChange).toHaveBeenCalledWith({ kind: 'optionGroup', key: 'primaryAgent', value: 'plan' })
+  it('declares primaryAgent as the plan-mode group with plan/build values', () => {
+    // The generic settings panel renders the primaryAgent option group and
+    // dispatches changes through the host; the provider only declares which
+    // group + values drive plan mode.
+    expect(plugin.planMode).toMatchObject({
+      groupKey: 'primaryAgent',
+      planValue: 'plan',
+      defaultValue: 'build',
+    })
   })
 
-  it('includes the selected primary agent in the trigger label', () => {
-    render(() => plugin.settingsTriggerLabel!({
-      model: 'openai/gpt-5',
-      extraSettings: { primaryAgent: 'plan' },
-      availableModels: [model('openai/gpt-5', 'GPT-5', { isDefault: true })],
-      availableOptionGroups: [optionGroup('primaryAgent', 'Primary Agent', [
-        option('build', 'Build', { isDefault: true }),
-        option('plan', 'Plan'),
-      ])],
-    }))
-
-    expect(screen.getByText('GPT-5 \u00B7 Plan')).toBeInTheDocument()
+  it('renders the primaryAgent group as the trigger mode segment', () => {
+    expect(plugin.triggerModeGroupKey).toBe('primaryAgent')
   })
 })
 

@@ -11,6 +11,7 @@ import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { sendAgentMessage, watchEventsViaChannel } from '~/api/workerRpc'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
 import { providerFor } from '~/components/chat/providers/registry'
+import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { showWarnToast } from '~/components/common/Toast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentProvider, AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
@@ -24,10 +25,11 @@ import { CODEX_RATE_LIMITS_METHOD } from '~/lib/rateLimitUtils'
 import { createExponentialBackoff } from '~/lib/retry'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
+import { shallowEqual } from '~/lib/shallowEqual'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { compactionContextUsage } from '~/stores/agentSession.store'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.helpers'
+import { deriveOptionGroupTabFields, gitTabFieldsDiffer, tabKey, toGitTabFields } from '~/stores/tab.helpers'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 
 const log = createLogger('workspace')
@@ -433,7 +435,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           // not AGENT, or a catch-up replay where the INACTIVE-driven onTurnEnd
           // is skipped — leaving the counter frozen on its last value.
           agentSessionStore.clearThinkingTokens(agentId)
-          const modelId = tabStore.getAgentTab(agentId)?.model
+          // Resolve the context-window hint from the CONFIRMED catalog current value, not the
+          // optimistic optionValues: a result divider is post-relaunch ground truth for a turn
+          // that already ran, so a mid-switch optimistic value (the "default" sentinel, or a
+          // not-yet-relaunched id) would mis-key the primary-model lookup. The confirmed
+          // currentValue is the model the completed turn actually used.
+          const modelId = optionGroup(tabStore.getAgentTab(agentId)?.optionGroups, OPTION_ID_MODEL)?.currentValue
           const meta = extractResultMetadata(parsed, modelId)
           if (meta) {
             if (msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed') {
@@ -502,12 +509,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // full updates object and iterate every reactive reader for a no-op.
         const hasPayload = hasStatus
           || sc.gitStatus !== undefined
-          || Boolean(sc.permissionMode)
-          || Boolean(sc.extraSettings)
-          || Boolean(sc.model)
-          || Boolean(sc.effort)
-          || (sc.availableModels && sc.availableModels.length > 0)
-          || (sc.availableOptionGroups && sc.availableOptionGroups.length > 0)
+          || sc.optionGroups.length > 0
         if (!hasPayload) {
           if (catchUpPhases.get(agentId) === 'catchingUp') {
             const replayEndSeq = chatStore.getLastSeq(agentId)
@@ -553,22 +555,67 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           }
         }
 
-        // When a settings change is in progress (optimistic update active),
-        // don't overwrite the optimistically-set fields — the pending RPC
-        // will resolve or revert them.
-        const pendingSettings = settingsLoading.loading()
+        // Whether THIS agent has any settings change in flight. Used only to gate the aggregate
+        // spinner stop below; the optimistic-value suppression is now per-AXIS (see pendingAxes
+        // further down), so an unrelated axis is no longer held back by a pending change on another
+        // axis of the same agent.
+        const pendingSettings = settingsLoading.isPending(sc.agentId)
         // Only update status and agentSessionId when status is set
         // (non-UNSPECIFIED). Proto3 defaults unset enums to 0
         // (UNSPECIFIED), so a statusChange carrying only git data
         // would otherwise overwrite valid agent state with defaults,
         // causing the agent to become "unwatchable" and dropping the
         // event stream.
-        // Route available models/option groups into the global settings
-        // label cache so notification renderers can resolve human names
-        // when the inline label is missing. We also persist them on the
-        // tab for the settings dialog's "current catalogs" reads.
-        if ((sc.availableModels && sc.availableModels.length > 0) || (sc.availableOptionGroups && sc.availableOptionGroups.length > 0))
-          updateSettingsLabelCache(sc.availableModels, sc.availableOptionGroups)
+        // Derive the per-axis current-value fields + full catalog from the
+        // reported option groups (empty = unchanged, so don't clobber the
+        // previously-fetched groups). Prime the global settings-label cache from
+        // the same groups here (the data-ingestion boundary) so notification
+        // renderers can resolve human names when an inline label is missing --
+        // deriveOptionGroupTabFields itself is pure.
+        if (sc.optionGroups.length > 0)
+          updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
+        const settingsFields = sc.optionGroups.length > 0 ? deriveOptionGroupTabFields(sc.optionGroups) : {}
+        // The worker re-broadcasts the full catalog on every status push,
+        // re-decoded into fresh proto objects. updateTab's reference check would
+        // then replace tab.optionGroups every push, recreating the settings
+        // popover's radio rows and flickering / racing clicks. Reuse each
+        // unchanged group's previous reference (per group, so a single changed
+        // group like effort doesn't churn the untouched model list either).
+        if (settingsFields.optionGroups && prev?.optionGroups) {
+          settingsFields.optionGroups = mergeStableOptionGroupRefs(settingsFields.optionGroups, prev.optionGroups)
+        }
+        // Per-axis optimistic suppression: for each axis THIS agent is actively changing
+        // (settingsLoading.pendingAxes), KEEP the optimistic value the in-flight RPC will resolve;
+        // for every OTHER axis, apply the server's confirmed current value. This refines the old
+        // per-agent "suppress all optionValues while pending" rule so a server-initiated change to an
+        // UNRELATED axis on this agent isn't stranded until the pending RPC resolves. The catalog
+        // (optionGroups) is never optimistic and always applies (in the updateTab below).
+        const pendingAxes = settingsLoading.pendingAxes(sc.agentId)
+        if (settingsFields.optionValues && pendingAxes.size > 0 && prev?.optionValues) {
+          const merged: Record<string, string> = { ...settingsFields.optionValues }
+          for (const axis of pendingAxes) {
+            // The tab's optimistic optionValues is authoritative for a pending axis until the in-flight
+            // RPC resolves: useAgentOperations writes it (a concrete value for a SET, a DELETED key for
+            // a CLEAR) right before marking the axis pending, so a present entry is the user's in-flight
+            // selection and an ABSENT one is an in-flight clear -- NOT "unprotected". Mirror that
+            // decision exactly: keep the optimistic value, or keep the axis ABSENT for a clear, rather
+            // than absorbing the server's (in-flight-stale) value back into the optimistic layer.
+            const optimistic = prev.optionValues[axis]
+            if (optimistic !== undefined)
+              merged[axis] = optimistic
+            else
+              delete merged[axis]
+          }
+          settingsFields.optionValues = merged
+        }
+        // optionValues is rebuilt fresh on every catalog-carrying push; reuse the prior
+        // reference when its (possibly per-axis-merged) content is unchanged so a re-broadcast that
+        // didn't change any current value doesn't trip every reactive reader of optionValues (the
+        // same stability the optionGroups get above).
+        if (settingsFields.optionValues && prev?.optionValues
+          && shallowEqual(settingsFields.optionValues, prev.optionValues)) {
+          settingsFields.optionValues = prev.optionValues
+        }
 
         // Consolidate every per-status field into one updateTab so the
         // store walks state.tabs once. The `agentGitStatus` (full proto)
@@ -591,23 +638,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           ...(sc.status === AgentStatus.STARTING
             ? { startupMessage: sc.startupMessage }
             : hasStatus ? { startupMessage: '' } : {}),
-          ...(pendingSettings
-            ? {}
-            : {
-                ...(sc.permissionMode ? { permissionMode: sc.permissionMode } : {}),
-                ...(sc.extraSettings ? { extraSettings: sc.extraSettings } : {}),
-                ...(sc.model ? { model: sc.model } : {}),
-                ...(sc.effort ? { effort: sc.effort } : {}),
-              }),
-          // Agent-reported catalogs. Empty arrays mean "unchanged" — the
-          // status change events cover non-setting transitions too, and we
-          // don't want those to clobber the previously-fetched groups.
-          ...(sc.availableModels && sc.availableModels.length > 0
-            ? { availableModels: sc.availableModels }
-            : {}),
-          ...(sc.availableOptionGroups && sc.availableOptionGroups.length > 0
-            ? { availableOptionGroups: sc.availableOptionGroups }
-            : {}),
+          // Apply the recomputed catalog (optionGroups) and current values (optionValues). The
+          // catalog is never optimistic — the worker recomputes it on a settings change (e.g.
+          // swapping the model replaces the dynamic model list and re-emits the effort group for the
+          // new model), and skipping it would strand a stale catalog (most visibly the static
+          // fallback model list from the open response). The values were already per-axis-suppressed
+          // above (optimistic value kept for the axes the user is actively changing, server value for
+          // every other axis), so they apply as computed.
+          ...settingsFields,
           ...(sc.gitStatus
             ? {
                 agentGitStatus: sc.gitStatus,

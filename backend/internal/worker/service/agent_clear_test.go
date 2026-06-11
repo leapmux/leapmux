@@ -92,8 +92,8 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 	// Mock a successful restart so we can validate the happy-path ordering
 	// without spawning a real agent process. context_cleared is only
 	// broadcast when the new agent starts successfully.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -157,8 +157,8 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 
 	// Mock a successful restart so we exercise the happy path without
 	// spawning a real agent process.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
-		return &leapmuxv1.AgentSettings{}, nil
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		return map[string]string{}, nil
 	}
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -244,7 +244,7 @@ func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing
 	// required (createMessageRow refuses to persist messages for an UNSPECIFIED
 	// provider), so the failure is injected via startAgentFn rather than by
 	// leaving the provider unset.
-	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (*leapmuxv1.AgentSettings, error) {
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, errors.New("forced restart failure")
 	}
 

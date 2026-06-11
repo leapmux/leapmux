@@ -361,7 +361,10 @@ export async function openAgentViaAPI(
       workerId,
       workingDir: workingDir ?? '',
       ...(options?.title ? { title: options.title } : {}),
-      ...(options?.model ? { model: options.model } : {}),
+      // The proto carries model under the `options` map, not a top-level `model`
+      // field; spreading `{ model }` would be silently dropped by create(), opening
+      // the agent at the provider default instead of the requested model.
+      ...(options?.model ? { options: { model: options.model } } : {}),
       ...(options?.agentProvider ? { agentProvider: options.agentProvider } : {}),
       ...(options?.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
       ...(options?.worktreeBaseBranch ? { worktreeBaseBranch: options.worktreeBaseBranch } : {}),
@@ -467,6 +470,47 @@ export async function shareWorkspaceViaAPI(
   if (!res.ok) {
     throw new Error(`shareWorkspaceViaAPI failed: ${res.status}`)
   }
+}
+
+/**
+ * Stop and close every agent/terminal a workspace owns on its worker — the
+ * worker-side half of a workspace delete.
+ *
+ * The browser app's delete flow is two steps: the hub soft-deletes the workspace
+ * (returning worker IDs), then the frontend fans out a `CleanupWorkspace` E2EE RPC
+ * to each worker (useWorkspaceOperations.deleteWorkspace), which stops the agent
+ * subprocesses. `deleteWorkspaceViaAPI` only does the hub half, so without this the
+ * worker keeps every test's Claude CLI subprocess alive; across a suite they pile up
+ * (observed peak ~17 concurrent) and starve local resources, which makes the live
+ * frontend janky enough to flake settings-menu interactions. Run this at teardown to
+ * mirror what the real client does. Best-effort; reuses the cached test channel,
+ * which already has the workspace in its accessible set from openAgentViaAPI.
+ */
+export async function cleanupWorkspaceViaAPI(
+  hubUrl: string,
+  cookie: string,
+  workerId: string,
+  workspaceId: string,
+): Promise<void> {
+  const { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema } = await import('../../../src/generated/leapmux/v1/workspace_pb')
+  const channel = await getTestChannel(hubUrl, cookie)
+  // Refresh the channel's accessible-workspace set before the workspace-scoped RPC
+  // (the cached channel froze its set at handshake), exactly as openAgentViaAPI does.
+  const prepResp = await fetch(`${hubUrl}/leapmux.v1.ChannelService/PrepareWorkspaceAccess`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ workerId, workspaceId }),
+  })
+  if (!prepResp.ok) {
+    throw new Error(`cleanupWorkspaceViaAPI: PrepareWorkspaceAccess failed: ${prepResp.status}`)
+  }
+  await channel.callWorker(
+    workerId,
+    'CleanupWorkspace',
+    CleanupWorkspaceRequestSchema,
+    CleanupWorkspaceResponseSchema,
+    { workspaceId },
+  )
 }
 
 /**

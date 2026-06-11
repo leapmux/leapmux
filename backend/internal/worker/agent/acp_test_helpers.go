@@ -41,6 +41,21 @@ func newACPAgentForRPCWithResponder[T any](
 	accessBase func(*T) *acpBase,
 	respond func(method string) json.RawMessage,
 ) (*T, func() []recordedRequest) {
+	return newACPAgentForRPCWithRequestResponder(t, construct, accessBase, func(req recordedRequest) json.RawMessage {
+		return respond(req.Method)
+	})
+}
+
+// newACPAgentForRPCWithRequestResponder is like newACPAgentForRPCWithResponder but the
+// responder sees the full request (method + params), so a test can vary its reply by an
+// RPC's arguments -- e.g. return different configOptions for a session/set_config_option
+// that writes the model vs. one that writes the reasoning-effort axis.
+func newACPAgentForRPCWithRequestResponder[T any](
+	t *testing.T,
+	construct func() *T,
+	accessBase func(*T) *acpBase,
+	respond func(req recordedRequest) json.RawMessage,
+) (*T, func() []recordedRequest) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,12 +88,13 @@ func newACPAgentForRPCWithResponder[T any](
 			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 				continue
 			}
+			recorded := recordedRequest{Method: req.Method, Params: req.Params}
 			mu.Lock()
-			requests = append(requests, recordedRequest{Method: req.Method, Params: req.Params})
+			requests = append(requests, recorded)
 			mu.Unlock()
 			body := json.RawMessage(`{}`)
 			if respond != nil {
-				body = respond(req.Method)
+				body = respond(recorded)
 			}
 			ab.deliver(req.ID, body)
 		}

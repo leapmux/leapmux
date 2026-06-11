@@ -6,6 +6,7 @@ import { generateSlug } from 'random-word-slugs'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { channelClient, workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
+import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { labelRow } from '~/components/common/Dialog.css'
 import { RefreshButton } from '~/components/common/RefreshButton'
@@ -97,11 +98,10 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       const agentResp = await workerRpc.openAgent(wid, {
         workspaceId: wsResp.workspaceId,
         agentProvider: provider,
-        model: '',
         // title omitted: worker picks "Agent <Name>" from the shared pool.
-        systemPrompt: '',
         workerId: wid,
         workingDir: worker.workingDir(),
+        ...openAgentRequestOptions(provider),
         ...gitMode.toGitFields(),
         ...(sessionId.trimmed() ? { agentSessionId: sessionId.trimmed() } : {}),
       })

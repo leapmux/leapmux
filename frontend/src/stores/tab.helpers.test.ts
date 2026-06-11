@@ -1,7 +1,11 @@
 import type { Tab } from './tab.types'
+import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { gitTabFieldsDiffer, isSameRepo, preserveNonEmptyGitFields, tabDisplayLabel, toGitTabFields } from './tab.helpers'
+import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
+import { agentTabToInfo, deriveOptionGroupTabFields, gitTabFieldsDiffer, isSameRepo, preserveNonEmptyGitFields, setOptionValue, tabDisplayLabel, toGitTabFields } from './tab.helpers'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
 // AND in the workspace tree?" helper. Three call sites depend on its
@@ -242,5 +246,196 @@ describe('preserveNonEmptyGitFields', () => {
       { gitToplevel: '/r', gitIsWorktree: true },
     )
     expect(out.gitIsWorktree).toBe(false)
+  })
+})
+
+// agentTabToInfo projects the optimistic per-tab settings onto the option-group
+// catalog. The interesting case is a model switch: each model carries its own
+// model-dependent groups (effort tiers + the extended-thinking label) in
+// `subGroups`, and an in-flight switch must swap those in immediately rather
+// than waiting for the worker's relaunch round-trip.
+describe('agentTabToInfo model-dependent option groups', () => {
+  function opt(id: string, name: string, subGroups: AvailableOptionGroup[] = []) {
+    return create(AvailableOptionSchema, { id, name, subGroups })
+  }
+  function effortGroup(ids: string[], defaultValue: string) {
+    return create(AvailableOptionGroupSchema, {
+      id: 'effort',
+      label: 'Effort',
+      order: 20,
+      mutable: true,
+      defaultValue,
+      options: ids.map(id => create(AvailableOptionSchema, { id, name: id })),
+    })
+  }
+  function thinkingGroup(onLabel: string) {
+    return create(AvailableOptionGroupSchema, {
+      id: 'alwaysThinkingEnabled',
+      label: 'Extended Thinking',
+      order: 30,
+      mutable: true,
+      defaultValue: 'on',
+      options: [opt('on', onLabel), opt('off', 'Off')],
+    })
+  }
+  // Sonnet: high/max, adaptive thinking. Haiku: no effort, plain "On". Opus:
+  // xhigh/ultracode, adaptive thinking.
+  const sonnetSub = [effortGroup(['auto', 'high', 'max'], 'high'), thinkingGroup('Adaptive')]
+  const haikuSub = [thinkingGroup('On')]
+  const opusSub = [effortGroup(['auto', 'high', 'xhigh', 'ultracode', 'max'], 'high'), thinkingGroup('Adaptive')]
+
+  function modelGroup(currentValue: string) {
+    return create(AvailableOptionGroupSchema, {
+      id: 'model',
+      label: 'Model',
+      order: 10,
+      mutable: true,
+      currentValue,
+      defaultValue: 'sonnet',
+      options: [opt('sonnet', 'Sonnet', sonnetSub), opt('haiku', 'Haiku', haikuSub), opt('opus[1m]', 'Opus', opusSub)],
+    })
+  }
+  const permissionGroup = create(AvailableOptionGroupSchema, {
+    id: 'permissionMode',
+    label: 'Permission Mode',
+    order: 90,
+    mutable: true,
+    currentValue: 'default',
+    options: [opt('default', 'Default')],
+  })
+
+  // A confirmed catalog for a running agent on `model`: the top-level effort and
+  // thinking groups reflect that model (matching what the worker broadcasts).
+  function catalogFor(model: string): AvailableOptionGroup[] {
+    const sub = model === 'haiku' ? haikuSub : model === 'opus[1m]' ? opusSub : sonnetSub
+    return [modelGroup(model), ...sub, permissionGroup]
+  }
+
+  function infoGroups(overrides: Partial<Extract<Tab, { type: TabType.AGENT }>>): AvailableOptionGroup[] {
+    const tab = agent({ agentProvider: 0, ...overrides }) as Tab
+    return agentTabToInfo(tab)!.optionGroups
+  }
+
+  it('leaves the catalog untouched when no model switch is pending', () => {
+    const base = catalogFor('sonnet')
+    const groups = infoGroups({ optionValues: { model: 'sonnet' }, optionGroups: base })
+    // Same array reference: identity stability keeps <For> from churning.
+    expect(groups).toBe(base)
+  })
+
+  it('returns a stable array reference across reads during an in-flight model switch', () => {
+    // The projection rebuilds the model-dependent groups while a switch is in flight; the cache
+    // (keyed on the optionGroups + optionValues references, both stable until the worker confirms)
+    // must hand back the SAME array on repeated reads so downstream <For>/memos don't churn.
+    const base = catalogFor('sonnet')
+    const tab = agent({ agentProvider: 0, optionValues: { model: 'opus[1m]' }, optionGroups: base }) as Tab
+    const first = agentTabToInfo(tab)!.optionGroups
+    const second = agentTabToInfo(tab)!.optionGroups
+    expect(first).not.toBe(base) // it actually rebuilt (the switch is in flight)
+    expect(second).toBe(first) // ...but the repeat read is served from the cache, not rebuilt
+  })
+
+  it('drops the effort group and relabels thinking when switching to Haiku', () => {
+    const groups = infoGroups({ optionValues: { model: 'haiku' }, optionGroups: catalogFor('sonnet') })
+    expect(groups.find(g => g.id === 'effort')).toBeUndefined()
+    const thinking = groups.find(g => g.id === 'alwaysThinkingEnabled')
+    expect(thinking?.options.find(o => o.id === 'on')?.name).toBe('On')
+    // Order is preserved (model, thinking, permission).
+    expect(groups.map(g => g.id)).toEqual(['model', 'alwaysThinkingEnabled', 'permissionMode'])
+  })
+
+  it('surfaces opus-only effort tiers and adaptive thinking when switching to Opus', () => {
+    const groups = infoGroups({ optionValues: { model: 'opus[1m]' }, optionGroups: catalogFor('sonnet') })
+    const effort = groups.find(g => g.id === 'effort')
+    expect(effort?.options.map(o => o.id)).toContain('xhigh')
+    expect(effort?.options.map(o => o.id)).toContain('ultracode')
+    expect(groups.find(g => g.id === 'alwaysThinkingEnabled')?.options.find(o => o.id === 'on')?.name).toBe('Adaptive')
+  })
+
+  it('rebuilds effort with the new model default so a stale tier falls back', () => {
+    // On Opus with xhigh selected, switching to Sonnet (no xhigh) must present
+    // Sonnet's effort options with default "high"; the panel's validity guard
+    // then renders "high" since the carried-over xhigh is no longer offered.
+    const groups = infoGroups({ optionValues: { model: 'sonnet', effort: 'xhigh' }, optionGroups: catalogFor('opus[1m]') })
+    const effort = groups.find(g => g.id === 'effort')
+    expect(effort?.options.map(o => o.id)).not.toContain('xhigh')
+    expect(effort?.defaultValue).toBe('high')
+  })
+
+  it('keeps existing dependent groups when the optimistic model is not a listed option', () => {
+    // A hidden/unknown model id lingering in optionValues must NOT strip effort
+    // and thinking to nothing -- the catalog's dependent groups survive until a
+    // real push arrives.
+    const groups = infoGroups({ optionValues: { model: 'ghost-model' }, optionGroups: catalogFor('sonnet') })
+    expect(groups.find(g => g.id === 'effort')).toBeDefined()
+    expect(groups.find(g => g.id === 'alwaysThinkingEnabled')).toBeDefined()
+  })
+})
+
+describe('deriveOptionGroupTabFields', () => {
+  function group(id: string, currentValue: string): AvailableOptionGroup {
+    return create(AvailableOptionGroupSchema, {
+      id,
+      options: [create(AvailableOptionSchema, { id: currentValue, name: currentValue })],
+      currentValue,
+    })
+  }
+
+  it('maps every group currentValue into optionValues by id, with no axis special-cased', () => {
+    const groups = [
+      group('model', 'sonnet'),
+      group('effort', 'high'),
+      group('permissionMode', 'plan'),
+      group('sandbox_policy', 'workspace-write'), // a non-well-known provider extra
+    ]
+    const fields = deriveOptionGroupTabFields(groups)
+    // The well-known axes AND the provider extra all land in the one generic map,
+    // keyed by group id -- proving the derive does no per-axis branching.
+    expect(fields.optionValues).toEqual({
+      model: 'sonnet',
+      effort: 'high',
+      permissionMode: 'plan',
+      sandbox_policy: 'workspace-write',
+    })
+    expect(fields.optionGroups).toBe(groups)
+  })
+
+  it('omits empty current values and returns {} for an empty catalog', () => {
+    expect(deriveOptionGroupTabFields([])).toEqual({})
+    const fields = deriveOptionGroupTabFields([group('model', 'sonnet'), group('effort', '')])
+    expect(fields.optionValues).toEqual({ model: 'sonnet' })
+  })
+
+  it('is pure: does not prime the settings-label cache', () => {
+    clearSettingsLabelCache()
+    const labelled = create(AvailableOptionGroupSchema, {
+      id: 'model',
+      label: 'Model',
+      options: [create(AvailableOptionSchema, { id: 'sonnet', name: 'Sonnet' })],
+      currentValue: 'sonnet',
+    })
+    deriveOptionGroupTabFields([labelled])
+    // Priming the label cache is the caller's job (protoToAgentTabFields / the
+    // statusChange handler), so the converter writes nothing -- it stays referentially
+    // transparent and testable without cache cleanup.
+    expect(getCachedSettingsGroupLabel(AgentProvider.CLAUDE_CODE, 'model')).toBeUndefined()
+  })
+})
+
+describe('setOptionValue', () => {
+  it('sets a non-empty value and preserves other axes', () => {
+    expect(setOptionValue({ model: 'sonnet' }, 'effort', 'high')).toEqual({ model: 'sonnet', effort: 'high' })
+  })
+
+  it('deletes the key for an empty value rather than storing an empty-string override', () => {
+    expect(setOptionValue({ model: 'sonnet', effort: 'high' }, 'effort', '')).toEqual({ model: 'sonnet' })
+  })
+
+  it('returns a fresh map (does not mutate the input) and tolerates undefined', () => {
+    const input = { model: 'sonnet' }
+    const out = setOptionValue(input, 'effort', 'high')
+    expect(out).not.toBe(input)
+    expect(input).toEqual({ model: 'sonnet' })
+    expect(setOptionValue(undefined, 'model', 'sonnet')).toEqual({ model: 'sonnet' })
   })
 })

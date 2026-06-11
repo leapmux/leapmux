@@ -588,22 +588,56 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlCancel(content []byte) {
 	a.sink.BroadcastControlCancel(cc.RequestID)
 }
 
-// claudeCodeHandleControlResponse handles control_response from Claude Code.
-// Note: the control request is already deleted from the DB by the
-// SendControlResponse handler; this method only handles plan mode changes.
+// claudeCodeHandleControlResponse handles a control_response from Claude Code that no
+// pending waiter consumed -- in practice a DEFERRED set_permission_mode ack. The live
+// UpdateSettings path caps its wait at permissionModeApplyTimeout; while a turn is streaming
+// the CLI defers the ack until the turn ends, so UpdateSettings applied the mode
+// optimistically and this late response is the authoritative reconciliation.
+//
+// Re-sync from the provider rather than trusting the optimistic value: adopt the mode the CLI
+// actually applied (response.mode -- present on a success, and on a rejection that reports the
+// still-effective mode) into BOTH the in-memory confirmed state AND the persisted row +
+// broadcast. Updating a.confirmedPermissionMode is the part the optimistic path can't do
+// itself: OptionGroups() reads confirmedPermissionMode, so without this the agent's catalog
+// would keep reporting the optimistic mode even after the CLI settled on a different one.
+// (get_settings omits permission mode and, run from this reader goroutine, would deadlock on
+// its own response -- so the response.mode field is the only provider-authoritative source.)
 func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 	var cr struct {
 		Response struct {
-			Subtype  string `json:"subtype"`
-			Response struct {
+			Subtype   string `json:"subtype"`
+			RequestID string `json:"request_id"`
+			Response  struct {
 				Mode string `json:"mode"`
 			} `json:"response"`
 		} `json:"response"`
 	}
-	if err := json.Unmarshal(content, &cr); err == nil {
-		if cr.Response.Subtype == "success" && cr.Response.Response.Mode != "" {
-			a.sink.UpdatePermissionMode(cr.Response.Response.Mode)
+	if err := json.Unmarshal(content, &cr); err != nil {
+		return
+	}
+	mode := cr.Response.Response.Mode
+	if mode == "" {
+		return
+	}
+	// Fold the mode back ONLY when this response is the deferred ack of the set_permission_mode
+	// toggle we are awaiting -- matched by request_id. Without the match a stale/duplicate ack,
+	// an earlier (superseded) toggle's ack, or any other mode-bearing control_response would
+	// clobber the confirmed mode with a value the user didn't last choose. Consuming the id
+	// (clearing it) also makes a re-delivered ack a no-op.
+	a.mu.Lock()
+	matched := cr.Response.RequestID != "" && cr.Response.RequestID == a.deferredPermissionModeReqID
+	if matched {
+		a.deferredPermissionModeReqID = ""
+		a.confirmedPermissionMode = mode
+		// The deferred ack confirming "auto" proves the session can enter it; clear a stale
+		// autoModeAvailable=false (see applyPermissionModeLive) so the picker offers auto again.
+		if mode == PermissionModeAuto {
+			a.autoModeAvailable = true
 		}
+	}
+	a.mu.Unlock()
+	if matched {
+		a.sink.UpdatePermissionMode(mode)
 	}
 
 	// No need to persist control_response in the timeline — they are
@@ -783,7 +817,7 @@ func (a *ClaudeCodeAgent) getOrCreateUsageSnapshot() *contextUsageSnapshot {
 // of available models. Returns 0 if the model is not found. Delegates to
 // FindAvailableModel so the nil-entry guard and id match live in one place
 // rather than a fourth hand-copied catalog walk.
-func modelContextWindow(models []*leapmuxv1.AvailableModel, modelID string) int64 {
+func modelContextWindow(models []*ModelInfo, modelID string) int64 {
 	if m := FindAvailableModel(models, modelID); m != nil {
 		return m.ContextWindow
 	}

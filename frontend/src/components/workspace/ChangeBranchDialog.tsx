@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createSignal, Match, Show, Switch } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
+import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { labelRow } from '~/components/common/Dialog.css'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { isChangeBranchSubmitDisabled } from '~/components/shell/dialogValidation'
@@ -202,8 +203,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
           const resp = await workerRpc.openAgent(props.workerId, {
             ...worktreeArgs,
             agentProvider: provider,
-            model: '',
-            systemPrompt: '',
+            ...openAgentRequestOptions(provider),
           })
           if (resp.agent) {
             recordProviderUse(provider)

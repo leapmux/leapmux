@@ -1,41 +1,113 @@
-import type { AvailableModel, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 
 /**
- * Global cache of model/effort/option display names, populated from AgentInfo.
- * Used by notification renderers to show human-readable labels for settings changes
- * when the notification payload doesn't include inline labels (e.g., older messages).
+ * Per-provider cache of option display names, populated from AgentInfo's option
+ * groups. Used by notification renderers to show human-readable labels for
+ * settings changes when the notification payload doesn't include inline labels
+ * (e.g. older messages). Model and effort are ordinary groups here.
+ *
+ * Keyed by PROVIDER, not globally: the same group id carries different option sets
+ * across providers (e.g. `permissionMode` is Cursor's Agent/Plan/Ask vs Goose's
+ * Auto/Approve/Smart Approve/Chat), so a single global map let one provider's labels
+ * collide with another's last-writer-wins. Two agents of the SAME provider share an
+ * identical label space, so per-provider keying is both correct and minimal.
  */
-const modelLabels = new Map<string, string>()
-const effortLabels = new Map<string, string>()
-const optionGroupDisplayLabels = new Map<string, string>()
-const optionGroupLabels = new Map<string, Map<string, string>>()
 
-/** Update the cache from available model/option metadata (called when AgentInfo arrives). */
-export function updateSettingsLabelCache(models?: AvailableModel[], optionGroups?: AvailableOptionGroup[]): void {
-  if (models) {
-    for (const m of models) {
-      if (m.displayName)
-        modelLabels.set(m.id, m.displayName)
-      for (const e of m.supportedEfforts) {
-        if (e.name)
-          effortLabels.set(e.id, e.name)
-      }
-    }
+/**
+ * One cache entry per (provider, group id): the group's display label and its option-id -> name
+ * sub-map, co-located in a single record. A single map keyed by group id therefore evicts a
+ * group's label and its options TOGETHER, so the LRU bound can never half-evict (drop the option
+ * sub-map while keeping the label, or vice versa) -- a hazard a pair of parallel maps with
+ * independent eviction populations would carry.
+ */
+interface GroupLabelEntry {
+  label?: string
+  options: Map<string, string> // option id -> display name
+}
+
+const optionGroupCache = new Map<AgentProvider, Map<string, GroupLabelEntry>>()
+
+// Upper bound on retained option labels per (provider, group). The per-group option-id ->
+// name map can grow over a very long session with heavy churn (e.g. many distinct Cursor
+// model variants, repeated effort switches), accumulating every id ever seen. 256 is
+// generous enough that historical settings_changed rows in a normal session keep their labels.
+const MAX_LABELS_PER_GROUP = 256
+
+// Upper bound on retained GROUP ids per provider. Real providers expose a handful of groups
+// (model, effort, permission mode, a few config options), so this only bites a non-conforming
+// server cycling distinct group ids -- the same adversary the per-group option-id cap defends
+// against. Without it, that dimension would grow without bound.
+const MAX_GROUPS_PER_PROVIDER = 64
+
+/**
+ * Insert or refresh `map[key] = value` with LRU eviction at `max`. A Map preserves insertion
+ * order and re-`set`ting an existing key does NOT refresh it, so delete-then-set moves the key
+ * to the most-recent position. Each AgentInfo re-sets the current catalog's keys (keeping them
+ * fresh), so a key that stops appearing drifts to the front and is evicted first -- exactly the
+ * keys least likely to be referenced by a still-visible row. Generic over the value so the
+ * group-id dimension (sub-maps) is bounded the same way the option-id dimension (labels) is.
+ */
+function setWithCap<V>(map: Map<string, V>, key: string, value: V, max: number): void {
+  map.delete(key)
+  map.set(key, value)
+  while (map.size > max) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined)
+      break
+    map.delete(oldest)
   }
-  if (optionGroups) {
-    for (const group of optionGroups) {
-      if (group.label)
-        optionGroupDisplayLabels.set(group.key, group.label)
-      let groupMap = optionGroupLabels.get(group.key)
-      if (!groupMap) {
-        groupMap = new Map()
-        optionGroupLabels.set(group.key, groupMap)
-      }
-      for (const opt of group.options) {
-        if (opt.name)
-          groupMap.set(opt.id, opt.name)
-      }
+}
+
+/**
+ * Return `map[key]`, lazily inserting a fresh value from `factory` when absent. Used only for
+ * the PROVIDER dimension, which is bounded by the provider enum (a handful) and so needs no cap.
+ */
+function getOrCreate<K, V>(map: Map<K, V>, key: K, factory: () => V): V {
+  let value = map.get(key)
+  if (value === undefined) {
+    value = factory()
+    map.set(key, value)
+  }
+  return value
+}
+
+/** Update the cache from an agent's option-group catalog (called when AgentInfo arrives). */
+export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?: AvailableOptionGroup[]): void {
+  if (!optionGroups)
+    return
+  const groups = getOrCreate(optionGroupCache, provider, () => new Map<string, GroupLabelEntry>())
+  const seenInPush = new Set<string>()
+  for (const group of optionGroups) {
+    // A catalog carries one group per id (the backend dedups before broadcast). Defend against a
+    // malformed catalog with two same-id groups by taking the FIRST and skipping later ones, so the
+    // entry reflects a single group rather than silently merging two groups' option sets (and
+    // last-writer-wins labels) under one id.
+    if (seenInPush.has(group.id))
+      continue
+    seenInPush.add(group.id)
+    // One entry per group id, LRU-bounded at MAX_GROUPS_PER_PROVIDER so a non-conforming server
+    // cycling distinct group ids can't grow the map without bound. The entry holds BOTH the
+    // group's label and its option sub-map, so the single setWithCap below refreshes -- and, on
+    // overflow, evicts -- the two together; neither can half-evict while the other is still live.
+    const entry = groups.get(group.id) ?? { options: new Map<string, string>() }
+    // Keep the previously-cached label when this push omits it (a label-less push still refreshes
+    // the entry's LRU position via setWithCap below).
+    if (group.label)
+      entry.label = group.label
+    // Append-merge into the group's existing option sub-map rather than replacing it
+    // wholesale: this cache exists to resolve labels for HISTORICAL settings_changed
+    // notifications (re-rendered on scroll-back) whose payload carries no inline label.
+    // A model/effort switch narrows the catalog (e.g. dropping "ultracode" after moving
+    // off Opus), so a wholesale replace would EVICT the label an older notification still
+    // references, leaving it to render the raw id. Retaining recently-seen labels keeps
+    // those historical rows readable; a renamed id still picks up its new name here because
+    // `set` overwrites the same key. Growth is bounded by setWithCap's LRU eviction,
+    // so an evicted (long-unseen) id falls back to its raw value in an old row.
+    for (const opt of group.options) {
+      if (opt.name)
+        setWithCap(entry.options, opt.id, opt.name, MAX_LABELS_PER_GROUP)
     }
+    setWithCap(groups, group.id, entry, MAX_GROUPS_PER_PROVIDER)
   }
 }
 
@@ -45,21 +117,22 @@ export function updateSettingsLabelCache(models?: AvailableModel[], optionGroups
  * registrations into later cases.
  */
 export function clearSettingsLabelCache(): void {
-  modelLabels.clear()
-  effortLabels.clear()
-  optionGroupDisplayLabels.clear()
-  optionGroupLabels.clear()
+  optionGroupCache.clear()
 }
 
-/** Look up a cached display name for a model, effort, or option group ID. */
-export function getCachedSettingsLabel(key: string, id: string): string | undefined {
-  if (key === 'model')
-    return modelLabels.get(id)
-  if (key === 'effort')
-    return effortLabels.get(id)
-  return optionGroupLabels.get(key)?.get(id)
+/**
+ * Look up a cached display name for an option value within a group (by group id), scoped
+ * to the agent's provider. Returns undefined when the provider is unknown (then the caller
+ * falls back to the raw id) so a notification without provider context degrades gracefully.
+ */
+export function getCachedSettingsLabel(provider: AgentProvider | undefined, key: string, id: string): string | undefined {
+  if (provider === undefined)
+    return undefined
+  return optionGroupCache.get(provider)?.get(key)?.options.get(id)
 }
 
-export function getCachedSettingsGroupLabel(key: string): string | undefined {
-  return optionGroupDisplayLabels.get(key)
+export function getCachedSettingsGroupLabel(provider: AgentProvider | undefined, key: string): string | undefined {
+  if (provider === undefined)
+    return undefined
+  return optionGroupCache.get(provider)?.get(key)?.label
 }

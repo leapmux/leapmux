@@ -81,7 +81,7 @@ test.describe('Settings and /clear after Worker restart', () => {
 
       // Step 3: Change permission mode (Default → Plan Mode)
       await openSettingsMenu()
-      await page.locator('[data-testid="permission-mode-plan"]').click()
+      await page.locator('[data-testid="permissionMode-plan"]').click()
 
       await expect(trigger).toContainText('Plan')
       await waitForNotification('Mode (Default \u2192 Plan Mode)')

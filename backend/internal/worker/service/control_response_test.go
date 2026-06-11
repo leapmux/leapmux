@@ -57,7 +57,7 @@ func TestSendControlResponse_PersistsCodexUserInputAnswer(t *testing.T) {
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
-		Model:      "opus",
+		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestSendControlResponse_PersistsCodexFeedbackMessage(t *testing.T) {
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
-		Model:      "opus",
+		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	require.NoError(t, err)
@@ -172,7 +172,7 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
-		Model:      "opus",
+		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 	require.NoError(t, err)
@@ -242,7 +242,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionAnswer(t *testing.T) {
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
-		Model:      "opus",
+		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE))
 	require.NoError(t, err)
@@ -302,7 +302,7 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionLabel(t *testing.
 
 	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
 		AgentID:    "agent-1",
-		Model:      "auto",
+		Options:    map[string]string{agent.OptionIDModel: "auto"},
 		WorkingDir: t.TempDir(),
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT))
 	require.NoError(t, err)

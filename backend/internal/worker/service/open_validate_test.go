@@ -254,6 +254,67 @@ func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 	assert.Zero(t, countAgentRows(t, svc))
 }
 
+// ---------- OpenAgent: launch-option validation [S1] ----------
+
+// An explicitly-requested permission mode the provider doesn't offer must fail the RPC with
+// InvalidArgument BEFORE any DB row is created -- so a CLI typo surfaces as a clear error rather
+// than reaching the provider and dying at startup (an opaque dead agent).
+func TestOpenAgent_Validate_RejectsUnknownPermissionMode(t *testing.T) {
+	repoDir := initRepo(t)
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	defer drainAllInFlight(svc)
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    repoDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Options:       map[string]string{"permissionMode": "bogus-mode"},
+	}, w)
+
+	msg := requireInvalidArgument(t, w)
+	assert.Contains(t, msg, "permission mode")
+	assert.Zero(t, countAgentRows(t, svc), "no DB row on validation failure")
+}
+
+// Model is NOT validated at spawn: every provider discovers its model catalog from the running CLI,
+// seeding only a fallback, so a model absent from the seed (but maybe valid in the live catalog)
+// must NOT be rejected -- the spawn proceeds and the running session validates it.
+func TestOpenAgent_Validate_DoesNotRejectUnknownModel(t *testing.T) {
+	repoDir := initRepo(t)
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	defer drainAllInFlight(svc)
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    repoDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Options:       map[string]string{"model": "a-future-model-not-in-the-seed"},
+	}, w)
+
+	require.Empty(t, w.errors, "an unknown model must not be rejected at spawn (the catalog is dynamic)")
+	require.Len(t, w.responses, 1)
+	assert.Equal(t, 1, countAgentRows(t, svc))
+}
+
+// A VALID explicitly-requested permission mode must NOT be rejected -- the validation must not
+// over-reject and break a normal spawn that pins a legitimate mode.
+func TestOpenAgent_Validate_AcceptsValidPermissionMode(t *testing.T) {
+	repoDir := initRepo(t)
+	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	defer drainAllInFlight(svc)
+
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkspaceId:   "ws-1",
+		WorkingDir:    repoDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Options:       map[string]string{"permissionMode": "plan"},
+	}, w)
+
+	require.Empty(t, w.errors, "a valid permission mode must not be rejected")
+	require.Len(t, w.responses, 1)
+	assert.Equal(t, 1, countAgentRows(t, svc), "the agent row is created for a valid spawn")
+}
+
 // ---------- OpenTerminal mirrors of the git-mode cases ----------
 
 func TestOpenTerminal_Validate_BranchNameSyntax(t *testing.T) {

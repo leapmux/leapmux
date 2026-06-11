@@ -13,7 +13,7 @@ const (
 	NotificationTypeAgentError = "agent_error"
 
 	// NotificationTypeSettingsChanged is emitted when the user updates the
-	// agent's model / effort / permission mode / extra settings. Carries
+	// agent's model / effort / permission mode / options. Carries
 	// a `changes` map of {key: {old, new}} entries.
 	NotificationTypeSettingsChanged = "settings_changed"
 

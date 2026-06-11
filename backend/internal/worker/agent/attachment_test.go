@@ -235,7 +235,7 @@ func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {
 
 	agent, err := mockStart(ctx, Options{
 		AgentID:    "attach-test",
-		Model:      "test",
+		Options:    map[string]string{OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, sink)
 	require.NoError(t, err, "mockStart")

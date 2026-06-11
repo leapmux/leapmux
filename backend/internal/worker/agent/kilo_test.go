@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
 func newKiloAgentForRPC(t *testing.T) (*KiloAgent, func() []recordedRequest) {
@@ -126,20 +127,17 @@ func TestKiloConfigurePrimaryAgentsFallsBackWhenServerReportsNoModes(t *testing.
 	require.Equal(t, KiloPrimaryAgentCode, agent.currentPrimaryAgent)
 	require.Len(t, agent.availablePrimaryAgents, 2)
 	assert.Equal(t, KiloPrimaryAgentCode, agent.availablePrimaryAgents[0].GetId())
-	assert.True(t, agent.availablePrimaryAgents[0].GetIsDefault())
 }
 
 func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	agent, requests := newKiloAgentForRPC(t)
 	agent.availablePrimaryAgents = []*leapmuxv1.AvailableOption{
-		{Id: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode, IsDefault: true},
+		{Id: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
 		{Id: OpenCodePrimaryAgentPlan, Name: OpenCodePrimaryAgentPlan},
 	}
 	agent.currentPrimaryAgent = KiloPrimaryAgentCode
 
-	updated := agent.UpdateSettings(&leapmuxv1.AgentSettings{
-		ExtraSettings: map[string]string{OptionGroupKeyPrimaryAgent: OpenCodePrimaryAgentPlan},
-	})
+	updated := agent.UpdateSettings(map[string]string{OptionIDPrimaryAgent: OpenCodePrimaryAgentPlan})
 	require.True(t, updated)
 	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	recorded := requests()
@@ -148,18 +146,23 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 }
 
 func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
-	agent := &KiloAgent{acpBase: acpBase{modeChannel: modeChannelPrimaryAgent, model: "openai/gpt-5", currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
-	settings := agent.CurrentSettings()
-	require.Equal(t, "openai/gpt-5", settings.GetModel())
-	require.Equal(t, OpenCodePrimaryAgentPlan, settings.GetExtraSettings()[OptionGroupKeyPrimaryAgent])
+	agent := &KiloAgent{acpBase: acpBase{modeChannel: modeChannelPrimaryAgent, model: "openai/gpt-5", availableModels: []*ModelInfo{{Id: "openai/gpt-5", DisplayName: "GPT-5"}}, currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
+	groups := agent.OptionGroups()
+	require.Equal(t, "openai/gpt-5", optionids.CurrentValue(groups, OptionIDModel))
+	require.Equal(t, OpenCodePrimaryAgentPlan, optionids.CurrentValue(groups, OptionIDPrimaryAgent))
 }
 
 func TestKiloAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
-	agent := &KiloAgent{}
-	groups := agent.AvailableOptionGroups()
+	// configure sets both the channel and the static fallback list; OptionGroups serves
+	// that fallback before the session reports a primary-agent catalog.
+	agent := &KiloAgent{acpBase: acpBase{
+		modeChannel:       modeChannelPrimaryAgent,
+		secondaryFallback: fallbackKiloPrimaryAgents(),
+	}}
+	groups := agent.OptionGroups()
 	require.Len(t, groups, 1)
-	require.Equal(t, OptionGroupKeyPrimaryAgent, groups[0].Key)
+	require.Equal(t, OptionIDPrimaryAgent, groups[0].GetId())
 	require.Len(t, groups[0].Options, 2)
 	require.Equal(t, KiloPrimaryAgentCode, groups[0].Options[0].Id)
-	require.True(t, groups[0].Options[0].IsDefault)
+	require.Equal(t, KiloPrimaryAgentCode, groups[0].GetDefaultValue())
 }

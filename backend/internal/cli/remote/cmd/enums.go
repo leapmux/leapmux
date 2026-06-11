@@ -3,6 +3,7 @@ package cmd
 import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
 // Enums emitted by protobuf default to integer ordinals through
@@ -131,33 +132,74 @@ func workspaceTabsToList(tabs []*leapmuxv1.WorkspaceTab) []map[string]any {
 }
 
 // agentInfoToMap projects an AgentInfo into a JSON-friendly map with
-// status / agent_provider rendered as strings. The proto carries a
-// number of provider-specific nested messages (AvailableModel,
-// AvailableOptionGroup, AgentGitStatus); those still go through the
-// default encoding/json path because their fields are strings/bools
-// already -- only the top-level enum fields need projection.
+// status / agent_provider rendered as strings and the option-group catalog
+// hand-projected into snake_case (optionGroupsToList) -- letting encoding/json
+// reflect the proto structs directly would leak PascalCase Go field names and
+// is no longer a flat string/bool shape now that AvailableOption carries an
+// int64 context_window and recursive sub_groups.
 func agentInfoToMap(a *leapmuxv1.AgentInfo) map[string]any {
+	groups := a.GetOptionGroups()
 	return map[string]any{
-		"id":                      a.GetId(),
-		"workspace_id":            a.GetWorkspaceId(),
-		"title":                   a.GetTitle(),
-		"model":                   a.GetModel(),
-		"status":                  agentStatusName(a.GetStatus()),
-		"agent_provider":          agentProviderName(a.GetAgentProvider()),
-		"created_at":              a.GetCreatedAt(),
-		"closed_at":               a.GetClosedAt(),
-		"agent_session_id":        a.GetAgentSessionId(),
-		"permission_mode":         a.GetPermissionMode(),
-		"effort":                  a.GetEffort(),
-		"worker_id":               a.GetWorkerId(),
-		"worker_name":             a.GetWorkerName(),
-		"working_dir":             a.GetWorkingDir(),
-		"git_status":              a.GetGitStatus(),
-		"home_dir":                a.GetHomeDir(),
-		"available_models":        a.GetAvailableModels(),
-		"available_option_groups": a.GetAvailableOptionGroups(),
-		"extra_settings":          a.GetExtraSettings(),
-		"startup_error":           a.GetStartupError(),
-		"startup_message":         a.GetStartupMessage(),
+		"id":               a.GetId(),
+		"workspace_id":     a.GetWorkspaceId(),
+		"title":            a.GetTitle(),
+		"model":            optionids.CurrentValue(groups, optionids.Model),
+		"status":           agentStatusName(a.GetStatus()),
+		"agent_provider":   agentProviderName(a.GetAgentProvider()),
+		"created_at":       a.GetCreatedAt(),
+		"closed_at":        a.GetClosedAt(),
+		"agent_session_id": a.GetAgentSessionId(),
+		"permission_mode":  optionids.CurrentValue(groups, optionids.PermissionMode),
+		"effort":           optionids.CurrentValue(groups, optionids.Effort),
+		"worker_id":        a.GetWorkerId(),
+		"worker_name":      a.GetWorkerName(),
+		"working_dir":      a.GetWorkingDir(),
+		"git_status":       a.GetGitStatus(),
+		"home_dir":         a.GetHomeDir(),
+		"option_groups":    optionGroupsToList(groups),
+		"startup_error":    a.GetStartupError(),
+		"startup_message":  a.GetStartupMessage(),
 	}
+}
+
+// optionGroupToMap projects an AvailableOptionGroup into a JSON-friendly, snake_case map
+// (matching the rest of the CLI envelope), recursively projecting each option's
+// model-dependent sub_groups. The explicit projection keeps the keys snake_case and the
+// int64 context_window a plain number, rather than letting encoding/json reflect the proto
+// struct's PascalCase Go field names.
+func optionGroupToMap(g *leapmuxv1.AvailableOptionGroup) map[string]any {
+	options := make([]map[string]any, 0, len(g.GetOptions()))
+	for _, o := range g.GetOptions() {
+		opt := map[string]any{
+			"id":          o.GetId(),
+			"name":        o.GetName(),
+			"description": o.GetDescription(),
+		}
+		if cw := o.GetContextWindow(); cw != 0 {
+			opt["context_window"] = cw
+		}
+		if subs := o.GetSubGroups(); len(subs) > 0 {
+			opt["sub_groups"] = optionGroupsToList(subs)
+		}
+		options = append(options, opt)
+	}
+	return map[string]any{
+		"id":            g.GetId(),
+		"label":         g.GetLabel(),
+		"options":       options,
+		"current_value": g.GetCurrentValue(),
+		"default_value": g.GetDefaultValue(),
+		"mutable":       g.GetMutable(),
+		"order":         g.GetOrder(),
+	}
+}
+
+// optionGroupsToList projects a slice of option groups (optionGroupToMap each). Returns a
+// non-nil zero-length slice so the JSON envelope renders `[]` rather than `null`.
+func optionGroupsToList(groups []*leapmuxv1.AvailableOptionGroup) []map[string]any {
+	out := make([]map[string]any, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, optionGroupToMap(g))
+	}
+	return out
 }

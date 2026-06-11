@@ -20,6 +20,7 @@ import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
+import { optionValuesFromGroups } from '~/stores/tab.helpers'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AttachmentStrip } from './AttachmentStrip'
@@ -29,6 +30,11 @@ import { useControlResponseHandling } from './controlResponseHandling'
 import { EditorSettingsDropdown } from './markdownEditor/EditorSettingsDropdown'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
 import { providerFor } from './providers/registry'
+import {
+  OPTION_ID_MODEL,
+  optionGroup,
+  selectedModelContextWindow,
+} from './settingsGroups'
 import { useChatAttachments } from './useChatAttachments'
 import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
@@ -149,8 +155,33 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     tryRegisterEditorRef(agentId)
   }))
 
+  // Current (optimistically-updated) selections, derived from the option-group
+  // catalog the agent reports: each well-known axis's `currentValue`. The proto
+  // AgentInfo no longer carries scalar model/effort/permissionMode fields, so the
+  // settings dropdown and plan-mode toggle read them from here.
+  const currentModel = () => optionGroup(props.agent?.optionGroups, OPTION_ID_MODEL)?.currentValue || ''
+  // Every axis's confirmed value as one generic map keyed by group id, derived from
+  // the catalog (the proto AgentInfo carries no scalar model/effort/permission fields).
+  const currentOptionValues = () => optionValuesFromGroups(props.agent?.optionGroups)
+
+  // The plan-mode toggle reads the current option values from its `agent` view,
+  // derived here from the option groups.
   const ctrl = useControlResponseHandling(
-    props,
+    {
+      get agentId() { return props.agentId },
+      get agent() {
+        return {
+          optionValues: currentOptionValues(),
+          agentProvider: props.agent?.agentProvider,
+        }
+      },
+      get controlRequests() { return props.controlRequests },
+      get onControlResponse() { return props.onControlResponse },
+      get onSettingChange() { return props.onSettingChange },
+      get onSendMessage() { return props.onSendMessage },
+      get settingsLoading() { return props.settingsLoading },
+      get agentWorking() { return props.agentWorking },
+    },
     askState,
     () => editorContentRef,
     editorHeight.resetEditorHeight,
@@ -188,7 +219,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   const info = useAgentInfoCard(props)
   const modelContextWindow = createMemo(() =>
-    Number(props.agent?.availableModels?.find(m => m.id === props.agent?.model)?.contextWindow) || undefined,
+    selectedModelContextWindow(props.agent?.optionGroups, currentModel()) || undefined,
   )
   const activeDraftKey = createMemo(() => {
     if (!props.agentId)
@@ -201,6 +232,46 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   })
 
   let triggerSend: (() => void) | undefined
+
+  // The context-usage / rate-limit info dropdown is rendered identically in both footer
+  // layouts (the control-request footer and the normal footer bar), differing only in how
+  // each gates it (a prop value vs JSX children). Extracted so the two call sites can't drift
+  // on the trigger button, the rate-limit countdown, or the hover-card body. Closes over
+  // `info`/`props`/`modelContextWindow`, so it needs no props of its own.
+  const AgentInfoTrigger: Component = () => (
+    <DropdownMenu
+      as="div"
+      trigger={triggerProps => (
+        <button
+          class={styles.infoTrigger}
+          data-testid="agent-info-trigger"
+          {...triggerProps}
+        >
+          <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} agentProvider={props.agent?.agentProvider} size={iconSize.xs} />
+          <Show when={info.urgentRateLimit()}>
+            {rl => (
+              <Tooltip
+                text={(() => {
+                  const resetsAt = getResetsAt(rl().info)
+                  return resetsAt ? formatResetTimestamp(resetsAt) : undefined
+                })()}
+              >
+                <span class={styles.rateLimitCountdown}>
+                  {rl().countdown}
+                </span>
+              </Tooltip>
+            )}
+          </Show>
+        </button>
+      )}
+      class="card"
+      data-testid="agent-info-popover"
+    >
+      <div class={styles.infoRows}>
+        {info.infoHoverCardContent()}
+      </div>
+    </DropdownMenu>
+  )
 
   return (
     <div
@@ -321,40 +392,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     modelContextWindow={modelContextWindow()}
                     infoTrigger={
                       info.showInfoTrigger()
-                        ? (
-                            <DropdownMenu
-                              as="div"
-                              trigger={triggerProps => (
-                                <button
-                                  class={styles.infoTrigger}
-                                  data-testid="agent-info-trigger"
-                                  {...triggerProps}
-                                >
-                                  <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} agentProvider={props.agent?.agentProvider} size={iconSize.xs} />
-                                  <Show when={info.urgentRateLimit()}>
-                                    {rl => (
-                                      <Tooltip
-                                        text={(() => {
-                                          const resetsAt = getResetsAt(rl().info)
-                                          return resetsAt ? formatResetTimestamp(resetsAt) : undefined
-                                        })()}
-                                      >
-                                        <span class={styles.rateLimitCountdown}>
-                                          {rl().countdown}
-                                        </span>
-                                      </Tooltip>
-                                    )}
-                                  </Show>
-                                </button>
-                              )}
-                              class="card"
-                              data-testid="agent-info-popover"
-                            >
-                              <div class={styles.infoRows}>
-                                {info.infoHoverCardContent()}
-                              </div>
-                            </DropdownMenu>
-                          )
+                        ? <AgentInfoTrigger />
                         : undefined
                     }
                   />
@@ -365,48 +403,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       <EditorSettingsDropdown
                         disabled={props.disabled}
                         settingsLoading={props.settingsLoading}
-                        model={props.agent?.model}
-                        effort={props.agent?.effort}
-                        permissionMode={props.agent?.permissionMode}
-                        extraSettings={props.agent?.extraSettings}
-                        availableModels={props.agent?.availableModels}
-                        availableOptionGroups={props.agent?.availableOptionGroups}
+                        optionValues={currentOptionValues()}
+                        optionGroups={props.agent?.optionGroups}
                         agentProvider={props.agent?.agentProvider}
                         onChange={props.onSettingChange}
                       />
                       <Show when={info.showInfoTrigger()}>
-                        <DropdownMenu
-                          as="div"
-                          trigger={triggerProps => (
-                            <button
-                              class={styles.infoTrigger}
-                              data-testid="agent-info-trigger"
-                              {...triggerProps}
-                            >
-                              <ContextUsageGrid contextUsage={props.agentSessionInfo?.contextUsage} modelContextWindow={modelContextWindow()} agentProvider={props.agent?.agentProvider} size={iconSize.xs} />
-                              <Show when={info.urgentRateLimit()}>
-                                {rl => (
-                                  <Tooltip
-                                    text={(() => {
-                                      const resetsAt = getResetsAt(rl().info)
-                                      return resetsAt ? formatResetTimestamp(resetsAt) : undefined
-                                    })()}
-                                  >
-                                    <span class={styles.rateLimitCountdown}>
-                                      {rl().countdown}
-                                    </span>
-                                  </Tooltip>
-                                )}
-                              </Show>
-                            </button>
-                          )}
-                          class="card"
-                          data-testid="agent-info-popover"
-                        >
-                          <div class={styles.infoRows}>
-                            {info.infoHoverCardContent()}
-                          </div>
-                        </DropdownMenu>
+                        <AgentInfoTrigger />
                       </Show>
                     </div>
                     <div class={styles.footerBarRight}>

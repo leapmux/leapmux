@@ -350,8 +350,8 @@ describe('renderNotificationThread: message ordering', () => {
   })
 
   it('uses Workflow label for Codex collaboration mode changes', () => {
-    updateSettingsLabelCache([], [{
-      key: 'collaboration_mode',
+    updateSettingsLabelCache(AgentProvider.CODEX, [{
+      id: 'collaboration_mode',
       label: 'Workflow',
       options: [
         { id: 'default', name: 'Default' },
@@ -361,13 +361,14 @@ describe('renderNotificationThread: message ordering', () => {
     const messages = [
       { type: 'settings_changed', changes: { collaboration_mode: { old: 'default', new: 'plan' } } },
     ]
-    const text = renderText(messages)
+    // The notification renders under the same provider the cache was primed for.
+    const text = renderThreadText(messages, AgentProvider.CODEX)
     expect(text).toContain('Workflow')
   })
 
   it('uses cached option-group labels for arbitrary provider settings', () => {
-    updateSettingsLabelCache([], [{
-      key: 'opencode_mode',
+    updateSettingsLabelCache(AgentProvider.OPENCODE, [{
+      id: 'opencode_mode',
       label: 'Execution Mode',
       options: [
         { id: 'safe', name: 'Safe' },
@@ -377,10 +378,41 @@ describe('renderNotificationThread: message ordering', () => {
     const messages = [
       { type: 'settings_changed', changes: { opencode_mode: { old: 'safe', new: 'fast' } } },
     ]
-    const text = renderText(messages)
+    const text = renderThreadText(messages, AgentProvider.OPENCODE)
     expect(text).toContain('Execution Mode')
     expect(text).toContain('Safe')
     expect(text).toContain('Fast')
+  })
+
+  it('prefers a provider\'s cached label for a well-known axis over the canonical name', () => {
+    // A provider can relabel a well-known axis -- Pi labels "effort" as "Thinking Level".
+    // displayLabel must consult the per-provider cache for well-known ids too, so a
+    // settings_changed without an inline label renders the provider's name rather than
+    // the hardcoded canonical "Effort".
+    updateSettingsLabelCache(AgentProvider.PI, [{
+      id: 'effort',
+      label: 'Thinking Level',
+      options: [
+        { id: 'low', name: 'Low' },
+        { id: 'high', name: 'High' },
+      ],
+    }] as any)
+    const messages = [
+      { type: 'settings_changed', changes: { effort: { old: 'low', new: 'high' } } },
+    ]
+    const text = renderThreadText(messages, AgentProvider.PI)
+    expect(text).toContain('Thinking Level')
+    expect(text).not.toContain('Effort')
+  })
+
+  it('falls back to the canonical well-known axis name when the cache is unprimed', () => {
+    // With no cache entry for the provider, a well-known axis still renders its canonical
+    // English name (the fallback that keeps historical notifications readable).
+    const messages = [
+      { type: 'settings_changed', changes: { effort: { old: 'low', new: 'high' } } },
+    ]
+    const text = renderThreadText(messages, AgentProvider.CLAUDE_CODE)
+    expect(text).toContain('Effort')
   })
 
   it('interrupted appears in order among other messages', () => {

@@ -15,20 +15,18 @@ function makeAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
     id: 'agent-1',
     workspaceId: 'ws-1',
     title: 'Agent Olivia',
-    model: '',
     status: AgentStatus.ACTIVE,
     workingDir: '/tmp',
-    permissionMode: '',
-    effort: '',
     agentSessionId: '',
     homeDir: '/tmp',
     workerId: 'worker-1',
     createdAt: '2025-01-15T10:00:00.000Z',
     gitStatus: undefined,
     agentProvider: AgentProvider.CLAUDE_CODE,
-    availableModels: [],
-    availableOptionGroups: [],
-    extraSettings: {},
+    // Model/effort/permission mode and every provider-specific axis now live as
+    // option groups; the heuristics under test read none of them, so an empty
+    // catalog suffices.
+    optionGroups: [],
     ...overrides,
   } as AgentInfo
 }

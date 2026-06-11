@@ -78,8 +78,10 @@ func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturin
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
-		Model:         "gpt-5",
-		Effort:        "high",
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDModel:  "gpt-5",
+			agent.OptionIDEffort: "high",
+		}),
 	}))
 
 	mock := &sessionInfoCapturingWriter{channelID: "ch-1"}

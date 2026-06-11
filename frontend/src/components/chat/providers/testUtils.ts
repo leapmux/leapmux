@@ -3,7 +3,6 @@ import type { AvailableOption } from '~/generated/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import {
   AgentProvider,
-  AvailableModelSchema,
   AvailableOptionGroupSchema,
   AvailableOptionSchema,
 } from '~/generated/leapmux/v1/agent_pb'
@@ -30,19 +29,21 @@ export function input(
 }
 
 interface ModelOpts {
-  isDefault?: boolean
   description?: string
   contextWindow?: bigint
-  supportedEfforts?: { id: string, name: string, description?: string }[]
 }
 
-/** Build an AvailableModel for provider-settings tests. */
+/**
+ * Build a model option for provider-settings tests. Models are now ordinary
+ * options inside the "model" option group (the standalone AvailableModel message
+ * was removed), so this constructs an AvailableOption with `name` set from the
+ * display name.
+ */
 export function model(id: string, displayName: string, opts: ModelOpts = {}) {
-  return create(AvailableModelSchema, { id, displayName, ...opts })
+  return create(AvailableOptionSchema, { id, name: displayName, ...opts })
 }
 
 interface OptionOpts {
-  isDefault?: boolean
   description?: string
 }
 
@@ -52,6 +53,6 @@ export function option(id: string, name: string, opts: OptionOpts = {}) {
 }
 
 /** Build an AvailableOptionGroup for provider-settings tests. */
-export function optionGroup(key: string, label: string, options: AvailableOption[]) {
-  return create(AvailableOptionGroupSchema, { key, label, options })
+export function optionGroup(id: string, label: string, options: AvailableOption[]) {
+  return create(AvailableOptionGroupSchema, { id, label, options })
 }
