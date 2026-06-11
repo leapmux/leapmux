@@ -85,7 +85,9 @@ func TestStartReasonix_NewSessionHandshakePassesModelFlag(t *testing.T) {
 	assert.Contains(t, string(recorded), "acp --model deepseek-flash")
 }
 
-func TestStartReasonix_OmitsModelFlagWhenUnset(t *testing.T) {
+func TestStartReasonix_DefaultsModelFlagWhenUnset(t *testing.T) {
+	// Clear the env override so the catalog default (deepseek-flash) applies.
+	t.Setenv("LEAPMUX_REASONIX_DEFAULT_MODEL", "")
 	argsFile := filepath.Join(t.TempDir(), "args.txt")
 	installFakeReasonixCLI(t, argsFile)
 
@@ -104,11 +106,13 @@ func TestStartReasonix_OmitsModelFlagWhenUnset(t *testing.T) {
 		_ = agent.Wait()
 	})
 
-	// No --model: Reasonix falls back to its config default_model.
+	// An unset model is pinned to the provider default and always passed as
+	// --model, so LeapMux controls the model rather than reasonix.toml's
+	// default_model, and the stored model is never empty.
+	assert.Equal(t, "deepseek-flash", agent.model)
 	recorded, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
-	assert.NotContains(t, string(recorded), "--model")
-	assert.Equal(t, "acp", strings.TrimSpace(string(recorded)))
+	assert.Equal(t, "acp --model deepseek-flash", strings.TrimSpace(string(recorded)))
 }
 
 func TestStartReasonix_LoadSessionUsesResumeID(t *testing.T) {

@@ -24,26 +24,36 @@ type ReasonixAgent struct {
 // Unlike the other ACP providers, Reasonix has no afterHandshake apply step:
 // session/new returns only a sessionId (no models/modes to apply), so the
 // handshake itself activates the session and the manager serves the static
-// model catalog. The model is selected at startup via `reasonix acp --model
-// <name>` (an empty model lets Reasonix use its config default_model); there is
-// no runtime model RPC. It inherits the default prompt sender and the default
-// nil-group AvailableOptionGroups from acpBase.
+// model catalog.
+//
+// Reasonix selects its model only at launch via `reasonix acp --model <name>`
+// and reports it nowhere over ACP, so LeapMux always pins it: the model is
+// resolved to the provider default (the IsDefault catalog entry, or the
+// LEAPMUX_REASONIX_DEFAULT_MODEL override) when the caller leaves it unset, and
+// the flag is always passed. This keeps the stored model in sync with the
+// running process (it can never be empty/unknown) and gives LeapMux full
+// control over the model rather than deferring to reasonix.toml's default_model
+// -- matching the service, which already resolves the model before launch.
+// It inherits the default prompt sender and the default nil-group
+// AvailableOptionGroups from acpBase.
 func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	baseArgs := []string{"acp"}
-	if opts.Model != "" {
-		baseArgs = append(baseArgs, "--model", opts.Model)
+	model := opts.Model
+	if model == "" {
+		model = DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX)
 	}
 	return acpStart(ctx, opts, sink, acpStartSpec[ReasonixAgent]{
 		providerName: "reasonix",
 		binaryName:   "reasonix",
-		baseArgs:     baseArgs,
+		baseArgs:     []string{"acp", "--model", model},
 		newAgent:     func() *ReasonixAgent { return &ReasonixAgent{} },
 		base:         func(a *ReasonixAgent) *acpBase { return &a.acpBase },
 		configure: func(a *ReasonixAgent) {
-			// modeChannel stays unmapped and reapply/refresh stay nil: Reasonix
-			// exposes no modes/configOptions channel. modelFixedAtLaunch makes a
-			// stray config_option_update model select a no-op so the stored model
-			// can't drift from the --model launch value.
+			// Pin the stored model to the launched one (acpStart set it from the
+			// possibly-empty opts.Model). modeChannel stays unmapped and
+			// reapply/refresh stay nil: Reasonix exposes no modes/configOptions
+			// channel. modelFixedAtLaunch makes a stray config_option_update model
+			// select a no-op so the stored model can't drift from the launch value.
+			a.model = model
 			a.modelFixedAtLaunch = true
 		},
 	})
