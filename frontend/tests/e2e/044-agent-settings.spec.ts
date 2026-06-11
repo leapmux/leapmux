@@ -358,12 +358,12 @@ test.describe('Agent Settings', () => {
 
     // Send a message to establish a session ID.
     await editor.click()
-    await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
     // Wait for a response (ensures init message and session ID are stored)
     const lastAssistant1 = lastAssistantBubble(page)
-    await expect(lastAssistant1).toContainText('2', { timeout: 30000 })
+    await expect(lastAssistant1).toContainText(/3,?333/, { timeout: 30000 })
 
     // Switch to Plan Mode (dropdown auto-closes on select)
     await openSettingsMenu(page)
@@ -391,10 +391,10 @@ test.describe('Agent Settings', () => {
     await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
 
-    // Wait for a NEW assistant bubble to appear (not the old "2" response).
+    // Wait for a NEW assistant bubble to appear (not the prior warmup response).
     await expect(page.locator(ASSISTANT_BUBBLE_SELECTOR)).toHaveCount(assistantBubblesBefore + 1, { timeout: 30000 })
 
-    // The new bubble (last one) should contain "4".
+    // The new bubble (last one) should contain "6912".
     const lastAssistant2 = lastAssistantBubble(page)
     await expect(lastAssistant2).toContainText(/6,?912/, { timeout: 30000 })
 
@@ -408,10 +408,10 @@ test.describe('Agent Settings', () => {
 
     // Send a quick message to ensure the agent is fully started
     await editor.click()
-    await page.keyboard.type('What is 1+1? Reply with just the number, nothing else.')
+    await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
     await page.keyboard.press('Meta+Enter')
     const lastAssistant1 = lastAssistantBubble(page)
-    await expect(lastAssistant1).toContainText('2', { timeout: 30000 })
+    await expect(lastAssistant1).toContainText(/3,?333/, { timeout: 30000 })
 
     // Verify the agent is still responsive after interrupt by sending another message
     await editor.click()

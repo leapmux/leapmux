@@ -1,16 +1,13 @@
-import { lastAssistantBubble, sendMessage, waitForAgentIdle } from './helpers/ui'
-import { expect, KILO_E2E_SKIP_REASON, kiloTest } from './kilo-fixtures'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { KILO_E2E_SKIP_REASON, kiloTest } from './kilo-fixtures'
 
 kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
 
 kiloTest.describe('Kilo Basic Chat', () => {
   kiloTest('send message and receive response', async ({ authenticatedKiloWorkspace, page }) => {
     void authenticatedKiloWorkspace
-    await sendMessage(page, 'What is 1234 + 5678? Reply with just the number.')
+    await sendMessage(page, ARITHMETIC_PROMPT)
     await waitForAgentIdle(page, 120_000)
-
-    const bubble = await lastAssistantBubble(page)
-    const text = await bubble.textContent()
-    expect(text).toMatch(/6,?912/)
+    await expectAssistantAnswer(page)
   })
 })

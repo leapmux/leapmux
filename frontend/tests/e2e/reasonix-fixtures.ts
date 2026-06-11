@@ -8,7 +8,7 @@ import { test as base, expect } from './fixtures'
 const reasonixConfig: ACPFixtureConfig = {
   agentProvider: AgentProvider.REASONIX,
   cliBinary: 'reasonix',
-  skipMessage: 'Reasonix E2E requires a reasonix CLI on PATH (and DEEPSEEK_API_KEY)',
+  skipMessage: 'Reasonix E2E requires a reasonix CLI on PATH',
   workspacePrefix: 'reasonix-e2e',
 }
 

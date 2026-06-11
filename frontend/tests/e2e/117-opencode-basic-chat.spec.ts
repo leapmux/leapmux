@@ -1,4 +1,4 @@
-import { lastAssistantBubble, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer, lastAssistantBubble, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, OPENCODE_E2E_SKIP_REASON, opencodeTest } from './opencode-fixtures'
 
 opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
@@ -6,12 +6,9 @@ opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
 opencodeTest.describe('OpenCode Basic Chat', () => {
   opencodeTest('send message and receive response', async ({ authenticatedOpencodeWorkspace, page }) => {
     void authenticatedOpencodeWorkspace // fixture trigger
-    await sendMessage(page, 'What is 1234 + 5678? Reply with just the number.')
+    await sendMessage(page, ARITHMETIC_PROMPT)
     await waitForAgentIdle(page, 120_000)
-
-    const bubble = await lastAssistantBubble(page)
-    const text = await bubble.textContent()
-    expect(text).toMatch(/6,?912/)
+    await expectAssistantAnswer(page)
   })
 
   opencodeTest('assistant response appears in chat bubble', async ({ authenticatedOpencodeWorkspace, page }) => {

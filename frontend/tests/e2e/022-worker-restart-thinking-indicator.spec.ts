@@ -105,16 +105,18 @@ test.describe('Worker Restart Thinking Indicator', () => {
         }
       })
 
-      // Send a new message — agent should restart and respond
+      // Send a new message — agent should restart and respond. The answer
+      // ("3333") must not be a substring of the first answer ("6912"), which is
+      // still on screen, or this wait would match the stale bubble.
       await editor.click()
-      await page.keyboard.type('What is 3+3? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
 
-      // Wait for the assistant's response containing "6"
+      // Wait for the assistant's response containing "3333"
       await page.waitForFunction((sel: string) => {
         const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {
-          if (b.textContent?.includes('6'))
+          if (/3,?333/.test(b.textContent ?? ''))
             return true
         }
         return false

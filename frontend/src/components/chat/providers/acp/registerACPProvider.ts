@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
-import type { Provider } from '../registry'
+import type { AttachmentCapabilities, Provider } from '../registry'
 import type { ACPSettingsPanelConfig } from './settings'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -55,7 +55,7 @@ export interface ACPProviderOptions {
    * Attachment capabilities. Defaults to full support; pass a restricted set for
    * providers that can't take every attachment kind (e.g. Reasonix is text-only).
    */
-  attachments?: { text: boolean, image: boolean, pdf: boolean, binary: boolean }
+  attachments?: AttachmentCapabilities
 }
 
 /** Synthesize the default plan-mode read/write halves from a settingsConfig + planValue. */

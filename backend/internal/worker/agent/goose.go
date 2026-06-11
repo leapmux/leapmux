@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -21,53 +20,21 @@ type GooseCLIAgent struct {
 
 // StartGooseCLI starts a Goose CLI ACP agent process and performs the handshake.
 func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
-		Shell:      opts.Shell,
-		LoginShell: opts.LoginShell,
-		BinaryName: "goose",
-		BaseArgs:   []string{"acp"},
-		WorkingDir: opts.WorkingDir,
-	})
-
-	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
-
-	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
-	if err != nil {
-		return nil, err
-	}
-
-	a := &GooseCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "goose", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
-			sink:        sink,
-			model:       opts.Model,
+	return acpStart(ctx, opts, sink, acpStartSpec[GooseCLIAgent]{
+		providerName: "goose",
+		binaryName:   "goose",
+		baseArgs:     []string{"acp"},
+		newAgent:     func() *GooseCLIAgent { return &GooseCLIAgent{} },
+		base:         func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
+		configure: func(a *GooseCLIAgent) {
+			a.modeChannel = modeChannelPermissionMode
+			a.reapplySettings = a.reapplyModelAndPermissionMode
+			a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
 		},
-	}
-	a.modeChannel = modeChannelPermissionMode
-	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = a.reapplyModelAndPermissionMode
-	a.refreshFromSession = a.refreshModelAndPermissionModeFromSession
-
-	if err := a.startCmd(cmd, cancel); err != nil {
-		return nil, err
-	}
-
-	initParams, err := acpStandardInitParams()
-	if err != nil {
-		return nil, err
-	}
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := a.applyPermissionModeStartup(handshake, opts, GooseCLIModeAuto, opts.Model, a.setModel); err != nil {
-		return nil, err
-	}
-
-	return a, nil
+		afterHandshake: func(a *GooseCLIAgent, handshake *acpSessionResult, opts Options) error {
+			return a.applyPermissionModeStartup(handshake, opts, GooseCLIModeAuto, opts.Model, a.setModel)
+		},
+	})
 }
 
 func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
@@ -77,12 +44,6 @@ func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
 		{Id: GooseCLIModeSmartApprove, Name: "Smart Approve"},
 		{Id: GooseCLIModeChat, Name: "Chat"},
 	}
-}
-
-func (a *GooseCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
-		a.handleACPPromptResponse(resp, nil)
-	})
 }
 
 func (a *GooseCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {

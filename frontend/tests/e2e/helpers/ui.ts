@@ -59,6 +59,29 @@ export function lastAssistantBubble(page: Page) {
   return page.locator(ASSISTANT_BUBBLE_SELECTOR).last()
 }
 
+/**
+ * Standard arithmetic chat probe shared across the agent e2e specs. The answer
+ * (6912) is a distinctive 4-digit number that won't match incidental UI text
+ * (model names like gpt-5.4, durations, token counts, dates) the way a single
+ * digit would.
+ */
+export const ARITHMETIC_PROMPT = 'What is 1234 + 5678? Reply with just the number.'
+
+/** Matches the {@link ARITHMETIC_PROMPT} answer, tolerating a thousands comma. */
+export const ARITHMETIC_ANSWER = /6,?912/
+
+/**
+ * Assert the agent answered {@link ARITHMETIC_PROMPT}: the answer appears in
+ * SOME assistant bubble. Scanning every bubble (rather than only the last one)
+ * is robust to a trailing "Turn ended" result divider, which is itself an
+ * agent-role bubble and would otherwise be picked up by lastAssistantBubble().
+ */
+export async function expectAssistantAnswer(page: Page, opts?: { answer?: RegExp, timeout?: number }) {
+  const answer = opts?.answer ?? ARITHMETIC_ANSWER
+  const matches = assistantBubbles(page).filter({ hasText: answer })
+  await expect(matches).not.toHaveCount(0, opts?.timeout != null ? { timeout: opts.timeout } : undefined)
+}
+
 /** Wait for the agent to finish its current turn (thinking indicator gone). */
 export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
   // Brief delay so the thinking indicator has time to appear before we

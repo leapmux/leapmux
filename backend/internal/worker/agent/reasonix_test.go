@@ -197,6 +197,25 @@ func TestReasonixAvailableOptionGroupsIsNil(t *testing.T) {
 	assert.Nil(t, agent.AvailableOptionGroups())
 }
 
+// TestReasonixIgnoresConfigOptionModelUpdate pins the modelFixedAtLaunch guard:
+// Reasonix's model is set once via the --model launch flag and cannot change
+// over ACP, so a server config_option_update advertising a different model must
+// not overwrite the stored model (which would desync it from the running
+// process).
+func TestReasonixIgnoresConfigOptionModelUpdate(t *testing.T) {
+	agent, _ := newReasonixAgentForRPC(t)
+	agent.sink = &testSink{}
+	agent.modelFixedAtLaunch = true
+	agent.model = "deepseek-flash"
+
+	agent.handleACPConfigOptionUpdate(json.RawMessage(
+		`{"configOptions":[{"id":"model","currentValue":"deepseek-pro","options":[{"value":"deepseek-flash"},{"value":"deepseek-pro"}]}]}`,
+	))
+
+	assert.Equal(t, "deepseek-flash", agent.model,
+		"a launch-fixed model must not be overwritten by a config_option_update")
+}
+
 func TestReasonixModelCatalog(t *testing.T) {
 	// The static catalog mirrors Reasonix's built-in provider entries; the id is
 	// the bare provider-entry name its `--model` flag accepts.

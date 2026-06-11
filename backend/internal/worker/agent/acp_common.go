@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -108,6 +110,11 @@ type acpBase struct {
 	// the old syncsPermissionMode/syncsPrimaryAgent bool pair so the illegal "both set"
 	// state is unrepresentable and every family-conditional site reads one field.
 	modeChannel acpModeChannel
+	// modelFixedAtLaunch marks a provider whose model is selected once at process
+	// launch (e.g. Reasonix's `--model` flag) and cannot change over ACP. For such
+	// providers a server config_option_update must not overwrite the model, or the
+	// stored/broadcast model would drift from what the process is actually running.
+	modelFixedAtLaunch bool
 	// primaryAgentHiddenFilter, when set, marks primary-agent ids the provider treats
 	// as internal pseudo-agents to hide from the picker (OpenCode's
 	// compaction/title/summary). Applied wherever the primary-agent list is built.
@@ -1605,6 +1612,118 @@ func (b *acpBase) startACPHandshake(
 	return session, nil
 }
 
+// acpStartSpec configures acpStart for one ACP provider. acpStart runs the
+// fixed launch + handshake pipeline shared by every ACP agent; the spec
+// supplies only what differs between providers.
+type acpStartSpec[T any] struct {
+	providerName   string                                     // process/log name, e.g. "cursor"
+	binaryName     string                                     // CLI binary to launch
+	baseArgs       []string                                   // args after the binary, e.g. {"acp"}
+	rcMarkerEnvKey string                                     // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
+	sessionConfig  acpSessionConfig                           // zero value -> acpDefaultSessionConfig
+	newAgent       func() *T                                  // construct a zero-value concrete agent
+	base           func(*T) *acpBase                          // accessor for the agent's embedded acpBase
+	configure      func(*T)                                   // set provider-specific hooks before the process starts
+	afterHandshake func(*T, *acpSessionResult, Options) error // post-handshake apply step; nil for none
+}
+
+// acpStart launches an ACP agent subprocess and performs the initialize +
+// session handshake, centralizing the boilerplate shared by every ACP provider
+// (Cursor, Copilot, Goose, Kilo, OpenCode, Reasonix). Providers differ only in
+// the acpStartSpec fields: the binary/args, an optional rc marker, the session
+// config, the hooks set in configure, and the post-handshake apply step.
+func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec acpStartSpec[T]) (Agent, error) {
+	ctx, cancel := context.WithCancel(ctx)
+
+	wrap := shellWrapSpec{
+		Shell:      opts.Shell,
+		LoginShell: opts.LoginShell,
+		BinaryName: spec.binaryName,
+		BaseArgs:   spec.baseArgs,
+		WorkingDir: opts.WorkingDir,
+	}
+	if spec.rcMarkerEnvKey != "" {
+		wrap.StripEnvKeys = []string{spec.rcMarkerEnvKey}
+	}
+	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, wrap)
+
+	// A provider rc marker is stripped from the inherited env and re-added only for
+	// a login shell, so the child detects "launched by leapmux" without inheriting a
+	// stale parent value.
+	if spec.rcMarkerEnvKey != "" {
+		cmd.Env = envutil.FilterEnv(cmd.Environ(), spec.rcMarkerEnvKey)
+		if opts.LoginShell {
+			cmd.Env = append(cmd.Env, spec.rcMarkerEnvKey+"=1")
+		}
+		cmd.Env = FinalizeAgentEnv(cmd.Env, opts)
+	} else {
+		cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
+	}
+
+	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
+	if err != nil {
+		return nil, err
+	}
+
+	a := spec.newAgent()
+	b := spec.base(a)
+	// newProcessBase returns a fresh value (copylocks-exempt: the RHS is a call),
+	// so assigning it to the embedded processBase doesn't copy a held lock.
+	b.processBase = newProcessBase(opts, spec.providerName, cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)
+	b.sink = sink
+	b.model = opts.Model
+	// Default prompt sender shared by every ACP provider; a provider may override
+	// it in configure.
+	b.promptFunc = func(content string, attachments []*leapmuxv1.Attachment) {
+		b.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
+			b.handleACPPromptResponse(resp, nil)
+		})
+	}
+	if spec.configure != nil {
+		spec.configure(a)
+	}
+
+	if err := b.startCmd(cmd, cancel); err != nil {
+		return nil, err
+	}
+
+	initParams, err := acpStandardInitParams()
+	if err != nil {
+		return nil, err
+	}
+	sessionCfg := spec.sessionConfig
+	if sessionCfg.newMethod == "" {
+		sessionCfg = acpDefaultSessionConfig
+	}
+	handshake, err := b.startACPHandshake(stdout, stderrPipe, opts, initParams, sessionCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if spec.afterHandshake != nil {
+		if err := spec.afterHandshake(a, handshake, opts); err != nil {
+			return nil, err
+		}
+	}
+	// Every concrete ACP agent (*T) implements Agent via its embedded acpBase
+	// plus its own overrides; assert it here so acpStart can stay generic over T.
+	agent, ok := any(a).(Agent)
+	if !ok {
+		return nil, fmt.Errorf("acp agent %T does not implement Agent", a)
+	}
+	return agent, nil
+}
+
+// AvailableOptionGroups is the default for ACP providers that surface no mapped
+// option group of their own (e.g. Reasonix, which is model-only): it returns
+// just the read-only generic groups the server surfaced, if any. Providers with
+// a permission-mode or primary-agent group override this method.
+func (b *acpBase) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.genericOptionGroups
+}
+
 // parseACPSessionResult parses the model/mode/configOptions channels shared by
 // every ACP session response -- the handshake (session/new, resume) and the
 // ClearContext reply alike. Session-id validation is left to the caller.
@@ -2010,7 +2129,13 @@ func (b *acpBase) handleACPConfigOptionUpdate(update json.RawMessage) {
 
 	b.mu.Lock()
 	oldMode := b.permissionMode
-	modelChanged, listChanged := b.applyConfigOptionModelsLocked(options)
+	// A launch-fixed-model provider (e.g. Reasonix) cannot switch model over ACP;
+	// ignore any model select so the stored model stays in sync with the running
+	// process (a model change relaunches instead, via UpdateSettings).
+	var modelChanged, listChanged bool
+	if !b.modelFixedAtLaunch {
+		modelChanged, listChanged = b.applyConfigOptionModelsLocked(options)
+	}
 	var mode string
 	var modeChanged, primaryAgentChanged bool
 	if b.modeChannel == modeChannelPermissionMode {

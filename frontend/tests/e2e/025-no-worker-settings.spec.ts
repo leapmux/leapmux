@@ -24,7 +24,7 @@ test.describe('Settings and /clear after Worker restart', () => {
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
-      // Wait for the assistant's response containing "4"
+      // Wait for the assistant's response containing "6912"
       await page.waitForFunction((sel: string) => {
         const bubbles = document.querySelectorAll(sel)
         for (const b of bubbles) {

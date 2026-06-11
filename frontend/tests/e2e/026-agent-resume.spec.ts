@@ -3,19 +3,26 @@ import { ASSISTANT_BUBBLE_SELECTOR, loginViaToken, waitForWorkspaceReady } from 
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 /**
- * Wait for an assistant message containing the given text.
+ * Wait for an assistant message matching the given text or pattern.
  * Scoped to assistant message bubbles to avoid false matches from
- * timestamps, file names, or other page content.
+ * timestamps, file names, or other page content. A string is matched
+ * literally; a RegExp lets callers tolerate formatting (e.g. a thousands
+ * comma in a multi-digit answer).
  */
-async function waitForAssistantMessage(page: import('@playwright/test').Page, text: string) {
+async function waitForAssistantMessage(page: import('@playwright/test').Page, pattern: string | RegExp) {
+  const source = typeof pattern === 'string'
+    ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    : pattern.source
+  const flags = typeof pattern === 'string' ? '' : pattern.flags
   await page.waitForFunction(
-    ({ t, sel }: { t: string, sel: string }) => {
+    ({ source, flags, sel }: { source: string, flags: string, sel: string }) => {
+      const re = new RegExp(source, flags)
       const msgs = document.querySelectorAll(
         `${sel} [data-testid="message-content"]`,
       )
-      return [...msgs].some(m => m.textContent?.includes(t))
+      return [...msgs].some(m => re.test(m.textContent ?? ''))
     },
-    { t: text, sel: ASSISTANT_BUBBLE_SELECTOR },
+    { source, flags, sel: ASSISTANT_BUBBLE_SELECTOR },
     { timeout: 60_000 },
   )
 }
@@ -42,7 +49,7 @@ test.describe('Agent Session Resume', () => {
       await expect(editor).toHaveText('')
 
       // Wait for the assistant's response
-      await waitForAssistantMessage(page, '4')
+      await waitForAssistantMessage(page, /6,?912/)
 
       // Stop the worker
       await stopWorker()
@@ -58,11 +65,13 @@ test.describe('Agent Session Resume', () => {
 
       // Send a new message to the closed (but resumable) agent
       await editor.click()
-      await page.keyboard.type('What is 3+3? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
 
-      // Wait for a response - the agent should have resumed
-      await waitForAssistantMessage(page, '6')
+      // Wait for a response - the agent should have resumed. The answer "3333"
+      // does not occur in the first answer "6912", so this waits for the new
+      // (resumed) turn rather than matching the prior bubble.
+      await waitForAssistantMessage(page, /3,?333/)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -88,7 +97,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
-      await waitForAssistantMessage(page, '4')
+      await waitForAssistantMessage(page, /6,?912/)
 
       // Stop the worker, wait, restart
       await stopWorker()
@@ -132,7 +141,7 @@ test.describe('Agent Session Resume', () => {
       await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
-      await waitForAssistantMessage(page, '4')
+      await waitForAssistantMessage(page, /6,?912/)
 
       // Stop the worker, wait, restart
       await stopWorker()
@@ -144,11 +153,11 @@ test.describe('Agent Session Resume', () => {
 
       // Send another message to confirm agent is alive after restart
       await editor.click()
-      await page.keyboard.type('What is 5+5? Reply with just the number, nothing else.')
+      await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
       await page.keyboard.press('Meta+Enter')
 
       // Wait for response — verifies normal operation post-restart
-      await waitForAssistantMessage(page, '10')
+      await waitForAssistantMessage(page, /3,?333/)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

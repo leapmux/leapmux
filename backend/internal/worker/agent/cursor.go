@@ -23,55 +23,25 @@ type CursorCLIAgent struct {
 
 // StartCursorCLI starts a Cursor CLI ACP agent process and performs the handshake.
 func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	cmd, preambleDelimiter, metaPrefix := buildShellWrappedCommand(ctx, shellWrapSpec{
-		Shell:      opts.Shell,
-		LoginShell: opts.LoginShell,
-		BinaryName: "cursor-agent",
-		BaseArgs:   []string{"acp"},
-		WorkingDir: opts.WorkingDir,
-	})
-
-	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
-
-	stdin, stdout, stderrPipe, err := setupProcessPipes(cmd, cancel)
-	if err != nil {
-		return nil, err
-	}
-
-	a := &CursorCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: newProcessBase(opts, "cursor", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)},
-			sink:        sink,
-			model:       normalizeCursorModelID(opts.Model),
+	return acpStart(ctx, opts, sink, acpStartSpec[CursorCLIAgent]{
+		providerName: "cursor",
+		binaryName:   "cursor-agent",
+		baseArgs:     []string{"acp"},
+		newAgent:     func() *CursorCLIAgent { return &CursorCLIAgent{} },
+		base:         func(a *CursorCLIAgent) *acpBase { return &a.acpBase },
+		configure: func(a *CursorCLIAgent) {
+			// Cursor stores the normalized (display) model id, not the wire form.
+			a.model = normalizeCursorModelID(opts.Model)
+			a.modelIDNormalizer = normalizeCursorModelID
+			a.modeChannel = modeChannelPermissionMode
+			a.extraMethod = a.handleExtraMethod
+			a.reapplySettings = a.reapplyModelAndMode
+			a.refreshFromSession = a.refreshCursorFromSession
 		},
-	}
-	a.modelIDNormalizer = normalizeCursorModelID
-	a.modeChannel = modeChannelPermissionMode
-	a.extraMethod = a.handleExtraMethod
-	a.promptFunc = a.doSendPrompt
-	a.reapplySettings = a.reapplyModelAndMode
-	a.refreshFromSession = a.refreshCursorFromSession
-
-	if err := a.startCmd(cmd, cancel); err != nil {
-		return nil, err
-	}
-
-	initParams, err := acpStandardInitParams()
-	if err != nil {
-		return nil, err
-	}
-	handshake, err := a.startACPHandshake(stdout, stderrPipe, opts, initParams, acpDefaultSessionConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := a.applyPermissionModeStartup(handshake, opts, CursorCLIModeAgent, normalizeCursorModelID(opts.Model), a.setCursorModel); err != nil {
-		return nil, err
-	}
-
-	return a, nil
+		afterHandshake: func(a *CursorCLIAgent, handshake *acpSessionResult, opts Options) error {
+			return a.applyPermissionModeStartup(handshake, opts, CursorCLIModeAgent, normalizeCursorModelID(opts.Model), a.setCursorModel)
+		},
+	})
 }
 
 func normalizeCursorModelID(model string) string {
@@ -94,12 +64,6 @@ func fallbackCursorCLIModes() []*leapmuxv1.AvailableOption {
 		{Id: CursorCLIModePlan, Name: "Plan"},
 		{Id: CursorCLIModeAsk, Name: "Ask"},
 	}
-}
-
-func (a *CursorCLIAgent) doSendPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	a.doSendACPPrompt(content, attachments, func(resp json.RawMessage) {
-		a.handleACPPromptResponse(resp, nil)
-	})
 }
 
 func (a *CursorCLIAgent) AvailableOptionGroups() []*leapmuxv1.AvailableOptionGroup {
