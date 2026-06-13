@@ -64,7 +64,7 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
           </div>
           <div>
             <div class={labelRow}>License</div>
-            <a href="https://github.com/leapmux/leapmux/blob/main/LICENSE.md" target="_blank" rel="noopener noreferrer">
+            <a href="https://leapmux.dev/docs/reference/legal/" target="_blank" rel="noopener noreferrer">
               Functional Source License, Version 1.1, ALv2 Future License
             </a>
           </div>
