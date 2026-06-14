@@ -53,6 +53,45 @@ export const numberGhost = style({
 const fadeIn = keyframes({ from: { opacity: 0 }, to: { opacity: 1 } })
 const fadeOut = keyframes({ from: { opacity: 1 }, to: { opacity: 0 } })
 
+// Easter egg: when the count lands on exactly 777, the number + " tokens" go
+// "star power" -- a Mario-star pulse. Two animations layer on the root: a hue
+// cycle through the spectrum (the rainbow) and a faster scale+glow throb (the
+// pulse). They run on `color`/`transform`, so every glyph -- the rolling digits
+// and the unit noun, all of which inherit `color` -- shifts in lockstep.
+const starRainbow = keyframes({
+  '0%': { color: '#ff3b30' }, // red
+  '16%': { color: '#ff9500' }, // orange
+  '33%': { color: '#ffd60a' }, // yellow
+  '50%': { color: '#34c759' }, // green
+  '66%': { color: '#0a84ff' }, // blue
+  '83%': { color: '#bf5af2' }, // violet
+  '100%': { color: '#ff3b30' }, // back to red for a seamless loop
+})
+// The throb: scale up a touch and bloom a currentColor glow at the midpoint, so
+// the halo takes on whatever rainbow hue is live at that instant.
+const starPulse = keyframes({
+  '0%': { transform: 'scale(1)', textShadow: 'none' },
+  '50%': { transform: 'scale(1.08)', textShadow: '0 0 6px currentColor' },
+  '100%': { transform: 'scale(1)', textShadow: 'none' },
+})
+
+export const starPower = style({
+  'animation': `${starRainbow} 1.4s linear infinite, ${starPulse} 0.7s ease-in-out infinite`,
+  // transform-origin at the baseline edge keeps the throb from bobbing the count
+  // up and down against the verb it sits beside.
+  'transformOrigin': 'center bottom',
+  'willChange': 'color, transform',
+  '@media': {
+    // Honour reduced-motion: drop the animation but keep a static gold so the
+    // egg still reads as special without any pulsing.
+    '(prefers-reduced-motion: reduce)': {
+      animation: 'none',
+      transform: 'none',
+      color: '#ffd60a',
+    },
+  },
+})
+
 // Fades a freshly-mounted slot in: the new leading column when the number grows
 // a digit, or every slot of the live layer when it is swapped for a unit
 // crossfade. Runs once on mount, so persisting (rolling) columns never re-fade.

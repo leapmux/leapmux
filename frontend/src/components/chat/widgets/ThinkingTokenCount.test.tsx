@@ -54,6 +54,59 @@ describe('thinking token count', () => {
     expect(getByText('230 tokens')).toBeInTheDocument()
   })
 
+  it('uses the singular noun when the count is exactly one', () => {
+    const { getByText } = render(() => <ThinkingTokenCount tokens={1} />)
+    expect(getByText('1 token')).toBeInTheDocument()
+  })
+
+  it('keeps the plural noun for every other count, including zero and two', () => {
+    const { getByText: getZero } = render(() => <ThinkingTokenCount tokens={0} />)
+    expect(getZero('0 tokens')).toBeInTheDocument()
+    const { getByText: getTwo } = render(() => <ThinkingTokenCount tokens={2} />)
+    expect(getTwo('2 tokens')).toBeInTheDocument()
+    // 1k still reads "1.00k tokens" (plural) -- singular tracks the rendered
+    // number, not a raw value of 1.
+    const { getByText: getK } = render(() => <ThinkingTokenCount tokens={1000} />)
+    expect(getK('1.00k tokens')).toBeInTheDocument()
+  })
+
+  it('switches between plural and singular as the count rolls down to one', () => {
+    const [tokens, setTokens] = createSignal(2)
+    const { getByText } = render(() => <ThinkingTokenCount tokens={tokens()} />)
+    expect(getByText('2 tokens')).toBeInTheDocument()
+
+    setTokens(1)
+
+    expect(getByText('1 token')).toBeInTheDocument()
+  })
+
+  it('lights up the star-power easter egg at exactly 777 tokens', () => {
+    const { container } = render(() => <ThinkingTokenCount tokens={777} />)
+    expect(container.querySelector(`.${styles.starPower}`)).not.toBeNull()
+  })
+
+  it('leaves the easter egg off for neighbouring counts and the 7.77k shape', () => {
+    const { container: below } = render(() => <ThinkingTokenCount tokens={776} />)
+    expect(below.querySelector(`.${styles.starPower}`)).toBeNull()
+    const { container: above } = render(() => <ThinkingTokenCount tokens={778} />)
+    expect(above.querySelector(`.${styles.starPower}`)).toBeNull()
+    // 7770 formats as "7.77k", not "777" -- the egg keys on the rendered digits.
+    const { container: thousands } = render(() => <ThinkingTokenCount tokens={7770} />)
+    expect(thousands.querySelector(`.${styles.starPower}`)).toBeNull()
+  })
+
+  it('toggles the easter egg on and back off as the count crosses 777', () => {
+    const [tokens, setTokens] = createSignal(776)
+    const { container } = render(() => <ThinkingTokenCount tokens={tokens()} />)
+    expect(container.querySelector(`.${styles.starPower}`)).toBeNull()
+
+    setTokens(777)
+    expect(container.querySelector(`.${styles.starPower}`)).not.toBeNull()
+
+    setTokens(778)
+    expect(container.querySelector(`.${styles.starPower}`)).toBeNull()
+  })
+
   it('compacts large values in the accessible text, to two decimals', () => {
     const { getByText } = render(() => <ThinkingTokenCount tokens={1234} />)
     expect(getByText('1.23k tokens')).toBeInTheDocument()

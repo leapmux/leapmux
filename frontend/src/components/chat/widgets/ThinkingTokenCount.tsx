@@ -285,16 +285,26 @@ function useFadingSnapshots<T>(
 }
 
 /**
- * Animated thinking-token count: "<n> tokens" where the number's digits roll up
- * while the digit-shape is stable and crossfade when the format changes.
+ * Animated thinking-token count: "<n> token(s)" where the number's digits roll
+ * up while the digit-shape is stable and crossfade when the format changes. The
+ * noun is singular only when the rendered number reads exactly "1".
  *
  * The number's width and baseline come from an in-flow hidden ghost; the visible
  * rolling digits are painted by absolutely-positioned overlays on top of it, so
  * the overlays' clipped (baseline-less) columns never disturb where the count
- * sits next to " tokens" and the verb.
+ * sits next to the unit noun and the verb.
  */
 export const ThinkingTokenCount: Component<{ tokens: number }> = (props) => {
   const display = createMemo(() => formatTokenCount(props.tokens, 2))
+  // Singular "token" only when the rendered number is exactly "1"; everything
+  // else ("0", "2", "1.0k", ...) is plural. Keyed on the displayed string (not
+  // the raw prop) so the noun agrees with the digits actually shown after
+  // rounding/compaction.
+  const unit = createMemo(() => (display() === '1' ? 'token' : 'tokens'))
+  // Easter egg: a "star power" rainbow pulse when the count reads exactly 777.
+  // Keyed on the displayed string (like `unit`) so it triggers iff the digits
+  // shown are "777" -- never on 7.77k / 777.00k, which format differently.
+  const starPower = createMemo(() => display() === '777')
   // Single-item list keyed by the unit family: For reuses the live layer while
   // the family is stable (so digits roll and a new leading column fades in) and
   // remounts it — for the unit crossfade — only when the family changes.
@@ -312,9 +322,9 @@ export const ThinkingTokenCount: Component<{ tokens: number }> = (props) => {
   })
 
   return (
-    <span class={styles.root}>
+    <span classList={{ [styles.root]: true, [styles.starPower]: starPower() }}>
       {/* Real value for assistive tech and tests; the visual odometer is aria-hidden. */}
-      <span class={styles.srOnly}>{`${display()} tokens`}</span>
+      <span class={styles.srOnly}>{`${display()} ${unit()}`}</span>
       <span class={styles.numberBox}>
         {/* In-flow, hidden: owns the number's width and baseline. */}
         <span class={styles.numberGhost} aria-hidden="true">{display()}</span>
@@ -333,7 +343,7 @@ export const ThinkingTokenCount: Component<{ tokens: number }> = (props) => {
           )}
         </For>
       </span>
-      {' tokens'}
+      {` ${unit()}`}
     </span>
   )
 }
