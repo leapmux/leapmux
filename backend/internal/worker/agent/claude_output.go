@@ -961,13 +961,29 @@ func extractStatusValue(content []byte) (status string, ok bool) {
 	return "", true
 }
 
-var claudeSyntheticAPI5xxPattern = regexp.MustCompile(`^API Error[^[:alnum:]]+5[0-9]{2}(?:$|[^[:alnum:]].*)`)
-var claudeRetryableIdleTimeoutPattern = regexp.MustCompile(`^API Error[^[:alnum:]]+Stream idle timeout(?:$|[^[:alnum:]].*)`)
+var claudeSyntheticAPI5xxPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+5[0-9]{2}(?:$|[^[:alnum:]].*)`)
+var claudeRetryableIdleTimeoutPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+Stream idle timeout(?:$|[^[:alnum:]].*)`)
+
+// claudeRetryableOverloadedPattern matches the bare "Overloaded" result string.
+// An overload is Anthropic HTTP 529 -- the most retryable error there is -- but
+// Claude Code emits it in two forms: "API Error: 529 Overloaded" (with the
+// numeric code, already caught by claudeSyntheticAPI5xxPattern) and a bare
+// "API Error: Overloaded" with no code, which the 5xx pattern cannot match
+// because it requires a three-digit code right after the punctuation. This
+// pattern covers the code-less form so both spellings auto-continue.
+var claudeRetryableOverloadedPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+Overloaded(?:$|[^[:alnum:]].*)`)
 
 // isRetryableClaudeResultError reports whether a Claude result error should
-// trigger auto-continue.
+// trigger auto-continue. Matching is case-insensitive (each pattern carries the
+// (?i) flag): the result field is an unstructured, human-readable error string,
+// not a structured code, so a cosmetic casing change must not silently regress
+// the retry -- that over-strictness is exactly what left the bare "Overloaded"
+// form unmatched before. False positives stay implausible regardless of casing
+// because every pattern is anchored to the "API Error" prefix Claude Code emits.
 func isRetryableClaudeResultError(s string) bool {
-	return claudeSyntheticAPI5xxPattern.MatchString(s) || claudeRetryableIdleTimeoutPattern.MatchString(s)
+	return claudeSyntheticAPI5xxPattern.MatchString(s) ||
+		claudeRetryableIdleTimeoutPattern.MatchString(s) ||
+		claudeRetryableOverloadedPattern.MatchString(s)
 }
 
 // isSimpleUserTextEcho returns true if the NDJSON line is a user message echo

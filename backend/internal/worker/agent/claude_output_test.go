@@ -403,6 +403,36 @@ func TestClaudeResult_IdleTimeoutPrefixSchedulesAPIErrorAutoContinue(t *testing.
 	assert.Equal(t, 0, source.NumToolUses)
 }
 
+func TestClaudeResult_BareOverloadedSchedulesAPIErrorAutoContinue(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// Claude Code emits overloads (Anthropic HTTP 529) both as
+	// "API Error: 529 Overloaded" and, as seen in the wild, the bare
+	// "API Error: Overloaded" with no numeric code. The bare form must still
+	// auto-continue even though the 5xx code matcher cannot see a code.
+	payload := []byte(`{
+		"type":"result",
+		"is_error":true,
+		"result":"API Error: Overloaded"
+	}`)
+
+	agent.HandleOutput(payload)
+
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	schedule := sink.LastAutoSchedule()
+	assert.Equal(t, AutoContinueReasonAPIError, schedule.Reason)
+	var source struct {
+		Type    string `json:"type"`
+		IsError bool   `json:"is_error"`
+		Result  string `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(schedule.SourcePayload, &source))
+	assert.Equal(t, "result", source.Type)
+	assert.True(t, source.IsError)
+	assert.Equal(t, "API Error: Overloaded", source.Result)
+}
+
 func TestHandleOutput_MalformedJSON(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
@@ -778,10 +808,18 @@ func TestIsRetryableClaudeResultError(t *testing.T) {
 		{"5xx 599 bare", "API Error: 599", true},
 		{"5xx alternate punctuation", "API Error - 502 Bad Gateway", true},
 		{"5xx repeated punctuation", "API Error:: 529 Overloaded", true},
+		{"5xx lowercase prefix", "api error: 500 internal server error", true},
 		{"idle timeout exact", "API Error: Stream idle timeout", true},
 		{"idle timeout partial response", "API Error: Stream idle timeout - partial response received", true},
 		{"idle timeout alternate punctuation", "API Error - Stream idle timeout - partial response received", true},
 		{"idle timeout repeated punctuation", "API Error:: Stream idle timeout", true},
+		{"idle timeout lowercase", "api error: stream idle timeout", true},
+		{"overloaded bare", "API Error: Overloaded", true},
+		{"overloaded alternate punctuation", "API Error - Overloaded", true},
+		{"overloaded repeated punctuation", "API Error:: Overloaded", true},
+		{"overloaded trailing text", "API Error: Overloaded - please retry", true},
+		{"overloaded lowercase", "API Error: overloaded", true},
+		{"overloaded uppercase", "API ERROR: OVERLOADED", true},
 		{"non-retryable 4xx", "API Error: 400 Bad Request", false},
 		{"5xx single digit", "API Error: 5", false},
 		{"5xx two digits", "API Error: 50", false},
@@ -790,6 +828,9 @@ func TestIsRetryableClaudeResultError(t *testing.T) {
 		{"5xx alphanumeric suffix", "API Error: 500X", false},
 		{"idle timeout alphanumeric separator", "API ErrorX Stream idle timeout", false},
 		{"idle timeout alphanumeric suffix", "API Error: Stream idle timeoutX", false},
+		{"overloaded alphanumeric separator", "API ErrorX Overloaded", false},
+		{"overloaded alphanumeric suffix", "API Error: OverloadedX", false},
+		{"overloaded without prefix", "Server Overloaded", false},
 		{"empty string", "", false},
 		{"plain text", "done", false},
 	}
