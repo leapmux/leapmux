@@ -18,6 +18,7 @@ function makeStubInstance(): TerminalInstance & { _log: string[] } {
       }),
     } as any,
     fitAddon: { fit: vi.fn() } as any,
+    serializeAddon: { serialize: vi.fn(() => '') } as any,
     suppressInput: false,
     dispose: vi.fn(),
     _log: log,

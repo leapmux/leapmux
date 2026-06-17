@@ -417,13 +417,24 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         content,
         ...(attachments.length > 0 ? { attachments } : {}),
       })
-      // Success: delete the old failed message. The new one arrives via WatchEvents.
+      // The resend SUCCEEDED (the new message arrives via WatchEvents), so removing the
+      // old failed bubble is best-effort cleanup. A delete failure here must NOT fall
+      // through to the outer catch and re-stamp "Failed to deliver": that would mislead
+      // the user into thinking the retry failed when it actually landed. The worker now
+      // rejects deleteAgentMessage unless the row is still a FAILED user message, so a
+      // concurrent state change (or a transient network error) can make this throw after
+      // a good resend.
       if (messageId.startsWith('local-')) {
         props.chatStore.removeMessage(agentId, messageId)
       }
       else {
-        await workerRpc.deleteAgentMessage(workerId, { agentId, messageId })
-        props.chatStore.removeMessage(agentId, messageId)
+        try {
+          await workerRpc.deleteAgentMessage(workerId, { agentId, messageId })
+          props.chatStore.removeMessage(agentId, messageId)
+        }
+        catch (cleanupErr) {
+          showWarnToast('Could not remove the old failed message', cleanupErr)
+        }
       }
     }
     catch (err) {
@@ -461,6 +472,11 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // Synchronous local cleanup: the tab disappears immediately.
     props.controlStore.clearAgent(agentId)
     clearAttachments(agentId)
+    // Reclaim the agent's chat-store state (loaded window, pagination flags, live
+    // tail, command streams, span index, to-dos, streaming text, pending outbound,
+    // saved scroll). The store only trims within a window, never on close, so
+    // without this a long open/close session leaks one entry per agent.
+    props.chatStore.forgetAgent(agentId)
     props.tabStore.removeTab(TabType.AGENT, agentId)
 
     // `tabStore.removeTab` above emitted the TombstoneTab op via the

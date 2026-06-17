@@ -66,3 +66,32 @@ function collapseCarriageRunIfNeeded(group: string): string {
   const tail = segments.slice(-PROGRESS_TAIL)
   return [...head, ELLIPSIS, ...tail].join('\n')
 }
+
+const LEADING_BLANK_LINES_RE = /^(?:\s*\n)+/
+
+/**
+ * Trim leading blank lines from a tool-result body. Lives here beside
+ * {@link normalizeProgressOutput} because the two are applied together (CR
+ * normalization first so a leading bare `\r`-turned-`\n` becomes trimmable),
+ * and so the pure height estimator can reuse it WITHOUT importing the heavy
+ * `toolRenderers` render module (which would widen the height path's dependency
+ * footprint and risk an init-order cycle).
+ */
+export function stripLeadingBlankLines(content: string): string {
+  return content.replace(LEADING_BLANK_LINES_RE, '')
+}
+
+/**
+ * The full render-time command-body transform a {@link stripLeadingBlankLines}'d
+ * `CommandResultBody` applies, as ONE step: CR-normalize the raw output, THEN strip
+ * leading blank lines (order matters -- a leading bare `\r` first becomes a `\n` that
+ * only then trims). Returns the display text plus whether the source carried `\r`
+ * runs (which widens the collapse threshold to {@link PROGRESS_MAX_ROWS}). Shared by
+ * the renderer (commandResult.tsx) and the off-screen height estimate
+ * (claudeBashHeightFields) so the two can't drift on the normalize/strip order or the
+ * carriage-return flag.
+ */
+export function normalizedCommandBody(output: string): NormalizedProgressOutput {
+  const norm = normalizeProgressOutput(output)
+  return { text: stripLeadingBlankLines(norm.text), hadCarriageReturns: norm.hadCarriageReturns }
+}

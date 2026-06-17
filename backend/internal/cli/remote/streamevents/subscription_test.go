@@ -25,6 +25,11 @@ type fakeTransport struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	openErr error
+	// openStarted/releaseOpen let tests pause OpenWatchEvents after the
+	// transport has been entered but before the stream is installed.
+	openStarted chan struct{}
+	releaseOpen <-chan struct{}
+	active      int32
 	// callsOpened increments per OpenWatchEvents call so tests can
 	// assert resubscribe count.
 	callsOpened int32
@@ -34,23 +39,38 @@ func (t *fakeTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv
 	onFrame func(*leapmuxv1.WatchEventsResponse),
 ) (context.CancelFunc, <-chan struct{}, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.openErr != nil {
 		err := t.openErr
 		t.openErr = nil // clear so subsequent calls succeed (reconnect path)
+		t.mu.Unlock()
 		return nil, nil, err
 	}
+	t.mu.Unlock()
+	if t.openStarted != nil {
+		select {
+		case t.openStarted <- struct{}{}:
+		default:
+		}
+	}
+	if t.releaseOpen != nil {
+		<-t.releaseOpen
+	}
 	atomic.AddInt32(&t.callsOpened, 1)
-	t.calls = append(t.calls, req)
-	t.onFrame = onFrame
 	ctx, cancel := context.WithCancel(parentCtx)
-	t.cancel = cancel
-	t.done = make(chan struct{})
+	done := make(chan struct{})
+	atomic.AddInt32(&t.active, 1)
 	go func() {
 		<-ctx.Done()
-		close(t.done)
+		atomic.AddInt32(&t.active, -1)
+		close(done)
 	}()
-	return cancel, t.done, nil
+	t.mu.Lock()
+	t.calls = append(t.calls, req)
+	t.onFrame = onFrame
+	t.cancel = cancel
+	t.done = done
+	t.mu.Unlock()
+	return cancel, done, nil
 }
 
 func (t *fakeTransport) pushFrame(resp *leapmuxv1.WatchEventsResponse) {
@@ -100,6 +120,137 @@ func TestSubscription_HappyPath_AdvanceCursorAndCallback(t *testing.T) {
 	defer gotMu.Unlock()
 	require.NotNil(t, got)
 	assert.Equal(t, "a-1", got.GetAgentId())
+}
+
+// TestSubscription_DedupsOverlapMessageBySeq verifies the
+// register-before-replay overlap is collapsed: a WatchEvents subscription
+// registers its watcher BEFORE replaying history, so a message created in that
+// window is delivered twice -- once live, once in the replay. The dispatcher
+// forwards each seq at most once while still advancing the cursor. Because
+// message seqs are monotonic (a deleted seq is never reused), the dedup is a
+// plain seq <= cursor and needs no replayed flag.
+func TestSubscription_DedupsOverlapMessageBySeq(t *testing.T) {
+	tr := &fakeTransport{}
+	agents := NewAgentCursor()
+	terms := NewTerminalCursor()
+	var seqs []int64
+	var mu sync.Mutex
+	sub := NewSubscription(tr, agents, terms,
+		func(ae *leapmuxv1.AgentEvent) {
+			mu.Lock()
+			seqs = append(seqs, ae.GetAgentMessage().GetSeq())
+			mu.Unlock()
+		},
+		nil, nil)
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
+
+	push := func(seq int64) {
+		tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+			Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+				AgentId: "a-1",
+				Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: seq}},
+			}},
+		})
+	}
+
+	push(17) // live broadcast
+	push(17) // the same message's replay copy -- a duplicate, must be skipped
+	push(18) // a genuinely newer message -- forwarded
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []int64{17, 18}, seqs, "the overlap duplicate seq 17 must be forwarded only once")
+	assert.Equal(t, int64(18), agents.Get("a-1"), "cursor still advances to the highest seq")
+}
+
+// TestSubscription_OverlapDedupIsOrderIndependent pins the robustness the
+// monotonic-seq invariant buys: an overlap message's live and replay copies can
+// arrive in EITHER order, and exactly one is forwarded. With the old replayed-gated
+// dedup the live copy had to win the race (a replay-first delivery produced a
+// duplicate); a plain seq <= cursor drop forwards whichever lands first and drops
+// the second regardless of order.
+func TestSubscription_OverlapDedupIsOrderIndependent(t *testing.T) {
+	tr := &fakeTransport{}
+	agents := NewAgentCursor()
+	var seqs []int64
+	var mu sync.Mutex
+	sub := NewSubscription(tr, agents, NewTerminalCursor(),
+		func(ae *leapmuxv1.AgentEvent) {
+			mu.Lock()
+			seqs = append(seqs, ae.GetAgentMessage().GetSeq())
+			mu.Unlock()
+		},
+		nil, nil)
+	t.Cleanup(sub.Cancel)
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
+
+	push := func(seq int64) {
+		tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+			Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+				AgentId: "a-1",
+				Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: seq}},
+			}},
+		})
+	}
+
+	// Replay copy arrives BEFORE the live copy (the order the old gate mishandled).
+	push(9) // first copy of the overlap message -- forwarded, cursor -> 9
+	push(9) // second copy of the SAME message -- dropped (seq <= cursor)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []int64{9}, seqs, "an overlap message is forwarded exactly once regardless of copy order")
+}
+
+// TestSubscription_ForwardsEphemeralNegativeSeqFrames pins the
+// regression where the seq-dedup swallowed ephemeral frames: an
+// agent_session_info frame carries a negative sentinel seq (-1) and is
+// never replayed, so it must ALWAYS forward and must NOT touch the
+// cursor. A naive `seq <= cursor` check drops every such frame (-1 is
+// always <= any non-negative cursor), starving `--follow` of live
+// thinking-token / usage / rate-limit updates.
+func TestSubscription_ForwardsEphemeralNegativeSeqFrames(t *testing.T) {
+	tr := &fakeTransport{}
+	agents := NewAgentCursor()
+	terms := NewTerminalCursor()
+	var seqs []int64
+	var mu sync.Mutex
+	sub := NewSubscription(tr, agents, terms,
+		func(ae *leapmuxv1.AgentEvent) {
+			mu.Lock()
+			seqs = append(seqs, ae.GetAgentMessage().GetSeq())
+			mu.Unlock()
+		},
+		nil, nil)
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
+
+	push := func(seq int64) {
+		tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+			Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+				AgentId: "a-1",
+				Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: seq}},
+			}},
+		})
+	}
+
+	push(7)  // a real message advances the cursor to 7
+	push(-1) // ephemeral session-info: must forward despite -1 <= 7
+	push(-1) // a second ephemeral frame must ALSO forward (not deduped)
+	push(8)  // a real newer message still forwards
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []int64{7, -1, -1, 8}, seqs,
+		"ephemeral negative-seq frames must always forward; real seqs dedup")
+	assert.Equal(t, int64(8), agents.Get("a-1"),
+		"ephemeral frames must not advance or lower the cursor")
 }
 
 // TestSubscription_TerminalDataAdvancesOffset confirms terminal
@@ -204,7 +355,8 @@ func TestSubscription_UpdateCancelsPreviousAndCarriesCursor(t *testing.T) {
 	require.NotNil(t, last)
 	require.Len(t, last.GetAgents(), 1)
 	assert.Equal(t, "a-1", last.GetAgents()[0].GetAgentId())
-	assert.Equal(t, int64(9), last.GetAgents()[0].GetAfterSeq())
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
+	assert.Equal(t, int64(9), last.GetAgents()[0].GetCursorSeq())
 	assert.Equal(t, int32(2), atomic.LoadInt32(&tr.callsOpened),
 		"Update should cancel and re-open exactly once")
 }
@@ -237,6 +389,43 @@ func TestSubscription_TransportOpenError(t *testing.T) {
 
 	// Subsequent attempt should succeed because openErr was cleared
 	// in the fake. Mirrors the production reconnect-after-error path.
+	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{}))
+	t.Cleanup(sub.Cancel)
+}
+
+// TestSubscription_UpdateErrorAfterSuccessLeavesCleanState covers the
+// success-then-failure path the single-failure TransportOpenError test misses: a
+// later Update cancels the live subscription and then the re-open fails. The
+// subscription must not retain the torn-down stream's cancel/done -- Done() reports
+// "no live subscription" (a closed channel), Cancel() is a safe no-op, and a fresh
+// Update recovers.
+func TestSubscription_UpdateErrorAfterSuccessLeavesCleanState(t *testing.T) {
+	tr := &fakeTransport{}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{}))
+
+	// Arm the next OpenWatchEvents to fail, then Update: it cancels the prior sub
+	// and the re-open errors.
+	tr.mu.Lock()
+	tr.openErr = errors.New("reopen failed")
+	tr.mu.Unlock()
+	require.Error(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{}))
+
+	// Done() must report a closed channel (no live subscription).
+	select {
+	case <-sub.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Done() did not report a closed channel after a failed re-open")
+	}
+	// Cancel() must not hang on a stale done channel.
+	done := make(chan struct{})
+	go func() { sub.Cancel(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Cancel() hung after a failed re-open")
+	}
+	// A fresh Update recovers (openErr was consumed by the failed attempt).
 	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{}))
 	t.Cleanup(sub.Cancel)
 }
@@ -398,8 +587,7 @@ func TestSubscription_DoneOnFreshSubReturnsClosed(t *testing.T) {
 // burst can issue Update twice in a row before the previous's
 // goroutine has finished cleaning up. Each Update must cancel its
 // predecessor and open a fresh subscription, leaving the latest one
-// live. The Subscription contract is single-flight via its mutex —
-// concurrent goroutine callers are out of scope.
+// live.
 func TestSubscription_RapidSequentialUpdates(t *testing.T) {
 	tr := &fakeTransport{}
 	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
@@ -408,7 +596,7 @@ func TestSubscription_RapidSequentialUpdates(t *testing.T) {
 	const updates = 8
 	for i := 0; i < updates; i++ {
 		require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
-			Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1", AfterSeq: int64(i)}},
+			Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("a-1", int64(i))},
 		}))
 	}
 	// Each Update calls OpenWatchEvents exactly once — the Subscription
@@ -418,7 +606,58 @@ func TestSubscription_RapidSequentialUpdates(t *testing.T) {
 	// subscribe asked for.
 	last := tr.lastRequest()
 	require.NotNil(t, last)
-	assert.Equal(t, int64(updates-1), last.GetAgents()[0].GetAfterSeq())
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
+	assert.Equal(t, int64(updates-1), last.GetAgents()[0].GetCursorSeq())
+}
+
+func TestSubscription_ConcurrentUpdatesAreLifecycleSingleFlight(t *testing.T) {
+	const updates = 8
+	openStarted := make(chan struct{}, updates)
+	releaseOpen := make(chan struct{})
+	tr := &fakeTransport{openStarted: openStarted, releaseOpen: releaseOpen}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(sub.Cancel)
+
+	start := make(chan struct{})
+	errs := make(chan error, updates)
+	var wg sync.WaitGroup
+	wg.Add(updates)
+	for i := 0; i < updates; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
+				Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("a-1", int64(i+1))},
+			})
+		}()
+	}
+	close(start)
+
+	select {
+	case <-openStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected first OpenWatchEvents call to start")
+	}
+
+	sawConcurrentOpen := false
+	select {
+	case <-openStarted:
+		sawConcurrentOpen = true
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseOpen)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	assert.False(t, sawConcurrentOpen, "Update must not enter a replacement open while another Update is still opening")
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&tr.active) == 1
+	}, time.Second, 10*time.Millisecond, "only the latest stream should remain active")
 }
 
 // TestSubscription_AgentMessageNilDoesNotAdvanceCursor: an

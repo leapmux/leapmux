@@ -439,7 +439,7 @@ The `agent` group is the type-specific surface for agent tabs — use `tab open`
 | `agent interrupt` | `--tab-id`, `--reason "..."` | `{agent_id}` |
 | `agent get` | `--tab-id` | Full agent state (model, status, provider, option groups, git status, ...) |
 | `agent providers` | `--tab-id` / `--worker-id` | `[{name, aliases}]` for the Worker |
-| `agent messages` | `--tab-id`, `--after-seq`, `--before-seq`, `--limit`, `--follow` | A message page, or a stream with `--follow` |
+| `agent messages` | `--tab-id`, `--anchor`, `--cursor-seq`, `--limit`, `--follow` | A message page, or a stream with `--follow` |
 | `agent set` | `--tab-id`, `--model`, `--effort`, `--permission-mode`, `--option key=value` | `{agent_id, applied:{...}}` |
 | `agent send-control-response` | `--tab-id`, `--content "..."` | `{agent_id}` |
 
@@ -452,7 +452,8 @@ leapmux remote agent messages --tab-id "$T" --follow
 Notes:
 
 - `agent send` requires one of `--message` or `--stdin`; passing neither is an `invalid_request` ("--message or --stdin is required"). If you pass both, `--message` wins and `--stdin` is ignored.
-- `agent messages --limit` defaults to 5 (the Hub caps it at 50). Without `--follow` you get one page as a JSON array; with `--follow` you get the first page followed by new messages as JSON-lines, reconnecting automatically on transient drops. `--follow` exists **only** on `agent messages`, not on `events watch`.
+- `agent messages` returns the most recent page by default (`--anchor latest`). Pick a different page with `--anchor oldest` (the first messages in history), `--anchor before --cursor-seq N` (the page older than seq N), or `--anchor after --cursor-seq N` (the page newer than seq N). `--cursor-seq` is required for `before`/`after` and rejected for `latest`/`oldest`. Messages always come back ascending by seq.
+- `agent messages --limit` defaults to 50, which is also the Hub's cap. Without `--follow` you get one page as a JSON array; with `--follow` you get the first page followed by new messages as JSON-lines, reconnecting automatically on transient drops. `--follow` exists **only** on `agent messages`, not on `events watch`. `--follow` cannot be combined with `--anchor oldest` or `--anchor before` (paging backward through history while tailing the live stream forward is contradictory); use `--anchor latest` (the default) or `--anchor after --cursor-seq N` with `--follow`.
 - `agent set` applies model/effort/permission-mode and repeatable `--option key=value` provider options. Most settings (model, effort, permission-mode) apply live on providers that support it (e.g. Claude Code, Codex); changes a provider can't apply to the running process trigger a restart (e.g. switching effort back to auto). See [Coding Agents](/docs/using/coding-agents/) for the per-provider settings.
 - `agent get`/`agent list` report every provider setting as one unified `option_groups` array (each entry `{id, label, current_value, options:[...], ...}`); `model`/`effort`/`permission_mode` stay as top-level convenience keys. There is no separate `extra_settings`/`available_models`/`available_option_groups` field -- read a provider option from `option_groups`, e.g. `leapmux remote agent get --tab-id "$T" | jq '.data.option_groups[] | select(.id=="sandbox_policy") | .current_value'`.
 - `agent send-control-response` forwards a raw `control_response` JSON payload for Claude-Code-style agents — the scripting equivalent of clicking an approval button in the UI.

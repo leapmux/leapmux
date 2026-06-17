@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { TodoItem } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
 import { Match, Switch } from 'solid-js'
 import * as styles from './TaskCheckbox.css'
 

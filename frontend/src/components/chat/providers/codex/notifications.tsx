@@ -1,6 +1,6 @@
 import type { NotificationThreadEntry } from '../registry'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { CODEX_RATE_LIMITS_METHOD, formatRateLimitMessage, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
+import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, formatCodexRateLimitReached, formatRateLimitMessage, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_METHOD } from '~/types/toolMessages'
 
 const STARTUP_METHOD = CODEX_METHOD.MCP_SERVER_STARTUP_STATUS_UPDATED
@@ -91,6 +91,13 @@ export function codexNotificationThreadEntry(msg: Record<string, unknown>): Noti
       if (info.rateLimitType && info.status !== 'allowed')
         entries.push({ kind: 'text', text: formatRateLimitMessage(info) })
     }
+    // A snapshot-level reached-type (credits depleted, usage cap, or a rate
+    // limit whose window rounded under threshold) is an authoritative block even
+    // when no per-tier window is over its threshold. Surface it so the block is
+    // never silently hidden; skip when a tier line already conveys the throttle.
+    const reached = codexRateLimitReachedType(msg)
+    if (reached && entries.length === 0)
+      entries.push({ kind: 'text', text: formatCodexRateLimitReached(reached) })
     return entries
   }
 

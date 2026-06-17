@@ -8,6 +8,7 @@ import {
   pickNumber,
   pickObject,
   pickString,
+  stringArray,
 } from './jsonPick'
 
 describe('isobject', () => {
@@ -117,5 +118,18 @@ describe('pickfirstobject', () => {
   it('returns undefined when no candidate matches', () => {
     expect(pickFirstObject({ a: 'x' }, ['a', 'b'])).toBeUndefined()
     expect(pickFirstObject(null, ['a'])).toBeUndefined()
+  })
+})
+
+describe('stringarray', () => {
+  it('keeps only the string elements of an array', () => {
+    expect(stringArray(['a', 1, 'b', null, 'c', undefined, {}])).toEqual(['a', 'b', 'c'])
+  })
+  it('returns an empty array for a non-array (or empty) value', () => {
+    expect(stringArray(undefined)).toEqual([])
+    expect(stringArray(null)).toEqual([])
+    expect(stringArray('not-an-array')).toEqual([])
+    expect(stringArray({ 0: 'a' })).toEqual([])
+    expect(stringArray([])).toEqual([])
   })
 })

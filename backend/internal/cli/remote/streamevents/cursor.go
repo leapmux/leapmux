@@ -5,7 +5,7 @@
 // resume-on-reconnect logic only lives in one place.
 //
 // `WatchEvents` differs from `WatchWorkspacePrivateEvents`: its
-// request pins a closed list of `(agent_id, after_seq)` and
+// request pins a closed list of `(agent_id, replay, cursor_seq)` and
 // `(terminal_id, after_offset)` entries, and the worker only delivers
 // events for those specific tabs. New tabs that appear after the
 // subscription is live are silently dropped. So any caller that
@@ -77,6 +77,27 @@ func (c *Cursor[Entry]) Update(id string, value int64) int64 {
 	return cur
 }
 
+// Advance records value for id iff it STRICTLY advances the counter, and reports
+// whether it did. It folds a dedup's "have I already forwarded this seq?" read and
+// the cursor write into ONE locked operation, so two goroutines racing the same
+// id+value (e.g. a late frame from a torn-down stream overlapping a reconnect's
+// replay of the same seq) can't both observe "not yet seen" and forward a duplicate
+// -- exactly one sees advanced=true. A separate Get-then-Update has a window between
+// the two locks where both readers see the stale value.
+func (c *Cursor[Entry]) Advance(id string, value int64) bool {
+	if id == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur, ok := c.values[id]
+	if !ok || value > cur {
+		c.values[id] = value
+		return true
+	}
+	return false
+}
+
 // Get returns the current cursor for id, or 0 if untracked.
 func (c *Cursor[Entry]) Get(id string) int64 {
 	c.mu.Lock()
@@ -135,9 +156,38 @@ type AgentCursor = Cursor[*leapmuxv1.WatchAgentEntry]
 
 // NewAgentCursor returns an empty cursor seeded with no agents.
 func NewAgentCursor() *AgentCursor {
-	return NewCursor(func(id string, seq int64) *leapmuxv1.WatchAgentEntry {
-		return &leapmuxv1.WatchAgentEntry{AgentId: id, AfterSeq: seq}
-	})
+	return NewCursor(AgentWatchEntry)
+}
+
+// IsResumeCursor reports whether `seq` names a real resume point. Message seqs are
+// assigned from 1, so a positive seq is "resume after this" while seq <= 0 means
+// nothing has been observed yet (no resume point). The single home for the threshold
+// the subscribe path (AgentWatchEntry: LATEST vs AFTER_CURSOR) and the --follow
+// backlog drain (drainFetch: OLDEST vs AFTER) both branch on, so the "what counts as
+// a resume cursor" rule can't drift between them.
+func IsResumeCursor(seq int64) bool {
+	return seq > 0
+}
+
+// AgentWatchEntry maps a per-agent resume cursor (the highest seq seen, or 0 when
+// nothing has been seen yet) to the WatchEvents replay request: a non-resume cursor
+// (IsResumeCursor false) maps to a fresh LATEST subscription (tail from the most
+// recent page), while a real resume cursor maps to AFTER_CURSOR resume from that seq.
+// The wire entry is explicit either way -- no 0/sign overload. Shared by the cursor's
+// Snapshot builder (the `events` fan-out) and the `agent messages --follow` reconnect
+// loop so the mapping lives in one place.
+func AgentWatchEntry(id string, seq int64) *leapmuxv1.WatchAgentEntry {
+	if !IsResumeCursor(seq) {
+		return &leapmuxv1.WatchAgentEntry{
+			AgentId: id,
+			Replay:  leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
+		}
+	}
+	return &leapmuxv1.WatchAgentEntry{
+		AgentId:   id,
+		Replay:    leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR,
+		CursorSeq: seq,
+	}
 }
 
 // TerminalCursor records the highest cumulative `end_offset` seen per

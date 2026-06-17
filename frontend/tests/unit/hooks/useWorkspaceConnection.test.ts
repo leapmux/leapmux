@@ -1,14 +1,63 @@
+import type { AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentTab, TerminalTab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { agentWatchEntry, applyAgentLifecycleAndUsage, applyPendingAxisSuppression, buildAgentStatusTabUpdate, buildWatchTargetsKey, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, reconcileLaggingTails, resolveSettingsTabFields } from '~/hooks/useWorkspaceConnection'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createTabStore } from '~/stores/tab.store'
+
+/**
+ * Types a simulated catch-up phase as the runtime union so the guard
+ * comparisons (`!== 'live'`, `=== 'live'`) mirror the source instead of
+ * being collapsed to a known literal by TS const-narrowing.
+ */
+function simulatePhase(phase: 'catchingUp' | 'live'): 'catchingUp' | 'live' {
+  return phase
+}
+
+describe('watch target helpers', () => {
+  it('maps resume cursors to explicit replay modes', () => {
+    expect(agentWatchEntry('a1', 0n)).toMatchObject({
+      agentId: 'a1',
+      replay: WatchReplayMode.LATEST,
+      cursorSeq: 0n,
+    })
+    expect(agentWatchEntry('a1', 42n)).toMatchObject({
+      agentId: 'a1',
+      replay: WatchReplayMode.AFTER_CURSOR,
+      cursorSeq: 42n,
+    })
+  })
+
+  it('distinguishes active and non-active target roles in the subscription key', () => {
+    const active = buildWatchTargetsKey(
+      'w1',
+      [agentWatchEntry('a1', 0n), agentWatchEntry('a2', 0n)],
+      ['t1', 't2'],
+      new Set(['a2']),
+      new Set(['t2']),
+    )
+    const movedToActive = buildWatchTargetsKey(
+      'w1',
+      [agentWatchEntry('a1', 0n), agentWatchEntry('a2', 0n)],
+      ['t1', 't2'],
+      new Set(),
+      new Set(),
+    )
+    expect(active).not.toBe(movedToActive)
+    expect(active).toContain('aa:a1')
+    expect(active).toContain('pa:a2')
+    expect(active).toContain('at:t1')
+    expect(active).toContain('pt:t2')
+  })
+})
 
 /**
  * These tests verify the control-request guard in useWorkspaceConnection's
@@ -22,7 +71,7 @@ describe('controlRequest guard for inactive agents', () => {
   function makeAgent(id: string, status: AgentStatus) {
     return { id, status }
   }
-  function asAgentTab(a: { id: string, status: AgentStatus }) {
+  function asAgentTab(a: { id: string, status: AgentStatus }): AgentTab {
     return { type: TabType.AGENT, id: a.id, agentStatus: a.status }
   }
 
@@ -39,7 +88,7 @@ describe('controlRequest guard for inactive agents', () => {
 
       // Simulate the guard in useWorkspaceConnection's controlRequest handler:
       // if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE) break
-      const catchUpPhase = 'catchingUp'
+      const catchUpPhase = simulatePhase('catchingUp')
       // const agentEntry = tabStore.getAgentTab(cr.agentId)
       const agentEntry = tabStore.getAgentTab('agent-1')
       if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
@@ -82,7 +131,7 @@ describe('controlRequest guard for inactive agents', () => {
 
       tabStore.addTab(asAgentTab(makeAgent('agent-1', AgentStatus.ACTIVE)))
 
-      const catchUpPhase = 'catchingUp'
+      const catchUpPhase = simulatePhase('catchingUp')
       const agentEntry = tabStore.getAgentTab('agent-1')
       if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
@@ -152,7 +201,7 @@ describe('controlRequest guard for inactive agents', () => {
       // A replayed controlRequest for the now-INACTIVE agent must be skipped
       // by the controlRequest-case guard in useWorkspaceConnection: catch-up
       // replay + INACTIVE → break.
-      const catchUpPhase = 'catchingUp'
+      const catchUpPhase = simulatePhase('catchingUp')
       const agentEntry = tabStore.getAgentTab('agent-1')
       if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
         controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
@@ -217,7 +266,7 @@ describe('background agent history trimming', () => {
         !isAgentTabVisible(tabStore, 'background-agent')
         && chatStore.getMessages('background-agent').length > MAX_BACKGROUND_CHAT_MESSAGES
       ) {
-        chatStore.trimOldMessages('background-agent', MAX_BACKGROUND_CHAT_MESSAGES)
+        chatStore.trimOldestEnd('background-agent', MAX_BACKGROUND_CHAT_MESSAGES)
       }
 
       const messages = chatStore.getMessages('background-agent')
@@ -244,7 +293,7 @@ describe('background agent history trimming', () => {
         !isAgentTabVisible(tabStore, 'active-agent')
         && chatStore.getMessages('active-agent').length > MAX_LOADED_CHAT_MESSAGES
       ) {
-        chatStore.trimOldMessages('active-agent', MAX_LOADED_CHAT_MESSAGES)
+        chatStore.trimOldestEnd('active-agent', MAX_LOADED_CHAT_MESSAGES)
       }
 
       const messages = chatStore.getMessages('active-agent')
@@ -272,7 +321,7 @@ describe('background agent history trimming', () => {
         !isAgentTabVisible(tabStore, 'visible-agent')
         && chatStore.getMessages('visible-agent').length > MAX_BACKGROUND_CHAT_MESSAGES
       ) {
-        chatStore.trimOldMessages('visible-agent', MAX_BACKGROUND_CHAT_MESSAGES)
+        chatStore.trimOldestEnd('visible-agent', MAX_BACKGROUND_CHAT_MESSAGES)
       }
 
       const messages = chatStore.getMessages('visible-agent')
@@ -506,7 +555,7 @@ describe('streaming text preservation', () => {
     createRoot((dispose) => {
       const chatStore = createChatStore()
 
-      chatStore.setStreamingText('agent-1', 'Hello')
+      chatStore.streamingText.set('agent-1', 'Hello')
 
       const echoedUserMessage = {
         id: 'server-user-1',
@@ -518,12 +567,12 @@ describe('streaming text preservation', () => {
 
       chatStore.addMessage('agent-1', echoedUserMessage)
 
-      chatStore.setStreamingText('agent-1', `${chatStore.state.streamingText['agent-1'] ?? ''} world`)
+      chatStore.streamingText.set('agent-1', `${chatStore.streamingText.get('agent-1') ?? ''} world`)
 
-      expect(chatStore.state.streamingText['agent-1']).toBe('Hello world')
+      expect(chatStore.streamingText.get('agent-1')).toBe('Hello world')
 
-      chatStore.clearStreamingText('agent-1')
-      expect(chatStore.state.streamingText['agent-1']).toBe('')
+      chatStore.streamingText.clear('agent-1')
+      expect(chatStore.streamingText.get('agent-1')).toBe('')
       dispose()
     })
   })
@@ -532,7 +581,7 @@ describe('streaming text preservation', () => {
     createRoot((dispose) => {
       const chatStore = createChatStore()
 
-      chatStore.setStreamingText('agent-1', 'Hello')
+      chatStore.streamingText.set('agent-1', 'Hello')
 
       const completedAssistantMessage = {
         id: 'assistant-1',
@@ -555,9 +604,9 @@ describe('streaming text preservation', () => {
       const parsed = parseMessageContent(completedAssistantMessage)
       const item = parsed.parentObject?.item as Record<string, unknown> | undefined
       if (item?.type === 'agentMessage')
-        chatStore.clearStreamingText('agent-1')
+        chatStore.streamingText.clear('agent-1')
 
-      expect(chatStore.state.streamingText['agent-1']).toBe('')
+      expect(chatStore.streamingText.get('agent-1')).toBe('')
       dispose()
     })
   })
@@ -567,7 +616,7 @@ describe('streaming text preservation', () => {
       const chatStore = createChatStore()
       const agentSessionStore = createAgentSessionStore()
 
-      chatStore.setStreamingText('agent-1', '# Plan\n')
+      chatStore.streamingText.set('agent-1', '# Plan\n')
       agentSessionStore.updateInfo('agent-1', { streamingType: 'plan' })
 
       const completedPlanMessage = {
@@ -591,11 +640,11 @@ describe('streaming text preservation', () => {
       const parsed = parseMessageContent(completedPlanMessage)
       const item = parsed.parentObject?.item as Record<string, unknown> | undefined
       if (item?.type === 'plan') {
-        chatStore.clearStreamingText('agent-1')
+        chatStore.streamingText.clear('agent-1')
         agentSessionStore.updateInfo('agent-1', { streamingType: '' })
       }
 
-      expect(chatStore.state.streamingText['agent-1']).toBe('')
+      expect(chatStore.streamingText.get('agent-1')).toBe('')
       expect(agentSessionStore.getInfo('agent-1').streamingType).toBe('')
       dispose()
     })
@@ -700,28 +749,13 @@ describe('startupMessage handling in agent statusChange', () => {
 })
 
 describe('per-axis optimistic suppression in agent statusChange', () => {
-  // Mirrors the per-axis optionValues merge in useWorkspaceConnection's statusChange handler [S6]:
-  // keep the optimistic value for each axis the agent is actively changing (settingsLoading
-  // .pendingAxes), and apply the server's confirmed value for every OTHER axis. A pending axis ABSENT
-  // from prev is an in-flight CLEAR (useAgentOperations deletes a cleared key before marking it
-  // pending), so it stays absent rather than re-absorbing the server value. Driven by the REAL
-  // createLoadingSignal so the integration of pendingAxes with this merge is exercised.
-  function mergeOptionValues(
-    prev: Record<string, string>,
-    serverValues: Record<string, string>,
-    pendingAxes: ReadonlySet<string>,
-  ): Record<string, string> {
-    const merged = { ...serverValues }
-    for (const axis of pendingAxes) {
-      const optimistic = prev[axis]
-      if (optimistic !== undefined)
-        merged[axis] = optimistic
-      else
-        delete merged[axis]
-    }
-    return merged
-  }
-
+  // Exercises the REAL applyPendingAxisSuppression (the handler's per-axis merge):
+  // keep the optimistic value for each axis the agent is actively changing
+  // (settingsLoading.pendingAxes), and apply the server's confirmed value for every
+  // OTHER axis. A pending axis ABSENT from prev is an in-flight CLEAR (useAgentOperations
+  // deletes a cleared key before marking it pending), so it stays absent rather than
+  // re-absorbing the server value. Driven by the REAL createLoadingSignal so the
+  // integration of pendingAxes with the merge is exercised end to end.
   it('keeps the pending axis optimistic while applying a server change to an unrelated axis', () => {
     createRoot((dispose) => {
       const s = createLoadingSignal()
@@ -732,7 +766,7 @@ describe('per-axis optimistic suppression in agent statusChange', () => {
       // server-initiated permissionMode.
       const serverValues = { model: 'sonnet', permissionMode: 'plan' }
 
-      const merged = mergeOptionValues(prev, serverValues, s.pendingAxes('agent-1'))
+      const merged = applyPendingAxisSuppression(serverValues, prev, s.pendingAxes('agent-1'))
       expect(merged.model).toBe('opus') // pending axis: optimistic value preserved
       expect(merged.permissionMode).toBe('plan') // unrelated axis: server value applied, not stranded
       dispose()
@@ -749,7 +783,7 @@ describe('per-axis optimistic suppression in agent statusChange', () => {
       // A push still carries the server's pre-clear permissionMode (the in-flight RPC hasn't resolved).
       const serverValues = { model: 'opus', permissionMode: 'plan' }
 
-      const merged = mergeOptionValues(prev, serverValues, s.pendingAxes('agent-1'))
+      const merged = applyPendingAxisSuppression(serverValues, prev, s.pendingAxes('agent-1'))
       expect('permissionMode' in merged).toBe(false) // in-flight clear preserved, not re-absorbed
       expect(merged.model).toBe('opus') // unrelated axis untouched
       dispose()
@@ -764,9 +798,164 @@ describe('per-axis optimistic suppression in agent statusChange', () => {
       const prev = { model: 'opus', permissionMode: 'default' }
       const serverValues = { model: 'sonnet', permissionMode: 'plan' }
 
-      const merged = mergeOptionValues(prev, serverValues, s.pendingAxes('agent-1'))
+      const merged = applyPendingAxisSuppression(serverValues, prev, s.pendingAxes('agent-1'))
       expect(merged.model).toBe('sonnet') // no longer pending -> server value applies
       expect(merged.permissionMode).toBe('plan')
+      dispose()
+    })
+  })
+
+  it('returns the server values unchanged (same reference) when nothing is pending', () => {
+    const serverValues = { model: 'sonnet', permissionMode: 'plan' }
+    // No pending axes -> a no-op, and the SAME reference so the handler's downstream
+    // shallow-equal ref-reuse can short-circuit.
+    expect(applyPendingAxisSuppression(serverValues, { model: 'opus' }, new Set())).toBe(serverValues)
+  })
+})
+
+describe('resolveSettingsTabFields', () => {
+  // Minimal option-group stubs: deriveOptionGroupTabFields reads only id + currentValue.
+  const group = (id: string, currentValue: string): AvailableOptionGroup =>
+    ({ id, label: id, currentValue, options: [] }) as unknown as AvailableOptionGroup
+
+  it('returns {} for an empty option-group push, leaving the previously-derived fields untouched', () => {
+    expect(resolveSettingsTabFields(undefined, [], new Set())).toEqual({})
+  })
+
+  it('reuses the prior optionValues reference when a re-broadcast changes no current value', () => {
+    // prev has no optionGroups, so the stable-group-ref step is skipped; only the
+    // optionValues shallow-equal ref-reuse runs.
+    const prev: AgentTab = { type: TabType.AGENT, id: 'a1', optionValues: { model: 'opus' } }
+    const fields = resolveSettingsTabFields(prev, [group('model', 'opus')], new Set())
+    // Same content -> same reference, so reactive readers of optionValues don't wake.
+    expect(fields.optionValues).toBe(prev.optionValues)
+  })
+
+  it('keeps the optimistic value for a pending axis while applying the server value elsewhere', () => {
+    const prev: AgentTab = { type: TabType.AGENT, id: 'a1', optionValues: { model: 'opus', permissionMode: 'default' } }
+    const fields = resolveSettingsTabFields(
+      prev,
+      [group('model', 'sonnet'), group('permissionMode', 'plan')],
+      new Set(['model']),
+    )
+    expect(fields.optionValues).toEqual({ model: 'opus', permissionMode: 'plan' })
+  })
+})
+
+describe('buildAgentStatusTabUpdate', () => {
+  const settings = { optionValues: { model: 'opus' } } as Partial<AgentTab>
+
+  it('omits status/sessionId for a status-less (git-only) push so a default cannot overwrite valid state', () => {
+    const sc = { status: AgentStatus.UNSPECIFIED, agentSessionId: 's1', startupError: '', startupMessage: '' } as unknown as AgentStatusChange
+    const update = buildAgentStatusTabUpdate(sc, false, settings)
+    expect('agentStatus' in update).toBe(false)
+    expect('agentSessionId' in update).toBe(false)
+    expect(update.optionValues).toEqual({ model: 'opus' }) // settings still apply
+  })
+
+  it('carries status, clears startupError/startupMessage on ACTIVE, and merges settings', () => {
+    const sc = { status: AgentStatus.ACTIVE, agentSessionId: 's1', startupError: 'stale', startupMessage: 'stale' } as unknown as AgentStatusChange
+    const update = buildAgentStatusTabUpdate(sc, true, settings)
+    expect(update.agentStatus).toBe(AgentStatus.ACTIVE)
+    expect(update.agentSessionId).toBe('s1')
+    expect(update.startupError).toBe('')
+    expect(update.startupMessage).toBe('')
+    expect(update.optionValues).toEqual({ model: 'opus' })
+  })
+
+  it('carries the phase label while STARTING and the server error on STARTUP_FAILED', () => {
+    const starting = buildAgentStatusTabUpdate(
+      { status: AgentStatus.STARTING, startupMessage: 'Starting Claude Code…', startupError: '' } as unknown as AgentStatusChange,
+      true,
+      {},
+    )
+    expect(starting.startupMessage).toBe('Starting Claude Code…')
+    const failed = buildAgentStatusTabUpdate(
+      { status: AgentStatus.STARTUP_FAILED, startupError: 'spawn failed', startupMessage: '' } as unknown as AgentStatusChange,
+      true,
+      {},
+    )
+    expect(failed.startupError).toBe('spawn failed')
+  })
+
+  it('derives the git fields + full proto from a gitStatus payload (a git-only push)', () => {
+    const sc = {
+      status: AgentStatus.UNSPECIFIED,
+      gitStatus: { branch: 'main', originUrl: 'git@x:y.git', toplevel: '/repo', isWorktree: true },
+    } as unknown as AgentStatusChange
+    const update = buildAgentStatusTabUpdate(sc, false, {})
+    expect(update.gitBranch).toBe('main')
+    expect(update.gitOriginUrl).toBe('git@x:y.git')
+    expect(update.gitToplevel).toBe('/repo')
+    expect(update.gitIsWorktree).toBe(true)
+    expect(update.agentGitStatus).toBe(sc.gitStatus) // full proto carried for the diff view
+  })
+})
+
+describe('drainPendingOutboundOnStart', () => {
+  const queued = (localId: string) => ({ localId, content: 'hi', attachments: [] })
+
+  it('is a no-op when the prior status was not STARTING (queue left intact)', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+      chatStore.pendingOutbound.enqueue('agent-1', queued('local-1'))
+      drainPendingOutboundOnStart(
+        { agentId: 'agent-1', status: AgentStatus.ACTIVE } as unknown as AgentStatusChange,
+        { agentStatus: AgentStatus.ACTIVE } as AgentTab, // prior status not STARTING
+        chatStore,
+      )
+      expect(chatStore.pendingOutbound.take('agent-1')).toHaveLength(1) // not drained
+      dispose()
+    })
+  })
+
+  it('surfaces a failure error and clears the pending label on every queued message on STARTUP_FAILED', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+      chatStore.pendingOutbound.enqueue('agent-1', queued('local-1'))
+      chatStore.pendingOutbound.enqueue('agent-1', queued('local-2'))
+      chatStore.setMessagePendingLabel('local-1', 'Queued…')
+      drainPendingOutboundOnStart(
+        { agentId: 'agent-1', status: AgentStatus.STARTUP_FAILED } as unknown as AgentStatusChange,
+        { agentStatus: AgentStatus.STARTING } as AgentTab,
+        chatStore,
+      )
+      expect(chatStore.messageErrors()['local-1']).toBe('Agent failed to start')
+      expect(chatStore.messageErrors()['local-2']).toBe('Agent failed to start')
+      expect(chatStore.messagePendingLabels()['local-1']).toBeUndefined() // label cleared
+      expect(chatStore.pendingOutbound.take('agent-1')).toHaveLength(0) // queue drained
+      dispose()
+    })
+  })
+})
+
+describe('handleAgentInactive', () => {
+  function makeStores() {
+    const tabStore = createTabStore()
+    tabStore.addTab({ type: TabType.AGENT, id: 'agent-1', agentStatus: AgentStatus.INACTIVE } as unknown as Parameters<typeof tabStore.addTab>[0])
+    const controlStore = createControlStore()
+    controlStore.addRequest('agent-1', { requestId: 'r1', agentId: 'agent-1', payload: {} })
+    return { controlStore, agentSessionStore: createAgentSessionStore(), chatStore: createChatStore(), tabStore }
+  }
+
+  it('clears control requests and signals turn-end while LIVE', () => {
+    createRoot((dispose) => {
+      const stores = makeStores()
+      const turnEnds: string[] = []
+      handleAgentInactive('agent-1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'live', stores, id => turnEnds.push(id))
+      expect(stores.controlStore.getRequests('agent-1')).toHaveLength(0)
+      expect(turnEnds).toEqual(['agent-1']) // live + sessionId + tab present -> turn end
+      dispose()
+    })
+  })
+
+  it('clears control requests but does NOT signal turn-end during catch-up', () => {
+    createRoot((dispose) => {
+      const stores = makeStores()
+      const turnEnds: string[] = []
+      handleAgentInactive('agent-1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'catchingUp', stores, id => turnEnds.push(id))
+      expect(stores.controlStore.getRequests('agent-1')).toHaveLength(0) // still cleared
+      expect(turnEnds).toEqual([]) // catchUpComplete sweep owns turn-end during catch-up
       dispose()
     })
   })
@@ -815,7 +1004,7 @@ describe('startupMessage handling in terminal statusChange', () => {
     msg: string | undefined,
   ) {
     const existing = tabStore.state.tabs.find(
-      t => t.type === TabType.TERMINAL && t.id === terminalId,
+      (t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === terminalId,
     )
     if (existing && existing.status !== TerminalStatus.READY && existing.status !== TerminalStatus.STARTING) {
       tabStore.updateTab(TabType.TERMINAL, terminalId, {
@@ -835,7 +1024,7 @@ describe('startupMessage handling in terminal statusChange', () => {
 
       applyStarting(tabStore, 'term-1', 'Starting zsh…')
 
-      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
       expect(tab?.status).toBe(TerminalStatus.STARTING)
       expect(tab?.startupMessage).toBe('Starting zsh…')
       dispose()
@@ -849,7 +1038,7 @@ describe('startupMessage handling in terminal statusChange', () => {
 
       applyStarting(tabStore, 'term-1', 'Starting fish…')
 
-      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
       expect(tab?.startupMessage).toBe('Starting fish…')
       dispose()
     })
@@ -866,7 +1055,7 @@ describe('startupMessage handling in terminal statusChange', () => {
 
       applyStarting(tabStore, 'term-1', 'Creating worktree "feature/x"…')
 
-      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
       expect(tab?.startupMessage).toBe('Creating worktree "feature/x"…')
       dispose()
     })
@@ -879,7 +1068,7 @@ describe('startupMessage handling in terminal statusChange', () => {
 
       applyStarting(tabStore, 'term-1', 'Rolling back worktree "feature/x"…')
 
-      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
       expect(tab?.startupMessage).toBe('Rolling back worktree "feature/x"…')
       dispose()
     })
@@ -895,7 +1084,7 @@ describe('startupMessage handling in terminal statusChange', () => {
     gitOriginUrl: string,
   ) {
     const existing = tabStore.state.tabs.find(
-      t => t.type === TabType.TERMINAL && t.id === terminalId,
+      (t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === terminalId,
     )
     if (!existing)
       return
@@ -913,7 +1102,7 @@ describe('startupMessage handling in terminal statusChange', () => {
 
       applyGitFromStatusChange(tabStore, 'term-1', 'feature/x', 'git@example.com:org/repo.git')
 
-      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 'term-1')
+      const tab = tabStore.state.tabs.find((t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === 'term-1')
       expect(tab?.gitBranch).toBe('feature/x')
       expect(tab?.gitOriginUrl).toBe('git@example.com:org/repo.git')
       dispose()
@@ -971,6 +1160,493 @@ describe('agent_session_info snake_case wire normalization', () => {
       applyAgentSessionInfo(store, 'cc-3', {})
       expect(Object.keys(store.getInfo('cc-3'))).toHaveLength(0)
       dispose()
+    })
+  })
+})
+
+// handleAgentEvent gates the turn-end orphan sweep on catchUpPhase === 'live', so a
+// turn-end divider replayed DURING catch-up skips it; the catchUpComplete handler
+// then sweeps once on the transition. Simulated inline with the real chatStore (as
+// the other handler tests here do) to verify the cross-cutting invariant: an orphan
+// recorded mid-catch-up is reclaimed on catch-up completion rather than leaking.
+describe('orphaned command-stream sweep across catch-up', () => {
+  function makeSpanMessage(id: string, seq: bigint, spanId: string) {
+    return {
+      id,
+      source: MessageSource.AGENT,
+      content: new TextEncoder().encode('{"type":"assistant"}'),
+      seq,
+      spanId,
+    } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+  }
+
+  it('reclaims a stream orphaned during catch-up on the catch-up -> live transition', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+      chatStore.addMessage('agent-1', makeSpanMessage('m1', 1n, 'span1'))
+      chatStore.appendCommandStream('agent-1', 'span1', 'item/commandExecution/output', 'output') // marks span1 renderable
+
+      // A mid-stream delete spares the still-buffered stream and records it as an
+      // orphan (clearing now would lose the in-flight segments).
+      chatStore.removeMessage('agent-1', 'm1')
+      expect(chatStore.getCommandStream('agent-1', 'span1')).toHaveLength(1)
+
+      // The result_divider turn-end sweep is GATED on catchUpPhase === 'live'
+      // (see handleAgentEvent), so a turn-end replayed during catch-up skips it.
+      const catchUpPhase = simulatePhase('catchingUp')
+      if (catchUpPhase === 'live')
+        chatStore.sweepOrphanedBufferedSpans('agent-1')
+      expect(chatStore.getCommandStream('agent-1', 'span1')).toHaveLength(1) // still spared
+
+      // The catchUpComplete handler flips the phase to 'live' AND sweeps once, so
+      // the orphan recorded during catch-up is reclaimed instead of leaking until
+      // (or past) the next live turn-end.
+      chatStore.sweepOrphanedBufferedSpans('agent-1')
+      expect(chatStore.getCommandStream('agent-1', 'span1')).toHaveLength(0)
+      dispose()
+    })
+  })
+})
+
+describe('agentMessage sub-handlers', () => {
+  function agentMessage(content: unknown, agentProvider = AgentProvider.CLAUDE_CODE) {
+    return {
+      id: 'm1',
+      source: MessageSource.AGENT,
+      content: new TextEncoder().encode(JSON.stringify(content)),
+      contentCompression: ContentCompression.NONE,
+      seq: 1n,
+      agentProvider,
+    } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+  }
+
+  it('handleAgentSessionInfo consumes an agent_session_info message and applies its updates', () => {
+    createRoot((dispose) => {
+      const agentSessionStore = createAgentSessionStore()
+      const msg = agentMessage({ type: 'agent_session_info', info: { total_cost_usd: 1.5 } })
+      const handled = handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)
+      // Returning true is the early-break signal: the caller must NOT persist it.
+      expect(handled).toBe(true)
+      expect(agentSessionStore.getInfo('a1').totalCostUsd).toBe(1.5)
+      dispose()
+    })
+  })
+
+  it('handleAgentSessionInfo returns false for a persisted message (caller keeps processing it)', () => {
+    createRoot((dispose) => {
+      const agentSessionStore = createAgentSessionStore()
+      const msg = agentMessage({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })
+      expect(handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)).toBe(false)
+      dispose()
+    })
+  })
+
+  it('handleAgentSessionInfo clears a stale thinking-token estimate on a 0 (per-phase reset)', () => {
+    createRoot((dispose) => {
+      const agentSessionStore = createAgentSessionStore()
+      agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
+      const msg = agentMessage({ type: 'agent_session_info', info: { thinking_tokens: 0 } })
+      handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)
+      expect(agentSessionStore.getInfo('a1').thinkingTokens).not.toBe(500)
+      dispose()
+    })
+  })
+
+  it('handleResultDivider fires onTurnEnd only in the live phase, not during catch-up replay', () => {
+    createRoot((dispose) => {
+      const stores = {
+        agentSessionStore: createAgentSessionStore(),
+        chatStore: createChatStore(),
+        tabStore: createTabStore(),
+      }
+      const turnEnds: string[] = []
+      const onTurnEnd = (id: string) => turnEnds.push(id)
+      const msg = agentMessage({ type: 'result', subtype: 'success', total_cost_usd: 0.25 })
+      const parsed = parseMessageContent(msg)
+
+      // A catch-up replay must not re-play the turn-end side effects.
+      handleResultDivider('a1', msg, parsed, stores, onTurnEnd, 'catchingUp')
+      expect(turnEnds).toEqual([])
+
+      // A live divider fires onTurnEnd and rehydrates total cost.
+      handleResultDivider('a1', msg, parsed, stores, onTurnEnd, 'live')
+      expect(turnEnds).toEqual(['a1'])
+      expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(0.25)
+      dispose()
+    })
+  })
+
+  /** A span (commandExecution/fileChange/reasoning) row carrying its `item` payload. */
+  function spanMessage(item: unknown, spanType: string, spanId = 'span1') {
+    return {
+      id: 'm1',
+      source: MessageSource.AGENT,
+      content: new TextEncoder().encode(JSON.stringify({ item })),
+      contentCompression: ContentCompression.NONE,
+      seq: 1n,
+      spanId,
+      spanType,
+    } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+  }
+
+  it('clearCompletedSpanStream reclaims a COMPLETED span command stream', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+      chatStore.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
+
+      // The persisted row reports the commandExecution span completed -> its buffered
+      // in-flight segments are superseded and reclaimed.
+      const msg = spanMessage({ type: 'commandExecution', status: 'completed' }, 'commandExecution')
+      clearCompletedSpanStream('a1', msg, parseMessageContent(msg), chatStore)
+      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  it('clearCompletedSpanStream leaves an IN-PROGRESS span stream buffered', () => {
+    createRoot((dispose) => {
+      const chatStore = createChatStore()
+      chatStore.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+
+      // A still-running span (status != completed) must keep its live stream.
+      const msg = spanMessage({ type: 'commandExecution', status: 'in_progress' }, 'commandExecution')
+      clearCompletedSpanStream('a1', msg, parseMessageContent(msg), chatStore)
+      expect(chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
+      dispose()
+    })
+  })
+
+  it('handleAgentMessage does not clear a completed span stream when the row is dropped beyond the window', () => {
+    createRoot((dispose) => {
+      const stores = {
+        agentSessionStore: createAgentSessionStore(),
+        chatStore: createChatStore(),
+        tabStore: createTabStore(),
+      }
+      stores.chatStore.setMessages('a1', Array.from({ length: 50 }, (_, i) => ({
+        ...agentMessage({ type: 'assistant' }),
+        id: `m${i + 1}`,
+        seq: BigInt(i + 1),
+      })))
+      stores.chatStore.trimNewestEnd('a1', 30) // hasMoreNewer=true; seq 60 is recorded but not inserted.
+      stores.chatStore.appendCommandStream('a1', 'span1', 'item/commandExecution/output', 'output')
+      const dropped = {
+        ...spanMessage({ type: 'commandExecution', status: 'completed' }, 'commandExecution'),
+        id: 'dropped-complete',
+        seq: 60n,
+      }
+
+      handleAgentMessage('a1', dropped, stores, undefined, 'live')
+
+      expect(stores.chatStore.getMessages('a1').some(m => m.id === 'dropped-complete')).toBe(false)
+      expect(stores.chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
+      dispose()
+    })
+  })
+
+  it('applyAgentLifecycleAndUsage clears a stale Codex turn id on thread/started', () => {
+    createRoot((dispose) => {
+      const agentSessionStore = createAgentSessionStore()
+      agentSessionStore.updateInfo('a1', { codexTurnId: 'turn-123' })
+      const msg = agentMessage({ method: 'thread/started' })
+      applyAgentLifecycleAndUsage('a1', msg, parseMessageContent(msg), agentSessionStore)
+      // A new thread starts idle: the stale turn id is cleared so the chat shows its
+      // empty state instead of a phantom thinking indicator.
+      expect(agentSessionStore.getInfo('a1').codexTurnId).toBe('')
+      dispose()
+    })
+  })
+
+  it('applyAgentLifecycleAndUsage skips a non-AGENT message (the source gate)', () => {
+    createRoot((dispose) => {
+      const agentSessionStore = createAgentSessionStore()
+      agentSessionStore.updateInfo('a1', { codexTurnId: 'turn-123' })
+      // A USER-source message carrying a thread/started method must be ignored, so the
+      // turn id survives -- the gate that keeps a hidden-classified lifecycle item from
+      // being processed off a non-AGENT row.
+      const msg = { ...agentMessage({ method: 'thread/started' }), source: MessageSource.USER }
+      applyAgentLifecycleAndUsage('a1', msg, parseMessageContent(msg), agentSessionStore)
+      expect(agentSessionStore.getInfo('a1').codexTurnId).toBe('turn-123')
+      dispose()
+    })
+  })
+})
+
+describe('reconcileLaggingTails', () => {
+  function run(overrides: {
+    agentTabs: Array<{ id: string, workerId: string }>
+    hasNewerMessages?: (id: string) => boolean
+    caughtUpToLiveTail?: (id: string) => boolean
+    isTailFillDeferred?: (id: string) => boolean
+    getLastSeq?: (id: string) => bigint
+    isFetchingNewer?: (id: string) => boolean
+  }) {
+    const catchUp: Array<{ workerId: string, agentId: string, afterSeq: bigint }> = []
+    const resume: Array<{ workerId: string, agentId: string }> = []
+    const jumps: Array<{ workerId: string, agentId: string }> = []
+    reconcileLaggingTails({
+      agentTabs: () => overrides.agentTabs,
+      hasNewerMessages: overrides.hasNewerMessages ?? (() => false),
+      caughtUpToLiveTail: overrides.caughtUpToLiveTail ?? (() => true),
+      isTailFillDeferred: overrides.isTailFillDeferred ?? (() => false),
+      // Default to a NON-empty loaded window (1n); the empty-window (0n) recovery branch
+      // is exercised explicitly by its own test.
+      getLastSeq: overrides.getLastSeq ?? (() => 1n),
+      isFetchingNewer: overrides.isFetchingNewer ?? (() => false),
+      catchUpToTail: (workerId, agentId, afterSeq) => catchUp.push({ workerId, agentId, afterSeq }),
+      resumeDeferredTailFill: (workerId, agentId) => resume.push({ workerId, agentId }),
+      jumpToLatest: (workerId, agentId) => jumps.push({ workerId, agentId }),
+    })
+    return { catchUp, resume, jumps }
+  }
+
+  it('forward-fills ONLY an agent that lags its live tail while AT the tail', () => {
+    const { catchUp, resume } = run({
+      agentTabs: [
+        { id: 'lagging', workerId: 'w1' }, // at tail, not caught up -> fill
+        { id: 'caught-up', workerId: 'w1' }, // at tail, caught up -> no fill
+        { id: 'scrolled-away', workerId: 'w1' }, // hasNewer, NOT deferred -> no fill
+      ],
+      hasNewerMessages: id => id === 'scrolled-away',
+      caughtUpToLiveTail: id => id === 'caught-up',
+      // 'lagging' is at the tail; 'scrolled-away' has a loaded (non-empty) window.
+      getLastSeq: id => (id === 'lagging' ? 42n : id === 'scrolled-away' ? 30n : 0n),
+    })
+    expect(catchUp).toEqual([{ workerId: 'w1', agentId: 'lagging', afterSeq: 42n }])
+    expect(resume).toEqual([]) // a plain scrolled-away wall is left to the affordance
+  })
+
+  it('skips a tab with no workerId (a non-active-workspace agent)', () => {
+    const { catchUp } = run({
+      agentTabs: [{ id: 'lagging', workerId: '' }],
+      caughtUpToLiveTail: () => false, // lagging, but no worker to fetch from
+    })
+    expect(catchUp).toEqual([])
+  })
+
+  it('forward-fills every lagging agent from its own loaded tail', () => {
+    const { catchUp } = run({
+      agentTabs: [
+        { id: 'a', workerId: 'w1' },
+        { id: 'b', workerId: 'w2' },
+      ],
+      caughtUpToLiveTail: () => false,
+      getLastSeq: id => (id === 'a' ? 10n : 20n),
+    })
+    expect(catchUp).toEqual([
+      { workerId: 'w1', agentId: 'a', afterSeq: 10n },
+      { workerId: 'w2', agentId: 'b', afterSeq: 20n },
+    ])
+  })
+
+  it('resumes an exhaustion-forced deferred fill, but not a plain scrolled-away wall', () => {
+    const { catchUp, resume } = run({
+      agentTabs: [
+        { id: 'deferred', workerId: 'w1' }, // hasNewer + deferred + lagging -> resume
+        { id: 'scrolled-away', workerId: 'w1' }, // hasNewer, NOT deferred -> nothing
+      ],
+      hasNewerMessages: () => true, // both away from the loaded tail
+      caughtUpToLiveTail: () => false, // both genuinely lagging
+      isTailFillDeferred: id => id === 'deferred',
+    })
+    expect(resume).toEqual([{ workerId: 'w1', agentId: 'deferred' }])
+    expect(catchUp).toEqual([]) // resume uses the merge path, not catchUpToTail
+  })
+
+  it('prefers catchUpToTail at the tail over a deferred resume, and skips a caught-up agent', () => {
+    const { catchUp, resume } = run({
+      agentTabs: [
+        { id: 'at-tail', workerId: 'w1' }, // !hasNewer, lagging -> catchUpToTail
+        { id: 'caught-up-deferred', workerId: 'w1' }, // caught up, even if deferred -> nothing
+      ],
+      hasNewerMessages: () => false,
+      caughtUpToLiveTail: id => id === 'caught-up-deferred',
+      isTailFillDeferred: () => true,
+      getLastSeq: () => 7n,
+    })
+    expect(catchUp).toEqual([{ workerId: 'w1', agentId: 'at-tail', afterSeq: 7n }])
+    expect(resume).toEqual([])
+  })
+
+  it('re-seats an EMPTY window (a full phantom reap) on the latest page instead of forward-filling', () => {
+    const { catchUp, resume, jumps } = run({
+      agentTabs: [{ id: 'emptied', workerId: 'w1' }],
+      // Not caught up (server content survives), but the loaded window is empty (getLastSeq
+      // 0n) -- a full phantom reap dropped every loaded row. There's no anchor to
+      // forward-fill from, so re-seat on the latest page.
+      caughtUpToLiveTail: () => false,
+      getLastSeq: () => 0n,
+    })
+    expect(jumps).toEqual([{ workerId: 'w1', agentId: 'emptied' }])
+    expect(catchUp).toEqual([]) // no forward-fill from an empty window
+    expect(resume).toEqual([])
+  })
+
+  it('does NOT re-issue the empty-window re-seat while a newer fetch is already in flight', () => {
+    const { jumps } = run({
+      agentTabs: [{ id: 'emptied', workerId: 'w1' }],
+      caughtUpToLiveTail: () => false,
+      getLastSeq: () => 0n,
+      isFetchingNewer: () => true, // jumpToLatest's own fetch is resolving
+    })
+    expect(jumps).toEqual([]) // guarded so the reconcile tick doesn't abort + restart it
+  })
+})
+
+// Direct coverage for the per-case handlers extracted from handleAgentEvent's
+// dispatcher. The dispatcher closure itself is only driven by gRPC streams, so these
+// exercise the real production handlers (not a re-implementation) against live stores.
+describe('extracted handleAgentEvent arm handlers', () => {
+  const enc = (s: string) => new TextEncoder().encode(s)
+  const argStores = () => ({
+    agentSessionStore: createAgentSessionStore(),
+    chatStore: createChatStore(),
+    tabStore: createTabStore(),
+    controlStore: createControlStore(),
+  })
+
+  describe('handleStreamChunk', () => {
+    it('accumulates free-form streaming text when there is no spanId', () => {
+      createRoot((dispose) => {
+        const chatStore = createChatStore()
+        handleStreamChunk('a1', { delta: enc('hello '), spanId: '', method: '' } as unknown as AgentStreamChunk, chatStore)
+        handleStreamChunk('a1', { delta: enc('world'), spanId: '', method: '' } as unknown as AgentStreamChunk, chatStore)
+        expect(chatStore.streamingText.get('a1')).toBe('hello world')
+        dispose()
+      })
+    })
+
+    it('routes a spanId chunk to the command-stream buffer, not the free-form text', () => {
+      createRoot((dispose) => {
+        const chatStore = createChatStore()
+        handleStreamChunk('a1', { delta: enc('out'), spanId: 's1', method: 'bash' } as unknown as AgentStreamChunk, chatStore)
+        expect(chatStore.streamingText.get('a1')).toBe('') // NOT the free-form text
+        expect(chatStore.getCommandStream('a1', 's1').map(seg => seg.text).join('')).toContain('out')
+        dispose()
+      })
+    })
+  })
+
+  describe('handleStreamEnd', () => {
+    it('clears the free-form streaming text and badges a backgrounded tab', () => {
+      createRoot((dispose) => {
+        const chatStore = createChatStore()
+        const tabStore = createTabStore()
+        tabStore.addTab({ type: TabType.AGENT, id: 'a1' } as AgentTab)
+        tabStore.addTab({ type: TabType.AGENT, id: 'a2' } as AgentTab)
+        tabStore.setActiveTab(TabType.AGENT, 'a2') // a1 is backgrounded
+        chatStore.streamingText.set('a1', 'partial')
+        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore, tabStore })
+        expect(chatStore.streamingText.get('a1')).toBe('')
+        expect(tabStore.getAgentTab('a1')?.hasNotification).toBe(true)
+        dispose()
+      })
+    })
+
+    it('does not badge the tab when the agent IS the active tab', () => {
+      createRoot((dispose) => {
+        const chatStore = createChatStore()
+        const tabStore = createTabStore()
+        tabStore.addTab({ type: TabType.AGENT, id: 'a1' } as AgentTab)
+        tabStore.setActiveTab(TabType.AGENT, 'a1')
+        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore, tabStore })
+        expect(tabStore.getAgentTab('a1')?.hasNotification).toBeFalsy()
+        dispose()
+      })
+    })
+  })
+
+  describe('handleControlRequest', () => {
+    const req = (agentId: string) =>
+      ({ requestId: 'r1', agentId, payload: enc(JSON.stringify({ method: 'item/commandExecution/requestApproval' })) }) as unknown as AgentControlRequest
+
+    it('skips a replayed (catch-up) request for an already-INACTIVE agent', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.INACTIVE } as AgentTab)
+        handleControlRequest('a1', req('a1'), simulatePhase('catchingUp'), s, undefined)
+        expect(s.controlStore.getRequests('a1')).toHaveLength(0)
+        dispose()
+      })
+    })
+
+    it('adds a live request, badges a backgrounded tab, and ends the turn', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a2' } as AgentTab)
+        s.tabStore.setActiveTab(TabType.AGENT, 'a2')
+        let ended = ''
+        handleControlRequest('a1', req('a1'), 'live', s, id => void (ended = id))
+        expect(s.controlStore.getRequests('a1')).toHaveLength(1)
+        expect(s.tabStore.getAgentTab('a1')?.hasNotification).toBe(true)
+        expect(ended).toBe('a1')
+        dispose()
+      })
+    })
+
+    it('adds a catch-up request for an ACTIVE agent but does NOT run the live-only turn-end', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        let ended = ''
+        handleControlRequest('a1', req('a1'), simulatePhase('catchingUp'), s, id => void (ended = id))
+        expect(s.controlStore.getRequests('a1')).toHaveLength(1)
+        expect(ended).toBe('') // onTurnEnd gated to live
+        dispose()
+      })
+    })
+
+    it('ignores a malformed JSON payload instead of throwing out of the stream handler', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        const malformed = { requestId: 'r1', agentId: 'a1', payload: enc('{not json') } as unknown as AgentControlRequest
+        expect(() => handleControlRequest('a1', malformed, 'live', s, undefined)).not.toThrow()
+        expect(s.controlStore.getRequests('a1')).toHaveLength(0)
+        dispose()
+      })
+    })
+  })
+
+  describe('handleAgentStatusChange', () => {
+    it('applies a status update and reports worker-online on a full snapshot', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.STARTING } as AgentTab)
+        let online: boolean | undefined
+        const sc = { agentId: 'a1', status: AgentStatus.ACTIVE, workerOnline: true, optionGroups: [], startupError: '', startupMessage: '' } as unknown as AgentStatusChange
+        handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), v => void (online = v), undefined)
+        expect(s.tabStore.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+        expect(online).toBe(true)
+        dispose()
+      })
+    })
+
+    it('skips a payload-less sentinel without touching the tab or reporting worker-online', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        let online: boolean | undefined
+        const sc = { agentId: 'a1', status: AgentStatus.UNSPECIFIED, workerOnline: false, optionGroups: [] } as unknown as AgentStatusChange
+        handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), v => void (online = v), undefined)
+        expect(s.tabStore.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE) // unchanged
+        expect(online).toBeUndefined() // setWorkerOnline only on a full status snapshot
+        dispose()
+      })
+    })
+
+    it('clears pending control requests when the agent goes INACTIVE', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabStore.addTab({ type: TabType.AGENT, id: 'a1', agentStatus: AgentStatus.ACTIVE } as AgentTab)
+        s.controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { method: 'x' } })
+        const sc = { agentId: 'a1', status: AgentStatus.INACTIVE, workerOnline: true, optionGroups: [], startupError: '', startupMessage: '' } as unknown as AgentStatusChange
+        handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.controlStore.getRequests('a1')).toHaveLength(0)
+        dispose()
+      })
     })
   })
 })

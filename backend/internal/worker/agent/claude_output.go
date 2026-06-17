@@ -713,19 +713,60 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 		slog.Error("persist rate_limit notification", "agent_id", a.agentID, "error", err)
 	}
 
-	if rlInfo.Status == "allowed" {
+	// Decide whether this event is an actual block that warrants waiting for a
+	// reset. Only a hard "rejected" status blocks; "allowed" and
+	// "allowed_warning" are both served -- a warning is just a heads-up that the
+	// window is filling up -- so they clear any pending resume. This mirrors
+	// Claude Code's own gate (it shows the blocking countdown only on "rejected")
+	// and fixes a bug where any non-"allowed" status, notably "allowed_warning",
+	// scheduled a spurious auto-continue.
+	usingOverage := rlInfo.IsUsingOverage != nil && *rlInfo.IsUsingOverage
+	blocked, resumeAt := claudeRateLimitResume(
+		rlInfo.Status, rlInfo.ResetsAt, usingOverage, rlInfo.OverageStatus, rlInfo.OverageResetsAt)
+	if !blocked {
 		a.sink.CancelAutoContinue(AutoContinueReasonRateLimit)
 		return
 	}
-	if rlInfo.ResetsAt == nil {
+	// Blocked, but a resume can only be scheduled if the event says when the
+	// window lifts. A blocked-but-undated event leaves any existing schedule
+	// intact rather than cancelling a legitimate pending resume.
+	if resumeAt == nil {
 		return
 	}
 
 	a.sink.ScheduleAutoContinue(AutoContinueSchedule{
 		Reason:        AutoContinueReasonRateLimit,
-		DueAt:         time.Unix(*rlInfo.ResetsAt, 0).UTC(),
+		DueAt:         time.Unix(*resumeAt, 0).UTC(),
 		SourcePayload: append([]byte(nil), rle.RateLimitInfo...),
 	})
+}
+
+// claudeRateLimitStatusRejected is the only Claude rate_limit_event status that
+// represents an actual block. The Anthropic-native status vocabulary is
+// "allowed" / "allowed_warning" / "rejected" (and the same three for the overage
+// status); "allowed" and "allowed_warning" are both served requests.
+const claudeRateLimitStatusRejected = "rejected"
+
+// claudeRateLimitResume reports whether a Claude rate_limit_event represents an
+// actual block and, if so, the Unix reset time to auto-resume at (nil when the
+// event is a block but carries no reset). Mirrors Claude Code's own gate:
+//
+//   - While NOT on overage, the base window blocks only on a "rejected" status,
+//     lifting at resetsAt. "allowed" / "allowed_warning" are served.
+//   - While ON overage, the base window is absorbed by the overage allowance, so
+//     the block applies only once the overage itself is "rejected", lifting at
+//     overageResetsAt.
+func claudeRateLimitResume(status string, resetsAt *int64, usingOverage bool, overageStatus string, overageResetsAt *int64) (blocked bool, resumeAt *int64) {
+	if usingOverage {
+		if overageStatus == claudeRateLimitStatusRejected {
+			return true, overageResetsAt
+		}
+		return false, nil
+	}
+	if status == claudeRateLimitStatusRejected {
+		return true, resetsAt
+	}
+	return false, nil
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.

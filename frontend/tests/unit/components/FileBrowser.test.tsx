@@ -1,18 +1,19 @@
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
+import { create } from '@bufbuild/protobuf'
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { FileBrowser } from '~/components/filebrowser/FileBrowser'
+import { FileInfoSchema } from '~/generated/leapmux/v1/file_pb'
 
 function makeEntry(name: string, isDir: boolean, size: bigint = 0n): FileInfo {
-  return {
-    $typeName: 'leapmux.v1.FileInfo',
+  return create(FileInfoSchema, {
     name,
     path: `/${name}`,
     isDir,
     size,
     modTime: '',
     permissions: '',
-  }
+  })
 }
 
 describe('fileBrowser', () => {

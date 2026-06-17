@@ -29,6 +29,8 @@ describe('acpReadFromToolCall', () => {
       totalLines: 0,
       numLines: 0,
       fallbackContent: '1\tfoo\n2\tbar\n',
+      leading: [],
+      trailing: [],
     })
   })
 
@@ -45,6 +47,8 @@ describe('acpReadFromToolCall', () => {
       totalLines: 0,
       numLines: 0,
       fallbackContent: 'plain text body',
+      leading: [],
+      trailing: [],
     })
   })
 
@@ -66,6 +70,8 @@ describe('acpReadFromToolCall', () => {
       totalLines: 0,
       numLines: 0,
       fallbackContent: '1\thi\n',
+      leading: [],
+      trailing: [],
     })
   })
 })

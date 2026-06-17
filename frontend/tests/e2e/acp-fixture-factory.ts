@@ -68,7 +68,10 @@ export async function createACPWorkspace(
 }
 
 export async function authenticateACPWorkspace(
-  page: Parameters<typeof loginViaToken>[0] & { goto: (url: string) => Promise<void> },
+  // Playwright's `Page` (loginViaToken's first param) already provides `goto`.
+  // Intersecting an explicit `goto` returning Promise<void> contradicts Page's
+  // own `goto` (Promise<Response | null>), so use the param type as-is.
+  page: Parameters<typeof loginViaToken>[0],
   workspace: WorkspaceFixture,
   adminToken: string,
   use: (fixture: WorkspaceFixture) => Promise<void>,

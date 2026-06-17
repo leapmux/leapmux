@@ -58,15 +58,45 @@ export const messageList = style({
   gap: 'var(--space-3)',
 })
 
-export const loadingOlderIndicator = style({
+/**
+ * Shared look of the "Loading older/newer messages..." indicators. Each is an absolute
+ * OVERLAY pill (a sibling of the scroll container, inside the relative wrapper), NOT in
+ * the scroll flow. An in-flow indicator would shift the virtualized content by its
+ * height when fetching toggles -- and that shift is invisible to the anchor re-pin
+ * (whose offset map covers only the virtual rows), so the view bounces by the
+ * indicator's height each load cycle and a scrolled reader gets stuck re-triggering the
+ * load. As an overlay it never moves the content. pointer-events: none so it can't
+ * swallow a scroll/click landing on it. The top/bottom edge is set by each variant.
+ */
+const loadingIndicatorBase = style({
+  position: 'absolute',
+  left: '50%',
+  transform: 'translateX(-50%)',
+  zIndex: 10,
   display: 'flex',
   alignItems: 'center',
-  justifyContent: 'center',
   gap: 'var(--space-2)',
-  padding: 'var(--space-3)',
+  padding: 'var(--space-2) var(--space-4)',
+  // Match the scroll-to-bottom button's corner (the base button radius token),
+  // not a pill -- both float over the same viewport so they should read as one set.
+  borderRadius: 'var(--radius-medium)',
+  backgroundColor: 'var(--background)',
+  border: '1px solid var(--border)',
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-7)',
+  pointerEvents: 'none',
+  opacity: 0.95,
 })
+
+/** "Loading older messages..." overlay, pinned top-center while scrolled up against the loaded top edge. */
+export const loadingOlderIndicator = style([loadingIndicatorBase, { top: 'var(--space-3)' }])
+
+/**
+ * "Loading newer messages..." overlay, pinned bottom-center. It takes the scroll-to-bottom
+ * button's exact slot (same bottom-center anchor); ChatView hides that button while this is
+ * shown (scroll.stalledNewer()) so the two never overlap.
+ */
+export const loadingNewerIndicator = style([loadingIndicatorBase, { bottom: 'var(--space-3)' }])
 
 export const inputArea = style({
   padding: 'var(--space-1) var(--space-3) var(--space-3)',
@@ -418,14 +448,33 @@ export const messageRow = style({
   display: 'flex',
 })
 
-// Tighten the gap for messages with span lines (they belong to a visual group).
-export const messageRowWithSpanLines = style({
-  marginTop: 'calc(-1 * (var(--space-5) - var(--space-2)))',
-})
-
 export const messageRowContent = style({
   flex: 1,
   minWidth: 0,
+  // Isolate the bubble's layout/paint so an internal change (e.g. a tool card
+  // expanding) doesn't invalidate siblings. Kept off the row itself so it never
+  // clips the span-line bridge pseudo-elements that overflow each row.
+  contain: 'layout paint',
+})
+
+// Spacer sized to the whole window height; absolutely-positioned rows live
+// inside it so the native scrollbar reflects the full message list.
+export const virtualSpacer = style({
+  position: 'relative',
+  width: '100%',
+  // We anchor the viewport ourselves (useChatScroll); browser scroll anchoring
+  // on the absolutely-positioned children would fight our re-pin math.
+  overflowAnchor: 'none',
+})
+
+// A single virtualized message row, positioned by translateY. Must NOT set
+// `contain: paint` / `content-visibility` — that would clip the span-line
+// bridges that intentionally overflow the row to connect adjacent rails.
+export const virtualRow = style({
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
 })
 
 export const editorPanelWrapper = style({

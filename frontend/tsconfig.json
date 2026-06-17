@@ -18,5 +18,5 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  "include": ["src", "app.config.ts"]
+  "include": ["src", "tests/unit", "app.config.ts"]
 }

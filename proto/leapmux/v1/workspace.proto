@@ -204,7 +204,12 @@ message WatchEventsRequest {
 
 message WatchAgentEntry {
   string agent_id = 1;
-  int64 after_seq = 2;
+  // Which history to replay before the live stream begins. Defaults (UNSPECIFIED)
+  // to LATEST -- the cold-start view.
+  WatchReplayMode replay = 2;
+  // Exclusive lower bound for AFTER_CURSOR replay (replay seq > cursor_seq);
+  // ignored for LATEST.
+  int64 cursor_seq = 3;
 }
 
 message WatchTerminalEntry {
@@ -232,10 +237,47 @@ message AgentEvent {
     AgentMessageDeleted message_deleted = 9;
     CatchUpComplete catch_up_complete = 10;
     AgentTodosChanged todos_changed = 11;
+    CatchUpStart catch_up_start = 12;
   }
 }
 
-message CatchUpComplete {}
+// CatchUpStart is broadcast at the START of a WatchEvents (re)subscribe, BEFORE the
+// message replay burst, carrying the agent's authoritative live-tail seq. A windowed
+// client that was disconnected reconciles against it FIRST -- dropping any loaded row
+// whose seq exceeds latest_seq (a tail deletion it missed while away) and clamping its
+// recorded live-tail -- so phantom rows are gone before the replay renders rather than
+// flashing until CatchUpComplete. CatchUpComplete repeats the reconcile as the final
+// authority after the burst.
+message CatchUpStart {
+  // The agent's authoritative live-tail seq at the moment replay began. Sentinel:
+  // -1 = the worker couldn't determine it (a DB error) and the client skips
+  // reconciliation; 0 = the agent genuinely has no messages; >0 = the authoritative
+  // MAX(seq).
+  int64 latest_seq = 1;
+}
+
+message CatchUpComplete {
+  // The agent's authoritative live-tail seq at the moment replay completed. A windowed
+  // client that was disconnected never receives the AgentMessageDeleted for rows
+  // deleted meanwhile, so it reconciles here: it drops any loaded row whose seq exceeds
+  // latest_seq (a tail deletion it missed) and clamps its recorded live-tail to this
+  // value, so its "new messages below" affordance can't stay stuck past a now-shorter
+  // history. Sentinel: -1 = the worker couldn't determine it (a DB error) and the
+  // client skips reconciliation; 0 = the agent genuinely has no messages; >0 = the
+  // authoritative MAX(seq).
+  int64 latest_seq = 1;
+  // The live-tail seq at the moment replay BEGAN (== CatchUpStart.latest_seq), repeated
+  // here so the reconcile can tell a deleted-during-replay phantom from a live arrival.
+  // The worker registers the watcher BEFORE reading latest_seq, so a message created and
+  // broadcast during catch-up can reach the client BEFORE this frame -- and its seq is
+  // necessarily ABOVE start_tail_seq (it didn't exist when replay began), while a
+  // deleted-during-replay phantom sits at-or-below it. So the client reaps only the
+  // (latest_seq, start_tail_seq] band and EXEMPTS rows above start_tail_seq (genuine live
+  // arrivals), instead of reaping everything above latest_seq (which would wrongly drop
+  // them). Same -1/0/>0 sentinel as latest_seq; -1 disables the band exemption (the
+  // client falls back to reaping above latest_seq, matching the pre-field behavior).
+  int64 start_tail_seq = 2;
+}
 
 message TerminalEvent {
   string terminal_id = 1;

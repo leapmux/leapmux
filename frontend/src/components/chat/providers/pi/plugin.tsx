@@ -12,7 +12,7 @@ import { formatUnifiedDiffText } from '../../diff'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
-import { fileEditDiffHunks, fileEditHasDiff } from '../../results/fileEditDiff'
+import { fileEditDiffHunks } from '../../results/fileEditDiff'
 import { COLLAPSED_RESULT_ROWS } from '../../toolRenderers'
 import { registerProvider } from '../registry'
 import { piQuestionsFromPayload } from './askUserQuestion'
@@ -25,8 +25,9 @@ import {
 } from './controlResponse'
 import { PiControlActions, PiControlContent } from './controls'
 import { extractPiBash } from './extractors/bash'
-import { extractPiEdit, extractPiRead, extractPiWrite, resolvePiResultDiff } from './extractors/fileEdit'
+import { extractPiRead, piResolveDiffSources } from './extractors/fileEdit'
 import { piExtractTool } from './extractors/toolCommon'
+import { piHeightMetrics } from './heightMetrics'
 import { piContentText, piIsThinkingOnly } from './messageContent'
 import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from './protocol'
 import {
@@ -82,22 +83,6 @@ function isHiddenPiNotification(m: unknown): boolean {
   if (!isObject(m) || pickString(m, 'type') !== PI_EVENT.ExtensionUIRequest)
     return false
   return describePiNotification(m) === null
-}
-
-function piFallbackDiffSources(
-  toolName: string,
-  toolUseParsed: ParsedMessageContent | undefined,
-): FileEditDiffSource[] {
-  const startPayload = toolUseParsed?.parentObject
-  if (!isObject(startPayload))
-    return []
-  if (toolName === PI_TOOL.Edit)
-    return extractPiEdit(startPayload)?.sources.filter(fileEditHasDiff) ?? []
-  if (toolName === PI_TOOL.Write) {
-    const source = extractPiWrite(startPayload)
-    return fileEditHasDiff(source) ? [source] : []
-  }
-  return []
 }
 
 function formatPiDiffSources(sources: FileEditDiffSource[]): string | null {
@@ -184,8 +169,7 @@ function piToolResultMeta(
       }
     }
 
-    const resultDiff = resolvePiResultDiff(parsed, startArgs).source
-    const sources = resultDiff ? [resultDiff] : piFallbackDiffSources(tool.toolName, toolUseParsed)
+    const sources = piResolveDiffSources(parsed, toolUseParsed)
     const hasDiff = sources.length > 0
     return {
       collapsible: false,
@@ -321,6 +305,8 @@ const piPlugin: Provider = {
   resultDivider: piResultDivider,
 
   toolResultMeta: piToolResultMeta,
+
+  heightMetrics: piHeightMetrics,
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject

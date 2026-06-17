@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { CommandStreamSegment } from '~/stores/chat.store'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 import { For } from 'solid-js'
 import { isObject } from '~/lib/jsonPick'
 import { commandStreamContainer, commandStreamInteraction, toolResultContentPre } from '../../toolStyles.css'

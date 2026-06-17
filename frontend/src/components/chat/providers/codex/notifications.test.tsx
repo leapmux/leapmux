@@ -86,6 +86,36 @@ describe('codex single MCP startup status', () => {
   })
 })
 
+describe('codex rate-limit reached-type notifications', () => {
+  it('surfaces credit depletion even when no window is over threshold', () => {
+    // Windows are well under threshold, so without the reached-type this would
+    // render nothing -- the authoritative signal keeps the block visible.
+    expect(renderText([{
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          rateLimitReachedType: 'workspace_owner_credits_depleted',
+          primary: { usedPercent: 20, windowDurationMins: 300 },
+        },
+      },
+    }])).toBe('Out of credits')
+  })
+
+  it('does not double-report when a tier line already conveys the throttle', () => {
+    const text = renderText([{
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          rateLimitReachedType: 'rate_limit_reached',
+          primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 4102444800 },
+        },
+      },
+    }])
+    expect(text).toContain('5-hour rate limit')
+    expect(text).not.toContain('Rate limit reached')
+  })
+})
+
 describe('renderNotificationThread (Codex provider): MCP startup grouping', () => {
   it('does not render skills or remote-control metadata entries', () => {
     const text = renderText([

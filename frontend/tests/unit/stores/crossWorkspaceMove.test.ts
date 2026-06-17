@@ -1,436 +1,277 @@
 import type { WorkspaceSnapshot } from '~/stores/workspaceStoreRegistry'
 import { createRoot } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
+import { useCrossWorkspaceMove } from '~/components/shell/useCrossWorkspaceMove'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
+import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
+import { isFileTab } from '~/stores/tab.types'
 import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
+import { flush } from '../helpers/async'
+import { installTestBridge } from '../helpers/crdtBridge'
 
+// The cross-workspace move issues a worker RPC (then a CRDT batch) -- stub the RPCs so
+// these tests assert the OPTIMISTIC local move (the part the user sees immediately) and
+// which RPC fired, without a live worker. Only useCrossWorkspaceMove consumes these
+// modules in this graph, so a scoped replacement is safe.
+const mockMoveTabWorkspace = vi.fn((..._args: unknown[]) => Promise.resolve({}))
+const mockRelocateFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
+const mockListTabsForWorkspace = vi.fn((..._args: unknown[]) => Promise.resolve({ tabs: [] }))
+
+vi.mock('~/api/workerRpc', () => ({
+  moveTabWorkspace: (...args: unknown[]) => mockMoveTabWorkspace(...args),
+  relocateFileTabPath: (...args: unknown[]) => mockRelocateFileTabPath(...args),
+}))
+vi.mock('~/api/listTabsBatcher', () => ({
+  listTabsForWorkspace: (...args: unknown[]) => mockListTabsForWorkspace(...args),
+}))
+vi.mock('~/components/common/Toast', () => ({
+  showWarnToast: vi.fn(),
+  showErrorToast: vi.fn(),
+  showInfoToast: vi.fn(),
+}))
+
+/** Tab key as the store builds it: `${type}:${id}` (type is the numeric TabType enum). */
+function key(type: TabType, id: string): string {
+  return `${type}:${id}`
+}
+
+/** A flat WorkspaceSnapshot (the current shape: `tabs` is a bare Tab[], no agents slot). */
 function makeSnapshot(workspaceId: string, overrides?: Partial<WorkspaceSnapshot>): WorkspaceSnapshot {
   return {
     workspaceId,
-    tabs: {
-      tabs: [],
-      activeTabKey: null,
-      mruOrder: [],
-      tileActiveTabKeys: {},
-      tileMruOrder: {},
-    },
-    layout: {
-      root: { type: 'leaf', id: 'tile-1' },
-      focusedTileId: 'tile-1',
-    },
-    agents: [],
-    terminals: [],
+    tabs: [],
+    activeTabKey: null,
+    layout: { root: { type: 'leaf', id: 'tile-1' }, focusedTileId: 'tile-1' },
     restored: true,
     tabsLoaded: true,
     ...overrides,
   }
 }
 
-describe('cross-workspace tab move via registry', () => {
-  it('should transfer a tab from active store to target registry snapshot', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const registry = createWorkspaceStoreRegistry()
+/** Stand up the real stores + the real move handler over them. */
+function setup(activeWsId = 'ws-active') {
+  installTestBridge({ rootTileId: 'tile-1' })
+  const tabStore = createTabStore()
+  const layoutStore = createLayoutStore()
+  layoutStore.setFocusedTile('tile-1')
+  const floatingWindowStore = createFloatingWindowStore()
+  const registry = createWorkspaceStoreRegistry()
+  const focusTile = vi.fn()
+  const { move } = useCrossWorkspaceMove({
+    getActiveWorkspaceId: () => activeWsId,
+    getOrgId: () => 'org-1',
+    tabStore,
+    layoutStore,
+    floatingWindowStore,
+    registry,
+    pendingMgr: () => null,
+    batchResultHandlers: new Map(),
+    focusTile,
+  })
+  return { activeWsId, tabStore, layoutStore, floatingWindowStore, registry, focusTile, move }
+}
 
-      // Set up active workspace with two tabs
-      tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1' })
-      expect(tabStore.state.tabs.length).toBe(2)
-
-      // Set up target workspace in registry (empty)
-      registry.set('ws-target', makeSnapshot('ws-target'))
-
-      // Simulate cross-workspace move: find tab, remove from store, add to registry
-      const tab = tabStore.state.tabs.find(t => t.type === TabType.AGENT && t.id === 'a1')!
-      tabStore.removeTab(tab.type, tab.id)
-
-      const targetSnap = registry.get('ws-target')!
-      const newTab = { ...tab }
-      targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, newTab]
-      registry.set('ws-target', { ...targetSnap })
-
-      // Active store should have one tab remaining
-      expect(tabStore.state.tabs.length).toBe(1)
-      expect(tabStore.state.tabs[0].id).toBe('t1')
-
-      // Target snapshot should have the moved tab
-      const updatedSnap = registry.get('ws-target')!
-      expect(updatedSnap.tabs.tabs.length).toBe(1)
-      expect(updatedSnap.tabs.tabs[0].type).toBe(TabType.AGENT)
-      expect(updatedSnap.tabs.tabs[0].id).toBe('a1')
-
-      dispose()
-    })
+describe('useCrossWorkspaceMove', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
   })
 
-  it('should preserve tab properties during cross-workspace transfer', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const registry = createWorkspaceStoreRegistry()
-
-      tabStore.addTab({
-        type: TabType.FILE,
-        id: 'f1',
-        tileId: 'tile-1',
-        filePath: '/home/user/readme.md',
-        title: 'readme.md',
-      })
-      tabStore.setTabDisplayMode(TabType.FILE, 'f1', 'split')
-
-      registry.set('ws-target', makeSnapshot('ws-target'))
-
-      const tab = tabStore.state.tabs.find(t => t.type === TabType.FILE && t.id === 'f1')!
-      tabStore.removeTab(tab.type, tab.id)
-
-      const targetSnap = registry.get('ws-target')!
-      targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, { ...tab }]
-      registry.set('ws-target', { ...targetSnap })
-
-      const movedTab = registry.get('ws-target')!.tabs.tabs[0]
-      expect(movedTab.filePath).toBe('/home/user/readme.md')
-      expect(movedTab.title).toBe('readme.md')
-      expect(movedTab.displayMode).toBe('split')
-
-      dispose()
-    })
-  })
-
-  it('should activate MRU tab in source tile after cross-workspace move', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const tileId = 'tile-1'
-
-      tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId })
-      tabStore.setActiveTabForTile(tileId, TabType.AGENT, 'a1')
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', tileId })
-      tabStore.setActiveTabForTile(tileId, TabType.TERMINAL, 't1')
-      tabStore.addTab({ type: TabType.AGENT, id: 'a2', tileId })
-      tabStore.setActiveTabForTile(tileId, TabType.AGENT, 'a2')
-      // Per-tile MRU: [a2, t1, a1]; active = a2
-
-      // Move active tab (a2) out — simulates cross-workspace move
-      tabStore.removeTab(TabType.AGENT, 'a2')
-
-      // Should fall back to t1 (next in MRU)
-      expect(tabStore.getActiveTabKeyForTile(tileId)).toBe('2:t1')
-      expect(tabStore.state.tabs.length).toBe(2)
-
-      dispose()
-    })
-  })
-
-  it('should not change active tab in source tile when moving non-active tab', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const tileId = 'tile-1'
-
-      tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId })
-      tabStore.setActiveTabForTile(tileId, TabType.AGENT, 'a1')
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', tileId })
-      // Don't activate t1 — a1 remains active
-
-      // Move non-active tab (t1) out
-      tabStore.removeTab(TabType.TERMINAL, 't1')
-
-      expect(tabStore.getActiveTabKeyForTile(tileId)).toBe('1:a1')
-      expect(tabStore.state.tabs.length).toBe(1)
-
-      dispose()
-    })
-  })
-
-  it('should handle move when target workspace has no snapshot yet', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const registry = createWorkspaceStoreRegistry()
-
-      tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
-
-      // No snapshot for target — registry.get returns undefined
-      expect(registry.get('ws-target')).toBeUndefined()
-
-      // Tab removal still works even without target snapshot
-      tabStore.removeTab(TabType.AGENT, 'a1')
-      expect(tabStore.state.tabs.length).toBe(0)
-
-      dispose()
-    })
-  })
-
-  it('should append to existing tabs in target snapshot', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const registry = createWorkspaceStoreRegistry()
-
-      // Target already has a tab
-      registry.set('ws-target', makeSnapshot('ws-target', {
-        tabs: {
-          tabs: [
-            { type: TabType.AGENT, id: 'existing-a1', position: 'a', tileId: 'tile-1' } as any,
-          ],
-          activeTabKey: '1:existing-a1',
-          mruOrder: ['1:existing-a1'],
-          tileActiveTabKeys: {},
-          tileMruOrder: {},
-        },
+  it('moves an active-workspace tab into a cached target snapshot on the target tile', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1' })
+      h.registry.set('ws-target', makeSnapshot('ws-target', {
+        layout: { root: { type: 'leaf', id: 'target-tile' }, focusedTileId: 'target-tile' },
       }))
 
-      tabStore.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1' })
+      h.move('ws-target', key(TabType.AGENT, 'a1'))
 
-      const tab = tabStore.state.tabs.find(t => t.type === TabType.TERMINAL && t.id === 't1')!
-      tabStore.removeTab(tab.type, tab.id)
-
-      const targetSnap = registry.get('ws-target')!
-      targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, { ...tab }]
-      registry.set('ws-target', { ...targetSnap })
-
-      const updatedSnap = registry.get('ws-target')!
-      expect(updatedSnap.tabs.tabs.length).toBe(2)
-      expect(updatedSnap.tabs.tabs[0].id).toBe('existing-a1')
-      expect(updatedSnap.tabs.tabs[1].id).toBe('t1')
-
+      // The active store lost the tab; the target snapshot gained it, landing on the
+      // target workspace's own focused tile and becoming its active tab.
+      expect(h.tabStore.getTabByKey(key(TabType.AGENT, 'a1'))).toBeUndefined()
+      const target = h.registry.get('ws-target')!
+      expect(target.tabs.map(t => t.id)).toEqual(['a1'])
+      expect(target.tabs[0].tileId).toBe('target-tile')
+      expect(target.activeTabKey).toBe(key(TabType.AGENT, 'a1'))
+      expect(target.tileActiveTabKeys?.['target-tile']).toBe(key(TabType.AGENT, 'a1'))
+      // Worker bookkeeping flips first, via MoveTabWorkspace for an AGENT tab.
+      expect(mockMoveTabWorkspace).toHaveBeenCalledWith('w1', expect.objectContaining({
+        tabType: TabType.AGENT,
+        tabId: 'a1',
+        newWorkspaceId: 'ws-target',
+      }))
+      await flush()
       dispose()
     })
   })
 
-  it('should skip move when target is same as active workspace', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const activeWsId = 'ws-active'
+  it('carries agent metadata (workerId, title) on the moved tab record -- no separate agents slot', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1', title: 'Agent Olivia' })
+      h.registry.set('ws-target', makeSnapshot('ws-target'))
 
-      tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+      h.move('ws-target', key(TabType.AGENT, 'a1'))
 
-      // Simulate the guard: if target === active, don't move
-      const targetWorkspaceId = activeWsId
-      if (targetWorkspaceId === activeWsId) {
-        // No-op — tab should remain
-        expect(tabStore.state.tabs.length).toBe(1)
-      }
-
+      const moved = h.registry.get('ws-target')!.tabs[0]
+      expect(moved.workerId).toBe('w1')
+      expect(moved.title).toBe('Agent Olivia')
+      await flush()
       dispose()
     })
   })
 
-  it('should move tab from registry snapshot to registry snapshot', () => {
-    createRoot((dispose) => {
-      const registry = createWorkspaceStoreRegistry()
+  it('moves a FILE tab via the relocate RPC, preserving its path and display mode', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.tabStore.addTab({ type: TabType.FILE, id: 'f1', tileId: 'tile-1', workerId: 'w1', filePath: '/home/user/readme.md', title: 'readme.md' })
+      h.tabStore.setTabDisplayMode(TabType.FILE, 'f1', 'split')
+      h.registry.set('ws-target', makeSnapshot('ws-target'))
 
-      // Source workspace has a tab
-      registry.set('ws-source', makeSnapshot('ws-source', {
-        tabs: {
-          tabs: [
-            { type: TabType.AGENT, id: 'a1', title: 'Agent Olivia', position: 'a', tileId: 'tile-1', workerId: 'w1' } as any,
-          ],
-          activeTabKey: '1:a1',
-          mruOrder: ['1:a1'],
-          tileActiveTabKeys: {},
-          tileMruOrder: {},
-        },
+      h.move('ws-target', key(TabType.FILE, 'f1'))
+
+      const moved = h.registry.get('ws-target')!.tabs[0]
+      expect(isFileTab(moved) && moved.filePath).toBe('/home/user/readme.md')
+      expect(isFileTab(moved) && moved.displayMode).toBe('split')
+      expect(moved.title).toBe('readme.md')
+      // FILE tabs relocate via the E2EE path (RelocateFileTabPath), NOT MoveTabWorkspace.
+      expect(mockRelocateFileTabPath).toHaveBeenCalledWith('w1', expect.objectContaining({
+        tabId: 'f1',
+        newWorkspaceId: 'ws-target',
       }))
-      registry.set('ws-target', makeSnapshot('ws-target'))
-
-      // Simulate: remove from source snapshot, add to target snapshot
-      const sourceSnap = registry.get('ws-source')!
-      const draggedKey = `${TabType.AGENT}:a1`
-      const tab = sourceSnap.tabs.tabs.find((t: any) => `${t.type}:${t.id}` === draggedKey)!
-
-      sourceSnap.tabs.tabs = sourceSnap.tabs.tabs.filter((t: any) => `${t.type}:${t.id}` !== draggedKey)
-      registry.set('ws-source', { ...sourceSnap })
-
-      const targetSnap = registry.get('ws-target')!
-      targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, { ...tab }]
-      registry.set('ws-target', { ...targetSnap })
-
-      expect(registry.get('ws-source')!.tabs.tabs.length).toBe(0)
-      expect(registry.get('ws-target')!.tabs.tabs.length).toBe(1)
-      expect(registry.get('ws-target')!.tabs.tabs[0].id).toBe('a1')
-
-      dispose()
-    })
-  })
-})
-
-describe('cross-workspace move to non-active target snapshot', () => {
-  it('should set valid tileId from target layout when moving to non-active workspace', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const registry = createWorkspaceStoreRegistry()
-
-      // Source has a tab with tileId from source layout
-      tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'source-tile' })
-
-      // Target snapshot has a different layout with its own tile IDs
-      registry.set('ws-target', makeSnapshot('ws-target', {
-        layout: {
-          root: { type: 'leaf', id: 'target-tile' },
-          focusedTileId: 'target-tile',
-        },
-      }))
-
-      const tab = tabStore.state.tabs.find(t => t.id === 'a1')!
-      tabStore.removeTab(tab.type, tab.id)
-
-      // Simulate the fixed move logic: use target's focusedTileId
-      const targetSnap = registry.get('ws-target')!
-      const targetTileId = targetSnap.layout.focusedTileId ?? 'target-tile'
-      const newTab = { ...tab, tileId: targetTileId }
-      const key = `${newTab.type}:${newTab.id}`
-      targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, newTab]
-      targetSnap.tabs.activeTabKey = key
-      targetSnap.tabs.mruOrder = [key, ...targetSnap.tabs.mruOrder]
-      if (targetTileId) {
-        targetSnap.tabs.tileActiveTabKeys = {
-          ...targetSnap.tabs.tileActiveTabKeys,
-          [targetTileId]: key,
-        }
-      }
-      registry.set('ws-target', { ...targetSnap })
-
-      const updated = registry.get('ws-target')!
-      // Tab should have target's tileId, not source's
-      expect(updated.tabs.tabs[0].tileId).toBe('target-tile')
-      // activeTabKey and mruOrder should be updated
-      expect(updated.tabs.activeTabKey).toBe(`${TabType.AGENT}:a1`)
-      expect(updated.tabs.mruOrder).toContain(`${TabType.AGENT}:a1`)
-      // tileActiveTabKeys should map the target tile to the moved tab
-      expect(updated.tabs.tileActiveTabKeys['target-tile']).toBe(`${TabType.AGENT}:a1`)
-
+      expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
+      await flush()
       dispose()
     })
   })
 
-  it('should copy agent data to target snapshot when moving to non-active workspace', () => {
-    createRoot((dispose) => {
-      const registry = createWorkspaceStoreRegistry()
-
-      const agent = { id: 'a1', workerId: 'w1', title: 'Test Agent' } as any
-
-      // Source has an agent and corresponding tab
-      registry.set('ws-source', makeSnapshot('ws-source', {
-        tabs: {
-          tabs: [{ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1' } as any],
-          activeTabKey: `${TabType.AGENT}:a1`,
-          mruOrder: [`${TabType.AGENT}:a1`],
-          tileActiveTabKeys: {},
-          tileMruOrder: {},
-        },
-        agents: [agent],
+  it('moves a tab between two non-active workspace snapshots', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup() // active = ws-active; both source and target are non-active
+      h.registry.set('ws-source', makeSnapshot('ws-source', {
+        tabs: [{ type: TabType.AGENT, id: 'a1', position: 'a', tileId: 'tile-1', workerId: 'w1' }],
+        activeTabKey: key(TabType.AGENT, 'a1'),
       }))
-      registry.set('ws-target', makeSnapshot('ws-target'))
+      h.registry.set('ws-target', makeSnapshot('ws-target'))
 
-      // Simulate move: remove from source, add to target with agent
-      const sourceSnap = registry.get('ws-source')!
-      const tab = sourceSnap.tabs.tabs[0]
-      sourceSnap.tabs.tabs = []
-      sourceSnap.agents = sourceSnap.agents.filter(a => a.id !== tab.id)
-      registry.set('ws-source', { ...sourceSnap })
+      h.move('ws-target', key(TabType.AGENT, 'a1'), 'ws-source')
 
-      const targetSnap = registry.get('ws-target')!
-      targetSnap.tabs.tabs = [...targetSnap.tabs.tabs, { ...tab }]
-      if (!targetSnap.agents.some(a => a.id === tab.id)) {
-        targetSnap.agents = [...targetSnap.agents, agent]
-      }
-      registry.set('ws-target', { ...targetSnap })
-
-      // Source should have no agents
-      expect(registry.get('ws-source')!.agents.length).toBe(0)
-      // Target should have the agent
-      expect(registry.get('ws-target')!.agents.length).toBe(1)
-      expect(registry.get('ws-target')!.agents[0].id).toBe('a1')
-
+      expect(h.registry.get('ws-source')!.tabs).toEqual([])
+      expect(h.registry.get('ws-target')!.tabs.map(t => t.id)).toEqual(['a1'])
+      await flush()
       dispose()
     })
   })
 
-  it('should remove agent from source snapshot when moving from non-active workspace', () => {
-    createRoot((dispose) => {
-      const registry = createWorkspaceStoreRegistry()
-
-      const agent = { id: 'a1', workerId: 'w1' } as any
-
-      registry.set('ws-source', makeSnapshot('ws-source', {
-        tabs: {
-          tabs: [{ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' } as any],
-          activeTabKey: `${TabType.AGENT}:a1`,
-          mruOrder: [`${TabType.AGENT}:a1`],
-          tileActiveTabKeys: {},
-          tileMruOrder: {},
-        },
-        agents: [agent],
+  it('moves a non-active snapshot tab into the active workspace and focuses its tile', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.registry.set('ws-source', makeSnapshot('ws-source', {
+        tabs: [{ type: TabType.AGENT, id: 'a1', position: 'a', tileId: 'src-tile', workerId: 'w1' }],
       }))
 
-      // Remove tab AND agent from source
-      const sourceSnap = registry.get('ws-source')!
-      sourceSnap.tabs.tabs = sourceSnap.tabs.tabs.filter((t: any) => t.id !== 'a1')
-      sourceSnap.agents = sourceSnap.agents.filter(a => a.id !== 'a1')
-      registry.set('ws-source', { ...sourceSnap })
+      // Target is the active workspace; drop onto tile-1.
+      h.move(h.activeWsId, key(TabType.AGENT, 'a1'), 'ws-source', 'tile-1')
 
-      expect(registry.get('ws-source')!.tabs.tabs.length).toBe(0)
-      expect(registry.get('ws-source')!.agents.length).toBe(0)
-
+      const active = h.tabStore.getTabByKey(key(TabType.AGENT, 'a1'))
+      expect(active?.tileId).toBe('tile-1')
+      expect(h.registry.get('ws-source')!.tabs).toEqual([])
+      expect(h.focusTile).toHaveBeenCalledWith('tile-1')
+      await flush()
       dispose()
     })
   })
 
-  it('should restore correctly after move-back to original workspace', () => {
-    createRoot((dispose) => {
-      const tabStore = createTabStore()
-      const registry = createWorkspaceStoreRegistry()
+  it('is a no-op when source and target resolve to the same workspace', async () => {
+    await createRoot((dispose) => {
+      const h = setup()
+      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
 
-      const agent = { id: 'a1', workerId: 'w1', title: 'Agent' } as any
+      // Target === the active source workspace -> the guard returns early.
+      h.move(h.activeWsId, key(TabType.AGENT, 'a1'))
 
-      // ws-a starts with a tab, ws-b is empty
-      registry.set('ws-a', makeSnapshot('ws-a', {
-        tabs: {
-          tabs: [],
-          activeTabKey: null,
-          mruOrder: [],
-          tileActiveTabKeys: {},
-          tileMruOrder: {},
-        },
-        agents: [],
+      expect(h.tabStore.getTabByKey(key(TabType.AGENT, 'a1'))).toBeDefined()
+      expect(mockMoveTabWorkspace).not.toHaveBeenCalled()
+      dispose()
+    })
+  })
+
+  it('appends to an existing target snapshot rather than replacing its tabs', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.registry.set('ws-target', makeSnapshot('ws-target', {
+        tabs: [{ type: TabType.AGENT, id: 'existing', position: 'a', tileId: 'tile-1' }],
+        activeTabKey: key(TabType.AGENT, 'existing'),
       }))
-      registry.set('ws-b', makeSnapshot('ws-b', {
-        tabs: {
-          tabs: [{ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1' } as any],
-          activeTabKey: `${TabType.AGENT}:a1`,
-          mruOrder: [`${TabType.AGENT}:a1`],
-          tileActiveTabKeys: { 'tile-1': `${TabType.AGENT}:a1` },
-          tileMruOrder: {},
-        },
-        agents: [agent],
+      h.tabStore.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1' })
+
+      h.move('ws-target', key(TabType.TERMINAL, 't1'))
+
+      expect(h.registry.get('ws-target')!.tabs.map(t => t.id)).toEqual(['existing', 't1'])
+      await flush()
+      dispose()
+    })
+  })
+
+  it('creates a fresh, not-yet-loaded snapshot when the target workspace was never opened', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1', workerId: 'w1' })
+      expect(h.registry.get('ws-new')).toBeUndefined()
+
+      h.move('ws-new', key(TabType.AGENT, 'a1'), undefined, 'new-tile')
+
+      // Read the optimistic snapshot synchronously, BEFORE the async ListTabs merge runs.
+      const created = h.registry.get('ws-new')
+      expect(created?.tabs.map(t => t.id)).toEqual(['a1'])
+      // tabsLoaded:false marks it for the post-move ListTabs fetch that fills the hub's
+      // existing tabs before the user switches in.
+      expect(created?.tabsLoaded).toBe(false)
+      await flush() // drain the async ListTabs merge (mocked empty)
+      dispose()
+    })
+  })
+
+  it('restores the moved tab when the target snapshot is later restored into the store', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.registry.set('ws-a', makeSnapshot('ws-a'))
+      h.registry.set('ws-b', makeSnapshot('ws-b', {
+        tabs: [{ type: TabType.AGENT, id: 'a1', position: 'a', tileId: 'tile-1', workerId: 'w1' }],
       }))
 
-      // Simulate moving tab from ws-b (non-active) back to ws-a (non-active)
-      const sourceSnap = registry.get('ws-b')!
-      const tab = sourceSnap.tabs.tabs[0]
-      sourceSnap.tabs.tabs = []
-      sourceSnap.agents = []
-      registry.set('ws-b', { ...sourceSnap })
+      // Move a1 from ws-b (non-active) to ws-a (non-active), then restore ws-a's snapshot.
+      h.move('ws-a', key(TabType.AGENT, 'a1'), 'ws-b', 'tile-1')
+      h.tabStore.restore(h.registry.get('ws-a')!)
 
-      const targetSnap = registry.get('ws-a')!
-      const targetTileId = targetSnap.layout.focusedTileId ?? 'tile-1'
-      const newTab = { ...tab, tileId: targetTileId }
-      const key = `${newTab.type}:${newTab.id}`
-      targetSnap.tabs.tabs = [newTab]
-      targetSnap.tabs.activeTabKey = key
-      targetSnap.tabs.mruOrder = [key]
-      targetSnap.tabs.tileActiveTabKeys = { [targetTileId]: key }
-      targetSnap.agents = [agent]
-      registry.set('ws-a', { ...targetSnap })
+      expect(h.tabStore.state.tabs.map(t => t.id)).toEqual(['a1'])
+      expect(h.tabStore.state.tabs[0].tileId).toBe('tile-1')
+      expect(h.tabStore.state.activeTabKey).toBe(key(TabType.AGENT, 'a1'))
+      await flush()
+      dispose()
+    })
+  })
 
-      // Now restore ws-a from its snapshot
-      const cached = registry.get('ws-a')!
-      tabStore.restore(cached.tabs)
+  it('falls the source tile back to its next MRU tab when the active tab is moved out', async () => {
+    await createRoot(async (dispose) => {
+      const h = setup()
+      h.tabStore.addTab({ type: TabType.AGENT, id: 'a1', tileId: 'tile-1' })
+      h.tabStore.setActiveTabForTile('tile-1', TabType.AGENT, 'a1')
+      h.tabStore.addTab({ type: TabType.TERMINAL, id: 't1', tileId: 'tile-1' })
+      h.tabStore.setActiveTabForTile('tile-1', TabType.TERMINAL, 't1')
+      h.tabStore.addTab({ type: TabType.AGENT, id: 'a2', tileId: 'tile-1' })
+      h.tabStore.setActiveTabForTile('tile-1', TabType.AGENT, 'a2') // per-tile MRU: [a2, t1, a1]; active a2
+      h.registry.set('ws-target', makeSnapshot('ws-target'))
 
-      // Tab should be restored with correct tileId and active state
-      expect(tabStore.state.tabs.length).toBe(1)
-      expect(tabStore.state.tabs[0].id).toBe('a1')
-      expect(tabStore.state.tabs[0].tileId).toBe('tile-1')
-      expect(tabStore.state.activeTabKey).toBe(`${TabType.AGENT}:a1`)
+      h.move('ws-target', key(TabType.AGENT, 'a2'))
 
+      // a2 left the active store; the source tile's active falls back to the next MRU (t1).
+      expect(h.tabStore.getTabByKey(key(TabType.AGENT, 'a2'))).toBeUndefined()
+      expect(h.tabStore.getActiveTabKeyForTile('tile-1')).toBe(key(TabType.TERMINAL, 't1'))
+      await flush()
       dispose()
     })
   })

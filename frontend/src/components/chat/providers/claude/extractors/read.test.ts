@@ -39,6 +39,8 @@ describe('claudeReadFromToolResult', () => {
       totalLines: 100,
       numLines: 2,
       fallbackContent: 'fallback',
+      leading: [],
+      trailing: [],
     })
   })
 
@@ -53,6 +55,8 @@ describe('claudeReadFromToolResult', () => {
       totalLines: 0,
       numLines: 0,
       fallbackContent: 'fallback',
+      leading: [],
+      trailing: [],
     })
   })
 
@@ -71,6 +75,8 @@ describe('claudeReadFromToolResult', () => {
       totalLines: 0,
       numLines: 0,
       fallbackContent: '1\tfoo\n2\tbar\n',
+      leading: [],
+      trailing: [],
     })
   })
 
@@ -85,6 +91,8 @@ describe('claudeReadFromToolResult', () => {
       totalLines: 0,
       numLines: 0,
       fallbackContent: 'not a cat-n output',
+      leading: [],
+      trailing: [],
     })
   })
 })

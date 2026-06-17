@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression } from '~/generated/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { renderMessageContent } from './messageRenderers'
+import { MESSAGE_UI_KEY } from './messageUiKeys'
 import './providers'
 
 // Mock shiki worker to avoid Web Worker unavailability in test environment.
@@ -227,5 +228,26 @@ describe('renderMessageContent provider resolution', () => {
     // The Claude renderer would have produced "Took 1.1s"; instead we get raw JSON.
     expect(container.textContent).toContain('"duration_ms"')
     expect(container.textContent).not.toContain('Took 1.1s')
+  })
+})
+
+describe('thinking renderer honors context.expandUiKey', () => {
+  it('reads expand-state under the context-supplied key, not its own THINKING literal', () => {
+    const parsed = { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'a long private thought' }] } }
+    const category = { kind: 'assistant_thinking' } as MessageCategory
+    const getMessageUiState = vi.fn().mockReturnValue(false)
+    const setMessageUiState = vi.fn()
+    // The classification mapper resolved this row's expand key to CODEX_REASONING; the
+    // renderer must look its shared UI-state up under THAT key so it agrees with the
+    // off-screen height estimator (which used the same mapper), not the hand-typed
+    // THINKING literal it falls back to only when rendered without a context.
+    const context: RenderContext = {
+      expandUiKey: MESSAGE_UI_KEY.CODEX_REASONING,
+      getMessageUiState,
+      setMessageUiState,
+    }
+    render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
+    expect(getMessageUiState).toHaveBeenCalledWith(MESSAGE_UI_KEY.CODEX_REASONING)
+    expect(getMessageUiState).not.toHaveBeenCalledWith(MESSAGE_UI_KEY.THINKING)
   })
 })

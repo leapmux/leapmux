@@ -1,10 +1,10 @@
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
-import type { TodoItem } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
 import { decompressContentToString } from '~/lib/decompress'
 import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickString } from '~/lib/jsonPick'
-import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
-import { normalizeTodoStatus } from '~/stores/chat.store'
+import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW, CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
+import { normalizeTodoStatus } from '~/stores/chatTodos'
 
 /**
  * Content-type discriminator emitted by the backend's `wrapNotifContent`
@@ -59,6 +59,17 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
   const result = parseMessageContentImpl(message)
   parseCache.set(message, result)
   return result
+}
+
+/**
+ * Drop the memoized parse for a message whose content was replaced IN PLACE under a
+ * stable reference -- the store's same-seq update merges new content into the
+ * existing proxy, keeping its reference. That breaks the by-reference immutability
+ * assumption above, so the mutator MUST evict here or every caller keeps seeing the
+ * pre-update parse. Safe no-op when the message was never parsed.
+ */
+export function invalidateMessageParseCache(message: AgentChatMessage): void {
+  parseCache.delete(message)
 }
 
 function parseMessageContentImpl(message: AgentChatMessage): ParsedMessageContent {
@@ -535,6 +546,20 @@ export function extractRateLimitInfo(parsed: ParsedMessageContent): {
     for (const { info } of iterCodexRateLimitTiers(inner)) {
       if (info.rateLimitType)
         results.push({ key: info.rateLimitType, info })
+    }
+    // Mirror the backend's elevate so this replay path agrees with the live
+    // session-info broadcast: when the authoritative reached-type says a
+    // time-windowed limit is hit but rounding kept every window under 100%,
+    // surface the most-utilized window as "exceeded".
+    if (codexRateLimitReachedType(inner) === CODEX_RATE_LIMIT_REACHED_TIME_WINDOW
+      && !results.some(r => r.info.status === 'exceeded')) {
+      let top: { key: string, info: RateLimitInfo } | undefined
+      for (const r of results) {
+        if (!top || (r.info.utilization ?? 0) > (top.info.utilization ?? 0))
+          top = r
+      }
+      if (top)
+        top.info = { ...top.info, status: 'exceeded' }
     }
     return results
   }

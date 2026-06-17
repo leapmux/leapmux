@@ -1,6 +1,6 @@
 import type { TodoListSource } from '../../../todoListMessage'
-import type { TodoItem } from '~/stores/chat.store'
-import { normalizeTodoStatus } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
+import { normalizeTodoStatus } from '~/stores/chatTodos'
 
 interface AcpPlanEntry {
   priority?: string

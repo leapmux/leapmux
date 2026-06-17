@@ -3,10 +3,10 @@ import type { RenderContext } from '../messageRenderers'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import { createMemo, Show } from 'solid-js'
-import { normalizeProgressOutput, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
+import { normalizedCommandBody, normalizeProgressOutput, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
 import { getToolResultExpanded } from '../messageRenderers'
 import { formatDuration, joinMetaParts } from '../rendererUtils'
-import { COLLAPSED_RESULT_ROWS, stripLeadingBlankLines } from '../toolRenderers'
+import { COLLAPSED_RESULT_ROWS } from '../toolRenderers'
 import { toolInputSummary, toolMessage } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
 import { ToolStatusHeader } from './ToolStatusHeader'
@@ -33,6 +33,18 @@ export interface CommandResultSource {
 }
 
 /**
+ * The row count below which {@link CommandResultBody} stops collapsing: widened to
+ * {@link PROGRESS_MAX_ROWS} when the output carried `\r`-overwrites (so the head/`…`/
+ * tail rows the normalize step just produced aren't sliced back off), else the plain
+ * {@link COLLAPSED_RESULT_ROWS}. The body and the toolbar's `collapsible` check
+ * (`commandOutputIsCollapsible`) must agree on this threshold or the expand button
+ * hides over output the body actually clips -- so both read it from here.
+ */
+function commandCollapseThreshold(hadCarriageReturns: boolean): number {
+  return hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS
+}
+
+/**
  * Mirror of {@link CommandResultBody}'s collapse decision for tool-meta
  * `collapsible` checks. `hasMoreLinesThan` against raw `\n`s under-counts
  * when output contains `\r`-overwrites (progress bars, `git rebase`, etc.)
@@ -43,7 +55,7 @@ export interface CommandResultSource {
  */
 export function commandOutputIsCollapsible(text: string): boolean {
   const { text: normalized, hadCarriageReturns } = normalizeProgressOutput(text)
-  return hasMoreLinesThan(normalized, hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS)
+  return hasMoreLinesThan(normalized, commandCollapseThreshold(hadCarriageReturns))
 }
 
 /**
@@ -79,10 +91,12 @@ export function CommandResultBody(props: {
   source: CommandResultSource
   context?: RenderContext
 }): JSX.Element {
-  // Order matters: normalize CR overwrites first so a leading bare `\r`
-  // becomes a leading `\n`, which `stripLeadingBlankLines` can then trim.
-  const progress = createMemo(() => normalizeProgressOutput(props.source.output))
-  const normalized = createMemo(() => stripLeadingBlankLines(progress().text))
+  // The shared normalize-then-strip transform (order matters: normalize CR
+  // overwrites first so a leading bare `\r` becomes a `\n` that strip can then
+  // trim). normalizedCommandBody is the single source the height estimate
+  // (claudeBashHeightFields) also sizes from, so the body can't drift.
+  const body = createMemo(() => normalizedCommandBody(props.source.output))
+  const normalized = createMemo(() => body().text)
   const expanded = () => getToolResultExpanded(props.context)
   // After CR normalization the output has at most PROGRESS_MAX_ROWS rows
   // (head + `…` + tail). Widen the row threshold so the default 3-row
@@ -90,7 +104,7 @@ export function CommandResultBody(props: {
   const { display, isCollapsed } = useCollapsedLines({
     text: normalized,
     expanded,
-    threshold: () => progress().hadCarriageReturns ? PROGRESS_MAX_ROWS : COLLAPSED_RESULT_ROWS,
+    threshold: () => commandCollapseThreshold(body().hadCarriageReturns),
   })
   const statusIcon = () => props.source.isError ? CircleAlert : Check
   const statusLabel = () => commandStatusLabel(props.source)

@@ -1,6 +1,7 @@
 import type { StructuredPatchHunk } from '../../../diff'
 import { describe, expect, it } from 'vitest'
 import {
+  claudeCreateResultDiff,
   claudeFileEditFromToolUseInput,
   claudeFileEditFromToolUseResult,
   isClaudeFileEditTool,
@@ -140,5 +141,30 @@ describe('claudeFileEditFromToolUseResult', () => {
       newStr: 'y',
       originalFile: undefined,
     })
+  })
+})
+
+describe('claudeCreateResultDiff', () => {
+  it('synthesizes an all-added diff from a create result content', () => {
+    expect(claudeCreateResultDiff({ type: 'create', filePath: '/tmp/new.ts', content: 'a\nb\nc' }, false)).toEqual({
+      filePath: '/tmp/new.ts',
+      structuredPatch: null,
+      oldStr: '',
+      newStr: 'a\nb\nc',
+    })
+  })
+
+  it('returns null for an error create (the file was not written)', () => {
+    expect(claudeCreateResultDiff({ type: 'create', filePath: '/tmp/new.ts', content: 'a\nb' }, true)).toBeNull()
+  })
+
+  it('returns null for a non-create result', () => {
+    expect(claudeCreateResultDiff({ type: 'update', filePath: '/tmp/a.ts', content: 'x' }, false)).toBeNull()
+    expect(claudeCreateResultDiff({ filePath: '/tmp/a.ts', content: 'x' }, false)).toBeNull()
+  })
+
+  it('returns null for a create with empty content, or null input', () => {
+    expect(claudeCreateResultDiff({ type: 'create', filePath: '/tmp/new.ts', content: '' }, false)).toBeNull()
+    expect(claudeCreateResultDiff(null, false)).toBeNull()
   })
 })

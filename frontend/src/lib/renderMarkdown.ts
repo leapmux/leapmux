@@ -1,123 +1,83 @@
-import type { Root } from 'hast'
-import rehypeShikiFromHighlighter from '@shikijs/rehype/core'
-// Import themes
-import themeGithubDark from '@shikijs/themes/github-dark'
-import themeGithubLight from '@shikijs/themes/github-light'
-import rehypeStringify from 'rehype-stringify'
-import remarkGfm from 'remark-gfm'
-import remarkParse from 'remark-parse'
-import remarkRehype from 'remark-rehype'
-
 import { createHighlighterCoreSync } from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
-// Import bundled language grammars
-import langBash from 'shiki/langs/bash.mjs'
-import langC from 'shiki/langs/c.mjs'
-import langCpp from 'shiki/langs/cpp.mjs'
-import langCss from 'shiki/langs/css.mjs'
-import langDiff from 'shiki/langs/diff.mjs'
-import langGo from 'shiki/langs/go.mjs'
-import langHtml from 'shiki/langs/html.mjs'
-import langJava from 'shiki/langs/java.mjs'
-import langJavascript from 'shiki/langs/javascript.mjs'
-import langJson from 'shiki/langs/json.mjs'
-import langJsx from 'shiki/langs/jsx.mjs'
-import langMarkdown from 'shiki/langs/markdown.mjs'
-import langPython from 'shiki/langs/python.mjs'
-import langRust from 'shiki/langs/rust.mjs'
-import langSql from 'shiki/langs/sql.mjs'
-import langToml from 'shiki/langs/toml.mjs'
-import langTsx from 'shiki/langs/tsx.mjs'
-import langTypescript from 'shiki/langs/typescript.mjs'
+import { createSignal } from 'solid-js'
+import { capMapInsertionOrder } from '~/lib/mapLru'
+import { createMarkdownProcessor, plainMarkdownProcessor, renderWithPlainFallback, shikiLangs, transparentBgThemes } from './markdownProcessor'
+import { renderMarkdownInWorker } from './markdownWorkerClient'
 
-import langXml from 'shiki/langs/xml.mjs'
-import langYaml from 'shiki/langs/yaml.mjs'
-import { unified } from 'unified'
-import { visit } from 'unist-util-visit'
-
-// Override each theme's `bg` so Shiki emits `--shiki-light-bg`/`--shiki-dark-bg`
-// as `transparent`. Lets the surrounding wrapper's background show through
-// instead of the theme's editor color.
-const transparentBgThemes = [themeGithubLight, themeGithubDark].map(t => ({ ...t, bg: 'transparent' }))
-
-// Create synchronous Shiki highlighter with pre-loaded languages
+// Synchronous Shiki highlighter, pre-loaded with the bundled languages. Still
+// exported for the OTHER synchronous highlighting call sites (renderAnsi,
+// ReadResultView, the markdown editor, tool renderers) that highlight short,
+// bounded snippets where a worker round-trip would be overkill. Markdown bodies no
+// longer use it on the hot path -- see renderMarkdown below.
 export const shikiHighlighter = createHighlighterCoreSync({
   themes: transparentBgThemes,
-  langs: [
-    langTypescript,
-    langJavascript,
-    langPython,
-    langRust,
-    langGo,
-    langJava,
-    langBash,
-    langJson,
-    langHtml,
-    langCss,
-    langYaml,
-    langToml,
-    langSql,
-    langMarkdown,
-    langDiff,
-    langC,
-    langCpp,
-    langJsx,
-    langTsx,
-    langXml,
-  ],
+  langs: shikiLangs,
   engine: createJavaScriptRegexEngine(),
 })
 
-const HTTP_URL_RE = /^https?:\/\//
+// The full highlighted-markdown processor on the MAIN thread. Used only as the
+// fallback when no Worker is available (unit tests / SSR) -- in the browser the
+// worker renders instead, off the UI thread (see renderMarkdown).
+const syncProcessor = createMarkdownProcessor(shikiHighlighter)
 
-/** Rehype plugin that secures links: adds target/rel to http(s) links, unwraps non-http(s) links. */
-function rehypeExternalLinks() {
-  return (tree: Root) => {
-    visit(tree, 'element', (node, index, parent) => {
-      if (node.tagName !== 'a')
-        return
-      const href = node.properties?.href
-      if (typeof href === 'string' && HTTP_URL_RE.test(href)) {
-        node.properties ??= {}
-        node.properties.target = '_blank'
-        node.properties.rel = 'noopener noreferrer nofollow'
-      }
-      else if (parent && typeof index === 'number') {
-        // Non-http(s) link — unwrap: replace <a> with its children
-        parent.children.splice(index, 1, ...node.children)
-        return index
-      }
-    })
-  }
-}
-
-const processor = unified()
-  .use(remarkParse)
-  .use(remarkGfm)
-  .use(remarkRehype)
-  .use(rehypeShikiFromHighlighter, shikiHighlighter as any, {
-    themes: { light: 'github-light', dark: 'github-dark' },
-    defaultColor: false,
-  })
-  .use(rehypeExternalLinks)
-  .use(rehypeStringify)
-
-/** Fallback processor without Shiki (used when syntax highlighting fails). */
-const plainProcessor = unified()
-  .use(remarkParse)
-  .use(remarkGfm)
-  .use(remarkRehype)
-  .use(rehypeExternalLinks)
-  .use(rehypeStringify)
-
-// LRU cache for rendered markdown: avoids re-running the full remark+shiki pipeline
-// for identical content (e.g. on tab switch, thread expand/collapse, re-mount).
-const CACHE_MAX_SIZE = 256
+// LRU cache for rendered markdown HTML: avoids re-rendering identical content on
+// re-mount (the virtualized chat list mounts a row ~4-5x as it scrolls in and out).
+// Holds the HIGHLIGHTED result -- whether produced synchronously (fallback) or by
+// the worker -- so a cache hit serves the final HTML with no flash. Sized well above
+// a viewport's worth of distinct messages so a normal scroll session stops
+// re-rendering rather than re-paying the worker round-trip after eviction.
+const CACHE_MAX_SIZE = 1024
 const markdownCache = new Map<string, string>()
 
-/** Visible for testing: drop all cached entries. */
+// Plain (unhighlighted) PLACEHOLDER renders, cached separately from the highlighted
+// markdownCache (a plain entry must not satisfy the markdownCache lookup, or the
+// highlight would never be dispatched). The version signal bumps on every worker
+// completion and re-evaluates EVERY on-screen markdown body; without this cache, each
+// body still awaiting its highlight would re-run the synchronous plain remark render on
+// every bump -- a thundering herd that measured ~3s cumulative across a scroll. Caching
+// the placeholder makes those re-evals O(1). The entry is dropped once the highlighted
+// result lands (the markdownCache hit serves it thereafter), so it never goes stale.
+const placeholderCache = new Map<string, string>()
+
+// Bumped whenever an async worker render completes and fills the cache, so a
+// consumer that called renderMarkdown in a reactive context (every chat call site
+// does, via a memo or a reactive `innerHTML`) re-renders and picks up the
+// highlighted HTML in place of the plain placeholder it first received. Module-level
+// so all markdown consumers share one invalidation; the memo/`innerHTML` equality
+// check means only the rows whose HTML actually changed touch the DOM.
+const [markdownVersion, setMarkdownVersion] = createSignal(0)
+// Texts whose worker render is in flight, so concurrent/re-rendered consumers of the
+// same body don't each dispatch a duplicate render.
+const inFlight = new Set<string>()
+// Coalesce a burst of completions (a screenful of bodies finishing within a tick)
+// into a single version bump, so consumers re-render once rather than once per body.
+let bumpScheduled = false
+function scheduleVersionBump(): void {
+  if (bumpScheduled)
+    return
+  bumpScheduled = true
+  queueMicrotask(() => {
+    bumpScheduled = false
+    setMarkdownVersion(v => v + 1)
+  })
+}
+
+// Whether off-thread rendering is available. False under unit tests / SSR (jsdom
+// defines no Worker), where renderMarkdown falls back to a synchronous highlight so
+// the rendered output is identical to the browser's eventual result.
+function canUseWorker(): boolean {
+  return typeof Worker !== 'undefined'
+}
+
+/** Visible for testing: drop all cached entries and in-flight tracking. */
 export function _resetMarkdownCache(): void {
   markdownCache.clear()
+  placeholderCache.clear()
+  // Clear inFlight too: a text left "in flight" (its worker render never resolved)
+  // would otherwise be skipped forever by the dedup guard, so a clear-and-retry could
+  // never actually retry -- and a text dispatched in one test would leak into the next.
+  inFlight.clear()
 }
 
 /** Visible for testing: number of cached entries. */
@@ -125,35 +85,104 @@ export function _getMarkdownCacheSize(): number {
   return markdownCache.size
 }
 
-export function renderMarkdown(text: string, skipCache = false): string {
-  if (!skipCache) {
-    const cached = markdownCache.get(text)
-    if (cached !== undefined) {
-      // Move to end (most recently used) by re-inserting
-      markdownCache.delete(text)
-      markdownCache.set(text, cached)
-      return cached
-    }
-  }
+/** Visible for testing: number of cached plain placeholders. */
+export function _getPlaceholderCacheSize(): number {
+  return placeholderCache.size
+}
 
-  let result: string
-  try {
-    result = String(processor.processSync(text))
-  }
-  catch {
-    // Shiki's regex engine may fail on certain grammars (e.g. unsupported
-    // lookbehind in Safari). Fall back to rendering without syntax highlighting.
-    result = String(plainProcessor.processSync(text))
-  }
+// Insert/refresh `key` in an LRU `map` (delete+set moves it to the most-recently-used
+// end) and evict insertion-order-oldest entries past CACHE_MAX_SIZE. Shared by the
+// highlighted and placeholder caches so their bound + eviction can't drift apart.
+function lruSet(map: Map<string, string>, key: string, value: string): void {
+  map.delete(key)
+  map.set(key, value)
+  capMapInsertionOrder(map, CACHE_MAX_SIZE)
+}
 
-  if (!skipCache) {
-    // Evict oldest entry if at capacity
-    if (markdownCache.size >= CACHE_MAX_SIZE) {
-      const firstKey = markdownCache.keys().next().value!
-      markdownCache.delete(firstKey)
-    }
-    markdownCache.set(text, result)
-  }
+/** Raw plain (no-Shiki) render, NOT cached -- for transient/streaming text that never repeats. */
+function plainRender(text: string): string {
+  return String(plainMarkdownProcessor.processSync(text))
+}
 
+/** Cached plain placeholder -- shown while the worker's highlighted result is in flight. */
+function renderPlain(text: string): string {
+  const cached = placeholderCache.get(text)
+  if (cached !== undefined) {
+    lruSet(placeholderCache, text, cached) // move to MRU end
+    return cached
+  }
+  const result = plainRender(text)
+  lruSet(placeholderCache, text, result)
   return result
+}
+
+/** Full synchronous highlighted render (main-thread Shiki). The no-Worker fallback. */
+function renderHighlightedSync(text: string): string {
+  return renderWithPlainFallback(syncProcessor, text)
+}
+
+/**
+ * Render markdown to HTML.
+ *
+ * In the browser the expensive Shiki highlighting runs OFF the main thread: a
+ * cache miss returns a fast plain (unhighlighted) placeholder immediately and
+ * dispatches the highlight to a worker; when it lands, the result is cached and a
+ * version signal bumps so the (reactive) caller re-renders with the highlighted
+ * HTML in place. This keeps a large code-heavy body from blocking a frame -- a
+ * single synchronous render measured up to ~1s on the main thread.
+ *
+ * Without a Worker (unit tests / SSR) it renders synchronously and highlighted, so
+ * the output is identical to the browser's eventual result.
+ *
+ * `skipCache` (streaming / transient text) bypasses the cache entirely: in the
+ * browser it returns an UNCACHED plain render without dispatching a worker render
+ * (the text changes every frame, so highlighting it would thrash AND caching each
+ * distinct frame would churn the placeholder cache the on-screen bodies rely on);
+ * under tests it renders synchronously highlighted.
+ */
+export function renderMarkdown(text: string, skipCache = false): string {
+  if (skipCache)
+    return canUseWorker() ? plainRender(text) : renderHighlightedSync(text)
+
+  // Subscribe to the version signal so an async worker completion re-renders this
+  // (reactive) caller. Read BEFORE the cache lookup so the dependency is always
+  // registered, including on the cache-hit path.
+  markdownVersion()
+
+  const cached = markdownCache.get(text)
+  if (cached !== undefined) {
+    lruSet(markdownCache, text, cached) // move to MRU end
+    return cached
+  }
+
+  if (!canUseWorker()) {
+    // No worker: render synchronously and cache.
+    const html = renderHighlightedSync(text)
+    lruSet(markdownCache, text, html)
+    return html
+  }
+
+  // Dispatch the highlight off-thread (once per distinct text) and return the plain
+  // placeholder now. On completion the highlighted HTML is cached and the version
+  // bumps, re-rendering this caller with it. A null result (worker crash) caches the
+  // plain render so it degrades gracefully instead of retrying forever.
+  if (!inFlight.has(text)) {
+    inFlight.add(text)
+    renderMarkdownInWorker(text)
+      .then((html) => {
+        inFlight.delete(text)
+        lruSet(markdownCache, text, html ?? plainRender(text))
+        // The highlighted (or fallback) result now serves from markdownCache, so the
+        // plain placeholder for this text is dead -- drop it to bound the cache.
+        placeholderCache.delete(text)
+        scheduleVersionBump()
+      })
+      .catch(() => {
+        inFlight.delete(text)
+        lruSet(markdownCache, text, plainRender(text))
+        placeholderCache.delete(text)
+        scheduleVersionBump()
+      })
+  }
+  return renderPlain(text)
 }

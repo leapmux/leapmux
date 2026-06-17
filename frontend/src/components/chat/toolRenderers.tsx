@@ -14,10 +14,12 @@ import ListTodo from 'lucide-solid/icons/list-todo'
 import Quote from 'lucide-solid/icons/quote'
 import Rows2 from 'lucide-solid/icons/rows-2'
 import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
-import { createMemo, Show } from 'solid-js'
+import { createMemo, For, Show } from 'solid-js'
+import { Alert } from '~/components/common/Alert'
 import { Icon } from '~/components/common/Icon'
 import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
+import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { escapeHtml } from '~/lib/renderAnsi'
 import { shikiHighlighter } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
@@ -26,7 +28,7 @@ import { RelativeTime } from './RelativeTime'
 import { CollapsibleContent } from './results/CollapsibleContent'
 import { CommandResultBody } from './results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
-import { parseCatNContent, ReadResultView } from './results/ReadResultView'
+import { parseReadContent, ReadResultView } from './results/ReadResultView'
 import { useCollapsedLines } from './results/useCollapsedLines'
 import {
   controlResponseTag,
@@ -346,16 +348,11 @@ export function renderJsonHighlight(code: string): string {
 export const COLLAPSED_RESULT_ROWS = 3
 
 const TOOL_USE_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/
-const LEADING_BLANK_LINES_RE = /^(?:\s*\n)+/
 
 /** Extract error text from <tool_use_error> tags in tool result content. */
 function extractToolUseError(content: string): string | null {
   const match = content.match(TOOL_USE_ERROR_RE)
   return match ? match[1].trim() : null
-}
-
-export function stripLeadingBlankLines(content: string): string {
-  return content.replace(LEADING_BLANK_LINES_RE, '')
 }
 
 /**
@@ -382,15 +379,21 @@ function renderReadOrPre(
   readFilePath?: string,
   collapsed?: boolean,
 ): JSX.Element {
-  const parsed = parseCatNContent(resultContent)
-  if (parsed) {
-    const displayLines = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
-      ? parsed.slice(0, COLLAPSED_RESULT_ROWS)
-      : parsed
-    const isCollapsed = collapsed && parsed.length > COLLAPSED_RESULT_ROWS
+  const { leading, lines, trailing } = parseReadContent(resultContent)
+  if (lines) {
+    const isCollapsed = !!collapsed && lines.length > COLLAPSED_RESULT_ROWS
+    const displayLines = isCollapsed ? lines.slice(0, COLLAPSED_RESULT_ROWS) : lines
+    // Reminder/tag alerts render only when expanded (mirroring ReadFileResultBody),
+    // so a collapsed body keeps the body-only height the off-screen estimator assumes.
     return (
       <div class={isCollapsed ? toolResultCollapsed : undefined}>
+        <Show when={!collapsed}>
+          <For each={leading}>{r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}</For>
+        </Show>
         <ReadResultView lines={displayLines} filePath={readFilePath} />
+        <Show when={!collapsed}>
+          <For each={trailing}>{r => <Alert variant={r.variant} label={r.label}>{r.text}</Alert>}</For>
+        </Show>
       </div>
     )
   }

@@ -1,3 +1,4 @@
+import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
@@ -88,7 +89,7 @@ const defaultProps = {
   },
 }
 
-function makeTab(type: TabType, id: string, title?: string) {
+function makeTab(type: Tab['type'], id: string, title?: string): Tab {
   return { type, id, title, position: '0|' }
 }
 

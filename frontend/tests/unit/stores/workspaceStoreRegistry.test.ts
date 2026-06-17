@@ -13,7 +13,6 @@ function makeSnapshot(workspaceId: string, overrides?: Partial<WorkspaceSnapshot
       root: { type: 'leaf', id: 'tile-1' },
       focusedTileId: 'tile-1',
     },
-    agents: [],
     restored: true,
     tabsLoaded: true,
     ...overrides,
@@ -83,9 +82,7 @@ describe('createWorkspaceStoreRegistry', () => {
           },
         ],
         activeTabKey: `${TabType.AGENT}:agent-1`,
-        mruOrder: [`${TabType.AGENT}:agent-1`],
         tileActiveTabKeys: { 'tile-1': `${TabType.AGENT}:agent-1` },
-        tileMruOrder: { 'tile-1': [`${TabType.AGENT}:agent-1`] },
       })
 
       registry.set('ws-1', snap)

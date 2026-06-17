@@ -2232,6 +2232,11 @@ func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider
 		CreatedAt:          timefmt.Format(parentRow.CreatedAt),
 		Depth:              0,
 		SpanLines:          spanLines,
+		// This broadcast is a MOVE: the consolidated thread row jumped from its old
+		// seq (parentRow.Seq, read before UpdateNotificationThread) to newSeq. Mark it
+		// so consumers reconcile by id instead of treating it as a new message. Only set
+		// here -- the persisted row + replays carry no previous_seq (0).
+		PreviousSeq: parentRow.Seq,
 	})
 
 	return true, nil

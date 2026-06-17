@@ -1,10 +1,12 @@
 import type { TerminalInstance } from '~/lib/terminal'
+import type { TerminalTab } from '~/stores/tab.types'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 
 const mockCreateTerminalInstance = vi.fn()
 
@@ -66,6 +68,7 @@ function makeMockTerminalInstance(): TerminalInstance {
   return {
     terminal,
     fitAddon: { fit: vi.fn() } as any,
+    serializeAddon: { serialize: vi.fn() } as any,
     suppressInput: false,
     dispose: vi.fn(),
   }
@@ -86,15 +89,17 @@ describe('terminalView', () => {
         <TerminalView
           terminals={[{
             id: 'term-1',
-            workspaceId: 'ws-1',
+            type: TabType.TERMINAL,
             screen: new TextEncoder().encode('\x07restored'),
           }]}
           activeTerminalId="term-1"
           visible
+          tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
           onTitleChange={vi.fn()}
           onBell={onBell}
+          onContentReady={vi.fn()}
         />
       </PreferencesProvider>
     ))
@@ -121,13 +126,14 @@ describe('terminalView', () => {
         <TerminalView
           terminals={[{
             id: 'term-1',
-            workspaceId: 'ws-1',
+            type: TabType.TERMINAL,
             status: TerminalStatus.STARTING,
             startupMessage: 'Starting zsh…',
             screen: new Uint8Array(),
           }]}
           activeTerminalId="term-1"
           visible
+          tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
           onTitleChange={vi.fn()}
@@ -150,12 +156,13 @@ describe('terminalView', () => {
         <TerminalView
           terminals={[{
             id: 'term-1',
-            workspaceId: 'ws-1',
+            type: TabType.TERMINAL,
             status: TerminalStatus.STARTING,
             screen: new Uint8Array(),
           }]}
           activeTerminalId="term-1"
           visible
+          tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
           onTitleChange={vi.fn()}
@@ -178,12 +185,13 @@ describe('terminalView', () => {
         <TerminalView
           terminals={[{
             id: 'term-exited-empty',
-            workspaceId: 'ws-1',
+            type: TabType.TERMINAL,
             status: TerminalStatus.EXITED,
             screen: new Uint8Array(),
           }]}
           activeTerminalId="term-exited-empty"
           visible
+          tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
           onTitleChange={vi.fn()}
@@ -215,8 +223,8 @@ describe('terminalView', () => {
       .mockReturnValueOnce(instanceA)
       .mockReturnValueOnce(instanceB)
 
-    const baseTab = { workspaceId: 'ws-1', screen: new Uint8Array() }
-    const [terminals, setTerminals] = createSignal([
+    const baseTab = { type: TabType.TERMINAL as const, screen: new Uint8Array() }
+    const [terminals, setTerminals] = createSignal<TerminalTab[]>([
       { id: 'dispose-test-A', ...baseTab },
       { id: 'dispose-test-B', ...baseTab },
     ])
@@ -227,6 +235,7 @@ describe('terminalView', () => {
           terminals={terminals()}
           activeTerminalId="dispose-test-A"
           visible
+          tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
           onTitleChange={vi.fn()}
@@ -264,15 +273,17 @@ describe('terminalView', () => {
         <TerminalView
           terminals={[{
             id: 'term-1',
-            workspaceId: 'ws-1',
+            type: TabType.TERMINAL,
             screen: new Uint8Array(),
           }]}
           activeTerminalId="term-1"
           visible
+          tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
           onTitleChange={vi.fn()}
           onBell={vi.fn()}
+          onContentReady={vi.fn()}
           pageScrollRef={(fn) => { pageScroll = fn }}
         />
       </PreferencesProvider>
@@ -301,13 +312,9 @@ describe('terminalView', () => {
     mockCreateTerminalInstance.mockReturnValue(instance)
 
     const initialPayload = new TextEncoder().encode('restored screen')
-    const [terminals, setTerminals] = createStore<Array<{
-      id: string
-      workspaceId: string
-      screen?: Uint8Array
-    }>>([{
+    const [terminals, setTerminals] = createStore<TerminalTab[]>([{
       id: 'term-late-screen',
-      workspaceId: 'ws-1',
+      type: TabType.TERMINAL,
       // screen is undefined initially — ListTerminals hasn't returned yet.
       screen: undefined,
     }])
@@ -318,6 +325,7 @@ describe('terminalView', () => {
           terminals={terminals}
           activeTerminalId="term-late-screen"
           visible
+          tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
           onTitleChange={vi.fn()}
@@ -353,14 +361,9 @@ describe('terminalView', () => {
     mockCreateTerminalInstance.mockReturnValue(instance)
 
     const screen = new TextEncoder().encode('once')
-    const [terminals, setTerminals] = createStore<Array<{
-      id: string
-      workspaceId: string
-      screen: Uint8Array
-      title?: string
-    }>>([{
+    const [terminals, setTerminals] = createStore<TerminalTab[]>([{
       id: 'term-no-double-write',
-      workspaceId: 'ws-1',
+      type: TabType.TERMINAL,
       screen,
       title: 'Initial',
     }])
@@ -371,6 +374,7 @@ describe('terminalView', () => {
           terminals={terminals}
           activeTerminalId="term-no-double-write"
           visible
+          tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
           onTitleChange={vi.fn()}

@@ -1,7 +1,9 @@
 import type { JSX } from 'solid-js'
+import type { HeightInput } from '../chatHeightEstimator'
 import type { StructuredPatchHunk } from '../diff'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import { createMemo } from 'solid-js'
+import { diffHeightFields, mergeDiffHeightFields } from '../chatDiffGeometry'
 import { DiffView, rawDiffToHunks } from '../diff'
 
 /**
@@ -82,6 +84,37 @@ export function fileEditDiffHunks(source: FileEditDiffSource): StructuredPatchHu
   return source.structuredPatch && source.structuredPatch.length > 0
     ? source.structuredPatch
     : rawDiffToHunks(source.oldStr, source.newStr)
+}
+
+/**
+ * Pre-mount height fields for a row rendering `source` as a file-edit diff, or
+ * null when there is no diff to size. The shared tail of the per-provider
+ * `heightMetrics` hooks that resolve a single source via `pickFileEditDiff`
+ * (Claude tool_result, ACP tool_call_update): once the source is resolved the
+ * row is sized identically -- the hunks' geometry plus the original-file context
+ * the diff view uses for between-hunk gaps -- so the contract lives in one place
+ * next to `fileEditDiffHunks` instead of being duplicated per provider.
+ */
+export function diffFieldsFromSource(source: FileEditDiffSource | null): Partial<HeightInput> | null {
+  if (!source)
+    return null
+  return diffHeightFields(fileEditDiffHunks(source), source.originalFile)
+}
+
+/**
+ * Pre-mount height fields for a row rendering MULTIPLE sources as N stacked
+ * file-edit diff blocks (a multi-file Pi edit). Each source is sized
+ * independently -- its own hunks, its own originalFile gap separators -- then
+ * summed via mergeDiffHeightFields, which records diffBlockCount so the
+ * estimator charges container chrome per block. Sizing the concatenated hunks
+ * as one block instead would under-count chrome by (N-1) blocks and let a
+ * cross-file hunk boundary spuriously trip the between-hunk separator test.
+ */
+export function diffFieldsFromSources(sources: FileEditDiffSource[]): Partial<HeightInput> | null {
+  const slices = sources
+    .map(diffFieldsFromSource)
+    .filter((f): f is Partial<HeightInput> => f !== null)
+  return mergeDiffHeightFields(slices)
 }
 
 export function FileEditDiffBody(props: {

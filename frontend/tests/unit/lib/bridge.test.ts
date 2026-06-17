@@ -69,7 +69,7 @@ describe('withBridgeAndState', () => {
   it('returns fallback when bridge.speculativeState() returns null', () => {
     const bridge = makeBridge({ state: null })
     let called = false
-    const result = withBridgeAndState(bridge, () => {
+    const result = withBridgeAndState<string | number>(bridge, () => {
       called = true
       return 'should-not-run'
     }, 42)

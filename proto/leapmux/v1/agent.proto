@@ -245,6 +245,15 @@ message AgentChatMessage {
   string span_type = 12; // Tool name (e.g. "Grep", "Edit") or item type (e.g. "commandExecution") for span messages
   int32 span_color = 13; // Color index assigned to this span (−1 = no color)
   string span_lines = 14; // JSON array of active span lines at this message's position
+  // TRANSIENT broadcast metadata: when > 0, this live broadcast is a MOVE of an
+  // existing message id to a new (higher) seq -- a notification-thread consolidation
+  // reseq -- and previous_seq is the seq it moved FROM. 0 means a brand-new message.
+  // Only ever set on the live WatchEvents broadcast of a reseq; always 0 on a persisted
+  // row, a ListAgentMessages page, and a resubscribe replay (the DB has no such column),
+  // so a consumer can treat a replayed/listed row as a normal message at its current seq.
+  // Lets every consumer recognize a move EXPLICITLY instead of inferring it (the CLI
+  // follower has no id memory; the frontend no longer has to guess from a seq change).
+  int64 previous_seq = 15;
 }
 
 message AgentStreamChunk {
@@ -308,11 +317,44 @@ message AgentGitStatus {
 
 // --- Message History ---
 
+// Which page of an agent's message history ListAgentMessages returns.
+// The response is ALWAYS ordered ascending by seq, regardless of anchor;
+// has_more reports whether further messages exist in the page's direction.
+enum MessagePageAnchor {
+  // Unset/unknown. The handler resolves it to the LATEST page, so an unset
+  // anchor still defaults to the most recent page (cold-start view).
+  MESSAGE_PAGE_ANCHOR_UNSPECIFIED = 0;
+  // Most recent page (cold-start view / jump-to-latest). cursor_seq is ignored.
+  MESSAGE_PAGE_ANCHOR_LATEST = 1;
+  // Earliest page (jump-to-first / Home). cursor_seq is ignored.
+  MESSAGE_PAGE_ANCHOR_OLDEST = 2;
+  // Page of messages older than cursor_seq (seq < cursor_seq) -- scroll-up.
+  MESSAGE_PAGE_ANCHOR_BEFORE = 3;
+  // Page of messages newer than cursor_seq (seq > cursor_seq) -- scroll-down / catch-up.
+  MESSAGE_PAGE_ANCHOR_AFTER = 4;
+}
+
+// WatchReplayMode selects which history a WatchEvents subscriber replays before
+// the live stream begins. Sibling of MessagePageAnchor, narrowed to the two modes
+// a tail subscription actually supports -- so OLDEST/BEFORE (meaningless for a
+// live tail) are simply unrepresentable rather than rejected at runtime.
+enum WatchReplayMode {
+  // Unset/unknown. The handler resolves it to LATEST (cold-start view).
+  WATCH_REPLAY_MODE_UNSPECIFIED = 0;
+  // Replay the most recent page, then stream live. cursor_seq is ignored. The
+  // cold-start subscription, matching the windowing client's initial LATEST load
+  // so the two dedup instead of tearing a gap into the loaded window.
+  WATCH_REPLAY_MODE_LATEST = 1;
+  // Replay every message after cursor_seq (seq > cursor_seq), then stream live.
+  // The reconnect/resume subscription that bridges the disconnect gap.
+  WATCH_REPLAY_MODE_AFTER_CURSOR = 2;
+}
+
 message ListAgentMessagesRequest {
   string agent_id = 1;
-  int64 after_seq = 2;  // Forward cursor: return messages with seq > after_seq (ascending)
-  int32 limit = 3;      // Max messages to return (Hub enforces max 50)
-  int64 before_seq = 4; // Backward cursor: return messages with seq < before_seq (returned ascending)
+  MessagePageAnchor anchor = 2; // Which page to return; defaults to LATEST.
+  int64 cursor_seq = 3;         // Exclusive seq bound for BEFORE/AFTER; ignored for LATEST/OLDEST.
+  int32 limit = 4;              // Max messages to return (Hub enforces max 50).
 }
 
 message ListAgentMessagesResponse {
@@ -321,7 +363,26 @@ message ListAgentMessagesResponse {
   // Authoritative provider-agnostic to-do list at the time the response is
   // served. Drives the sidebar without re-scanning message history; survives
   // page reloads and cross-client opens via the worker's agent_todos table.
+  // Only meaningful when todos_loaded is true -- an empty repeated field is
+  // indistinguishable on the wire from "the snapshot couldn't be loaded".
   repeated TodoItem todos = 3;
+  // Whether `todos` carries an authoritative snapshot. True only on a latest
+  // page whose LoadTodos succeeded; false on a non-latest page OR when the
+  // LoadTodos query errored. The client overwrites its to-do list ONLY when
+  // this is true, so a transient DB error can't wipe a populated list with an
+  // empty array (protobuf-es always materializes the repeated field as [], so
+  // [] alone can't signal "leave todos alone").
+  bool todos_loaded = 4;
+  // The agent's authoritative live-tail seq at the time the response is served. Lets
+  // the `--follow` CLI resolve a resume point WITHOUT inferring it from the page's
+  // content: when page 1 comes back empty it resumes after latest_seq instead of seq 0,
+  // so a transient empty page on a populated agent can no longer collapse to the
+  // "drain the entire history from OLDEST" path. Sentinel (shared with
+  // CatchUpStart/Complete.latest_seq and AgentMessageDeleted.new_latest_seq): -1 = the
+  // worker couldn't determine it (a DB error) and the consumer skips reconciliation /
+  // falls back to its loaded cursor; 0 = the agent genuinely has no messages; >0 = the
+  // authoritative MAX(seq).
+  int64 latest_seq = 5;
 }
 
 // TodoItem is the provider-neutral to-do row used by the sidebar list and
@@ -386,6 +447,19 @@ message AgentMessageError {
 message AgentMessageDeleted {
   string agent_id = 1;
   string message_id = 2;
+  // The seq of the deleted row. Lets a windowed client whose loaded window lags
+  // the live tail tell whether the deleted row was at or beyond its recorded
+  // live-tail seq.
+  int64 seq = 3;
+  // The agent's authoritative MAX(seq) AFTER this deletion. When the deleted row was
+  // the recorded live tail, a windowed client sets its live-tail seq to exactly this
+  // value instead of guessing seq - 1 -- so a delete of an unloaded beyond-window tail
+  // can't strand the recorded tail above the true server max, and the next forward-fill
+  // resolves against the real tail rather than a conservative under-estimate. Sentinel
+  // (shared with latest_seq): -1 = the worker couldn't determine it (a DB error) and
+  // the client leaves its recorded tail unchanged; 0 = no messages remain; >0 = the
+  // authoritative MAX(seq).
+  int64 new_latest_seq = 4;
 }
 
 message DeleteAgentMessageRequest {

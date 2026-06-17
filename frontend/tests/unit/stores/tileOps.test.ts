@@ -1,3 +1,4 @@
+import type { OrgOp } from '~/generated/leapmux/v1/org_ops_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { NodeKind, NodeRecordSchema, OrgCrdtStateSchema, TabRecordSchema } from '~/generated/leapmux/v1/org_crdt_pb'
@@ -226,7 +227,7 @@ describe('buildCloseSubtreeOps', () => {
     const ops = buildCloseSubtreeOps(mkCtx(), state, 'root')
     const tombstoned = ops
       .filter(o => o.body.case === 'tombstoneNode')
-      .map(o => o.body.value.nodeId)
+      .map(o => o.body.case === 'tombstoneNode' ? o.body.value.nodeId : '')
     expect(tombstoned).toContain('a')
     expect(tombstoned).toContain('b')
     expect(tombstoned).toContain('c')
@@ -246,7 +247,7 @@ describe('buildCloseSubtreeOps', () => {
     const ops = buildCloseSubtreeOps(mkCtx(), state, 'root', { tombstoneRoot: false })
     const tombstoned = ops
       .filter(o => o.body.case === 'tombstoneNode')
-      .map(o => o.body.value.nodeId)
+      .map(o => o.body.case === 'tombstoneNode' ? o.body.value.nodeId : '')
     expect(tombstoned).toContain('a')
     expect(tombstoned).not.toContain('root')
   })
@@ -275,7 +276,9 @@ describe('buildCloseSubtreeOps', () => {
     const migrationOps = ops.filter(o => o.body.case === 'setTabRegister' && o.body.value.field.case === 'tileId')
     expect(migrationOps).toHaveLength(2)
     for (const op of migrationOps) {
-      expect((op.body.value.field.value as string)).toBe('survivor')
+      if (op.body.case !== 'setTabRegister' || op.body.value.field.case !== 'tileId')
+        throw new Error('expected a setTabRegister(tileId) op')
+      expect(op.body.value.field.value).toBe('survivor')
     }
   })
 
@@ -313,7 +316,7 @@ describe('buildCloseSubtreeOps', () => {
 // per op so we compare the deterministic structural shape (body case
 // + payload fields) rather than full object equality.
 describe('precomputed childIndex equivalence', () => {
-  function bodyShape(op: { body: { case: string | undefined, value: unknown } }) {
+  function bodyShape(op: OrgOp) {
     return { case: op.body.case, value: op.body.value }
   }
 

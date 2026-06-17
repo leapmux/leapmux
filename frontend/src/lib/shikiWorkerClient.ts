@@ -23,11 +23,13 @@ function getWorker(): Worker {
       }
     }
     worker.onerror = () => {
-      // On worker crash, reject all pending and recreate on next call
+      // On worker crash, reject all pending and recreate on next call. Terminate the
+      // dead worker first so its thread + Shiki highlighter aren't leaked across crashes.
       for (const entry of pending.values()) {
         entry.resolve(null)
       }
       pending.clear()
+      worker?.terminate()
       worker = null
     }
   }

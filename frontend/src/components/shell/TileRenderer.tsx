@@ -5,12 +5,14 @@ import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
+import type { ChatMessageLookups } from '~/components/chat/ChatView'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
+import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createControlStore } from '~/stores/control.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
@@ -37,7 +39,6 @@ import { createImperativeRef } from '~/lib/imperativeRef'
 import { relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
-import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo } from '~/stores/tab.helpers'
@@ -102,7 +103,7 @@ interface TileRendererOpts {
   /** Cross-component refs the renderer threads to its tab content. */
   refs: {
     focusEditorRef: ImperativeRef<() => void>
-    getScrollStateRef: ImperativeRef<() => { distFromBottom: number, atBottom: boolean } | undefined>
+    getScrollStateRef: ImperativeRef<() => SavedViewportScroll | undefined>
     forceScrollToBottomRef: ImperativeRef<() => void>
   }
   /** Floating-window plumbing. Omit to disable detach/attach support. */
@@ -411,7 +412,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     agentTabToInfo(tabStore.getAgentTab(agentId)),
     agentSessionStore.getInfo(agentId),
     chatStore.getMessages(agentId),
-    chatStore.state.streamingText[agentId],
+    chatStore.streamingText.get(agentId),
     controlStore.getRequests(agentId).length,
   )
 
@@ -564,7 +565,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const tileAgentTabs = () => tabsByType().agent
     const tileFileTabs = () => tabsByType().file
     const tileTerminals = () => tabsByType().terminal
-    const agentScrollStates = new Map<string, () => { distFromBottom: number, atBottom: boolean } | undefined>()
+    const agentScrollStates = new Map<string, () => SavedViewportScroll | undefined>()
     const agentScrollToBottoms = new Map<string, () => void>()
     createEffect(() => {
       const activeId = agentTab()?.id
@@ -581,6 +582,19 @@ export function createTileRenderer(opts: TileRendererOpts) {
           {(at) => {
             const agentId = at.id
             const agent = createMemo(() => tabStore.getAgentTab(agentId))
+            // The per-agent reactive lookups ChatView's renderers / entry cache / height
+            // estimator consult. Built ONCE here (the <For> child runs once per agent),
+            // so `props.lookups` is a stable object -- a fresh object per access would
+            // allocate on every spanId lookup the entry cache makes.
+            const lookups: ChatMessageLookups = {
+              getToolUseParsedBySpanId: spanId => chatStore.getToolUseParsedBySpanId(agentId, spanId),
+              getToolUseContentVersionBySpanId: spanId => chatStore.getToolUseContentVersionBySpanId(agentId, spanId),
+              getToolResultParsedBySpanId: spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId),
+              getCommandStreamBySpanId: spanId => chatStore.getCommandStream(agentId, spanId),
+              hasRenderableCommandStreamBySpanId: spanId => chatStore.hasRenderableCommandStream(agentId, spanId),
+              getMessageContentVersion: id => chatStore.getMessageContentVersion(id),
+              getTodoById: taskId => chatStore.todos.getById(agentId, taskId),
+            }
             onCleanup(() => {
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
@@ -596,23 +610,29 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     agentId={agentId}
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
-                    streamingText={chatStore.state.streamingText[agentId] ?? ''}
+                    streamingText={chatStore.streamingText.get(agentId)}
                     streamingType={agentSessionStore.getInfo(agentId).streamingType}
-                    thinkingTokens={agentSessionStore.getInfo(agentId).thinkingTokens}
-                    agentWorking={agentThinking(agentId)}
                     tabActive={agentTab()?.id === at.id}
-                    messageErrors={chatStore.state.messageErrors}
-                    messagePendingLabels={chatStore.state.messagePendingLabels}
+                    messageErrors={chatStore.messageErrors()}
+                    messagePendingLabels={chatStore.messagePendingLabels()}
                     onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
                     onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
                     workingDir={agent()?.workingDir}
                     homeDir={workerInfoStore.getHomeDir(agent()?.workerId ?? '')}
-                    hasOlderMessages={chatStore.hasOlderMessages(agentId)}
-                    fetchingOlder={chatStore.isFetchingOlder(agentId)}
-                    onLoadOlderMessages={() => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId)}
-                    onTrimOldMessages={() => chatStore.trimOldMessages(agentId, MAX_LOADED_CHAT_MESSAGES)}
-                    savedViewportScroll={chatStore.getSavedViewportScroll(agentId)}
-                    onClearSavedViewportScroll={() => chatStore.clearSavedViewportScroll(agentId)}
+                    pagination={{
+                      hasOlderMessages: chatStore.hasOlderMessages(agentId),
+                      fetchingOlder: chatStore.isFetchingOlder(agentId),
+                      onLoadOlderMessages: () => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId),
+                      onTrimOldMessages: minKeep => chatStore.trimOldestToViewport(agentId, minKeep),
+                      hasNewerMessages: chatStore.hasNewerMessages(agentId),
+                      fetchingNewer: chatStore.isFetchingNewer(agentId),
+                      atWindowCeiling: chatStore.atWindowCeiling(agentId),
+                      onLoadNewerMessages: () => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId),
+                      onJumpToLatest: () => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId),
+                      onJumpToOldest: () => chatStore.jumpToOldestMessages(agent()?.workerId ?? '', agentId),
+                    }}
+                    savedViewportScroll={chatStore.viewportScroll.get(agentId)}
+                    onClearSavedViewportScroll={() => chatStore.viewportScroll.clear(agentId)}
                     onScrollApiReady={(api) => {
                       agentScrollStates.set(agentId, api.getScrollState)
                       agentScrollToBottoms.set(agentId, api.forceScrollToBottom)
@@ -622,10 +642,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                         forceScrollToBottomRef.set(api.forceScrollToBottom)
                       }
                     }}
-                    getToolUseParsedBySpanId={spanId => chatStore.getToolUseParsedBySpanId(agentId, spanId)}
-                    getToolResultParsedBySpanId={spanId => chatStore.getToolResultParsedBySpanId(agentId, spanId)}
-                    getCommandStreamBySpanId={spanId => chatStore.getCommandStream(agentId, spanId)}
-                    getTodoById={taskId => chatStore.getTodoById(agentId, taskId)}
+                    lookups={lookups}
                     onQuote={isActiveWorkspaceArchived()
                       ? undefined
                       : (text) => {
@@ -638,10 +655,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
                           appendText(agentId, text)
                           focusEditorRef()?.()
                         }}
-                    agentStatus={agent()?.agentStatus}
-                    startupError={agent()?.startupError}
-                    startupMessage={agent()?.startupMessage}
-                    providerLabel={agentProviderLabel(agent()?.agentProvider)}
+                    agentLifecycle={{
+                      agentWorking: agentThinking(agentId),
+                      thinkingTokens: agentSessionStore.getInfo(agentId).thinkingTokens,
+                      agentStatus: agent()?.agentStatus,
+                      startupError: agent()?.startupError,
+                      startupMessage: agent()?.startupMessage,
+                      providerLabel: agentProviderLabel(agent()?.agentProvider),
+                    }}
                   />
                 </Show>
               </div>
@@ -815,7 +836,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           // ACTIVE, or marks failed on STARTUP_FAILED.
           if (status === AgentStatus.STARTING) {
             chatStore.setMessagePendingLabel(localId, `Queued — ${agentProviderLabel(sendAgent?.agentProvider)} is starting…`)
-            chatStore.enqueuePendingOutbound(id, { localId, content, attachments: protoAttachments })
+            chatStore.pendingOutbound.enqueue(id, { localId, content, attachments: protoAttachments })
             return
           }
           const persistFailed = (reason: string) => {

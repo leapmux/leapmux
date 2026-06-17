@@ -1,7 +1,7 @@
 import type { TaskCardSource } from '../../../taskCardMessage'
-import type { TodoItem } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { normalizeTodoStatus } from '~/stores/chat.store'
+import { normalizeTodoStatus } from '~/stores/chatTodos'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 
 /**

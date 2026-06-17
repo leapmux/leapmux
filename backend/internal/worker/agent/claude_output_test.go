@@ -291,14 +291,14 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
-	rawEvent := `{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000}}`
+	rawEvent := `{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour","status":"rejected","resetsAt":1893456000}}`
 	agent.HandleOutput([]byte(rawEvent))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
 	assert.Equal(t, AutoContinueReasonRateLimit, schedule.Reason)
 	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.DueAt)
-	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000}`, string(schedule.SourcePayload))
+	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"rejected","resetsAt":1893456000}`, string(schedule.SourcePayload))
 
 	// Persists raw rate_limit_event verbatim as AGENT (no longer
 	// synthesizes a stripped-down {type:"rate_limit",rate_limit_info}).
@@ -318,7 +318,7 @@ func TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
-	rawEvent := `{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour","status":"exceeded","resetsAt":1893456000,"utilization":1.0}}`
+	rawEvent := `{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour","status":"rejected","resetsAt":1893456000,"utilization":1.0}}`
 	agent.HandleOutput([]byte(rawEvent))
 
 	require.Equal(t, 1, sink.SessionInfoCount())
@@ -329,7 +329,7 @@ func TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire(t *testing.T) {
 	tier, ok := rateLimits["five_hour"].(map[string]any)
 	require.True(t, ok, "tier should be keyed by rate_limit_type")
 	assert.Equal(t, "five_hour", tier["rate_limit_type"])
-	assert.Equal(t, "exceeded", tier["status"])
+	assert.Equal(t, "rejected", tier["status"])
 	assert.Equal(t, int64(1893456000), tier["resets_at"])
 	assert.Equal(t, 1.0, tier["utilization"])
 }
@@ -350,6 +350,94 @@ func TestClaudeRateLimitEvent_AllowedCancelsResume(t *testing.T) {
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, AutoContinueReasonRateLimit, sink.LastAutoCancel())
 	assert.Equal(t, 0, sink.AutoScheduleCount())
+}
+
+// TestClaudeRateLimitEvent_AllowedWarningCancelsResume guards the bug where an
+// "allowed_warning" status -- a served, heads-up event in which the request was
+// NOT blocked -- scheduled a spurious auto-continue. Only a hard "rejected"
+// status is an actual block; a warning must cancel any pending resume, exactly
+// like "allowed".
+func TestClaudeRateLimitEvent_AllowedWarningCancelsResume(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type":"rate_limit_event",
+		"rate_limit_info":{
+			"rateLimitType":"seven_day",
+			"status":"allowed_warning",
+			"resetsAt":1893456000,
+			"utilization":0.75
+		}
+	}`))
+
+	assert.Equal(t, 0, sink.AutoScheduleCount(), "an allowed_warning event must not schedule an auto-continue")
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, AutoContinueReasonRateLimit, sink.LastAutoCancel())
+}
+
+// TestClaudeRateLimitEvent_OverageAbsorbsRejected verifies the overage carve-out:
+// while on overage, a "rejected" base window is absorbed by the overage
+// allowance (overageStatus still served), so there is no block to wait out and
+// any pending resume is cancelled.
+func TestClaudeRateLimitEvent_OverageAbsorbsRejected(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type":"rate_limit_event",
+		"rate_limit_info":{
+			"rateLimitType":"seven_day",
+			"status":"rejected",
+			"resetsAt":1893456000,
+			"isUsingOverage":true,
+			"overageStatus":"allowed",
+			"overageResetsAt":1893460000
+		}
+	}`))
+
+	assert.Equal(t, 0, sink.AutoScheduleCount(), "overage absorbs the rejected base window; no resume")
+	require.Equal(t, 1, sink.AutoCancelCount())
+}
+
+// TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset verifies that a
+// hard block while on overage (the overage itself is "rejected") schedules a
+// resume at overageResetsAt -- not the base resetsAt.
+func TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type":"rate_limit_event",
+		"rate_limit_info":{
+			"rateLimitType":"seven_day",
+			"status":"rejected",
+			"resetsAt":1893456000,
+			"isUsingOverage":true,
+			"overageStatus":"rejected",
+			"overageResetsAt":1893460000
+		}
+	}`))
+
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	assert.Equal(t, time.Unix(1893460000, 0).UTC(), sink.LastAutoSchedule().DueAt)
+}
+
+// TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact verifies that
+// a "rejected" event carrying no resetsAt is a block we can't date: it neither
+// schedules (no time to wait until) nor cancels (must not drop a legitimate
+// pending resume from a prior well-formed event).
+func TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact(t *testing.T) {
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type":"rate_limit_event",
+		"rate_limit_info":{"rateLimitType":"seven_day","status":"rejected"}
+	}`))
+
+	assert.Equal(t, 0, sink.AutoScheduleCount())
+	assert.Equal(t, 0, sink.AutoCancelCount())
 }
 
 func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {

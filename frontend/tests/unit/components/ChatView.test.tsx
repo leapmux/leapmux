@@ -1,9 +1,12 @@
+import type { VirtualItem } from '~/components/chat/useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
-import type { CommandStreamSegment } from '~/stores/chat.store'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ChatView } from '~/components/chat/ChatView'
+import { computeOverscanPx } from '~/components/chat/chatViewportGeometry'
+import { sameVirtualItems } from '~/components/chat/useChatVirtualizer'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
@@ -26,6 +29,11 @@ beforeAll(() => {
   } as unknown as typeof Worker
 })
 
+// `role` ('user' | 'assistant') only labels the call site for readability;
+// ChatView classifies messages off `message.source` (left UNSPECIFIED here,
+// matching the historical behavior of these tests), not a `role` field —
+// AgentChatMessage has no `role`, so it is intentionally not placed on the
+// returned proto.
 function makeMessage(role: string, text: string, id: string = '1'): AgentChatMessage {
   const content = JSON.stringify({
     message: {
@@ -35,7 +43,6 @@ function makeMessage(role: string, text: string, id: string = '1'): AgentChatMes
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id,
-    role,
     content: new TextEncoder().encode(content),
     contentCompression: ContentCompression.NONE,
     seq: 1n,
@@ -43,7 +50,10 @@ function makeMessage(role: string, text: string, id: string = '1'): AgentChatMes
     // A real persisted message always carries a provider; classifyMessage no
     // longer falls back to Claude for an unset one (it would be unsupported_provider).
     agentProvider: AgentProvider.CLAUDE_CODE,
-  }
+    // Partial literal cast to the proto type, matching the sibling
+    // makeCodex* helpers below — the omitted proto fields default to
+    // their zero values, preserving these tests' historical behavior.
+  } as AgentChatMessage
 }
 
 function makeCodexCommandMessage(params: {
@@ -256,6 +266,47 @@ function makeClaudeEnterPlanModeResultMessage(id: string = 'claude-enter-plan-re
   } as AgentChatMessage
 }
 
+describe('computeOverscanPx', () => {
+  it('floors short panes and the pre-measurement frame at 800px', () => {
+    expect(computeOverscanPx(0)).toBe(800) // pre-measurement frame
+    expect(computeOverscanPx(-10)).toBe(800) // defensive
+    expect(computeOverscanPx(400)).toBe(800) // 400*1.5=600 < floor
+    expect(computeOverscanPx(533)).toBe(800) // ~533*1.5=800 (floor boundary)
+  })
+
+  it('scales with the viewport in the mid-range', () => {
+    expect(computeOverscanPx(800)).toBe(1200) // 800*1.5
+    expect(computeOverscanPx(1000)).toBe(1500) // 1000*1.5
+  })
+
+  it('caps tall panes at the 2400px ceiling', () => {
+    expect(computeOverscanPx(1600)).toBe(2400) // 1600*1.5=2400 (ceiling boundary)
+    expect(computeOverscanPx(2200)).toBe(2400) // 2200*1.5=3300 -> capped
+    expect(computeOverscanPx(10000)).toBe(2400) // far past the cap
+  })
+})
+
+describe('samevirtualitems', () => {
+  const item = (id: string, hasSpanLines = false, estimateKey?: string): VirtualItem => ({ id, hasSpanLines, estimateKey })
+
+  it('is true for the same reference and for a geometry-equivalent rebuild', () => {
+    const a = [item('m1', false, '1'), item('m2', true, '2')]
+    expect(sameVirtualItems(a, a)).toBe(true)
+    // A fresh array (a streaming/command-stream delta re-walk) with identical
+    // id/hasSpanLines/estimateKey is geometry-equivalent -> keep the prior, no churn.
+    const b = [item('m1', false, '1'), item('m2', true, '2')]
+    expect(sameVirtualItems(a, b)).toBe(true)
+  })
+
+  it('is false when a content version, span-line flag, id, or length changes', () => {
+    const base = [item('m1', false, '1'), item('m2', true, '2')]
+    expect(sameVirtualItems(base, [item('m1', false, '1'), item('m2', true, '3')])).toBe(false) // estimateKey bumped
+    expect(sameVirtualItems(base, [item('m1', true, '1'), item('m2', true, '2')])).toBe(false) // hasSpanLines flipped
+    expect(sameVirtualItems(base, [item('mX', false, '1'), item('m2', true, '2')])).toBe(false) // id changed (reorder/insert)
+    expect(sameVirtualItems(base, [item('m1', false, '1')])).toBe(false) // a row appeared/left
+  })
+})
+
 describe('chatView', () => {
   it('renders empty state when no messages', () => {
     render(() => (
@@ -264,6 +315,82 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
+  })
+
+  it('renders the older-loading indicator as an overlay OUTSIDE the scroll container', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[]} streamingText="" pagination={{ hasOlderMessages: true, fetchingOlder: true }} />
+      </PreferencesProvider>
+    ))
+    const indicator = screen.getByText('Loading older messages...')
+    expect(indicator).toBeInTheDocument()
+    // An IN-FLOW indicator inside the scroll container shifts the virtualized content
+    // by its height when fetchingOlder toggles -- a shift the anchor re-pin can't see
+    // (its offset map covers only the virtual rows) -- so a scrolled-up reader bounces
+    // and gets wedged re-triggering loadOlder. It must be an overlay sibling of the
+    // scroll container, never a descendant.
+    const scrollContainer = document.querySelector('[data-chat-scroll-container="true"]')
+    expect(scrollContainer).toBeInTheDocument()
+    expect(scrollContainer!.contains(indicator)).toBe(false)
+  })
+
+  it('gates the older-loading indicator on the top-edge stall, not the raw fetchingOlder flag', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[]} streamingText="" pagination={{ hasOlderMessages: true, fetchingOlder: true }} />
+      </PreferencesProvider>
+    ))
+    // jsdom computes no layout, so give the scroll container real geometry: content
+    // 5000 over a 500 viewport (max scrollTop 4500). scrollTop is a get/set pair so a
+    // scroll event reads whatever we last set.
+    const sc = document.querySelector('[data-chat-scroll-container="true"]') as HTMLElement
+    let top = 0
+    Object.defineProperty(sc, 'scrollHeight', { value: 5000, configurable: true })
+    Object.defineProperty(sc, 'clientHeight', { value: 500, configurable: true })
+    Object.defineProperty(sc, 'scrollTop', {
+      get: () => top,
+      set: (v) => { top = v },
+      configurable: true,
+    })
+
+    // Off the top edge: the older fetch is still in flight, but it is now a background
+    // pre-fetch (not a stall), so the indicator must stay dark.
+    top = 2000
+    fireEvent.scroll(sc)
+    expect(screen.queryByText('Loading older messages...')).not.toBeInTheDocument()
+
+    // Clamped at the top edge with the same fetch in flight: now it is a genuine stall.
+    top = 0
+    fireEvent.scroll(sc)
+    expect(screen.getByText('Loading older messages...')).toBeInTheDocument()
+  })
+
+  it('shows the newer-loading indicator and hides the scroll-to-bottom button while stalled at the bottom', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[]} streamingText="" pagination={{ hasNewerMessages: true, fetchingNewer: true }} />
+      </PreferencesProvider>
+    ))
+    const indicator = screen.getByText('Loading newer messages...')
+    expect(indicator).toBeInTheDocument()
+    // The newer indicator takes the scroll-to-bottom button's bottom-center slot, so the
+    // button is hidden for the duration of the stall (the only button in this render).
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    // Same overlay contract as the older indicator: a sibling of the scroll container,
+    // never a descendant (an in-flow indicator would shift the virtualized content).
+    const scrollContainer = document.querySelector('[data-chat-scroll-container="true"]')
+    expect(scrollContainer!.contains(indicator)).toBe(false)
+  })
+
+  it('shows the scroll-to-bottom button (no newer indicator) when newer messages exist but no fetch is stalling', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[]} streamingText="" pagination={{ hasNewerMessages: true }} />
+      </PreferencesProvider>
+    ))
+    expect(screen.queryByText('Loading newer messages...')).not.toBeInTheDocument()
+    expect(screen.getByRole('button')).toBeInTheDocument()
   })
 
   // The AgentStartupBanner sub-component is the visible surface of the
@@ -276,8 +403,7 @@ describe('chatView', () => {
         <ChatView
           messages={[]}
           streamingText=""
-          agentStatus={AgentStatus.STARTING}
-          providerLabel="Claude Code"
+          agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code' }}
         />
       </PreferencesProvider>
     ))
@@ -291,9 +417,7 @@ describe('chatView', () => {
         <ChatView
           messages={[]}
           streamingText=""
-          agentStatus={AgentStatus.STARTING}
-          providerLabel="Claude Code"
-          startupMessage="Checking Git status…"
+          agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code', startupMessage: 'Checking Git status…' }}
         />
       </PreferencesProvider>
     ))
@@ -308,9 +432,7 @@ describe('chatView', () => {
         <ChatView
           messages={[]}
           streamingText=""
-          agentStatus={AgentStatus.STARTING}
-          providerLabel="Claude Code"
-          startupMessage=""
+          agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code', startupMessage: '' }}
         />
       </PreferencesProvider>
     ))
@@ -323,15 +445,44 @@ describe('chatView', () => {
         <ChatView
           messages={[]}
           streamingText=""
-          agentStatus={AgentStatus.STARTUP_FAILED}
-          providerLabel="Claude Code"
-          startupError="exec: claude: not found"
+          agentLifecycle={{ agentStatus: AgentStatus.STARTUP_FAILED, providerLabel: 'Claude Code', startupError: 'exec: claude: not found' }}
         />
       </PreferencesProvider>
     ))
     expect(screen.getByTestId('agent-startup-error')).toBeInTheDocument()
     expect(screen.getByText('Claude Code failed to start')).toBeInTheDocument()
     expect(screen.getByText('exec: claude: not found')).toBeInTheDocument()
+  })
+
+  it('hides the trailing startup banner while windowed away from the live tail', () => {
+    // Visible history is present (non-empty branch renders), the agent is STARTING,
+    // but the window is scrolled away from the tail. The startup banner is tail-
+    // anchored like streaming/thinking, so it must NOT paint mid-history here.
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={[makeMessage('user', 'hello', 'm1')]}
+          streamingText=""
+          agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code' }}
+          pagination={{ hasNewerMessages: true }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.queryByTestId('agent-startup-overlay')).not.toBeInTheDocument()
+  })
+
+  it('shows the trailing startup banner at the live tail with visible history', () => {
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={[makeMessage('user', 'hello', 'm1')]}
+          streamingText=""
+          agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code' }}
+          pagination={{ hasNewerMessages: false }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('agent-startup-overlay')).toBeInTheDocument()
   })
 
   it('renders empty state when all messages are hidden', () => {
@@ -341,6 +492,18 @@ describe('chatView', () => {
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
+  })
+
+  it('does not show the empty state for an all-hidden window page when more history exists', () => {
+    // A windowed page that is entirely hidden messages is NOT an empty chat —
+    // there is older history to page in. Showing "Send a message to start" here
+    // would be the mid-history blank-page bug.
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} streamingText="" pagination={{ hasOlderMessages: true }} />
+      </PreferencesProvider>
+    ))
+    expect(screen.queryByText('Send a message to start')).not.toBeInTheDocument()
   })
 
   it('hides EnterPlanMode tool_result messages in chat history', () => {
@@ -365,6 +528,37 @@ describe('chatView', () => {
     ))
     expect(screen.getByText('Hello')).toBeInTheDocument()
     expect(screen.getByText('Hi there')).toBeInTheDocument()
+  })
+
+  it('hides a trailing optimistic local while windowed away from the live tail', () => {
+    const messages = [
+      makeMessage('assistant', 'Server reply', 'm1'),
+      { ...makeMessage('user', 'My pending message', 'local-1'), seq: 0n },
+    ]
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" pagination={{ hasNewerMessages: true }} />
+      </PreferencesProvider>
+    ))
+    // The server message renders; the optimistic local (seq 0n) is hidden -- it
+    // belongs at the live tail, not stranded after a scrolled-away window. It
+    // stays in the store and reappears on jump-to-latest.
+    expect(screen.getByText('Server reply')).toBeInTheDocument()
+    expect(screen.queryByText('My pending message')).toBeNull()
+  })
+
+  it('renders a trailing optimistic local at the live tail', () => {
+    const messages = [
+      makeMessage('assistant', 'Server reply', 'm1'),
+      { ...makeMessage('user', 'My pending message', 'local-1'), seq: 0n },
+    ]
+    render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" pagination={{ hasNewerMessages: false }} />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByText('Server reply')).toBeInTheDocument()
+    expect(screen.getByText('My pending message')).toBeInTheDocument()
   })
 
   it('renders streaming text', async () => {
@@ -400,13 +594,52 @@ describe('chatView', () => {
         <ChatView
           messages={messages}
           streamingText=""
-          getCommandStreamBySpanId={() => commandStream}
+          lookups={{ getCommandStreamBySpanId: () => commandStream }}
         />
       </PreferencesProvider>
     ))
 
     expect(screen.getByText('building...')).toBeInTheDocument()
     expect(screen.getByText('> y')).toBeInTheDocument()
+  })
+
+  it('reveals an empty codex reasoning row once its command stream starts streaming', async () => {
+    // An empty reasoning envelope (no summary/content) classifies as hidden
+    // until its span streams — then it becomes a visible row. The entry cache
+    // keys on seq, so without ALSO re-checking command-stream presence the row
+    // would freeze on its first (hidden) classification and never appear. A
+    // visible anchor message keeps the list rendered so only the reasoning row's
+    // own classification decides whether it shows.
+    const messages = [
+      { ...makeMessage('assistant', 'anchor', 'anchor-1'), seq: 1n },
+      makeCodexReasoningMessage({ id: 'reasoning-1', seq: 2n, spanId: 'reasoning-span-1' }),
+    ]
+    let setStream!: (s: CommandStreamSegment[]) => void
+
+    const view = render(() => {
+      const [stream, updateStream] = createSignal<CommandStreamSegment[]>([])
+      setStream = updateStream
+      return (
+        <PreferencesProvider>
+          <ChatView
+            messages={messages}
+            streamingText=""
+            lookups={{
+              getCommandStreamBySpanId: () => stream(),
+              hasRenderableCommandStreamBySpanId: () => stream().length > 0,
+            }}
+          />
+        </PreferencesProvider>
+      )
+    })
+
+    // No command stream yet -> the empty reasoning row (seq 2) is hidden.
+    expect(view.container.querySelector('[data-seq="2"]')).toBeNull()
+    expect(view.container.querySelector('[data-seq="1"]')).not.toBeNull() // anchor renders
+
+    // The span starts streaming -> the reasoning row must flip to visible.
+    setStream([{ kind: 'reasoning_content', text: 'pondering...' }])
+    await waitFor(() => expect(view.container.querySelector('[data-seq="2"]')).not.toBeNull())
   })
 
   it('preserves expanded codex reasoning state when the message updates and new messages are appended', async () => {
@@ -462,7 +695,7 @@ describe('chatView', () => {
       setMessages = updateMessages
       return (
         <PreferencesProvider>
-          <ChatView messages={messages()} streamingText="" hasOlderMessages={true} />
+          <ChatView messages={messages()} streamingText="" pagination={{ hasOlderMessages: true }} />
         </PreferencesProvider>
       )
     })
@@ -502,7 +735,14 @@ describe('chatView', () => {
       ...initialMessages,
     ])
 
-    await waitFor(() => expect(scrollTop).toBe(650))
+    // The virtualized list anchors the viewport to the message at the top of
+    // the viewport (by seq + offset) rather than shifting scrollTop by a raw
+    // scrollHeight delta. In jsdom rows measure 0px, so the anchor resolves
+    // back to the same offset — the key guarantee is that the view is NOT
+    // snapped to the bottom. (The pixel-accurate offset math is unit-tested in
+    // useChatVirtualizer.test.ts / useChatScroll.test.ts.)
+    await waitFor(() => expect(view.container).toHaveTextContent('Older 1'))
+    expect(scrollTop).toBeLessThan(scrollHeight - clientHeight)
 
     scrollHeight = 2700
     setMessages([
@@ -513,7 +753,63 @@ describe('chatView', () => {
     ])
 
     await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
-    expect(scrollTop).toBe(650)
+    expect(scrollTop).toBeLessThan(scrollHeight - clientHeight)
+  })
+
+  it('re-sticks to the bottom when the thinking-token count grows while pinned at the tail', async () => {
+    // The thinking indicator is a tail sibling no ResizeObserver here watches; its
+    // height growth (a climbing token count wrapping the verb row) does NOT move the
+    // auto-scroll signature, so a dedicated effect must re-stick on the token count.
+    // (agentWorking is left false so the visible indicator's rAF animation loop --
+    // which the synchronous test rAF stub would recurse infinitely -- stays unmounted;
+    // the effect is keyed on the thinkingTokens prop regardless, and the indicator's
+    // jsdom-absent layout growth is simulated by growing scrollHeight below.)
+    let setTokens!: (n: number) => void
+    const messages = [{ ...makeMessage('assistant', 'Working on it', 'msg-1'), seq: 1n }]
+
+    const view = render(() => {
+      const [tokens, updateTokens] = createSignal(0)
+      setTokens = updateTokens
+      return (
+        <PreferencesProvider>
+          <ChatView messages={messages} streamingText="" agentLifecycle={{ thinkingTokens: tokens() }} />
+        </PreferencesProvider>
+      )
+    })
+
+    const chatContainer = screen.getByTestId('chat-container')
+    const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
+
+    let scrollTop = 0
+    let scrollHeight = 1000
+    const clientHeight = 500
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      // Clamp like a real browser: the stick writes scrollTop = scrollHeight, which
+      // the browser pins to the maximum (scrollHeight - clientHeight).
+      set: (value: number) => {
+        scrollTop = Math.max(0, Math.min(value, scrollHeight - clientHeight))
+      },
+    })
+    Object.defineProperty(messageList, 'scrollHeight', { configurable: true, get: () => scrollHeight })
+    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => clientHeight })
+
+    // Pin to the bottom and let the sticky-bottom record seed.
+    scrollTop = scrollHeight - clientHeight // 500
+    fireEvent.scroll(messageList)
+    await flushAnimationFrame()
+
+    // The indicator grows: scrollHeight climbs while the message list, streamingText,
+    // and agentWorking all stay put -- only the token count changed.
+    scrollHeight = 1300
+    setTokens(842)
+    await flushAnimationFrame()
+    await Promise.resolve()
+
+    // The dedicated thinkingTokens re-stick effect snapped the view to the new bottom.
+    await waitFor(() => expect(scrollTop).toBe(scrollHeight - clientHeight)) // 800
+    view.unmount()
   })
 
   it('does not snap to bottom when a new message arrives before older-message anchoring finishes', async () => {
@@ -528,7 +824,7 @@ describe('chatView', () => {
       setMessages = updateMessages
       return (
         <PreferencesProvider>
-          <ChatView messages={messages()} streamingText="" hasOlderMessages={true} />
+          <ChatView messages={messages()} streamingText="" pagination={{ hasOlderMessages: true }} />
         </PreferencesProvider>
       )
     })
@@ -570,7 +866,8 @@ describe('chatView', () => {
     ])
 
     await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
-    await waitFor(() => expect(scrollTop).toBe(750))
+    // Anchored to the viewport-top message, not snapped to the bottom.
+    await waitFor(() => expect(scrollTop).toBeLessThan(scrollHeight - clientHeight))
   })
 
   it('does not snap to bottom after older loading finishes while the user is still browsing history', async () => {
@@ -591,8 +888,7 @@ describe('chatView', () => {
           <ChatView
             messages={messages()}
             streamingText=""
-            hasOlderMessages={true}
-            fetchingOlder={fetchingOlder()}
+            pagination={{ hasOlderMessages: true, fetchingOlder: fetchingOlder() }}
           />
         </PreferencesProvider>
       )
@@ -634,7 +930,9 @@ describe('chatView', () => {
       ...initialMessages,
     ])
 
-    await waitFor(() => expect(scrollTop).toBe(650))
+    // Anchored to the viewport-top message, not snapped to the bottom.
+    await waitFor(() => expect(view.container).toHaveTextContent('Older 1'))
+    expect(scrollTop).toBeLessThan(scrollHeight - clientHeight)
 
     setFetchingOlder(false)
     scrollHeight = 2700
@@ -646,7 +944,7 @@ describe('chatView', () => {
     ])
 
     await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
-    expect(scrollTop).toBe(650)
+    expect(scrollTop).toBeLessThan(scrollHeight - clientHeight)
   })
 
   it('suppresses passive older-message loading when restored to top after trim clamping', async () => {
@@ -662,9 +960,8 @@ describe('chatView', () => {
         <ChatView
           messages={messages}
           streamingText=""
-          hasOlderMessages={true}
-          savedViewportScroll={{ distFromBottom: 9999, atBottom: false }}
-          onLoadOlderMessages={onLoadOlderMessages}
+          pagination={{ hasOlderMessages: true, onLoadOlderMessages }}
+          savedViewportScroll={{ atBottom: false, hasMoreNewer: false }}
           onClearSavedViewportScroll={onClearSavedViewportScroll}
         />
       </PreferencesProvider>
@@ -714,8 +1011,7 @@ describe('chatView', () => {
         <ChatView
           messages={messages}
           streamingText=""
-          hasOlderMessages={true}
-          onLoadOlderMessages={onLoadOlderMessages}
+          pagination={{ hasOlderMessages: true, onLoadOlderMessages }}
         />
       </PreferencesProvider>
     ))
@@ -741,8 +1037,7 @@ describe('chatView', () => {
         <ChatView
           messages={messages}
           streamingText=""
-          hasOlderMessages={true}
-          onLoadOlderMessages={onLoadOlderMessages}
+          pagination={{ hasOlderMessages: true, onLoadOlderMessages }}
         />
       </PreferencesProvider>
     ))
@@ -752,7 +1047,9 @@ describe('chatView', () => {
     Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
     Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
 
-    fireEvent.keyDown(messageList, { key: 'PageUp' })
+    // ArrowUp is the explicit upward-intent key (Home jumps to the first
+    // message and PageUp pages, so neither directly triggers older-loading).
+    fireEvent.keyDown(messageList, { key: 'ArrowUp' })
     expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
   })
 
@@ -779,7 +1076,8 @@ describe('chatView', () => {
     Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 240 })
 
     pageScroll(1)
-    expect(messageList.scrollBy).toHaveBeenCalledWith({ top: 240, behavior: 'auto' })
+    // A page jump keeps PAGE_SCROLL_OVERLAP_PX (48) of context: 240 - 48 = 192.
+    expect(messageList.scrollBy).toHaveBeenCalledWith({ top: 192, behavior: 'auto' })
   })
 
   it('scrolls only the targeted chat when multiple chat views are mounted', () => {
@@ -823,11 +1121,13 @@ describe('chatView', () => {
     visiblePageScroll(-1)
 
     expect(hiddenList.scrollBy).not.toHaveBeenCalled()
-    expect(visibleList.scrollBy).toHaveBeenCalledWith({ top: -240, behavior: 'auto' })
+    // 240 viewport - 48 overlap = 192 (negative: paging up).
+    expect(visibleList.scrollBy).toHaveBeenCalledWith({ top: -192, behavior: 'auto' })
 
     hiddenPageScroll(1)
 
-    expect(hiddenList.scrollBy).toHaveBeenCalledWith({ top: 120, behavior: 'auto' })
+    // 120 viewport - 48 overlap = 72.
+    expect(hiddenList.scrollBy).toHaveBeenCalledWith({ top: 72, behavior: 'auto' })
   })
 
   it('loads older messages on touch and pointer overscroll intent while at top', () => {
@@ -842,8 +1142,7 @@ describe('chatView', () => {
         <ChatView
           messages={messages}
           streamingText=""
-          hasOlderMessages={true}
-          onLoadOlderMessages={onLoadOlderMessages}
+          pagination={{ hasOlderMessages: true, onLoadOlderMessages }}
         />
       </PreferencesProvider>
     ))
@@ -965,7 +1264,7 @@ describe('chatView', () => {
         <ChatView
           messages={messages}
           streamingText=""
-          getCommandStreamBySpanId={() => fileStream}
+          lookups={{ getCommandStreamBySpanId: () => fileStream }}
         />
       </PreferencesProvider>
     ))
@@ -1200,7 +1499,10 @@ describe('chatView', () => {
         <ChatView
           messages={messages}
           streamingText=""
-          getCommandStreamBySpanId={() => reasoningStream}
+          lookups={{
+            getCommandStreamBySpanId: () => reasoningStream,
+            hasRenderableCommandStreamBySpanId: () => reasoningStream.length > 0,
+          }}
         />
       </PreferencesProvider>
     ))

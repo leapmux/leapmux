@@ -9,7 +9,7 @@ import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '~/components/chat/sett
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { CODEX_RATE_LIMITS_METHOD, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
+import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_INTERNAL_TOOL, CODEX_ITEM, CODEX_METHOD, CODEX_STATUS } from '~/types/toolMessages'
 import { getToolName } from '~/utils/controlResponse'
 import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from '../../controls/CodexControlRequest'
@@ -24,6 +24,7 @@ import {
   DEFAULT_CODEX_COLLABORATION_MODE,
 } from './constants'
 import { CODEX_RENDERERS } from './defineRenderer'
+import { codexHeightMetrics } from './heightMetrics'
 import { codexNotificationThreadEntry } from './notifications'
 // The named imports below are the renderers dispatched explicitly (not via
 // the registry) by `renderMessage` for non-`item.type` shapes.
@@ -184,6 +185,10 @@ function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] }
 /** Returns true when a Codex rate limit message has all tiers below the warning threshold. */
 function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
   if (m.method !== CODEX_RATE_LIMITS_METHOD)
+    return false
+  // An authoritative reached-type (rate limit / credits / usage cap) is a real
+  // block -- never hide it, even when every rolling window is under threshold.
+  if (codexRateLimitReachedType(m))
     return false
   for (const { info } of iterCodexRateLimitTiers(m)) {
     if (info.status !== 'allowed')
@@ -433,7 +438,14 @@ const codexPlugin: Provider = {
 
   toolResultMeta: codexToolResultMeta,
 
+  heightMetrics: codexHeightMetrics,
+
   resultDivider: codexResultDivider,
+
+  // A persisted `turn_completed` result divider is the turn boundary that must stop
+  // the thinking indicator after a reconnect / missed live event -- so it clears the
+  // active codex_turn_id, mirroring the ephemeral session-info clear.
+  resultDividerEndsActiveTurn: subtype => subtype === 'turn_completed',
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject

@@ -455,7 +455,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 		var terminals []*leapmuxv1.TerminalInfo
 		var gitDirs []string
 		for _, e := range entries {
-			if accessibleWsIDs != nil && !accessibleWsIDs[e.Meta.WorkspaceID] {
+			if !accessibleWsIDs[e.Meta.WorkspaceID] {
 				continue
 			}
 			seen[e.ID] = true
@@ -488,7 +488,7 @@ func registerTerminalHandlers(d *channel.Dispatcher, svc *Context) {
 				if seen[ts.ID] {
 					continue
 				}
-				if accessibleWsIDs != nil && !accessibleWsIDs[ts.WorkspaceID] {
+				if !accessibleWsIDs[ts.WorkspaceID] {
 					continue
 				}
 				status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)

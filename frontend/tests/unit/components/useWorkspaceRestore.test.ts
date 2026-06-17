@@ -13,6 +13,7 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabStore } from '~/stores/tab.store'
+import { isAgentTab } from '~/stores/tab.types'
 import { createWorkspaceStoreRegistry } from '~/stores/workspaceStoreRegistry'
 import { installTestBridge } from '../helpers/crdtBridge'
 
@@ -530,10 +531,10 @@ describe('useWorkspaceRestore agent hydration race against reconciler', () => {
           expect(ettaTab, 'etta tab present').toBeDefined()
           expect(walkerTab, 'walker tab present').toBeDefined()
           expect(ettaTab?.title).toBe('Agent Etta')
-          expect(ettaTab?.agentProvider).toBe(AgentProvider.CLAUDE_CODE)
+          expect(ettaTab && isAgentTab(ettaTab) ? ettaTab.agentProvider : undefined).toBe(AgentProvider.CLAUDE_CODE)
           // The bug: walker comes back as a bare reconciler-added tab.
           expect(walkerTab?.title).toBe('Agent Walker')
-          expect(walkerTab?.agentProvider).toBe(AgentProvider.CLAUDE_CODE)
+          expect(walkerTab && isAgentTab(walkerTab) ? walkerTab.agentProvider : undefined).toBe(AgentProvider.CLAUDE_CODE)
 
           harness.dispose()
           dispose()

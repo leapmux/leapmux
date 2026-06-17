@@ -80,6 +80,16 @@ export function classifyMessage(
   return { kind: 'unsupported_provider' }
 }
 
+/** Classify a message, returning both the parsed content and category. */
+export function classifyParsedMessage(
+  message: AgentChatMessage,
+  classificationContext?: ClassificationContext,
+) {
+  const parsed = parseMessageContent(message)
+  const category = classifyMessage(toClassificationInput(parsed, message), classificationContext)
+  return { parsed, category }
+}
+
 // AgentChatMessage is immutable once persisted, so caching the
 // context-free classification by message reference avoids redispatching
 // through the provider plugin on every isAgentWorking scan. Skip when a
@@ -116,6 +126,16 @@ export function classifyAgentMessage(message: AgentChatMessage): MessageCategory
   const result = classifyMessage(toClassificationInput(parseMessageContent(message), message))
   classifyCache.set(message, result)
   return result
+}
+
+/**
+ * Drop the memoized classification for a message whose content was replaced in
+ * place under a stable reference (the store's same-seq update). Pairs with
+ * `invalidateMessageParseCache`: both caches key on the immutability assumption an
+ * in-place merge violates.
+ */
+export function invalidateMessageClassificationCache(message: AgentChatMessage): void {
+  classifyCache.delete(message)
 }
 
 // ---------------------------------------------------------------------------

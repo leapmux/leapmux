@@ -57,7 +57,7 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 			// Subscribe here — by this point the DB row exists, so
 			// WatchEvents accepts the subscription.
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: opts.AgentID, AfterSeq: 0}},
+				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: opts.AgentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
 			}, wWatch)
 
 			// Drive CloseAgent synchronously. dispatch returns only

@@ -1,3 +1,4 @@
+import type { JSX } from 'solid-js'
 import { render, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
@@ -17,9 +18,9 @@ type Prefs = ReturnType<typeof usePreferences>
 
 function captureContext(): { get: () => Prefs } {
   let prefs: Prefs | undefined
-  function Capture() {
+  function Capture(): JSX.Element {
     prefs = usePreferences()
-    return null as unknown as ReturnType<typeof usePreferences>
+    return null
   }
   render(() => (
     <PreferencesProvider>

@@ -17,7 +17,6 @@
 // regression that the fixture would silently hide.
 // ─────────────────────────────────────────────────────────────────────────
 
-import type { OrgCrdtState, WorkspaceContentsRecord } from '../../../src/generated/leapmux/v1/org_crdt_pb'
 import { fromBinary } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
 import { WatchOrgEventSchema } from '../../../src/generated/leapmux/v1/org_ops_pb'
@@ -69,7 +68,6 @@ export async function openOrgEventsSubscription(
 ): Promise<OrgEventsSubscription> {
   const wsUrl = `${hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/orgevents?org_id=${encodeURIComponent(orgId)}`
   const ws = new WebSocket(wsUrl, { headers: { Cookie: cookie } } as any)
-  // @ts-expect-error -- Node.js WebSocket supports binaryType
   ws.binaryType = 'arraybuffer'
 
   // workspaceId -> rootNodeId once observed.
@@ -136,10 +134,10 @@ export async function openOrgEventsSubscription(
       const e = evt.event
       switch (e?.case) {
         case 'initial': {
-          const initial = e.value as OrgCrdtState
+          const initial = e.value
           epoch = initial.currentEpoch
           for (const [wsId, rec] of Object.entries(initial.workspaces ?? {})) {
-            const r = (rec as WorkspaceContentsRecord).rootNodeId
+            const r = rec.rootNodeId
             if (r)
               setRoot(wsId, r)
           }
@@ -147,10 +145,13 @@ export async function openOrgEventsSubscription(
           resolve()
           break
         }
-        case 'op': {
-          const op = e.value
-          if (op.body.case === 'setWorkspaceRootNode') {
-            setRoot(op.body.value.workspaceId, op.body.value.rootNodeId)
+        case 'batch': {
+          // The hub broadcasts each committed op batch as one `batch` event;
+          // scan its ops for the seed `SetWorkspaceRootNode` that carries the
+          // workspace's rootNodeId.
+          for (const op of e.value.ops) {
+            if (op.body.case === 'setWorkspaceRootNode')
+              setRoot(op.body.value.workspaceId, op.body.value.rootNodeId)
           }
           break
         }

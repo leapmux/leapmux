@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, gitTabFieldsDiffer, isSameRepo, preserveNonEmptyGitFields, setOptionValue, tabDisplayLabel, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, gitTabFieldsDiffer, isSameRepo, preserveNonEmptyGitFields, setOptionValue, spliceTabGitFields, tabDisplayLabel, toGitTabFields } from './tab.helpers'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
 // AND in the workspace tree?" helper. Three call sites depend on its
@@ -216,6 +216,34 @@ describe('gitTabFieldsDiffer', () => {
     // false→undefined transition as a change — every refresh would
     // otherwise allocate a new tab object.
     expect(gitTabFieldsDiffer({ ...base, gitIsWorktree: undefined }, { ...base, gitIsWorktree: false })).toBe(false)
+  })
+})
+
+describe('spliceTabGitFields', () => {
+  const agentTab = (id: string, branch?: string): Tab =>
+    ({ type: TabType.AGENT, id, gitBranch: branch }) as Tab
+
+  it('returns the SAME array (no copy) when the matched tab git fields are unchanged', () => {
+    const tabs = [agentTab('a', 'main')]
+    const next = toGitTabFields('main', '', '', false)
+    expect(spliceTabGitFields(tabs, t => t.id === 'a', next)).toBe(tabs)
+  })
+
+  it('returns the SAME array when no tab matches', () => {
+    const tabs = [agentTab('a', 'main')]
+    const next = toGitTabFields('feature', '', '', false)
+    expect(spliceTabGitFields(tabs, t => t.id === 'missing', next)).toBe(tabs)
+  })
+
+  it('copy-on-writes only the matched tab when its git fields differ', () => {
+    const tabs = [agentTab('a', 'main'), agentTab('b', 'main')]
+    const next = toGitTabFields('feature', '', '', false)
+    const out = spliceTabGitFields(tabs, t => t.id === 'b', next)
+    expect(out).not.toBe(tabs) // fresh array
+    expect(out[0]).toBe(tabs[0]) // untouched tab keeps its reference
+    expect(out[1]).not.toBe(tabs[1]) // matched tab replaced
+    expect(out[1].gitBranch).toBe('feature')
+    expect(tabs[1].gitBranch).toBe('main') // original not mutated
   })
 })
 

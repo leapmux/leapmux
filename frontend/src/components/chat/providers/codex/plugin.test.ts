@@ -21,6 +21,12 @@ describe('codex provider capabilities', () => {
   it('preserves an option selection alongside the free-text note', () => {
     expect(plugin.preservesSelectionNotes).toBe(true)
   })
+
+  it('treats a turn_completed result divider as ending the active turn', () => {
+    expect(plugin.resultDividerEndsActiveTurn?.('turn_completed')).toBe(true)
+    expect(plugin.resultDividerEndsActiveTurn?.('error')).toBe(false)
+    expect(plugin.resultDividerEndsActiveTurn?.(undefined)).toBe(false)
+  })
 })
 
 describe('codex extractQuotableText', () => {
@@ -242,6 +248,22 @@ describe('codex classify', () => {
             usedPercent: 85,
             windowMinutes: 300,
           },
+        },
+      },
+    }
+    const result = plugin.classify(input(parent))
+    expect(result).toEqual({ kind: 'notification', messages: [parent] })
+  })
+
+  it('keeps a reached-type block visible even when all windows are under threshold', () => {
+    // Credit depletion leaves the rolling windows with headroom, so the
+    // all-allowed check would hide it; the authoritative reached-type must not.
+    const parent = {
+      method: 'account/rateLimits/updated',
+      params: {
+        rateLimits: {
+          rateLimitReachedType: 'workspace_owner_credits_depleted',
+          primary: { usedPercent: 20, windowDurationMins: 300 },
         },
       },
     }

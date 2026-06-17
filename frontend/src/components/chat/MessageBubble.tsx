@@ -5,7 +5,8 @@ import type { MessageUiKey } from './messageUiKeys'
 import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { CommandStreamSegment, TodoItem } from '~/stores/chat.store'
+import type { TodoItem } from '~/stores/chatTodos'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
@@ -17,16 +18,18 @@ import { usePreferences } from '~/context/PreferencesContext'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatErrorMessage } from '~/lib/errors'
+import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
-import { parseMessageContent } from '~/lib/messageParser'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
+import { buildRawJsonEnvelope } from './chatRawJson'
+import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import * as styles from './MessageBubble.css'
-import { classifyMessage, messageBubbleClass, messageRowClass, toClassificationInput } from './messageClassification'
+import { classifyParsedMessage, messageBubbleClass, messageRowClass } from './messageClassification'
 import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
-import { MESSAGE_UI_KEY } from './messageUiKeys'
+import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { renderNotificationThread } from './notificationRenderers'
 import { providerFor } from './providers/registry'
 import { renderResultDivider } from './resultDividerRenderers'
@@ -102,19 +105,14 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
     }, host)
 
     disposers.push(dispose)
+    // Mark the <pre> so the copy-button positioning (absolute, top-right) and its
+    // relative anchor apply regardless of where the <pre> lives -- a markdown body or a
+    // non-markdown block (e.g. a result-divider error <pre>). Without this the button
+    // anchored only inside `.markdownContent` and fell inline elsewhere.
+    pre.classList.add(codeCopyHostClass)
     pre.appendChild(host)
   }
   return disposers
-}
-
-/** Classify a message, returning both the parsed content and category. */
-export function classifyParsedMessage(
-  message: AgentChatMessage,
-  classificationContext?: { hasCommandStream?: boolean, commandStreamLength?: number },
-) {
-  const parsed = parseMessageContent(message)
-  const category = classifyMessage(toClassificationInput(parsed, message), classificationContext)
-  return { parsed, category }
 }
 
 /**
@@ -144,6 +142,8 @@ export interface MessageBubbleHost {
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
   setMessageUiState?: (key: MessageUiKey, value: boolean) => void
+  /** Debug: this row's analytical estimate + measured height + estimate breakdown, for the raw-JSON surface. */
+  getHeightDebug?: () => { estimated?: number, measured?: number, breakdown?: unknown }
 }
 
 interface MessageBubbleProps {
@@ -169,7 +169,8 @@ interface MessageBubbleProps {
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const prefs = usePreferences()
   const toolResultExpanded = () =>
-    props.host?.getMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED) ?? false
+    props.host?.getMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
+    ?? messageUiDefault(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
   const toggleToolResultExpanded = () =>
     props.host?.setMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, !toolResultExpanded())
   let contentRef: HTMLDivElement | undefined
@@ -184,57 +185,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Full raw JSON for the Raw JSON display. Plain function (not createMemo)
   // so the JSON.parse + JSON.stringify only run when a consumer actually
   // reads it (Copy Raw JSON click, hidden-message <pre> render).
-  const rawJson = (): string => {
-    const p = parsed()
-    const msg = props.message
-    const envelope: Record<string, unknown> = {
-      id: msg.id,
-      source: sourceLabel(msg.source),
-      seq: Number(msg.seq),
-      created_at: msg.createdAt,
-    }
-    if (msg.deliveryError)
-      envelope.delivery_error = msg.deliveryError
-    if (msg.depth)
-      envelope.depth = msg.depth
-    if (msg.spanId)
-      envelope.span_id = msg.spanId
-    if (msg.parentSpanId)
-      envelope.parent_span_id = msg.parentSpanId
-    if (msg.spanType)
-      envelope.span_type = msg.spanType
-    if (msg.spanColor > 0)
-      envelope.span_color = msg.spanColor
-    if (msg.spanLines && msg.spanLines !== '[]') {
-      // span_lines is backend-generated JSON, but this same envelope backs the
-      // raw-JSON debug surface for `hidden` / `unsupported_provider` rows, whose
-      // whole purpose is to show the bytes when something is wrong. Guard the
-      // parse like the `content` parse below so a corrupt span_lines degrades to
-      // its raw string instead of throwing into the ErrorBoundary and hiding the
-      // JSON we came here to inspect.
-      try {
-        envelope.span_lines = JSON.parse(msg.spanLines)
-      }
-      catch {
-        envelope.span_lines = msg.spanLines
-      }
-    }
-    if (p.wrapper && p.wrapper.old_seqs.length > 0)
-      envelope.old_seqs = p.wrapper.old_seqs
-
-    if (p.wrapper) {
-      envelope.messages = p.wrapper.messages
-      return JSON.stringify(envelope)
-    }
-
-    try {
-      envelope.content = JSON.parse(p.rawText)
-      return JSON.stringify(envelope)
-    }
-    catch {
-      return p.rawText
-    }
-  }
+  // The raw-JSON debug envelope (hidden / unsupported_provider rows). The pure
+  // builder lives in chatRawJson so its proto-field copying and parse-failure
+  // fallbacks are unit-testable without mounting a component.
+  const rawJson = (): string =>
+    buildRawJsonEnvelope(props.message, parsed(), sourceLabel(props.message.source), props.host?.getHeightDebug?.())
 
   const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => prettifyJson(rawJson()))
 
@@ -313,6 +268,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     jsonCopied,
     get createdAt() { return props.message.createdAt },
     get expandAgentThoughts() { return prefs.expandAgentThoughts() },
+    // Resolve the row's expand-toggle UI key ONCE here (kind + provider), so the
+    // thinking-style renderers read the same key the off-screen height estimator
+    // assumed -- see expandedUiKeyFor. Getter so the literal stays referentially
+    // stable while tracking a category/provider change.
+    get expandUiKey() { return expandedUiKeyFor(category().kind, props.message.agentProvider) },
     get toolUseParsed() { return toolUseParsed() },
     get toolResultParsed() { return toolResultParsed() },
     get spanColor() { return props.message.spanColor },
@@ -392,10 +352,70 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   onMount(() => {
     if (!contentRef)
       return
-    const disposers = injectCopyButtons(contentRef)
-    onCleanup(() => {
+    const el = contentRef
+    let disposers: Array<() => void> = []
+    let idle: number | undefined
+    let observer: MutationObserver | undefined
+    const disposeAll = () => {
       for (const d of disposers)
         d()
+      disposers = []
+    }
+    // (Re-)inject copy buttons over the CURRENT content. Disconnect the observer across
+    // the injection so our own appendChild(host) writes don't re-trigger it (which would
+    // loop). Dispose the prior roots first: an async re-render replaces the markdown
+    // <div>'s innerHTML wholesale, orphaning the old buttons' Solid roots, so we drop them
+    // and re-apply to the new <pre> elements.
+    const reinject = () => {
+      observer?.disconnect()
+      disposeAll()
+      disposers = injectCopyButtons(el)
+      observer?.observe(el, { childList: true, subtree: true })
+    }
+    // Defer (re-)injection to idle: the querySelectorAll('pre') + per-<pre> button render
+    // is post-mount chrome, not part of the first paint. A row that flings past unmounts
+    // and cancels the handle before it fires, so the work is skipped for rows that scroll
+    // by and runs only for rows that settle visible. The debounce also coalesces the burst
+    // of mutations from one re-render into a single re-injection.
+    const schedule = () => {
+      if (idle !== undefined)
+        cancelIdle(idle)
+      idle = requestIdle(() => {
+        idle = undefined
+        reinject()
+      })
+    }
+    // Re-apply on a CONTENT change, not just the first render: a code block's body is
+    // produced by renderMarkdown, whose syntax highlighting now lands ASYNCHRONOUSLY (the
+    // worker's highlighted HTML replaces the plain placeholder's innerHTML, wiping the
+    // injected buttons). A one-shot injection raced that swap -- inject before it and the
+    // button is wiped; after it and the button lands -- so a code block "sometimes" had no
+    // copy button. Observing contentRef re-injects after the swap (and after streaming
+    // re-renders / expand-collapse) regardless of timing.
+    //
+    // But IGNORE mutations the copy buttons cause themselves -- the IconButton swapping its
+    // Copy<->Check icon (and title) when clicked is a subtree mutation. Re-injecting on
+    // that would dispose the button mid-click, wiping its transient "Copied" checkmark and
+    // churning every button in the bubble on each copy. Re-inject only when a mutation
+    // touches something OUTSIDE the copy-button chrome.
+    const onMutations = (records: MutationRecord[]) => {
+      for (const r of records) {
+        const node = r.target
+        const asEl = node instanceof Element ? node : node.parentElement
+        if (!asEl?.closest('.copy-code-button')) {
+          schedule()
+          return
+        }
+      }
+    }
+    observer = new MutationObserver(onMutations)
+    observer.observe(el, { childList: true, subtree: true })
+    schedule()
+    onCleanup(() => {
+      observer?.disconnect()
+      if (idle !== undefined)
+        cancelIdle(idle)
+      disposeAll()
     })
   })
 

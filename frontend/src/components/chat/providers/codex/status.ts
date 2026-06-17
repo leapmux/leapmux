@@ -1,4 +1,4 @@
-import type { CommandStreamSegment } from '~/stores/chat.store'
+import type { CommandStreamSegment } from '~/stores/chatTypes'
 import { CODEX_STATUS } from '~/types/toolMessages'
 
 export type CodexTerminalStatus = typeof CODEX_STATUS.COMPLETED | typeof CODEX_STATUS.FAILED

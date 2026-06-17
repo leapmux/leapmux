@@ -7,12 +7,13 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { isTabReadyForGitStatus, preserveTerminalDisplayFields, protoToTerminalTabFields, tabKey } from '~/stores/tab.helpers'
 import { createTabStore } from '~/stores/tab.store'
+import { isAgentTab, isFileTab } from '~/stores/tab.types'
 import { flush } from '../helpers/async'
 
 describe('tabKey', () => {
   it('should create composite key from type and id', () => {
-    expect(tabKey({ type: 'agent', id: 'a1' })).toBe('agent:a1')
-    expect(tabKey({ type: 'terminal', id: 't1' })).toBe('terminal:t1')
+    expect(tabKey({ type: TabType.AGENT, id: 'a1' })).toBe('1:a1')
+    expect(tabKey({ type: TabType.TERMINAL, id: 't1' })).toBe('2:t1')
   })
 })
 
@@ -30,10 +31,10 @@ describe('createTabStore', () => {
   it('should add a tab and set it active', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      expect(store.state.tabs).toMatchObject([{ type: 'agent', id: 'a1' }])
-      expect(store.state.activeTabKey).toBe('agent:a1')
-      expect(store.activeTab()).toMatchObject({ type: 'agent', id: 'a1' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      expect(store.state.tabs).toMatchObject([{ type: TabType.AGENT, id: 'a1' }])
+      expect(store.state.activeTabKey).toBe('1:a1')
+      expect(store.activeTab()).toMatchObject({ type: TabType.AGENT, id: 'a1' })
       dispose()
     })
   })
@@ -69,7 +70,7 @@ describe('createTabStore', () => {
       expect(store.state.tabs).toHaveLength(1)
       const only = store.state.tabs[0]
       expect(only.title).toBe('Agent Sullivan')
-      expect(only.agentProvider).toBe(1)
+      expect(isAgentTab(only) && only.agentProvider).toBe(1)
       expect(only.workerId).toBe('w-1')
       dispose()
     })
@@ -78,11 +79,11 @@ describe('createTabStore', () => {
   it('should add multiple tabs and activate the latest', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.addTab({ type: 'terminal', id: 't1' })
-      store.addTab({ type: 'agent', id: 'a2' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
+      store.addTab({ type: TabType.AGENT, id: 'a2' })
       expect(store.state.tabs.length).toBe(3)
-      expect(store.state.activeTabKey).toBe('agent:a2')
+      expect(store.state.activeTabKey).toBe('1:a2')
       dispose()
     })
   })
@@ -118,11 +119,11 @@ describe('createTabStore', () => {
   it('should set active tab', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.addTab({ type: 'terminal', id: 't1' })
-      store.setActiveTab('agent', 'a1')
-      expect(store.state.activeTabKey).toBe('agent:a1')
-      expect(store.activeTab()).toMatchObject({ type: 'agent', id: 'a1' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
+      store.setActiveTab(TabType.AGENT, 'a1')
+      expect(store.state.activeTabKey).toBe('1:a1')
+      expect(store.activeTab()).toMatchObject({ type: TabType.AGENT, id: 'a1' })
       dispose()
     })
   })
@@ -130,18 +131,18 @@ describe('createTabStore', () => {
   it('should activate most recently used tab when removing active tab', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.addTab({ type: 'terminal', id: 't1' })
-      store.addTab({ type: 'agent', id: 'a2' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
+      store.addTab({ type: TabType.AGENT, id: 'a2' })
       // MRU: [a2, t1, a1]
-      store.setActiveTab('terminal', 't1')
+      store.setActiveTab(TabType.TERMINAL, 't1')
       // MRU: [t1, a2, a1]
-      expect(store.state.activeTabKey).toBe('terminal:t1')
+      expect(store.state.activeTabKey).toBe('2:t1')
 
       // Remove t1, should activate a2 (most recently used)
-      store.removeTab('terminal', 't1')
+      store.removeTab(TabType.TERMINAL, 't1')
       expect(store.state.tabs.length).toBe(2)
-      expect(store.state.activeTabKey).toBe('agent:a2')
+      expect(store.state.activeTabKey).toBe('1:a2')
       dispose()
     })
   })
@@ -149,13 +150,13 @@ describe('createTabStore', () => {
   it('should activate previous tab via MRU when removing last tab in list', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.addTab({ type: 'terminal', id: 't1' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
       // MRU: [t1, a1]; active is t1
       // Remove t1, should activate a1 (most recently used remaining)
-      store.removeTab('terminal', 't1')
+      store.removeTab(TabType.TERMINAL, 't1')
       expect(store.state.tabs.length).toBe(1)
-      expect(store.state.activeTabKey).toBe('agent:a1')
+      expect(store.state.activeTabKey).toBe('1:a1')
       dispose()
     })
   })
@@ -163,29 +164,29 @@ describe('createTabStore', () => {
   it('should follow MRU order across multiple closes', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.addTab({ type: 'agent', id: 'a2' })
-      store.addTab({ type: 'agent', id: 'a3' })
-      store.addTab({ type: 'agent', id: 'a4' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.addTab({ type: TabType.AGENT, id: 'a2' })
+      store.addTab({ type: TabType.AGENT, id: 'a3' })
+      store.addTab({ type: TabType.AGENT, id: 'a4' })
       // MRU: [a4, a3, a2, a1]
 
       // Visit tabs in order: a1 -> a3 -> a4
-      store.setActiveTab('agent', 'a1')
-      store.setActiveTab('agent', 'a3')
-      store.setActiveTab('agent', 'a4')
+      store.setActiveTab(TabType.AGENT, 'a1')
+      store.setActiveTab(TabType.AGENT, 'a3')
+      store.setActiveTab(TabType.AGENT, 'a4')
       // MRU: [a4, a3, a1, a2]
 
       // Close a4 -> should go to a3
-      store.removeTab('agent', 'a4')
-      expect(store.state.activeTabKey).toBe('agent:a3')
+      store.removeTab(TabType.AGENT, 'a4')
+      expect(store.state.activeTabKey).toBe('1:a3')
 
       // Close a3 -> should go to a1 (not a2, because a1 was used more recently)
-      store.removeTab('agent', 'a3')
-      expect(store.state.activeTabKey).toBe('agent:a1')
+      store.removeTab(TabType.AGENT, 'a3')
+      expect(store.state.activeTabKey).toBe('1:a1')
 
       // Close a1 -> should go to a2 (last remaining)
-      store.removeTab('agent', 'a1')
-      expect(store.state.activeTabKey).toBe('agent:a2')
+      store.removeTab(TabType.AGENT, 'a1')
+      expect(store.state.activeTabKey).toBe('1:a2')
 
       dispose()
     })
@@ -194,17 +195,17 @@ describe('createTabStore', () => {
   it('should not include closed tabs in MRU when selecting next tab', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.addTab({ type: 'agent', id: 'a2' })
-      store.addTab({ type: 'agent', id: 'a3' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.addTab({ type: TabType.AGENT, id: 'a2' })
+      store.addTab({ type: TabType.AGENT, id: 'a3' })
       // MRU: [a3, a2, a1]
 
-      store.setActiveTab('agent', 'a1')
+      store.setActiveTab(TabType.AGENT, 'a1')
       // MRU: [a1, a3, a2]
 
       // Close a1 -> should go to a3 (not a1 which is being removed)
-      store.removeTab('agent', 'a1')
-      expect(store.state.activeTabKey).toBe('agent:a3')
+      store.removeTab(TabType.AGENT, 'a1')
+      expect(store.state.activeTabKey).toBe('1:a3')
 
       dispose()
     })
@@ -213,8 +214,8 @@ describe('createTabStore', () => {
   it('should set activeTabKey to null when last tab is removed', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.removeTab('agent', 'a1')
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.removeTab(TabType.AGENT, 'a1')
       expect(store.state.tabs.length).toBe(0)
       expect(store.state.activeTabKey).toBeNull()
       expect(store.activeTab()).toBeNull()
@@ -225,12 +226,12 @@ describe('createTabStore', () => {
   it('should not change active tab when removing non-active tab', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.addTab({ type: 'terminal', id: 't1' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
       // Active is t1
-      store.removeTab('agent', 'a1')
+      store.removeTab(TabType.AGENT, 'a1')
       expect(store.state.tabs.length).toBe(1)
-      expect(store.state.activeTabKey).toBe('terminal:t1')
+      expect(store.state.activeTabKey).toBe('2:t1')
       dispose()
     })
   })
@@ -238,8 +239,8 @@ describe('createTabStore', () => {
   it('should update tab title', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'terminal', id: 't1' })
-      store.updateTabTitle('terminal', 't1', 'bash')
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
+      store.updateTabTitle(TabType.TERMINAL, 't1', 'bash')
       expect(store.state.tabs[0].title).toBe('bash')
       dispose()
     })
@@ -248,8 +249,8 @@ describe('createTabStore', () => {
   it('should clear all tabs', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'agent', id: 'a1' })
-      store.addTab({ type: 'terminal', id: 't1' })
+      store.addTab({ type: TabType.AGENT, id: 'a1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
       store.clear()
       expect(store.state.tabs).toEqual([])
       expect(store.state.activeTabKey).toBeNull()
@@ -260,8 +261,8 @@ describe('createTabStore', () => {
   it('should set notification on tab', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'terminal', id: 't1' })
-      store.setNotification('terminal', 't1', true)
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
+      store.setNotification(TabType.TERMINAL, 't1', true)
       expect(store.state.tabs[0].hasNotification).toBe(true)
       dispose()
     })
@@ -270,10 +271,10 @@ describe('createTabStore', () => {
   it('should clear notification when tab becomes active', () => {
     createRoot((dispose) => {
       const store = createTabStore()
-      store.addTab({ type: 'terminal', id: 't1' })
-      store.addTab({ type: 'terminal', id: 't2' })
-      store.setNotification('terminal', 't1', true)
-      store.setActiveTab('terminal', 't1')
+      store.addTab({ type: TabType.TERMINAL, id: 't1' })
+      store.addTab({ type: TabType.TERMINAL, id: 't2' })
+      store.setNotification(TabType.TERMINAL, 't1', true)
+      store.setActiveTab(TabType.TERMINAL, 't1')
       expect(store.state.tabs[0].hasNotification).toBe(false)
       dispose()
     })
@@ -662,7 +663,8 @@ describe('createTabStore', () => {
       const store = createTabStore()
       store.addTab({ type: TabType.FILE, id: 'f1', filePath: '/home/user/readme.md' })
       store.setTabDisplayMode(TabType.FILE, 'f1', 'source')
-      expect(store.state.tabs[0].displayMode).toBe('source')
+      const tab = store.state.tabs[0]
+      expect(isFileTab(tab) && tab.displayMode).toBe('source')
       dispose()
     })
   })
@@ -671,10 +673,11 @@ describe('createTabStore', () => {
     createRoot((dispose) => {
       const store = createTabStore()
       store.addTab({ type: TabType.FILE, id: 'f1', filePath: '/home/user/readme.md' })
+      const tab = store.state.tabs[0]
       store.setTabDisplayMode(TabType.FILE, 'f1', 'render')
-      expect(store.state.tabs[0].displayMode).toBe('render')
+      expect(isFileTab(tab) && tab.displayMode).toBe('render')
       store.setTabDisplayMode(TabType.FILE, 'f1', 'split')
-      expect(store.state.tabs[0].displayMode).toBe('split')
+      expect(isFileTab(tab) && tab.displayMode).toBe('split')
       dispose()
     })
   })
@@ -686,10 +689,11 @@ describe('createTabStore', () => {
       store.setTabDisplayMode(TabType.FILE, 'f1', 'split')
       // Add another tab — f1 display mode should persist
       store.addTab({ type: TabType.AGENT, id: 'a1' })
-      expect(store.state.tabs[0].displayMode).toBe('split')
+      const tab = store.state.tabs[0]
+      expect(isFileTab(tab) && tab.displayMode).toBe('split')
       // Update title — display mode should persist
       store.updateTabTitle(TabType.FILE, 'f1', 'renamed')
-      expect(store.state.tabs[0].displayMode).toBe('split')
+      expect(isFileTab(tab) && tab.displayMode).toBe('split')
       dispose()
     })
   })
@@ -1279,7 +1283,8 @@ describe('tab.store setter no-op guards', () => {
 
         let runs = 0
         createEffect(() => {
-          void store.state.tabs.find(t => t.id === 'a1')?.startupError
+          const tab = store.state.tabs.find(t => t.id === 'a1')
+          void (tab && isAgentTab(tab) ? tab.startupError : undefined)
           runs++
         })
         await flush()
@@ -1730,7 +1735,7 @@ describe('reconcileFromProjection tile MRU migration', () => {
       expect(x?.position).toBe('P')
       // The non-CRDT fields survive the reconcile.
       expect(x?.title).toBe('Agent Sullivan')
-      expect(x?.agentProvider).toBe(agentProvider)
+      expect(x && isAgentTab(x) && x.agentProvider).toBe(agentProvider)
       dispose()
     })
   })

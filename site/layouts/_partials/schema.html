@@ -22,7 +22,7 @@
         "name" .Site.Title
         "url" .Site.Home.Permalink
         "description" $desc
-        "inLanguage" site.Language.LanguageCode
+        "inLanguage" site.Language.Locale
         "publisher" $org -}}
   {{- $orgHome := merge $org (dict "sameAs" (slice "https://github.com/leapmux/leapmux")) -}}
   {{- $graph = slice $website $orgHome -}}
@@ -42,7 +42,7 @@
         "description" $desc
         "url" .Permalink
         "mainEntityOfPage" (dict "@type" "WebPage" "@id" .Permalink)
-        "inLanguage" site.Language.LanguageCode
+        "inLanguage" site.Language.Locale
         "image" (partial "og-image.html" .)
         "articleSection" $section
         "keywords" (partial "keywords.html" .)

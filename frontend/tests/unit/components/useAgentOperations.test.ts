@@ -24,6 +24,7 @@ const mockInterruptAgent = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
 const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
+const mockDeleteAgentMessage = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
@@ -34,7 +35,7 @@ vi.mock('~/api/workerRpc', () => ({
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   retryAgentMessage: vi.fn(),
-  deleteAgentMessage: vi.fn(),
+  deleteAgentMessage: (...args: unknown[]) => mockDeleteAgentMessage(...args),
   listAvailableProviders: (...args: unknown[]) => mockListAvailableProviders(...args),
 }))
 
@@ -60,6 +61,7 @@ function setup() {
     clearMessageError: vi.fn(),
     setMessageError: vi.fn(),
     removeMessage: vi.fn(),
+    forgetAgent: vi.fn(),
   } as any
 
   const ops = useAgentOperations({
@@ -175,6 +177,7 @@ describe('useAgentOperations', () => {
             clearMessageError: vi.fn(),
             setMessageError: vi.fn(),
             removeMessage: vi.fn(),
+            forgetAgent: vi.fn(),
           } as any
 
           const ops = useAgentOperations({
@@ -422,13 +425,47 @@ describe('useAgentOperations', () => {
         }
       })
     })
+
+    it('does not re-stamp a delivery error when the resend succeeds but the cleanup delete fails', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { tabStore, chatStore, ops } = setup()
+          mockSendAgentMessage.mockReset()
+          mockDeleteAgentMessage.mockReset()
+          mockShowWarnToast.mockReset()
+          const agent = create(AgentInfoSchema, { id: 'a-3', workerId: 'w-1' })
+          tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
+          // A SERVER-persisted failed message (non-local id) so the deleteAgentMessage
+          // cleanup path runs.
+          chatStore.getMessages.mockReturnValue([{
+            id: 'srv-3',
+            source: MessageSource.USER,
+            content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
+            contentCompression: ContentCompression.NONE,
+          }])
+          mockSendAgentMessage.mockResolvedValueOnce({}) // resend SUCCEEDS
+          mockDeleteAgentMessage.mockRejectedValueOnce(new Error('not a failed user message')) // cleanup fails
+
+          await ops.handleRetryMessage('a-3', 'srv-3')
+
+          // The resend landed, so the old bubble must NOT be re-marked as failed.
+          expect(chatStore.setMessageError).not.toHaveBeenCalled()
+          // The cleanup failure is surfaced softly, NOT as a "Retry failed".
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Could not remove the old failed message', expect.any(Error))
+          expect(mockShowWarnToast).not.toHaveBeenCalledWith('Retry failed', expect.any(Error))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
   })
 
   describe('handleAgentClose', () => {
     it('removes agent/tab synchronously BEFORE the close RPC resolves', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { tabStore, ops } = setup()
+          const { tabStore, chatStore, ops } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
           tabStore.addTab({ type: TabType.AGENT, id: agent.id, ...protoToAgentTabFields(agent.workerId, agent) })
           tabStore.addTab({ type: TabType.AGENT, id: 'a-1', title: 'Agent Olivia', tileId: 'tile-1', workerId: 'w-1', workingDir: '/tmp' })
@@ -441,6 +478,8 @@ describe('useAgentOperations', () => {
           // Store mutations happened synchronously.
           expect(tabStore.getAgentTab('a-1')).toBeUndefined()
           expect(tabStore.state.tabs.find(t => t.id === 'a-1')).toBeUndefined()
+          // Chat-store per-agent state is reclaimed synchronously too (no leak).
+          expect(chatStore.forgetAgent).toHaveBeenCalledWith('a-1')
           // RPC was dispatched with KEEP as the default worktree action.
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
         }

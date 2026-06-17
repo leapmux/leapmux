@@ -1,7 +1,8 @@
 import type { FileEditDiffSource } from '../../../results/fileEditDiff'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
-import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
-import { fileEditDiffFromHunks, fileEditDiffFromNewFile } from '../../../results/fileEditDiff'
+import type { ParsedMessageContent } from '~/lib/messageParser'
+import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { fileEditDiffFromHunks, fileEditDiffFromNewFile, fileEditHasDiff } from '../../../results/fileEditDiff'
 import { readFileSourceFromContent } from '../../../results/readFileResult'
 import { PI_TOOL } from '../protocol'
 import { parsePiNumberedDiff } from './piDiffParser'
@@ -128,4 +129,63 @@ export function extractPiRead(
     offset: pickNumber(args, 'offset'),
     limit: pickNumber(args, 'limit'),
   }
+}
+
+/**
+ * Fallback diff source(s) for a Pi edit/write whose `tool_execution_end` result
+ * carried no `details.diff`: synthesize from the paired `tool_execution_start`
+ * args (the original edit substitutions / write body), reached via
+ * `toolUseParsed`. Returns only sources with a renderable diff.
+ */
+export function piFallbackDiffSources(
+  toolName: string,
+  toolUseParsed: ParsedMessageContent | undefined,
+): FileEditDiffSource[] {
+  const startPayload = toolUseParsed?.parentObject
+  if (!isObject(startPayload))
+    return []
+  if (toolName === PI_TOOL.Edit)
+    return extractPiEdit(startPayload)?.sources.filter(fileEditHasDiff) ?? []
+  if (toolName === PI_TOOL.Write) {
+    const source = extractPiWrite(startPayload)
+    return fileEditHasDiff(source) ? [source] : []
+  }
+  return []
+}
+
+/**
+ * The diff source(s) a Pi edit/write `tool_execution_end` row renders, shared by
+ * `piToolResultMeta` (toolbar copyable/hasDiff) and the height estimator so both
+ * size/format the same diff. Prefers the inline result diff
+ * (`resolvePiResultDiff`), else the tool_use-start fallback. Returns [] for a
+ * non-edit/write tool, a failed execution (renders error text, not a diff), or
+ * when no diff is present.
+ *
+ * A PRESENT-but-unparseable result diff (`source` null, `rawDiff` non-empty) does
+ * NOT fall through to the start-args fallback: the renderer (PiDiffToolResult)
+ * draws the raw diff text as a single `<pre>` block in that case, NOT a structured
+ * diff, so synthesizing one here would make the height estimate / `hasDiff` meta
+ * model a multi-line diff the body never renders -- the exact estimate-vs-render
+ * drift this shared resolver exists to prevent. Mirror the renderer's
+ * `isError() || resultDiff().rawDiff` guard.
+ */
+export function piResolveDiffSources(
+  parsed: Record<string, unknown> | null | undefined,
+  toolUseParsed: ParsedMessageContent | undefined,
+): FileEditDiffSource[] {
+  if (!isObject(parsed))
+    return []
+  const tool = piExtractTool(parsed)
+  if (!tool || (tool.toolName !== PI_TOOL.Edit && tool.toolName !== PI_TOOL.Write))
+    return []
+  if (tool.isError)
+    return []
+  const startArgs = pickObject(toolUseParsed?.parentObject, 'args') ?? {}
+  const resolved = resolvePiResultDiff(parsed, startArgs)
+  if (resolved.source)
+    return [resolved.source]
+  // Present-but-unparseable diff: the renderer shows raw text, not a diff body.
+  if (resolved.rawDiff)
+    return []
+  return piFallbackDiffSources(tool.toolName, toolUseParsed)
 }

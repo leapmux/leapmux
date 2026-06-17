@@ -87,7 +87,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('updatePosition emits a 2-op batch (x + y) and reflects in the projection', () => {
     withTestBridge((harness) => {
       const store = createFloatingWindowStore()
-      const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })
+      const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
       const before = harness.pending.state.pendingBatches.length
 
       store.updatePosition(windowId, 0.5, 0.6)
@@ -102,7 +102,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('updatePosition is a no-op when the coordinates haven’t changed', () => {
     withTestBridge((harness) => {
       const store = createFloatingWindowStore()
-      const { windowId } = store.addWindow({ x: 0.1, y: 0.2, width: 0.3, height: 0.3 })
+      const { windowId } = store.addWindow({ x: 0.1, y: 0.2, width: 0.3, height: 0.3 })!
       const before = harness.pending.state.pendingBatches.length
 
       store.updatePosition(windowId, 0.1, 0.2)
@@ -113,7 +113,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('updateGeometry emits a 4-op batch and clamps below MIN_WINDOW_DIMENSION', () => {
     withTestBridge((harness) => {
       const store = createFloatingWindowStore()
-      const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })
+      const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
       const before = harness.pending.state.pendingBatches.length
 
       // Pass a width below the floor; store must clamp before emitting.
@@ -129,7 +129,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('updateOpacity clamps the value into [0.2, 1.0] and emits a single-op batch', () => {
     withTestBridge((harness) => {
       const store = createFloatingWindowStore()
-      const { windowId } = store.addWindow()
+      const { windowId } = store.addWindow()!
 
       // Start by dropping below 1.0 so the next bump shows the clamp
       // change (default 1.0 == clamp(5) == 1.0, which would no-op).
@@ -153,7 +153,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('updateOpacity at the same clamped value is a no-op', () => {
     withTestBridge((harness) => {
       const store = createFloatingWindowStore()
-      const { windowId } = store.addWindow()
+      const { windowId } = store.addWindow()!
       // Window default opacity is 1.0; resetting to 1.0 is a no-op.
       const before = harness.pending.state.pendingBatches.length
       const changed = store.updateOpacity(windowId, 1)
@@ -165,8 +165,8 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('bringToFront reorders the projection without emitting a batch (z-order is local)', () => {
     withTestBridge((harness) => {
       const store = createFloatingWindowStore()
-      const w1 = store.addWindow().windowId
-      const w2 = store.addWindow().windowId
+      const w1 = store.addWindow()!.windowId
+      const w2 = store.addWindow()!.windowId
       // Initially w1 was added first, then w2 — w2 is on top.
       const before = harness.pending.state.pendingBatches.length
       store.bringToFront(w1)

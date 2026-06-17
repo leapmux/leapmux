@@ -11,49 +11,9 @@ import { renderBashHighlight, ToolResultMessage, ToolUseLayout } from '../../../
 import { toolInputSummary, toolResultContentPre } from '../../../toolStyles.css'
 import { renderBashTitle } from '../../../toolTitleRenderers'
 import { defineCodexRenderer } from '../defineRenderer'
-import { codexCommandFromItem, codexUnwrapCommand } from '../extractors/commandExecution'
+import { codexCommandFromItem, codexUnwrapCommand, stripToolUseHeaderFromOutput } from '../extractors/commandExecution'
 import { LiveStreamOutput } from '../renderHelpers'
 import { isCodexTerminalStatus, readLiveStream } from '../status'
-
-const DIV_OPEN_RE = /<div\b/g
-const DIV_CLOSE_RE = /<\/div>/g
-const TOOL_USE_HEADER_CLASS_FRAGMENT = 'toolUseHeader__'
-
-/**
- * Strip our own injected tool-use headers from a Codex `aggregatedOutput`
- * payload. The backend sometimes echoes the rendered tool-use chrome (an
- * HTML `<div>` block) back into the aggregated output stream; this walks the
- * matching depth-counted div-block and drops it.
- */
-function stripToolUseHeaderFromOutput(output: string): string {
-  if (!output.includes(TOOL_USE_HEADER_CLASS_FRAGMENT))
-    return output
-
-  const lines = output.split('\n')
-  const kept: string[] = []
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (!line.includes(TOOL_USE_HEADER_CLASS_FRAGMENT)) {
-      kept.push(line)
-      continue
-    }
-
-    if (kept.length > 0 && kept.at(-1)?.includes('<div'))
-      kept.pop()
-
-    let depth = 1
-    while (++i < lines.length) {
-      const current = lines[i]
-      depth += (current.match(DIV_OPEN_RE) || []).length
-      depth -= (current.match(DIV_CLOSE_RE) || []).length
-      if (depth <= 0)
-        break
-    }
-  }
-
-  return kept.join('\n')
-}
 
 // Registry-only: dispatched by `item.type === 'commandExecution'` via
 // `CODEX_RENDERERS` (loaded from `renderers/registerAll.ts`).
