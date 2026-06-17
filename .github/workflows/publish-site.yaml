@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: cloudflare-publish
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           # Full history so Hugo's enableGitInfo derives accurate per-file
           # last-modified dates. A shallow clone dates every page with the

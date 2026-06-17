@@ -3,7 +3,7 @@ package hub
 import (
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v6"
 )
 
 // newFastBackoff creates a fast exponential backoff for testing.
