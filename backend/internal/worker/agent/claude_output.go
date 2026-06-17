@@ -830,24 +830,32 @@ func modelContextWindow(models []*ModelInfo, modelID string) int64 {
 // Each key is collapsed into the alias space with normalizeClaudeCodeModel -- the
 // same normalization a.model and the catalog ids use -- and compared for EQUALITY,
 // so the match is exact rather than a substring scan: "opus" no longer matches an
-// unrelated "claude-opusplus-1" key, the "[1m]" variant is disambiguated by the
-// normalized suffix, and a "[1M]" spelling is handled (normalize lowercases). Returns
-// 0 if the primary model is not found.
+// unrelated "claude-opusplus-1" key, and a "[1M]" spelling is handled (normalize
+// lowercases).
+//
+// Because Opus collapses to a single "opus[1m]" alias regardless of suffix, two keys
+// (a standard-context "claude-opus-4-6" and a 1M "claude-opus-4-6[1m]") could both
+// match -- a case the current CLI does not emit (it lists only the 1M Opus), but one
+// the old per-suffix disambiguation handled. Return the LARGEST matching window rather
+// than the first hit so the result is deterministic regardless of map iteration order
+// (the 1M window is the correct one for the running Opus). Returns 0 if the primary
+// model is not found.
 func findPrimaryContextWindow(modelUsage map[string]json.RawMessage, shortModelID string) int64 {
 	if shortModelID == "" {
 		// No primary model configured -- fall back to max across all models.
 		return maxContextWindow(modelUsage)
 	}
 	want := normalizeClaudeCodeModel(shortModelID)
+	var best int64
 	for key, raw := range modelUsage {
 		if normalizeClaudeCodeModel(key) != want {
 			continue
 		}
-		if cw := contextWindowOf(raw); cw > 0 {
-			return cw
+		if cw := contextWindowOf(raw); cw > best {
+			best = cw
 		}
 	}
-	return 0
+	return best
 }
 
 // contextWindowOf unmarshals a single modelUsage entry and returns its

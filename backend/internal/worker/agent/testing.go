@@ -58,7 +58,11 @@ func wireClaudeMockAgent(ctx context.Context, cancel context.CancelFunc, cmd *ex
 			processDone: make(chan struct{}),
 			apiTimeout:  opts.apiTimeout(),
 		},
-		model:          opts.Model(),
+		// Mirror StartClaudeCode: a.model is initialized from the normalized launch
+		// model, not the raw stored value, so the mock keeps the same "a.model lives
+		// in the normalized alias space" invariant (e.g. a stored "opus" becomes
+		// "opus[1m]") that the real launch path establishes.
+		model:          normalizeClaudeCodeModel(opts.Model()),
 		workingDir:     opts.WorkingDir,
 		homeDir:        opts.HomeDir,
 		sink:           sink,

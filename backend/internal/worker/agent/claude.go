@@ -170,6 +170,15 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		baseArgs = append(baseArgs, "--resume", opts.ResumeSessionID)
 	}
 
+	// opts.Model() is the raw stored/operator-default value, which may be a legacy
+	// or fully-qualified id (a persisted "opus", a "claude-opus-4-8" from
+	// LEAPMUX_CLAUDE_DEFAULT_MODEL). Canonicalize it up front so both the --model
+	// arg we forward and the initial a.model live in the same alias space the
+	// catalog and post-init refresh use -- otherwise launch would forward a bare
+	// "opus"/fully-qualified id and a.model would read it raw until the first
+	// get_settings refresh corrected it.
+	launchModel := normalizeClaudeCodeModel(opts.Model())
+
 	var modelEffortArgs []string
 	if !thirdPartyFromSettings {
 		// The dynamic catalog isn't known until the initialize response
@@ -177,7 +186,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		// catalog. Fable and the other shipped models live there; a model
 		// known only to a newer CLI downgrades ultracode→xhigh here and is
 		// re-enabled post-init by buildStartupFlagSettings.
-		modelEffortArgs = newEffortResolver(claudeCodeAvailableModels).buildModelEffortArgs(opts.Model(), opts.Effort())
+		modelEffortArgs = newEffortResolver(claudeCodeAvailableModels).buildModelEffortArgs(launchModel, opts.Effort())
 	}
 
 	// Always probe for a shell-profile third-party provider unless settings
@@ -214,7 +223,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 
 	a := &ClaudeCodeAgent{
 		processBase:            newProcessBase(opts, "claude", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
-		model:                  opts.Model(),
+		model:                  launchModel,
 		effort:                 opts.Effort(),
 		workingDir:             opts.WorkingDir,
 		homeDir:                opts.HomeDir,
@@ -1238,14 +1247,18 @@ func flagSettingThinking(v string) interface{} {
 // normalizeClaudeCodeModel collapses the fully-qualified model ID that
 // Claude Code's get_settings "applied.model" field returns (e.g.
 // "claude-opus-4-7", "claude-haiku-4-5-20251001", "claude-sonnet-4-6[1m]")
-// back to the short alias leapmux uses (opus, opus[1m], sonnet,
-// sonnet[1m], haiku). Short aliases pass through unchanged.
+// back to the short alias leapmux uses (opus[1m], sonnet, sonnet[1m], haiku).
+// Short aliases pass through unchanged.
 //
 // Rules:
 //   - Strip an optional "claude-" prefix.
 //   - Preserve a trailing "[...]" bracket suffix (the 1M-context marker).
 //   - Keep only the leading alphabetic token (opus/sonnet/haiku), dropping
 //     version numbers (e.g. "-4-7") and date suffixes (e.g. "-20251001").
+//   - Fable and Opus ship only as 1M-context models, so every spelling of
+//     either collapses to "fable[1m]" / "opus[1m]" regardless of suffix --
+//     bare "opus" (the legacy standard-context alias the CLI no longer lists)
+//     is canonicalized to "opus[1m]" like every other Opus spelling.
 func normalizeClaudeCodeModel(model string) string {
 	if model == "" {
 		return ""
@@ -1287,15 +1300,18 @@ func normalizeClaudeCodeModel(model string) string {
 		// caller can still display it.
 		return model
 	}
-	// Fable ships only as a 1M-context model and its canonical id carries the
-	// "[1m]" marker -- matching what the live CLI reports ("claude-fable-5[1m]").
-	// There is no standard-context Fable to disambiguate, so every Fable spelling
-	// (bare "fable" from an operator override or an older CLI listing, or a
-	// "[1m-beta]"-style decoration) collapses to "fable[1m]" so a running Fable
-	// always matches its own catalog entry instead of splitting into fable vs
-	// fable[1m].
-	if alias == "fable" {
-		return "fable[1m]"
+	// Fable and Opus ship only as 1M-context models, and their canonical ids
+	// carry the "[1m]" marker -- matching what the live CLI reports
+	// ("claude-fable-5[1m]", "claude-opus-4-8[1m]"). There is no standard-context
+	// Fable, and the standard-context Opus is a legacy id the live CLI no longer
+	// lists, so every spelling of either (bare "fable"/"opus" from an operator
+	// override or an older CLI listing, a fully-qualified value, an already-"[1m]"
+	// id, or a "[1m-beta]"-style decoration) collapses to "<family>[1m]" so a
+	// running Fable/Opus always matches its own catalog entry instead of splitting
+	// into "<family>" vs "<family>[1m]". If a standard-context Opus is ever
+	// reintroduced, this collapse must be revisited.
+	if alias == "fable" || alias == "opus" {
+		return alias + "[1m]"
 	}
 	return alias + suffix
 }
@@ -1386,8 +1402,12 @@ var claudeCodeAvailableModels = []*ModelInfo{
 	// display name omits "(1M context)" -- there is no standard-context Fable to
 	// distinguish it from.
 	{Id: "fable[1m]", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
-	// opus is retained for effort & context-window capability resolution (a
-	// session may still run it, e.g. via an operator default override) but
+	// opus is the legacy standard-context alias. normalizeClaudeCodeModel now
+	// collapses every Opus spelling (bare "opus" included) to "opus[1m]", so no
+	// path resolves to this entry by id anymore -- it is retained purely as a
+	// Hidden, exact-match-only safety net for any un-normalized legacy id that
+	// might still reach a FindAvailableModel lookup. FindAvailableModel matches
+	// raw ids, so this entry can never shadow the selectable opus[1m] below.
 	// Hidden from the picker: the live CLI no longer lists the standard-context
 	// Opus -- only opus[1m] -- so the static fallback must not resurrect it as a
 	// selectable option.

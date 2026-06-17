@@ -1333,23 +1333,27 @@ func TestEffortResolver_NilGuard(t *testing.T) {
 // ultracode-capable instead of silently downgrading it. The genuine downgrade case
 // (model still listed, minus xhigh) still wins because dynamic takes precedence.
 func TestEffortResolver_StaticFallbackTrustsFilteredModel(t *testing.T) {
-	// Dynamic catalog lists only sonnet -> opus is "filtered".
+	// The resolver is queried with normalized ids (a.model, buildModelEffortArgs's
+	// launchModel, normalizeClaudeCodeModel(...)), and Opus normalizes to "opus[1m]".
+	//
+	// Dynamic catalog lists only sonnet -> opus[1m] is "filtered".
 	filtered := &ClaudeCodeAgent{availableModels: convertClaudeModels([]claudeCodeModelInfo{
 		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
 	}, nil)}
 	r := filtered.effortResolver()
-	assert.True(t, r.supportsUltracode("opus"), "filtered opus resolves via the static fallback")
-	assert.Equal(t, EffortUltracode, r.resolveEffort("opus", EffortUltracode), "filtered opus keeps ultracode")
+	assert.True(t, r.supportsUltracode("opus[1m]"), "filtered opus[1m] resolves via the static fallback")
+	assert.Equal(t, EffortUltracode, r.resolveEffort("opus[1m]", EffortUltracode), "filtered opus[1m] keeps ultracode")
 	// A live edit echoing the current ultracode must NOT strip it for the filtered model.
-	assert.Empty(t, r.updateFlagSettings("opus", EffortUltracode, EffortUltracode),
+	assert.Empty(t, r.updateFlagSettings("opus[1m]", EffortUltracode, EffortUltracode),
 		"an unrelated live edit preserves a filtered model's ultracode")
 
 	// Dynamic precedence: a model the live CLI lists WITHOUT xhigh is genuinely not
-	// ultracode-capable even though the static catalog says it is.
+	// ultracode-capable even though the static catalog says it is. The bare "opus"
+	// value normalizes to the "opus[1m]" catalog id, so the query matches it directly.
 	dropped := &ClaudeCodeAgent{availableModels: convertClaudeModels([]claudeCodeModelInfo{
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
 	}, nil)}
-	assert.False(t, dropped.effortResolver().supportsUltracode("opus"),
+	assert.False(t, dropped.effortResolver().supportsUltracode("opus[1m]"),
 		"a live CLI that dropped xhigh wins over the static fallback")
 }
 
@@ -2077,6 +2081,7 @@ func TestConvertClaudeModels(t *testing.T) {
 		// "fable[1m]" id, so they collapse to one entry (first, effort-bearing, wins).
 		{Value: "fable", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
 		{Value: "fable[1m]", DisplayName: "Fable 5 (1M context)", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
+		// Opus is 1M-only: a bare "opus" normalizes to the canonical "opus[1m]" id.
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: claudeXHighLevels},
 		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: claudeMaxLevels},
 		{Value: "haiku", DisplayName: "Haiku", SupportsEffort: false},
@@ -2094,7 +2099,7 @@ func TestConvertClaudeModels(t *testing.T) {
 	for _, m := range got {
 		ids = append(ids, m.Id)
 	}
-	assert.Equal(t, []string{"default", "fable[1m]", "opus", "sonnet", "haiku"}, ids)
+	assert.Equal(t, []string{"default", "fable[1m]", "opus[1m]", "sonnet", "haiku"}, ids)
 
 	byID := claudeModelsByID(got)
 	xhighEfforts := []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}
@@ -2226,7 +2231,7 @@ func TestConvertClaudeModels_UnavailableSkipNormalized(t *testing.T) {
 	))
 
 	require.NotContains(t, got, "fable[1m]", "unavailable reported as claude-fable-5[1m] still filters fable[1m]")
-	require.NotContains(t, got, "opus", "unavailable reported as opus still filters claude-opus-4-8")
+	require.NotContains(t, got, "opus[1m]", "unavailable reported as aliased opus still filters claude-opus-4-8 (both normalize to opus[1m])")
 	require.Contains(t, got, "sonnet")
 	assert.Len(t, got, 1)
 }
@@ -2312,7 +2317,10 @@ func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 		// The live CLI reports Fable fully-qualified; it canonicalizes to the static
 		// catalog's "fable[1m]" id.
 		{Value: "claude-fable-5[1m]", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "opus", DisplayName: "Opus", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		// Opus is 1M-only: the live CLI lists only the 1M variant, which canonicalizes
+		// to the static catalog's selectable "opus[1m]" entry. (The static catalog's
+		// hidden legacy "opus" entry has no convert equivalent -- convert always emits
+		// "opus[1m]" -- so it is skipped in the comparison below.)
 		{Value: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
 		{Value: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: maxLevels},
 		{Value: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: maxLevels},
@@ -2324,6 +2332,13 @@ func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 		// The "default" sentinel is a hand-authored placeholder (no concrete
 		// model behind it), not a convert output, so it has no equivalent here.
 		if want.Id == DefaultModelSentinel {
+			continue
+		}
+		// The hidden legacy "opus" entry is a safety-net-only id: normalization
+		// collapses every Opus spelling to "opus[1m]", so convert never reproduces a
+		// bare "opus". Skip it -- the selectable "opus[1m]" entry IS reproduced and
+		// checked.
+		if want.Id == "opus" {
 			continue
 		}
 		m := got[want.Id]
@@ -2383,12 +2398,14 @@ func TestBuildStartupFlagSettings_DynamicCatalogUltracode(t *testing.T) {
 // stranded at an xhigh the CLI rejects.
 func TestBuildStartupFlagSettings_DowngradesWhenDynamicDropsXHigh(t *testing.T) {
 	// Live CLI reports opus without xhigh -- so dynamically it is not
-	// ultracode-capable, even though the static catalog says it is.
+	// ultracode-capable, even though the static catalog says it is. The CLI's "opus"
+	// value normalizes to the "opus[1m]" catalog id, which is also what a.model holds
+	// (production keeps a.model in the normalized alias space).
 	dynamic := convertClaudeModels([]claudeCodeModelInfo{
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
 	}, nil)
 
-	a := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic}
+	a := &ClaudeCodeAgent{model: "opus[1m]", effort: EffortUltracode, availableModels: dynamic}
 	fs := a.buildStartupFlagSettings(nil)
 	// Launch sent --effort xhigh (static opus is ultracode-capable); the dynamic
 	// catalog resolves ultracode->high and clears the ultracode boolean.
@@ -2427,9 +2444,10 @@ func TestBuildStartupFlagSettings_FilteredModelHonorsLaunchVerdict(t *testing.T)
 		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "max"}},
 	}, nil)
 
-	// opus+ultracode: static knows opus is ultracode-capable and launch deferred the
-	// boolean here, so completing the combo preserves the user's choice.
-	opus := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic}
+	// opus[1m]+ultracode: static knows opus[1m] is ultracode-capable and launch deferred
+	// the boolean here, so completing the combo preserves the user's choice. (a.model is
+	// the normalized "opus[1m]", which the sonnet-only dynamic catalog does not list.)
+	opus := &ClaudeCodeAgent{model: "opus[1m]", effort: EffortUltracode, availableModels: dynamic}
 	fs := opus.buildStartupFlagSettings(nil)
 	assert.Equal(t, EffortXHigh, fs["effortLevel"], "filtered ultracode model completes the combo (xhigh base)")
 	assert.Equal(t, true, fs["ultracode"], "filtered static-ultracode model keeps its ultracode boolean")
@@ -2464,7 +2482,7 @@ func TestBuildStartupFlagSettings_ThirdPartyEmitsNoEffort(t *testing.T) {
 		{Value: "opus", DisplayName: "Opus", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
 	}, nil)
 
-	a := &ClaudeCodeAgent{model: "opus", effort: EffortUltracode, availableModels: dynamic, thirdPartyFromSettings: true}
+	a := &ClaudeCodeAgent{model: "opus[1m]", effort: EffortUltracode, availableModels: dynamic, thirdPartyFromSettings: true}
 	fs := a.buildStartupFlagSettings(nil)
 	_, hasLevel := fs["effortLevel"]
 	_, hasUltra := fs["ultracode"]

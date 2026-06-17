@@ -201,16 +201,26 @@ func TestModelSupportsAdaptiveThinking(t *testing.T) {
 func TestNormalizeClaudeCodeModel(t *testing.T) {
 	cases := map[string]string{
 		// Short aliases pass through.
-		"opus":       "opus",
 		"opus[1m]":   "opus[1m]",
 		"sonnet":     "sonnet",
 		"sonnet[1m]": "sonnet[1m]",
 		"haiku":      "haiku",
+		// Opus is 1M-only now: every spelling (bare legacy "opus", fully-qualified,
+		// already-"[1m]", or a "[1m-beta]"-style decoration) canonicalizes to the
+		// single "opus[1m]" catalog alias, so a running Opus never splits into opus
+		// vs opus[1m].
+		"opus":          "opus[1m]",
+		"opus[1m-beta]": "opus[1m]",
+		// The Opus collapse is unconditional: it discards ANY bracket suffix (not just
+		// a 1M marker) and re-stamps "[1m]", unlike sonnet/haiku which preserve theirs.
+		"opus[foo]":           "opus[1m]",
+		"claude-opus-4-8":     "opus[1m]",
+		"claude-opus-4-8[1m]": "opus[1m]",
+		"claude-opus-4-7":     "opus[1m]",
+		"claude-opus-4-7[1m]": "opus[1m]",
+		"claude-opus-4-6":     "opus[1m]",
+		"claude-opus-4-6[1m]": "opus[1m]",
 		// Fully-qualified IDs Claude Code returns from get_settings.
-		"claude-opus-4-7":            "opus",
-		"claude-opus-4-7[1m]":        "opus[1m]",
-		"claude-opus-4-6":            "opus",
-		"claude-opus-4-6[1m]":        "opus[1m]",
 		"claude-sonnet-4-6":          "sonnet",
 		"claude-sonnet-4-6[1m]":      "sonnet[1m]",
 		"claude-haiku-4-5-20251001":  "haiku",
@@ -234,7 +244,7 @@ func TestNormalizeClaudeCodeModel(t *testing.T) {
 		// running model still matches its own (lowercase) catalog entry.
 		"OPUS[1M]":          "opus[1m]",
 		"Claude-Sonnet-4-6": "sonnet",
-		"Opus":              "opus",
+		"Opus":              "opus[1m]",
 		// Degenerate input.
 		"":              "",
 		"unknown-thing": "unknown",
@@ -244,6 +254,33 @@ func TestNormalizeClaudeCodeModel(t *testing.T) {
 			assert.Equal(t, want, normalizeClaudeCodeModel(in))
 		})
 	}
+}
+
+// TestStartClaudeCode_NormalizesLaunchModel verifies the launch path canonicalizes a
+// stored/legacy model id into the normalized alias space at construction -- a bare
+// legacy "opus" becomes "opus[1m]" before a.model is ever read, not only after the
+// first get_settings refresh. The same normalized value also feeds the --model arg
+// (both come from launchModel). wireClaudeMockAgent mirrors StartClaudeCode's a.model
+// initialization, so this also guards that the mock and production stay in sync.
+func TestStartClaudeCode_NormalizesLaunchModel(t *testing.T) {
+	sink := &testSink{}
+	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
+		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1"},
+		Options{
+			AgentID:    "test-launch-model",
+			Options:    map[string]string{OptionIDModel: "opus"},
+			WorkingDir: t.TempDir(),
+			APITimeout: 5 * time.Second,
+		},
+		sink)
+	require.NoError(t, err)
+	// Join the output-reader goroutine before reading a.model so the read can't race a
+	// settings refresh; the control responder pushes nothing unsolicited, so a.model
+	// stays at its construction value.
+	stopTestAgent(a)
+
+	assert.Equal(t, "opus[1m]", a.model,
+		`launch canonicalizes a legacy bare "opus" to "opus[1m]" at construction`)
 }
 
 func TestFlagSettingThinking(t *testing.T) {

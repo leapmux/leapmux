@@ -145,7 +145,7 @@ type agentFactoryEntry struct {
 	// so a restarting agent's groups still carry every model's dependent groups.
 	modelSubGroups modelSubGroupsFunc
 	// modelIDNormalizer canonicalizes a model id into the provider's alias space (e.g.
-	// Claude's "claude-opus-4-8" -> "opus", Cursor's "default[]" -> "auto"). nil leaves
+	// Claude's "claude-opus-4-8" -> "opus[1m]", Cursor's "default[]" -> "auto"). nil leaves
 	// the id unchanged. NormalizeModelID (the offline-label path) and the live agent's
 	// acpBase.modelIDNormalizer both source it here, so the two can't drift.
 	modelIDNormalizer func(string) string
